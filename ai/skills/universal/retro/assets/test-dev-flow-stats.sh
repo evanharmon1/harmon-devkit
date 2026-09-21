@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-dev-flow-stats.sh — behavioral test for scripts/dev-flow-stats.mjs:
+# ai/skills/universal/retro/assets/test-dev-flow-stats.sh — behavioral test for ai/skills/universal/retro/assets/dev-flow-stats.mjs:
 # evidence harvesting, trust/digest verification, the closed-cohort success
 # metric, per-run trajectory rendering, and policy replay. See
 # ai/schemas/README.md "Evidence marker and digest grammar" for the contract
@@ -22,7 +22,7 @@ fail() {
 }
 
 command -v node >/dev/null 2>&1 || fail "node is required"
-[ -f scripts/dev-flow-stats.mjs ] || fail "missing required asset: scripts/dev-flow-stats.mjs"
+[ -f ai/skills/universal/retro/assets/dev-flow-stats.mjs ] || fail "missing required asset: ai/skills/universal/retro/assets/dev-flow-stats.mjs"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -31,7 +31,7 @@ mkdir -p "$stub"
 
 # ---------------------------------------------------------------------------
 # Fake gh: reads $DFSTATS_DB (a JSON object {issues, comments, commits}) and
-# answers exactly the endpoints scripts/dev-flow-stats.mjs calls. --paginate
+# answers exactly the endpoints ai/skills/universal/retro/assets/dev-flow-stats.mjs calls. --paginate
 # --slurp gets one page (this repo's fixtures are always small enough).
 # ---------------------------------------------------------------------------
 cat >"$stub/gh" <<'STUB'
@@ -130,7 +130,7 @@ import { writeFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
   entryDigest, sha256, canonicalDigest, GENESIS, payloadDigest,
-} from "${repo}/scripts/dev-flow-stats.mjs";
+} from "${repo}/ai/skills/universal/retro/assets/dev-flow-stats.mjs";
 
 const TRUSTED_ORCHESTRATOR = 9001;
 const OTHER_TRUSTED = 9002;
@@ -283,7 +283,7 @@ function pass(finder, findings) {
     const priority = finding.priority || finding.severity || "P2";
     return {
       id: finding.id || \`review-r1-\${finder}-\${index + 1}\`,
-      path: finding.path || "scripts/dev-flow-stats.mjs",
+      path: finding.path || "ai/skills/universal/retro/assets/dev-flow-stats.mjs",
       line: finding.line === undefined ? 1 : finding.line,
       class: finding.class || "correctness",
       provenance: finding.provenance || "original",
@@ -3631,8 +3631,8 @@ function writeScenario(name, db) {
     // inline here rather than extending a helper 200+ other fixtures share,
     // same reasoning as run-221-challenge-still-active above. Unlike the
     // engine's own receipts (no edge-legality check at all — see
-    // dev-flow-exit.mjs's own comment on that), stage_transitions IS
-    // checked against validate-result-schemas.mjs's ALLOWED_EDGES, which
+    // ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs's own comment on that), stage_transitions IS
+    // checked against ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs's ALLOWED_EDGES, which
     // has no direct review->challenge edge — only review->implement, then
     // implement->verify, then verify->challenge (the exact "review ->
     // implement -> verify -> challenge" shape Codex's own finding named).
@@ -3654,7 +3654,7 @@ function writeScenario(name, db) {
     writeCompletedZeroFindingPass(runDir, runId, "review", 1);
     // The re-entry itself: a bare transition receipt into "challenge", no
     // pass of its own — the minimal shape that exercises the engine's fix,
-    // mirroring exactly how scripts/test-dev-flow-exit.sh proves it there.
+    // mirroring exactly how ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh proves it there.
     const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
     run2.receipts = [...(run2.receipts || []), { kind: "transition", stage: "challenge" }];
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
@@ -4079,20 +4079,20 @@ meta() {
 echo "== happy path: --run trajectory renders a clean ready-for-review run =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
 run_id="$(meta happy .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == "ready-for-review"' >/dev/null || fail "happy: expected ready-for-review outcome"
 echo "$out" | jq -e '.rounds | length == 1' >/dev/null || fail "happy: expected exactly one round"
 echo "$out" | jq -e '.rounds[0].stage == "review" and .rounds[0].round == 1' >/dev/null || fail "happy: round stage/number mismatch"
 
 echo "== happy path: --repo metric counts the issue as unattended success =="
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "happy: expected 1/1 unattended success"
 echo "$out" | jq -e '.per_issue[0].success == true' >/dev/null || fail "happy: per_issue success flag wrong"
 
 echo "== issue discovery tolerates >1 MiB output and projects paginated fields =="
 export DFSTATS_DB="$tmp/scenarios/large-buffer.json"
 export DFSTATS_GH_LOG="$tmp/large-buffer-discovery-gh.log"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .per_issue[0].issueNumber == 185' >/dev/null ||
     fail "large-buffer discovery: expected the oversized issue to be harvested"
 grep -Fq 'api --paginate --slurp repos/o/r/issues?state=all&per_page=100 --jq map(.[] | {number, pull_request})' "$DFSTATS_GH_LOG" ||
@@ -4101,7 +4101,7 @@ grep -Fq 'api --paginate --slurp repos/o/r/issues?state=all&per_page=100 --jq ma
 echo "== canonical --run reads only its issue and succeeds with >1 MiB gh output =="
 export DFSTATS_GH_LOG="$tmp/large-buffer-run-gh.log"
 run_id="$(meta large-buffer .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 185' >/dev/null ||
     fail "large-buffer --run: expected the canonical run from issue #185"
 grep -Fq 'api repos/o/r/issues/185' "$DFSTATS_GH_LOG" ||
@@ -4111,7 +4111,7 @@ if grep -Fq 'issues?state=all' "$DFSTATS_GH_LOG"; then
 fi
 
 echo "== canonical --run maps a missing inferred issue to run-not-found =="
-if node scripts/dev-flow-stats.mjs --repo o/r --run run-999-missing --trusted-actor-id 9001 --json >"$tmp/missing-run.out" 2>"$tmp/missing-run.err"; then
+if node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-999-missing --trusted-actor-id 9001 --json >"$tmp/missing-run.out" 2>"$tmp/missing-run.err"; then
     fail "missing canonical run: expected run-not-found"
 else
     rc=$?
@@ -4124,7 +4124,7 @@ unset DFSTATS_GH_LOG
 echo "== review evidence grammar reconstructs its authenticated local record beside a legacy run =="
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
 # harmon-devkit#1001 item 7: a trusted actor's marker naming the wrong
 # destination or a stage never visited is a structural anomaly in the
 # MARKER, not a forged-author claim — it belongs in tampered_comments, not
@@ -4133,15 +4133,15 @@ echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
 
 echo "== --as-of authenticates remote markers but discloses the local trajectory as current-state =="
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
 echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [] and .slot_failures_unavailable == false and .future_adjudication_files == [] and .local_record_current_state == true and ([.tampered_comments[].id] | index($future) != null)' >/dev/null ||
     fail "evidence grammar as-of: local evidence was not disclosed as current-state: $out"
-text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z)"
+text_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z)"
 grep -Fq 'local record read at current state; not reconstructable to the cutoff' <<<"$text_out" ||
     fail "evidence grammar as-of: missing current-state disclosure: $text_out"
 
 echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
-text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
+text_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
 grep -Fq 'legacy-also-present: true' <<<"$text_out" ||
     fail "evidence grammar: expected the text report to disclose legacy-also-present, got: $text_out"
 
@@ -4149,7 +4149,7 @@ echo "== a local current record fails closed when a registered comment is no lon
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
-import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+import { entryDigest, GENESIS } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs";
 const [source, destination] = process.argv.slice(2);
 const body = JSON.parse(readFileSync(source, "utf8"));
 body.evidence_comments.push({ id: "999999", author_actor_id: 9002, login: "other-orchestrator", digest: "missing", marker: { run_id: body.run_id, stage: "review", destination: "issue", round: 2, sequence: 2 } });
@@ -4164,7 +4164,7 @@ body.evidence_registrations = body.evidence_comments.map((entry, seq) => {
 writeFileSync(destination, JSON.stringify(body, null, 2));
 NODE
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq '999999' <<<"$out" && grep -Fq 'deleted-entry tampering' <<<"$out" ||
@@ -4182,7 +4182,7 @@ for receipt_case in before-transition wrong-stage; do
             "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
     fi
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
     rc=$?
     set -e
     if [ "$receipt_case" = before-transition ]; then
@@ -4205,28 +4205,28 @@ echo "== every local-record read target stays beneath --record-dir =="
 mkdir -p "$tmp/symlink-records"
 ln -s "$tmp/local-records/$run_id" "$tmp/symlink-records/$run_id"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/symlink-records" --trusted-actor-id 9002 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/symlink-records" --trusted-actor-id 9002 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'symbolic link' <<<"$out" ||
     fail "evidence grammar: expected run-directory symlink escape to be indeterminate, got rc=$rc: $out"
 
 echo "== review evidence grammar without a local input reports evidence-only marker facts =="
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9002 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9002 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .pr_binding == null and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}] and (.untrusted_marker_facts | length) == 3 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected evidence-only marker facts, got: $out"
 
 echo "== current-marker trust uses the configured read-time set without registry history =="
 export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
 run_id="$(meta arbitrary-evidence-run .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.status == "evidence-only" and (.marker_facts | length) == 1' >/dev/null ||
     fail "current configured-set trust: expected evidence without registry history, got: $out"
 
 echo "== a PR-only current marker is fetched and authenticated through the local PR binding =="
 export DFSTATS_DB="$tmp/scenarios/evidence-pr-only.json"
 run_id="$(meta evidence-pr-only .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 188 and .rounds == [] and .unverified_evidence_destinations == []' >/dev/null ||
     fail "PR-only current marker: expected authenticated local trajectory, got: $out"
 
@@ -4234,7 +4234,7 @@ echo "== malformed trusted PR evidence propagates beyond the local binding probe
 cp "$tmp/scenarios/evidence-pr-only.json" "$tmp/scenarios/evidence-pr-only.json.saved"
 jq '.comments["9188"][0].body = "<!-- dev-flow-v2-evidence: malformed -->"' "$tmp/scenarios/evidence-pr-only.json.saved" >"$tmp/scenarios/evidence-pr-only.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment' <<<"$out" && grep -Fq 'malformed dev-flow-v2-evidence marker' <<<"$out" ||
@@ -4244,7 +4244,7 @@ mv "$tmp/scenarios/evidence-pr-only.json.saved" "$tmp/scenarios/evidence-pr-only
 echo "== a later authoritative issue marker wins over an earlier PR-only rejection =="
 export DFSTATS_DB="$tmp/scenarios/evidence-pr-only-arbitrary.json"
 run_id="$(meta evidence-pr-only-arbitrary .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 192' >/dev/null ||
     fail "arbitrary PR-only binding: later authoritative issue marker did not win: $out"
 
@@ -4252,7 +4252,7 @@ echo "== arbitrary-id PR-only evidence remains unverified when no issue authenti
 export DFSTATS_DB="$tmp/scenarios/evidence-pr-only-unbound.json"
 run_id="$(meta evidence-pr-only-unbound .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'unverified for issue #193' <<<"$out" && grep -Fq 'issue marker or canonical run-id issue binding' <<<"$out" ||
@@ -4262,7 +4262,7 @@ echo "== complete validation rejects malformed retained registrations =="
 export DFSTATS_DB="$tmp/scenarios/evidence-unverified-pr.json"
 run_id="$(meta evidence-unverified-pr .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'evidence_comments[1].digest' <<<"$out" ||
@@ -4271,7 +4271,7 @@ set -e
 echo "== malformed legacy evidence cannot suppress an authenticated current marker =="
 export DFSTATS_DB="$tmp/scenarios/evidence-current-first.json"
 run_id="$(meta evidence-current-first .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 190 and (.rounds | length) == 1' >/dev/null ||
     fail "current-first migration: malformed legacy evidence suppressed the current run: $out"
 
@@ -4280,7 +4280,7 @@ export DFSTATS_DB="$tmp/scenarios/happy.json"
 run_id="$(meta happy .meta.runId)"
 mkdir -p "$tmp/local-records/$run_id"
 printf '%s\n' '{not-json' >"$tmp/local-records/$run_id/run.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == "ready-for-review" and .issue == 101' >/dev/null ||
     fail "current selection: unselected malformed local bytes suppressed the legacy run: $out"
 rm -rf "$tmp/local-records/$run_id"
@@ -4290,7 +4290,7 @@ export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 mkdir -p "$tmp/empty-records"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/empty-records" --trusted-actor-id 9002 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/empty-records" --trusted-actor-id 9002 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 1 ] && grep -Fq 'record-missing' <<<"$out" ||
@@ -4299,10 +4299,10 @@ set -e
 echo "== current-marker discovery supports schema-valid run ids without an encoded issue number =="
 export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
 run_id="$(meta arbitrary-evidence-run .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
     fail "evidence grammar: expected all-issue lookup to find the arbitrary run id, got: $out"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
 echo "$out" | jq -e '.slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}] and .slot_failures_unavailable == false and .local_record_current_state == true' >/dev/null ||
     fail "evidence grammar as-of: current local slot failures were cutoff-filtered: $out"
 
@@ -4311,13 +4311,13 @@ for scenario in evidence-sequence-two-only evidence-sequence-gap; do
     export DFSTATS_DB="$tmp/scenarios/$scenario.json"
     run_id="$(meta "$scenario" .meta.runId)"
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 3 ] && grep -Fq 'unique contiguous sequences starting at 1' <<<"$out" ||
         fail "evidence sequence: expected indeterminate contiguous-sequence refusal, got rc=$rc: $out"
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 3 ] && grep -Fq 'unique contiguous sequences starting at 1' <<<"$out" ||
@@ -4327,7 +4327,7 @@ done
 echo "== a valid multi-segment current-marker group projects one retained round =="
 export DFSTATS_DB="$tmp/scenarios/evidence-sequence-valid.json"
 run_id="$(meta evidence-sequence-valid .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "evidence sequence: valid multi-segment group did not reconstruct: $out"
 
@@ -4335,7 +4335,7 @@ echo "== an authenticated marker with no retained artifact is record-missing =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-missing.json"
 run_id="$(meta evidence-adjudication-missing .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'record-missing: authenticated review round 1 marker group' <<<"$out" ||
@@ -4344,7 +4344,7 @@ set -e
 echo "== a completed zero-finding pass and adjudication are projected without deriving an exit =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
 run_id="$(meta evidence-adjudication-clean .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "evidence adjudication: completed zero-finding pass and adjudication were not projected: $out"
 
@@ -4352,7 +4352,7 @@ echo "== the complete run-record validator rejects an invalid first transition =
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
-import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+import { entryDigest, GENESIS } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs";
 const [source, destination] = process.argv.slice(2);
 const body = JSON.parse(readFileSync(source, "utf8"));
 body.stage_transitions[0].stage = "review";
@@ -4367,7 +4367,7 @@ body.stage_transitions = body.stage_transitions.map((entry, seq) => {
 writeFileSync(destination, JSON.stringify(body, null, 2));
 NODE
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'failed exit-engine validation: FAIL:' <<<"$out" && grep -Fq 'stage_transitions' <<<"$out" ||
@@ -4390,17 +4390,17 @@ mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.j
 echo "== the exit-engine trajectory does not synthesize integration rounds, and discloses integration as not measured from local evidence =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
     fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
-out_table="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
 grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
     fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
 
 echo "== a completed integration adjudication does not block harvesting real review evidence (harmon-devkit#1001 challenge round 5/7, fixed round 6/7) =="
 export DFSTATS_DB="$tmp/scenarios/review-and-integration-complete.json"
 run_id="$(meta review-and-integration-complete .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].stage == "review" and .rounds[0].round == 1 and .rounds[0].pass_count == 1 and .rounds[0].finding_count == 0 and .rounds[0].has_adjudication == true' >/dev/null ||
     fail "review+integration complete: expected the review round to compute cleanly alongside the completed integration adjudication: $out"
 
@@ -4429,7 +4429,7 @@ race_err="$tmp/freeze-race-err.log"
 # the collision entirely; no production-code change needed.
 race_tmp_base="$tmp/freeze-race-tmpdir"
 mkdir -p "$race_tmp_base"
-TMPDIR="$race_tmp_base" node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json >"$race_out" 2>"$race_err" &
+TMPDIR="$race_tmp_base" node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json >"$race_out" 2>"$race_err" &
 race_pid=$!
 observed_freeze=""
 race_deadline=$((SECONDS + 20))
@@ -4464,7 +4464,7 @@ echo "== --as-of excludes a round whose marker was posted after the cutoff (harm
 # record's CURRENT-STATE files exactly as any other round would.
 export DFSTATS_DB="$tmp/scenarios/future-adjudication.json"
 run_id="$(meta future-adjudication .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
 echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].round == 1 and .future_adjudication_files == [] and .local_record_current_state == true' >/dev/null ||
     fail "future adjudication cutoff: a post-cutoff round leaked into the historical read: $out"
 
@@ -4472,7 +4472,7 @@ echo "== author_actor_id must be a strict positive integer, never coerced (harmo
 export DFSTATS_DB="$tmp/scenarios/strict-actor-id.json"
 run_id="$(meta strict-actor-id .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'does not authenticate evidence comment' <<<"$out" ||
@@ -4481,28 +4481,28 @@ set -e
 echo "== a marker edited (updated_at) after an --as-of cutoff is not admitted from its present body (harmon-devkit#1001 item 5) =="
 export DFSTATS_DB="$tmp/scenarios/edited-after-cutoff.json"
 run_id="$(meta edited-after-cutoff .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
 echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].round == 1' >/dev/null ||
     fail "edited after cutoff: round 2 (edited after the cutoff) leaked into the historical read: $out"
 
 echo "== an unregistered legacy comment from the trusted author surfaces as a local orphan (harmon-devkit#1001 item 6) =="
 export DFSTATS_DB="$tmp/scenarios/legacy-orphan.json"
 run_id="$(meta legacy-orphan .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '(.orphan_comments | length) == 1' >/dev/null ||
     fail "legacy orphan: expected exactly one orphan comment, got: $out"
 
 echo "== a legacy orphan comment edited (updated_at) after an --as-of cutoff is not admitted from its present body (harmon-devkit#1001 challenge round 5/7, fixed round 6/7) =="
 export DFSTATS_DB="$tmp/scenarios/legacy-orphan-edited-after-cutoff.json"
 run_id="$(meta legacy-orphan-edited-after-cutoff .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
 echo "$out" | jq -e '(.orphan_comments | length) == 0' >/dev/null ||
     fail "legacy orphan edited after cutoff: a legacy comment edited after the cutoff leaked into a historical orphan read: $out"
 
 echo "== an unreceipted blocked envelope does not inflate blocked_passes (harmon-devkit#1001 item 10) =="
 export DFSTATS_DB="$tmp/scenarios/unreceipted-blocked.json"
 run_id="$(meta unreceipted-blocked .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "unreceipted blocked: expected blocked_passes to stay 0, got: $out"
 
@@ -4510,7 +4510,7 @@ echo "== a local run record's pr.number that is not a real pull request is rejec
 export DFSTATS_DB="$tmp/scenarios/pr-not-a-pr.json"
 run_id="$(meta pr-not-a-pr .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'does not name a pull request' <<<"$out" ||
@@ -4520,7 +4520,7 @@ echo "== a round gap (round 1 then round 3, no round 2) is indeterminate (harmon
 export DFSTATS_DB="$tmp/scenarios/round-gap.json"
 run_id="$(meta round-gap .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'not contiguous from 1' <<<"$out" ||
@@ -4537,7 +4537,7 @@ echo "== a malformed pass that is the only confidence evidence is indeterminate,
 export DFSTATS_DB="$tmp/scenarios/malformed-only-evidence.json"
 run_id="$(meta malformed-only-evidence .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'local-record trajectory for challenge:' <<<"$out" ||
@@ -4553,7 +4553,7 @@ set -e
 echo "== an integration-only run's unreceipted pass is still caught by the engine's receipt validation (harmon-devkit#1001 round 2 deferred #3, fixed round 4) =="
 export DFSTATS_DB="$tmp/scenarios/integration-only-unreceipted.json"
 run_id="$(meta integration-only-unreceipted .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.unreceipted_pass_files == ["integration-r1"] and .rounds == []' >/dev/null ||
     fail "integration-only unreceipted: expected the integrator pass to be reported unreceipted with no confidence rounds: $out"
 
@@ -4561,7 +4561,7 @@ echo "== two authoritative issue bindings for one arbitrary run are indeterminat
 export DFSTATS_DB="$tmp/scenarios/duplicate-authoritative-binding.json"
 run_id="$(meta duplicate-authoritative-binding .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'more than one authoritative issue binding (#202, #203)' <<<"$out" ||
@@ -4570,7 +4570,7 @@ set -e
 echo "== mixed current and legacy registrations are both observed =="
 export DFSTATS_DB="$tmp/scenarios/mixed-registration.json"
 run_id="$(meta mixed-registration .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds[0].pass_count == 1 and .unverified_evidence_destinations == []' >/dev/null ||
     fail "mixed registrations: legacy evidence was not observed beside current evidence: $out"
 
@@ -4579,7 +4579,7 @@ cp "$tmp/scenarios/mixed-registration.json" "$tmp/scenarios/mixed-registration.j
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 node --input-type=module - "$tmp/scenarios/mixed-registration.json.saved" "$tmp/scenarios/mixed-registration.json" "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
-import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+import { entryDigest, GENESIS } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs";
 const [dbSource, dbTarget, runSource, runTarget] = process.argv.slice(2);
 const db = JSON.parse(readFileSync(dbSource, "utf8"));
 const run = JSON.parse(readFileSync(runSource, "utf8"));
@@ -4604,7 +4604,7 @@ writeFileSync(dbTarget, JSON.stringify(db, null, 2));
 writeFileSync(runTarget, JSON.stringify(run, null, 2));
 NODE
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'does not authenticate evidence comment' <<<"$out" ||
@@ -4616,7 +4616,7 @@ echo "== registered legacy evidence must keep its marker on the first line =="
 cp "$tmp/scenarios/mixed-registration.json" "$tmp/scenarios/mixed-registration.json.saved"
 jq '(.comments["204"][] | select(.body | startswith("<!-- devflow:evidence")) | .body) |= ("quoted marker\n" + .)' "$tmp/scenarios/mixed-registration.json.saved" >"$tmp/scenarios/mixed-registration.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'does not authenticate evidence comment' <<<"$out" ||
@@ -4630,7 +4630,7 @@ cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.sa
 mv "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
 jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'both an accepted pass and a slot_failures record' <<<"$out" ||
@@ -4644,7 +4644,7 @@ for invalid_case in missing-identity duplicate-finding-id; do
     if [ "$invalid_case" = missing-identity ]; then
         jq 'del(.run.initiated_by)' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
     else
-        jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"one"},{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:2,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"two"}] | .payload.counts = {P0:0,P1:0,P2:2,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+        jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"ai/skills/universal/retro/assets/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"one"},{id:"review-r1-codex-verification-1",path:"ai/skills/universal/retro/assets/dev-flow-stats.mjs",line:2,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"two"}] | .payload.counts = {P0:0,P1:0,P2:2,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
     fi
     # harmon-devkit#1001 challenge round 1 (P1), confirmed: a marker whose
     # only backing pass is schema/receipt-invalid must fail closed
@@ -4652,7 +4652,7 @@ for invalid_case in missing-identity duplicate-finding-id; do
     # same fix as the before-transition case above, for a different
     # rejection cause.
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 3 ] && grep -Fq 'record-missing: authenticated review round 1 marker group has no retained pass, adjudication, or slot failure' <<<"$out" ||
@@ -4669,7 +4669,7 @@ echo "== a JSON-malformed retained artifact reaches the engine and fails closed 
 cp "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
 printf '{"schema": 2, "run_id":' >"$tmp/local-records/$run_id/adjudications/review-r1.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 # harmon-devkit#1001 challenge round 4: the engine is now invoked
@@ -4686,7 +4686,7 @@ cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.sa
 mv "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
 jq '.receipts |= map(select(.kind != "pass" or .file != "review-r1"))' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'adjudication document "review-r1"' <<<"$out" ||
@@ -4699,7 +4699,7 @@ cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.sa
 cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
 jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
 jq '.status = "blocked" | .payload.findings = [] | .payload.counts = {P0:0,P1:0,P2:0,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds[0].pass_count == 0 and .rounds[0].blocked_passes == 1 and .rounds[0].status == "capped" and .rounds[0].finding_count == 0' >/dev/null ||
     fail "blocked pass projection: blocked envelope counted as completed evidence: $out"
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
@@ -4710,9 +4710,9 @@ export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
 cp "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
-jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"repeat-of:review-r1-codex-verification-1",priority:"P2",recommended_disposition:"fix",evidence:"fixture evidence"}] | .payload.counts = {P0:0,P1:0,P2:1,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"ai/skills/universal/retro/assets/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"repeat-of:review-r1-codex-verification-1",priority:"P2",recommended_disposition:"fix",evidence:"fixture evidence"}] | .payload.counts = {P0:0,P1:0,P2:1,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
 jq '.adjudications = [{finding_id:"review-r1-codex-verification-1",reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"defer",reason:"fixture reason",evidence:"fixture evidence",override:null}]' "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" >"$tmp/local-records/$run_id/adjudications/review-r1.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
 echo "$out" | jq -e '.rounds[0].provenance_measurement == "unverified" and .rounds[0].finding_attributions == [{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"repeat-of:review-r1-codex-verification-1",fingerprint_status:"unverified"}] and .findings_by_class_and_provenance == {} and .findings_by_verified_fingerprint == {} and .provenance_unavailable_rounds == [{stage:"review",round:1}]' >/dev/null ||
     fail "unverified finding projection: attribution was mislabeled or counted as verified: $out"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
@@ -4722,7 +4722,7 @@ echo "== duplicate evidence-comment ids are indeterminate before registration in
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
-import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+import { entryDigest, GENESIS } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs";
 const [source, destination] = process.argv.slice(2);
 const body = JSON.parse(readFileSync(source, "utf8"));
 body.evidence_comments.push({ ...body.evidence_comments[0] });
@@ -4737,7 +4737,7 @@ body.evidence_registrations = body.evidence_comments.map((entry, seq) => {
 writeFileSync(destination, JSON.stringify(body, null, 2));
 NODE
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'repeats evidence comment id' <<<"$out" ||
@@ -4745,13 +4745,13 @@ set -e
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
 echo "== current-marker parsing rejects trailing content and invalid destination/round pairs =="
-node --input-type=module -e 'import { parseMarker } from "./scripts/dev-flow-stats.mjs"; const body = (destination, round, tail = "") => `<!-- dev-flow-v2-evidence: {"run_id":"r","stage":"review","round":${round},"sequence":1,"destination":"${destination}"} -->${tail}`; if ([body("issue", 1, " trailing"), body("issue", "null"), body("pr", 1)].some((value) => parseMarker(value) !== null)) process.exit(1)'
+node --input-type=module -e 'import { parseMarker } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs"; const body = (destination, round, tail = "") => `<!-- dev-flow-v2-evidence: {"run_id":"r","stage":"review","round":${round},"sequence":1,"destination":"${destination}"} -->${tail}`; if ([body("issue", 1, " trailing"), body("issue", "null"), body("pr", 1)].some((value) => parseMarker(value) !== null)) process.exit(1)'
 
 echo "== chain fork: two entries claiming the same prev_digest -> indeterminate, never silently resolved =="
 export DFSTATS_DB="$tmp/scenarios/fork.json"
 run_id="$(meta fork .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "fork: expected exit 3 (indeterminate), got $rc: $out"
@@ -4784,17 +4784,17 @@ for key in ("registry_commits", "registry_contents", "commit_pulls", "commit_che
 json.dump(combined, open(sys.argv[3], "w"))
 PY
 export DFSTATS_DB="$tmp/scenarios/fork-plus-happy.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "fork-plus-happy: expected indeterminate_count 1"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "fork-plus-happy: the OTHER issue should still be counted"
 
 echo "== untrusted author: plausible payload, wrong actor id -> rejected as forged, never trusted =="
 export DFSTATS_DB="$tmp/scenarios/untrusted-author.json"
 run_id="$(meta untrusted-author .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "untrusted-author: forged run must not enter the cohort at all (no run record found -> not yet kicked off, not a failure)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 1 ] || fail "untrusted-author: --run should report not-found (an untrusted marker is not a run), got rc=$rc: $out"
@@ -4802,7 +4802,7 @@ set -e
 echo "== two-source trust root: an id NOT in the configured set is never trusted even alone =="
 export DFSTATS_DB="$tmp/scenarios/untrusted-author.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 4242 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 4242 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "untrusted-author under a different trusted set: expected a clean (empty) cohort, not an error, got rc=$rc: $out"
@@ -4812,8 +4812,8 @@ echo "== duplicate marker (same-writer resume): lowest id canonical, stable acro
 export DFSTATS_DB="$tmp/scenarios/duplicate-marker.json"
 run_id="$(meta duplicate-marker .meta.runId)"
 first_id="$(meta duplicate-marker .meta.firstId)"
-before_cutoff="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T00:03:00Z --json)"
-after_cutoff="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-02T00:00:00Z --json)"
+before_cutoff="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T00:03:00Z --json)"
+after_cutoff="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-02T00:00:00Z --json)"
 echo "$before_cutoff" | jq -e '.rounds | length == 1' >/dev/null || fail "duplicate-marker: expected exactly one round (duplicate resolved, not double-counted)"
 echo "$after_cutoff" | jq -e '.rounds | length == 1' >/dev/null || fail "duplicate-marker: still exactly one round after the duplicate's own timestamp"
 [ "$(echo "$before_cutoff" | jq -c .rounds)" = "$(echo "$after_cutoff" | jq -c .rounds)" ] || fail "duplicate-marker: reconstruction must be identical at both cutoffs (concurrent-writer stability)"
@@ -4824,7 +4824,7 @@ echo "$after_cutoff" | jq -e --argjson id "$duplicate_id" '[.orphan_comments[].i
 echo "== split segments reassemble in sequence order =="
 export DFSTATS_DB="$tmp/scenarios/split.json"
 run_id="$(meta split .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds | length == 1' >/dev/null || fail "split: expected the two segments to reassemble into one round"
 echo "$out" | jq -e '.rounds[0].finding_count == 1' >/dev/null || fail "split: expected the reassembled finding to be visible"
 
@@ -4832,7 +4832,7 @@ echo "== digest tampering: an edited entry is rejected, not silently replayed ==
 export DFSTATS_DB="$tmp/scenarios/tamper.json"
 run_id="$(meta tamper .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tamper: expected exit 3 (indeterminate), got $rc: $out"
@@ -4841,30 +4841,30 @@ grep -qi "tamper" <<<"$out" || fail "tamper: expected a tamper-shaped reason, go
 echo "== stale non-terminal run terminalizes as abandoned at --as-of =="
 export DFSTATS_DB="$tmp/scenarios/stale.json"
 as_of="$(meta stale .meta.asOf)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$as_of" --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$as_of" --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 0' >/dev/null || fail "stale: expected the run to close as a failure (abandoned), not stay open"
 
 echo "== post-ready human fix is reported as a separate number =="
 export DFSTATS_DB="$tmp/scenarios/postfix.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.unattended_success_count == 1 and .post_ready_fix_count == 1' >/dev/null || fail "postfix: expected success still counted, plus a separate post-ready fix"
 
 echo "== --repo cohort combines multiple issues correctly =="
 export DFSTATS_DB="$tmp/scenarios/cohort.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 2 and .unattended_success_count == 2' >/dev/null || fail "cohort: expected 2/2"
 
 echo "== --trusted-actors-file is unioned with --trusted-actor-id =="
 echo '{"trusted_actor_ids":[9001]}' >"$tmp/trusted.json"
 export DFSTATS_DB="$tmp/scenarios/happy.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actors-file "$tmp/trusted.json" --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actors-file "$tmp/trusted.json" --json)"
 echo "$out" | jq -e '.cohort_size == 1' >/dev/null || fail "trusted-actors-file: expected the file-configured actor to be trusted"
 
 echo "== shepherd round 6: a JSON boolean in --trusted-actors-file is a usage error, never silently coerced to actor id 1 =="
 for bad_value in 'true' '"9001"' 'null' '{}'; do
     echo "{\"trusted_actor_ids\":[$bad_value]}" >"$tmp/trusted-bad.json"
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actors-file "$tmp/trusted-bad.json" --json 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actors-file "$tmp/trusted-bad.json" --json 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "trusted-actors-file (bad value $bad_value): expected a usage error, got rc=$rc: $out"
@@ -4872,7 +4872,7 @@ done
 
 echo "== missing --trusted-actor-id/--trusted-actors-file is a usage error, never a silent open-trust default =="
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "missing trust config: expected exit 2, got $rc"
@@ -4880,7 +4880,7 @@ grep -qi "trusted-actor" <<<"$out" || fail "missing trust config: expected an ex
 
 echo "== omator#397: the real committed trajectory harvests and renders =="
 export DFSTATS_DB="$tmp/scenarios/omator-397.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run omator-397 --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run omator-397 --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == "capped"' >/dev/null || fail "omator-397: expected capped outcome"
 echo "$out" | jq -e '.rounds | length == 7' >/dev/null || fail "omator-397: expected 4 challenge + 3 review rounds"
 echo "$out" | jq -e '[.rounds[] | select(.stage == "challenge")] | length == 4' >/dev/null || fail "omator-397: expected 4 challenge rounds"
@@ -4889,23 +4889,23 @@ echo "$out" | jq -e '[.rounds[].finding_count] | add > 0' >/dev/null || fail "om
 
 echo "== Foreman-initiated run: trust from actor id, never from initiated_by =="
 export DFSTATS_DB="$tmp/scenarios/foreman.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9099 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9099 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "foreman: expected 1/1 unattended success"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-foreman-1 --trusted-actor-id 9099 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-foreman-1 --trusted-actor-id 9099 --json)"
 echo "$out" | jq -e '.initiated_by == "foreman"' >/dev/null || fail "foreman: expected initiated_by foreman on the rendered trajectory"
 # The SAME payload, checked against a trusted set that does NOT include the
 # Foreman actor id, must find nothing — proving trust never falls back to
 # reading initiated_by out of the payload.
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "foreman: a payload claiming initiated_by=foreman must not self-authenticate under an unrelated trusted set"
 
 echo "== --replay: fake exit-script, policy unchanged -> no diff =="
 cat >"$tmp/fake-exit-script.mjs" <<'FAKE'
 #!/usr/bin/env node
-// Test double for scripts/dev-flow-exit.mjs's CLI contract: --run <dir>
+// Test double for ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs's CLI contract: --run <dir>
 // --stage <s> --policy <f> --current-head <h> --json. Counts this run
 // directory's own rounds for --stage and compares against a `<stage>_cap =
-// N` line grepped from --policy — enough to prove dev-flow-stats.mjs wires
+// N` line grepped from --policy — enough to prove ai/skills/universal/retro/assets/dev-flow-stats.mjs wires
 // arguments, the run directory, and the verdict JSON through correctly,
 // without depending on the real exit-computation logic (#720, not yet on
 // main — see ai/schemas/README.md and this lane's PR body).
@@ -4924,7 +4924,7 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 // Records every --current-head this fake was invoked with, keyed by
 // stage, so the bash test can assert on it afterward — proving
-// dev-flow-stats.mjs derives a real head for a non-promoted (capped) run
+// ai/skills/universal/retro/assets/dev-flow-stats.mjs derives a real head for a non-promoted (capped) run
 // instead of an invented all-zero placeholder (challenge round 2, P1).
 const headLogPath = process.env.FAKE_EXIT_HEAD_LOG;
 if (headLogPath) {
@@ -4933,7 +4933,7 @@ if (headLogPath) {
   // shepherd round 1, Codex-confirmed (P1): --repo-root was hardcoded to
   // process.cwd(), never threaded from a --repo-root CLI flag — logged
   // here the same way current-head already is, so the bash test can
-  // assert dev-flow-stats.mjs actually passes an explicit value through.
+  // assert ai/skills/universal/retro/assets/dev-flow-stats.mjs actually passes an explicit value through.
   prior.repo_root = args["repo-root"];
   writeFileSync(headLogPath, JSON.stringify(prior));
 }
@@ -4946,8 +4946,8 @@ const policyText = readFileSync(args.policy, "utf8");
 const capMatch = policyText.match(new RegExp(`${args.stage}_cap\\s*=\\s*(\\d+)`));
 const cap = capMatch ? Number(capMatch[1]) : 99;
 // shepherd round 2: on-demand indeterminate verdict, matching
-// dev-flow-exit.mjs's own real "could not verify" contract (JSON
-// outcome:"indeterminate", exit 2) — proves dev-flow-stats.mjs
+// ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs's own real "could not verify" contract (JSON
+// outcome:"indeterminate", exit 2) — proves ai/skills/universal/retro/assets/dev-flow-stats.mjs
 // propagates it instead of diffing it like an ordinary recomputed
 // outcome.
 if (process.env.FAKE_EXIT_INDETERMINATE) {
@@ -4967,7 +4967,7 @@ TOML
 export DFSTATS_DB="$tmp/scenarios/omator-397.json"
 export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads.json"
 rm -f "$FAKE_EXIT_HEAD_LOG"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "replay (matching policy): expected no diffs, got: $out"
 
 echo "== replay derives a real current-head for a capped (never-promoted) run, not an all-zero placeholder =="
@@ -4986,23 +4986,23 @@ cat >"$tmp/policy-looser.toml" <<'TOML'
 challenge_cap = 10
 review_cap = 10
 TOML
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-looser.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-looser.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].diffs | length == 2' >/dev/null || fail "replay (looser policy): expected both stages to diff, got: $out"
 echo "$out" | jq -e '[.[0].diffs[].recomputed] == ["continue","continue"]' >/dev/null || fail "replay (looser policy): expected recomputed=continue for both stages"
 
 echo "== --config is accepted as an alias for --policy (issue #663's own acceptance-criterion flag) =="
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --config "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --config "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "replay --config alias: expected no diffs"
 
 echo "== evidence_comments[] cross-check: a genuinely listed-and-present comment passes (happy path, re-verified) =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-happy-1 --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-happy-1 --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds | length == 1' >/dev/null || fail "happy (evidence_comments populated): expected the listed round to still be found"
 
 echo "== deleted evidence comment: listed in evidence_comments[] but the comment no longer exists -> indeterminate, never silently absent =="
 export DFSTATS_DB="$tmp/scenarios/deleted-evidence.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-deleted-evidence-1 --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-deleted-evidence-1 --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "deleted-evidence: expected exit 3 (indeterminate), got $rc: $out"
@@ -5010,29 +5010,29 @@ grep -qi "deleted-entry tampering\|no longer exists" <<<"$out" || fail "deleted-
 
 echo "== post-ready fix detection is position-based: catches a cherry-picked (older-timestamped) commit a timestamp check would miss =="
 export DFSTATS_DB="$tmp/scenarios/postfix-cherrypick.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.unattended_success_count == 1 and .post_ready_fix_count == 1' >/dev/null || fail "postfix-cherrypick: expected the older-timestamped post-promotion commit to still be caught"
 
 echo "== --as-of between a stage-exit and its later promotion reads as in-flight, never borrows the future ready-for-review outcome =="
 export DFSTATS_DB="$tmp/scenarios/future-outcome.json"
-between="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-future-outcome-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:10:00Z --json)"
+between="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-future-outcome-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:10:00Z --json)"
 echo "$between" | jq -e '.outcome == null' >/dev/null || fail "future-outcome: expected in-flight (null) outcome between the exit text and the actual promotion, got: $between"
-after="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-future-outcome-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
+after="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-future-outcome-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
 echo "$after" | jq -e '.outcome == "ready-for-review"' >/dev/null || fail "future-outcome: expected ready-for-review once the actual promotion is within cutoff"
 
 echo "== --since bounds cohort membership by first kickoff, matching the closed-cohort spec =="
 export DFSTATS_DB="$tmp/scenarios/cohort.json"
-before="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-01T00:00:00Z --json)"
+before="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-01T00:00:00Z --json)"
 echo "$before" | jq -e '.cohort_size == 2' >/dev/null || fail "since (before both kickoffs): expected both issues still in the window"
-after="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-02T00:00:00Z --json)"
+after="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-02T00:00:00Z --json)"
 echo "$after" | jq -e '.cohort_size == 0' >/dev/null || fail "since (after both kickoffs): expected the window to exclude both issues"
 
 echo "== deleted run-record comment (index survives): indeterminate, never silently 'no run happened' =="
 export DFSTATS_DB="$tmp/scenarios/deleted-record.json"
-metric_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+metric_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$metric_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "deleted-record: expected the issue to be reported indeterminate, not silently absent from the cohort"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-deleted-record-1 --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-deleted-record-1 --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "deleted-record: expected exit 3 (indeterminate), got $rc: $out"
@@ -5040,24 +5040,24 @@ grep -qi "deleted-entry tampering\|no longer exists" <<<"$out" || fail "deleted-
 
 echo "== a legitimately edited run-record (content changed after the index was created) still authenticates — the P0 regression =="
 export DFSTATS_DB="$tmp/scenarios/edited-record.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-edited-record-1 --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-edited-record-1 --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.stage_transitions | length == 2' >/dev/null || fail "edited-record: expected the post-edit chain (2 transitions) to be visible, got: $out"
 
 echo "== terminal outcome derivation trusts body.outcome directly, not a magic-word prefix on the exit text =="
 export DFSTATS_DB="$tmp/scenarios/freetext-exit.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-freetext-exit-1 --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-freetext-exit-1 --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == "escalated"' >/dev/null || fail "freetext-exit: expected escalated outcome despite non-magic-word exit text, got: $out"
 
 echo "== post-ready fix is checked independently of pre-ready interventions (a second, separate failure measure) =="
 export DFSTATS_DB="$tmp/scenarios/postfix-with-intervention.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.unattended_success_count == 0 and .post_ready_fix_count == 1' >/dev/null || fail "postfix-with-intervention: expected success=0 (intervention present) but post_ready_fix_count still 1, got: $out"
 
 echo "== invalid --as-of / --since / --stale-after-days are usage errors, not silent NaN comparisons =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
 for flag_args in "--as-of not-a-date" "--since not-a-date" "--stale-after-days not-a-number" "--stale-after-days -5"; do
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "invalid arg ($flag_args): expected exit 2, got $rc: $out"
@@ -5066,7 +5066,7 @@ done
 echo "== shepherd round 3: a timestamp that Date.parse() accepts but is not the documented ISO-8601 (Z) form is still a usage error =="
 for flag_args in "--as-of 0" "--as-of 09/03/2026" "--as-of 2026-09-03T12:00:00" "--since 2026-09-03T12:00:00+00:00"; do
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "parseable-but-non-ISO-8601 arg ($flag_args): expected exit 2, got $rc: $out"
@@ -5075,19 +5075,19 @@ done
 echo "== shepherd round 4: a syntactically-ISO but CALENDAR-invalid timestamp (Date.parse silently normalizes it to a different day) is still a usage error =="
 for flag_args in "--as-of 2026-02-30T00:00:00Z" "--as-of 2026-13-01T00:00:00Z" "--as-of 2026-01-01T24:00:00Z" "--since 2026-02-30T00:00:00Z"; do
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "calendar-invalid ISO-8601 arg ($flag_args): expected exit 2, got $rc: $out"
 done
 echo "== ...but a genuinely valid leap-day timestamp is still accepted =="
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2024-02-29T00:00:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2024-02-29T00:00:00Z --json)"
 echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "leap-day --as-of: expected acceptance (empty cohort against an empty repo), got: $out"
 
 echo "== review round 2: a value-taking flag followed by nothing (or another flag) is a usage error, not a silent default =="
 for flag_args in "--as-of" "--since" "--stale-after-days"; do
     set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args --json 2>&1)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args --json 2>&1)"
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "missing-value ($flag_args --json): expected exit 2, got $rc: $out"
@@ -5097,7 +5097,7 @@ done
 echo "== a listed evidence entry naming a foreign run_id in its own marker is rejected, not silently merged =="
 export DFSTATS_DB="$tmp/scenarios/foreign-evidence.json"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-foreign-evidence-1 --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-foreign-evidence-1 --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "foreign-evidence: expected exit 3 (indeterminate), got $rc: $out"
@@ -5105,7 +5105,7 @@ grep -qi "does not bind to run\|tamper" <<<"$out" || fail "foreign-evidence: exp
 
 echo "== conflicting payloads under one marker resolve by lowest id, unconditionally (reverted round-1 regression) =="
 export DFSTATS_DB="$tmp/scenarios/conflicting-dup.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-conflicting-dup-1 --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-conflicting-dup-1 --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds | length == 1' >/dev/null || fail "conflicting-dup: expected the round to resolve (not indeterminate), got: $out"
 echo "$out" | jq -e '.rounds[0].finding_count == 1' >/dev/null || fail "conflicting-dup: expected the lowest-id (first) comment's own finding to win"
 
@@ -5113,29 +5113,29 @@ echo "== replay uses each stage's OWN reviewed head, even for a promoted run who
 export DFSTATS_DB="$tmp/scenarios/stage-heads.json"
 export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads-2.json"
 rm -f "$FAKE_EXIT_HEAD_LOG"
-node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json >/dev/null
+node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json >/dev/null
 recorded_challenge_head="$(jq -r '.challenge' "$FAKE_EXIT_HEAD_LOG")"
 [ "$recorded_challenge_head" = "$(printf 'a%.0s' $(seq 1 40))" ] || fail "stage-heads: expected challenge's own reviewed_head, got: $recorded_challenge_head (not the later promotion.head)"
 unset FAKE_EXIT_HEAD_LOG
 
 echo "== post-ready fix count respects --as-of: a later commit does not retroactively change an earlier cutoff's result =="
 export DFSTATS_DB="$tmp/scenarios/postfix.json"
-early="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:15:00Z --json)"
+early="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:15:00Z --json)"
 echo "$early" | jq -e '.post_ready_fix_count == 0' >/dev/null || fail "postfix as-of before the fix commit: expected post_ready_fix_count 0, got: $early"
-late="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
+late="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
 echo "$late" | jq -e '.post_ready_fix_count == 1' >/dev/null || fail "postfix as-of after the fix commit: expected post_ready_fix_count 1, got: $late"
 
 echo "== review round 1: a resumed writer's byte-identical retry normalizes to one entry and validates cleanly (not a broken chain) =="
 export DFSTATS_DB="$tmp/scenarios/dup-retry.json"
 run_id="$(meta dup-retry .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "dup-retry: expected the run to harvest cleanly (in-flight), got: $out"
 
 echo "== round 4 of #663: an edited evidence_registrations[] entry breaks its own chain, rejected like any other tampered entry =="
 export DFSTATS_DB="$tmp/scenarios/edited-registration.json"
 run_id="$(meta edited-registration .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "edited-registration: expected exit 3 (indeterminate), got $rc: $out"
@@ -5145,7 +5145,7 @@ echo "== round 4 of #663: evidence_comments[] naming a different comment than it
 export DFSTATS_DB="$tmp/scenarios/swapped-comment-id.json"
 run_id="$(meta swapped-comment-id .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "swapped-comment-id: expected exit 3 (indeterminate), got $rc: $out"
@@ -5153,12 +5153,12 @@ grep -qi "evidence_comments.*does not match\|out-of-band edit" <<<"$out" || fail
 
 echo "== review round 1: a human-initiated re-kick after a failed run is itself an intervention, even with empty interventions[] on both runs =="
 export DFSTATS_DB="$tmp/scenarios/multirun-human-rekick.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 0' >/dev/null || fail "multirun-human-rekick: expected the human re-kick to count as an intervention (not unattended success), got: $out"
 
 echo "== review round 1: a FOREMAN-initiated retry after a failed run is NOT an intervention (explicit spec carve-out, negative control) =="
 export DFSTATS_DB="$tmp/scenarios/multirun-foreman-retry.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --trusted-actor-id 9099 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --trusted-actor-id 9099 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "multirun-foreman-retry: expected the Foreman retry to still count as unattended success, got: $out"
 
 echo "== review round 1: an --as-of read does not falsely report a PR-side evidence_comments[] entry as deleted-entry tampering =="
@@ -5171,16 +5171,16 @@ run_id="$(meta asof-pr-rollup .meta.runId)"
 # cutoffs below threw "deleted-entry tampering" (exit 3) rather than
 # resolving cleanly, since the fake gh stub only serves PR comments when
 # actually asked for them.
-before="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T01:00:00Z --json)"
+before="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T01:00:00Z --json)"
 echo "$before" | jq -e '.outcome == null' >/dev/null || fail "asof-pr-rollup: expected a clean, tampering-free in-flight reconstruction before the promotion cutoff, got: $before"
-after="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T02:25:00Z --json)"
+after="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T02:25:00Z --json)"
 echo "$after" | jq -e '.outcome == "ready-for-review"' >/dev/null || fail "asof-pr-rollup: expected a clean, tampering-free ready-for-review reconstruction after the promotion cutoff, got: $after"
 
 echo "== review round 2: an evidence_comments[] entry naming a DIFFERENT trusted actor than the run's own author is a forged-author entry, not merely self-consistent =="
 export DFSTATS_DB="$tmp/scenarios/forged-author.json"
 run_id="$(meta forged-author .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "forged-author: expected exit 3 (indeterminate), got $rc: $out"
@@ -5188,14 +5188,14 @@ grep -qi "not this run's own trusted author\|forged-author" <<<"$out" || fail "f
 
 echo "== review round 2: fresh evidence_registrations activity keeps a long-in-one-stage run out of stale-abandoned terminalization =="
 export DFSTATS_DB="$tmp/scenarios/active-not-stale.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-09T00:00:00Z --stale-after-days 7 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-09T00:00:00Z --stale-after-days 7 --json)"
 echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "active-not-stale: expected the run to stay open (not stale-terminalized, so not yet in the closed cohort), got: $out"
 
 echo "== review round 3: a run-record whose marker and JSON payload declare different run_id values is rejected as an identity mismatch =="
 export DFSTATS_DB="$tmp/scenarios/marker-payload-mismatch.json"
 run_id="$(meta marker-payload-mismatch .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-payload-mismatch: expected exit 3 (indeterminate), got $rc: $out"
@@ -5205,7 +5205,7 @@ echo "== review round 3: a duplicate chain entry sharing seq/digest/prev_digest 
 export DFSTATS_DB="$tmp/scenarios/tampered-duplicate.json"
 run_id="$(meta tampered-duplicate .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tampered-duplicate: expected exit 3 (indeterminate), got $rc: $out"
@@ -5215,7 +5215,7 @@ echo "== review round 4 (piece 2 of #663): a registry revision eligible at kicko
 export DFSTATS_DB="$tmp/scenarios/registry-revision-pin.json"
 run_id_narrowed="$(meta registry-revision-pin .meta.runIdNarrowed)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_narrowed" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id_narrowed" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 # shepherd round 5, Codex-confirmed (P2): the index author's own trust is
@@ -5230,25 +5230,25 @@ grep -qi "not a registry-trusted actor as of this run's kickoff" <<<"$out" || fa
 
 echo "== review round 4 (piece 2 of #663) / #741: a registry revision REMOVING the author that lands AFTER kickoff is not applied retroactively — the run stays authenticated under the baseline revision in effect at kickoff =="
 run_id_not_yet="$(meta registry-revision-pin .meta.runIdNotYet)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_not_yet" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id_not_yet" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-revision-pin: pre-revision run should still authenticate cleanly"
 
 echo "== review round 4 (piece 2 of #663): a cherry-picked registry commit newest in listing order is still excluded by its own (later) first_seen; an earlier eligible commit governs instead =="
 export DFSTATS_DB="$tmp/scenarios/registry-revision-cherrypick.json"
 run_id="$(meta registry-revision-cherrypick .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-revision-cherrypick: run governed by the earlier eligible commit should still authenticate cleanly"
 
 echo "== shepherd round 1: a schema-conformant record with NO chain fields at all on stage_transitions harvests cleanly (pre-#738 shape) =="
 export DFSTATS_DB="$tmp/scenarios/chain-pending-schema.json"
 run_id_plain="$(meta chain-pending-schema .meta.runIdPlain)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_plain" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id_plain" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "chain-pending-schema: a plain (no seq/digest/prev_digest) record should still authenticate cleanly"
 
 echo "== shepherd round 1: a MIXED record (one entry chain-protected, one not) still fails closed =="
 run_id_mixed="$(meta chain-pending-schema .meta.runIdMixed)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_mixed" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id_mixed" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "chain-pending-schema: mixed chain shape should be indeterminate, got rc=$rc: $out"
@@ -5257,7 +5257,7 @@ echo "== shepherd round 1: initiated_by edited in the mutable record body, disag
 export DFSTATS_DB="$tmp/scenarios/mutable-field-tamper.json"
 run_id_init="$(meta mutable-field-tamper .meta.runIdInit)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_init" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id_init" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "mutable-field-tamper (initiated_by): expected indeterminate, got rc=$rc: $out"
@@ -5266,26 +5266,26 @@ grep -qi "initiated_by" <<<"$out" || fail "mutable-field-tamper (initiated_by): 
 echo "== shepherd round 2: a claimed started_at in the mutable record body has no effect — the record comment's own created_at is always authoritative =="
 export DFSTATS_DB="$tmp/scenarios/started-at-neutralized.json"
 run_id="$(meta started-at-neutralized .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "started-at-neutralized: expected the run to authenticate cleanly despite the implausible claimed started_at"
 echo "$out" | jq -e '.started_at == "2026-09-01T00:00:00Z"' >/dev/null || fail "started-at-neutralized: expected started_at to be the record comment's own created_at (2026-09-01), not the claimed 2099 value, got: $out"
 
 echo "== shepherd round 1/2: a path-traversal run_id cannot escape --replay's temp directory, and is replayed normally (hashing neutralizes rather than rejects) =="
 export DFSTATS_DB="$tmp/scenarios/replay-path-traversal.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].indeterminate // false | not' >/dev/null || fail "replay-path-traversal: expected the run to replay normally (hashing makes the id safe unconditionally), got: $out"
 echo "$out" | jq -e '.[0].diffs == []' >/dev/null || fail "replay-path-traversal: expected no diffs for a bare kickoff-only run with no rounds, got: $out"
 
 echo "== shepherd round 1: firstSeen takes the EARLIEST of check-suite and merged_at, never merged_at unconditionally =="
 export DFSTATS_DB="$tmp/scenarios/postfix-early-checksuite.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
 echo "$out" | jq -e '.post_ready_fix_count == 1' >/dev/null || fail "postfix-early-checksuite: expected the check-suite's earlier visibility to count as of a cutoff between it and the eventual merge, got: $out"
 
 echo "== shepherd round 1: two chain entries sharing content+prev_digest but disagreeing on their own digest field are a fork, not a silently-discarded duplicate =="
 export DFSTATS_DB="$tmp/scenarios/digest-mismatch-duplicate.json"
 run_id="$(meta digest-mismatch-duplicate .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "digest-mismatch-duplicate: expected indeterminate (forked chain), got rc=$rc: $out"
@@ -5295,7 +5295,7 @@ echo "== shepherd round 1: an evidence marker edited from round=1 to round=1junk
 export DFSTATS_DB="$tmp/scenarios/marker-round-tamper.json"
 run_id="$(meta marker-round-tamper .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-round-tamper: expected indeterminate, got rc=$rc: $out"
@@ -5305,7 +5305,7 @@ echo "== shepherd round 1: a trusted run-index marker with a non-canonical tuple
 export DFSTATS_DB="$tmp/scenarios/noncanonical-index.json"
 run_id="$(meta noncanonical-index .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 1 ] || fail "noncanonical-index: expected not-found (non-canonical index ignored), got rc=$rc: $out"
@@ -5313,21 +5313,21 @@ set -e
 echo "== shepherd round 1: rounds render in CHRONOLOGICAL (posting) order, not alphabetical-by-stage-name order =="
 export DFSTATS_DB="$tmp/scenarios/chronological-rounds.json"
 run_id="$(meta chronological-rounds .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds[0].stage == "challenge" and .rounds[0].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[0] = challenge r1, got: $out"
 echo "$out" | jq -e '.rounds[1].stage == "review" and .rounds[1].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[1] = review r1 (posted before challenge r2), got: $out"
 echo "$out" | jq -e '.rounds[2].stage == "challenge" and .rounds[2].round == 2' >/dev/null || fail "chronological-rounds: expected rounds[2] = challenge r2, got: $out"
 
 echo "== shepherd round 1: a bot-authored post-promotion commit never counts as a post-ready HUMAN fix =="
 export DFSTATS_DB="$tmp/scenarios/postfix-bot.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.unattended_success_count == 1 and .post_ready_fix_count == 0' >/dev/null || fail "postfix-bot: expected the bot commit to be excluded from post_ready_fix_count, got: $out"
 
 echo "== shepherd round 1: --repo-root is threaded to the exit script explicitly, not silently defaulted =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
 export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads-repo-root.json"
 rm -f "$FAKE_EXIT_HEAD_LOG"
-node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --repo-root "$tmp" --trusted-actor-id 9001 --json >/dev/null
+node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --repo-root "$tmp" --trusted-actor-id 9001 --json >/dev/null
 [ -f "$FAKE_EXIT_HEAD_LOG" ] || fail "--repo-root: fake exit script was never invoked"
 logged_repo_root="$(jq -r '.repo_root' "$FAKE_EXIT_HEAD_LOG")"
 [ "$logged_repo_root" = "$tmp" ] || fail "--repo-root: expected the exit script to receive the explicit --repo-root value ($tmp), got: $logged_repo_root"
@@ -5345,7 +5345,7 @@ cp "$repo/.devflow.toml" "$tmp/altroot-repo-root/.devflow.toml"
 # closed (indeterminate), rather than silently resolving the real repo's
 # policy via a lucky cwd.
 set +e
-out="$(cd "$tmp" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(cd "$tmp" && node "$repo/ai/skills/universal/retro/assets/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'requires the exit engine' <<<"$out" && grep -Fq 'does not exist' <<<"$out" ||
@@ -5353,15 +5353,15 @@ set -e
 # An explicit --repo-root naming a directory that DOES have .devflow.toml,
 # invoked from that same unrelated cwd, must reproduce the real repo root's
 # output exactly.
-baseline_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-altroot_out="$(cd "$tmp" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --repo-root "$tmp/altroot-repo-root" --json)"
+baseline_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+altroot_out="$(cd "$tmp" && node "$repo/ai/skills/universal/retro/assets/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --repo-root "$tmp/altroot-repo-root" --json)"
 [ "$baseline_out" = "$altroot_out" ] ||
     fail "repo-root (run path): explicit --repo-root from another cwd did not reproduce the baseline output. baseline=$baseline_out altroot=$altroot_out"
 
 echo "== harmon-devkit#1001 review round 2: a not-measured finding (its round could not be ancestry-retained) is never counted as verified (fixed round 3/5) =="
 export DFSTATS_DB="$tmp/scenarios/not-measured-provenance.json"
 run_id="$(meta not-measured-provenance .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '
   (.rounds[0].provenance_measurement == "unverified") and
   (.rounds[0].finding_attributions[0].provenance_status == "not-measured") and
@@ -5376,7 +5376,7 @@ echo "== integration Codex cycle 1: a receipted blocked envelope for a round the
 export DFSTATS_DB="$tmp/scenarios/blocked-wrong-runid.json"
 run_id="$(meta blocked-wrong-runid .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" ||
@@ -5388,15 +5388,15 @@ echo "== integration Codex cycle 1: --run from a repository subdirectory resolve
 # itself fail) for this to exercise the toplevel-resolution fix at all.
 export DFSTATS_DB="$tmp/scenarios/subdirectory-repo-root.json"
 run_id="$(meta subdirectory-repo-root .meta.runId)"
-subdir_out="$(cd "$repo/scripts" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-root_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+subdir_out="$(cd "$repo/scripts" && node "$repo/ai/skills/universal/retro/assets/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+root_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 [ "$subdir_out" = "$root_out" ] ||
     fail "subdirectory repo-root: --run from a subdirectory without --repo-root did not resolve the same policy as the root. subdir=$subdir_out root=$root_out"
 
 echo "== integration Codex cycle 2: review round 1 survives a legitimate challenge re-entry instead of being discarded as stage-not-active (fixed remediation 2/6) =="
 export DFSTATS_DB="$tmp/scenarios/review-then-challenge-reentry.json"
 run_id="$(meta review-then-challenge-reentry .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "review-then-challenge-reentry: expected review round 1 to survive the later challenge re-entry: $out"
 
@@ -5404,7 +5404,7 @@ echo "== integration Codex cycle 3: a schema-valid adjudication rejected by the 
 export DFSTATS_DB="$tmp/scenarios/rejected-adjudication.json"
 run_id="$(meta rejected-adjudication .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'exit engine rejected adjudication' <<<"$out" ||
@@ -5414,7 +5414,7 @@ echo "== integration Codex cycle 4: an UNRECEIPTED blocked envelope with a wrong
 export DFSTATS_DB="$tmp/scenarios/unreceipted-blocked-wrong-runid.json"
 run_id="$(meta unreceipted-blocked-wrong-runid .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" ||
@@ -5423,7 +5423,7 @@ set -e
 echo "== integration Codex cycle 4: a receipted wrong-role blocked envelope is neither counted nor reported (fixed remediation 4/6) =="
 export DFSTATS_DB="$tmp/scenarios/wrong-role-blocked.json"
 run_id="$(meta wrong-role-blocked .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "wrong-role-blocked: a receipted role:\"integrator\" blocked envelope was counted as blocked review evidence: $out"
 
@@ -5431,7 +5431,7 @@ echo "== integration Codex cycle 5: a retained rounds policy that has drifted fr
 export DFSTATS_DB="$tmp/scenarios/rounds-policy-drift.json"
 run_id="$(meta rounds-policy-drift .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'resolved rounds policy has drifted' <<<"$out" ||
@@ -5440,7 +5440,7 @@ set -e
 echo "== integration Codex cycle 5: the verification head is corrected from validated rounds, not a raw invalid later-round entry (fixed remediation 5/6) =="
 export DFSTATS_DB="$tmp/scenarios/invalid-later-round-head.json"
 run_id="$(meta invalid-later-round-head .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 # "unverified" (not "not-measured") proves round 1 was ancestry-RETAINED —
 # the corrected current-head resolved to its own reviewed_head, so
 # applyVerification actually ran on it. "not-measured" is what an invalid
@@ -5453,7 +5453,7 @@ echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_pa
 echo "== integration cycle 6: a malformed (non-SHA) round-2 head no longer indeterminates a valid round 1 (fixed remediation 6/6) =="
 export DFSTATS_DB="$tmp/scenarios/malformed-later-round-head.json"
 run_id="$(meta malformed-later-round-head .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
     fail "malformed-later-round-head: a malformed round-2 head made a valid round 1 indeterminate: $out"
 
@@ -5461,7 +5461,7 @@ echo "== integration cycle 6: a present policy.json with a malformed rounds obje
 export DFSTATS_DB="$tmp/scenarios/malformed-policy-json.json"
 run_id="$(meta malformed-policy-json .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'policy.json exists but its' <<<"$out" ||
@@ -5471,7 +5471,7 @@ echo "== integration cycle 7: a present policy.json with valid rounds but malfor
 export DFSTATS_DB="$tmp/scenarios/malformed-rigor-metadata.json"
 run_id="$(meta malformed-rigor-metadata .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'rigor.level' <<<"$out" ||
@@ -5480,7 +5480,7 @@ set -e
 echo "== integration cycle 6: the retry falls back past a headless terminal round to an earlier round's real head (fixed remediation 6/6) =="
 export DFSTATS_DB="$tmp/scenarios/headless-terminal-round.json"
 run_id="$(meta headless-terminal-round .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
     fail "headless-terminal-round: the retry did not skip past the headless round 2 to round 1's real head: $out"
 
@@ -5488,7 +5488,7 @@ echo "== integration cycle 6: a receipted blocked envelope with no payload is ca
 export DFSTATS_DB="$tmp/scenarios/null-payload-blocked.json"
 run_id="$(meta null-payload-blocked .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" ||
@@ -5497,7 +5497,7 @@ set -e
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"
 run_id="$(meta challenge-still-active .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"challenge",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "challenge-still-active: expected only challenge round 1, review not yet started: $out"
 
@@ -5505,7 +5505,7 @@ echo "== shepherd round 1: a comment physically posted on the PR but whose marke
 export DFSTATS_DB="$tmp/scenarios/marker-dest-mismatch.json"
 run_id="$(meta marker-dest-mismatch .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-dest-mismatch: expected indeterminate, got rc=$rc: $out"
@@ -5514,14 +5514,14 @@ grep -qi "not actually fetched from\|edited-entry tampering" <<<"$out" || fail "
 echo "== shepherd round 2: a registry commit's pre-merge (feature-branch) check-suite time does not backdate when its revision took effect =="
 export DFSTATS_DB="$tmp/scenarios/registry-premerge-checksuite.json"
 run_id="$(meta registry-premerge-checksuite .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-premerge-checksuite: expected the run to authenticate cleanly (the revision is not yet in effect at kickoff), got: $out"
 
 echo "== shepherd round 2: registry-revision narrowing still applies against a non-'main' default branch =="
 export DFSTATS_DB="$tmp/scenarios/registry-nonmain-branch.json"
 run_id="$(meta registry-nonmain-branch .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 # shepherd round 5: same reclassification as registry-revision-pin above —
@@ -5535,20 +5535,20 @@ echo "== shepherd round 2: a forged-author evidence marker is reported under for
 export DFSTATS_DB="$tmp/scenarios/forged-marker-report.json"
 run_id="$(meta forged-marker-report .meta.runId)"
 forged_id="$(meta forged-marker-report .meta.forgedId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "forged-marker-report: expected the run itself to authenticate cleanly"
 echo "$out" | jq -e --argjson id "$forged_id" '[.forged_comments[].id] | index($id) != null' >/dev/null || fail "forged-marker-report: expected the forged comment under forged_comments, got: $out"
 echo "$out" | jq -e --argjson id "$forged_id" '[.orphan_comments[].id] | index($id) == null' >/dev/null || fail "forged-marker-report: forged comment must not also appear in orphan_comments, got: $out"
 
 echo "== shepherd round 2: run_ids that normalize to the same path (a vs a/.) do not collide during one --replay batch =="
 export DFSTATS_DB="$tmp/scenarios/replay-dir-collision.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '[.[].runId] | sort == ["a", "a/."]' >/dev/null || fail "replay-dir-collision: expected both run_ids to appear independently, got: $out"
 echo "$out" | jq -e '[.[].indeterminate] | all(. != true)' >/dev/null || fail "replay-dir-collision: expected neither run to be indeterminate, got: $out"
 
 echo "== shepherd round 2: an unrecognized flag (a typo, e.g. --asof) is a usage error, not a silent no-op =="
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --asof 2026-09-01T00:00:00Z --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --asof 2026-09-01T00:00:00Z --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "unrecognized flag: expected usage error (exit 2), got rc=$rc: $out"
@@ -5557,7 +5557,7 @@ grep -qi "unrecognized option" <<<"$out" || fail "unrecognized flag: expected an
 echo "== shepherd round 2: an indeterminate exit-script verdict is propagated, not diffed as a policy disagreement =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
 export FAKE_EXIT_INDETERMINATE=1
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 unset FAKE_EXIT_INDETERMINATE
 echo "$out" | jq -e '.[0].diffs[0].recomputed == null and (.[0].diffs[0].error | test("could not verify"))' >/dev/null || fail "indeterminate-exit-script: expected an error-shaped diff entry naming the verification failure, got: $out"
 echo "$out" | jq -e '.[0].diffs[0] | has("reason") | not' >/dev/null || fail "indeterminate-exit-script: expected no policy-disagreement 'reason' field on an indeterminate diff entry, got: $out"
@@ -5567,16 +5567,16 @@ echo "$out" | jq -e '.[0].reason | test("could not verify")' >/dev/null || fail 
 
 echo "== shepherd round 2: --since correctly excludes an issue whose indeterminate FIRST run predates the window, using the trusted index's own kickoff time =="
 export DFSTATS_DB="$tmp/scenarios/since-indeterminate-first.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-15T00:00:00Z --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-15T00:00:00Z --json)"
 echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "since-indeterminate-first: expected the issue excluded by --since (predates the window via the broken run's own index time), got: $out"
-without_since="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+without_since="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$without_since" | jq -e '.indeterminate_count == 1' >/dev/null || fail "since-indeterminate-first: without --since, expected the issue counted as indeterminate (the broken first run), got: $without_since"
 
 echo "== shepherd round 2: a second chain- and digest-valid outcome_transitions entry (capped then ready-for-review) is rejected, not laundered into success =="
 export DFSTATS_DB="$tmp/scenarios/outcome-transitions-unbounded.json"
 run_id="$(meta outcome-transitions-unbounded .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "outcome-transitions-unbounded: expected indeterminate, got rc=$rc: $out"
@@ -5586,7 +5586,7 @@ echo "== shepherd round 3: a destination=pr marker with a non-null round is reje
 export DFSTATS_DB="$tmp/scenarios/pr-dest-with-round.json"
 run_id="$(meta pr-dest-with-round .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "pr-dest-with-round: expected indeterminate, got rc=$rc: $out"
@@ -5594,16 +5594,16 @@ grep -qi "destination=pr with a non-null round" <<<"$out" || fail "pr-dest-with-
 
 echo "== shepherd round 3: post_ready_fix_indeterminate_count is shown in the human-readable --repo output, not just JSON =="
 export DFSTATS_DB="$tmp/scenarios/postfix-unresolvable.json"
-json_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+json_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$json_out" | jq -e '.post_ready_fix_indeterminate_count == 1' >/dev/null || fail "postfix-unresolvable: expected post_ready_fix_indeterminate_count 1 in JSON, got: $json_out"
-table_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001)"
+table_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001)"
 grep -qi "post-ready human fixes indeterminate" <<<"$table_out" || fail "postfix-unresolvable: expected the human-readable form to show post-ready-fix uncertainty, got: $table_out"
 
 echo "== shepherd round 3: the run-record author's trust is evaluated at the RECORD's own kickoff time, not the later run-index post time =="
 export DFSTATS_DB="$tmp/scenarios/registry-trust-record-before-index.json"
 run_id="$(meta registry-trust-record-before-index .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "registry-trust-record-before-index: expected indeterminate (untrusted at record-post time, even though a later registry revision would trust it by index-post time), got rc=$rc: $out"
@@ -5616,16 +5616,16 @@ set -e
 grep -qi "not a configured trusted actor\|not a registry-trusted actor as of this run's kickoff" <<<"$out" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
 
 echo "== shepherd round 3: an indeterminate run's --since cohort time is the RECORD's own created_at, not the later run-index post time (same fixture, isolates the catch-block fallback from the trust check above) =="
-since_excluded="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:15:00Z --json)"
+since_excluded="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:15:00Z --json)"
 echo "$since_excluded" | jq -e '.indeterminate_count == 0 and (.per_issue | length) == 0' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:15 to exclude the issue entirely (record posted 00:10, before the cutoff), got: $since_excluded"
-since_included="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:05:00Z --json)"
+since_included="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:05:00Z --json)"
 echo "$since_included" | jq -e '.indeterminate_count == 1 and (.per_issue | length) == 1' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:05 to include the issue as indeterminate (record posted 00:10, on/after the cutoff), got: $since_included"
 
 echo "== shepherd round 4 / #741: a registry-touching commit with no merging PR (direct push) voids the WHOLE repo's registry history, and a void history is indeterminate (fail closed), never CLI-only trust =="
 export DFSTATS_DB="$tmp/scenarios/registry-direct-push.json"
 run_id="$(meta registry-direct-push .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "registry-direct-push: expected indeterminate (unresolvable registry history fails closed), got rc=$rc: $out"
@@ -5635,24 +5635,24 @@ echo "== shepherd round 4: a run's last activity exactly staleAfterDays before -
 export DFSTATS_DB="$tmp/scenarios/stale-boundary.json"
 at_boundary="$(meta stale-boundary .meta.atBoundary)"
 before_boundary="$(meta stale-boundary .meta.beforeBoundary)"
-at_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$at_boundary" --json)"
+at_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$at_boundary" --json)"
 echo "$at_out" | jq -e '.cohort_size == 1 and .unattended_success_count == 0' >/dev/null || fail "stale-boundary: expected terminalized-abandoned at the exact boundary, got: $at_out"
-before_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$before_boundary" --json)"
+before_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$before_boundary" --json)"
 echo "$before_out" | jq -e '.cohort_size == 0' >/dev/null || fail "stale-boundary: expected the run still open (not yet stale) one ms before the boundary, got: $before_out"
 
 echo "== shepherd round 4: --run --as-of C cutoff-filters orphan/forged reports the same as everything else historical =="
 export DFSTATS_DB="$tmp/scenarios/orphan-cutoff.json"
 run_id="$(meta orphan-cutoff .meta.runId)"
-live_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+live_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$live_out" | jq -e '(.orphan_comments | length) == 1' >/dev/null || fail "orphan-cutoff: expected the orphan visible with no --as-of, got: $live_out"
-historical_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-02T00:00:00Z --json)"
+historical_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-02T00:00:00Z --json)"
 echo "$historical_out" | jq -e '(.orphan_comments | length) == 0' >/dev/null || fail "orphan-cutoff: expected the orphan EXCLUDED at an --as-of before it was posted, got: $historical_out"
 
 echo "== shepherd round 4: a run-record marker edited off the reserved kickoff/issue/-/1 tuple is rejected, not silently authenticated =="
 export DFSTATS_DB="$tmp/scenarios/record-marker-tamper.json"
 run_id="$(meta record-marker-tamper .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "record-marker-tamper: expected indeterminate, got rc=$rc: $out"
@@ -5662,7 +5662,7 @@ echo "== shepherd round 5: the run-index's OWN author trust is decided at the re
 export DFSTATS_DB="$tmp/scenarios/index-author-narrowed.json"
 run_id="$(meta index-author-narrowed .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "index-author-narrowed: expected indeterminate (index author narrowed out at the record's kickoff time), got rc=$rc: $out"
@@ -5672,29 +5672,29 @@ echo "== shepherd round 5: a trusted run-index with a canonical marker but no fe
 export DFSTATS_DB="$tmp/scenarios/index-no-fence.json"
 run_id="$(meta index-no-fence .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "index-no-fence: expected indeterminate (malformed trusted index), got rc=$rc: $out"
 grep -qi "canonical marker but no fenced payload" <<<"$out" || fail "index-no-fence: expected a malformed-payload reason, got: $out"
-repo_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+repo_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$repo_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "index-no-fence: expected the --repo scan to count this issue as indeterminate, not silently absent from the cohort, got: $repo_out"
 
 echo "== shepherd round 5: with no --as-of given, discovery freezes a real 'now' cutoff instead of an unbounded one — a future-dated run-record is excluded, not admitted =="
 export DFSTATS_DB="$tmp/scenarios/future-dated.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '(.per_issue | length) == 0' >/dev/null || fail "future-dated: expected the far-future run's issue completely undiscovered under the frozen 'now' cutoff (not merely open/non-terminal, which an unrelated Infinity cutoff would also show), got: $out"
 
 echo "== shepherd round 5: a ready-for-review outcome with no reconstructed PR binding is rejected as inconsistent, not left to crash computePostReadyFix and abort the whole metric =="
 export DFSTATS_DB="$tmp/scenarios/ready-no-pr-binding.json"
 run_id="$(meta ready-no-pr-binding .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "ready-no-pr-binding: expected indeterminate, got rc=$rc: $out"
 grep -qi "ready-for-review without a corresponding PR binding" <<<"$out" || fail "ready-no-pr-binding: expected a PR-binding-inconsistency reason, got: $out"
-repo_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+repo_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$repo_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "ready-no-pr-binding: expected the --repo scan to complete and count this issue as indeterminate, not crash entirely, got: $repo_out"
 
 echo "== shepherd round 5: replay selects a cap-0-disabled stage (recorded stage_transitions exit, zero rounds) for comparison instead of skipping it entirely =="
@@ -5703,20 +5703,20 @@ cat >"$tmp/policy-disabled-matching.toml" <<'TOML'
 challenge_cap = 0
 review_cap = 3
 TOML
-matching_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+matching_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$matching_out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "challenge-capped-disabled (matching cap 0): expected no diff, got: $matching_out"
 cat >"$tmp/policy-disabled-enabling.toml" <<'TOML'
 challenge_cap = 4
 review_cap = 3
 TOML
-enabling_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-enabling.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+enabling_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-enabling.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$enabling_out" | jq -e '(.[0].diffs | length) == 1 and .[0].diffs[0].stage == "challenge" and .[0].diffs[0].recorded == "capped: disabled" and .[0].diffs[0].recomputed == "continue"' >/dev/null || fail "challenge-capped-disabled (enabling cap 4): expected challenge to diff (recorded capped, recomputed continue for the zero-round trajectory), got: $enabling_out"
 
 echo "== shepherd round 6: a malformed (no-fence) run-index with the LOWER comment id stays canonical over a later well-formed duplicate for the same run_id, using its own created_at as kickoffCreatedAt =="
 export DFSTATS_DB="$tmp/scenarios/malformed-index-stays-canonical.json"
 run_id="$(meta malformed-index-stays-canonical .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "malformed-index-stays-canonical: expected the malformed (lower-id) index to stay canonical (indeterminate), got rc=$rc: $out"
@@ -5726,37 +5726,37 @@ grep -qi "canonical marker but no fenced payload" <<<"$out" || fail "malformed-i
 # (2026-09-01) — proven via --since: a cutoff of 2026-08-21 (after the
 # malformed index, before the later duplicate) must EXCLUDE this issue.
 # A null kickoffCreatedAt bug would instead admit it unconditionally.
-since_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-21T00:00:00Z --json)"
+since_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-21T00:00:00Z --json)"
 echo "$since_out" | jq -e '.indeterminate_count == 0 and (.per_issue | length) == 0' >/dev/null || fail "malformed-index-stays-canonical: expected --since 08-21 to exclude the issue (malformed index's own kickoff predates it), got: $since_out"
 
 echo "== shepherd round 6: a correctly authenticated evidence comment whose reassembled payload is valid JSON but not an object (bare null) makes its run indeterminate, never crashes --run or --replay =="
 export DFSTATS_DB="$tmp/scenarios/null-round-payload.json"
 run_id="$(meta null-round-payload .meta.runId)"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "null-round-payload: expected indeterminate (not a crash), got rc=$rc: $out"
 grep -qi "valid JSON but not an object" <<<"$out" || fail "null-round-payload: expected a malformed-round-payload reason, got: $out"
 set +e
-replay_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json 2>&1)"
+replay_out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json 2>&1)"
 replay_rc=$?
 set -e
 [ "$replay_rc" -eq 0 ] || fail "null-round-payload: expected --replay to complete without crashing, got rc=$replay_rc: $replay_out"
 
 echo "== shepherd round 6: a confirmed post-ready fix and a separate unresolved commit on the same issue count only as fixed, never also indeterminate =="
 export DFSTATS_DB="$tmp/scenarios/postfix-mixed.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.post_ready_fix_count == 1 and .post_ready_fix_indeterminate_count == 0' >/dev/null || fail "postfix-mixed: expected fixed=1, indeterminate=0 (a confirmed fix settles the issue), got: $out"
 
 echo "== shepherd round 6: computePostReadyFix's own API failure isolates to one issue's indeterminate count, never aborts the --repo scan =="
 export DFSTATS_DB="$tmp/scenarios/postfix-api-fail.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 2 and .post_ready_fix_indeterminate_count == 1 and .post_ready_fix_count == 0' >/dev/null || fail "postfix-api-fail: expected both issues reported (cohort_size 2), the failing one counted indeterminate, the sibling unaffected, got: $out"
 
 echo "== shepherd round 6: a stage exit with trailing free-form prose ('continue, more rounds needed') is still parsed as its leading machine token, not null =="
 export DFSTATS_DB="$tmp/scenarios/outcome-trailing-prose.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '(.[0].diffs | length) == 0' >/dev/null || fail "outcome-trailing-prose: expected no diff (recorded 'continue,...' correctly parses as continue, matching the fake script's recomputed continue with 1 round under cap 4), got: $out"
 
 # ---------------------------------------------------------------------------
@@ -5768,23 +5768,23 @@ echo "$out" | jq -e '(.[0].diffs | length) == 0' >/dev/null || fail "outcome-tra
 echo "== #741 shepherd round 1: a registry-unauthorized lower-id index never shadows the legitimate later one =="
 export DFSTATS_DB="$tmp/scenarios/forged-index-shadow.json"
 run_id="$(meta forged-index-shadow .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "forged-index-shadow: expected the run to harvest via the legitimate index, got: $out"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "forged-index-shadow: expected the run to harvest via the legitimate index, got: $out"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "forged-index-shadow: expected a clean in-flight run, got: $out"
 
 echo "== #741 shepherd round 2: an index edited after its author's removal never shadows a legitimate later index =="
 export DFSTATS_DB="$tmp/scenarios/edited-index-shadow.json"
 run_id="$(meta edited-index-shadow .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "edited-index-shadow: expected the run to harvest via the legitimate index, got: $out"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "edited-index-shadow: expected the run to harvest via the legitimate index, got: $out"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "edited-index-shadow: expected a clean in-flight run, got: $out"
 
 echo "== #741 shepherd round 3: a direct-push registry commit older than a PR-landed revision voids only the interval before that landing =="
 export DFSTATS_DB="$tmp/scenarios/older-direct-push.json"
 run_after="$(meta older-direct-push .meta.runIdAfter)"
 run_before="$(meta older-direct-push .meta.runIdBefore)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_after" --trusted-actor-id 9001 --json 2>&1)" || fail "older-direct-push: run after the resolvable landing should authenticate, got: $out"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_after" --trusted-actor-id 9001 --json 2>&1)" || fail "older-direct-push: run after the resolvable landing should authenticate, got: $out"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "older-direct-push: expected a clean in-flight run after the landing, got: $out"
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_before" --trusted-actor-id 9001 2>&1)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_before" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "older-direct-push: run before the resolvable landing should be indeterminate, got rc=$rc: $out"
@@ -5793,7 +5793,7 @@ grep -qi "no agent-registry.json revision had landed" <<<"$out" || fail "older-d
 echo "== #741 shepherd round 4: a higher-id duplicate index with an unanswerable write time does not sink a run whose lower-id index is authenticated =="
 export DFSTATS_DB="$tmp/scenarios/later-duplicate-unresolvable.json"
 run_id="$(meta later-duplicate-unresolvable .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2099-06-01T00:00:00Z --json 2>&1)" || fail "later-duplicate-unresolvable: expected the run to harvest via its lower-id index, got: $out"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2099-06-01T00:00:00Z --json 2>&1)" || fail "later-duplicate-unresolvable: expected the run to harvest via its lower-id index, got: $out"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "later-duplicate-unresolvable: expected a clean in-flight run, got: $out"
 
 echo "== #741: registry allowlist fixture corpus (fail closed on missing/empty/malformed; per-write revision binding) =="
@@ -5814,7 +5814,7 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     case "$expect_status" in
     ok)
         set +e
-        out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" "${trust_args[@]}" --json 2>&1)"
+        out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${trust_args[@]}" --json 2>&1)"
         rc=$?
         set -e
         [ "$rc" -eq 0 ] || fail "registry-trust/$name: expected the run to authenticate (rc 0), got rc=$rc: $out"
@@ -5835,7 +5835,7 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
         ;;
     indeterminate)
         set +e
-        out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" "${trust_args[@]}" 2>&1)"
+        out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${trust_args[@]}" 2>&1)"
         rc=$?
         set -e
         [ "$rc" -eq 3 ] || fail "registry-trust/$name: expected indeterminate (rc 3), got rc=$rc: $out"

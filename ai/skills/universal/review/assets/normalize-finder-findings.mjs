@@ -16,14 +16,14 @@
 // origin/main."); tightening it dropped real ones (an unbadged file-level
 // finding, two badged findings on consecutive lines). That is the same failure
 // family this repository already documents at length above `verdict_class` in
-// ai/skills/universal/integrate/assets/check-codex-cloud-review.sh — free text
+// integrate/assets/check-codex-cloud-review.sh — free text
 // "is not a channel that can be parsed reliably" — and the fix there was the
 // same one taken here: stop trying.
 //
 // A finder's `severity_map` still governs a local pass; the ROLE applies it.
 //
 // The point of this script is what it makes unnecessary. Adjudication,
-// scripts/dev-flow-exit.mjs and scripts/render-dev-flow.mjs read
+// dev-flow-support/assets/dev-flow-exit.mjs and dev-flow-support/assets/render-dev-flow.mjs read
 // `findings[]` — id, path, line, class, provenance, fingerprint, priority,
 // recommended_disposition, evidence — and must never learn which product
 // produced one. So every finder-shaped decision lives here and in that
@@ -75,9 +75,35 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// The default registry is the INVOKING repository's `agent-registry.json`, not
+// one resolved by counting directories up from this file (harmon-devkit#974).
+// This asset is vendored: it sits at `review/assets` in
+// harmon-devkit's own tree and at `.claude/skills/review/assets` in a consumer
+// that ran `task sync:skills`, so no single fixed depth names the repository
+// root in both. Walk up from the working directory to the checkout that owns
+// it instead, and fall back to the working directory itself when there is no
+// `.git` above it (a tarball export, a test fixture). `--registry` remains the
+// explicit override and keeps precedence over this default.
+// Secondary anchors (Gemini review 4056955657 / 4056955667): `.git` alone is
+// not always present at the root a caller means — a `git archive` export, a
+// vendored copy inside another project, or a CI checkout with the metadata
+// stripped all have none. Recognising the files that mark THIS repository's
+// root as well means the walk stops in the right place there instead of
+// walking to `/` and falling back to the start directory.
+const ROOT_ANCHORS = ['.git', 'Taskfile.yml', 'agent-registry.json', '.devflow.toml']
+
+function findRepoRoot(start) {
+  let dir = path.resolve(start)
+  for (;;) {
+    if (ROOT_ANCHORS.some((anchor) => fs.existsSync(path.join(dir, anchor)))) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) return path.resolve(start)
+    dir = parent
+  }
+}
+
+const REPO_ROOT = findRepoRoot(process.cwd())
 
 function die(message, code = 2) {
   console.error(`normalize-finder-findings: ${message}`)

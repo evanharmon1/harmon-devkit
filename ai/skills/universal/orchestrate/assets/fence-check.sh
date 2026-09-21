@@ -32,7 +32,13 @@ invoking_repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "fence-check: not inside a Git worktree" >&2
     exit 1
 }
-validator="$invoking_repo/scripts/validate-result-schemas.mjs"
+# The brief validator is a vendored asset of the sibling dev-flow-support
+# package, not a repository-root script (harmon-devkit#974), so it resolves
+# from this asset's own physical directory — the shape
+# track-work/assets/check-issue-metadata.sh uses for issue-title-support.
+# `pwd -P`: the dogfood tree reaches this file through a symlink.
+asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+validator="$asset_dir/../../dev-flow-support/assets/validate-result-schemas.mjs"
 [ -x "$validator" ] || {
     echo "fence-check: brief validator is unavailable: $validator" >&2
     exit 1
@@ -110,7 +116,7 @@ current_branch="$(git -C "$worktree_path" branch --show-current)" || {
 # portable to macOS bash 3.2, where `${var,,}` is a fatal `bad
 # substitution` (review round 1, confirmed); two sibling assets doing this
 # same normalization already use this exact idiom
-# (ai/skills/universal/track-work/assets/check-issue-metadata.sh,
+# (track-work/assets/check-issue-metadata.sh,
 # discover-label-guidance.sh). The trailing slash is still stripped BEFORE
 # the `.git` suffix — a remote ending in ".git/" would otherwise keep the
 # suffix, since stripping ".git" first is a no-op on a string still ending

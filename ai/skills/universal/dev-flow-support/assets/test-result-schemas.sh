@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# test-result-schemas.sh — schema-check the dev-flow-v2 brief/result/record fixture
+# ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh — schema-check the dev-flow-v2 brief/result/record fixture
 # corpus (ai/schemas/fixtures/) and exercise the receipt-validation semantic
-# checks scripts/validate-result-schemas.mjs layers on top of raw schema
+# checks ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs layers on top of raw schema
 # validation.
 #
 # Fixture corpus conventions (see ai/schemas/README.md):
@@ -16,7 +16,7 @@ set -euo pipefail
 repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
 
-validator="scripts/validate-result-schemas.mjs"
+validator="ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
 schemas_dir="ai/schemas"
 fixtures_dir="ai/schemas/fixtures"
 
@@ -32,7 +32,13 @@ fail() {
 command -v node >/dev/null 2>&1 || fail "node is required to validate the result schemas"
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
-node scripts/test-result-schema-composition.mjs
+# The native-composition check that used to run from here now has its own root
+# target, `task test:result-schema-composition` (harmon-devkit#974). It belongs
+# there rather than here: it validates the AUTHORING schema tree at
+# `ai/schemas/`, which exists only in harmon-devkit, so a vendored copy of this
+# test could never run it — and reaching a repository-root `scripts/` path from
+# inside a vendored asset is exactly the dependency this issue removes.
+# `task verify` runs both, in the same `test:schemas` group.
 
 # Briefs are rendered Markdown rather than JSON documents. Exercise their
 # dedicated corpus separately so the established result/run fixture walker
@@ -322,20 +328,20 @@ for dir in "$fixtures_dir"/*/; do
     # ai/schemas/fixtures/exit/ is a separate conformance corpus (the Dev
     # flow v2 policy reader and exit-computation engine, #636) with its own
     # per-case directory shape (policy.toml, registry.json, run/, ...) and
-    # its own test driver (scripts/test-dev-flow-exit.sh / task
+    # its own test driver (ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh / task
     # test:dev-flow-exit) — it is not one of this script's schema-fixture
     # directories, so it is intentionally skipped here rather than mapped to
     # a <kind>.
     [ "$base" = "exit" ] && continue
-    # render/ holds golden fixtures for scripts/render-dev-flow.mjs, a
+    # render/ holds golden fixtures for ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs, a
     # projection tool rather than one of this family's six schema kinds
-    # (ai/schemas/README.md "Rendering"); scripts/test-render-dev-flow.sh
+    # (ai/schemas/README.md "Rendering"); ai/skills/universal/dev-flow-support/assets/test-render-dev-flow.sh
     # owns it, so it is not iterated here.
     [ "$base" = "render" ] && continue
     # registry-trust/ holds the harvester's registry-allowlist timeline
     # corpus (#741; ai/schemas/README.md "Fixture layout"): declarative
-    # scenarios for scripts/dev-flow-stats.mjs's per-write trust binding,
-    # not documents of any schema kind; scripts/test-dev-flow-stats.sh
+    # scenarios for ai/skills/universal/retro/assets/dev-flow-stats.mjs's per-write trust binding,
+    # not documents of any schema kind; ai/skills/universal/retro/assets/test-dev-flow-stats.sh
     # (task test:dev-flow-stats) renders and runs them, so it is not
     # iterated here.
     [ "$base" = "registry-trust" ] && continue
@@ -343,7 +349,7 @@ for dir in "$fixtures_dir"/*/; do
     # finder's raw output in its own vendor shape, the arguments to decode it
     # with, and the pass core it must decode to (#796; ai/schemas/README.md
     # "Fixture layout"). Raw vendor output is not a document of any schema
-    # kind, so scripts/test-finder-normalization.sh (task
+    # kind, so ai/skills/universal/review/assets/test-finder-normalization.sh (task
     # test:finder-normalization) owns it and it is not iterated here.
     [ "$base" = "finder-normalization" ] && continue
     # brief.envelope is the rendered-Markdown corpus exercised above.
@@ -511,12 +517,12 @@ NODE
 # schema-level (a receipt/context-only violation — one that needs a sibling
 # envelope field, another document, or run context this composed schema
 # cannot see — is correctly NOT caught here; that is
-# scripts/validate-result-schemas.mjs's job, and SEMANTIC_ONLY below is the
+# ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs's job, and SEMANTIC_ONLY below is the
 # explicit, auditable list of which fixtures those are); (b) $defs.<role>
 # never drifts from the standalone result.<role>.schema.json it was copied
 # from.
 node --input-type=module - "$schemas_dir" "$fixtures_dir" <<'NODE'
-import { createSchemaValidator, canonicalJson } from './scripts/lib/json-schema-subset.mjs'
+import { createSchemaValidator, canonicalJson } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 
@@ -537,7 +543,7 @@ const ROLE_DIRS = {
 // this composed schema alone cannot express (ai/schemas/README.md's
 // "Composition" / "Receipt validation" sections name every one of these
 // checks). result.schema.json correctly ACCEPTS these fixtures on their
-// own; scripts/validate-result-schemas.mjs is what rejects them.
+// own; ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs is what rejects them.
 const SEMANTIC_ONLY = new Set([
   // The "missing-*" implementer status-conditional fixtures moved OFF this
   // list once result.schema.json's allOf gained the completed/blocked
@@ -558,7 +564,7 @@ const SEMANTIC_ONLY = new Set([
   'result.reviewer.schema/invalid/blocked-with-findings.json',
   // result.challenger.schema shares the same finding core and the same
   // receipt-validation functions (checkFindingIds, checkReviewerBlockedStatus,
-  // checkHeadAgreement — see scripts/validate-result-schemas.mjs), so it needs
+  // checkHeadAgreement — see ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs), so it needs
   // the identical set of receipt-only fixtures, plus two challenger-only ones
   // that need array-to-array comparison (attack_scenarios[] against
   // findings[]) no single-document schema keyword can express.
@@ -783,7 +789,7 @@ if (envelopeChecked === 0) {
 process.exit(failures === 0 ? 0 : 1)
 NODE
 
-# --- Engine-level keyword tests (scripts/lib/json-schema-subset.mjs) -------
+# --- Engine-level keyword tests (ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs) -------
 # minimum/maximum and if/then/else were added to the shared subset engine
 # for this schema family (agent-registry.schema.json never needed them).
 # The fixture corpus exercises both in situ (round/line/attempt/sequence
@@ -793,7 +799,7 @@ NODE
 # semantics — mirroring how test-agent-registry.sh unit-tests the rest of
 # the engine's keywords via tiny inline schema/instance pairs.
 node --input-type=module - <<'NODE'
-import { createSchemaValidator } from './scripts/lib/json-schema-subset.mjs'
+import { createSchemaValidator } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
 let failures = 0
 function expect(description, condition) {

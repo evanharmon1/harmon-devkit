@@ -111,11 +111,13 @@ resolve, relative to it:
   handed, nothing else configurable, and it carries no subcommand for a
   top-level PR conversation comment at all.
 
-Resolve `scripts/validate-result-schemas.mjs` from the repository root for
-§7. If any of the four is missing, say so and stop — do not hand-roll their
-behavior; a hand-rolled substitute is exactly the failure mode
-`check-codex-cloud-review.sh`'s own header warns about (a poller that misses
-a clean top-level result and reports an already-green attempt incomplete).
+For §7, resolve `$DEV_FLOW_SUPPORT` per "Resolving the assets from an agent
+file" in `dev-flow-support`'s `SKILL.md` (harmon-devkit#974), then use
+`"$DEV_FLOW_SUPPORT/validate-result-schemas.mjs"`. If any of the four is
+missing, say so and stop — do not hand-roll their behavior; a hand-rolled
+substitute is exactly the failure mode `check-codex-cloud-review.sh`'s own
+header warns about (a poller that misses a clean top-level result and reports
+an already-green attempt incomplete).
 
 ## 3. Reap stale state, then settle checks before reserving anything
 
@@ -704,7 +706,9 @@ Validate before reporting it — as the full envelope, the same `envelope` kind
 the readiness gate itself validates, not the bare `integrator` payload kind:
 
 ```sh
-node scripts/validate-result-schemas.mjs envelope "$out_file"
+# $DEV_FLOW_SUPPORT resolved per §2's "Resolving the assets from an agent
+# file" reference.
+node "$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope "$out_file"
 ```
 
 A nonzero exit means fix the document and re-validate — never report an

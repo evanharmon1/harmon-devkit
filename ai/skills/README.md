@@ -71,6 +71,47 @@ PR body (`tracking-guard.yml`), so the skill's rules and the enforced rules are
 the same code. `label-registry-support` is an internal runtime package rather
 than a workflow. Its `SKILL.md` ensures legacy category-sync engines vendor the
 shared interpreter that `track-work` and `triage` both call.
+`dev-flow-support` is the third such package: it carries the shared dev-flow v2
+runtime (`devflow-policy.mjs`, `validate-result-schemas.mjs`,
+`render-dev-flow.*`, `dev-flow-exit.*`, and their `lib/`) that `review`,
+`integrate`, `orchestrate`, and `retro` all call.
+
+**A skill's runtime ships with the skill, never from a repository-root
+`scripts/`** ([#974](https://github.com/evanharmon1/harmon-devkit/issues/974)).
+`task sync:skills` vendors `ai/skills/` and nothing else, and harmon-init's
+template renders no runtime for these skills, so a skill that reaches for a
+root path installs somewhere it cannot run — and the failure surfaces only when
+somebody tries to use it. A script one skill uses lives in that skill's own
+`assets/`; a script several skills share lives in a support package like the
+three above.
+
+What `task verify` guarantees today is **coverage, not a guard**: a synced
+consumer can execute the 15 runtime entrypoints that `review`, `integrate`,
+`orchestrate`, and `retro` invoke by name (#974 AC 5).
+`scripts/test-skills.sh` (via `task test:skills`) publishes this checkout's real
+`ai/` tree, runs the real `sync-skills.sh` into a pristine consumer that has no
+repository-root `scripts/` and no `ai/` tree, and then *executes* each of those
+entrypoints from inside it — including the cross-package hop from an
+`orchestrate` asset to its sibling `dev-flow-support` reader.
+
+That sweep names the entrypoints it executes and makes no claim about an asset
+it does not name. A *mechanical* check that fails whenever any vendored asset
+references a repository-root `scripts/` path is tracked separately in
+[#1099](https://github.com/evanharmon1/harmon-devkit/issues/1099) — three
+successive mechanisms for it were defeated in adversarial review, so it was
+split out of #974 rather than shipped unsound.
+
+**Consumers vendor the `universal` category as a unit.** A support package is
+reached from its callers as `$asset_dir/../../<package>/assets/<name>` —
+resolved from the calling asset's own *physical* directory, the same shape
+`track-work/assets/check-issue-metadata.sh` uses for `issue-title-support` —
+which holds in this source tree and in a consumer's flattened
+`.claude/skills/` tree alike, because categories are flattened on vendor.
+Vendoring a strict subset of `universal` can therefore leave a stage skill
+without the package it calls. A missing sibling package is a blocker the
+caller reports, never something it routes around; making the sync itself refuse
+a partial install is tracked separately in
+[#877](https://github.com/evanharmon1/harmon-devkit/issues/877).
 
 **harmon-devkit uses the `universal/` and `matt-pocock/` skills itself.** Each
 is symlinked into `.agents/skills/`, with `.claude/skills` pointing at that

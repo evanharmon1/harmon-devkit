@@ -101,7 +101,7 @@ unexplained-promotion procedure. An **intervention** is any human action
 between kickoff and ready-for-review, except answering an implementer's
 `blocked_question`, which is counted separately as *asked*. A human fix after ready-for-review
 is a failure of the readiness gate, tracked as a second number. The metric is
-computed by `scripts/dev-flow-stats.sh` ([#663](https://github.com/evanharmon1/harmon-devkit/issues/663))
+computed by `ai/skills/universal/retro/assets/dev-flow-stats.mjs` ([#663](https://github.com/evanharmon1/harmon-devkit/issues/663))
 from retained artifacts alone (§ Evidence). Baseline first; a target is set
 after roughly ten runs. Foreman cannot dispatch on public repositories, so
 Foreman-initiated runs are measured on private repos and a zero Foreman sample

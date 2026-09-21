@@ -364,7 +364,7 @@
           "minLength": 1
         },
         "raw_shape": {
-          "description": "The shape this finder's raw output arrives in, which scripts/normalize-finder-findings.mjs decodes into the shared finding core (#796). labelled-text: a text report whose findings are blank-line-separated blocks carrying a severity label somewhere in the block — every local-cli finder, whether the label is a P-badge this repo's own prompt asked for or the finder's own vocabulary. github-review-json: a GitHub review plus its inline comments — every pr-cloud finder, which is collected rather than invoked. Cross-file validation binds each value to its surface, because a surface cannot produce the other one's shape.",
+          "description": "The shape this finder's raw output arrives in, which ai/skills/universal/review/assets/normalize-finder-findings.mjs decodes into the shared finding core (#796). labelled-text: a text report whose findings are blank-line-separated blocks carrying a severity label somewhere in the block — every local-cli finder, whether the label is a P-badge this repo's own prompt asked for or the finder's own vocabulary. github-review-json: a GitHub review plus its inline comments — every pr-cloud finder, which is collected rather than invoked. Cross-file validation binds each value to its surface, because a surface cannot produce the other one's shape.",
           "enum": ["labelled-text", "github-review-json"]
         },
         "severity_map": {

@@ -114,7 +114,15 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
-const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
+// The package's OWN schema copy, resolved from this file's location — never a
+// repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
+// depth from an asset to a repository root differs between this source tree
+// (`dev-flow-support/assets`) and a flattened consumer one
+// (`.claude/skills/dev-flow-support/assets`), so a root-relative default is
+// wrong in at least one of them (harmon-devkit#974, ruling 2). `ai/schemas/`
+// stays the authoring source of truth; `assets/schemas/` is its byte-identical
+// copy, asserted by `task test:schema-parity`.
+const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'schemas')
 const PROJECTIONS = [
   'deferred-findings',
   'adjudication-record',

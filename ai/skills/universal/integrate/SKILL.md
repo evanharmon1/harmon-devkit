@@ -14,6 +14,38 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 # Integrate
 
+**Runtime assets travel with the skills.** Every executable this skill names is
+vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
+path (harmon-devkit#974): a consumer that installed the skill has no such
+directory, so a root-relative dependency installs a skill that cannot run. Two
+shorthands are used below and resolve the same way in harmon-devkit's source
+tree and in a consumer's flattened `.claude/skills/` one:
+
+- `assets/<name>` — this skill's own asset, i.e. `${CLAUDE_SKILL_DIR}/assets/<name>`.
+- `<package>/assets/<name>` — a sibling package's asset. **Resolve
+  `${CLAUDE_SKILL_DIR}` physically first**, then append:
+
+  ```sh
+  skill_dir="$(cd "${CLAUDE_SKILL_DIR}" && pwd -P)"
+  support_dir="$skill_dir/../dev-flow-support/assets"
+  ```
+
+  The `cd`/`pwd -P` is load-bearing, not ceremony: where the skills directory
+  is reached through a symlink — harmon-devkit's own `.agents/skills/<name>`
+  entries are symlinks into `ai/skills/<category>/` — a **logical**
+  `${CLAUDE_SKILL_DIR}/../` splits by resolver. `ls` follows the link and
+  succeeds; Node collapses `..` with `path.resolve()` before touching the
+  filesystem and fails with `MODULE_NOT_FOUND`. Resolving physically first
+  makes both agree. This is the same rule `dev-flow-support`'s own `SKILL.md`
+  states for asset-to-asset calls; see it for the canonical wording.
+
+  The shared dev-flow v2 runtime (`devflow-policy.mjs`,
+  `validate-result-schemas.mjs`, `render-dev-flow.{sh,mjs}`,
+  `dev-flow-exit.{sh,mjs}`) lives in `dev-flow-support/assets/`.
+
+A missing sibling package is a blocker, not a fallback: vendor the `universal`
+category as a unit rather than resolving a runtime path some other way.
+
 **Arguments:** $ARGUMENTS
 
 **Version 2 only.** This skill and its readiness gate
@@ -39,7 +71,7 @@ migration visible; a stage that finds another way to finish hides it.
 
 A consumer that has not advanced its pin still has the retired single-stage
 skill at the pin it is on, which is exactly why the pin waits for the policy;
-`scripts/consumer-pin-audit.sh` is the check that the two agree. harmon-devkit's
+`orchestrate/assets/consumer-pin-audit.sh` is the check that the two agree. harmon-devkit's
 `.devflow.toml` is `schema_version = 2` (harmon-devkit#862), so this skill
 operates there natively; a consumer that has not yet migrated still has the
 retired single-stage skill at its pin and refuses as described above. Do
@@ -154,7 +186,7 @@ one fix push, however many findings (Codex's or a human reviewer's) it
 answers, is one remediation unit.
 
 **Resolve them through the policy reader, and never hand-decode a shape.**
-`scripts/devflow-policy.mjs` is the one implementation of this resolution; a
+`dev-flow-support/assets/devflow-policy.mjs` is the one implementation of this resolution; a
 `schema_version = 2` `.devflow.toml` names the two caps directly as
 `rounds.integration` and `rounds.remediation`. This skill operates under
 version 2 and under nothing else — it carries no interpreter for the pre-v1
@@ -164,7 +196,7 @@ its refusal names the markers it actually found, so no procedure here has to
 restate an older shape's vocabulary in order to reject it.
 
 **On an ordinary review** — the change under review touches none of
-`scripts/devflow-policy.mjs`, `scripts/lib/toml-lite.mjs`, `.devflow.toml`,
+`dev-flow-support/assets/devflow-policy.mjs`, `dev-flow-support/assets/lib/toml-lite.mjs`, `.devflow.toml`,
 `agent-registry.json`, `Taskfile.yml`, or `taskfiles/` —
 `task devflow:policy -- resolve --policy .devflow.toml --registry
 agent-registry.json --taskfile-dir . --json` (add `--rigor <level>` for an
@@ -190,9 +222,34 @@ all. Materialize the merge-base copies first:
 ```sh
 base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
 mb_dir="$(mktemp -d)"
-mkdir -p "$mb_dir/scripts/lib"
-git show "${base}:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.mjs"
-git show "${base}:scripts/lib/toml-lite.mjs"  >"$mb_dir/scripts/lib/toml-lite.mjs"
+
+# ASK THE MERGE BASE which layout it has, rather than hardcoding one. The
+# loop below probes the reader's own `--closure` probe order — devflow-
+# policy.mjs's CLOSURE_READER_PATHS — narrowed to the repo-root-relative
+# candidates (the probe's other two entries, `devflow-policy.mjs` and
+# `assets/devflow-policy.mjs`, only apply when the supplied closure directory
+# already points at the skill or asset directory itself, which this
+# repo-root checkout never does), plus the legacy `scripts/devflow-policy.mjs`
+# path for any merge base predating harmon-devkit#974. First match wins here
+# too.
+reader=""
+for candidate in \
+    ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs \
+    .claude/skills/dev-flow-support/assets/devflow-policy.mjs \
+    .agents/skills/dev-flow-support/assets/devflow-policy.mjs \
+    scripts/devflow-policy.mjs; do
+    git cat-file -e "${base}:${candidate}" 2>/dev/null && { reader="$candidate"; break; }
+done
+[ -n "$reader" ] || exit 1   # a merge base with no reader is a blocker, never
+                             # grounds to fall back to the branch's own copy
+
+# Materialize the reader AT THE MERGE BASE'S OWN RELATIVE PATH, so its
+# ES-module import of ./lib/toml-lite.mjs resolves and --closure's probe finds
+# the entrypoint where it expects it.
+reader_dir="$(dirname "$reader")"
+mkdir -p "$mb_dir/$reader_dir/lib"
+git show "${base}:${reader}"                    >"$mb_dir/${reader}"
+git show "${base}:${reader_dir}/lib/toml-lite.mjs" >"$mb_dir/${reader_dir}/lib/toml-lite.mjs"
 git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
 
 # Always extract the merge-base registry — it is a repository file, so it
@@ -202,14 +259,14 @@ git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 # Invoke the MATERIALIZED reader by path, never through `task devflow:policy`:
 # the task target is branch-controlled, so routing through it lets the branch
 # choose the command line that is supposed to constrain it.
-node "$mb_dir/scripts/devflow-policy.mjs" resolve --closure "$mb_dir" \
+node "$mb_dir/${reader}" resolve --closure "$mb_dir" \
     --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
     --merge-base-registry "$mb_dir/agent-registry.json" \
     --registry agent-registry.json --taskfile-dir . --json
 ```
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
-reader imports `scripts/lib/toml-lite.mjs`, so extracting the entrypoint alone
+reader imports `dev-flow-support/assets/lib/toml-lite.mjs`, so extracting the entrypoint alone
 makes the re-exec fail with `ERR_MODULE_NOT_FOUND` before it resolves
 anything — and since this path is now the only one (there is no hand-decoding
 fallback), that failure is a hard stop rather than a degraded mode. A
@@ -274,8 +331,11 @@ this recipe asked for could not be decided, which is the same standing as a
 check that failed. If the reader grows another dependency, it belongs in this
 recipe too.
 
-`--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
-before this checkout's own (possibly branch-modified) copy runs any of its
+`--closure <dir>` re-execs the trusted merge-base reader inside `<dir>` —
+probing `CLOSURE_READER_PATHS` (`devflow-policy.mjs`,
+`assets/devflow-policy.mjs`, the vendored skill layouts, then
+`scripts/devflow-policy.mjs`) in that fixed order before this checkout's own
+(possibly branch-modified) copy runs any of its
 own code — the reader's self-modification boundary protects the reader
 itself, not only the data it reads, since a branch could otherwise lower its
 own gate by editing the resolution code instead of the config. A merge base
@@ -304,7 +364,7 @@ the preamble — never hand-decode the file, guess caps, advance the pin, or
 continue by another route to get past it. `task devflow:policy -- detect --policy .devflow.toml --json` answers
 the same question on its own (exit 0 version 2, exit 1 an older or mixed
 shape with the message in `migration`, exit 2 unreadable), and
-`scripts/consumer-pin-audit.sh` is the standing check that a repository's
+`orchestrate/assets/consumer-pin-audit.sh` is the standing check that a repository's
 vendored-skill pin and its policy shape agree.
 
 A `rigor:*` label conflict resolves to the single strongest level by
@@ -665,7 +725,7 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   disposition: `{type: sha, value: <sha>}` / `{type: comment_id, value: <id>}`
   / `{type: issue_number, value: <n>}`) to `run.json`'s `settlements[]` in
   the record directory, then validate the updated file
-  (`node scripts/validate-result-schemas.mjs run <record>/run.json --receipt
+  (`node dev-flow-support/assets/validate-result-schemas.mjs run <record>/run.json --receipt
   --adjudication <record>/adjudications/*.json`) before publishing anything
   from it — an invalid record must never reach `publish`. This is what
   removes the old class of failure entirely: there is no contributor-editable
@@ -804,7 +864,7 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     and hand the agent none.
 
   **Validate what comes back before using any of it**
-  (`node scripts/validate-result-schemas.mjs integrator <file>`) — a
+  (`node dev-flow-support/assets/validate-result-schemas.mjs integrator <file>`) — a
   dispatched role's result is a claim, not a fact, until it passes its own
   schema; a malformed result is rejected outright, never adjudicated or
   patched into shape.
@@ -1717,7 +1777,7 @@ Splitting is not an integration move.
 run record is validated *with* its adjudications, and nothing else in this
 stage does that — the readiness gate calls the renderer, whose cross-document
 validation does not read `splits`. So after recording a split, run
-`scripts/validate-result-schemas.mjs run <run.json> --adjudication <each round
+`dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --adjudication <each round
 document>` and treat a failure as a blocker. It invokes checks that already
 exist: an omitted `splits[]` entry on a terminal run, a split naming a finding
 that was not adjudicated `split`, an entry naming a different issue than the

@@ -104,7 +104,7 @@ if grep -Eq '\{\{[a-z0-9-]+\}\}' "$rendered_file"; then
     fail "rendered fixture retains a placeholder"
 fi
 
-node scripts/validate-result-schemas.mjs brief "$rendered_file" >/dev/null ||
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs brief "$rendered_file" >/dev/null ||
     fail "rendered fixture does not satisfy the brief envelope schema"
 
 headings=(

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// scripts/dev-flow-exit.mjs — deterministic confidence-stage exit computation.
+// dev-flow-exit.mjs — deterministic confidence-stage exit computation.
 //
 // Implements openspec/changes/dev-flow-v2/specs/exit-computation/spec.md and
 // specs/dev-flow-v2.md § "Convergence model v0" over a run directory (see
 // ai/schemas/README.md "Dev flow v2 exit computation: run directory layout"
 // for the exact shape) plus a resolved .devflow.toml policy
-// (scripts/devflow-policy.mjs).
+// (devflow-policy.mjs).
 //
 // CLI:
-//   node scripts/dev-flow-exit.mjs --run <dir> --stage <challenge|review> \
+//   node dev-flow-exit.mjs --run <dir> --stage <challenge|review> \
 //     --policy <file> [--rigor <level>] [--merge-base-policy <file>] \
 //     [--current-head <sha>] [--history <file> | --repo-root <dir>] \
 //     [--heads <file>] [--closure <dir>] [--validator <path>]
@@ -1641,6 +1641,25 @@ function parseArgs(argv) {
   return args;
 }
 
+// Where the trusted reader may sit inside a `--closure` directory, most
+// specific first — the same probe list devflow-policy.mjs uses, for the same
+// reason (harmon-devkit#974): this reader is a vendored skill asset now, it
+// was a repository-root `scripts/` script before, and a consumer's flattened
+// `.claude/skills/` tree puts it somewhere else again. Keeping the `scripts/`
+// layout last is what lets a branch whose merge base predates the relocation
+// still pass its own self-modification check instead of refusing outright.
+// Every candidate lives inside the same caller-materialized closure directory
+// and is therefore equally trusted: this widens where the trusted copy may
+// sit, never whose copy counts.
+const CLOSURE_READER_PATHS = [
+  ["dev-flow-exit.mjs"],
+  ["assets", "dev-flow-exit.mjs"],
+  ["ai", "skills", "universal", "dev-flow-support", "assets", "dev-flow-exit.mjs"],
+  [".claude", "skills", "dev-flow-support", "assets", "dev-flow-exit.mjs"],
+  [".agents", "skills", "dev-flow-support", "assets", "dev-flow-exit.mjs"],
+  ["scripts", "dev-flow-exit.mjs"],
+];
+
 // Same self-modification boundary as devflow-policy.mjs's own --closure
 // (see its tryDelegateToClosure for the full rationale): this script's own
 // exit computation is exactly as gate-able as the policy it resolves, so a
@@ -1654,13 +1673,15 @@ function tryDelegateToClosure(argv) {
     console.error("dev-flow-exit: --closure requires a directory argument");
     return 1;
   }
-  const trustedScript = path.join(closureDir, "scripts", "dev-flow-exit.mjs");
-  if (!existsSync(trustedScript)) {
+  const candidates = CLOSURE_READER_PATHS.map((rel) => path.join(closureDir, ...rel));
+  const trustedScript = candidates.find((candidate) => existsSync(candidate));
+  if (!trustedScript) {
     // Same reasoning as devflow-policy.mjs's tryDelegateToClosure: a merge
     // base that predates this reader's own existence has no trusted copy to
-    // delegate to — refuse outright, never fall back to the branch copy.
+    // delegate to — refuse outright, never fall back to the branch copy. Name
+    // every probed layout so the caller can see which were looked for.
     console.error(
-      `dev-flow-exit: --closure directory has no scripts/dev-flow-exit.mjs (${closureDir}) — the reader must land on the merge base before a self-referential check can run; never falling back to the branch copy`,
+      `dev-flow-exit: --closure directory has no dev-flow-exit.mjs (${closureDir}) — probed ${CLOSURE_READER_PATHS.map((rel) => rel.join("/")).join(", ")}; the reader must land on the merge base before a self-referential check can run; never falling back to the branch copy`,
     );
     return 1;
   }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-finder-normalization.sh — conformance for scripts/normalize-finder-findings.mjs.
+# ai/skills/universal/review/assets/test-finder-normalization.sh — conformance for ai/skills/universal/review/assets/normalize-finder-findings.mjs.
 #
 # Two obligations, both from #796:
 #
@@ -14,7 +14,7 @@ repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
 
 fixtures="ai/schemas/fixtures/finder-normalization"
-normalizer="scripts/normalize-finder-findings.mjs"
+normalizer="ai/skills/universal/review/assets/normalize-finder-findings.mjs"
 registry="agent-registry.json"
 
 fail() {
@@ -232,7 +232,7 @@ echo "==> the shared consumers carry no finder-specific branch"
 # The reason normalization exists. A finder slug appearing in any of these
 # three is the failure mode #796 set out to remove: a second reviewer family
 # becoming a third branch in code that should only ever see `findings[]`.
-for consumer in scripts/dev-flow-exit.mjs scripts/render-dev-flow.mjs \
+for consumer in ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs \
     ai/schemas/adjudication.schema.json; do
     [ -f "$consumer" ] || fail "missing shared consumer $consumer"
     while IFS= read -r slug; do

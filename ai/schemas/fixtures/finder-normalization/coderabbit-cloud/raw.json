@@ -13,7 +13,7 @@
     {
       "id": 9201,
       "commit_id": "0404040404040404040404040404040404040404",
-      "path": "scripts/normalize-finder-findings.mjs",
+      "path": "ai/skills/universal/review/assets/normalize-finder-findings.mjs",
       "line": 210,
       "user": {
         "id": 136622811,

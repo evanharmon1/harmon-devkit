@@ -123,7 +123,7 @@ tasks:
   audit:consumer-pin:
     desc: "Check a repo's vendored-skill pin against its .devflow.toml shape (usage: task audit:consumer-pin -- [--repo-root DIR] [--json])"
     cmds:
-      - ./scripts/consumer-pin-audit.sh {{.CLI_ARGS}}
+      - ./ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh {{.CLI_ARGS}}
 
   lint:
     desc: Run all linters in parallel
@@ -390,6 +390,8 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:result-schema-composition
+      - test:schema-parity
       - test:dev-flow-stats
       - test:dev-flow-exit
       - test:dev-flow-monitor
@@ -410,22 +412,32 @@ tasks:
   test:result-schemas:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
-      - ./scripts/test-result-schemas.sh
+      - ./ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh
+
+  test:result-schema-composition:
+    desc: Check the native composition of the dev-flow-v2 result envelope against its per-role payload schemas
+    cmds:
+      - node scripts/test-result-schema-composition.mjs
+
+  test:schema-parity:
+    desc: Assert dev-flow-support's vendored assets/schemas/ copy is byte-identical to the authoring ai/schemas/
+    cmds:
+      - ./ai/skills/universal/dev-flow-support/assets/test-schema-parity.sh
 
   test:dev-flow-stats:
     desc: Behavioral test for the Dev flow v2 evidence harvester, success metric, trajectory rendering, and policy replay
     cmds:
-      - ./scripts/test-dev-flow-stats.sh
+      - ./ai/skills/universal/retro/assets/test-dev-flow-stats.sh
 
   test:dev-flow-exit:
     desc: Behavioral test for the Dev flow v2 policy reader and exit-computation engine against fixture policies
     cmds:
-      - ./scripts/test-dev-flow-exit.sh
+      - ./ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh
 
   test:dev-flow-monitor:
     desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
     cmds:
-      - ./scripts/test-dev-flow-monitor.sh
+      - ./ai/skills/universal/orchestrate/assets/test-dev-flow-monitor.sh
 
   test:lane-watch:
     desc: Fixture-driven regression tests for the orchestrator lane watcher
@@ -435,7 +447,7 @@ tasks:
   test:render-dev-flow:
     desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher
     cmds:
-      - ./scripts/test-render-dev-flow.sh
+      - ./ai/skills/universal/dev-flow-support/assets/test-render-dev-flow.sh
 
   test:retro-run-report:
     desc: Behavioral test for the /retro skill's run-evidence projection (fixture trajectories, stubbed gh and harvester)
@@ -445,7 +457,7 @@ tasks:
   test:consumer-pin-audit:
     desc: Behavioral test for the Dev flow v2 consumer pin contract and older-shape policy refusals
     cmds:
-      - ./scripts/test-consumer-pin-audit.sh
+      - ./ai/skills/universal/orchestrate/assets/test-consumer-pin-audit.sh
 
   test:review-skill:
     desc: Fixture-driven regression checks for the /review stage contract
@@ -455,7 +467,7 @@ tasks:
   test:finder-normalization:
     desc: Conformance checks that every finder's raw output decodes to the shared finding core
     cmds:
-      - ./scripts/test-finder-normalization.sh
+      - ./ai/skills/universal/review/assets/test-finder-normalization.sh
 
   test:finder-review:
     desc: Offline guards for the non-Codex local-CLI finder runner
@@ -475,7 +487,7 @@ tasks:
   devflow:render:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
     cmds:
-      - ./scripts/render-dev-flow.sh {{.CLI_ARGS}}
+      - ./ai/skills/universal/dev-flow-support/assets/render-dev-flow.sh {{.CLI_ARGS}}
   test:worktree:
     desc: Behavioral test for worktree:new / worktree:rm (create → verify hooks → remove, in a throwaway fixture repo)
     cmds:
@@ -582,7 +594,7 @@ tasks:
   test:round-push:
     desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)
     cmds:
-      - ./scripts/test-round-push.sh
+      - ./ai/skills/universal/review/assets/test-round-push.sh
 
   test:lint-hygiene:
     desc: Behavioral fixtures for lint-hygiene's trigger-phrase adjacency scan
@@ -835,12 +847,12 @@ tasks:
   devflow:policy:
     desc: "Resolve a Dev flow v2 .devflow.toml (usage: task devflow:policy -- resolve --policy <file> [--registry <file>] [--rigor <level>] [--json])"
     cmds:
-      - node scripts/devflow-policy.mjs {{.CLI_ARGS}}
+      - node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs {{.CLI_ARGS}}
 
   devflow:exit:
     desc: "Compute a Dev flow v2 confidence-stage exit verdict (usage: task devflow:exit -- --run <dir> --stage <challenge|review> --policy <file> [--json])"
     cmds:
-      - ./scripts/dev-flow-exit.sh {{.CLI_ARGS}}
+      - ./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.sh {{.CLI_ARGS}}
 
   codex:gate:enable:
     desc: Enable the automatic Claude → Codex stop-gate review (this repo, this machine)
