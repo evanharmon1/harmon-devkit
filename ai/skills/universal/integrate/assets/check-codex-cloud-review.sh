@@ -132,7 +132,7 @@ requested_at_arg=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -756,8 +756,17 @@ JQDEFS
 #     under review at the new head                           -> intersects -> CHARGED
 #   - a clean merge of base commits touching other files     -> disjoint    -> EXEMPT
 #
-# Anything this cannot establish is CHARGED. An exemption is a spend the
-# reviewer never sanctioned, so the failure direction must be to charge.
+# THE INVARIANT: exempt only on positive proof. Every other outcome charges.
+#
+# Challenge rounds 1-3 each found a different way to be wrong about this, and
+# they all shared one shape — some input the classifier could not fully
+# establish, treated as if it had been. So the rule is stated once here and
+# every branch below obeys it: an uncertain compare, a truncated file list, a
+# state file that does not belong to this run, an unreadable patch, an
+# unexpected status — each charges. Under-exempting costs one cycle, which is
+# exactly the status quo this change improves on and never worse than it.
+# Over-exempting spends budget the reviewer never sanctioned, and no error in
+# that direction is recoverable once the cycle is gone.
 classify_cycle_charge() {
     classify_prev=$1
     classify_head=$2
@@ -775,6 +784,14 @@ classify_cycle_charge() {
         charge_reason="cannot compare $classify_prev...$classify_head; charging"
         return 0
     }
+    # The compare API caps `files` at 300 with no truncation flag of its own,
+    # so a list at the cap may be incomplete and cannot prove that nothing
+    # under review moved. Per the invariant, that charges.
+    if [ "$(jq -r '(.files // []) | length' <<<"$moved_payload")" -ge 300 ]; then
+        charge_class=charged
+        charge_reason="the compare file list is at the API's 300-file cap and may be truncated; charging"
+        return 0
+    fi
     moved_status=$(jq -r '.status // "unknown"' <<<"$moved_payload")
     # "ahead" is the only status meaning the previously reviewed head is an
     # ancestor of this one. "diverged" means history was rewritten under the
@@ -815,6 +832,14 @@ classify_cycle_charge() {
         charge_reason="cannot read the reviewed patch at $classify_head; charging"
         return 0
     }
+
+    for truncation_check in "$prev_patch" "$head_patch"; do
+        [ "$(jq -r '(.files // []) | length' <<<"$truncation_check")" -lt 300 ] || {
+            charge_class=charged
+            charge_reason="a reviewed-patch file list is at the API's 300-file cap and may be truncated; charging"
+            return 0
+        }
+    done
 
     overlap=$(jq -r -n --argjson moved "$moved_payload" --argjson prev "$prev_patch" --argjson head "$head_patch" '
           # Challenge round 2, P1 (confirmed): a rename is reported under the
@@ -952,6 +977,15 @@ reserve)
                 die "--previous-head was supplied but no persisted prior head exists to confirm it against"
             [ "$previous_head" = "$classify_prev_head" ] ||
                 die "--previous-head $previous_head disagrees with the persisted last-reviewed head $classify_prev_head"
+        fi
+        # Per the invariant: an exemption rests on the persisted record of what
+        # the last cycle reviewed, so that record must belong to THIS run. When
+        # the caller names a run and state carries a different one — or none at
+        # all — the prior head is not this run's history and cannot license an
+        # exemption, whatever it says.
+        if [ -n "$run_id" ] && [ "$(jq -r '.run_id // empty' "$state_file" 2>/dev/null)" != "$run_id" ]; then
+            classify_prev_head=
+            charge_reason="the persisted state belongs to a different run; charging"
         fi
         if [ -n "$classify_prev_head" ]; then
             classify_cycle_charge "$classify_prev_head" "$head" "$repo" "$pr"

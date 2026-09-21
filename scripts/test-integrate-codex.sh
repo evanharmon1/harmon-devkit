@@ -3724,5 +3724,38 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
     fail "the detail must name the surviving disposition: $check_out"
+# harmon-init#1326, challenge round 3, P1 (confirmed): every documented flag
+# must actually PARSE. This script's argument handling is two nested `case`
+# blocks — an outer one that allowlists the flag NAMES and an inner one that
+# assigns their values — and a flag added to only the inner block is silently
+# dead: it falls through the outer `*)` to `usage` and exits 2, so a caller
+# following the documented invocation gets a usage error instead of the
+# behavior. Both flags this change added were dead exactly that way, and the
+# identical mistake was made in readiness-gate.sh's own allowlist the same
+# day. Assert the property rather than the two instances, so the next flag
+# added to one block and not the other fails here instead of in production.
+echo "==> every flag named in the usage text is actually parsed"
+usage_text="$("$helper" --help 2>&1 || true)"
+documented_flags="$(printf '%s\n' "$usage_text" |
+    grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+[ -n "$documented_flags" ] || fail "could not extract any flag from the usage text"
+while IFS= read -r flag; do
+    [ -n "$flag" ] || continue
+    case "$flag" in
+    --help) continue ;;
+    esac
+    # A parsed flag consumes its value and moves on, so the command fails on
+    # something LATER (a missing state file, a bad repo) — never by printing
+    # usage. An unparsed one prints the usage block and exits 2 immediately.
+    probe_out="$("$helper" show --state /nonexistent/state.json "$flag" probe 2>&1 || true)"
+    case "$probe_out" in
+    *"Usage:"*)
+        fail "flag $flag appears in the usage text but is not parsed (missing from the outer allowlist?)"
+        ;;
+    esac
+done <<EOF
+$documented_flags
+EOF
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
