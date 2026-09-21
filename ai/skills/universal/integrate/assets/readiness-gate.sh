@@ -382,6 +382,7 @@ indeterminate() {
 # the subshell and let the gate carry on with an unset behind_by.
 behind_base_ref=
 behind_by=
+behind_base_oid=
 establish_behind() {
     establish_scalars="$1"
     establish_phase="$2"
@@ -401,6 +402,11 @@ establish_behind() {
         indeterminate behind-base-unknown "cannot compare ${behind_base_ref}...${head} to establish how far behind the head is (${establish_phase})"
     behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$establish_compare")" ||
         indeterminate behind-base-unknown "compare payload carries no numeric behind_by (${establish_phase})"
+    # The tip the count is ABOUT. Comparing base names across the identity read
+    # cannot see the base branch itself advancing — the name is unchanged and
+    # the stale `behind_by 0` reads as level.
+    behind_base_oid="$(jq -er '.base_commit.sha | select(type == "string")' <<<"$establish_compare")" ||
+        indeterminate behind-base-unknown "compare payload carries no base commit sha (${establish_phase})"
 }
 
 run_gh() {
@@ -535,11 +541,11 @@ if [ "$command_name" = behind ]; then
     # Same binding the gate does: a push or retarget during the comparison
     # would otherwise let this report `level` for a head that no longer
     # exists, and the caller spends its reserved cycle on the wrong one.
-    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
+    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName,baseRefOid)" ||
         indeterminate fetch-failed "cannot confirm PR identity after the comparison"
-    jq -e --arg h "$head" --arg b "$behind_base_ref" \
-        '.headRefOid == $h and .baseRefName == $b' <<<"$behind_after" >/dev/null ||
-        indeterminate behind-base-unknown "the PR head or base moved while comparing — re-run the preflight"
+    jq -e --arg h "$head" --arg b "$behind_base_ref" --arg o "$behind_base_oid" \
+        '.headRefOid == $h and .baseRefName == $b and .baseRefOid == $o' <<<"$behind_after" >/dev/null ||
+        indeterminate behind-base-unknown "the PR head, base branch or base tip moved while comparing — re-run the preflight"
     if [ "$behind_by" -eq 0 ]; then
         jq -cn --arg base "$behind_base_ref" --arg head "$head" \
             '{status:"level",behind_by:0,base:$base,head:$head}'
@@ -915,18 +921,13 @@ merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts with the base branch" ;;
 BEHIND)
-    # CHECK only, for the same reason the graph check above is. In check mode
-    # the graph already reported 0, so a cache still reading BEHIND is lag:
-    # failing it would send the caller to merge a base it is level with, which
-    # creates no commit and reproduces the blocker forever. Unknown-for-now.
-    #
-    # In AUDIT mode the graph check never ran, so this branch has no such
-    # premise — and ANY non-pass routes §2's unexplained-promotion flow to its
-    # undo path, reversing a valid handoff because the base drifted after it.
-    # Scoping only the graph check left that half-done (review round 1; the
-    # audit case had used BLOCKED and so missed it).
-    [ "$require_draft" = 0 ] ||
-        indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    # The graph reported 0 just above, so a cache still reading BEHIND is lag,
+    # not work: failing it would send the caller to merge a base it is level
+    # with, which creates no commit and reproduces the blocker forever.
+    # Unknown-for-now in BOTH modes — the audit-mode exemption this once
+    # carried existed only because §2 undid on any non-pass, and §2 now never
+    # undoes on an indeterminate.
+    indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
@@ -1529,10 +1530,11 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
 # behind during the run, which is the silent pass review round 2 rejected.
 recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
     indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
-if [ "$require_draft" = 1 ]; then
-    [ "$recheck_base" = "$behind_base_ref" ] ||
-        fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
-fi
+# BOTH modes: evidence gathered against the old base says nothing about a new
+# one, and retargeting can change required workflows and mergeability. §2
+# classifies this as drift, so it is reported rather than undone.
+[ "$recheck_base" = "$behind_base_ref" ] ||
+    fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
 establish_behind "$recheck" "immediately before the verdict"
 if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
@@ -1547,9 +1549,7 @@ fi
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
 BEHIND)
-    # CHECK only — same reasoning as the pre-evaluation branch above.
-    [ "$require_draft" = 0 ] ||
-        indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
@@ -1564,7 +1564,7 @@ esac
 # them. Bounded, not regressive: no further network call follows, and the
 # residual window is the caller's contractual pre-promotion re-read.
 final="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,baseRefOid)" ||
     indeterminate fetch-failed "cannot re-read the PR after the final comparison"
 jq -e '.state == "OPEN"' <<<"$final" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was comparing against the base"
@@ -1579,6 +1579,8 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was comparing against the base"
 jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
+jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null ||
+    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; reconcile and re-run"
 [ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
 # Same three-way handling as the recheck above — writing only the DIRTY arm
@@ -1588,8 +1590,7 @@ jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/nu
 case "$(jq -r '.mergeStateStatus // ""' <<<"$final")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was comparing against the base" ;;
 BEHIND)
-    [ "$require_draft" = 0 ] ||
-        indeterminate merge-state-stale "mergeStateStatus turned BEHIND while the gate was comparing, with the graph reporting 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    indeterminate merge-state-stale "mergeStateStatus turned BEHIND while the gate was comparing, with the graph reporting 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub stopped reporting mergeability while the gate was comparing — re-poll briefly"

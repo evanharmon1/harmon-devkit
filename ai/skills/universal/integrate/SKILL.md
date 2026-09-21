@@ -540,7 +540,31 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     already-non-draft path prescribes; do **not** call `gh pr ready` again.
     Reverting a promotion the gate would itself have made un-notifies nobody
     and can override a genuine human click.
-  - **Otherwise** — the promotion sits on an unverified head or open findings.
+  - **Indeterminate, or ordinary post-promotion drift — report, never undo.**
+    A non-pass is not by itself evidence that the promotion was unjustified.
+    Two kinds never license an undo:
+
+    - **Anything the gate could not establish** — every `audit` exit 2,
+      whatever its condition. "I could not determine this" is not "this is
+      wrong", and reversing a human's handoff on it destroys a real thing over
+      an unproven one. This generalises the rule already stated below for a
+      failed timeline read; it is not a new principle, just an honest one
+      about where it applies. Re-poll briefly; if it stays unknown, escalate
+      with the condition named.
+    - **State that changed *after* a correct promotion** — `audit-behind`,
+      `base-retargeted`, `head-moved`. The base and the contributor are not
+      ours to hold still, and a PR drifting once it is in a human's hands is
+      ordinary. Report it to the maintainer; the remedy is theirs.
+
+    This is deliberately a rule about kinds rather than a list of conditions.
+    The gate can emit dozens, and exempting them one at a time is a game you
+    lose by one condition every time a new one is added — which is exactly how
+    this text came to need rewriting.
+
+  - **Otherwise** — the gate positively established that the promotion sits on
+    an unverified head or open findings: failing checks, a `CHANGES_REQUESTED`
+    review, unanswered threads, unsettled deferred findings, a Codex cycle that
+    is not clean. Only these.
     **The undo is its own record, so read the PR's timeline before making
     another one**:
     `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`

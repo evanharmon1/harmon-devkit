@@ -419,7 +419,7 @@ write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch",baseRefName:"main"}' \
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -441,7 +441,7 @@ write_defaults() {
         >"${fixtures}/workflow-runs.pages.json"
     # Head level with its base by default. `behind_by` is the TRUTH check the
     # gate uses; mergeStateStatus above is only the cache.
-    jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/compare.json"
+    jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
@@ -625,8 +625,14 @@ assert_skill "the executable preflight for the reserved cycle" \
     "readiness-gate.sh behind --repo <repo> --pr <n>"
 assert_skill "promotion staying a one-way door when the base moves after it" \
     "Undoing a promotion because the base moved afterwards is **not** the remedy"
-assert_skill "the behind checks being check-mode only, so audit cannot trigger an undo" \
-    "behind checks run in \`check\` mode only"
+assert_skill "indeterminate never licensing an undo" \
+    "every \`audit\` exit 2, whatever its condition"
+assert_skill "post-promotion drift being reported, not undone" \
+    "State that changed *after* a correct promotion"
+assert_skill "the undo branch being limited to established injustice" \
+    "the gate positively established that the promotion sits on"
+assert_skill "the rule being about kinds, not a list of conditions" \
+    "a rule about kinds rather than a list of conditions"
 assert_skill "the last remediation push reserved like the last cycle" \
     "last remediation push is reserved the same way the last cycle is"
 assert_skill "the cap-0 integration carve-out" \
@@ -646,9 +652,9 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"CLEAN",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn '{behind_by:16,ahead_by:3,status:"diverged"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:16,ahead_by:3,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 run_gate
 assert_gate 1 fail behind-base
 
@@ -658,9 +664,9 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"CLEAN",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn '{behind_by:0,ahead_by:3,status:"ahead"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:0,ahead_by:3,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 run_gate
 assert_gate 0 pass ready
 
@@ -670,7 +676,7 @@ echo "==> a base that advances DURING the gate fails on the final re-read"
 # consult only mergeStateStatus — the cache this condition exists to distrust —
 # so a lagging cache let the gate pass for a head that had fallen behind.
 write_defaults
-jq -cn '{behind_by:2,ahead_by:3,status:"diverged"}' >"${fixtures}/second-compare.json"
+jq -cn '{behind_by:2,ahead_by:3,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/second-compare.json"
 run_gate
 assert_gate 1 fail behind-base
 
@@ -681,7 +687,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      baseRefName:"release/2.0"}' \
+      baseRefName:"release/2.0",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail base-retargeted
@@ -696,9 +702,9 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn '{behind_by:9,ahead_by:1,status:"diverged"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:9,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 run_gate_audit() {
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
@@ -720,19 +726,21 @@ grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
 grep -Fq '9 commit(s) behind' <<<"$gate_out" ||
     fail "audit-behind did not report the distance: $gate_out"
 
-# ...and with the CACHE also reporting BEHIND. The case above used BLOCKED and
-# so missed it: scoping only the graph check left the shared cache branch still
-# returning merge-state-stale (exit 2) in audit mode, where the graph check has
-# not run and the "graph said 0" premise does not hold. Any non-pass routes the
-# unexplained-promotion flow to its undo path (review round 1).
+# ...and with the CACHE also reporting BEHIND, which is INDETERMINATE in both
+# modes now. That is safe because SKILL.md §2 no longer undoes on any exit 2 —
+# the routing rule, not a per-condition exemption, is what protects the
+# promotion. Earlier revisions exempted this branch in audit precisely because
+# the old routing did undo on it (review rounds 1-5 each found one such state).
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate_audit
-[ "$gate_rc" -eq 0 ] ||
-    fail "audit failed on a cached-BEHIND promoted PR (rc $gate_rc) — post-promotion drift must not reverse a valid handoff: $gate_out"
+[ "$gate_rc" -eq 2 ] ||
+    fail "audit on a cached-BEHIND promoted PR should be indeterminate (rc $gate_rc): $gate_out"
+grep -Fq 'merge-state-stale' <<<"$gate_out" ||
+    fail "cached-BEHIND audit did not name the cache lag: $gate_out"
 
 echo "==> a head that moves DURING the final compare fails as head-moved"
 # The compare is a network call after the pre-verdict scalar read, so without
@@ -744,7 +752,7 @@ write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-third.json"
 run_gate
 assert_gate 1 fail head-moved
@@ -757,7 +765,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-third.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -767,7 +775,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-third.json"
 run_gate
 assert_gate 1 fail changes-requested
@@ -779,10 +787,10 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/compare.json"
-jq -cn '{behind_by:5,ahead_by:1,status:"diverged"}' >"${fixtures}/second-compare.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:5,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/second-compare.json"
 run_gate_audit
 [ "$gate_rc" -eq 0 ] ||
     fail "audit failed on mid-run drift (rc $gate_rc): $gate_out"
@@ -796,7 +804,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"UNKNOWN",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-third.json"
 run_gate
 assert_gate 2 indeterminate merge-state-unknown
@@ -806,7 +814,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-third.json"
 run_gate
 assert_gate 2 indeterminate merge-state-stale
@@ -818,14 +826,44 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn '{behind_by:6,ahead_by:1,status:"diverged"}' >"${fixtures}/compare.json"
-jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/second-compare.json"
+jq -cn '{behind_by:6,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/second-compare.json"
 run_gate_audit
 [ "$gate_rc" -eq 0 ] || fail "audit failed after drift resolved (rc $gate_rc): $gate_out"
 grep -Fq '"condition":"audit"' <<<"$gate_out" ||
     fail "audit reported stale drift after a level recheck: $gate_out"
+
+echo "==> a retarget during AUDIT stops it too, and names the new base"
+# Evidence gathered against the old base says nothing about a new one.
+# Safe to fail now: §2 classifies base-retargeted as drift, reported not undone.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"release/2.0",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-second.json"
+run_gate_audit
+[ "$gate_rc" -eq 1 ] || fail "audit accepted a retarget (rc $gate_rc): $gate_out"
+grep -Fq 'base-retargeted' <<<"$gate_out" || fail "audit retarget not named: $gate_out"
+
+echo "==> the base branch ADVANCING after the compare invalidates the count"
+# Name and head unchanged, tip moved: comparing names alone reported `level`
+# off a stale count (review round 5).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"cafecafecafecafecafecafecafecafecafecafe"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail behind-base
 
 echo "==> the behind preflight refuses a head that moved while comparing"
 # The preflight makes exactly two PR reads: the first captures the identity,
@@ -834,7 +872,7 @@ write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 set +e
 preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
@@ -864,7 +902,7 @@ echo "==> the behind preflight reports level, behind, and indeterminate"
 # The reserved-cycle rule sends integrators here instead of re-deriving the
 # comparison, so it must carry the same fail-closed behaviour as the gate.
 write_defaults
-jq -cn '{behind_by:0,ahead_by:2,status:"ahead"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:0,ahead_by:2,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 set +e
 preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
     --repo example/repo --pr 493 2>&1)"
@@ -874,7 +912,7 @@ set -e
 grep -Fq '"status":"level"' <<<"$preflight_out" ||
     fail "behind preflight did not report level: $preflight_out"
 
-jq -cn '{behind_by:4,ahead_by:2,status:"diverged"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:4,ahead_by:2,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 set +e
 preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
     --repo example/repo --pr 493 2>&1)"
@@ -906,9 +944,9 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"release#1/rc"}' \
+      headRefName:"feature-branch",baseRefName:"release#1/rc",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 run_gate
 assert_gate 0 pass ready
 grep -Fq 'compare/release%231/rc...' "$log" ||
@@ -921,7 +959,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 2 indeterminate merge-state-stale
@@ -943,7 +981,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"MERGED",isDraft:false,headRefOid:$head,
       reviewDecision:"",mergeStateStatus:"UNKNOWN",
-      headRefName:"feature-branch",baseRefName:"main"}' >"${fixtures}/pr-view.json"
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail pr-not-open
 
@@ -952,7 +990,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -962,7 +1000,7 @@ write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail head-mismatch
@@ -1504,7 +1542,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail changes-requested
@@ -1523,7 +1561,7 @@ for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 2 indeterminate merge-state
     jq -cn --arg head "$head_sha" --arg ms "$1" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms,
-          headRefName:"feature-branch",baseRefName:"main"}' \
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
     run_gate
     assert_gate "$2" "$3" "$4"
@@ -1755,7 +1793,7 @@ echo "==> a head that moves mid-gate fails as head-moved on the final re-read"
 write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail head-moved
@@ -1764,7 +1802,7 @@ echo "==> a promotion mid-gate fails as pr-not-draft on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -2348,7 +2386,7 @@ write_promoted_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch",baseRefName:"main"}' >"${fixtures}/pr-view.json"
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 }
 
 echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
@@ -2502,7 +2540,7 @@ write_default_record
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main"}' >"${fixtures}/pr-view.json"
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 run_audit --integration-cap 3
 assert_gate 2 indeterminate codex-cap-mismatch
 
@@ -2510,7 +2548,7 @@ echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",baseRefName:"main"}' \
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail changes-requested
@@ -2519,7 +2557,7 @@ echo "==> a DIRTY merge state arising mid-gate fails on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY",baseRefName:"main"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail merge-state-dirty
@@ -2628,7 +2666,7 @@ nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch",baseRefName:"main"}' \
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
 }
 
