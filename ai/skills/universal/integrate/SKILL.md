@@ -143,6 +143,14 @@ including the `task verify` a fix owes before the next round.
 When a cap of 0 skips a stage outright, there is no round to number: omit
 `round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
 `round 0/0`.
+Where the integration stage has run any **exempt** cycle (harmon-init#1326),
+`round n/cap` counts the CHARGED ones and the exempt ones are named beside it
+— `cycle 3/4 (+1 exempt)` — never folded into `n`, and never left out. Folding
+them in would report a budget that was not spent; leaving them out would hide
+work that really happened, and the reviewer really was asked to look. Both
+numbers are read from the cycle state's `charged_cycles` / `exempt_cycles`,
+so the ledger and the readiness gate can never disagree about what was
+spent.
 Before a capped stage has begun its first round, a stage-entry or pending-wait
 ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
 waiting, checks, and reviewer latency do not spend a round. Once a finding or
@@ -180,7 +188,31 @@ from what `AGENTS.md` actually states, never from inferring its vintage.
 
 **Two caps, counted separately, never combined.** The **integration cap**
 bounds how many current-head Codex cloud-review cycles this stage may drive;
-the **remediation cap** bounds how many fix pushes it may make. A Codex cycle
+the **remediation cap** bounds how many fix pushes it may make.
+
+**The integration cap charges only cycles that review something new**
+(harmon-init#1326). A cycle whose head differs from the last reviewed head
+ONLY by a base merge that changed no file under review re-reads identical code
+by construction — it cannot find anything the previous cycle did not — so
+charging it would measure the base branch's traffic rather than this change's
+difficulty. Such a cycle is **exempt**: it runs, and it spends the separate
+`rounds.integration_exempt` ceiling instead. Exempt is not free, and that
+second ceiling is why: a busy base branch could otherwise spend a whole run
+re-reviewing code nobody changed.
+
+Do not classify a cycle by eye. Pass `--previous-head <last reviewed SHA>` to
+`reserve`, which decides it from evidence — the previous head must be an
+ancestor of this one, and the files the new commits changed must not intersect
+the files the PR has under review — and keeps the two running totals in state
+as `charged_cycles` / `exempt_cycles`. A conflict resolution, or a fix slipped
+into the merge push, touches a file under review and charges normally.
+Anything the check cannot establish charges, because an exemption is a spend
+the reviewer never sanctioned. Report both counts on the integrator result as
+`codex_cycle.charged` and `codex_cycle.exempt`, and pass
+`--integration-exempt-cap` to the readiness gate alongside `--integration-cap`
+so both ceilings are checked; omit the counters and the gate applies the
+original single-counter rule, which is correct for a pass that never
+classified anything. A Codex cycle
 that a fix push directly answers is not a second charge against remediation —
 one fix push, however many findings (Codex's or a human reviewer's) it
 answers, is one remediation unit.

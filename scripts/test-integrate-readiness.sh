@@ -1978,6 +1978,70 @@ clean_result="$(write_integrator_result cap-cycle-exceeded "$cycle_three")"
 run_gate --integrator-result "$clean_result" --integration-cap 2
 assert_gate 2 indeterminate codex-cap-mismatch
 
+# harmon-init#1326: base-merge-only cycles are exempt from the integration
+# cap and spend a separate ceiling instead. A producer declares that it
+# classified its cycles by reporting `charged`/`exempt`; one that does not is
+# treated exactly as before, which is what keeps an older pinned skill working
+# rather than silently granting it an exemption it never computed.
+
+echo "==> a total cycle count above the cap passes when the excess is exempt"
+write_defaults
+# 3 cycles run, only 2 charged: the third was a base merge that changed
+# nothing under review. Under the OLD single-counter rule this was a
+# cap-mismatch — that is the whole bug #1326 fixes.
+split_ok="$(jq -c '.cycle = 3 | .charged = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-split-ok "$split_ok")"
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 0 pass ready
+
+echo "==> charged cycles exceeding --integration-cap is still codex-cap-mismatch"
+write_defaults
+# The exemption must not launder a genuine overspend: 3 CHARGED against a cap
+# of 2 is over the cap no matter how many exempt cycles sit beside it.
+split_over="$(jq -c '.cycle = 4 | .charged = 3 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-split-over "$split_over")"
+run_gate --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-cap-mismatch
+
+echo "==> exempt cycles exceeding --integration-exempt-cap is codex-cap-mismatch"
+write_defaults
+# Exempt is not free: a busy base branch must not be able to spend a whole run
+# on re-reviews of code nobody changed.
+exempt_over="$(jq -c '.cycle = 4 | .charged = 1 | .exempt = 3' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-exempt-over "$exempt_over")"
+run_gate --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-cap-mismatch
+
+echo "==> exempt cycles with no declared exempt ceiling is codex-cap-mismatch"
+write_defaults
+# An undeclared ceiling is nothing to check against, so a pass claiming exempt
+# cycles under a caller that never declared one is refused, not trusted.
+exempt_undeclared="$(jq -c '.cycle = 2 | .charged = 1 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-exempt-undeclared "$exempt_undeclared")"
+run_gate --integrator-result "$clean_result" --integration-cap 2
+assert_gate 2 indeterminate codex-cap-mismatch
+
+echo "==> charged without exempt is malformed-data"
+write_defaults
+half_split="$(jq -c '.cycle = 2 | .charged = 2' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-half-split "$half_split")"
+run_gate --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate malformed-data
+
+echo "==> charged + exempt disagreeing with cycle is malformed-data"
+write_defaults
+# The three numbers are one statement about the same run; a producer whose
+# arithmetic does not close is not one whose counters can be trusted.
+bad_sum="$(jq -c '.cycle = 5 | .charged = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-bad-sum "$bad_sum")"
+run_gate --integrator-result "$clean_result" \
+    --integration-cap 3 --integration-exempt-cap 3
+assert_gate 2 indeterminate malformed-data
+
 # --codex-recheck (harmon-devkit#639 gauntlet challenge round 1, finding 3):
 # a cached codex_cycle.exit_code 0 can go stale between the dispatched
 # integrator pass and this gate, so a clean exit_code 0 reconfirms itself

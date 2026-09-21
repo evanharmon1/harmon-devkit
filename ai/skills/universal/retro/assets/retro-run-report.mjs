@@ -852,8 +852,15 @@ function harvestTrajectory(stats, args, runId, trusted) {
 // puts on the same page.
 const POLICY_BEGIN = '<!-- dev-flow:begin:policy-disclosure -->'
 const POLICY_END = '<!-- dev-flow:end:policy-disclosure -->'
+// harmon-init#1341: the exempt-cycle ceiling renders as an optional
+// ` (+N exempt)` immediately after the charged integration cap. It has to be
+// OPTIONAL in this pattern, not merely added: a retro routinely reads PRs
+// opened before the ceiling existed, or by a repo whose harmon-init pin
+// predates it, and a required group would turn every one of those into
+// "does not open with a parseable rigor line" — silently dropping the caps
+// the report exists to show. Group 6 is the exempt count when present.
 const POLICY_LINE_RE =
-  /^rigor:\s*`([^`]*)`\s*\(`([^`]*)`\)\s*→\s*challenge ≤(\d+), review ≤(\d+), integration (\d+), remediation (\d+), min_rounds (\d+)\s*$/
+  /^rigor:\s*`([^`]*)`\s*\(`([^`]*)`\)\s*→\s*challenge ≤(\d+), review ≤(\d+), integration (\d+)(?: \(\+(\d+) exempt\))?, remediation (\d+), min_rounds (\d+)\s*$/
 
 function readPolicyDisclosure(body) {
   if (typeof body !== 'string' || !body.includes(POLICY_BEGIN)) {
@@ -896,8 +903,12 @@ function readPolicyDisclosure(body) {
       challenge: Number(match[3]),
       review: Number(match[4]),
       integration: Number(match[5]),
-      remediation: Number(match[6]),
-      min_rounds: Number(match[7])
+      // Absent group => the disclosure named no exempt ceiling, which is not
+      // the same as a ceiling of 0: undefined means "this run had no exempt
+      // budget concept at all", and a consumer must not render it as "+0".
+      ...(match[6] === undefined ? {} : { integration_exempt: Number(match[6]) }),
+      remediation: Number(match[7]),
+      min_rounds: Number(match[8])
     },
     disclosures: lines.slice(1).filter((line) => line.startsWith('- ')).map((line) => line.slice(2))
   }

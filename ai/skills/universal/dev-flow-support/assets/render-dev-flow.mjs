@@ -75,8 +75,11 @@
 //                         script's own contract, since no upstream schema
 //                         defines one yet):
 //                         {rigor:{level,source}, rounds:{challenge,review,
-//                         integration,remediation,min_rounds},
-//                         disclosures:[{kind,detail}]}.
+//                         integration,remediation,min_rounds,
+//                         integration_exempt?}, disclosures:[{kind,detail}]}.
+//                         integration_exempt is optional (harmon-init#1341):
+//                         absent means the resolver has no exempt ceiling, so
+//                         there is no exempt budget to disclose.
 //
 // Every record is checked, beyond schema validity, for local (single-
 // directory) cross-document consistency before anything renders: a pass
@@ -524,6 +527,26 @@ function validatePolicyShape(policy, file) {
     const minimum = key === 'min_rounds' ? 1 : 0
     if (!(Number.isInteger(value) && value >= minimum)) {
       fail(`${file}: rounds.${key} must be ${minimum === 1 ? 'a positive integer' : 'a non-negative integer'}`)
+    }
+  }
+  // harmon-init#1341: the exempt ceiling bounds base-merge-only cloud-review
+  // cycles, which do not spend `integration`. It is OPTIONAL rather than a
+  // sixth required cap, because a repo pinned to a harmon-init that predates
+  // it resolves no such value — and absent there genuinely means "no exempt
+  // budget exists", so nothing is under-disclosed by omitting it. Present, it
+  // is validated and rendered, because a run that CAN spend it must say so:
+  // 4 charged + 4 exempt cycles disclosed as "integration 4" hides both the
+  // effective ceiling and the real cost from the human reviewer.
+  if (policy.rounds.integration_exempt !== undefined) {
+    const exempt = policy.rounds.integration_exempt
+    if (!(Number.isInteger(exempt) && exempt >= 0)) {
+      fail(`${file}: rounds.integration_exempt, if present, must be a non-negative integer`)
+    }
+    // A positive exempt ceiling under a zero charged cap would announce
+    // cycles the operator disabled: cloud review off leaves no cycle of
+    // either kind to run.
+    if (exempt > 0 && policy.rounds.integration === 0) {
+      fail(`${file}: rounds.integration_exempt must be 0 when rounds.integration is 0`)
     }
   }
   if (policy.disclosures !== undefined) {
@@ -1317,7 +1340,11 @@ function policyLine(policy) {
   const { rigor, rounds } = policy
   // validatePolicyShape guarantees rounds and all five caps are present by
   // the time this runs — no defensive branching left to do here.
-  const capText = ` → challenge ≤${rounds.challenge}, review ≤${rounds.review}, integration ${rounds.integration}, remediation ${rounds.remediation}, min_rounds ${rounds.min_rounds}`
+  // harmon-init#1341: name the exempt ceiling beside the charged one when the
+  // resolver supplied it, so the announcement discloses the effective budget.
+  const exemptText =
+    rounds.integration_exempt === undefined ? '' : ` (+${rounds.integration_exempt} exempt)`
+  const capText = ` → challenge ≤${rounds.challenge}, review ≤${rounds.review}, integration ${rounds.integration}${exemptText}, remediation ${rounds.remediation}, min_rounds ${rounds.min_rounds}`
   // Backticks make GFM render this literally, but mergeSections' marker
   // scan is a raw byte match with no Markdown awareness — a code span does
   // not stop it from reading a forged marker inside rigor.level/source.

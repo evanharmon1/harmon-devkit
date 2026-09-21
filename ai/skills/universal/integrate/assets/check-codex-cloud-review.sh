@@ -34,6 +34,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
+                                     [--previous-head SHA]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
@@ -43,6 +44,15 @@ Usage:
 
 When --finder is given on reserve, actor identity and verdict classification
 are driven by the finder's profile in the trusted registry (C1-C3).
+
+--previous-head names the head the LAST cycle reviewed (harmon-init#1326).
+Given it, `reserve` classifies this cycle as charged or exempt and keeps the
+two running totals in state as `charged_cycles` / `exempt_cycles`. A cycle is
+exempt only when the previous head is an ancestor of this one AND the new
+commits changed no file the PR has under review — a base merge that reviews
+identical code. Everything else, including anything that cannot be
+established, is charged. Omit the flag and the cycle is charged, which is the
+behavior of every caller that predates the ceiling.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
@@ -108,6 +118,7 @@ reap_lock=
 reap_budget_sec=60
 reap_deadline_epoch=
 finder_slug=
+previous_head=
 requested_at_arg=
 
 while [ "$#" -gt 0 ]; do
@@ -125,6 +136,7 @@ while [ "$#" -gt 0 ]; do
         --actor-id) actor_id=$2 ;;
         --actor-login) actor_login=$2 ;;
         --finder) finder_slug=$2 ;;
+        --previous-head) previous_head=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
@@ -710,6 +722,87 @@ codex_verdict_defs=$(
 JQDEFS
 )
 
+# harmon-init#1326: classify a cycle as CHARGED or EXEMPT against the
+# integration cap.
+#
+# The cap exists to bound how many times a reviewer is asked to look at work
+# that changed. A cycle whose head differs from the last reviewed head ONLY by
+# a base merge that touched nothing under review re-reads identical code by
+# construction — it cannot find anything the previous cycle did not — so
+# charging it measures the base branch's traffic rather than the change's
+# difficulty.
+#
+# The test is deliberately narrow, and it is a set intersection rather than a
+# judgement about merge commits:
+#
+#   exempt  <=>  previous_head is an ANCESTOR of head (the base was merged in,
+#                nothing was rewritten), AND no file the PR has under review
+#                appears among the files the new commits changed.
+#
+# "Under review" is computed from the CURRENT head, which is what makes the
+# rule self-correcting rather than a loophole:
+#   - a conflict resolution edits a file under review        -> intersects -> CHARGED
+#   - the author slips a real fix into the merge push        -> that file is
+#     under review at the new head                           -> intersects -> CHARGED
+#   - a clean merge of base commits touching other files     -> disjoint    -> EXEMPT
+#
+# Anything this cannot establish is CHARGED. An exemption is a spend the
+# reviewer never sanctioned, so the failure direction must be to charge.
+classify_cycle_charge() {
+    classify_prev=$1
+    classify_head=$2
+    classify_repo=$3
+    classify_pr=$4
+
+    if [ "$classify_prev" = "$classify_head" ]; then
+        charge_class=charged
+        charge_reason="head is unchanged from the last reviewed head"
+        return 0
+    fi
+
+    compare_payload=$(run_gh api "repos/$classify_repo/compare/$classify_prev...$classify_head") || {
+        charge_class=charged
+        charge_reason="cannot compare $classify_prev...$classify_head; charging"
+        return 0
+    }
+    compare_status=$(jq -r '.status // "unknown"' <<<"$compare_payload")
+    # "ahead" is the only status that means the previous reviewed head is an
+    # ancestor of this one. "diverged" means history was rewritten under the
+    # cycle, "behind"/"identical" mean the head did not move forward: none of
+    # them is a base merge, and each is charged.
+    if [ "$compare_status" != "ahead" ]; then
+        charge_class=charged
+        charge_reason="compare status is $compare_status, not a fast-forward base merge"
+        return 0
+    fi
+
+    pr_files_payload=$(run_gh api --paginate --slurp "repos/$classify_repo/pulls/$classify_pr/files") || {
+        charge_class=charged
+        charge_reason="cannot read the PR file list; charging"
+        return 0
+    }
+
+    overlap=$(jq -r -n --argjson compare "$compare_payload" --argjson prfiles "$pr_files_payload" '
+          ($compare.files // []) | map(.filename) | unique as $moved
+          | ($prfiles | if type == "array" then (map(.[]?)) else . end)
+            | map(.filename) | unique as $under_review
+          | ($moved - ($moved - $under_review)) | join(", ")
+        ') || {
+        charge_class=charged
+        charge_reason="cannot intersect changed files with the PR file list; charging"
+        return 0
+    }
+
+    if [ -n "$overlap" ]; then
+        charge_class=charged
+        charge_reason="the merge changed file(s) under review: $overlap"
+    else
+        charge_class=exempt
+        charge_reason="base merge touched no file under review"
+    fi
+    return 0
+}
+
 case "$command_name" in
 reserve)
     [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] && [ -n "$attempt" ] ||
@@ -771,6 +864,39 @@ reserve)
     carried_settled='[]'
     if [ -f "$state_file" ] && [ "$(jq -r '.head' "$state_file")" = "$head" ]; then
         carried_settled=$(jq -c '.settled // []' "$state_file")
+    fi
+
+    # harmon-init#1326: the two cycle counters this stage spends. They persist
+    # across heads in this same state file, because the ceilings they answer to
+    # bound the STAGE, not a single cycle.
+    carried_charged=0
+    carried_exempt=0
+    if [ -f "$state_file" ]; then
+        carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
+        carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+    fi
+    charge_class=charged
+    charge_reason="no previous reviewed head was supplied; charging"
+    if [ "$attempt" = "1" ]; then
+        # Attempt 1 of a head is a NEW cycle, and the only thing that spends a
+        # ceiling. Classify it, then charge whichever counter it belongs to.
+        if [ -n "$previous_head" ]; then
+            valid_sha "$previous_head" ||
+                die "--previous-head must be a full 40-hex commit"
+            classify_cycle_charge "$previous_head" "$head" "$repo" "$pr"
+        fi
+        if [ "$charge_class" = "exempt" ]; then
+            carried_exempt=$((carried_exempt + 1))
+        else
+            carried_charged=$((carried_charged + 1))
+        fi
+    else
+        # Attempt 2 re-triggers the SAME cycle after an incomplete first
+        # attempt. Re-classifying would be wrong twice over: the head has not
+        # moved, and charging again would make a flaky reviewer cost budget
+        # that the change never asked for. Carry attempt 1's verdict.
+        charge_class=$(jq -r '.charge // "charged"' "$state_file")
+        charge_reason=$(jq -r '.charge_reason // ""' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
         previous_requested_at=$(jq -r '.requested_at' "$state_file")
@@ -872,6 +998,10 @@ reserve)
         --argjson settled "$carried_settled" \
         --argjson finder "$finder_payload" \
         --argjson previous_trigger_comment_id "$payload_previous_trigger_comment_id" \
+        --arg charge "$charge_class" \
+        --arg charge_reason "$charge_reason" \
+        --argjson charged_cycles "$carried_charged" \
+        --argjson exempt_cycles "$carried_exempt" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -880,7 +1010,11 @@ reserve)
           requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
-          finder:$finder
+          finder:$finder,
+          charge:$charge,
+          charge_reason:$charge_reason,
+          charged_cycles:$charged_cycles,
+          exempt_cycles:$exempt_cycles
         }')
     write_state "$state_file" "$payload"
     release_state_lock

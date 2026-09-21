@@ -127,11 +127,13 @@ usage() {
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      --remediation-cap N [--codex-recheck STATE_FILE]
+      --remediation-cap N [--integration-exempt-cap N]
+      [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      --remediation-cap N [--codex-recheck STATE_FILE]
+      --remediation-cap N [--integration-exempt-cap N]
+      [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
   readiness-gate.sh behind --repo OWNER/REPO --pr N
@@ -257,13 +259,14 @@ head=
 record_dir=
 integrator_result=
 integration_cap=
+integration_exempt_cap=
 remediation_cap=
 codex_recheck_state=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --integration-exempt-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -272,6 +275,7 @@ while [ "$#" -gt 0 ]; do
         --record) record_dir=$2 ;;
         --integrator-result) integrator_result=$2 ;;
         --integration-cap) integration_cap=$2 ;;
+        --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --remediation-cap) remediation_cap=$2 ;;
         --codex-recheck) codex_recheck_state=$2 ;;
         --allow-edited-root)
@@ -310,6 +314,8 @@ valid_repo "$repo" || die "invalid repository: $repo"
 valid_uint "$pr" || die "invalid PR number: $pr"
 [ -z "$integration_cap" ] || valid_uint_or_zero "$integration_cap" ||
     die "--integration-cap must be a non-negative integer"
+[ -z "$integration_exempt_cap" ] || valid_uint_or_zero "$integration_exempt_cap" ||
+    die "--integration-exempt-cap must be a non-negative integer"
 [ -z "$remediation_cap" ] || valid_uint_or_zero "$remediation_cap" ||
     die "--remediation-cap must be a non-negative integer"
 
@@ -1177,8 +1183,41 @@ if [ "$codex_cycle" != null ]; then
             indeterminate malformed-data "codex_cycle carries no cycle number"
         [ "$integration_cap" -gt 0 ] ||
             indeterminate codex-cap-mismatch "codex_cycle is non-null but --integration-cap is 0 (harmon-devkit#685: a cap-0 pass must report a null codex_cycle)"
-        [ "$cycle_number" -le "$integration_cap" ] ||
-            indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
+        # harmon-init#1326: `cycle` is the stage's TOTAL cycle ordinal, and
+        # once base-merge-only cycles are exempt from the integration cap that
+        # total may legitimately exceed it. A producer that classifies its
+        # cycles says so by reporting `charged` (and `exempt`), and then the
+        # two ceilings are checked independently — charged against
+        # --integration-cap, exempt against --integration-exempt-cap.
+        #
+        # A producer that reports no `charged` is one that does not classify,
+        # so every cycle it ran was charged: the original single-counter rule
+        # is exactly right for it and still applies unchanged. That is what
+        # keeps this backward compatible with a pass driven by an older skill,
+        # rather than silently granting it an exemption it never computed.
+        cycle_charged="$(jq -er '.charged | select(type == "number")' \
+            <<<"$codex_cycle" 2>/dev/null)" || cycle_charged=
+        if [ -n "$cycle_charged" ]; then
+            cycle_exempt="$(jq -er '.exempt | select(type == "number")' \
+                <<<"$codex_cycle" 2>/dev/null)" ||
+                indeterminate malformed-data "codex_cycle reports charged but no exempt count"
+            [ "$((cycle_charged + cycle_exempt))" -eq "$cycle_number" ] ||
+                indeterminate malformed-data "codex_cycle.charged $cycle_charged + .exempt $cycle_exempt does not equal .cycle $cycle_number"
+            [ "$cycle_charged" -le "$integration_cap" ] ||
+                indeterminate codex-cap-mismatch "codex_cycle.charged $cycle_charged exceeds --integration-cap $integration_cap"
+            # An unbounded exemption is a budget hole: without a declared
+            # ceiling there is nothing to check an exempt count against, so a
+            # pass claiming exempt cycles under a caller that never declared
+            # one is refused rather than trusted.
+            [ -n "$integration_exempt_cap" ] || [ "$cycle_exempt" -eq 0 ] ||
+                indeterminate codex-cap-mismatch "codex_cycle reports $cycle_exempt exempt cycle(s) but no --integration-exempt-cap was declared"
+            [ -z "$integration_exempt_cap" ] ||
+                [ "$cycle_exempt" -le "$integration_exempt_cap" ] ||
+                indeterminate codex-cap-mismatch "codex_cycle.exempt $cycle_exempt exceeds --integration-exempt-cap $integration_exempt_cap"
+        else
+            [ "$cycle_number" -le "$integration_cap" ] ||
+                indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
+        fi
     fi
     case "$codex_exit" in
     0) recheck_codex_freshness ;;
