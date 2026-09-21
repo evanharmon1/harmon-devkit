@@ -2815,11 +2815,34 @@ check)
         --argjson trigger "${state_trigger:-0}" \
         --argjson disposed "$disposed_comments" \
         "$codex_verdict_defs"'
+          # Review round 1, finding `review-r1-codex-verification-1` (confirmed
+          # P1): round 5 made the stamp `(.updated_at // .created_at)` but left
+          # the same-second tiebreak as `.id > $trigger` — TWO DIFFERENT CLOCKS,
+          # ONE TIEBREAK.
+          #
+          # The id tiebreak is only meaningful for a stamp that came from
+          # `created_at`: a comment created in the triggers own second was
+          # assigned a HIGHER id than the trigger if it came after it. A
+          # comment that PRE-EXISTS the trigger and is EDITED in that second
+          # has an equal stamp and necessarily a LOWER id, so the tiebreak
+          # rejected it and the badge was dropped — with the inclusive
+          # clean-by-reaction path free to exit 0 over it.
+          #
+          # Split by provenance: an equal stamp sourced from an EDIT is
+          # admitted outright (an edit in the triggers second is
+          # indistinguishable from one just after it, and admitting costs one
+          # recorded disposition while dropping costs the invariant), while an
+          # equal stamp sourced from `created_at` keeps the id tiebreak that
+          # can actually order it.
           [.[] | select(.user.id? == $id) |
+            . as $c |
+            ((($c.updated_at // "") != "") and
+             (($c.updated_at // "") != ($c.created_at // ""))) as $edited |
             (((.updated_at // .created_at) // "")) as $stamp |
             select(($stamp > $requested) or
                    (($stamp == $requested) and
-                    (((.id? | type) == "number") and (.id > $trigger)))) |
+                    ($edited or
+                     (((.id? | type) == "number") and (.id > $trigger))))) |
             select(has_severity_marker) |
             select(((.body // "") |
               test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |

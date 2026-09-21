@@ -375,7 +375,11 @@ write_integrator_result() {
         findings='[{"id":"integration-r1-codex-cloud-1","body":"a finding","source_id":"1"}]'
         ;;
     11 | 12 | 16) verdict=pending ;;
-    13 | 15 | 2) verdict=escalate ;;
+    # 14 excludes BOTH clean and pending (the PR is gone, so there is nothing
+    # to wait for and nothing to certify), which is why it needs its own arm
+    # rather than the pending default — review round 1 finding
+    # `review-r1-codex-verification-4` added the first fixture to reach it.
+    13 | 14 | 15 | 2) verdict=escalate ;;
     *) verdict=pending ;;
     esac
     jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
@@ -1436,6 +1440,58 @@ for marker in \
     run_gate
     assert_gate 0 pass ready
 done
+
+echo "==> review-r1-codex-verification-2: a finder_cycles exit-16 uses the finder-prefixed token too"
+# The 15 arm was renamed in challenge round 1 and its 16 sibling was left
+# codex-prefixed and untested. Both are per-finder conditions; both say so.
+write_defaults
+fc_transient="$(write_integrator_result fc-transient "$(codex_cycle_json 0)")"
+jq '.payload.verdict = "findings"
+    | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
+                            body:"a finder finding",source_id:"1"}]
+    | del(.payload.applied_dispositions)
+    | .payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,
+                                 cycle:1,attempt:1,exit_code:16}]' \
+    "$fc_transient" >"${fixtures}/integrator-result-fc-transient-16.json"
+node "$validator" envelope "${fixtures}/integrator-result-fc-transient-16.json" >/dev/null ||
+    fail "the finder-transient fixture must itself be schema-valid"
+run_gate_recheck_clean \
+    --integrator-result "${fixtures}/integrator-result-fc-transient-16.json" \
+    --integration-cap 1
+assert_gate 2 indeterminate finder-transient-read
+
+echo "==> review-r1-codex-verification-4: a codex_cycle exit-14 is a recognized terminal, not the catch-all"
+# 14 is documented at every other layer; here it fell into `*)` and was
+# reported as an unrecognized value.
+write_defaults
+result="$(write_integrator_result exit-14 "$(codex_cycle_json 14)")"
+run_gate --integrator-result "$result" --integration-cap 1
+assert_gate 1 fail codex-pr-not-open
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("no longer open")' >/dev/null ||
+    fail "the exit-14 condition must name the closed PR: $gate_out"
+
+echo "==> review-r1-codex-verification-3: the recheck retry waits before its single retry"
+# The retry used to re-invoke with no delay at all, so both reads landed within
+# microseconds and a transient failure could not have cleared between them.
+write_defaults
+clean_delay="$(write_integrator_result clean "$(codex_cycle_json 0)")"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXITS="16 0"
+export RECHECK_CALL_COUNTER="${test_tmp}/recheck-delay-calls"
+export CODEX_RECHECK_RETRY_DELAY=1
+rm -f "$RECHECK_CALL_COUNTER"
+delay_start="$(date -u '+%s')"
+run_gate --codex-recheck "$recheck_state" \
+    --integrator-result "$clean_delay" --integration-cap 1
+delay_elapsed="$(($(date -u '+%s') - delay_start))"
+unset RECHECK_FAKE_EXITS RECHECK_CALL_COUNTER CODEX_RECHECK_RETRY_DELAY
+gate="$saved_gate"
+assert_gate 0 pass ready
+[ "$(cat "${test_tmp}/recheck-delay-calls")" = "2" ] ||
+    fail "the retry must still fire exactly once"
+[ "$delay_elapsed" -ge 1 ] ||
+    fail "the retry must wait before re-reading, elapsed ${delay_elapsed}s"
 
 echo "==> item C: a finder_cycles quota exit uses the finder-prefixed condition token"
 write_defaults

@@ -75,6 +75,20 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
     [ ! -f "$GH_FIXTURES/fail-pr-$pr_number" ] || exit 94
+    # review-r1 finding -6, site :1946: the SECOND PR head fetch is
+    # unreachable by `fail-pr-<n>`, which trips the first one and exits before
+    # the second can run. `fail-pr-after-<n>` holds a call count: calls up to
+    # and including it succeed, every later one fails, so the post-evidence
+    # re-fetch can be failed on its own.
+    if [ -f "$GH_FIXTURES/fail-pr-after-$pr_number" ]; then
+        pr_calls=0
+        [ ! -f "$GH_FIXTURES/pr-call-count-$pr_number" ] ||
+            pr_calls="$(cat "$GH_FIXTURES/pr-call-count-$pr_number")"
+        pr_calls=$((pr_calls + 1))
+        printf '%s' "$pr_calls" >"$GH_FIXTURES/pr-call-count-$pr_number"
+        [ "$pr_calls" -le "$(cat "$GH_FIXTURES/fail-pr-after-$pr_number")" ] ||
+            exit 94
+    fi
     [ ! -f "$GH_FIXTURES/slow-pr" ] || sleep 5
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
@@ -103,6 +117,13 @@ done
 
 if [ -f "$GH_FIXTURES/fail-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/fail-endpoint")" <<<"$endpoint"; then
+    exit 92
+fi
+# Exact match, for the endpoints whose path is a PREFIX of others: failing
+# `repos/<o>/<r>/pulls/<n>` by substring would also fail its `/reviews` and
+# `/comments` children and trip an earlier read (review-r1 finding -6).
+if [ -f "$GH_FIXTURES/fail-endpoint-exact" ] &&
+    [ "$endpoint" = "$(cat "$GH_FIXTURES/fail-endpoint-exact")" ]; then
     exit 92
 fi
 if [ -f "$GH_FIXTURES/slow-endpoint" ] &&
@@ -258,6 +279,8 @@ write_defaults() {
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
         >"${fixtures}/pr.json"
     rm -f "${fixtures}/fail-endpoint"
+    rm -f "${fixtures}/fail-endpoint-exact"
+    rm -f "${fixtures}"/fail-pr-after-* "${fixtures}"/pr-call-count-*
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr"
@@ -4918,6 +4941,234 @@ set -e
 check_watchdog "$long_rc" long_window "$long_out"
 [ "$long_rc" -eq 11 ] ||
     fail "a 45-minute window must still be pending at 40 minutes: $long_out"
+
+# --------------------------------------------------------------------------
+# harmon-devkit#1050 review round 1/5. `-6` found five exit-16 call sites no
+# case reached; `-5` found five more surviving mutants in the predicate family
+# challenge round 5 fixed at two sites. One discriminating case each.
+# --------------------------------------------------------------------------
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r1-codex-verification-1: a badge EDITED IN during the triggers own second is not dropped"
+# Round 5 stamped on `(.updated_at // .created_at)` but tie-broke on
+# `.id > $trigger` — two clocks, one tiebreak. A comment that pre-exists the
+# trigger and is edited in its second has an equal stamp and a LOWER id, so
+# the tiebreak rejected it and the inclusive reaction path exited 0 over it.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:5,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:50:00Z",
+        updated_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a finding added by an edit in the triggers own second."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9601,user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:05Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 5
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [5]' >/dev/null ||
+    fail "an edit-stamped badge must be enumerated: $check_out"
+
+echo "==> review-r1-codex-verification-1: an UNEDITED same-second comment with a lower id is still prior"
+# The tiebreak still applies where it is meaningful — a comment created in the
+# triggers second whose id precedes the trigger came before it.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:5,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:00Z",
+        body:"**P0** a badge from before this trigger."
+      },
+      {
+        id:8300,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 8300
+
+echo "==> review-r1-codex-verification-5a: self_work_marker is load-bearing"
+# A Summary-headed, wholly structural, MARKER-LESS body must stay `findings`.
+# Without the conjunct it becomes informational and vanishes from every scan.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:7801,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:7802,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("### Summary\n\n* Looked over the change.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> review-r1-codex-verification-5b: the quota reply must come from the PINNED actor"
+# Exit 15 is terminal for the HEAD, so an unpinned commenter must not be able
+# to strand a commit with the usage-limit phrase.
+new_cycle
+jq -cn \
+    --arg body "$quota_reply_body" \
+    '[[
+      {
+        id:7803,user:{id:4242,login:"pr-author"},
+        created_at:"2026-07-31T08:00:03Z",body:$body
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+[ "$check_rc" -ne 15 ] ||
+    fail "an unpinned actor must not be able to declare the quota exhausted: $check_out"
+
+echo "==> review-r1-codex-verification-5c: the pending-reaction scan needs BOTH the actor and the content"
+# Either conjunct alone kept the suite green, and this line governs #655's
+# 30-minute window extension.
+new_cycle
+jq -cn \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9701,user:{id:4242,login:"pr-author"},
+        content:"eyes",created_at:"2026-07-31T08:00:01Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 12 retry
+[ "$check_rc" -ne 11 ] ||
+    fail "a 👀 from an unpinned actor must not extend the window: $check_out"
+
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9702,user:{id:$id,login:$login},
+        content:"confused",created_at:"2026-07-31T08:00:01Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 12 retry
+[ "$check_rc" -ne 11 ] ||
+    fail "a non-pending reaction must not extend the window: $check_out"
+
+echo "==> review-r1-codex-verification-5d: an informational body is excluded from the malformed-id scan"
+# The same filter is pinned at two other sites and was unpinned here.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:7804,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:0,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("### Summary\n\n* Committed the change on `codex/x` as `abc1234`.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 7804
+
+echo "==> review-r1-codex-verification-5e: a malformed creation time on the quota reply is indeterminate"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg body "$quota_reply_body" \
+    '[[
+      {
+        id:7805,user:{id:$id,login:$login},
+        created_at:"not-a-timestamp",body:$body
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> review-r1-codex-verification-6: every transient-read call site returns 16, not a window-elapsed retry"
+# Five of seven sites were reached by no case: the actor auth fetch, the
+# trigger re-fetch, the SECOND head re-fetch, the PR-object author fetch and
+# the reviewed-commit resolve. Each must be exit 16 even past the window.
+new_cycle
+printf '%s\n' 'users/' >"${fixtures}/fail-endpoint"
+run_check '2026-07-31T08:16:00Z'
+assert_status 16 transient-read
+grep -Fq 'authenticate the configured finder actor' <<<"$check_out" ||
+    fail "site :1879 (actor auth) must name itself: $check_out"
+
+new_cycle
+printf '%s\n' 'issues/comments/' >"${fixtures}/fail-endpoint"
+run_check '2026-07-31T08:16:00Z'
+assert_status 16 transient-read
+grep -Fq 're-fetch the exact trigger comment' <<<"$check_out" ||
+    fail "site :1896 (trigger re-fetch) must name itself: $check_out"
+
+new_cycle
+printf '%s\n' '1' >"${fixtures}/fail-pr-after-493"
+run_check '2026-07-31T08:16:00Z'
+assert_status 16 transient-read
+grep -Fq 're-fetch the PR head before verdict' <<<"$check_out" ||
+    fail "site :1946 (second head fetch) must name itself: $check_out"
+
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:7810,user:{id:$id,login:$login},path:"a.sh",
+        pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:05Z",
+        body:"**P1** an inline finding"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+printf '%s\n' 'repos/example/repo/pulls/493' >"${fixtures}/fail-endpoint-exact"
+run_check '2026-07-31T08:16:00Z'
+assert_status 16 transient-read
+grep -Fq 'pull request author identity' <<<"$check_out" ||
+    fail "site :2243 (PR object) must name itself: $check_out"
+
+new_cycle
+write_badged_comment 77
+printf '%s\n' '/commits/' >"${fixtures}/fail-endpoint"
+run_check '2026-07-31T08:16:00Z'
+assert_status 16 transient-read
+grep -Fq 'resolve a reviewed commit prefix' <<<"$check_out" ||
+    fail "site :3189 (commit resolve) must name itself: $check_out"
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

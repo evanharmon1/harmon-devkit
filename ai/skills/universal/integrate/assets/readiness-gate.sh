@@ -51,12 +51,13 @@
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
-#   codex-not-clean, disposition-unsettled,
+#   codex-not-clean, disposition-unsettled, codex-pr-not-open,
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
 #   unresolved-integrator-findings                          (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
-#   codex-stale, codex-transient-read, usage                 (indeterminate)
+#   codex-stale, codex-transient-read, finder-transient-read,
+#   usage                                                    (indeterminate)
 #
 # `codex-transient-read` exists because of harmon-devkit#508: the checker's
 # exit 16 says an evidence READ failed, which is not evidence that the cycle
@@ -492,6 +493,16 @@ recheck_codex_freshness() {
     # so a caller can tell "GitHub would not answer" from "the clean result no
     # longer holds".
     if [ "$codex_recheck_exit" -eq 16 ]; then
+        # Review round 1, finding `review-r1-codex-verification-3` (P2): the
+        # retry used to re-invoke immediately, and the checker has no retry of
+        # its own, so both reads landed within microseconds of each other. A
+        # transient GitHub failure has not cleared in that window, which made
+        # the retry nearly free and nearly useless. This repo already settled
+        # the shape in `lane-watch.sh` (bounded backoff, merged as 3760968);
+        # one short bounded sleep is the same idea at the smallest scale the
+        # single retry allows. `CODEX_RECHECK_RETRY_DELAY` exists so the test
+        # suite can drive the path without paying the wall-clock cost.
+        sleep "${CODEX_RECHECK_RETRY_DELAY:-2}"
         codex_recheck_exit=0
         codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
             codex_recheck_exit=$?
@@ -1172,6 +1183,16 @@ if [ "$codex_cycle" != null ]; then
         # the reason named, and the caller repeats the READ.
         indeterminate codex-transient-read "the current-head Codex cycle exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
         ;;
+    14)
+        # Review round 1, finding `review-r1-codex-verification-4` (P3,
+        # pre-existing): 14 is documented at every other layer — the checker
+        # header, both schemas, the validator, `ai/agents/integrator.md` and
+        # AGENTS.md — but fell into the catch-all here and was reported as
+        # "not a recognized terminal or pending value". It is recognized, and
+        # it is terminal for the whole stage: GitHub answered that the PR is
+        # merged or closed, so there is nothing left to gate.
+        fail_condition codex-pr-not-open "the current-head Codex cycle exited 14: the PR is no longer open, which ends the whole integration stage — stop rather than re-dispatching"
+        ;;
     *)
         indeterminate codex-indeterminate "codex_cycle exit_code $codex_exit is not a recognized terminal or pending value"
         ;;
@@ -1214,7 +1235,7 @@ if [ "$finder_cycles_len" -gt 0 ]; then
             fail_condition finder-quota-exhausted "finder_cycles[$fc_idx] ($fc_slug) exited 15: the finder reported its review usage limit is exhausted — report the blocker rather than re-triggering"
             ;;
         16)
-            indeterminate codex-transient-read "finder_cycles[$fc_idx] ($fc_slug) exited 16: an evidence read failed transiently — repeat the read rather than treating the finder as absent"
+            indeterminate finder-transient-read "finder_cycles[$fc_idx] ($fc_slug) exited 16: an evidence read failed transiently — repeat the read rather than treating the finder as absent"
             ;;
         *)
             indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) exit_code $fc_exit is not a recognized value"
