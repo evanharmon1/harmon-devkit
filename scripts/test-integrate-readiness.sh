@@ -732,19 +732,21 @@ grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
 grep -Fq '9 commit(s) behind' <<<"$gate_out" ||
     fail "audit-behind did not report the distance: $gate_out"
 
-# ...and with the CACHE also reporting BEHIND, which is INDETERMINATE in both
-# modes now. That is safe because SKILL.md §2 no longer undoes on any exit 2 —
-# the routing rule, not a per-condition exemption, is what protects the
-# promotion. Earlier revisions exempted this branch in audit precisely because
-# the old routing did undo on it (review rounds 1-5 each found one such state).
+# ...and the TRUE lag shape: cache says BEHIND while the graph says 0. Only
+# then is `merge-state-stale` an honest claim, and it is indeterminate in both
+# modes — safe because SKILL.md §2 never undoes on an exit 2. (Where the graph
+# also says behind, the two signals agree, re-polling can never resolve it,
+# and audit must reach `audit-behind` instead — covered separately.)
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
       headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' \
+    >"${fixtures}/compare.json"
 run_gate_audit
 [ "$gate_rc" -eq 2 ] ||
-    fail "audit on a cached-BEHIND promoted PR should be indeterminate (rc $gate_rc): $gate_out"
+    fail "a true cache lag in audit should be indeterminate (rc $gate_rc): $gate_out"
 grep -Fq 'merge-state-stale' <<<"$gate_out" ||
     fail "cached-BEHIND audit did not name the cache lag: $gate_out"
 
@@ -890,6 +892,35 @@ run_gate_audit
 [ "$gate_rc" -eq 1 ] || fail "audit base-tip race exited $gate_rc: $gate_out"
 grep -Fq 'behind-base' <<<"$gate_out" ||
     fail "audit base-tip race did not emit behind-base: $gate_out"
+
+echo "==> a genuinely behind audit reaches audit-behind, not a permanent stale"
+# Both signals agree here, so `merge-state-stale` would be a false lag claim
+# AND a permanent indeterminate — re-polling cannot resolve real drift, and it
+# would block the drift verdict audit mode exists to produce (Codex, cycle 2).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:7,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' \
+    >"${fixtures}/compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] || fail "genuinely-behind audit exited $gate_rc: $gate_out"
+grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
+    fail "genuinely-behind audit did not reach the drift verdict: $gate_out"
+
+echo "==> no network read follows the final checks evaluation"
+# The gate promises its final scalar read is the last network call. A compare
+# placed after the content fingerprint and second evaluate_checks broke that:
+# a check turning red during it went unseen (Codex, cycle 2).
+gate_src="${repo_root}/ai/skills/universal/integrate/assets/readiness-gate.sh"
+last_checks="$(grep -n '^evaluate_checks$' "$gate_src" | tail -1 | cut -d: -f1)"
+last_compare="$(grep -n 'establish_behind "\$recheck"' "$gate_src" | tail -1 | cut -d: -f1)"
+[ -n "$last_checks" ] && [ -n "$last_compare" ] ||
+    fail "could not locate the final checks evaluation or the base comparison"
+[ "$last_compare" -lt "$last_checks" ] ||
+    fail "the base comparison (line $last_compare) runs AFTER the final evaluate_checks (line $last_checks) — a network call behind the last snapshots"
 
 echo "==> the behind preflight refuses a head that moved while comparing"
 # The preflight makes exactly two PR reads: the first captures the identity,

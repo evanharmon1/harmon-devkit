@@ -927,7 +927,12 @@ BEHIND)
     # Unknown-for-now in BOTH modes — the audit-mode exemption this once
     # carried existed only because §2 undid on any non-pass, and §2 now never
     # undoes on an indeterminate.
-    indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    # A LAG claim, so only when the graph disagrees. Where audit is genuinely
+    # behind, both signals agree, re-polling can never resolve it, and a
+    # permanent indeterminate would block the `audit-behind` drift verdict
+    # this mode exists to produce.
+    [ "$behind_by" -ne 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
@@ -1467,33 +1472,13 @@ evaluated_c2="$c2"
 evaluated_c3="$c3"
 evaluated_c4="$c4"
 evaluated_c5="$c5"
-fp_pr=
-fp_reviews=
-fp_top=
-fp_inline=
-fp_threads=
-fetch_fingerprint_surfaces
-compute_fingerprint
-if [ "$fingerprint" != "$evaluated_fingerprint" ]; then
-    changed_surfaces=""
-    [ "$c1" = "$evaluated_c1" ] || changed_surfaces="$changed_surfaces PR-title/body"
-    [ "$c2" = "$evaluated_c2" ] || changed_surfaces="$changed_surfaces reviews"
-    [ "$c3" = "$evaluated_c3" ] || changed_surfaces="$changed_surfaces top-level-comments"
-    [ "$c4" = "$evaluated_c4" ] || changed_surfaces="$changed_surfaces inline-comments"
-    [ "$c5" = "$evaluated_c5" ] || changed_surfaces="$changed_surfaces thread-resolution"
-    fail_condition content-moved "review content changed while the gate was evaluating (${changed_surfaces# }) — re-adjudicate against the current content"
-fi
-
-# 11. Checks, one more time — AFTER the fresh content compare, so no content
-# fetch runs behind them: a rerun or a late-triggered workflow can appear on
-# this immutable commit while everything above ran, checks sit outside the
-# content fingerprint by design, and a pass printed over red CI is exactly
-# the failure this script exists to make impossible.
-evaluate_checks
-
-# 12. Re-read every scalar condition as the LAST network read before the
-# verdict — after the second checks evaluation, so no fetch runs behind it
-# (everything after this is local). A changed head
+# 9b. Re-read the scalars and re-establish the base relation. This runs
+# BEFORE the fresh content fingerprint and the second checks evaluation,
+# deliberately: the compare below is a network call of up to 60s, and
+# step 12 promises the final scalar read is the LAST one with nothing
+# fetching behind it. Putting the comparison after those snapshots broke
+# that promise — a check turning red or content moving during it went
+# unseen, because the read that follows looks at scalars only. A changed head
 # invalidates every result this gate relied on, and never wait out a
 # mismatch: a fresh replica showing someone else's newer push is evidence,
 # and re-polling until it converges would discard it. The review decision
@@ -1549,15 +1534,41 @@ fi
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
 BEHIND)
-    indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    # Lag claim only — see the pre-evaluation branch.
+    [ "$behind_by" -ne 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
     ;;
 esac
 
-# The compare is a network call, so the gate's LAST read is a scalar one — and
-# it reapplies EVERY scalar gate, not just identity. Checking only head/base
+fp_pr=
+fp_reviews=
+fp_top=
+fp_inline=
+fp_threads=
+fetch_fingerprint_surfaces
+compute_fingerprint
+if [ "$fingerprint" != "$evaluated_fingerprint" ]; then
+    changed_surfaces=""
+    [ "$c1" = "$evaluated_c1" ] || changed_surfaces="$changed_surfaces PR-title/body"
+    [ "$c2" = "$evaluated_c2" ] || changed_surfaces="$changed_surfaces reviews"
+    [ "$c3" = "$evaluated_c3" ] || changed_surfaces="$changed_surfaces top-level-comments"
+    [ "$c4" = "$evaluated_c4" ] || changed_surfaces="$changed_surfaces inline-comments"
+    [ "$c5" = "$evaluated_c5" ] || changed_surfaces="$changed_surfaces thread-resolution"
+    fail_condition content-moved "review content changed while the gate was evaluating (${changed_surfaces# }) — re-adjudicate against the current content"
+fi
+
+# 11. Checks, one more time — AFTER the fresh content compare, so no content
+# fetch runs behind them: a rerun or a late-triggered workflow can appear on
+# this immutable commit while everything above ran, checks sit outside the
+# content fingerprint by design, and a pass printed over red CI is exactly
+# the failure this script exists to make impossible.
+evaluate_checks
+
+# 12. The LAST network read, and it reapplies EVERY scalar gate rather than
+# just identity. Checking only head/base
 # would let a close, a promotion, a CHANGES_REQUESTED review or a DIRTY merge
 # state land during the comparison and still emit `ready`, and draft state and
 # mergeability are excluded from the fingerprint so nothing downstream catches
@@ -1590,7 +1601,9 @@ jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null 
 case "$(jq -r '.mergeStateStatus // ""' <<<"$final")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was comparing against the base" ;;
 BEHIND)
-    indeterminate merge-state-stale "mergeStateStatus turned BEHIND while the gate was comparing, with the graph reporting 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    # Lag claim only — see the pre-evaluation branch.
+    [ "$behind_by" -ne 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus turned BEHIND while the gate was comparing, with the graph reporting 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub stopped reporting mergeability while the gate was comparing — re-poll briefly"
