@@ -633,6 +633,8 @@ assert_skill "an unestablished promotion being escalated, not accepted" \
     "escalated loudly, not silently accepted"
 assert_skill "post-promotion drift being reported, not undone" \
     "State that changed *after* a correct promotion"
+assert_skill "behind-base counted as drift, not an undo trigger" \
+    "\`audit-behind\`, \`behind-base\`, \`base-retargeted\`, \`head-moved\`"
 assert_skill "the undo branch being limited to established injustice" \
     "the gate positively established that the promotion sits on"
 assert_skill "the rule being about kinds, not a list of conditions" \
@@ -868,6 +870,26 @@ jq -cn --arg head "$head_sha" \
     >"${fixtures}/pr-view-third.json"
 run_gate
 assert_gate 1 fail behind-base
+
+echo "==> the base-tip race is reachable in AUDIT too, and is classed as drift"
+# check mode already covers this; audit reaches the same `behind-base` via the
+# final identity read, and §2 must class it as drift or the undo branch claims
+# a valid human handoff (Codex, current head).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"cafecafecafecafecafecafecafecafecafecafe"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate_audit
+[ "$gate_rc" -eq 1 ] || fail "audit base-tip race exited $gate_rc: $gate_out"
+grep -Fq 'behind-base' <<<"$gate_out" ||
+    fail "audit base-tip race did not emit behind-base: $gate_out"
 
 echo "==> the behind preflight refuses a head that moved while comparing"
 # The preflight makes exactly two PR reads: the first captures the identity,

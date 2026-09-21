@@ -563,9 +563,14 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
       is already open and an undo does not close it. A PR whose readiness
       cannot be established is escalated loudly, not silently accepted.
     - **State that changed *after* a correct promotion** — `audit-behind`,
-      `base-retargeted`, `head-moved`. The base and the contributor are not
-      ours to hold still, and a PR drifting once it is in a human's hands is
-      ordinary. Report it to the maintainer; the remedy is theirs.
+      `behind-base`, `base-retargeted`, `head-moved`. The base and the
+      contributor are not ours to hold still, and a PR drifting once it is in
+      a human's hands is ordinary. Report it to the maintainer; the remedy is
+      theirs. `behind-base` belongs here for the same reason as the rest: in
+      an **audit** it can only mean the base branch advanced while the gate
+      was comparing against it, which is drift by definition. (In `check` it
+      is an ordinary failure — check never routes through this branch, because
+      this branch is about PRs somebody else already promoted.)
 
     This is deliberately a rule about kinds rather than a list of conditions.
     The gate can emit dozens, and exempting them one at a time is a game you
