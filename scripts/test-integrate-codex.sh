@@ -3851,6 +3851,42 @@ classify_reserve charged \
     '{"files":[{"filename":"src/a.js"}]}'
 assert_charge charged "diverged history" 2 0
 
+echo "==> reserve refuses a charged cycle once the integration cap is spent"
+# Review round 1, P1: the trigger is posted immediately after the reservation,
+# so a ceiling enforced only by the readiness gate is enforced after the review
+# has already run. Refusal must happen here, at the last preventable point.
+write_defaults
+rm -f "$state"
+printf '%s' "$classifier_prev" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = .reserved_at' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s' '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
+printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-main___${classifier_prev}.json"
+printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-main___${classifier_new}.json"
+printf '%s' "$classifier_new" >"${fixtures}/head"
+set +e
+overcap_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 1 --run-id run-a \
+    --integration-cap 1 --integration-exempt-cap 1 2>&1)"
+overcap_rc=$?
+set -e
+[ "$overcap_rc" -ne 0 ] ||
+    fail "reserve must refuse a charged cycle past the cap: $overcap_out"
+case "$overcap_out" in
+*"integration cap"*) ;;
+*) fail "the refusal must name the spent cap: $overcap_out" ;;
+esac
+# The refused reservation must not have spent anything either.
+[ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
+    fail "a refused reservation must not increment: $(jq -r '.charged_cycles' "$state")"
+
 echo "==> state from a different run cannot license an exemption"
 write_defaults
 rm -f "$state"

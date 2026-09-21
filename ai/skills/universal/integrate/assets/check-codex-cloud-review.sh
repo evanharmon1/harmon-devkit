@@ -35,6 +35,7 @@ usage() {
 Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
                                      [--previous-head SHA] [--run-id ID]
+                                     [--integration-cap N] [--integration-exempt-cap N]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
@@ -57,6 +58,13 @@ caller: a caller free to name any SHA could otherwise skip past a fix commit
 and manufacture an exemption. `--previous-head` is therefore optional and
 purely confirmatory — supply it to have the reservation refuse rather than
 proceed if your idea of the last reviewed head disagrees with the record.
+
+--integration-cap and --integration-exempt-cap make `reserve` REFUSE a cycle
+that would exceed the ceiling it belongs to. A ceiling checked only by the
+readiness gate is checked after the review has already run, since the trigger
+is posted immediately after the reservation; this is the last point at which
+the spend can still be prevented. Omit them and the reservation proceeds, with
+the gate as the only backstop.
 
 --run-id scopes the totals to one run. The state file outlives the run that
 wrote it, so a second run against the same PR would otherwise inherit the
@@ -128,11 +136,13 @@ reap_deadline_epoch=
 finder_slug=
 previous_head=
 run_id=
+integration_cap=
+integration_exempt_cap=
 requested_at_arg=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -147,6 +157,8 @@ while [ "$#" -gt 0 ]; do
         --finder) finder_slug=$2 ;;
         --previous-head) previous_head=$2 ;;
         --run-id) run_id=$2 ;;
+        --integration-cap) integration_cap=$2 ;;
+        --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
@@ -994,9 +1006,21 @@ reserve)
         if [ -n "$classify_prev_head" ]; then
             classify_cycle_charge "$classify_prev_head" "$head" "$repo" "$pr"
         fi
+        # Review round 1, P1 (confirmed): a cap is a CEILING, and a ceiling
+        # enforced only by the readiness gate is enforced after the money is
+        # spent — the prescribed sequence posts the trigger immediately after
+        # this reservation, so the review has already run by the time the gate
+        # objects. Refuse the reservation instead, at the one point where the
+        # spend is still preventable.
         if [ "$charge_class" = "exempt" ]; then
+            [ -z "$integration_exempt_cap" ] ||
+                [ "$((carried_exempt + 1))" -le "$integration_exempt_cap" ] ||
+                die "this cycle is exempt but the exempt ceiling ($integration_exempt_cap) is already spent; no cycle remains to reserve"
             carried_exempt=$((carried_exempt + 1))
         else
+            [ -z "$integration_cap" ] ||
+                [ "$((carried_charged + 1))" -le "$integration_cap" ] ||
+                die "the integration cap ($integration_cap) is already spent; no charged cycle remains to reserve"
             carried_charged=$((carried_charged + 1))
         fi
     else
