@@ -648,6 +648,37 @@ persist_quota_evidence() {
     write_state "$state_file" "$payload"
 }
 
+# Reports the usage-limit answer and stops. Codex cloud-review cycle 2 on PR
+# harmon-devkit#1125, finding 4065974923 (confirmed P2): this used to live
+# ONLY inside `bounded_wait`, on the reasoning that absence of other evidence
+# is the only state a quota reply can be observed in. That is false. The reply
+# carries no `Reviewed commit` line, no verdict sentence and no badge, so it is
+# invisible to every classifier — but the classifiers themselves are not
+# invisible to it: a stale thumbs-up on the trigger, a clean review from an
+# earlier attempt, or a recorded disposition all exit 0 long before any path
+# reaches `bounded_wait`. The head was then certified clean by evidence that
+# predates the reviewer saying it would not review.
+#
+# So the answer is reported where it is READ, and this function is what both
+# sites call. It is terminal by construction: a usage limit is an answer, not
+# silence, and nothing later in the cycle can make it not one.
+quota_exhausted_terminal() {
+    persist_quota_evidence
+    quota_detail="$1; the finder replied that its code-review usage limit is exhausted (comment $quota_comment_id)"
+    if [ -n "$quota_reset_at" ]; then
+        quota_detail="$quota_detail; limit resets at $quota_reset_at"
+    else
+        quota_detail="$quota_detail; the reply named no reset time"
+    fi
+    # Challenge round 3, finding `challenge-r3-codex-adversarial-11`
+    # (confirmed P2): after the reset-time carve-out was deleted in round 2,
+    # every operator-facing string still implied the reset time was actionable
+    # and none named the route that actually exists. Name it.
+    quota_detail="$quota_detail; this head cannot be re-reviewed here — push a new commit or have an operator remove this state file (recovery route carried in #1115)"
+    emit quota-exhausted "$quota_detail"
+    exit 15
+}
+
 bounded_wait() {
     detail=$1
     if [ -z "$now" ]; then
@@ -668,20 +699,12 @@ bounded_wait() {
     # keep their previous behaviour (and #508 has already moved read failures
     # off this function entirely).
     if [ -n "$quota_comment_id" ]; then
-        persist_quota_evidence
-        quota_detail="$detail; the finder replied that its code-review usage limit is exhausted (comment $quota_comment_id)"
-        if [ -n "$quota_reset_at" ]; then
-            quota_detail="$quota_detail; limit resets at $quota_reset_at"
-        else
-            quota_detail="$quota_detail; the reply named no reset time"
-        fi
-        # Challenge round 3, finding `challenge-r3-codex-adversarial-11`
-        # (confirmed P2): after the reset-time carve-out was deleted in round
-        # 2, every operator-facing string still implied the reset time was
-        # actionable and none named the route that actually exists. Name it.
-        quota_detail="$quota_detail; this head cannot be re-reviewed here — push a new commit or have an operator remove this state file (recovery route carried in #1115)"
-        emit quota-exhausted "$quota_detail"
-        exit 15
+        # Defence in depth only: the scan that sets `$quota_comment_id` now
+        # reports the answer terminally at the point it reads it (see
+        # `quota_exhausted_terminal`), so any path that still arrives here
+        # with one set has skipped that site and should not be allowed to
+        # wait on a reviewer that has already refused.
+        quota_exhausted_terminal "$detail"
     fi
     requested_epoch=$(jq -nr \
         --arg value "$state_requested" '$value | fromdateiso8601') ||
@@ -2174,6 +2197,13 @@ check)
                 emit indeterminate "the finder's usage-limit reply carries a malformed creation time"
                 exit 2
             }
+            # Terminal HERE, not at the far end of the pass. Everything below
+            # this point is evidence evaluation, and several of its branches
+            # exit 0 — a thumbs-up on the trigger, a clean review, a recorded
+            # disposition. Each of those would certify a head the reviewer has
+            # just refused to review, which is the false clean finding
+            # 4065974923 reported.
+            quota_exhausted_terminal "the finder answered this attempt with a usage-limit reply"
         fi
     fi
 

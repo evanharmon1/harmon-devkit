@@ -448,11 +448,17 @@ endpoint, a repository made private under you. Polling those to the end of the
 window and reporting `pending` asks the orchestrator to re-dispatch you into
 the identical failure, which spends the whole wall clock on a condition that
 was decided at the first read. So **count CONSECUTIVE 16s, and after the third
-break out of the loop** and report `indeterminate` with a blocker line naming
-the read that failed — the endpoint and the checker's own detail, so the
+break out of the loop** and return `status: "blocked"` with a blocker line
+naming the read that failed — the endpoint and the checker's own detail, so the
 operator can see it is an access problem and not a reviewer problem. The
 counter resets on any other exit code, because a 16 between two successful
 reads is the transient case this arm exists for.
+
+`blocked` is the envelope word for it: `result.envelope.schema.json`'s `status`
+enum is `completed` / `blocked` and nothing else, so "report indeterminate"
+would be a result no validator accepts. The gate has its own vocabulary for
+this condition (`codex-transient-read`, indeterminate-with-reason) and that is
+a different field on a different document — do not carry it onto the envelope.
 On **11 (pending)**, do not end the pass on the first pending read — that
 would spend the orchestrator's whole dispatch budget re-invoking you for
 every single poll, exactly the long-poll cost this role exists to absorb
@@ -503,10 +509,12 @@ driving the cycle for this pass. If the window elapsed still pending, report
 `codex_cycle` with `exit_code: 11` and no `accepted` (§7 shows the shape); a
 caller that wants another look dispatches you again for a fresh window, rather
 than this pass looping indefinitely on its own. If the consecutive-16 budget
-broke it, report `status: "indeterminate"` with `codex_cycle.exit_code: 16`
-and a blocker line naming the failing read — the endpoint and the checker's
-detail — so the orchestrator escalates the access problem instead of spending
-its remaining dispatches on it.
+broke it, report `status: "blocked"` with `codex_cycle.exit_code: 16`,
+`verdict: "pending"` (16's own rule in EXIT_CODE_VERDICT_CONSTRAINTS, which
+does not change because the read stopped being retriable) and a blocker line
+naming the failing read — the endpoint and the checker's detail — so the
+orchestrator escalates the access problem instead of spending its remaining
+dispatches on it.
 
 On **0 (clean)** or **10 (findings)**, `check_out` itself now carries the
 accepted evidence (harmon-devkit#639 gauntlet challenge round 4): build

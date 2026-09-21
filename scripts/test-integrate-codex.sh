@@ -5636,6 +5636,64 @@ assert_status 2 indeterminate
 printf '%s' "$check_out" | jq -e '.detail | test("no trigger comment id")' >/dev/null ||
     fail "the refusal must say the cycle records no trigger comment id: $check_out"
 
+echo "==> 4065974923: a usage-limit reply is terminal even when a thumbs-up says clean"
+# The reply carries no `Reviewed commit` line, no verdict sentence and no badge,
+# so it is invisible to every classifier -- but the classifiers are not
+# invisible to it. Reporting it only from `bounded_wait` meant any branch that
+# exits 0 first won, and a positive reaction on the trigger is exactly such a
+# branch. The head was certified clean by a thumbs-up while the reviewer had
+# already answered that it would not review it.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg body "$quota_reply_body" \
+    '[[
+      {
+        id:8800,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",body:$body
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9800,user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 15 quota-exhausted
+printf '%s' "$check_out" | jq -e '.detail | test("usage limit is exhausted")' >/dev/null ||
+    fail "the terminal answer must name the exhausted limit: $check_out"
+# The answer is recorded on the state whichever site reported it, so the one
+# bounded re-trigger is refused rather than spent.
+[ "$(jq -r '.quota_comment_id' "$state")" = "8800" ] ||
+    fail "the usage-limit answer must be recorded on the state: $(jq -c . "$state")"
+
+echo "==> 4065974923: a usage-limit reply is terminal even against a clean verdict comment"
+# The same, against the other branch that exits 0 first.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    --arg body "$quota_reply_body" \
+    '[[
+      {
+        id:8801,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",body:$body
+      },
+      {
+        id:8802,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:40Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 15 quota-exhausted
+
 echo "==> review-r1-codex-verification-5a: self_work_marker is load-bearing"
 # A Summary-headed, wholly structural, MARKER-LESS body must stay `findings`.
 # Without the conjunct it becomes informational and vanishes from every scan.

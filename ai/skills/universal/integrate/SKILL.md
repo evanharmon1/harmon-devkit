@@ -954,11 +954,16 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     causes that keep failing (a revoked token, a permission that no longer
     covers the endpoint, a repository made private) are the ones repeating
     will never fix. The agent's poll loop therefore counts **consecutive**
-    16s and breaks after the third, returning `status: "indeterminate"` with
-    a blocker line naming the failing read rather than a `pending` you would
+    16s and breaks after the third, returning `status: "blocked"` with
+    `codex_cycle.exit_code: 16`, `verdict: "pending"` and a blocker line
+    naming the failing read — rather than a `completed` `pending` you would
     re-dispatch into the identical failure until the wall clock is gone.
-    Treat that shape as a blocker to escalate, not as a cycle to re-drive;
-    a lone 16 between two good reads is still the ordinary transient case.
+    `blocked` because that is what the envelope's `status` enum offers
+    (`completed`/`blocked`); §6's gate keeps its own `codex-transient-read`
+    vocabulary for the same condition, which is a different field on a
+    different document. Treat that shape as a blocker to escalate, not as a
+    cycle to re-drive; a lone 16 between two good reads is still the ordinary
+    transient case.
   - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
     resolved **remediation** cap is spent and a finding still needs a code
     fix (see "A resolved remediation cap of 0..." above, which is the
