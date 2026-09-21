@@ -1940,7 +1940,7 @@ echo "==> review-r1-codex-verification-2: a finder_cycles exit-16 uses the finde
 # codex-prefixed and untested. Both are per-finder conditions; both say so.
 write_defaults
 fc_transient="$(write_integrator_result fc-transient "$(codex_cycle_json 0)")"
-jq '.payload.verdict = "findings"
+jq '.payload.verdict = "pending"
     | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
                             body:"a finder finding",source_id:"1"}]
     | del(.payload.applied_dispositions)
@@ -2003,7 +2003,7 @@ fc_quota="$(write_integrator_result fc-quota "$(codex_cycle_json 0)")"
 # fixture carries `findings` instead — exit_code 0 permits it, and condition 8b
 # (finder cycles) is evaluated before 9a (the pass's own findings[]), so the
 # finder arm is what this case reaches.
-jq '.payload.verdict = "findings"
+jq '.payload.verdict = "escalate"
     | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
                             body:"a finder finding",source_id:"1"}]
     | del(.payload.applied_dispositions)
@@ -2038,8 +2038,16 @@ write_finder_cycle_result() {
     # findings[]), so the finder arm is what these cases reach. `accepted` is
     # schema-required for exit 0 and 10 and forbidden nowhere else, so it is
     # attached only for those two.
+    # The verdict must be the one the cycle's exit code demands: the envelope
+    # validator aggregates EXIT_CODE_VERDICT_CONSTRAINTS over codex_cycle AND
+    # every finder_cycles entry now (harmon-devkit#1050 integration cycle 1),
+    # so a finder at 16 makes the pass `pending` and a finder at 15 makes it
+    # `escalate` however clean the Codex cycle is.
     jq --argjson ec "$wfc_exit" \
-        '.payload.verdict = "findings"
+        '(if $ec == 11 or $ec == 12 or $ec == 16 then "pending"
+          elif $ec == 13 or $ec == 14 or $ec == 15 or $ec == 2 then "escalate"
+          else "findings" end) as $verdict
+         | .payload.verdict = $verdict
          | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
                                  body:"a finder finding",source_id:"1"}]
          | del(.payload.applied_dispositions)

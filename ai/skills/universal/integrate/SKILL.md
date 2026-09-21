@@ -949,6 +949,16 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     repeated. Never treat it as a non-clean cycle; §6's gate reports it as
     `codex-transient-read` (indeterminate with the reason), never
     `codex-not-clean`.
+    **One way it is not like `11`:** a `11` that persists is a reviewer still
+    working, while a 16 that persists is a read that keeps failing — and the
+    causes that keep failing (a revoked token, a permission that no longer
+    covers the endpoint, a repository made private) are the ones repeating
+    will never fix. The agent's poll loop therefore counts **consecutive**
+    16s and breaks after the third, returning `status: "indeterminate"` with
+    a blocker line naming the failing read rather than a `pending` you would
+    re-dispatch into the identical failure until the wall clock is gone.
+    Treat that shape as a blocker to escalate, not as a cycle to re-drive;
+    a lone 16 between two good reads is still the ordinary transient case.
   - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
     resolved **remediation** cap is spent and a finding still needs a code
     fix (see "A resolved remediation cap of 0..." above, which is the

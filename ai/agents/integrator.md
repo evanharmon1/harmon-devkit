@@ -433,12 +433,26 @@ it is carried in harmon-devkit#1115.
 On **16 (transient read)** an evidence READ failed (harmon-devkit#508). This
 is emphatically **not** a statement about the reviewer, so it is neither a
 retry of the cycle nor an escalation: repeat the **read**. Inside this
-dispatch, treat it exactly like `11` — the same bounded poll loop below picks
-it up on its next iteration — and if the window runs out still on 16, report
+dispatch, treat it like `11` — the same bounded poll loop below picks it up on
+its next iteration — and if the window runs out still on 16, report
 `codex_cycle` with `exit_code: 16` and `verdict: "pending"`, no `accepted`.
 Never re-trigger and never reserve a fresh attempt to "get past" a 16: the
 reviewer was never absent, and the orchestrator's gate reads 16 as
 indeterminate-with-reason rather than as a non-clean cycle.
+
+**But 16 is not `11` forever, and that is the one way it differs.** A `11`
+that persists means a reviewer still working; a 16 that persists means a read
+that keeps failing, and the causes that keep failing are the ones repeating
+will never fix — a revoked token, a permission that no longer covers the
+endpoint, a repository made private under you. Polling those to the end of the
+window and reporting `pending` asks the orchestrator to re-dispatch you into
+the identical failure, which spends the whole wall clock on a condition that
+was decided at the first read. So **count CONSECUTIVE 16s, and after the third
+break out of the loop** and report `indeterminate` with a blocker line naming
+the read that failed — the endpoint and the checker's own detail, so the
+operator can see it is an access problem and not a reviewer problem. The
+counter resets on any other exit code, because a 16 between two successful
+reads is the transient case this arm exists for.
 On **11 (pending)**, do not end the pass on the first pending read — that
 would spend the orchestrator's whole dispatch budget re-invoking you for
 every single poll, exactly the long-poll cost this role exists to absorb
@@ -448,6 +462,7 @@ brief's cap implies (10–15 minutes per attempt):
 
 ```sh
 window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if different
+consecutive_16=0
 while [ "$SECONDS" -lt "$window_end" ]; do
     check_exit=0
     check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
@@ -455,6 +470,16 @@ while [ "$SECONDS" -lt "$window_end" ]; do
     # remedy for a read that failed is to repeat the read. Only a terminal
     # code breaks the loop.
     [ "$check_exit" != "11" ] && [ "$check_exit" != "16" ] && break
+    # A read that fails three times running is not transient. Break and report
+    # `indeterminate` naming the failing read, rather than polling out the
+    # window and handing back a `pending` the orchestrator will re-dispatch
+    # into the same wall.
+    if [ "$check_exit" = "16" ]; then
+        consecutive_16=$((consecutive_16 + 1))
+        [ "$consecutive_16" -lt 3 ] || break
+    else
+        consecutive_16=0
+    fi
     sleep 90
 done
 ```
@@ -472,12 +497,16 @@ rolling "Codex Review Summary" table was proposed and split back out
 (harmon-devkit#718, carried in harmon-devkit#1117) — do not expect a head to
 go terminal-clean from that row.
 
-Only once that loop exits — either a terminal `check_exit` broke it, or the
-window ran out still on 11 — do you stop driving the cycle for this pass.
-If the window elapsed still pending, report `codex_cycle` with
-`exit_code: 11` and no `accepted` (§7 shows the shape); a caller that wants
-another look dispatches you again for a fresh window, rather than this pass
-looping indefinitely on its own.
+Only once that loop exits — a terminal `check_exit` broke it, three
+consecutive 16s broke it, or the window ran out still on 11 — do you stop
+driving the cycle for this pass. If the window elapsed still pending, report
+`codex_cycle` with `exit_code: 11` and no `accepted` (§7 shows the shape); a
+caller that wants another look dispatches you again for a fresh window, rather
+than this pass looping indefinitely on its own. If the consecutive-16 budget
+broke it, report `status: "indeterminate"` with `codex_cycle.exit_code: 16`
+and a blocker line naming the failing read — the endpoint and the checker's
+detail — so the orchestrator escalates the access problem instead of spending
+its remaining dispatches on it.
 
 On **0 (clean)** or **10 (findings)**, `check_out` itself now carries the
 accepted evidence (harmon-devkit#639 gauntlet challenge round 4): build
@@ -492,8 +521,15 @@ A `10` raised by inline threads also carries `unanswered[]` — one
 `{thread_root, comment_id, review_id, path}` entry per unadjudicated bot
 thread on the head, **across every review that posted one**
 (harmon-devkit#737). Feed every entry's **`thread_root`** into
-`unanswered_thread_roots`, and the entry into `findings[]`. The two ids are
-not interchangeable: GitHub sets `in_reply_to_id` to the thread ROOT on every
+`unanswered_thread_roots`, and the entry into `findings[]`. Map the **unique**
+thread roots to **strings** as you assemble that array: two unadjudicated
+comments in one thread share a root and must contribute one id, not two, and
+the schema types the field as strings while the checker emits the root as a
+JSON number — so passing the numbers straight through produces a result the
+validator rejects, and passing duplicates through inflates the gate count of
+what is unanswered.
+
+The two ids are not interchangeable: GitHub sets `in_reply_to_id` to the thread ROOT on every
 reply, so `comment_id` names the bot comment that raised the finding while
 `thread_root` names the thread a reply must land in — and
 `unanswered_thread_roots` is defined as thread ids

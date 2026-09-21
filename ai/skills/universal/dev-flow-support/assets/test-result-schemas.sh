@@ -608,6 +608,15 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/exit-code-15-with-pending.json',
   'result.integrator.schema/invalid/exit-code-15-with-accepted.json',
   'result.integrator.schema/invalid/exit-code-16-with-escalate.json',
+  // harmon-devkit#1050 integration cycle 1, finding 4064588966: the same
+  // pairing aggregated over codex_cycle AND every finder_cycles[] entry, by
+  // precedence escalate > findings > pending > clean. A schema cannot express
+  // it for the same reason it cannot express the single-cycle rule, and less
+  // so: the governing cycle is whichever one demands the most, which is not a
+  // fixed node the way `codex_cycle` was.
+  'result.integrator.schema/invalid/cycles-escalate-outranks-pending.json',
+  'result.integrator.schema/invalid/finder-cycle-quota-exhausted-claims-pending.json',
+  'result.integrator.schema/invalid/finder-cycle-transient-read-claims-clean.json',
   'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json',
   'result.integrator.schema/invalid/applied-dispositions-future-integration-round.json'
 ])

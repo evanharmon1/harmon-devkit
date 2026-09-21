@@ -1,0 +1,1 @@
+$result.payload.verdict: must be "escalate" when finder_cycles[1] (coderabbit-cloud).exit_code is 15, found "pending"

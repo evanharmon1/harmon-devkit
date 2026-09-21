@@ -1,0 +1,1 @@
+$result.payload.finder_cycles[1] (coderabbit-cloud): must have exit_code 0 with accepted present when verdict is clean
