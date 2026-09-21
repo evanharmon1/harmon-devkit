@@ -21,6 +21,7 @@
 #       --record DIR --integrator-result FILE --integration-cap N
 #       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
+#   readiness-gate.sh behind --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
 # pass only, prints `{"status":"pass",...,"fingerprint":...}` — where the
@@ -47,7 +48,8 @@
 # `check` emits one JSON line naming the decisive condition:
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing, checks-pending                          (fail)
-#   changes-requested, merge-state-dirty, merge-state-behind (fail)
+#   changes-requested, merge-state-dirty                    (fail)
+#   behind-base, base-retargeted                            (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
@@ -56,6 +58,13 @@
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, usage                                      (indeterminate)
+#   behind-base-unknown, merge-state-stale                  (indeterminate)
+#
+# `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
+# so a genuinely behind head never reaches the cache branch, and a cache that
+# still says BEHIND while the graph says 0 is lag — `merge-state-stale`,
+# re-poll. Callers keyed to the old token should treat `behind-base` as its
+# fail replacement and `merge-state-stale` as a retry.
 #
 # Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
@@ -125,6 +134,7 @@ Usage:
       --remediation-cap N [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
+  readiness-gate.sh behind --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
 audit is the same evaluation with the draft requirement inverted (the PR
@@ -335,7 +345,7 @@ check | audit)
     # skipped remediation check promotes an over-cap run.
     [ -n "$remediation_cap" ] || usage
     ;;
-fingerprint) ;;
+fingerprint | behind) ;;
 *) usage ;;
 esac
 
@@ -356,6 +366,51 @@ fail_condition() {
 indeterminate() {
     emit indeterminate "$1" "$2"
     exit 2
+}
+
+# Establish how far the head is behind its base FROM THE COMMIT GRAPH, setting
+# $behind_base_ref and $behind_by. `mergeStateStatus` is a lazily recomputed
+# cache: on ponderousdev/omator#758 (2026-09-06 17:40Z) it read CLEAN/MERGEABLE
+# for a head SIXTEEN commits behind main, minutes after two sibling PRs merged.
+# The gate passed, the PR was reported ready, and the maintainer found "Update
+# branch" instead of a merge button — and his click moved the head, invalidating
+# the terminal Codex result the gate had just relied on.
+#
+# The base ref comes from the PR payload passed in, never from a local remote:
+# it must follow a retarget, and a fork's `origin/main` is not this PR's base.
+# A failed or malformed read is INDETERMINATE, never a pass — "I could not
+# establish this" must not read as "this is fine".
+#
+# Sets globals rather than echoing, and must NOT be called through `$(...)`:
+# `indeterminate` exits, and inside a command substitution that would end only
+# the subshell and let the gate carry on with an unset behind_by.
+behind_base_ref=
+behind_by=
+behind_base_oid=
+establish_behind() {
+    establish_scalars="$1"
+    establish_phase="$2"
+    behind_base_ref="$(jq -er '.baseRefName | select(type == "string")' <<<"$establish_scalars")" ||
+        indeterminate malformed-data "PR payload carries no base branch name (${establish_phase})"
+    # Encode the ref before it becomes a URL path segment. Branch names may
+    # contain `#`, `?` or a literal `%`, any of which silently truncate or
+    # reinterpret the endpoint — `release#1` would query `repos/.../compare/release`
+    # and answer about the wrong thing. `/` is restored afterwards because it
+    # is a legitimate, unambiguous separator inside a ref and GitHub expects it
+    # literally. Comparing against a base OID instead would answer a different
+    # question: how far behind a SNAPSHOT of the base, not its current tip.
+    # Done entirely in jq: the "loudly unbounded" path runs on a curated PATH
+    # that has no `sed`, and reaching for one made the gate exit 127 there.
+    establish_encoded="$(jq -rn --arg s "$behind_base_ref" '$s | @uri | gsub("%2F"; "/")')"
+    establish_compare="$(run_gh api "repos/${repo}/compare/${establish_encoded}...${head}")" ||
+        indeterminate behind-base-unknown "cannot compare ${behind_base_ref}...${head} to establish how far behind the head is (${establish_phase})"
+    behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$establish_compare")" ||
+        indeterminate behind-base-unknown "compare payload carries no numeric behind_by (${establish_phase})"
+    # The tip the count is ABOUT. Comparing base names across the identity read
+    # cannot see the base branch itself advancing — the name is unchanged and
+    # the stale `behind_by 0` reads as level.
+    behind_base_oid="$(jq -er '.base_commit.sha | select(type == "string")' <<<"$establish_compare")" ||
+        indeterminate behind-base-unknown "compare payload carries no base commit sha (${establish_phase})"
 }
 
 run_gh() {
@@ -474,6 +529,36 @@ recheck_codex_freshness() {
         indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
 }
 
+# `behind` is the read-only preflight the reserved-cycle rule needs. Before
+# dispatching the last permitted review cycle an integrator must know whether
+# the head is behind — and telling it to work that out itself would mean
+# re-deriving ref encoding and fail-closed handling outside the one place they
+# are tested, which is exactly the hand-rolling this skill forbids everywhere
+# else. Same code path as the gate, same exit vocabulary: 0 level, 1 behind,
+# 2 could not establish. It writes nothing and judges nothing else.
+if [ "$command_name" = behind ]; then
+    behind_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
+        indeterminate fetch-failed "cannot fetch the PR state"
+    head="$(jq -er '.headRefOid | select(type == "string")' <<<"$behind_scalars")" ||
+        indeterminate malformed-data "PR payload carries no head commit"
+    establish_behind "$behind_scalars" "preflight"
+    # Same binding the gate does: a push or retarget during the comparison
+    # would otherwise let this report `level` for a head that no longer
+    # exists, and the caller spends its reserved cycle on the wrong one.
+    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName,baseRefOid)" ||
+        indeterminate fetch-failed "cannot confirm PR identity after the comparison"
+    jq -e --arg h "$head" --arg b "$behind_base_ref" --arg o "$behind_base_oid" \
+        '.headRefOid == $h and .baseRefName == $b and .baseRefOid == $o' <<<"$behind_after" >/dev/null ||
+        indeterminate behind-base-unknown "the PR head, base branch or base tip moved while comparing — re-run the preflight"
+    if [ "$behind_by" -eq 0 ]; then
+        jq -cn --arg base "$behind_base_ref" --arg head "$head" \
+            '{status:"level",behind_by:0,base:$base,head:$head}'
+        exit 0
+    fi
+    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — reconcile before spending the reserved cycle"
+    exit 1
+fi
+
 if [ "$command_name" = fingerprint ]; then
     fetch_fingerprint_surfaces
     compute_fingerprint
@@ -487,7 +572,7 @@ fi
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
 
 # This PR's own branch name — an extra signal `evaluate_checks` uses below to
@@ -813,10 +898,46 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 # deadlocks precisely the repos that comply (evanharmon1/harmon-init#714).
 # Only DIRTY and BEHIND are the caller's to resolve; UNKNOWN means GitHub is
 # still computing mergeability.
+# The TRUTH check runs FIRST, so a head that is genuinely behind always reports
+# `behind-base` and follows one recipe. `merge-state-behind` stays after it as
+# the cache backstop; reaching it now means the cache says BEHIND while the
+# graph says 0, which is cache lag in the other direction.
+# CHECK only. `audit` judges a promotion that already happened, and the base is
+# not this repository's to hold still — a PR drifting behind after a correct
+# promotion is ordinary, and the remedy is the maintainer's "Update branch".
+# Failing audit on it would route a valid human handoff into §2's undo branch
+# and reverse it, which is exactly what this skill's one-way-door rule forbids.
+establish_behind "$scalars" "before evaluating"
+if [ "$require_draft" = 1 ]; then
+    [ "$behind_by" -eq 0 ] ||
+        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
+fi
+# AUDIT needs a THIRD answer, because the two obvious ones are both wrong.
+# Failing routes §2's unexplained-promotion flow to its undo path and reverses
+# a valid handoff over ordinary drift (review round 1). Passing silently lets
+# that flow complete the ready stop for a PR that IS behind (review round 2).
+# So audit passes — no undo — but says so in the verdict, and the caller
+# reports the drift to the maintainer instead of acting on it.
+audit_behind=0
+[ "$require_draft" = 1 ] || [ "$behind_by" -eq 0 ] || audit_behind="$behind_by"
+
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts with the base branch" ;;
-BEHIND) fail_condition merge-state-behind "the head is behind the base branch" ;;
+BEHIND)
+    # The graph reported 0 just above, so a cache still reading BEHIND is lag,
+    # not work: failing it would send the caller to merge a base it is level
+    # with, which creates no commit and reproduces the blocker forever.
+    # Unknown-for-now in BOTH modes — the audit-mode exemption this once
+    # carried existed only because §2 undid on any non-pass, and §2 now never
+    # undoes on an indeterminate.
+    # A LAG claim, so only when the graph disagrees. Where audit is genuinely
+    # behind, both signals agree, re-polling can never resolve it, and a
+    # permanent indeterminate would block the `audit-behind` drift verdict
+    # this mode exists to produce.
+    [ "$behind_by" -ne 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
     ;;
@@ -1355,6 +1476,77 @@ evaluated_c2="$c2"
 evaluated_c3="$c3"
 evaluated_c4="$c4"
 evaluated_c5="$c5"
+# 9b. Re-read the scalars and re-establish the base relation. This runs
+# BEFORE the fresh content fingerprint and the second checks evaluation,
+# deliberately: the compare below is a network call of up to 60s, and
+# step 12 promises the final scalar read is the LAST one with nothing
+# fetching behind it. Putting the comparison after those snapshots broke
+# that promise — a check turning red or content moving during it went
+# unseen, because the read that follows looks at scalars only. A changed head
+# invalidates every result this gate relied on, and never wait out a
+# mismatch: a fresh replica showing someone else's newer push is evidence,
+# and re-polling until it converges would discard it. The review decision
+# and merge state are re-evaluated here because they can move without moving
+# the head: a CHANGES_REQUESTED review landing mid-gate is absorbed into the
+# reviews fingerprint (so the post-promotion compare would stay identical),
+# and mergeability is excluded from the fingerprint by design — this re-read
+# is the only thing that can catch either.
+recheck="$(run_gh pr view "$pr" --repo "$repo" \
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName)" ||
+    indeterminate fetch-failed "cannot re-read the PR immediately before the verdict"
+jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
+    fail_condition pr-not-open "the PR left the OPEN state while the gate was reading it"
+if [ "$require_draft" = 1 ]; then
+    jq -e '.isDraft == true' <<<"$recheck" >/dev/null ||
+        fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
+else
+    jq -e '.isDraft == false' <<<"$recheck" >/dev/null ||
+        fail_condition pr-draft "the PR returned to draft while the audit was reading it — the promotion under audit no longer stands"
+fi
+jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
+    fail_condition head-moved "PR head changed while the gate was reading it"
+[ "$(jq -r '.reviewDecision // ""' <<<"$recheck")" != "CHANGES_REQUESTED" ] ||
+    fail_condition changes-requested "a reviewer requested changes while the gate was reading"
+# Re-establish behind-by from the GRAPH, not just the cache. Gate evaluation is
+# long, and a base that advances (or a retarget) during it leaves a head that
+# was level when checked and is behind by the verdict — caught here only if the
+# cache happens to have caught up, which is the assumption this whole condition
+# exists to stop making.
+# A retarget mid-gate invalidates every condition already evaluated against
+# the old base, so stop rather than re-deriving against a moving target.
+# Both modes re-establish the relation; only check mode FAILS on it. Audit
+# that skipped this went on to emit a plain clean `audit` for a PR that drifted
+# behind during the run, which is the silent pass review round 2 rejected.
+recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
+    indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
+# BOTH modes: evidence gathered against the old base says nothing about a new
+# one, and retargeting can change required workflows and mergeability. §2
+# classifies this as drift, so it is reported rather than undone.
+[ "$recheck_base" = "$behind_base_ref" ] ||
+    fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
+establish_behind "$recheck" "immediately before the verdict"
+if [ "$require_draft" = 1 ]; then
+    [ "$behind_by" -eq 0 ] ||
+        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
+else
+    # Assign, never merely set: a retarget to a level base (or a rewritten
+    # base) between the two comparisons would otherwise leave the earlier
+    # nonzero count standing and report drift that no longer exists.
+    audit_behind="$behind_by"
+fi
+
+case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
+DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
+BEHIND)
+    # Lag claim only — see the pre-evaluation branch.
+    [ "$behind_by" -ne 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    ;;
+UNKNOWN | "")
+    indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
+    ;;
+esac
+
 fp_pr=
 fp_reviews=
 fp_top=
@@ -1379,44 +1571,55 @@ fi
 # the failure this script exists to make impossible.
 evaluate_checks
 
-# 12. Re-read every scalar condition as the LAST network read before the
-# verdict — after the second checks evaluation, so no fetch runs behind it
-# (everything after this is local). A changed head
-# invalidates every result this gate relied on, and never wait out a
-# mismatch: a fresh replica showing someone else's newer push is evidence,
-# and re-polling until it converges would discard it. The review decision
-# and merge state are re-evaluated here because they can move without moving
-# the head: a CHANGES_REQUESTED review landing mid-gate is absorbed into the
-# reviews fingerprint (so the post-promotion compare would stay identical),
-# and mergeability is excluded from the fingerprint by design — this re-read
-# is the only thing that can catch either.
-recheck="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus)" ||
-    indeterminate fetch-failed "cannot re-read the PR immediately before the verdict"
-jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
-    fail_condition pr-not-open "the PR left the OPEN state while the gate was reading it"
+# 12. The LAST network read, and it reapplies EVERY scalar gate rather than
+# just identity. Checking only head/base
+# would let a close, a promotion, a CHANGES_REQUESTED review or a DIRTY merge
+# state land during the comparison and still emit `ready`, and draft state and
+# mergeability are excluded from the fingerprint so nothing downstream catches
+# them. Bounded, not regressive: no further network call follows, and the
+# residual window is the caller's contractual pre-promotion re-read.
+final="$(run_gh pr view "$pr" --repo "$repo" \
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,baseRefOid)" ||
+    indeterminate fetch-failed "cannot re-read the PR after the final comparison"
+jq -e '.state == "OPEN"' <<<"$final" >/dev/null ||
+    fail_condition pr-not-open "the PR left the OPEN state while the gate was comparing against the base"
 if [ "$require_draft" = 1 ]; then
-    jq -e '.isDraft == true' <<<"$recheck" >/dev/null ||
-        fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
+    jq -e '.isDraft == true' <<<"$final" >/dev/null ||
+        fail_condition pr-not-draft "the PR was promoted while the gate was comparing against the base"
 else
-    jq -e '.isDraft == false' <<<"$recheck" >/dev/null ||
-        fail_condition pr-draft "the PR returned to draft while the audit was reading it — the promotion under audit no longer stands"
+    jq -e '.isDraft == false' <<<"$final" >/dev/null ||
+        fail_condition pr-draft "the PR returned to draft while the gate was comparing against the base"
 fi
-jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
-    fail_condition head-moved "PR head changed while the gate was reading it"
-[ "$(jq -r '.reviewDecision // ""' <<<"$recheck")" != "CHANGES_REQUESTED" ] ||
-    fail_condition changes-requested "a reviewer requested changes while the gate was reading"
-case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
-DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
-BEHIND) fail_condition merge-state-behind "the base branch advanced while the gate was reading" ;;
+jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
+    fail_condition head-moved "PR head changed while the gate was comparing against the base"
+jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
+    fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
+jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null ||
+    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; reconcile and re-run"
+[ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
+    fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
+# Same three-way handling as the recheck above — writing only the DIRTY arm
+# here let UNKNOWN or a cache-BEHIND arriving during the comparison window
+# fall straight through to `ready`, which is precisely the set of states the
+# readiness rule excludes.
+case "$(jq -r '.mergeStateStatus // ""' <<<"$final")" in
+DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was comparing against the base" ;;
+BEHIND)
+    # Lag claim only — see the pre-evaluation branch.
+    [ "$behind_by" -ne 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus turned BEHIND while the gate was comparing, with the graph reporting 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    ;;
 UNKNOWN | "")
-    indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
+    indeterminate merge-state-unknown "GitHub stopped reporting mergeability while the gate was comparing — re-poll briefly"
     ;;
 esac
 
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
     verdict_detail="every mechanically checkable readiness condition holds"
+elif [ "$audit_behind" -ne 0 ]; then
+    verdict_condition=audit-behind
+    verdict_detail="every mechanically checkable condition except the draft requirement holds, but the head is ${audit_behind} commit(s) behind ${behind_base_ref} — ordinary post-promotion drift: REPORT it to the maintainer, never undo the promotion over it"
 else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"

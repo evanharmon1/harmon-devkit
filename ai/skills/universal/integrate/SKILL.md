@@ -576,6 +576,11 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   procedure would deadlock — the guard has already spent the undo and cannot
   reconcile an unverified head. That one comment only; every other write
   still routes.
+- **Being behind the base is not a mid-stage blocker.** A base that moved
+  mid-round is noted and carried, never acted on where it is noticed: a base
+  merge moves the head and throws away the CI and review results the round was
+  about to spend. The readiness gate resolves it, once, and the recipe is
+  "Base reconciliation" at the end of step 5.
 - **Unexplained promotion — `isDraft` flips to false with no `gh pr ready`
   issued by this session.** Read the `isDraft` from the round-start fetch every
   poll, not only at the gate: a flip caught late looks exactly like a PR that
@@ -595,7 +600,47 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     already-non-draft path prescribes; do **not** call `gh pr ready` again.
     Reverting a promotion the gate would itself have made un-notifies nobody
     and can override a genuine human click.
-  - **Otherwise** — the promotion sits on an unverified head or open findings.
+  - **Indeterminate, or ordinary post-promotion drift — report, never undo.**
+    A non-pass is not by itself evidence that the promotion was unjustified.
+    Two kinds never license an undo:
+
+    - **Anything the gate could not establish** — every `audit` exit 2,
+      whatever its condition. "I could not determine this" is not "this is
+      wrong", and reversing a human's handoff on it destroys a real thing over
+      an unproven one — while achieving nothing about the harm the
+      stay-draft rule guards, because `gh pr ready --undo` cannot unsend the
+      notifications that already went out. This generalises the rule stated
+      below for a failed timeline read rather than inventing one. Re-poll
+      briefly; if it stays unknown, **escalate with a blocker report naming
+      the condition**, and leave the PR as you found it.
+
+      Note the scope carefully, because it is easy to misread as a conflict
+      with the Dev Loop's "a failed **or indeterminate** condition is not a
+      pass: leave the PR draft". That rule governs **this session's own
+      promotion decision** — do not promote on an unproven condition. It does
+      not say to reverse a promotion somebody else already made, and the
+      reasoning it gives (the one-way door) argues against doing so: the door
+      is already open and an undo does not close it. A PR whose readiness
+      cannot be established is escalated loudly, not silently accepted.
+    - **State that changed *after* a correct promotion** — `audit-behind`,
+      `behind-base`, `base-retargeted`, `head-moved`. The base and the
+      contributor are not ours to hold still, and a PR drifting once it is in
+      a human's hands is ordinary. Report it to the maintainer; the remedy is
+      theirs. `behind-base` belongs here for the same reason as the rest: in
+      an **audit** it can only mean the base branch advanced while the gate
+      was comparing against it, which is drift by definition. (In `check` it
+      is an ordinary failure — check never routes through this branch, because
+      this branch is about PRs somebody else already promoted.)
+
+    This is deliberately a rule about kinds rather than a list of conditions.
+    The gate can emit dozens, and exempting them one at a time is a game you
+    lose by one condition every time a new one is added — which is exactly how
+    this text came to need rewriting.
+
+  - **Otherwise** — the gate positively established that the promotion sits on
+    an unverified head or open findings: failing checks, a `CHANGES_REQUESTED`
+    review, unanswered threads, unsettled deferred findings, a Codex cycle that
+    is not clean. Only these.
     **The undo is its own record, so read the PR's timeline before making
     another one**:
     `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`
@@ -1290,15 +1335,109 @@ is optional in addition, never a substitute for per-thread replies.
   declaring victory after a push is the classic failure mode this skill exists
   to prevent.
 
+### Base reconciliation
+
+The gate decides *whether* the head is behind and *against what*; this states
+the properties any reconciliation must satisfy. It deliberately does not
+restate the mechanism — `readiness-gate.sh` computes the base, the count and
+the condition, its failure message names all three, and a second hand-rolled
+recipe here would be one more thing to keep correct (an earlier draft of this
+section shipped a local `git rev-list` range that counted **ahead**, not
+behind).
+
+**Direction.** Merging the PR's own base branch **into** the feature branch is
+permitted, and is sometimes required before the gate can pass. Merging the
+feature branch **into** the base is the operation that needs per-merge human
+approval. They are opposite operations and only the second is a merge to
+`main`; an implementer who reads the second rule as forbidding the first will
+wait forever for a reconciliation that cannot arrive
+(evanharmon1/harmon-init#1203). Pushed history is never rebased or
+force-pushed — reconcile with a merge commit.
+
+**Base identity.** The base is the PR's own `baseRefName` in the **target**
+repository — never "the default branch" by habit, and never a local
+`origin/main`: a PR can target a release branch, and on a fork `origin` is the
+contributor's copy. Merging the wrong ref can leave the head level with
+something that is not its base. The gate reads `baseRefName`, and a retarget
+mid-gate stops the run (`base-retargeted`) rather than being re-measured
+against a moving target.
+
+**Timing — once, at the gate.** Being behind is **not a mid-stage blocker.**
+Notice it, record it, carry on; the gate is where it is resolved. Reacting on
+sight is expensive because a base merge moves the head, and a moved head
+invalidates the CI results and the review cycle about to be spent on it. On
+evanharmon1/harmon-init#1311 the base moved five times in one session and the
+branch was merged three times; two were mid-stage reactions that re-reviewed
+source which had not changed and found nothing.
+
+**Reconciliation is an ordinary remediation round.** It is not a special
+operation exempt from anything: it passes the round gate and the secret scan,
+it pushes the gated SHA, it spends remediation budget, and it counts against
+every cap that governs any other round. Two consequences follow rather than
+needing their own procedure:
+
+- With no remediation budget left, reconciliation is the **blocked stop** with
+  a report naming the unreconciled base — never a push anyway, and never a
+  promotion on a behind head. **The last remediation push is reserved the same
+  way the last cycle is**: before making a push that may be the final one,
+  preflight `behind` and fold the base merge into that same push. Deferring it
+  spends the last round on the fix alone and then needs a round that no longer
+  exists — with `remediation = 1`, a behind head and one confirmed finding,
+  merging and fixing together costs one round while doing them in sequence
+  costs two and ends blocked.
+- The merge moves the head, so it owes a fresh current-head cycle exactly as
+  any head move does. **The last permitted cycle is therefore reserved for the
+  reconciled head**: before dispatching it, run
+  `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
+  (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
+  behind, reconcile first and spend that cycle on the merged head. Use the
+  subcommand rather than a compare call of your own: ref encoding and the
+  fail-closed handling of an unreadable comparison live there and are tested
+  there, and an indeterminate answer must not be read as "level". Waiting for the gate
+  to report `behind-base` is too late by construction: the cycle is dispatched
+  *before* the gate runs, so a base that moved beforehand would consume the
+  last cycle on a head about to be superseded, and turn a recoverable branch
+  into a deterministic cap-reached blocker. Discovering it after the final
+  cycle is spent remains an escalation — the point of the reservation is that
+  it should not happen. Where the resolved integration cap is 0 no cloud cycle
+  is owed at all and the gate's Codex condition drops out, as everywhere else.
+
+**A PR the gate can establish is behind is never reported ready** — under any
+cap, at any round, however clean everything else is. That is the property all
+of the above exists to preserve; if a reading of this section ever conflicts
+with it, that reading is wrong.
+
+The qualifier is exact, not a hedge. The base is not under this repository's
+control, so a PR can fall behind a second after a correct promotion; that is
+ordinary, and resolving it is what the maintainer's "Update branch" is for.
+What the gate owes is that it never promotes a head it could see was behind —
+which is why the check runs again immediately before the verdict rather than
+once at the start. Undoing a promotion because the base moved afterwards is
+**not** the remedy: promotion is a one-way door (`gh pr ready --undo` cannot
+unsend the notifications), and § "Unexplained promotion" already refuses
+reflexive undos.
+
+This is enforced rather than merely stated: the behind checks run in `check`
+mode only. `audit` judges a promotion that already happened, so a behind head
+there is ordinary drift — and had audit failed on it, § "Unexplained
+promotion"'s *Otherwise* branch would have routed a perfectly valid human
+handoff into an undo. A promoted PR that has fallen behind is reported to the
+maintainer, never reversed by this session.
+
 ## 6. Stop conditions
 
 Every integration session ends at exactly one of these — there is no path
 that loops indefinitely:
 
 1. **Ready for human review** — all workflows pass, `reviewDecision` is not
-   `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` or `BEHIND`
-   (conflicts and an out-of-date head are yours to resolve — a merge/update
-   with the base plus re-verification is a round), and no findings remain
+   `CHANGES_REQUESTED`, the head is **0 commits behind its base** (`behind_by`,
+   not `mergeStateStatus`, which is a cache that has read `CLEAN` for a head
+   sixteen commits behind), `mergeStateStatus` is not `DIRTY`, and it is
+   neither `UNKNOWN` nor — with the graph reporting 0 — still `BEHIND`, both
+   of which are *unknown-for-now* and re-polled rather than promoted on
+   (conflicts and an out-of-date head are yours to resolve — see "Base
+   reconciliation" at the end of step 5; a merge with the base plus
+   re-verification is a round), and no findings remain
    unresolved — including the low-priority ones deferred into this stage,
    which count as resolved once their box is ticked with the outcome. A
    finding carried in the PR body has no inline thread to answer, so its
