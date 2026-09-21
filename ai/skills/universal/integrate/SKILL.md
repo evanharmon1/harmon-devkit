@@ -921,8 +921,13 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   ```
 
   `--surface review` takes a review ID instead. `settle` refuses (exit 2) a
-  target that does not exist, was not written by the pinned actor, carries no
-  severity badge, or does not identify this state's head. A disposition
+  target that does not exist, was not written by the pinned actor, is not
+  something `check` blocks on, or names a commit that is not this state's
+  head. Two halves of that are easy to get wrong: it does **not** require a
+  severity badge — its domain is every body whose verdict is `findings`, so a
+  body misread as a finding stays answerable — and a target that names no
+  commit of its own is accepted, binding to the cycle's reserved head by
+  comment id. A disposition
   settles the **whole** target — where it carries several badges, pass
   `--covers <n>` matching that count, or a partial settlement would read as
   full. It fingerprints the body it settled, so a finding Codex edits

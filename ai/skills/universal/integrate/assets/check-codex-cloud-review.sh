@@ -34,10 +34,13 @@
 # 15 and 16 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so a
 # caller pinned to the older contract still reads every code it knew.
 #
-# `settle` records the disposition of a badged finding that lives OUTSIDE an
+# `settle` records the disposition of a finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because
 # those two surfaces carry no reply linkage, so the in-thread adjudication path
 # can never reach them and `check` would report `findings` for them forever.
+# Its domain is everything `check` blocks on (`verdict_class == "findings"`),
+# not only badged bodies: a body misread as a finding must stay answerable, or
+# the misread strands the head instead of costing one recorded disposition.
 #
 # `reserve` creates the state a cycle runs on; `reap` is the other half of that
 # lifecycle. Nothing else removes a state file — a shepherded PR is still open
@@ -710,9 +713,15 @@ bounded_wait() {
     # LONGER window than the ceiling is never cut short by it: the extension
     # may only ever add time.
     if [ "$pending_reaction_live" = "1" ]; then
+        # Challenge round 5, finding `challenge-r5-codex-adversarial-8`
+        # (confirmed P3): a `max(ceiling, timeout)` clamp used to sit here,
+        # described by its own comment as stopping the ceiling from shortening
+        # a longer configured window. It was dead code. Reaching this point
+        # already requires `elapsed >= timeout_seconds`, so when the timeout
+        # exceeds the ceiling the comparison below is false with or without
+        # the clamp — it never changed an outcome. The property it claimed to
+        # protect still holds; only the misleading code is gone.
         ceiling_seconds=$((eyes_ceiling_min * 60))
-        [ "$ceiling_seconds" -ge "$timeout_seconds" ] ||
-            ceiling_seconds=$timeout_seconds
         if [ "$elapsed" -lt "$ceiling_seconds" ]; then
             emit pending "$detail; the finder's pending reaction is still live on this attempt's trigger, so the window is extended to ${eyes_ceiling_min} minutes from the trigger"
             exit 11
@@ -1998,12 +2007,21 @@ check)
     # evidence is the only state a quota reply can ever be observed in, and
     # every waiting path funnels through there.
     if finder_has_surface comment; then
+        # Same boundary as the unbound-badge scan above, same reason
+        # (`challenge-r5-codex-adversarial-4`, second site): a usage-limit
+        # reply posted in the triggers own second was missed by the strict
+        # bound, so the cycle waited out its window and reported 12 instead of
+        # the terminal 15 the reply had already given it. Inclusive bound with
+        # the monotonic comment-id tiebreak, exactly as above.
         quota_record=$(jq -r \
             --argjson id "$actor_id" \
-            --arg requested "$state_requested" '
+            --arg requested "$state_requested" \
+            --argjson trigger "${state_trigger:-0}" '
               [.[] | select(
                 .user.id? == $id and
-                ((.created_at? // "") > $requested) and
+                (((.created_at? // "") > $requested) or
+                 (((.created_at? // "") == $requested) and
+                  ((.id? | type) == "number") and (.id > $trigger))) and
                 ((.body // "") | ascii_downcase |
                   test("reached your codex usage limit"))
               ) | select((.id? | type) == "number" and .id > 0)] |
@@ -2243,10 +2261,15 @@ check)
             exit 2
         }
 
+        # The shared verdict defs are loaded here because the round-5 `-5`
+        # exemption below needs `is_self_report`, which lives in them. This is
+        # the same definition the top-level classifier and `readiness-gate.sh`
+        # use, which is the point: one predicate, three consumers.
         inline_partition=$(jq -c \
             --argjson id "$actor_id" \
             --argjson author "$pr_author_id" \
-            --arg head "$state_head" '
+            --arg head "$state_head" \
+            "$codex_verdict_defs"'
               def ts($value):
                 if ($value | type) == "string" and
                    ($value | test(
@@ -2259,7 +2282,25 @@ check)
               . as $all |
               [$all[] | select(
                 .user.id? == $id and (.original_commit_id? == $head)
-              )] as $bot |
+              )] as $bot_all |
+              # Challenge round 5, finding `challenge-r5-codex-adversarial-5`
+              # (confirmed P1, a CONTRACT BREAK against the governing file):
+              # AGENTS.md says a self-fix summary — an unbadged report from
+              # this bot describing a fix IT made, **in a thread** or as a
+              # top-level comment — is informational and owed no second reply.
+              # The top-level half was implemented in `verdict_class`, and
+              # `readiness-gate.sh` implements the thread half, but THIS
+              # partition selected every bot comment on the head with no
+              # exemption at all. So the bot own unbadged summary, posted
+              # after a session replied "Fixed in <sha>", held the cycle open
+              # and was named as the accepted finding evidence.
+              #
+              # It survived five rounds because every #675 fixture in this
+              # suite is top-level; the inline half of that sentence had no
+              # case, which is exactly how the two implementations diverged
+              # unnoticed. Same predicate as the other two consumers, so all
+              # three now answer the same question the same way.
+              [$bot_all[] | select(is_self_report | not)] as $bot |
               [$bot[] |
                 . as $comment |
                 ts($comment.created_at) as $posted |
@@ -2294,6 +2335,15 @@ check)
                     if ($comment.id? | type) == "number"
                     then $comment.id else null end
                   ),
+                  # Challenge round 5, finding `challenge-r5-codex-adversarial-6`
+                  # (confirmed P2): `unanswered[]` emitted the per-comment id
+                  # while `ai/agents/integrator.md` tells the agent to feed it
+                  # into `unanswered_thread_roots`, and the schema defines
+                  # those as THREAD ids. A bot comment posted into an existing
+                  # thread is not its own root, so the agent was handed a value
+                  # the field does not accept. The root is what the reply
+                  # endpoint takes too, so it is the useful id either way.
+                  root: $root,
                   path: (
                     if ($comment.path? | type) == "string"
                     then $comment.path else null end
@@ -2323,7 +2373,8 @@ check)
                 # answer all of them in the round that surfaced them.
                 unanswered:
                   ([$classified[] | select(.adjudicated | not) |
-                    {comment_id: .comment, review_id: .review, path: .path}]),
+                    {thread_root: .root, comment_id: .comment,
+                     review_id: .review, path: .path}]),
                 unattributed:
                   ([$classified[] | select(.review == null)] | length),
                 attributed:
@@ -2740,13 +2791,35 @@ check)
     #
     # Disposed ids are filtered inside the query so "is anything still
     # unanswered" is one decision rather than a check against a single id.
+    # Challenge round 5, finding `challenge-r5-codex-adversarial-4` (confirmed
+    # P1, and a reproduced FALSE CLEAN over a live P0): this bound was strict
+    # while the clean-by-reaction path it races is inclusive
+    # (`.created_at? >= $requested`, pinned by the suite case
+    # `exact-trigger current-request +1 is clean`). So a badge stamped in the
+    # TRIGGERS OWN SECOND was dropped while a reaction in that same second
+    # certified the cycle clean — one second was the whole difference, and the
+    # result carried no `unbound_badged` key at all, so the caller was never
+    # told the finding existed.
+    #
+    # Same hazard this file already ruled on for trigger reconstruction
+    # (harmon-devkit#1014 ruling 3, quoted above `prior_trigger_candidates`):
+    # GitHub stamps these to whole seconds, and comment ids are monotonic
+    # within one resource type, so a same-second comment whose id EXCEEDS the
+    # trigger comment id is provably after it. Inclusive bound plus that
+    # tiebreak, applied here at last. Conservative direction on a blocking
+    # scan: admitting one extra badge costs a recorded disposition, dropping
+    # one costs the invariant this whole form exists to hold.
     unbound_badged_ids=$(jq -c \
         --argjson id "$actor_id" \
         --arg requested "$state_requested" \
+        --argjson trigger "${state_trigger:-0}" \
         --argjson disposed "$disposed_comments" \
         "$codex_verdict_defs"'
           [.[] | select(.user.id? == $id) |
-            select(((((.updated_at // .created_at) // "")) > $requested)) |
+            (((.updated_at // .created_at) // "")) as $stamp |
+            select(($stamp > $requested) or
+                   (($stamp == $requested) and
+                    (((.id? | type) == "number") and (.id > $trigger)))) |
             select(has_severity_marker) |
             select(((.body // "") |
               test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |
@@ -2758,8 +2831,7 @@ check)
             # `challenge-r4-codex-adversarial-1` at its settle step.
             . as $comment |
             select(($disposed | index($comment.id)) == null) |
-            {id: $comment.id,
-             time: (((.updated_at // .created_at) // ""))}
+            {id: $comment.id, time: $stamp}
           ] | sort_by(.time, .id) | map(.id)
         ' "$workdir/comments.json") || {
         emit indeterminate "conversation comments could not be scanned for unbound badged findings"
@@ -3474,8 +3546,14 @@ settle)
     # answered it and `check` reports `findings` for that head forever — the
     # #275 deadlock, reappearing on the two surfaces the reply rule cannot
     # reach. This command is the local record of that answer, and it is
-    # deliberately narrow: it refuses anything it cannot prove is a badged
-    # finding, from the pinned actor, about the state's own head.
+    # deliberately narrow, and its DOMAIN IS WHAT `check` BLOCKS ON — every
+    # body whose `verdict_class` is `findings`, badged or not — never "what
+    # carries a badge" (challenge round 2, findings `-1`/`-3`; the pre-round-2
+    # badge-only wording was still stated here and in the file header, which
+    # is challenge round 5 finding `challenge-r5-codex-adversarial-3`). A
+    # target must still come from the pinned actor and resolve to this state's
+    # own head, or bind to it by comment id where the body names no commit of
+    # its own.
     [ -n "$surface" ] && [ -n "$target_id" ] && [ -n "$disposition" ] &&
         [ -n "$note" ] && [ -n "$actor_id" ] || usage
     valid_uint "$actor_id" || die "invalid actor ID"

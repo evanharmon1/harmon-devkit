@@ -704,18 +704,19 @@ symmetric:
 - An **inline** finding is classified independently of its badge and is
   answered by a trusted in-thread reply, so an inline cloud P3 is on the
   ordinary reply path with everything else.
-- A badged finding stated **outside** an inline thread has no reply linkage,
-  and `settle` currently refuses a badge it does not recognize as `p[0-2]`.
-  Its domain is now *what `check` blocks on* rather than *what carries a
-  badge*, and a target with no `Reviewed commit` line binds to the cycle's own
-  reserved head — so a badged comment the checker cannot bind can be declined
-  or filed rather than reporting findings forever.
-  So an unfixed, non-inline cloud P3 has no way to be recorded as settled
-  *by that checker*: fix it and push (which starts a fresh-head cycle and
-  resolves it), or if it genuinely needs no change, report the blocker and
-  leave the PR draft. That gap is being fixed upstream in
-  evanharmon1/harmon-devkit#530 and re-pinned here; it is a limitation of the
-  current pin, not a rule.
+- A finding stated **outside** an inline thread has no reply linkage, so
+  `settle` is the route: it records the disposition locally, against the
+  cycle's own state. Its domain is *what `check` blocks on* — every body whose
+  verdict is `findings` — rather than *what carries a badge*, so an unbadged
+  body the classifier reads as a finding stays answerable instead of stranding
+  the head. A target that names no commit of its own binds by comment id to
+  the head the cycle already reserved; one that names a different commit is
+  still refused. So a non-inline cloud finding at any severity, P3 included,
+  can be declined with reasoning or filed as follow-up rather than reporting
+  `findings` forever — the earlier limitation here (only `p[0-2]` badges were
+  settleable, leaving an unfixed non-inline P3 with no recorded resolution and
+  the PR stuck in draft) is gone, and evanharmon1/harmon-devkit#530 tracked
+  exactly that.
 
 **Where it is not vendored**, that limitation does not exist to work around:
 `AGENTS.md`'s checker-absent procedure governs, and a non-inline finding is

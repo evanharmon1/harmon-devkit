@@ -4632,5 +4632,292 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted comment 6005
 
+# --------------------------------------------------------------------------
+# harmon-devkit#1050 challenge round 5/5 — the capped final round. `-7` proved
+# by mutation that 188 green cases could not fail when the predicate family
+# every badge-dropping bug lived in was removed. These cases kill the two
+# surviving mutants and exercise the conjuncts that killed nothing.
+# --------------------------------------------------------------------------
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> challenge-r5-codex-adversarial-4: a badge in the TRIGGERS OWN SECOND is not dropped"
+# Reproduced fail-open: the blocking scan was strict `>` while the
+# clean-by-reaction path is inclusive `>=`, so one second decided between
+# `exit 0 clean` and a live P0. Inclusive bound plus the monotonic comment-id
+# tiebreak this file already uses for trigger reconstruction.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:8001,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** the migration drops rows on rollback."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9001,user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:05Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 8001
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [8001]' >/dev/null ||
+    fail "a same-second badge must be enumerated, not dropped: $check_out"
+
+echo "==> challenge-r5-codex-adversarial-4: a same-second comment whose id PRECEDES the trigger is still prior"
+# The tiebreak is monotonic ids, not a blanket inclusive bound: a comment
+# sharing the triggers second but assigned a LOWER id was posted before it and
+# belongs to an earlier cycle.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:99,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:00Z",
+        body:"**P0** a badge from before this trigger."
+      },
+      {
+        id:8002,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 8002
+
+echo "==> challenge-r5-codex-adversarial-4: a same-second usage-limit reply is terminal, not a retry"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg body "$quota_reply_body" \
+    '[[
+      {
+        id:8003,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:00Z",body:$body
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 15 quota-exhausted
+
+echo "==> challenge-r5-codex-adversarial-5: an in-thread bot self-fix summary is owed no reply"
+# AGENTS.md: a self-fix summary "in a thread or as a top-level comment" is
+# informational. The top-level half had three cases; the thread half had none,
+# which is how the checker and the gate diverged unnoticed.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:88,user:{id:$id,login:$login},path:"a.sh",
+        pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:03Z",
+        body:"**P1** the retry path is unguarded"
+      },
+      {
+        id:89,user:{id:$owner,login:"owner"},path:"a.sh",
+        in_reply_to_id:88,author_association:"OWNER",
+        original_commit_id:$head,created_at:"2026-07-31T08:00:10Z",
+        body:"Adjudicated P2 and fixed in `abc1234`."
+      },
+      {
+        id:90,user:{id:$id,login:$login},path:"a.sh",
+        in_reply_to_id:88,pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:20Z",
+        body:"## Summary\n\n* Committed the change on `codex/x` as `abc1234`.\n\n**Testing**\n\n* ✅ `git diff --check`\n"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> challenge-r5-codex-adversarial-5: a BADGED in-thread bot follow-up still blocks"
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:88,user:{id:$id,login:$login},path:"a.sh",
+        pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:03Z",
+        body:"**P1** the retry path is unguarded"
+      },
+      {
+        id:89,user:{id:$owner,login:"owner"},path:"a.sh",
+        in_reply_to_id:88,author_association:"OWNER",
+        original_commit_id:$head,created_at:"2026-07-31T08:00:10Z",
+        body:"Adjudicated P2 and fixed in `abc1234`."
+      },
+      {
+        id:90,user:{id:$id,login:$login},path:"a.sh",
+        in_reply_to_id:88,pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:20Z",
+        body:"## Summary\n\n**P1** and the rollback path still drops the lock.\n\n* Committed the change on `codex/x` as `abc1234`.\n"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> challenge-r5-codex-adversarial-6: unanswered[] carries the THREAD ROOT"
+# integrator.md feeds this into `unanswered_thread_roots`, which the schema
+# defines as thread ids; the per-comment id is not one for an in-thread reply.
+new_cycle
+codex_findings_review
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:700,user:{id:$owner,login:"owner"},path:"a.sh",
+        author_association:"OWNER",
+        original_commit_id:$head,created_at:"2026-07-31T08:00:01Z",
+        body:"opening the thread"
+      },
+      {
+        id:701,user:{id:$id,login:$login},path:"a.sh",
+        in_reply_to_id:700,pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:05Z",
+        body:"**P1** an unanswered finding posted into the thread"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+printf '%s' "$check_out" | jq -e '[.unanswered[].thread_root] == [700]' >/dev/null ||
+    fail "unanswered[] must carry the thread root, not the comment id: $check_out"
+printf '%s' "$check_out" | jq -e '[.unanswered[].comment_id] == [701]' >/dev/null ||
+    fail "the comment id stays alongside the root: $check_out"
+
+echo "==> challenge-r5-codex-adversarial-7: the Reviewed-commit exclusion is load-bearing (mutant 1)"
+# Removing `select(... test("Reviewed commit...")) | not)` from the unbound scan
+# survived all 188 cases. A BOUND badged comment must go down the ordinary
+# verdict path and be cited as a bound finding, never enumerated as unbound.
+new_cycle
+write_badged_comment 77
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 77
+printf '%s' "$check_out" | jq -e 'has("unbound_badged") | not' >/dev/null ||
+    fail "a comment naming this head is BOUND and must not be reported unbound: $check_out"
+
+echo "==> challenge-r5-codex-adversarial-7: the no-badge conjunct of is_self_report is load-bearing (mutant 2)"
+# Dropping `(has_severity_marker | not)` from `is_self_report` survived all 188
+# cases, while the round-2 safety argument leans on it: a BADGED body must
+# never reach `informational`, whatever else it looks like.
+#
+# THE BODY IS SHAPED TO ISOLATE ONE CONJUNCT, which is the whole point of `-7`.
+# A first attempt at this case ended with a bare `Reviewed commit ...` line,
+# so `states_only_own_work` rejected the body first and the case passed with
+# the badge conjunct removed — a case that cannot fail, which is exactly the
+# defect `-7` reported. Every line here is a valid self-report line (heading,
+# bullet, the whole-line metadata form), so the badge is the ONLY thing
+# standing between this body and `informational`.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:7701,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:7702,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("### Summary\n\n* **P1** Committed the change on `codex/x` as `abc1234`.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+[ "$check_rc" -ne 0 ] ||
+    fail "a badged body must never classify informational: $check_out"
+
+echo "==> challenge-r5-codex-adversarial-7: the finding-footer conjunct of is_self_report is load-bearing"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:7703,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:7704,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("### Summary\n\n* Committed the change on `codex/x` as `abc1234`.\n* Useful? React with 👍 / 👎.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> challenge-r5-codex-adversarial-7: the summary-heading conjunct of is_self_report is load-bearing"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:7705,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:7706,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("* Committed the change on `codex/x` as `abc1234`.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> challenge-r5-codex-adversarial-8: a window longer than the ceiling is still bounded by its own timeout"
+# The deleted clamp claimed to protect this. It still holds without it.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9302,user:{id:$id,login:$login},
+        content:"eyes",created_at:"2026-07-31T08:00:01Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+set +e
+long_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
+    --state "$state" --actor-id "$actor_id" --actor-login "$actor_login" \
+    --timeout-min 45 --now '2026-07-31T08:40:00Z' 2>&1)"
+long_rc=$?
+set -e
+check_watchdog "$long_rc" long_window "$long_out"
+[ "$long_rc" -eq 11 ] ||
+    fail "a 45-minute window must still be pending at 40 minutes: $long_out"
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
