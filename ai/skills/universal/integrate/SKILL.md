@@ -547,10 +547,21 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     - **Anything the gate could not establish** — every `audit` exit 2,
       whatever its condition. "I could not determine this" is not "this is
       wrong", and reversing a human's handoff on it destroys a real thing over
-      an unproven one. This generalises the rule already stated below for a
-      failed timeline read; it is not a new principle, just an honest one
-      about where it applies. Re-poll briefly; if it stays unknown, escalate
-      with the condition named.
+      an unproven one — while achieving nothing about the harm the
+      stay-draft rule guards, because `gh pr ready --undo` cannot unsend the
+      notifications that already went out. This generalises the rule stated
+      below for a failed timeline read rather than inventing one. Re-poll
+      briefly; if it stays unknown, **escalate with a blocker report naming
+      the condition**, and leave the PR as you found it.
+
+      Note the scope carefully, because it is easy to misread as a conflict
+      with the Dev Loop's "a failed **or indeterminate** condition is not a
+      pass: leave the PR draft". That rule governs **this session's own
+      promotion decision** — do not promote on an unproven condition. It does
+      not say to reverse a promotion somebody else already made, and the
+      reasoning it gives (the one-way door) argues against doing so: the door
+      is already open and an undo does not close it. A PR whose readiness
+      cannot be established is escalated loudly, not silently accepted.
     - **State that changed *after* a correct promotion** — `audit-behind`,
       `base-retargeted`, `head-moved`. The base and the contributor are not
       ours to hold still, and a PR drifting once it is in a human's hands is

@@ -627,6 +627,10 @@ assert_skill "promotion staying a one-way door when the base moves after it" \
     "Undoing a promotion because the base moved afterwards is **not** the remedy"
 assert_skill "indeterminate never licensing an undo" \
     "every \`audit\` exit 2, whatever its condition"
+assert_skill "the stay-draft rule scoped to this session's own promotion" \
+    "governs **this session's own promotion decision**"
+assert_skill "an unestablished promotion being escalated, not accepted" \
+    "escalated loudly, not silently accepted"
 assert_skill "post-promotion drift being reported, not undone" \
     "State that changed *after* a correct promotion"
 assert_skill "the undo branch being limited to established injustice" \
