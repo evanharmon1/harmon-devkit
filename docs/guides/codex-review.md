@@ -689,10 +689,17 @@ precisely because `settle`'s domain is *what `check` blocks on* rather than
 *what carries a badge* — so a body misread as a finding costs one recorded
 disposition instead of stranding the head. And a badged comment carrying no
 `Reviewed commit` line of its own **blocks** (`findings`, exit 10) until it is
-settled by comment id — every undisposed one blocks, oldest cited first, and
-"newer than the trigger" counts an edit as well as a post, so a badge added by
-a later edit cannot slip past. Nothing is parsed out of the body: the cycle is
-pinned to its reserved head. And while the bot's 👀 is still on the current attempt's trigger,
+settled by comment id — every undisposed one blocks, oldest cited first.
+"After the trigger" means **by comment id**, not by any timestamp: a badge
+blocks when its id exceeds the head's *first* trigger id, which is recorded at
+the first `attach` and never rebased by a second attempt or a reconstruction.
+Ids are monotonic, so there is no window, second, or edit to get wrong — five
+consecutive review rounds each closed one leak in a timestamp bound and each
+left another, and the clock came out. The **documented boundary** of that
+trade: a comment that pre-existed the first trigger and is later edited to add
+a badge is not covered, because its id is below the boundary and no id
+ordering can see the edit. Nothing is parsed out of the body either: the cycle
+is pinned to its reserved head. And while the bot's 👀 is still on the current attempt's trigger,
 the attempt window **extends** to a hard ceiling of 30 minutes from the
 trigger rather than returning `12`, because the window exists to bound a
 reviewer that is not working (harmon-devkit#655). A 👀 that vanished with no

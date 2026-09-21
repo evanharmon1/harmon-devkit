@@ -4631,8 +4631,13 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 assert_accepted comment 6003
 
-echo "==> challenge-r4-codex-adversarial-2: a badge whose comment is untouched since before the trigger does not block"
-# The inverse, so the fix is a stamp choice and not "always block".
+echo "==> challenge-r4-codex-adversarial-2: a badge from before the trigger does not block"
+# The inverse, so the invariant is an ordering and not "always block".
+#
+# Review round 4 (maintainer ruling): the ordering is the COMMENT ID now, so
+# this fixture carries an id below the trigger id as a real pre-trigger comment
+# would -- GitHub ids are monotonic. It used to carry id 6004 against trigger
+# 123 and rely on its timestamps, which is a shape the API cannot produce.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -4640,7 +4645,7 @@ jq -cn \
     --arg prefix "${head_sha:0:10}" \
     '[[
       {
-        id:6004,user:{id:$id,login:$login},
+        id:110,user:{id:$id,login:$login},
         created_at:"2026-07-31T07:55:00Z",
         updated_at:"2026-07-31T07:55:00Z",
         body:"**P1** a finding from before this trigger."
@@ -4696,20 +4701,16 @@ assert_accepted comment 8001
 printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [8001]' >/dev/null ||
     fail "a same-second badge must be enumerated, not dropped: $check_out"
 
-echo "==> review-r2-codex-verification-2: an equal-second badge with a LOWER id blocks, and settle answers it"
-# THE MOOTED TIEBREAK FAMILY. Three rounds each added a predicate here and
-# each left a way through: `challenge-r5-codex-adversarial-4` made the bound
-# inclusive and tie-broke on monotonic comment ids;
-# `review-r1-codex-verification-1` split the stamp by provenance because the
-# tiebreak and the stamp read different clocks; `review-r2-codex-verification-2`
-# then found that a comment created AND edited inside the trigger second
-# serializes with `created_at == updated_at`, so the edit is undetectable and
-# the tiebreak drops the badge.
+echo "==> review-r4 ruling: the id ordering blocks and settle answers it"
+# THE MOOTED CLOCK FAMILY, in one case. This slot used to pin a same-second
+# tiebreak, then an edit-provenance split, then an inclusive `>=` bound, then a
+# reservation anchor -- five consecutive rounds, each closing one leak in one
+# timestamp seam and each leaving another (`challenge-r5-codex-adversarial-4`,
+# `review-r1-codex-verification-1`, `review-r2-codex-verification-2`,
+# `review-r3-codex-verification-1`, `review-r4-codex-verification-1` and `-2`).
 #
-# The two wire shapes at this boundary are the SAME BYTES: a never-touched
-# comment from before the trigger and one edited in that second to add the
-# badge are indistinguishable. So the predicate is gone, the equal second
-# blocks, and this case pins the other half of that trade — the block is
+# The clock is gone. A badge blocks when its comment id exceeds the heads FIRST
+# trigger id, and this case pins the other half of that trade: the block is
 # always answerable by comment id, so erring closed costs one disposition.
 new_cycle
 jq -cn \
@@ -4718,11 +4719,11 @@ jq -cn \
     --arg prefix "${head_sha:0:10}" \
     '[[
       {
-        id:99,user:{id:$id,login:$login},
+        id:8099,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:00Z",
         updated_at:"2026-07-31T08:00:00Z",
         issue_url:"https://api.github.com/repos/example/repo/issues/493",
-        body:"**P0** a badge sharing the triggers second, with a lower id."
+        body:"**P0** a badge whose id outranks the first trigger."
       },
       {
         id:8002,user:{id:$id,login:$login},
@@ -4730,34 +4731,36 @@ jq -cn \
         body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
       }
     ]]' >"${fixtures}/comments.pages.json"
-jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-99.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-8099.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
-assert_accepted comment 99
-printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [99]' >/dev/null ||
-    fail "an equal-second badge must be enumerated whatever its id: $check_out"
-run_settle --surface comment --id 99 --disposition declined --note "adjudicated: belongs to an earlier cycle"
-[ "$settle_rc" -eq 0 ] || fail "an equal-second badge must be settleable: $settle_out"
+assert_accepted comment 8099
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [8099]' >/dev/null ||
+    fail "an id-ordered badge must be enumerated: $check_out"
+run_settle --surface comment --id 8099 --disposition declined --note "adjudicated: belongs to an earlier cycle"
+[ "$settle_rc" -eq 0 ] || fail "an id-ordered badge must be settleable: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted comment 8002
 
-echo "==> review-r2-codex-verification-2: an equal-second badge beats the clean-by-reaction race"
-# The reproduced false clean: the reaction path is inclusive
-# (`.created_at? >= $requested`), so while the blocking scan dropped this
-# badge a 👍 in the same cycle certified the head clean over a live P0. Under
-# the old provenance split this fixture exited 0; it must report findings.
+echo "==> challenge-r5-codex-adversarial-4: a badge beats the clean-by-reaction race"
+# The reproduced false clean this family started from: the reaction path is
+# inclusive, so while the blocking scan dropped a badge stamped in the triggers
+# own second a 👍 in the same cycle certified the head clean over a live P0.
+#
+# The scenario is carried; its mechanism is not. The badge outranks the trigger
+# id, so no clock decides it and the race is settled by ordering.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
     '[[
       {
-        id:98,user:{id:$id,login:$login},
+        id:8098,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:00Z",
         updated_at:"2026-07-31T08:00:00Z",
         issue_url:"https://api.github.com/repos/example/repo/issues/493",
-        body:"**P0** created and edited inside the triggers own second."
+        body:"**P0** posted after the trigger, racing a positive reaction."
       }
     ]]' >"${fixtures}/comments.pages.json"
 jq -cn \
@@ -4771,7 +4774,7 @@ jq -cn \
     ]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
-assert_accepted comment 98
+assert_accepted comment 8098
 
 echo "==> challenge-r5-codex-adversarial-4: a same-second usage-limit reply is terminal, not a retry"
 new_cycle
@@ -4797,13 +4800,18 @@ echo "==> review-r3-codex-verification-1: a badge posted BETWEEN the two trigger
 # both need a `Reviewed commit` prefix an unbound badge does not have -- so the
 # clean verdict on trigger 2 exited 0 over a live undisposed P0.
 #
-# The bound is the HEAD RESERVATION now, which `reserve` carries across both
-# attempts, so this case pins both halves: the carried timestamp and the scan
-# that reads it.
+# The ordering is the head FIRST TRIGGER ID now (review round 4 ruling): it is
+# written once at the first `attach`, carried across a re-reservation, and never
+# rebased by the second `attach`. So this case pins all three -- the record, the
+# carry, the refusal to rebase -- plus the scan that reads it. Round 3 anchored
+# this on the reservation timestamp instead, which starved `attach` own fetch
+# budget (`review-r4-codex-verification-1`); an id cannot expire.
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 new_cycle
-attempt1_reserved="$(jq -r '.reserved_at' "$state")"
+attempt1_first_trigger="$(jq -r '.first_trigger_comment_id' "$state")"
+[ "$attempt1_first_trigger" = "123" ] ||
+    fail "attach must record the head first trigger id: $(jq -c . "$state")"
 trigger_id=200
 request_time='2026-07-31T08:15:30Z'
 jq -cn \
@@ -4818,8 +4826,8 @@ jq -cn \
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 2 >/dev/null
-[ "$(jq -r '.reserved_at' "$state")" = "$attempt1_reserved" ] ||
-    fail "attempt 2 must keep the head reservation time, got $(jq -r '.reserved_at' "$state") not $attempt1_reserved"
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "$attempt1_first_trigger" ] ||
+    fail "re-reserving attempt 2 must keep the head first trigger id: $(jq -c . "$state")"
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
@@ -4842,8 +4850,10 @@ jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-150.json
 "$helper" attach --state "$state" --trigger-id 200 >/dev/null
 [ "$(jq -r '.requested_at' "$state")" = "2026-07-31T08:15:30Z" ] ||
     fail "attach must still rebase requested_at to the new trigger: $(jq -c . "$state")"
-[ "$(jq -r '.reserved_at' "$state")" = "$attempt1_reserved" ] ||
-    fail "attach must not move the head reservation time: $(jq -c . "$state")"
+[ "$(jq -r '.trigger_comment_id' "$state")" = "200" ] ||
+    fail "attach must attach the new trigger: $(jq -c . "$state")"
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "$attempt1_first_trigger" ] ||
+    fail "attach must NOT rebase the head first trigger id: $(jq -c . "$state")"
 # The window is deliberately elapsed: the clean half of this case rides the
 # ordinary clean-comment path, which owes `require_latest_window_elapsed`.
 # Blocking does not -- an unbound badge blocks whatever the clock says.
@@ -4861,33 +4871,75 @@ assert_accepted comment 8400
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 
-echo "==> review-r3-codex-verification-3: an unusable stamp is indeterminate, not an admitted block"
-# The scan stamps a comment `(.updated_at // .created_at)` and used to compare
-# that string without ever proving it was a timestamp. A payload whose stamp is
-# unusable was admitted, enumerated, and exited 10 -- and then `settle` refused
-# it, leaving the head blocked with no answer available through this helper.
-# An unusable stamp is unknown, which is the direction `malformed_top_level`
-# already takes.
+echo "==> review-r4-codex-verification-3: an unusable comment ID is indeterminate, and the ids are named"
+# `review-r4-codex-verification-3` (fail-OPEN) and `-4` (fail-CLOSED) were one
+# defect: the scan computed its two keys from different filter sets. A badge
+# whose id was unusable matched neither and was silently dropped, while a
+# head-bound, pre-trigger or already-disposed comment could land in the
+# unusable key and block a head forever with no settle route.
+#
+# One domain (actor, badged, unbound, undisposed), answered exhaustively:
+# unusable, prior, blocking -- and `check` verifies the three add up rather
+# than trusting them. An id that is not a positive integer can be ordered
+# against nothing and named in no `settle` call, so it is REPORTED.
+# `review-r4-codex-verification-5`: with the ids, not just "the comment".
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
     '[[
       {
-        id:160,user:{id:$id,login:$login},
-        updated_at:"not-a-timestamp",
+        id:"not-a-number",user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",
         issue_url:"https://api.github.com/repos/example/repo/issues/493",
-        body:"**P0** a badge whose only stamp is unusable."
+        body:"**P0** a badge whose id cannot be ordered or settled."
       }
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 2 indeterminate
+printf '%s' "$check_out" | jq -e '[.unbound_unusable[]] == ["not-a-number"]' >/dev/null ||
+    fail "the indeterminate must name the unusable ids, not just the comment: $check_out"
 
-echo "==> review-r3-codex-verification-3: a stamp the scan admits is one settle can time"
-# The other half of the same defect: `settle` read a comment result time as
-# `.created_at` alone while the scan stamped it `(.updated_at // .created_at)`.
-# Two sites reading different fields for the same fact, so a shape `check`
-# blocked on could be unanswerable. Same pair, same order, both ends.
+echo "==> review-r4-codex-verification-4: a DISPOSED badge with an odd payload does not block forever"
+# The fail-closed half. `unusable` used to apply none of the scan filters, so a
+# disposed comment with an odd payload forced exit 2 on every later read, and
+# no settle route existed because it was already settled. It is out of the
+# domain now.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:8150,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge that will be settled."
+      },
+      {
+        id:8151,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:40Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-8150.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 8150 --disposition declined --note "adjudicated: not a defect"
+[ "$settle_rc" -eq 0 ] || fail "settling the badge must succeed: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 8151
+
+echo "==> review-r3-codex-verification-3: a comment with only an update stamp is still settleable"
+# `settle` read a comment result time as `.created_at` alone, so a shape
+# `check` blocked on could be unanswerable. It reads
+# `(.updated_at // .created_at)` now.
+#
+# The scan itself no longer looks at timestamps at all after the review round 4
+# ruling, so this case pins `settle` rather than the ordering: a badge the id
+# ordering admits must still be nameable in a disposition.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -5168,46 +5220,20 @@ check_watchdog "$long_rc" long_window "$long_out"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 
-echo "==> review-r1-codex-verification-1: a badge EDITED IN during the triggers own second is not dropped"
-# Round 5 stamped on `(.updated_at // .created_at)` but tie-broke on
-# `.id > $trigger` — two clocks, one tiebreak. A comment that pre-exists the
-# trigger and is edited in its second has an equal stamp and a LOWER id, so
-# the tiebreak rejected it and the inclusive reaction path exited 0 over it.
-new_cycle
-jq -cn \
-    --argjson id "$actor_id" \
-    --arg login "$actor_login" \
-    '[[
-      {
-        id:5,user:{id:$id,login:$login},
-        created_at:"2026-07-31T07:50:00Z",
-        updated_at:"2026-07-31T08:00:00Z",
-        issue_url:"https://api.github.com/repos/example/repo/issues/493",
-        body:"**P0** a finding added by an edit in the triggers own second."
-      }
-    ]]' >"${fixtures}/comments.pages.json"
-jq -cn \
-    --argjson id "$actor_id" \
-    --arg login "$actor_login" \
-    '[[
-      {
-        id:9601,user:{id:$id,login:$login},
-        content:"+1",created_at:"2026-07-31T08:00:05Z"
-      }
-    ]]' >"${fixtures}/reactions.pages.json"
-run_check '2026-07-31T08:01:00Z'
-assert_status 10 findings
-assert_accepted comment 5
-printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [5]' >/dev/null ||
-    fail "an edit-stamped badge must be enumerated: $check_out"
-
-echo "==> review-r2-codex-verification-2: one second BEFORE the request still does not block"
-# The boundary inverse, adjacent to it rather than far from it, so the bound
-# is pinned as `>=` and not as something looser. Realistic payload: GitHub
-# always sends `updated_at`, equal to `created_at` for a comment nobody has
-# edited. The earlier version of this case OMITTED `updated_at` entirely — a
-# shape the issue-comment API never returns — which is how the second
-# conjunct of the deleted `$edited` predicate survived mutation.
+echo "==> review-r4 ruling: the documented boundary — a pre-trigger comment EDITED to add a badge is not covered"
+# RETIRED AND REVERSED, deliberately. This slot used to be
+# `review-r1-codex-verification-1`, which pinned the opposite: a comment
+# created before the trigger and edited inside the triggers own second had to
+# BLOCK, via a stamp split by edit provenance. That predicate and the four
+# others in its family each produced a fresh false clean the next round found,
+# so the maintainer ruling replaced the whole seam with comment-id ordering.
+#
+# Ids cannot see an edit. So this shape is OUT OF SCOPE now, and it is stated
+# here as an executable statement of the boundary rather than left to be
+# rediscovered: the trade is that the reviewer would have to edit an older
+# comment instead of posting a new one, against five rounds of demonstrated
+# clock leaks. Same sentence in `docs/glossary.md` and
+# `docs/guides/codex-review.md`.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -5216,9 +5242,10 @@ jq -cn \
     '[[
       {
         id:5,user:{id:$id,login:$login},
-        created_at:"2026-07-31T07:59:59Z",
-        updated_at:"2026-07-31T07:59:59Z",
-        body:"**P0** a badge from the second before this trigger."
+        created_at:"2026-07-31T07:50:00Z",
+        updated_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a finding added by an edit in the triggers own second."
       },
       {
         id:8300,user:{id:$id,login:$login},
@@ -5229,6 +5256,131 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted comment 8300
+printf '%s' "$check_out" | jq -e 'has("unbound_badged") | not' >/dev/null ||
+    fail "a pre-trigger id is outside the boundary and must not be enumerated: $check_out"
+
+echo "==> review-r4 ruling: an id AT the first trigger does not block"
+# The boundary inverse, adjacent to it rather than far from it, so the
+# comparison is pinned as strictly-greater and not as something looser. This
+# slot used to pin a one-second-before-the-request timestamp; the clock is gone
+# and the adjacent value is the trigger id itself.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson trigger "$trigger_id" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:$trigger,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:00Z",
+        updated_at:"2026-07-31T08:00:00Z",
+        body:"**P0** a badge whose id IS the first trigger id."
+      },
+      {
+        id:8301,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 8301
+
+echo "==> review-r4-codex-verification-2: a RECONSTRUCTED reservation cannot hide a badge"
+# `attach` supports a trigger that predates the local reservation (state
+# recovery), so `reserved_at > requested_at` is a supported state -- and while
+# the scan bounded on the reservation, every badge in that gap was dropped
+# while `like_evidence` still bounded on the request time and exited 0. The
+# same false clean the whole family kept producing, reached from the other
+# side.
+#
+# Ids do not care which of the two timestamps is larger. The reconstruction
+# keeps the id of the trigger it was rebuilt around, and a badge above it
+# blocks.
+trigger_id=300
+request_time='2026-07-31T08:00:00Z'
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+# A reservation stamped AFTER its own trigger: the recovery shape.
+jq '.reserved_at = "2026-07-31T08:10:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson trusted "$trusted_trigger_actor_id" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:301,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:05:00Z",
+        updated_at:"2026-07-31T08:05:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** posted between the trigger and the reconstructed reservation."
+      },
+      {
+        id:8600,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:12:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" attach --state "$state" --trigger-id 300 >/dev/null
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "300" ] ||
+    fail "attach must record the head first trigger id: $(jq -c . "$state")"
+run_check '2026-07-31T08:20:00Z'
+assert_status 10 findings
+assert_accepted comment 301
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [301]' >/dev/null ||
+    fail "a badge above the first trigger id must block whatever the reservation says: $check_out"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r4-codex-verification-6: settle reads get a FLAT per-call budget"
+# `settle` claimed a flat budget by leaving `state_reserved` unset, but
+# `window_anchor` is `${state_requested:-${state_reserved:-}}` and `settle`
+# read `state_requested` five lines above the comment -- so the anchor never
+# reached the fallback and every settlement read ran on the one-second clamp.
+# Settlement is a human act that lands long after the window closes, so the
+# clamp applied always, not rarely.
+#
+# The slow endpoint sleeps 5 seconds. Under the clamp the fetch is killed at
+# one and `settle` dies; with a flat budget it completes.
+trigger_id=123
+request_time="$(date -u -d '-20 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+write_defaults
+rm -f "$state"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq --arg t "$request_time" '.reserved_at = $t' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:8700,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge to settle through a slow endpoint."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-8700.json"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+printf '%s\n' 'issues/comments/8700' >"${fixtures}/slow-endpoint"
+settle_start_seconds=$SECONDS
+run_settle --surface comment --id 8700 --disposition declined --note "adjudicated: not a defect"
+settle_elapsed_seconds=$((SECONDS - settle_start_seconds))
+rm -f "${fixtures}/slow-endpoint"
+[ "$settle_rc" -eq 0 ] ||
+    fail "settle must read on a flat budget long after the window closed (rc=$settle_rc, ${settle_elapsed_seconds}s): $settle_out"
+[ "$settle_elapsed_seconds" -ge 5 ] ||
+    fail "the slow endpoint must actually have been waited out, not clamped (${settle_elapsed_seconds}s)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
 
 echo "==> review-r1-codex-verification-5a: self_work_marker is load-bearing"
 # A Summary-headed, wholly structural, MARKER-LESS body must stay `findings`.
