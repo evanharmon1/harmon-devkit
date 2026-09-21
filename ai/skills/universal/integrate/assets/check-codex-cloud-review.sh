@@ -803,8 +803,12 @@ classify_cycle_charge() {
         return 0
     fi
 
-    base_ref=$(run_gh api "repos/$classify_repo/pulls/$classify_pr" \
-        --jq '.base.ref') || base_ref=
+    # Parse locally rather than with `gh --jq`: the value is needed as a ref
+    # string either way, and one fewer flag on the read-only wrapper keeps its
+    # surface exactly as narrow as it documents.
+    classify_pr_payload=$(run_gh api "repos/$classify_repo/pulls/$classify_pr") ||
+        classify_pr_payload=
+    base_ref=$(jq -r '.base.ref // empty' <<<"$classify_pr_payload" 2>/dev/null) || base_ref=
     if [ -z "$base_ref" ] || [ "$base_ref" = "null" ]; then
         charge_class=charged
         charge_reason="cannot read the PR base ref; charging"

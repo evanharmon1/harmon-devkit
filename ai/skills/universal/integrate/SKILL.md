@@ -1517,6 +1517,15 @@ that loops indefinitely:
      that closes the stage still echoes the fix that caused the final loop,
      per the `applied_dispositions` bullet in §5's dispatch input, and a
      pass that genuinely still owes a code change is not `clean` anyway.
+   - `--integration-exempt-cap <n>` — the resolved
+     `[rounds.<policy>].integration_exempt` ceiling (harmon-init#1326), which
+     bounds the base-merge-only cycles that do NOT spend `--integration-cap`.
+     Pass it whenever the result reports `codex_cycle.charged`/`.exempt`: an
+     exempt count under a caller that declared no ceiling has nothing to be
+     checked against, so the gate refuses it rather than trusting it. Omit it
+     only for a result that reports no split at all, which is one that never
+     classified its cycles and is therefore held to the original
+     single-counter rule.
    - `--codex-recheck <state file>` — the integrator's own
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
@@ -1530,6 +1539,7 @@ that loops indefinitely:
      --record <dir> \
      --integrator-result <file> \
      --integration-cap <n> \
+     --integration-exempt-cap <n> \
      --remediation-cap <n> \
      --codex-recheck <state file>
    ```

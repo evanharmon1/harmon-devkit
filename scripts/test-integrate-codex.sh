@@ -139,6 +139,15 @@ repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 # inline findings. It must sort AFTER the sub-resource patterns above, which it
 # would otherwise shadow.
 repos/*/pulls/*) file=pr.json ;;
+# harmon-init#1326: the exemption classifier compares three ref pairs — the
+# moved range, and the reviewed patch at each end. Key the fixture by the ref
+# pair so one case can answer all three differently; fall back to a single
+# compare.json for cases that do not care which is which.
+repos/*/compare/*)
+    pair="${endpoint##*/compare/}"
+    file="compare-$(printf '%s' "$pair" | tr './' '__').json"
+    [ -f "$GH_FIXTURES/$file" ] || file=compare.json
+    ;;
 # Must sort before the bare-commit pattern below, which its trailing `*`
 # would otherwise also match.
 repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
@@ -255,7 +264,8 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
-        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+          base:{ref:"main"}}' \
         >"${fixtures}/pr.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/slow-endpoint"
@@ -3756,6 +3766,116 @@ while IFS= read -r flag; do
 done <<EOF
 $documented_flags
 EOF
+
+# harmon-init#1326: the exemption classifier had no behavioral coverage at all
+# — the gate's handling of the counters was tested while the thing that
+# PRODUCES them was not. These cases drive `reserve` across a head change with
+# stubbed compare responses and assert the decision each path must reach.
+# The governing invariant is that exemption needs positive proof, so four of
+# the five cases assert CHARGED: that is the safe direction, and the one a
+# regression would silently leave.
+classifier_prev=1111111111111111111111111111111111111111
+classifier_new=2222222222222222222222222222222222222222
+
+# $1 label, $2 moved-range JSON, $3 patch-at-prev JSON, $4 patch-at-head JSON
+classify_reserve() {
+    write_defaults
+    rm -f "$state"
+    printf '%s' "$classifier_prev" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+    # A reservation must be reconciled before its head may be replaced, which
+    # is the real flow (reserve -> attach -> check -> next head). Move the
+    # prior cycle out of `reserved` the way an attach would.
+    jq '.phase = "attached" | .trigger_comment_id = 4242 |
+        .requested_at = .reserved_at' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    printf '%s' "$2" >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
+    printf '%s' "$3" >"${fixtures}/compare-main___${classifier_prev}.json"
+    printf '%s' "$4" >"${fixtures}/compare-main___${classifier_new}.json"
+    printf '%s' "$classifier_new" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+}
+
+assert_charge() {
+    actual="$(jq -r '.charge' "$state")"
+    [ "$actual" = "$1" ] ||
+        fail "$2: expected charge $1, got $actual ($(jq -r '.charge_reason' "$state"))"
+    [ "$(jq -r '.charged_cycles' "$state")" = "$3" ] ||
+        fail "$2: expected charged_cycles $3, got $(jq -r '.charged_cycles' "$state")"
+    [ "$(jq -r '.exempt_cycles' "$state")" = "$4" ] ||
+        fail "$2: expected exempt_cycles $4, got $(jq -r '.exempt_cycles' "$state")"
+}
+
+echo "==> a base merge touching no reviewed file is exempt"
+classify_reserve exempt \
+    '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}'
+assert_charge exempt "clean base merge" 1 1
+
+echo "==> a merge that changes a reviewed file charges"
+classify_reserve charged \
+    '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}'
+assert_charge charged "conflict resolution" 2 0
+
+echo "==> a renamed reviewed file charges on either spelling"
+# The reviewed file was under review as src/old.js and the merge renamed it,
+# so the moved entry names src/new.js with src/old.js as previous_filename —
+# and it has LEFT the current patch entirely. Matching only .filename then
+# compares ["src/new.js"] against ["src/old.js"], finds nothing, and exempts a
+# cycle in which a reviewed file was renamed out from under the review. The
+# head patch must NOT also carry the new name, or the intersection hits for
+# the wrong reason and the case proves nothing (this fixture's first version
+# did exactly that, and the mutation run caught it).
+classify_reserve charged \
+    '{"status":"ahead","files":[{"filename":"src/new.js","previous_filename":"src/old.js"}]}' \
+    '{"files":[{"filename":"src/old.js"}]}' \
+    '{"files":[{"filename":"docs/other.md"}]}'
+assert_charge charged "rename" 2 0
+
+echo "==> a compare file list at the API cap charges rather than exempting"
+capped_files="$(jq -cn '{status:"ahead", files:[range(300) | {filename:("f\(.)/x.txt")}]}')"
+classify_reserve charged "$capped_files" \
+    '{"files":[{"filename":"src/a.js"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}'
+assert_charge charged "truncated compare" 2 0
+
+echo "==> a diverged compare charges rather than exempting"
+classify_reserve charged \
+    '{"status":"diverged","files":[{"filename":"docs/unrelated.md"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}'
+assert_charge charged "diverged history" 2 0
+
+echo "==> state from a different run cannot license an exemption"
+write_defaults
+rm -f "$state"
+printf '%s' "$classifier_prev" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = .reserved_at' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s' '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
+    >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
+printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-main___${classifier_prev}.json"
+printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-main___${classifier_new}.json"
+printf '%s' "$classifier_new" >"${fixtures}/head"
+# Same evidence as the exempt case above — only the run differs.
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 1 --run-id run-b >/dev/null
+[ "$(jq -r '.charge' "$state")" = "charged" ] ||
+    fail "cross-run state must charge: $(jq -r '.charge_reason' "$state")"
+[ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
+    fail "a new run restarts the totals, got $(jq -r '.charged_cycles' "$state")"
+
+write_defaults
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
