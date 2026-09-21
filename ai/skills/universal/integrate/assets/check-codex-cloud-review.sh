@@ -2007,12 +2007,22 @@ check)
     # evidence is the only state a quota reply can ever be observed in, and
     # every waiting path funnels through there.
     if finder_has_surface comment; then
-        # Same boundary as the unbound-badge scan above, same reason
-        # (`challenge-r5-codex-adversarial-4`, second site): a usage-limit
-        # reply posted in the triggers own second was missed by the strict
-        # bound, so the cycle waited out its window and reported 12 instead of
-        # the terminal 15 the reply had already given it. Inclusive bound with
-        # the monotonic comment-id tiebreak, exactly as above.
+        # `challenge-r5-codex-adversarial-4`, second site: a usage-limit reply
+        # posted in the triggers own second was missed by the strict bound, so
+        # the cycle waited out its window and reported 12 instead of the
+        # terminal 15 the reply had already given it. Inclusive bound plus the
+        # monotonic comment-id tiebreak.
+        #
+        # The unbound-badge scan above DROPPED that tiebreak in review round 2
+        # and this site deliberately keeps it, because the two scans fail in
+        # opposite directions. Admitting one extra badge costs one recorded
+        # disposition. Admitting one extra usage-limit reply costs the cycle
+        # outright: a quota answer is TERMINAL, so a stale refusal read as
+        # this attempt answer would end every later cycle on this head with a
+        # blocker nobody can settle. Here the id tiebreak is the only thing
+        # that can order a same-second reply against the trigger, and unlike
+        # the badge scan there is no second wire shape it cannot separate — a
+        # usage-limit reply is never edited into existence.
         quota_record=$(jq -r \
             --argjson id "$actor_id" \
             --arg requested "$state_requested" \
@@ -2206,13 +2216,31 @@ check)
     # `pull_request_review_id` cannot be attributed to anything, so it settles
     # nothing at all: the whole settled set collapses to empty rather than
     # letting an unattributable finding be counted against some other review.
+    #
+    # Review round 2, finding `review-r2-codex-verification-1` (confirmed P1):
+    # this count and the partition below were TWO DOMAINS FOR ONE QUESTION.
+    # Challenge round 5 (`challenge-r5-codex-adversarial-5`) taught the
+    # partition to exempt a self-fix summary and left this count unfiltered,
+    # so a head whose only actor inline comment was a self-report counted 1
+    # here and produced an EMPTY bot set there: nothing was unadjudicated, so
+    # `adjudicated_findings` was set, and the attribution assertion below —
+    # which requires at least one attributed review — could never be satisfied.
+    # The cycle exited 2 and handed a benign, informational state to a human,
+    # while the same head with ZERO actor inline comments reached the ordinary
+    # pending path. Reproduced as exactly that asymmetry (2 versus 11).
+    #
+    # In the merge base the two domains AGREED, because neither filtered. The
+    # divergence was created by narrowing one of two coupled sites, which is
+    # why the fix is one predicate rather than a second filter: the count now
+    # asks the same `is_self_report` question every other consumer asks.
     inline_head_findings=$(jq \
         --argjson id "$actor_id" \
-        --arg head "$state_head" '
+        --arg head "$state_head" \
+        "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.original_commit_id? == $head)
-          )] | length
+          ) | select(is_self_report | not)] | length
         ' "$workdir/inline.json")
 
     adjudicated_findings=0
@@ -2801,48 +2829,52 @@ check)
     # result carried no `unbound_badged` key at all, so the caller was never
     # told the finding existed.
     #
-    # Same hazard this file already ruled on for trigger reconstruction
-    # (harmon-devkit#1014 ruling 3, quoted above `prior_trigger_candidates`):
-    # GitHub stamps these to whole seconds, and comment ids are monotonic
-    # within one resource type, so a same-second comment whose id EXCEEDS the
-    # trigger comment id is provably after it. Inclusive bound plus that
-    # tiebreak, applied here at last. Conservative direction on a blocking
-    # scan: admitting one extra badge costs a recorded disposition, dropping
-    # one costs the invariant this whole form exists to hold.
+    # Conservative direction on a blocking scan: admitting one extra badge
+    # costs a recorded disposition, dropping one costs the invariant this
+    # whole form exists to hold.
+    #
+    # Review round 2, finding `review-r2-codex-verification-2` (confirmed P1,
+    # disposition RESTRUCTURE TO INVARIANT). The bound is one sentence now:
+    #
+    #   every unbound badged comment from the pinned actor whose stamp is at
+    #   or after the request time blocks, and is answered by comment id.
+    #
+    # No tiebreak, no edit detection, no provenance split. That deletes the
+    # entire family of same-second predicates this scan accumulated over three
+    # rounds. `challenge-r5-codex-adversarial-4` made the bound inclusive and
+    # added a monotonic comment-id tiebreak; `review-r1-codex-verification-1`
+    # then split the stamp by provenance, because the tiebreak and the stamp
+    # were reading two different clocks; and `review-r2-codex-verification-2`
+    # found the residual that split left — a comment created AND edited inside
+    # the trigger second serializes with `created_at == updated_at`, so the
+    # edit is undetectable, the tiebreak rejects the lower id, and the
+    # inclusive clean-by-reaction path is free to exit 0 over a live P0.
+    #
+    # Every one of those rounds was right about its own case and the form kept
+    # leaking, because the two wire shapes at the boundary are genuinely
+    # INDISTINGUISHABLE: `created_at == updated_at == $requested` with an id
+    # below the trigger is both a comment nobody ever touched and a comment
+    # edited in that second to add the badge. No predicate over these fields
+    # can separate them, so the only real question is which way to err, and
+    # the paragraph above already answers it. An equal-second comment from
+    # before the trigger therefore BLOCKS, and `settle` clears it by id: that
+    # subcommand domain is `verdict_class == "findings"` with no time bound of
+    # its own, so every shape this scan admits is answerable.
+    #
+    # The usage-limit scan keeps its inclusive-plus-tiebreak bound on purpose.
+    # The asymmetry is explained at that site.
     unbound_badged_ids=$(jq -c \
         --argjson id "$actor_id" \
         --arg requested "$state_requested" \
-        --argjson trigger "${state_trigger:-0}" \
         --argjson disposed "$disposed_comments" \
         "$codex_verdict_defs"'
-          # Review round 1, finding `review-r1-codex-verification-1` (confirmed
-          # P1): round 5 made the stamp `(.updated_at // .created_at)` but left
-          # the same-second tiebreak as `.id > $trigger` — TWO DIFFERENT CLOCKS,
-          # ONE TIEBREAK.
-          #
-          # The id tiebreak is only meaningful for a stamp that came from
-          # `created_at`: a comment created in the triggers own second was
-          # assigned a HIGHER id than the trigger if it came after it. A
-          # comment that PRE-EXISTS the trigger and is EDITED in that second
-          # has an equal stamp and necessarily a LOWER id, so the tiebreak
-          # rejected it and the badge was dropped — with the inclusive
-          # clean-by-reaction path free to exit 0 over it.
-          #
-          # Split by provenance: an equal stamp sourced from an EDIT is
-          # admitted outright (an edit in the triggers second is
-          # indistinguishable from one just after it, and admitting costs one
-          # recorded disposition while dropping costs the invariant), while an
-          # equal stamp sourced from `created_at` keeps the id tiebreak that
-          # can actually order it.
+          # One stamp, one comparison. The GENEROUS stamp stays: a badge
+          # added by an EDIT after the trigger is new evidence, which is
+          # `challenge-r4-codex-adversarial-2`, while the clean path keeps
+          # the conservative `created_at` for its own opposite reason.
           [.[] | select(.user.id? == $id) |
-            . as $c |
-            ((($c.updated_at // "") != "") and
-             (($c.updated_at // "") != ($c.created_at // ""))) as $edited |
             (((.updated_at // .created_at) // "")) as $stamp |
-            select(($stamp > $requested) or
-                   (($stamp == $requested) and
-                    ($edited or
-                     (((.id? | type) == "number") and (.id > $trigger))))) |
+            select($stamp >= $requested) |
             select(has_severity_marker) |
             select(((.body // "") |
               test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |

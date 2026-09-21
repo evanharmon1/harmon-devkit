@@ -140,6 +140,28 @@ cat "$GH_FIXTURES/$file"
 STUB
 chmod +x "${bin_dir}/gh"
 
+# Review round 2, finding `review-r2-codex-verification-3` (confirmed P2): the
+# retry-delay case asserted a whole-second `date +%s` difference measured
+# around the ENTIRE gate invocation, and the gate costs about a second on its
+# own, so the assertion had zero headroom — replacing the sleep with a no-op
+# left the suite green. Wall clock cannot pin this; the REQUEST can. This stub
+# records what the gate asked to sleep for and returns immediately, so a case
+# asserts the configured delay rather than hoping to observe it.
+#
+# It delegates to the real sleep whenever `SLEEP_CALL_LOG` is unset, so it can
+# never silently remove a delay some future case actually depends on.
+cat >"${bin_dir}/sleep" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${SLEEP_CALL_LOG:-}" ]; then
+    printf '%s\n' "$*" >>"$SLEEP_CALL_LOG"
+    exit 0
+fi
+real_sleep="$(PATH=/usr/bin:/bin command -v sleep)" || exit 0
+exec "$real_sleep" "$@"
+STUB
+chmod +x "${bin_dir}/sleep"
+
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
@@ -1470,28 +1492,37 @@ assert_gate 1 fail codex-pr-not-open
 printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("no longer open")' >/dev/null ||
     fail "the exit-14 condition must name the closed PR: $gate_out"
 
-echo "==> review-r1-codex-verification-3: the recheck retry waits before its single retry"
+echo "==> review-r1/r2-codex-verification-3: the recheck retry waits the CONFIGURED delay"
 # The retry used to re-invoke with no delay at all, so both reads landed within
 # microseconds and a transient failure could not have cleared between them.
+#
+# Review round 2 (`review-r2-codex-verification-3`): the first version of this
+# case asserted `delay_elapsed -ge 1` over the whole gate run, which the gate
+# saturates on its own — replacing the sleep with a no-op passed it, so the
+# case pinned nothing it named. The delay is observed through the PATH `sleep`
+# stub now, and the configured value is deliberately 7 rather than 1: a mutant
+# that drops the sleep records nothing, and one that hardcodes some other
+# delay records the wrong number. Neither can pass.
 write_defaults
 clean_delay="$(write_integrator_result clean "$(codex_cycle_json 0)")"
 saved_gate="$gate"
 gate="$recheck_gate"
 export RECHECK_FAKE_EXITS="16 0"
 export RECHECK_CALL_COUNTER="${test_tmp}/recheck-delay-calls"
-export CODEX_RECHECK_RETRY_DELAY=1
-rm -f "$RECHECK_CALL_COUNTER"
-delay_start="$(date -u '+%s')"
+export CODEX_RECHECK_RETRY_DELAY=7
+export SLEEP_CALL_LOG="${test_tmp}/recheck-delay-sleeps"
+rm -f "$RECHECK_CALL_COUNTER" "$SLEEP_CALL_LOG"
 run_gate --codex-recheck "$recheck_state" \
     --integrator-result "$clean_delay" --integration-cap 1
-delay_elapsed="$(($(date -u '+%s') - delay_start))"
-unset RECHECK_FAKE_EXITS RECHECK_CALL_COUNTER CODEX_RECHECK_RETRY_DELAY
+unset RECHECK_FAKE_EXITS RECHECK_CALL_COUNTER CODEX_RECHECK_RETRY_DELAY SLEEP_CALL_LOG
 gate="$saved_gate"
 assert_gate 0 pass ready
 [ "$(cat "${test_tmp}/recheck-delay-calls")" = "2" ] ||
     fail "the retry must still fire exactly once"
-[ "$delay_elapsed" -ge 1 ] ||
-    fail "the retry must wait before re-reading, elapsed ${delay_elapsed}s"
+[ -s "${test_tmp}/recheck-delay-sleeps" ] ||
+    fail "the retry must sleep before re-reading, but no sleep was requested"
+[ "$(cat "${test_tmp}/recheck-delay-sleeps")" = "7" ] ||
+    fail "the retry must sleep the configured delay, asked for: $(cat "${test_tmp}/recheck-delay-sleeps")"
 
 echo "==> item C: a finder_cycles quota exit uses the finder-prefixed condition token"
 write_defaults
@@ -1513,6 +1544,76 @@ run_gate_recheck_clean \
     --integrator-result "${fixtures}/integrator-result-fc-quota-15.json" \
     --integration-cap 1
 assert_gate 1 fail finder-quota-exhausted
+
+# --------------------------------------------------------------------------
+# Review round 2, finding `review-r2-codex-verification-4` (confirmed P2,
+# disposition RESTRUCTURE): one `exit_condition` mapping now serves both the
+# codex_cycle and finder_cycles surfaces, so the suite owes a case per code
+# per surface. The codex surface already has one for every code (0 through the
+# recheck cases, 2, 10-13, 14, 15, 16); these complete the finder side, whose
+# 14 and catch-all arms did not exist before this round.
+# --------------------------------------------------------------------------
+write_finder_cycle_result() {
+    wfc_label=$1
+    wfc_exit=$2
+    # A DISTINCT base name: the finished fixture is
+    # integrator-result-fc-<label>.json, so building it from a base of the
+    # same name would let the shell truncate the output before jq read it.
+    wfc_base="$(write_integrator_result "fc-${wfc_label}-base" "$(codex_cycle_json 0)")"
+    # A clean verdict requires every finder cycle to be terminal-clean, so the
+    # fixture carries `findings` instead — exit_code 0 permits it, and
+    # condition 8b (finder cycles) is evaluated before 9a (the pass's own
+    # findings[]), so the finder arm is what these cases reach. `accepted` is
+    # schema-required for exit 0 and 10 and forbidden nowhere else, so it is
+    # attached only for those two.
+    jq --argjson ec "$wfc_exit" \
+        '.payload.verdict = "findings"
+         | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
+                                 body:"a finder finding",source_id:"1"}]
+         | del(.payload.applied_dispositions)
+         | .payload.finder_cycles =
+             [({finder:"coderabbit-cloud",head:.head,
+                cycle:1,attempt:1,exit_code:$ec}
+               + (if ($ec == 0 or $ec == 10) then
+                    {accepted:{surface:"comment",id:"1",
+                               reviewed_commit:.head}}
+                  else {} end))]' \
+        "$wfc_base" >"${fixtures}/integrator-result-fc-${wfc_label}.json"
+    node "$validator" envelope "${fixtures}/integrator-result-fc-${wfc_label}.json" >/dev/null ||
+        fail "the fc-${wfc_label} fixture must itself be schema-valid: $(node "$validator" envelope "${fixtures}/integrator-result-fc-${wfc_label}.json" 2>&1 | tail -5)"
+    printf '%s\n' "${fixtures}/integrator-result-fc-${wfc_label}.json"
+}
+
+echo "==> review-r2-codex-verification-4: a finder_cycles exit 10/11/12/13 is finder-not-clean"
+for fc_code in 10 11 12 13; do
+    write_defaults
+    fc_result="$(write_finder_cycle_result "notclean-${fc_code}" "$fc_code")"
+    run_gate_recheck_clean --integrator-result "$fc_result" --integration-cap 1
+    assert_gate 1 fail finder-not-clean
+done
+
+echo "==> review-r2-codex-verification-4: a finder_cycles exit-14 is a recognized terminal, not the catch-all"
+# The defect this round found: 14 is in the finder_cycles exit_code enum, whose
+# schema description reads "Same contract as codex_cycle.exit_code above", yet
+# the finder arm reported it as an unrecognized value under a codex-prefixed
+# condition — prescribing a re-poll of a PR GitHub had already answered was
+# closed, while the codex arm correctly ended the stage.
+write_defaults
+fc_closed="$(write_finder_cycle_result closed-14 14)"
+run_gate_recheck_clean --integrator-result "$fc_closed" --integration-cap 1
+assert_gate 1 fail finder-pr-not-open
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("no longer open")' >/dev/null ||
+    fail "the finder exit-14 condition must name the closed PR: $gate_out"
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("coderabbit-cloud")' >/dev/null ||
+    fail "the finder condition must name which finder answered: $gate_out"
+
+echo "==> review-r2-codex-verification-4: an unrecognized finder exit_code uses the finder-prefixed catch-all"
+# The catch-all was `codex-indeterminate` on a per-finder condition, which is
+# `review-r1-codex-verification-2` verbatim at the sibling site.
+write_defaults
+fc_unknown="$(write_finder_cycle_result unknown-2 2)"
+run_gate_recheck_clean --integrator-result "$fc_unknown" --integration-cap 1
+assert_gate 2 indeterminate finder-indeterminate
 
 echo "==> harmon-devkit#675: a BADGED bot follow-up still blocks"
 write_defaults

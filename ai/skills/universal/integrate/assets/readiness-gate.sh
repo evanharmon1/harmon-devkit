@@ -44,20 +44,34 @@
 #      populated an answer yet, or the arguments are unusable. Unknown never
 #      passes: 2 is "re-poll or reconcile", never "promote".
 #
-# `check` emits one JSON line naming the decisive condition:
+# `check` emits one JSON line naming the decisive condition. This list is the
+# contract a caller reads to know which conditions it must handle, so it is
+# COMPLETE for `check` (review round 2, finding `review-r2-codex-verification-5`
+# — it documented 27 of the emitted tokens, and the six it omitted were all
+# pre-existing, `finder-not-clean` among them while its two sibling finder
+# tokens were listed):
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing, checks-pending                          (fail)
 #   changes-requested, merge-state-dirty, merge-state-behind (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
-#   deferred-unsettled                                       (fail)
+#   deferred-unsettled, content-moved                        (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
-#   unresolved-integrator-findings                          (fail)
+#   finder-not-clean, finder-pr-not-open,                   (fail)
+#   integrator-not-clean, unresolved-integrator-findings,   (fail)
+#   evidence-marker-missing, remediation-capped              (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
+#   finder-indeterminate, promotion-head-mismatch,
 #   usage                                                    (indeterminate)
+#
+# `audit` emits the same set with one addition of its own — `pr-draft` (fail),
+# for a PR that is no longer promoted — and without `pr-not-draft`, which is
+# the same requirement in the opposite direction. That token is deliberately
+# NOT in the `check` list above: the two subcommands differ by exactly this
+# one condition.
 #
 # `codex-transient-read` exists because of harmon-devkit#508: the checker's
 # exit 16 says an evidence READ failed, which is not evidence that the cycle
@@ -369,6 +383,77 @@ fail_condition() {
 indeterminate() {
     emit indeterminate "$1" "$2"
     exit 2
+}
+
+# Review round 2, finding `review-r2-codex-verification-4` (confirmed P2,
+# disposition RESTRUCTURE TO INVARIANT): the Codex cycle and the per-finder
+# cycles were TWO PARALLEL `case` STATEMENTS over one enum, and nothing forced
+# them to agree. Review round 1 fixed both of its taxonomy defects on the
+# codex arm alone — `-4` added the exit-14 terminal, `-2` renamed the
+# codex-prefixed token on a per-finder condition — so the sibling still
+# reported a schema-valid exit 14 as an unrecognized value, under a
+# codex-prefixed condition, and prescribed a re-poll of a PR GitHub had
+# already answered was closed.
+#
+# Both schema fields carry the same contract by construction: the
+# `finder_cycles[].exit_code` description reads "Same contract as
+# codex_cycle.exit_code above". So the mapping is ONE function keyed by
+# surface. Adding an exit code is now one arm here rather than two lists that
+# must be remembered together, and the suites cover every code on every
+# surface. Exit 0 stays at each call site because it is the one code whose
+# meaning is surface-specific: the Codex cycle re-checks its cached clean
+# result, a finder cycle is simply terminal-clean.
+exit_condition() {
+    ec_surface=$1
+    ec_exit=$2
+    ec_subject=$3
+    case "$ec_surface" in
+    codex)
+        ec_prefix=codex
+        # Recovery for an exhausted Codex head is carried in #1115; a finder
+        # has no equivalent reservation state to clear, so that sentence is
+        # this surface only rather than a claim made on every finder.
+        ec_quota_tail=" this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115)"
+        ;;
+    finder)
+        ec_prefix=finder
+        ec_quota_tail=""
+        ;;
+    *)
+        indeterminate usage "exit_condition was called with an unknown surface: $ec_surface"
+        ;;
+    esac
+    case "$ec_exit" in
+    10 | 11 | 12 | 13)
+        fail_condition "${ec_prefix}-not-clean" "$ec_subject exited $ec_exit, not terminal-clean"
+        ;;
+    14)
+        # 14 is documented at every other layer — the checker header, both
+        # schemas, the validator, `ai/agents/integrator.md` and AGENTS.md. It
+        # is terminal for the whole stage rather than for one surface: GitHub
+        # answered that the PR is merged or closed, so there is nothing left
+        # to gate, whichever reader saw it first.
+        fail_condition "${ec_prefix}-pr-not-open" "$ec_subject exited 14: the PR is no longer open, which ends the whole integration stage — stop rather than re-dispatching"
+        ;;
+    15)
+        # harmon-devkit#573: the reviewer answered that it will not review
+        # this head. Definitive, so a fail rather than an indeterminate — but
+        # its own condition, because the remedy is to report the blocker and
+        # wait for the quota, never to re-trigger or re-dispatch.
+        fail_condition "${ec_prefix}-quota-exhausted" "$ec_subject exited 15: the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time;${ec_quota_tail:- do not re-trigger}"
+        ;;
+    16)
+        # harmon-devkit#508: an evidence READ failed. This must never render
+        # as `*-not-clean` — that was the original defect, where one flaky
+        # GitHub read turned an already-adjudicated-clean cycle into a hard
+        # gate failure with no remedy but blind re-runs. It is unknown, with
+        # the reason named, and the caller repeats the READ.
+        indeterminate "${ec_prefix}-transient-read" "$ec_subject exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
+        ;;
+    *)
+        indeterminate "${ec_prefix}-indeterminate" "$ec_subject exit_code $ec_exit is not a recognized terminal or pending value"
+        ;;
+    esac
 }
 
 run_gh() {
@@ -1165,37 +1250,7 @@ if [ "$codex_cycle" != null ]; then
     fi
     case "$codex_exit" in
     0) recheck_codex_freshness ;;
-    10 | 11 | 12 | 13)
-        fail_condition codex-not-clean "the current-head Codex cycle exited $codex_exit, not terminal-clean"
-        ;;
-    15)
-        # harmon-devkit#573: the reviewer answered that it will not review
-        # this head. Definitive, so a fail rather than an indeterminate — but
-        # its own condition, because the remedy is to report the blocker and
-        # wait for the quota, never to re-trigger or re-dispatch.
-        fail_condition codex-quota-exhausted "the current-head Codex cycle exited 15: the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115)"
-        ;;
-    16)
-        # harmon-devkit#508: an evidence READ failed. This must never render
-        # as `codex-not-clean` — that was the original defect, where one flaky
-        # GitHub read turned an already-adjudicated-clean cycle into a hard
-        # gate failure with no remedy but blind re-runs. It is unknown, with
-        # the reason named, and the caller repeats the READ.
-        indeterminate codex-transient-read "the current-head Codex cycle exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
-        ;;
-    14)
-        # Review round 1, finding `review-r1-codex-verification-4` (P3,
-        # pre-existing): 14 is documented at every other layer — the checker
-        # header, both schemas, the validator, `ai/agents/integrator.md` and
-        # AGENTS.md — but fell into the catch-all here and was reported as
-        # "not a recognized terminal or pending value". It is recognized, and
-        # it is terminal for the whole stage: GitHub answered that the PR is
-        # merged or closed, so there is nothing left to gate.
-        fail_condition codex-pr-not-open "the current-head Codex cycle exited 14: the PR is no longer open, which ends the whole integration stage — stop rather than re-dispatching"
-        ;;
-    *)
-        indeterminate codex-indeterminate "codex_cycle exit_code $codex_exit is not a recognized terminal or pending value"
-        ;;
+    *) exit_condition codex "$codex_exit" "the current-head Codex cycle" ;;
     esac
 elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
     # harmon-devkit#685: a positive cap requires a cycle to have been
@@ -1228,18 +1283,7 @@ if [ "$finder_cycles_len" -gt 0 ]; then
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
         case "$fc_exit" in
         0) ;; # terminal-clean — condition passes
-        10 | 11 | 12 | 13)
-            fail_condition finder-not-clean "finder_cycles[$fc_idx] ($fc_slug) exited $fc_exit, not terminal-clean"
-            ;;
-        15)
-            fail_condition finder-quota-exhausted "finder_cycles[$fc_idx] ($fc_slug) exited 15: the finder reported its review usage limit is exhausted — report the blocker rather than re-triggering"
-            ;;
-        16)
-            indeterminate finder-transient-read "finder_cycles[$fc_idx] ($fc_slug) exited 16: an evidence read failed transiently — repeat the read rather than treating the finder as absent"
-            ;;
-        *)
-            indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) exit_code $fc_exit is not a recognized value"
-            ;;
+        *) exit_condition finder "$fc_exit" "finder_cycles[$fc_idx] ($fc_slug)" ;;
         esac
     done
 fi

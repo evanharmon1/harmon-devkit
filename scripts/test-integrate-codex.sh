@@ -4696,10 +4696,21 @@ assert_accepted comment 8001
 printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [8001]' >/dev/null ||
     fail "a same-second badge must be enumerated, not dropped: $check_out"
 
-echo "==> challenge-r5-codex-adversarial-4: a same-second comment whose id PRECEDES the trigger is still prior"
-# The tiebreak is monotonic ids, not a blanket inclusive bound: a comment
-# sharing the triggers second but assigned a LOWER id was posted before it and
-# belongs to an earlier cycle.
+echo "==> review-r2-codex-verification-2: an equal-second badge with a LOWER id blocks, and settle answers it"
+# THE MOOTED TIEBREAK FAMILY. Three rounds each added a predicate here and
+# each left a way through: `challenge-r5-codex-adversarial-4` made the bound
+# inclusive and tie-broke on monotonic comment ids;
+# `review-r1-codex-verification-1` split the stamp by provenance because the
+# tiebreak and the stamp read different clocks; `review-r2-codex-verification-2`
+# then found that a comment created AND edited inside the trigger second
+# serializes with `created_at == updated_at`, so the edit is undetectable and
+# the tiebreak drops the badge.
+#
+# The two wire shapes at this boundary are the SAME BYTES: a never-touched
+# comment from before the trigger and one edited in that second to add the
+# badge are indistinguishable. So the predicate is gone, the equal second
+# blocks, and this case pins the other half of that trade — the block is
+# always answerable by comment id, so erring closed costs one disposition.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -4709,7 +4720,9 @@ jq -cn \
       {
         id:99,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:00:00Z",
-        body:"**P0** a badge from before this trigger."
+        updated_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge sharing the triggers second, with a lower id."
       },
       {
         id:8002,user:{id:$id,login:$login},
@@ -4717,9 +4730,48 @@ jq -cn \
         body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
       }
     ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-99.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 99
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [99]' >/dev/null ||
+    fail "an equal-second badge must be enumerated whatever its id: $check_out"
+run_settle --surface comment --id 99 --disposition declined --note "adjudicated: belongs to an earlier cycle"
+[ "$settle_rc" -eq 0 ] || fail "an equal-second badge must be settleable: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted comment 8002
+
+echo "==> review-r2-codex-verification-2: an equal-second badge beats the clean-by-reaction race"
+# The reproduced false clean: the reaction path is inclusive
+# (`.created_at? >= $requested`), so while the blocking scan dropped this
+# badge a 👍 in the same cycle certified the head clean over a live P0. Under
+# the old provenance split this fixture exited 0; it must report findings.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:98,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:00Z",
+        updated_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** created and edited inside the triggers own second."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:9099,user:{id:$id,login:$login},
+        content:"+1",created_at:"2026-07-31T08:00:05Z"
+      }
+    ]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 98
 
 echo "==> challenge-r5-codex-adversarial-4: a same-second usage-limit reply is terminal, not a retry"
 new_cycle
@@ -4800,6 +4852,43 @@ jq -cn \
     ]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
+
+echo "==> review-r2-codex-verification-1: a self-report-only inline set is pending, not a human hand-off"
+# Challenge round 5 taught the inline partition to exempt a self-fix summary
+# and left the COUNT that guards it unfiltered, so a head whose only actor
+# inline comment was informational counted 1, produced an empty bot set, and
+# tripped the attribution assertion that requires at least one attributed
+# review — exit 2, a hand-off to a human over a state AGENTS.md calls
+# informational. Reproduced as the asymmetry below: same substantive state,
+# and before the fix these two cases answered 2 and 11.
+new_cycle
+printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:90,user:{id:$id,login:$login},path:"a.sh",
+        pull_request_review_id:120,
+        original_commit_id:$head,created_at:"2026-07-31T08:00:20Z",
+        body:"## Summary\n\n* Committed the change on `codex/x` as `abc1234`.\n\n**Testing**\n\n* PASS `git diff --check`\n"
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> review-r2-codex-verification-1: the zero-inline control answers identically"
+# The comparison that makes the case above a defect rather than a preference:
+# with no actor inline comments at all the same head reaches the same pending
+# path, so one informational comment must not change the answer.
+new_cycle
+printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
 
 echo "==> challenge-r5-codex-adversarial-6: unanswered[] carries the THREAD ROOT"
 # integrator.md feeds this into `unanswered_thread_roots`, which the schema
@@ -4983,9 +5072,13 @@ assert_accepted comment 5
 printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [5]' >/dev/null ||
     fail "an edit-stamped badge must be enumerated: $check_out"
 
-echo "==> review-r1-codex-verification-1: an UNEDITED same-second comment with a lower id is still prior"
-# The tiebreak still applies where it is meaningful — a comment created in the
-# triggers second whose id precedes the trigger came before it.
+echo "==> review-r2-codex-verification-2: one second BEFORE the request still does not block"
+# The boundary inverse, adjacent to it rather than far from it, so the bound
+# is pinned as `>=` and not as something looser. Realistic payload: GitHub
+# always sends `updated_at`, equal to `created_at` for a comment nobody has
+# edited. The earlier version of this case OMITTED `updated_at` entirely — a
+# shape the issue-comment API never returns — which is how the second
+# conjunct of the deleted `$edited` predicate survived mutation.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -4994,8 +5087,9 @@ jq -cn \
     '[[
       {
         id:5,user:{id:$id,login:$login},
-        created_at:"2026-07-31T08:00:00Z",
-        body:"**P0** a badge from before this trigger."
+        created_at:"2026-07-31T07:59:59Z",
+        updated_at:"2026-07-31T07:59:59Z",
+        body:"**P0** a badge from the second before this trigger."
       },
       {
         id:8300,user:{id:$id,login:$login},
