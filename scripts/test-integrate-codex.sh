@@ -4609,10 +4609,47 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted comment 6009
 
-echo "==> challenge-r4-codex-adversarial-2: a badge EDITED IN after the trigger still blocks"
-# The rejection form narrowed the stamp to `created_at`, so a comment created
-# before the trigger and edited afterwards to add a badge vanished. The
-# BLOCKING scan takes the generous stamp; the clean path keeps `created_at`.
+echo "==> challenge-r4-codex-adversarial-2 / review-r4 boundary: an edit cannot move a pre-trigger id"
+# RESHAPED, `review-r5-codex-verification-3` (confirmed P2). This slot was
+# titled "a badge EDITED IN after the trigger still blocks" and carried a
+# comment created at 07:55 -- before the trigger -- with id 6003 against
+# trigger 123. GitHub ids are monotonic, so that payload cannot exist, and
+# under id ordering the case passed only because 6003 > 123. It therefore
+# asserted that the documented boundary BLOCKS, ten lines above the case that
+# asserts the same shape is clean.
+#
+# Both halves of the boundary are stated here instead, on ids that could
+# actually occur. The original defect the r4-2 fixture was written for -- the
+# blocking scan reading a narrower stamp than the guard it replaced -- is moot:
+# there is no stamp.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:6,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:55:00Z",
+        updated_at:"2026-07-31T08:00:30Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge edited in after the trigger, on a pre-trigger id."
+      },
+      {
+        id:6009,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:40Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 6009
+printf '%s' "$check_out" | jq -e 'has("unbound_badged") | not' >/dev/null ||
+    fail "an edit cannot lift a pre-trigger id over the boundary: $check_out"
+
+echo "==> challenge-r4-codex-adversarial-2 / review-r4 boundary: a POST-trigger id blocks, edited or not"
+# The other half, and the half that carries the r4-2 scenario: a badge that
+# arrived after the trigger blocks whether or not it was edited afterwards.
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
@@ -4620,7 +4657,7 @@ jq -cn \
     '[[
       {
         id:6003,user:{id:$id,login:$login},
-        created_at:"2026-07-31T07:55:00Z",
+        created_at:"2026-07-31T08:00:10Z",
         updated_at:"2026-07-31T08:00:30Z",
         issue_url:"https://api.github.com/repos/example/repo/issues/493",
         body:"**P0** a finding added by a later edit."
@@ -5381,6 +5418,223 @@ rm -f "${fixtures}/slow-endpoint"
     fail "the slow endpoint must actually have been waited out, not clamped (${settle_elapsed_seconds}s)"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r5-codex-verification-1: a reconstruction anchors on the EARLIEST same-head trigger"
+# THE REPRODUCED FALSE CLEAN AT THE CAP. `attach` already fetches and
+# trust-authenticates the head earlier triggers to build
+# `previous_trigger_comment_id` -- which deliberately takes the NEWEST of them
+# -- and the boundary used to be filled with the trigger in hand instead. So a
+# reconstruction over two same-head triggers anchored on the SECOND, and every
+# badge that answered the first fell below the boundary: `rc=0 clean` with no
+# `unbound_badged` key at all, over a live undisposed P0.
+#
+# The anchor is the MINIMUM id among the same-head triggers this attach can
+# see, from the candidate set it has already authenticated -- no extra fetch --
+# and it can only ever move down.
+trigger_id=1100
+request_time='2026-07-31T08:20:00Z'
+write_defaults
+rm -f "$state"
+printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-committed-at"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson trusted "$trusted_trigger_actor_id" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:1000,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493"
+      },
+      {
+        id:1050,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:10:00Z",
+        updated_at:"2026-07-31T08:10:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** posted while the FIRST trigger was still waiting."
+      },
+      {
+        id:1100,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:20:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493"
+      },
+      {
+        id:1200,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:25:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][1]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-1050.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T08:19:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id 1100 >/dev/null
+# The NEWEST prior trigger is what `previous_trigger_comment_id` means; the
+# boundary takes the EARLIEST. Both are asserted so neither can drift into the
+# other.
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = "1000" ] ||
+    fail "the prior-trigger record must keep its own meaning: $(jq -c . "$state")"
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "1000" ] ||
+    fail "the boundary must be the EARLIEST same-head trigger, not the attached one: $(jq -c . "$state")"
+run_check '2026-07-31T08:40:00Z'
+assert_status 10 findings
+assert_accepted comment 1050
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [1050]' >/dev/null ||
+    fail "a badge answering the FIRST trigger must block: $check_out"
+# Answerable, as every block from this scan must be.
+run_settle --surface comment --id 1050 --disposition declined --note "adjudicated: answered on the re-review"
+[ "$settle_rc" -eq 0 ] || fail "the badge must be settleable: $settle_out"
+run_check '2026-07-31T08:40:00Z'
+assert_status 0 clean
+assert_accepted comment 1200
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r5-codex-verification-2: a pre-field state keeps its anchor across the re-trigger"
+# `check` degrades a state written before `first_trigger_comment_id` existed by
+# falling back to `trigger_comment_id`; `reserve` carry did not, so the anchor
+# was lost at the re-reservation and `attach` filled the null with the SECOND
+# trigger. A badge answering the first then fell below the boundary. Same
+# fallback in both places now.
+trigger_id=2000
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+# Simulate the upgrade window: strip the field a pre-field attach never wrote.
+jq 'del(.first_trigger_comment_id)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson trusted "$trusted_trigger_actor_id" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:2050,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:10:00Z",
+        updated_at:"2026-07-31T08:10:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** answered the first trigger, which the old state recorded."
+      },
+      {
+        id:2100,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:20:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id 2100 \
+    --argjson author "$trusted_trigger_actor_id" \
+    '{
+      id:$id,user:{id:$author,login:"trusted-trigger"},
+      body:"@codex review",created_at:"2026-07-31T08:20:00Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493"
+    }' >"${fixtures}/trigger.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "2000" ] ||
+    fail "reserve must carry a pre-field anchor forward from trigger_comment_id: $(jq -c . "$state")"
+"$helper" attach --state "$state" --trigger-id 2100 >/dev/null
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "2000" ] ||
+    fail "the carried anchor must survive the second attach: $(jq -c . "$state")"
+run_check '2026-07-31T08:40:00Z'
+assert_status 10 findings
+assert_accepted comment 2050
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r5-codex-verification-1: the anchor can only ever move DOWN"
+# The boundary is monotone decreasing: an attach that authenticates a same-head
+# trigger EARLIER than the recorded anchor lowers it, so no later attach can
+# hide a badge an earlier trigger had already drawn. Without that, an anchor
+# recorded too high stays too high for the life of the head.
+trigger_id=3100
+request_time='2026-07-31T08:20:00Z'
+write_defaults
+rm -f "$state"
+printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-committed-at"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson trusted "$trusted_trigger_actor_id" \
+    '[[
+      {
+        id:3000,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:00:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493"
+      },
+      {
+        id:3050,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:10:00Z",
+        updated_at:"2026-07-31T08:10:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** drawn by the trigger the anchor had skipped."
+      },
+      {
+        id:3100,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:20:00Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+# An anchor already recorded ABOVE an authenticable earlier trigger.
+jq '.reserved_at = "2026-07-31T08:19:00Z" | .first_trigger_comment_id = 3100' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id 3100 >/dev/null
+[ "$(jq -r '.first_trigger_comment_id' "$state")" = "3000" ] ||
+    fail "an authenticated earlier trigger must LOWER the anchor: $(jq -c . "$state")"
+run_check '2026-07-31T08:40:00Z'
+assert_status 10 findings
+assert_accepted comment 3050
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r5-codex-verification-4: no trigger comment id is INDETERMINATE, not boundary zero"
+# `attach --requested-at` records when a reviewer was requested; there is no
+# trigger comment, so neither `trigger_comment_id` nor
+# `first_trigger_comment_id` is written. The boundary read then came back empty
+# and degraded to 0, which blocks every badge the PR has ever carried -- while
+# the comment above it claimed it degraded to the trigger in hand. Both
+# available defaults are wrong, so this refuses instead.
+#
+# Driven from a hand-written state because no registry finder currently pairs
+# `requested-reviewer` with the `comment` surface: the guard would otherwise be
+# unreachable and therefore unprovable, which is the shape this stage has
+# punished four times.
+new_cycle
+jq --argjson actor "$actor_id" '
+      .trigger_comment_id = null |
+      .first_trigger_comment_id = null |
+      .previous_trigger_comment_id = null |
+      .finder = {slug:"requested-reviewer-probe",actor_id:$actor,
+                 trigger_mechanism:"requested-reviewer",
+                 surfaces:["comment","review","inline"],
+                 head_binding:"reviewed-commit-line"}' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:4050,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge with no trigger to be ordered against."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+printf '%s' "$check_out" | jq -e '.detail | test("no trigger comment id")' >/dev/null ||
+    fail "the refusal must say the cycle records no trigger comment id: $check_out"
 
 echo "==> review-r1-codex-verification-5a: self_work_marker is load-bearing"
 # A Summary-headed, wholly structural, MARKER-LESS body must stay `findings`.

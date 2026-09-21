@@ -1177,7 +1177,19 @@ reserve)
             # What DOES survive a re-reservation is the head FIRST TRIGGER id
             # below, which is an id rather than a deadline and so cannot
             # starve a fetch budget.
-            carried_first_trigger_comment_id=$(jq -r '.first_trigger_comment_id // empty' "$state_file")
+            #
+            # Review round 5, finding `review-r5-codex-verification-2`
+            # (confirmed P2): this read the new field alone while `check`
+            # degrades a pre-field state with `// .trigger_comment_id`. So a
+            # state written before the field existed lost its anchor across the
+            # re-reservation, `attach` then filled the null with the SECOND
+            # trigger, and a badge answering the first one dropped below the
+            # boundary. Same fallback as `check`, for the same one upgrade
+            # case: the old state is `attached` here by the guard above, so its
+            # `trigger_comment_id` is the only first-trigger evidence there is.
+            carried_first_trigger_comment_id=$(jq -r \
+                '.first_trigger_comment_id // .trigger_comment_id // empty' \
+                "$state_file")
         else
             [ "$attempt" = "1" ] ||
                 die "a new head must begin at attempt 1"
@@ -1569,6 +1581,10 @@ attach)
           )]
         ') || die "cannot classify prior review triggers"
 
+    # With no reconstruction evidence the only same-head trigger in view is the
+    # one being attached, so it IS the minimum. The branch below lowers this
+    # whenever it can authenticate an earlier one.
+    first_trigger_candidate=$trigger_id
     if [ "$requested_at" \< "$state_reserved" ] ||
         [ "$(printf '%s' "$prior_trigger_candidates" | jq 'length')" -gt 0 ]; then
         # A trigger that predates this local reservation is state-recovery
@@ -1607,6 +1623,33 @@ attach)
               [$candidates[] | select(.user.id as $id | $trusted | index($id))] |
               sort_by(.created_at, .id) | last // null | .id // null
             ')
+        # Review round 5, finding `review-r5-codex-verification-1` (confirmed
+        # P1, and a REPRODUCED false clean): the line above deliberately takes
+        # the NEWEST prior trigger, because that is what
+        # `previous_trigger_comment_id` means. The unbound-badge boundary needs
+        # the opposite — the EARLIEST — and it used to be filled with the
+        # trigger in hand instead, so a reconstruction over two same-head
+        # triggers anchored on the second and silently dropped every badge that
+        # answered the first. Reproduced as `rc=0 clean` over a live
+        # undisposed P0, with no `unbound_badged` key emitted at all.
+        #
+        # Same already-fetched, already-authenticated candidate set, no extra
+        # GitHub call: the minimum id among every same-head trigger this attach
+        # can see, including the one being attached. The boundary therefore
+        # only ever moves DOWN, which is the fail direction this scan commits
+        # to a few hundred lines below.
+        first_trigger_candidate=$(jq -nr \
+            --argjson candidates "$prior_trigger_candidates" \
+            --argjson attached "$trigger_id" \
+            --slurpfile registry "$trigger_registry_dir/registry.json" '
+              ($registry[0].trusted_orchestrator_actor_ids // []) as $trusted |
+              ([$candidates[] |
+                 select(.user.id as $id | $trusted | index($id)) | .id] +
+               [$attached]) |
+              map(select(type == "number" and . > 0)) | min // $attached
+            ')
+        valid_uint "$first_trigger_candidate" ||
+            die "cannot determine the head first trigger id from the fetched same-head triggers"
         rm -rf "$trigger_registry_dir"
         [ "$previous_trigger_comment_id" = null ] || requires_full_window=true
     fi
@@ -1615,6 +1658,7 @@ attach)
         --argjson id "$trigger_id" \
         --arg requested_at "$requested_at" \
         --argjson previous_trigger_comment_id "$previous_trigger_comment_id" \
+        --argjson first_trigger "$first_trigger_candidate" \
         --argjson requires_full_window "$requires_full_window" \
         --arg boundary_source "$boundary_source" \
         --arg commit_date_boundary "$commit_date_boundary" \
@@ -1633,7 +1677,15 @@ attach)
           # attempt is exactly the defect `review-r3-codex-verification-1`
           # reproduced, and anchoring it on a clock is the seam five
           # consecutive rounds attacked.
-          .first_trigger_comment_id = ((.first_trigger_comment_id // null) // $id) |
+          # MONOTONE DECREASING, set once and then only ever lowered. A
+          # second attempt keeps attempt 1 id (carried through `reserve`), and
+          # a reconstruction that authenticates an EARLIER same-head trigger
+          # lowers it to that one — `review-r5-codex-verification-1`. It can
+          # never rise, so no later attach can hide a badge an earlier trigger
+          # had already drawn.
+          .first_trigger_comment_id =
+            ([(.first_trigger_comment_id // empty), $first_trigger] |
+              map(select(type == "number" and . > 0)) | min) |
           .requires_full_window = $requires_full_window |
           .boundary_source = $boundary_source |
           .commit_date_boundary = $commit_date_boundary |
@@ -1883,11 +1935,23 @@ check)
     state_trigger=$(jq -r '.trigger_comment_id // empty' "$state_file")
     state_reserved=$(jq -r '.reserved_at' "$state_file")
     state_requested=$(jq -r '.requested_at' "$state_file")
-    # The head FIRST trigger id, the unbound-badge scan whole ordering. A
-    # state written before this field existed has none, and there is no way to
+    # The head FIRST trigger id, the unbound-badge scan whole ordering. A state
+    # written before this field existed has none, and there is no way to
     # recover which trigger came first from a resumed state, so it degrades to
-    # the trigger in hand: that is the pre-existing behaviour for that one
-    # case, and every state this version writes carries the field.
+    # the trigger in hand.
+    #
+    # Review round 5, finding `review-r5-codex-verification-4` (confirmed P3):
+    # the previous version of this comment also claimed every state this
+    # version writes carries the field, and that is FALSE for a
+    # requested-reviewer finder — `attach --requested-at` records when the
+    # reviewer was requested and there is no trigger comment to record, so
+    # BOTH fields are null and this read came back empty. The boundary then
+    # degraded to `0`, which would make every unbound badge block forever
+    # rather than "degrade to the trigger in hand". It was inert only because
+    # the one requested-reviewer finder in the registry does not declare the
+    # `comment` surface, so the scan is never reached — one registry edit from
+    # live. The degradation is explicit at the scan itself now rather than
+    # resting on that coincidence.
     state_first_trigger=$(jq -r \
         '.first_trigger_comment_id // .trigger_comment_id // empty' "$state_file")
     # trigger_comment_id is null for requested-reviewer finders
@@ -2931,9 +2995,20 @@ check)
     # instead of posting, while the clock-based alternatives demonstrably
     # produced a fresh false clean every round. The same boundary is stated in
     # `docs/glossary.md` and `docs/guides/codex-review.md`.
+    # `review-r5-codex-verification-4`: refuse rather than substitute a
+    # boundary. This scan orders comment ids against a comment id, so a state
+    # that has none — a requested-reviewer finder that nonetheless declares the
+    # `comment` surface — has no boundary to order against, and both available
+    # defaults are wrong: 0 blocks every badge the PR has ever carried, and
+    # "infinity" blocks none. Unknown is its own answer here as everywhere else
+    # in this file.
+    valid_uint "$state_first_trigger" || {
+        emit indeterminate "this cycle records no trigger comment id, so a badged conversation comment cannot be ordered against the review that asked for it — a finder that reads the comment surface must attach a trigger comment"
+        exit 2
+    }
     unbound_badged_scan=$(jq -c \
         --argjson id "$actor_id" \
-        --argjson first_trigger "${state_first_trigger:-0}" \
+        --argjson first_trigger "$state_first_trigger" \
         --argjson disposed "$disposed_comments" \
         "$codex_verdict_defs"'
           # The domain is bound ONCE and then answered exhaustively, which is
