@@ -760,36 +760,60 @@ classify_cycle_charge() {
         return 0
     fi
 
-    compare_payload=$(run_gh api "repos/$classify_repo/compare/$classify_prev...$classify_head") || {
+    moved_payload=$(run_gh api "repos/$classify_repo/compare/$classify_prev...$classify_head") || {
         charge_class=charged
         charge_reason="cannot compare $classify_prev...$classify_head; charging"
         return 0
     }
-    compare_status=$(jq -r '.status // "unknown"' <<<"$compare_payload")
-    # "ahead" is the only status that means the previous reviewed head is an
+    moved_status=$(jq -r '.status // "unknown"' <<<"$moved_payload")
+    # "ahead" is the only status meaning the previously reviewed head is an
     # ancestor of this one. "diverged" means history was rewritten under the
-    # cycle, "behind"/"identical" mean the head did not move forward: none of
-    # them is a base merge, and each is charged.
-    if [ "$compare_status" != "ahead" ]; then
+    # cycle; "behind"/"identical" mean the head did not move forward. None is
+    # a base merge, and each charges.
+    if [ "$moved_status" != "ahead" ]; then
         charge_class=charged
-        charge_reason="compare status is $compare_status, not a fast-forward base merge"
+        charge_reason="compare status is $moved_status, not a fast-forward base merge"
         return 0
     fi
 
-    pr_files_payload=$(run_gh api --paginate --slurp "repos/$classify_repo/pulls/$classify_pr/files") || {
+    base_ref=$(run_gh api "repos/$classify_repo/pulls/$classify_pr" \
+        --jq '.base.ref') || base_ref=
+    if [ -z "$base_ref" ] || [ "$base_ref" = "null" ]; then
         charge_class=charged
-        charge_reason="cannot read the PR file list; charging"
+        charge_reason="cannot read the PR base ref; charging"
+        return 0
+    fi
+
+    # Challenge round 1, P1 (confirmed): "under review" cannot be read from the
+    # CURRENT patch alone. A base merge that makes a reviewed file identical to
+    # base — or a conflict resolution that drops the branch's edit — removes
+    # that file from the current patch while it still shows up among the moved
+    # files. Intersecting against only the current set then finds nothing and
+    # exempts a cycle in which reviewed code really did change, or was lost.
+    #
+    # So compare against the union of the patch as it stood at the PREVIOUS
+    # reviewed head and as it stands now. A file that leaves the patch is still
+    # under review for this decision, which is the direction that matters: it
+    # is exactly the case where the merge silently rewrote the change.
+    prev_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref...$classify_prev") || {
+        charge_class=charged
+        charge_reason="cannot read the reviewed patch at $classify_prev; charging"
+        return 0
+    }
+    head_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref...$classify_head") || {
+        charge_class=charged
+        charge_reason="cannot read the reviewed patch at $classify_head; charging"
         return 0
     }
 
-    overlap=$(jq -r -n --argjson compare "$compare_payload" --argjson prfiles "$pr_files_payload" '
-          ($compare.files // []) | map(.filename) | unique as $moved
-          | ($prfiles | if type == "array" then (map(.[]?)) else . end)
-            | map(.filename) | unique as $under_review
-          | ($moved - ($moved - $under_review)) | join(", ")
+    overlap=$(jq -r -n --argjson moved "$moved_payload" --argjson prev "$prev_patch" --argjson head "$head_patch" '
+          def names: (.files // []) | map(.filename);
+          ($moved | names | unique) as $changed
+          | (($prev | names) + ($head | names) | unique) as $under_review
+          | ($changed - ($changed - $under_review)) | join(", ")
         ') || {
         charge_class=charged
-        charge_reason="cannot intersect changed files with the PR file list; charging"
+        charge_reason="cannot intersect the moved files with the reviewed patch; charging"
         return 0
     }
 
@@ -876,14 +900,33 @@ reserve)
         carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
     fi
     charge_class=charged
-    charge_reason="no previous reviewed head was supplied; charging"
+    charge_reason="no persisted prior reviewed head; charging"
     if [ "$attempt" = "1" ]; then
         # Attempt 1 of a head is a NEW cycle, and the only thing that spends a
         # ceiling. Classify it, then charge whichever counter it belongs to.
+        # Challenge round 1, P1 (confirmed): the previous reviewed head is
+        # DERIVED from persisted state, never taken on a caller's word. The
+        # state already records it, and a caller free to name any SHA can
+        # manufacture an exemption: given reviewed head A, a fix commit B and
+        # a base merge C, passing B classifies only B...C and exempts a cycle
+        # in which A...C changed reviewed code. `--previous-head` may now only
+        # RESTATE what state already says, so a caller that disagrees with the
+        # record is refused rather than believed.
+        classify_prev_head=
+        if [ -f "$state_file" ]; then
+            classify_prev_head=$(jq -r '.head // empty' "$state_file")
+            [ "$classify_prev_head" != "$head" ] || classify_prev_head=
+        fi
         if [ -n "$previous_head" ]; then
             valid_sha "$previous_head" ||
                 die "--previous-head must be a full 40-hex commit"
-            classify_cycle_charge "$previous_head" "$head" "$repo" "$pr"
+            [ -n "$classify_prev_head" ] ||
+                die "--previous-head was supplied but no persisted prior head exists to confirm it against"
+            [ "$previous_head" = "$classify_prev_head" ] ||
+                die "--previous-head $previous_head disagrees with the persisted last-reviewed head $classify_prev_head"
+        fi
+        if [ -n "$classify_prev_head" ]; then
+            classify_cycle_charge "$classify_prev_head" "$head" "$repo" "$pr"
         fi
         if [ "$charge_class" = "exempt" ]; then
             carried_exempt=$((carried_exempt + 1))

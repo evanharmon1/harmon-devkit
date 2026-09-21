@@ -972,7 +972,21 @@ function measure(trajectory, policy) {
     // always read as a misleading zero (harmon-devkit#962 maintainer
     // extension: never a count, never zero).
     if (stage === 'integration') {
-      return { stage, entries, cap, integration_evidence: trajectory.integration_evidence || 'unavailable', interventions: stageInterventions }
+      // harmon-init#1341, challenge round 1 P1 (confirmed): the parser reads
+      // the exempt ceiling, so the report must carry it. `cap` alone answers
+      // "how many cycles were allowed?" with only the charged half, and for
+      // the integration stage that is the number a reader uses to judge
+      // whether a run overspent. Omitted when the disclosure named none, which
+      // is not the same as a ceiling of 0 — see the parser's own note.
+      const exemptCap = policy.present ? policy.rounds.integration_exempt : undefined
+      return {
+        stage,
+        entries,
+        cap,
+        ...(exemptCap === undefined ? {} : { exempt_cap: exemptCap }),
+        integration_evidence: trajectory.integration_evidence || 'unavailable',
+        interventions: stageInterventions
+      }
     }
     return {
       stage,
@@ -1182,7 +1196,14 @@ function renderMarkdown(report) {
     // local evidence can never authenticate a round/pass/finding count for
     // it — disclose that instead of a count that would always read as zero.
     if (stage.stage === 'integration') {
-      const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
+      // harmon-init#1341: the charged cap alone understates what the run was
+      // allowed to spend once base-merge-only cycles have a ceiling of their
+      // own, and this line is where a reader judges whether a run overspent.
+      const exemptSuffix = stage.exempt_cap === undefined ? '' : ` + ${stage.exempt_cap} exempt`
+      const cap =
+        stage.cap === null
+          ? 'no cap recorded'
+          : `cap ${stage.cap}${exemptSuffix} (disclosed, unverified)`
       l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}) — integration passes carry no authenticated evidence marker today.`)
     } else if (stage.cap !== null || stage.rounds_spent > 0) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`

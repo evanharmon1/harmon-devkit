@@ -1214,6 +1214,27 @@ if [ "$codex_cycle" != null ]; then
             [ -z "$integration_exempt_cap" ] ||
                 [ "$cycle_exempt" -le "$integration_exempt_cap" ] ||
                 indeterminate codex-cap-mismatch "codex_cycle.exempt $cycle_exempt exceeds --integration-exempt-cap $integration_exempt_cap"
+            # Challenge round 1, P1 (confirmed): internal arithmetic alone is
+            # not integrity. The result is agent-produced, so a schema-valid
+            # one whose counters merely add up can still move spend from the
+            # charged column into the exempt one and walk past both ceilings.
+            # Where the durable checker state is supplied, it is the record of
+            # what was actually reserved, and the reported split must match it.
+            if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+                state_charged="$(jq -er '.charged_cycles | select(type == "number")' \
+                    "$codex_recheck_state" 2>/dev/null)" || state_charged=
+                state_exempt="$(jq -er '.exempt_cycles | select(type == "number")' \
+                    "$codex_recheck_state" 2>/dev/null)" || state_exempt=
+                # State written before these counters existed carries neither,
+                # and absence is not a mismatch — it is a pass this check
+                # cannot speak to, so it stays silent rather than failing a
+                # legitimate in-flight cycle.
+                if [ -n "$state_charged" ] && [ -n "$state_exempt" ]; then
+                    [ "$cycle_charged" -eq "$state_charged" ] &&
+                        [ "$cycle_exempt" -eq "$state_exempt" ] ||
+                        indeterminate codex-cap-mismatch "codex_cycle reports charged $cycle_charged / exempt $cycle_exempt but the checker state records charged $state_charged / exempt $state_exempt"
+                fi
+            fi
         else
             [ "$cycle_number" -le "$integration_cap" ] ||
                 indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
