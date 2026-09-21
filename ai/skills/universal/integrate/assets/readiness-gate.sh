@@ -670,6 +670,23 @@ recheck_codex_freshness() {
         [ "$codex_recheck_exit" -ne 16 ] ||
             indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"
     fi
+    # Codex cloud-review cycle 3 on PR harmon-devkit#1125, finding 4067133481
+    # (confirmed P2): 16 got its own handling above and 15 did not, so a live
+    # recheck that came back quota-exhausted fell into the generic stale arm —
+    # which prescribes dispatching a fresh integrator pass. That is the one
+    # remedy exit 15 rules out: the finder has answered that it will not
+    # review this head, and re-dispatching spends budget re-asking a question
+    # already answered. The CACHED path has said so since harmon-devkit#573
+    # (`codex_exit`s own 15 arm, via `exit_condition`); this path had the same
+    # obligation and not the same code, which is the two-parallel-sites shape
+    # this branch has been bitten by four times.
+    #
+    # `fail_condition`, not `indeterminate`: a usage limit is definitive, and
+    # the remedy is to report the blocker, never to re-poll. Same wording and
+    # same recovery route as the cached arm.
+    if [ "$codex_recheck_exit" -eq 15 ]; then
+        fail_condition codex-quota-exhausted "recheck of the cached clean Codex cycle came back quota-exhausted (check-codex-cloud-review.sh exited 15): the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115): $codex_recheck_output"
+    fi
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
 }

@@ -614,6 +614,11 @@ const SEMANTIC_ONLY = new Set([
   // it for the same reason it cannot express the single-cycle rule, and less
   // so: the governing cycle is whichever one demands the most, which is not a
   // fixed node the way `codex_cycle` was.
+  // Codex cycle 3 finding 4067133478: 11/12/16 are a floor of `pending`, so
+  // `escalate` is rejected by the exclusion rather than by an equality, and a
+  // `clean` mis-statement is caught by the clean rule before the floor. Both
+  // are validator-side for the same reason the rest of this family is.
+  'result.integrator.schema/invalid/transient-read-claims-clean.json',
   'result.integrator.schema/invalid/cycles-escalate-outranks-pending.json',
   'result.integrator.schema/invalid/finder-cycle-quota-exhausted-claims-pending.json',
   'result.integrator.schema/invalid/finder-cycle-transient-read-claims-clean.json',

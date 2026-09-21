@@ -1,1 +1,1 @@
-$result.payload.verdict: must be "pending" when codex_cycle.exit_code is 16, found "escalate"
+$result.payload.verdict: must not be "escalate" when codex_cycle.exit_code is 16

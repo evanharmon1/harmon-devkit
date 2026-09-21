@@ -932,15 +932,33 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // `escalate` would spend a human on a flaky GitHub call, and pairing it with
 // `clean` or `findings` would assert a verdict over evidence nobody managed
 // to read.
+// Codex cloud-review cycle 3 on PR harmon-devkit#1125, finding 4067133478
+// (confirmed P2): 11, 12 and 16 used to be `equals: 'pending'`, which
+// contradicted ai/agents/integrator.md's own verdict rule — `pending` is for
+// "still waiting on CI or the Codex window WITH NOTHING ELSE OUTSTANDING",
+// and a CI failure or a human finding beside an unfinished Codex window is
+// exactly something else outstanding. The truthful verdict there is
+// `findings`, and the validator rejected it.
+//
+// They are a FLOOR of `pending` now, expressed the way exit 0 and 14 already
+// express theirs: `clean` and `escalate` stay rejected — nothing is clean
+// while a window is open or a read failed, and neither state needs the
+// remediation cap — while `findings` is permitted.
+//
+// The condition that `findings` be backed by evidence needs no check here:
+// the schema itself requires `findings` to have at least one item whenever
+// the verdict is `findings` (result.integrator.schema.json allOf[0]), so a
+// vacuous `findings` cannot validate in the first place. A pass with
+// unanswered threads but no findings[] is `pending`, which the floor allows.
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
   0: { excludes: new Set(['pending', 'escalate']) },
   10: { equals: 'findings' },
-  11: { equals: 'pending' },
-  12: { equals: 'pending' },
+  11: { excludes: new Set(['clean', 'escalate']) },
+  12: { excludes: new Set(['clean', 'escalate']) },
   13: { equals: 'escalate' },
   14: { excludes: new Set(['clean', 'pending']) },
   15: { equals: 'escalate' },
-  16: { equals: 'pending' },
+  16: { excludes: new Set(['clean', 'escalate']) },
   2: { equals: 'escalate' }
 }
 

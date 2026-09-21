@@ -1964,6 +1964,27 @@ assert_gate 1 fail codex-pr-not-open
 printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("no longer open")' >/dev/null ||
     fail "the exit-14 condition must name the closed PR: $gate_out"
 
+echo "==> 4067133481: a live recheck that comes back quota-exhausted is a blocker, not staleness"
+# 16 had its own handling on this path and 15 did not, so a recheck that came
+# back quota-exhausted fell into the generic `codex-stale` arm -- which
+# prescribes dispatching a fresh integrator pass, the one remedy exit 15 rules
+# out. The cached path has emitted `codex-quota-exhausted` since #573; this
+# path had the same obligation and not the same code.
+write_defaults
+quota_recheck="$(write_integrator_result clean "$(codex_cycle_json 0)")"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXITS="15"
+run_gate --codex-recheck "$recheck_state" \
+    --integrator-result "$quota_recheck" --integration-cap 1
+unset RECHECK_FAKE_EXITS
+gate="$saved_gate"
+assert_gate 1 fail codex-quota-exhausted
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("usage limit is exhausted")' >/dev/null ||
+    fail "the recheck quota condition must name the exhausted limit: $gate_out"
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("1115")' >/dev/null ||
+    fail "the recheck quota condition must name the recovery route: $gate_out"
+
 echo "==> review-r1/r2-codex-verification-3: the recheck retry waits the CONFIGURED delay"
 # The retry used to re-invoke with no delay at all, so both reads landed within
 # microseconds and a transient failure could not have cleared between them.
