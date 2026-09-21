@@ -3084,7 +3084,27 @@ check)
     # The partition is checked, not asserted. If these ever stop adding up a
     # badge has gone missing, which is the one thing this form promises cannot
     # happen — so say so instead of reporting a verdict built on it.
-    unbound_partition_ok=$(printf '%s' "$unbound_badged_scan" | jq -er '
+    #
+    # Gemini finding 4066758522 on PR harmon-devkit#1125 (adjudicated P3):
+    # this read `jq -er`, and `-e` exits 1 when the last output is `false`.
+    # So the one outcome the check exists to detect took the generic
+    # "could not be partitioned" path and the specific message below could
+    # never be reached. With `-r` the two branches split the way they were
+    # meant to: a `false` result gets its own sentence below, and this generic
+    # arm keeps the case where jq cannot run at all (unparseable scan output,
+    # rc 5). Note what `false` covers, since it is more than a mismatched sum:
+    # jq treats a missing key as null and `0 + null` as 0, so a scan payload
+    # that lost a key also lands on the specific message — which is true of
+    # it, because a key that is gone did not account for anything.
+    #
+    # Worth stating plainly, because a green suite is not evidence either
+    # branch has fired: `false` is unreachable from the scan as it stands.
+    # Every domain member is a positive integer or not, and if it is, its id
+    # is either at-or-below the boundary or above it — the three keys are
+    # exhaustive and disjoint by construction. This is defence against a
+    # future edit to that query, not a live path, and no fixture can drive it
+    # without a production hook that exists only for the test.
+    unbound_partition_ok=$(printf '%s' "$unbound_badged_scan" | jq -r '
       (.domain == ((.unusable | length) + .prior + (.ids | length)))
     ') || {
         emit indeterminate "unbound badged findings could not be partitioned"
