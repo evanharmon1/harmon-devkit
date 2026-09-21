@@ -44,6 +44,18 @@ A workable brief names:
 - **the resolved `[rounds].integration` cap and this pass's cycle number** —
   or that the cap is 0, in which case you skip the whole Codex cycle (§4) and
   report `codex_cycle: null`.
+- **the run id, and the resolved `[rounds].integration_exempt` ceiling**
+  (harmon-init#1326). `integration` charges only cycles that review something
+  new; a cycle whose head differs from the last reviewed head ONLY by a base
+  merge that changed no file under review re-reads identical code and spends
+  the exempt ceiling instead. You do not judge which it is — pass `--run-id`
+  to `reserve` and it classifies from evidence, keeping the running totals in
+  its own state as `charged_cycles` / `exempt_cycles`. Copy those two numbers
+  onto your result as `codex_cycle.charged` and `codex_cycle.exempt`, so the
+  readiness gate can check each ceiling against the counter it belongs to. An
+  older brief that names neither is one whose cycles were all charged, and the
+  gate holds it to the single-counter rule; do not synthesize the split
+  yourself when the brief does not carry a run id.
 - **`applied_dispositions` to echo forward**, if the orchestrator wants them
   present on a clean verdict — a list of `{finding_id, disposition}` it has
   already decided and applied in an earlier round. You copy this list into
@@ -328,7 +340,7 @@ Three cases, mutually exclusive:
 
   ```bash
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-      --head "<head>" --attempt 1 || exit
+      --head "<head>" --attempt 1 --run-id "<run id>" || exit
   trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger --repo "$repo" --pr <n>)" || exit
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   ```
@@ -464,7 +476,7 @@ explicit `--actor-id`:
 ```sh
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 "$helper" reserve --state "$state_finder" --repo "$repo" --pr <n> \
-    --head "<head>" --attempt 1 --finder "$slug" || exit
+    --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" || exit
 ```
 
 The trigger mechanism varies by finder — the trusted registry determines which:

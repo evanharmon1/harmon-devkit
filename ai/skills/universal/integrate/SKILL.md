@@ -848,11 +848,15 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     fetch, never re-read at dispatch time (a mid-adjudication push would
     otherwise be laundered into "current");
   - the resolved `integration_round` ordinal (this run-wide pass number),
-    the resolved integration cap, and — where that cap is not 0 — this
-    pass's **Codex cycle number**: 1 for the stage's first cycle, one more
-    for each cycle a later pass actually drives, never above the cap (a
-    re-dispatch after a `pending` result continues the same cycle rather
-    than starting a new one). At cap 0 say so instead;
+    the resolved integration cap, the resolved `integration_exempt` ceiling,
+    and — where the integration cap is not 0 — this pass's **Codex cycle
+    number**: 1 for the stage's first cycle, one more for each cycle a later
+    pass actually drives (a re-dispatch after a `pending` result continues the
+    same cycle rather than starting a new one). At cap 0 say so instead.
+    That ordinal counts every cycle, so it may legitimately exceed the
+    integration cap once base-merge-only cycles are exempt from it
+    (harmon-init#1326) — what may not exceed the cap is the CHARGED count the
+    reserve state keeps, which is the number the readiness gate checks;
   - `run_id` and `initiated_by` — the active run's identity, read from
     `--record <dir>`'s own `run.json` (the same two values §6's gate binds
     the result to before trusting it);
