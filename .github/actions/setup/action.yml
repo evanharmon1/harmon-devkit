@@ -164,6 +164,6 @@ runs:
       run: |
         if ! command -v snyk >/dev/null 2>&1; then
           # renovate: datasource=npm depName=snyk
-          SNYK_VERSION=1.1307.2
+          SNYK_VERSION=1.1307.3
           npm install --global "snyk@${SNYK_VERSION}"
         fi
