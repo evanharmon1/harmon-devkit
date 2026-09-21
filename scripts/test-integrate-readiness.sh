@@ -81,7 +81,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     [ ! -f "$count_file" ] || count="$(cat "$count_file")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$count_file"
-    if [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/pr-view-second.json" ]; then
+    if [ "$count" -ge 3 ] && [ -f "$GH_FIXTURES/pr-view-third.json" ]; then
+        cat "$GH_FIXTURES/pr-view-third.json"
+    elif [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/pr-view-second.json" ]; then
         cat "$GH_FIXTURES/pr-view-second.json"
     else
         cat "$GH_FIXTURES/pr-view.json"
@@ -120,6 +122,7 @@ repos/*/issues/*/comments*) file=top.pages.json ;;
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/actions/runs*) file=workflow-runs.pages.json ;;
+repos/*/compare/*) file=compare.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
 esac
@@ -457,7 +460,7 @@ write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -477,6 +480,9 @@ write_defaults() {
     # with no matching check_suite_id fall back to their app id (harmon-devkit#714).
     printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
         >"${fixtures}/workflow-runs.pages.json"
+    # Head level with its base by default. `behind_by` is the TRUTH check the
+    # gate uses; mergeStateStatus above is only the cache.
+    jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
@@ -485,7 +491,7 @@ write_defaults() {
         '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"T1","isResolved":false}]}}}}}]' \
         >"${fixtures}/threads.pages.json"
     rm -f "${fixtures}/fail-endpoint"
-    rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json"
+    rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
     rm -f "${fixtures}"/count-* "${fixtures}"/second-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
@@ -649,12 +655,460 @@ write_defaults
 run_gate
 assert_gate 0 pass ready
 
+# ---- SKILL.md base-reconciliation contract (harmon-devkit#873, #836) -------
+# Prose, not behaviour — but the prose is the whole fix for #873, and a
+# directional distinction that quietly disappears from a document fails
+# silently and forever. An implementer who reads "never merge to main" and
+# concludes it forbids merging main INTO the branch waits for a reconciliation
+# that will never come (observed on evanharmon1/harmon-init#1203).
+echo "==> SKILL.md keeps the base-reconciliation contract"
+skill_md="${repo_root}/ai/skills/universal/integrate/SKILL.md"
+[ -f "$skill_md" ] || fail "integrate SKILL.md not found at $skill_md"
+# Match against a WHITESPACE-NORMALIZED copy: the assertions are about prose
+# that markdown wraps, and one keyed to today's line breaks would fail the next
+# time someone re-wraps a paragraph — which invites "fixing" it by loosening
+# the pattern until it no longer asserts anything.
+skill_flat="$(tr '\n' ' ' <"$skill_md" | tr -s ' ')"
+assert_skill() {
+    case "$skill_flat" in
+    *"$2"*) ;;
+    *) fail "SKILL.md lost: $1" ;;
+    esac
+}
+assert_skill "the permitted base-into-feature direction" \
+    "base branch **into** the feature branch is permitted"
+assert_skill "the prohibited feature-into-base direction" \
+    "feature branch **into** the base is the operation that needs per-merge human approval"
+assert_skill "the no-rebase rule for pushed history" \
+    "never rebased or force-pushed"
+assert_skill "behind-ness deferred to the gate, not acted on mid-stage" \
+    "not a mid-stage blocker"
+assert_skill "the base bound to the PR's own baseRefName in the target repo" \
+    "own \`baseRefName\` in the **target** repository"
+assert_skill "reconciliation being an ordinary remediation round" \
+    "ordinary remediation round"
+assert_skill "the exhausted-remediation blocked stop" \
+    "no remediation budget left, reconciliation is the **blocked stop**"
+assert_skill "the last cycle reserved for the reconciled head" \
+    "last permitted cycle is therefore reserved for the reconciled head"
+assert_skill "the executable preflight for the reserved cycle" \
+    "readiness-gate.sh behind --repo <repo> --pr <n>"
+assert_skill "promotion staying a one-way door when the base moves after it" \
+    "Undoing a promotion because the base moved afterwards is **not** the remedy"
+assert_skill "indeterminate never licensing an undo" \
+    "every \`audit\` exit 2, whatever its condition"
+assert_skill "the stay-draft rule scoped to this session's own promotion" \
+    "governs **this session's own promotion decision**"
+assert_skill "an unestablished promotion being escalated, not accepted" \
+    "escalated loudly, not silently accepted"
+assert_skill "post-promotion drift being reported, not undone" \
+    "State that changed *after* a correct promotion"
+assert_skill "behind-base counted as drift, not an undo trigger" \
+    "\`audit-behind\`, \`behind-base\`, \`base-retargeted\`, \`head-moved\`"
+assert_skill "the undo branch being limited to established injustice" \
+    "the gate positively established that the promotion sits on"
+assert_skill "the rule being about kinds, not a list of conditions" \
+    "a rule about kinds rather than a list of conditions"
+assert_skill "the last remediation push reserved like the last cycle" \
+    "last remediation push is reserved the same way the last cycle is"
+assert_skill "the cap-0 integration carve-out" \
+    "integration cap is 0 no cloud cycle is owed"
+assert_skill "the overriding never-ready-when-behind invariant" \
+    "gate can establish is behind is never reported ready"
+assert_skill "the Base reconciliation section heading" \
+    "### Base reconciliation"
+
+echo "==> a head behind its base fails behind-base even when the cache says CLEAN"
+# The omator#758 shape (harmon-devkit#836): GitHub returned CLEAN/MERGEABLE for
+# a head 16 commits behind main. mergeStateStatus is a lazily recomputed cache;
+# behind_by is the commit graph. If this ever passes, the gate is reporting
+# ready for a PR the maintainer will have to "Update branch" — which moves the
+# head and invalidates the Codex result the gate just relied on.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"CLEAN",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:16,ahead_by:3,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 1 fail behind-base
+
+echo "==> a head level with its base passes with the same CLEAN cache"
+# The negative control for the case above: same mergeStateStatus, behind_by 0.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"CLEAN",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:3,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a base that advances DURING the gate fails on the final re-read"
+# The race the single up-front comparison cannot see: level when checked, behind
+# by the verdict. Gate evaluation is long, and the pre-verdict re-read used to
+# consult only mergeStateStatus — the cache this condition exists to distrust —
+# so a lagging cache let the gate pass for a head that had fallen behind.
+write_defaults
+jq -cn '{behind_by:2,ahead_by:3,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/second-compare.json"
+run_gate
+assert_gate 1 fail behind-base
+
+echo "==> a retarget DURING the gate stops the run rather than re-measuring"
+# Every condition already evaluated used the OLD base, so re-deriving against
+# the new one mid-verdict would mix two baselines in one verdict.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      baseRefName:"release/2.0",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-second.json"
+run_gate
+assert_gate 1 fail base-retargeted
+grep -Fq 'release/2.0' <<<"$gate_out" ||
+    fail "retarget case did not name the new base ref: $gate_out"
+
+echo "==> audit does NOT fail a behind head (post-promotion drift is not an undo)"
+# Had audit failed here, SKILL.md's unexplained-promotion "Otherwise" branch
+# would route a perfectly valid human handoff into `gh pr ready --undo`,
+# reversing it because the base moved afterwards. Ordinary drift, not a defect.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:9,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+run_gate_audit() {
+    set +e
+    gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
+        --repo example/repo --pr 493 --head "$head_sha" \
+        --record "$record_dir" \
+        --integrator-result "${fixtures}/integrator-result-disabled.json" \
+        --integration-cap 0 --remediation-cap 4 "$@" 2>&1)"
+    gate_rc=$?
+    set -e
+}
+run_gate_audit
+[ "$gate_rc" -eq 0 ] ||
+    fail "audit failed on a behind head (rc $gate_rc) — this routes a valid promotion to an undo: $gate_out"
+# ...and it must not pass SILENTLY either: a bare `audit` verdict would let §2
+# complete the ready stop for a PR that is in fact behind (review round 2).
+# The third answer: pass, so no undo, but say so, so the caller reports it.
+grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
+    fail "audit passed a behind head without flagging the drift: $gate_out"
+grep -Fq '9 commit(s) behind' <<<"$gate_out" ||
+    fail "audit-behind did not report the distance: $gate_out"
+
+# ...and the TRUE lag shape: cache says BEHIND while the graph says 0. Only
+# then is `merge-state-stale` an honest claim, and it is indeterminate in both
+# modes — safe because SKILL.md §2 never undoes on an exit 2. (Where the graph
+# also says behind, the two signals agree, re-polling can never resolve it,
+# and audit must reach `audit-behind` instead — covered separately.)
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' \
+    >"${fixtures}/compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 2 ] ||
+    fail "a true cache lag in audit should be indeterminate (rc $gate_rc): $gate_out"
+grep -Fq 'merge-state-stale' <<<"$gate_out" ||
+    fail "cached-BEHIND audit did not name the cache lag: $gate_out"
+
+echo "==> a head that moves DURING the final compare fails as head-moved"
+# The compare is a network call after the pre-verdict scalar read, so without
+# re-binding afterwards the verdict would rest on an identity nothing checked.
+# Only the THIRD read moves. Seeding the counter instead made the FIRST read
+# return the moved SHA, so the gate exited early on `head-mismatch` and the
+# case passed with the new guard deleted — a vacuous assertion (review r3).
+write_defaults
+jq -cn --arg head "$moved_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail head-moved
+
+echo "==> a promotion DURING the final compare fails, not just a head move"
+# The post-compare read reapplies every scalar gate, not only identity:
+# checking head/base alone would let a close, a promotion, a CHANGES_REQUESTED
+# review or a DIRTY merge state land during the comparison and still say ready.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail pr-not-draft
+
+echo "==> a CHANGES_REQUESTED review DURING the final compare fails"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail changes-requested
+
+echo "==> audit re-establishes drift that appears DURING the run"
+# Level at the start, behind by the verdict: audit must still say audit-behind
+# rather than emitting a plain clean verdict the caller reports as ready.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:5,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/second-compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] ||
+    fail "audit failed on mid-run drift (rc $gate_rc): $gate_out"
+grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
+    fail "audit missed drift that appeared during the run: $gate_out"
+
+echo "==> UNKNOWN arriving DURING the final compare is indeterminate, not ready"
+# Writing only the DIRTY arm on the final read let the other two prohibited
+# merge states fall straight through to `ready` (review round 4).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"UNKNOWN",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 2 indeterminate merge-state-unknown
+
+echo "==> a cache turning BEHIND DURING the final compare is indeterminate"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 2 indeterminate merge-state-stale
+
+echo "==> audit drift that RESOLVES before the verdict is not reported"
+# behind at the first comparison, level at the recheck: only ever SETTING
+# audit_behind left the stale count standing and reported drift that was gone.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:6,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/second-compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] || fail "audit failed after drift resolved (rc $gate_rc): $gate_out"
+grep -Fq '"condition":"audit"' <<<"$gate_out" ||
+    fail "audit reported stale drift after a level recheck: $gate_out"
+
+echo "==> a retarget during AUDIT stops it too, and names the new base"
+# Evidence gathered against the old base says nothing about a new one.
+# Safe to fail now: §2 classifies base-retargeted as drift, reported not undone.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"release/2.0",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-second.json"
+run_gate_audit
+[ "$gate_rc" -eq 1 ] || fail "audit accepted a retarget (rc $gate_rc): $gate_out"
+grep -Fq 'base-retargeted' <<<"$gate_out" || fail "audit retarget not named: $gate_out"
+
+echo "==> the base branch ADVANCING after the compare invalidates the count"
+# Name and head unchanged, tip moved: comparing names alone reported `level`
+# off a stale count (review round 5).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"cafecafecafecafecafecafecafecafecafecafe"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail behind-base
+
+echo "==> the base-tip race is reachable in AUDIT too, and is classed as drift"
+# check mode already covers this; audit reaches the same `behind-base` via the
+# final identity read, and §2 must class it as drift or the undo branch claims
+# a valid human handoff (Codex, current head).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"cafecafecafecafecafecafecafecafecafecafe"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate_audit
+[ "$gate_rc" -eq 1 ] || fail "audit base-tip race exited $gate_rc: $gate_out"
+grep -Fq 'behind-base' <<<"$gate_out" ||
+    fail "audit base-tip race did not emit behind-base: $gate_out"
+
+echo "==> a genuinely behind audit reaches audit-behind, not a permanent stale"
+# Both signals agree here, so `merge-state-stale` would be a false lag claim
+# AND a permanent indeterminate — re-polling cannot resolve real drift, and it
+# would block the drift verdict audit mode exists to produce (Codex, cycle 2).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:7,ahead_by:1,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' \
+    >"${fixtures}/compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] || fail "genuinely-behind audit exited $gate_rc: $gate_out"
+grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
+    fail "genuinely-behind audit did not reach the drift verdict: $gate_out"
+
+echo "==> no network read follows the final checks evaluation"
+# The gate promises its final scalar read is the last network call. A compare
+# placed after the content fingerprint and second evaluate_checks broke that:
+# a check turning red during it went unseen (Codex, cycle 2).
+gate_src="${repo_root}/ai/skills/universal/integrate/assets/readiness-gate.sh"
+last_checks="$(grep -n '^evaluate_checks$' "$gate_src" | tail -1 | cut -d: -f1)"
+last_compare="$(grep -n 'establish_behind "\$recheck"' "$gate_src" | tail -1 | cut -d: -f1)"
+[ -n "$last_checks" ] && [ -n "$last_compare" ] ||
+    fail "could not locate the final checks evaluation or the base comparison"
+[ "$last_compare" -lt "$last_checks" ] ||
+    fail "the base comparison (line $last_compare) runs AFTER the final evaluate_checks (line $last_checks) — a network call behind the last snapshots"
+
+echo "==> the behind preflight refuses a head that moved while comparing"
+# The preflight makes exactly two PR reads: the first captures the identity,
+# the second re-binds it after comparing. Only the second moves here.
+write_defaults
+jq -cn --arg head "$moved_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-second.json"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 2 ] ||
+    fail "behind preflight certified a moved head (rc $preflight_rc): $preflight_out"
+grep -Fq 'behind-base-unknown' <<<"$preflight_out" ||
+    fail "behind preflight did not name the identity drift: $preflight_out"
+
+echo "==> the gate emits no stray output before its own argument parsing"
+# A header-comment edit once dropped its leading `#`, leaving an executable
+# line at top level. `set -euo pipefail` is BELOW the header, so it failed with
+# 127, execution continued, and every test still passed while stderr carried
+# "command not found" on every single run. Assert the shape, not that one line.
+stray_out="$("$gate" 2>&1 || true)"
+case "$stray_out" in
+*"command not found"* | *"No such file or directory"*)
+    fail "the gate emits stray shell output before parsing arguments: $stray_out"
+    ;;
+esac
+grep -q '^Usage:' <<<"$stray_out" ||
+    fail "a bare invocation did not print usage first: $stray_out"
+
+echo "==> the behind preflight reports level, behind, and indeterminate"
+# The reserved-cycle rule sends integrators here instead of re-deriving the
+# comparison, so it must carry the same fail-closed behaviour as the gate.
+write_defaults
+jq -cn '{behind_by:0,ahead_by:2,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 0 ] || fail "behind preflight on a level head exited $preflight_rc: $preflight_out"
+grep -Fq '"status":"level"' <<<"$preflight_out" ||
+    fail "behind preflight did not report level: $preflight_out"
+
+jq -cn '{behind_by:4,ahead_by:2,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 1 ] || fail "behind preflight on a behind head exited $preflight_rc: $preflight_out"
+grep -Fq 'behind-base' <<<"$preflight_out" ||
+    fail "behind preflight did not name behind-base: $preflight_out"
+
+# Indeterminate must NOT read as level: spending the reserved cycle on an
+# unverified head is the failure this preflight exists to prevent.
+write_defaults
+printf '%s\n' 'compare' >"${fixtures}/fail-endpoint"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 2 ] || fail "behind preflight on an unreadable compare exited $preflight_rc: $preflight_out"
+grep -Fq 'behind-base-unknown' <<<"$preflight_out" ||
+    fail "behind preflight did not report behind-base-unknown: $preflight_out"
+write_defaults
+
+echo "==> a URL-significant base ref is encoded, and a slash is left literal"
+# `release#1` interpolated raw would truncate the endpoint at the fragment and
+# silently compare against `release` — the wrong branch, answered confidently.
+# `/` must survive, because GitHub expects it literally inside a ref.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"release#1/rc",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 0 pass ready
+grep -Fq 'compare/release%231/rc...' "$log" ||
+    fail "compare endpoint did not encode the base ref: $(grep -F compare/ "$log" | head -1)"
+
+echo "==> a cache-only BEHIND (graph says 0) is indeterminate, not a merge to do"
+# Merging a base the head is already level with creates no commit, so there is
+# nothing to push or re-review and the blocker would reproduce forever.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view.json"
+run_gate
+assert_gate 2 indeterminate merge-state-stale
+
+echo "==> an unreadable compare is indeterminate, never a pass"
+write_defaults
+printf '%s\n' 'compare' >"${fixtures}/fail-endpoint"
+run_gate
+assert_gate 2 indeterminate behind-base-unknown
+
+echo "==> a compare payload without a numeric behind_by is indeterminate"
+write_defaults
+jq -cn '{status:"ahead"}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 2 indeterminate behind-base-unknown
+
 echo "==> a closed PR fails as pr-not-open"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"MERGED",isDraft:false,headRefOid:$head,
       reviewDecision:"",mergeStateStatus:"UNKNOWN",
-      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail pr-not-open
 
@@ -663,7 +1117,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -673,7 +1127,7 @@ write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail head-mismatch
@@ -1215,13 +1669,18 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' \
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail changes-requested
 
-echo "==> DIRTY and BEHIND fail; UNKNOWN is indeterminate"
-for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" \
+# BEHIND is RECLASSIFIED, not relaxed: the graph check above already failed a
+# genuinely behind head as `behind-base`, so reaching the cache branch means
+# the cache disagrees with the graph. Both outcomes refuse promotion — exit 1
+# vs exit 2 — but `merge-state-stale` says "re-poll", where the old
+# `merge-state-behind` sent the caller to merge a base it is level with.
+echo "==> DIRTY fails; a cache-only BEHIND and UNKNOWN are indeterminate"
+for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 2 indeterminate merge-state-stale" \
     "UNKNOWN 2 indeterminate merge-state-unknown"; do
     # shellcheck disable=SC2086
     set -- $pair
@@ -1229,7 +1688,7 @@ for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" 
     jq -cn --arg head "$head_sha" --arg ms "$1" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms,
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
     run_gate
     assert_gate "$2" "$3" "$4"
@@ -1826,7 +2285,7 @@ echo "==> a head that moves mid-gate fails as head-moved on the final re-read"
 write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail head-moved
@@ -1835,7 +2294,7 @@ echo "==> a promotion mid-gate fails as pr-not-draft on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -2502,7 +2961,7 @@ write_promoted_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 }
 
 echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
@@ -2656,7 +3115,7 @@ write_default_record
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 run_audit --integration-cap 3
 assert_gate 2 indeterminate codex-cap-mismatch
 
@@ -2664,7 +3123,7 @@ echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail changes-requested
@@ -2673,7 +3132,7 @@ echo "==> a DIRTY merge state arising mid-gate fails on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail merge-state-dirty
@@ -2782,7 +3241,7 @@ nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
 }
 
