@@ -4788,6 +4788,135 @@ jq -cn \
 run_check '2026-07-31T08:16:00Z'
 assert_status 15 quota-exhausted
 
+echo "==> review-r3-codex-verification-1: a badge posted BETWEEN the two triggers still blocks"
+# THE REPRODUCED FALSE CLEAN. `attach` rebases `requested_at` to each new
+# trigger, so bounding the unbound scan on the request time made the lower
+# bound the LATEST trigger: the connector answered attempt 1 late, the operator
+# took its one sanctioned re-trigger, and the badge fell BELOW the new bound.
+# No other scan can see it -- `comment_candidates` and `malformed_top_level`
+# both need a `Reviewed commit` prefix an unbound badge does not have -- so the
+# clean verdict on trigger 2 exited 0 over a live undisposed P0.
+#
+# The bound is the HEAD RESERVATION now, which `reserve` carries across both
+# attempts, so this case pins both halves: the carried timestamp and the scan
+# that reads it.
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+attempt1_reserved="$(jq -r '.reserved_at' "$state")"
+trigger_id=200
+request_time='2026-07-31T08:15:30Z'
+jq -cn \
+    --argjson id "$trigger_id" \
+    --argjson author "$trusted_trigger_actor_id" \
+    --arg created "$request_time" \
+    '{
+      id:$id,user:{id:$author,login:"trusted-trigger"},
+      body:"@codex review",created_at:$created,
+      issue_url:"https://api.github.com/repos/example/repo/issues/493"
+    }' >"${fixtures}/trigger.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+[ "$(jq -r '.reserved_at' "$state")" = "$attempt1_reserved" ] ||
+    fail "attempt 2 must keep the head reservation time, got $(jq -r '.reserved_at' "$state") not $attempt1_reserved"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:150,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:15:10Z",
+        updated_at:"2026-07-31T08:15:10Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** the late answer to attempt 1, naming no reviewed commit."
+      },
+      {
+        id:8400,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:16:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-150.json"
+"$helper" attach --state "$state" --trigger-id 200 >/dev/null
+[ "$(jq -r '.requested_at' "$state")" = "2026-07-31T08:15:30Z" ] ||
+    fail "attach must still rebase requested_at to the new trigger: $(jq -c . "$state")"
+[ "$(jq -r '.reserved_at' "$state")" = "$attempt1_reserved" ] ||
+    fail "attach must not move the head reservation time: $(jq -c . "$state")"
+# The window is deliberately elapsed: the clean half of this case rides the
+# ordinary clean-comment path, which owes `require_latest_window_elapsed`.
+# Blocking does not -- an unbound badge blocks whatever the clock says.
+run_check '2026-07-31T08:31:00Z'
+assert_status 10 findings
+assert_accepted comment 150
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [150]' >/dev/null ||
+    fail "a badge between the two triggers must be enumerated: $check_out"
+# And it is answerable, so erring closed costs one disposition.
+run_settle --surface comment --id 150 --disposition declined --note "adjudicated: answered on the re-review"
+[ "$settle_rc" -eq 0 ] || fail "a between-triggers badge must be settleable: $settle_out"
+run_check '2026-07-31T08:31:00Z'
+assert_status 0 clean
+assert_accepted comment 8400
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> review-r3-codex-verification-3: an unusable stamp is indeterminate, not an admitted block"
+# The scan stamps a comment `(.updated_at // .created_at)` and used to compare
+# that string without ever proving it was a timestamp. A payload whose stamp is
+# unusable was admitted, enumerated, and exited 10 -- and then `settle` refused
+# it, leaving the head blocked with no answer available through this helper.
+# An unusable stamp is unknown, which is the direction `malformed_top_level`
+# already takes.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:160,user:{id:$id,login:$login},
+        updated_at:"not-a-timestamp",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge whose only stamp is unusable."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> review-r3-codex-verification-3: a stamp the scan admits is one settle can time"
+# The other half of the same defect: `settle` read a comment result time as
+# `.created_at` alone while the scan stamped it `(.updated_at // .created_at)`.
+# Two sites reading different fields for the same fact, so a shape `check`
+# blocked on could be unanswerable. Same pair, same order, both ends.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:161,user:{id:$id,login:$login},
+        updated_at:"2026-07-31T08:00:20Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a badge carrying only an update stamp."
+      },
+      {
+        id:8500,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:40Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-161.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 161
+run_settle --surface comment --id 161 --disposition declined --note "adjudicated: not a defect"
+[ "$settle_rc" -eq 0 ] ||
+    fail "a comment the scan admits must be settleable, not refused for its timestamp: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 8500
+
 echo "==> challenge-r5-codex-adversarial-5: an in-thread bot self-fix summary is owed no reply"
 # AGENTS.md: a self-fix summary "in a thread or as a top-level comment" is
 # informational. The top-level half had three cases; the thread half had none,

@@ -398,9 +398,10 @@ indeterminate() {
 # Both schema fields carry the same contract by construction: the
 # `finder_cycles[].exit_code` description reads "Same contract as
 # codex_cycle.exit_code above". So the mapping is ONE function keyed by
-# surface. Adding an exit code is now one arm here rather than two lists that
-# must be remembered together, and the suites cover every code on every
-# surface. Exit 0 stays at each call site because it is the one code whose
+# surface, and the suite asserts its ARM SET against the schema exit-code
+# enum on both surfaces — round 2 made this one function and still left exit 2
+# in the catch-all, which is the round-3 finding `-4`, so "one place to add a
+# code" is only true if something checks that every code was added. Exit 0 stays at each call site because it is the one code whose
 # meaning is surface-specific: the Codex cycle re-checks its cached clean
 # result, a finder cycle is simply terminal-clean.
 exit_condition() {
@@ -450,7 +451,27 @@ exit_condition() {
         # the reason named, and the caller repeats the READ.
         indeterminate "${ec_prefix}-transient-read" "$ec_subject exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
         ;;
+    2)
+        # Review round 3, finding `review-r3-codex-verification-4` (confirmed
+        # P3): 2 was the LAST documented code still falling to the catch-all,
+        # so the gate told the operator that the one value every other layer
+        # defines — the checker header, both schema enums, AGENTS.md — "is not
+        # a recognized terminal or pending value". The outcome was already
+        # right; the sentence was not, and a sentence is what the operator
+        # acts on. Exit 2 is the checker saying its evidence does not add up,
+        # which is unknown with the reason named, so the remedy is a fresh
+        # pass rather than a promotion or a hard fail.
+        indeterminate "${ec_prefix}-indeterminate" "$ec_subject exited 2: the checker could not determine a verdict from the evidence it read — dispatch a fresh pass rather than treating this as clean or as a review failure"
+        ;;
     *)
+        # Reached only by a value OUTSIDE the schema exit-code enum, which is
+        # a defect in whatever produced the envelope. Every documented code has
+        # its own arm above, and the suite asserts that against the enum in
+        # `ai/schemas/result.integrator.schema.json` on BOTH surfaces, so a
+        # code cannot be added to the schema and quietly left here. Three
+        # consecutive review rounds each closed one member of this enum by
+        # hand (`review-r1-codex-verification-4`, `-r2-...-4`, `-r3-...-4`);
+        # the assertion is what ends that.
         indeterminate "${ec_prefix}-indeterminate" "$ec_subject exit_code $ec_exit is not a recognized terminal or pending value"
         ;;
     esac

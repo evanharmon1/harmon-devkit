@@ -819,6 +819,16 @@ codex_verdict_defs=$(
           # values the same way `valid_uint`'s `[1-9][0-9]*` anchor does.
           def is_positive_integer:
             (type == "number") and (. == (. | floor)) and (. > 0);
+          # The jq-level mirror of the shell `valid_time` guard, same anchored
+          # shape and same second resolution, so a timestamp this file will
+          # later COMPARE is proven usable at the point it is read rather than
+          # trusted because GitHub usually sends it. Review round 3, finding
+          # `review-r3-codex-verification-3`: the unbound-badge scan admitted
+          # an unvalidated stamp that `settle` then refused, which made a
+          # blocked head unanswerable through this helper.
+          def is_iso_second:
+            (type == "string") and
+            test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
           # Factored out of `rest_is_boilerplate` so the carrier defs below can
           # reuse the exact same removal and the exact same metadata pattern
           # instead of restating them. Same regexes, same flags, same order —
@@ -1116,6 +1126,7 @@ reserve)
     [ "$live_head" = "$head" ] || die "PR head changed before reservation"
 
     replaced_trigger_comment_id=
+    carried_reserved_at=
     if [ -f "$state_file" ]; then
         read_state
         old_repo=$(jq -r '.repo' "$state_file")
@@ -1158,6 +1169,22 @@ reserve)
             # recomputing this field from live GitHub evidence once a new
             # trigger is attached; this is only the value in between.
             replaced_trigger_comment_id=$(jq -r '.trigger_comment_id // empty' "$state_file")
+            # Review round 3, finding `review-r3-codex-verification-1`
+            # (confirmed P1, and a REPRODUCED false clean): the reservation
+            # time is the one thing about this cycle that must NOT move when
+            # the sanctioned re-trigger happens, because it is the only
+            # head-scoped anchor the blocking scan can bound on. Carry it
+            # forward rather than stamping a new one.
+            #
+            # Nothing else reads it as a per-attempt value: inside `check` the
+            # window `bounded_wait` enforces and the per-call fetch budget in
+            # `run_gh` both anchor on `requested_at` (which still rebases per
+            # attempt, as the window should), and `state_reserved` is only the
+            # budget fallback for the phases that have no trigger yet. The one
+            # comparison that uses it here — a trigger that predates the
+            # reservation, below — stays correct, because attempt 2 triggers
+            # strictly after attempt 1 was reserved.
+            carried_reserved_at=$(jq -r '.reserved_at // empty' "$state_file")
         else
             [ "$attempt" = "1" ] ||
                 die "a new head must begin at attempt 1"
@@ -1167,6 +1194,11 @@ reserve)
     fi
 
     reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    # The head keeps ONE reservation time across both of its attempts. See the
+    # same-head branch above for why.
+    if [ -n "$carried_reserved_at" ] && valid_time "$carried_reserved_at"; then
+        reserved_at=$carried_reserved_at
+    fi
     # Settlements PERSIST as head-level statements for the record, but they
     # never CERTIFY a later attempt. Attempt 2 of the same head keeps them so
     # the cycle does not re-block on a finding a human already disposed of, and
@@ -2834,10 +2866,29 @@ check)
     # whole form exists to hold.
     #
     # Review round 2, finding `review-r2-codex-verification-2` (confirmed P1,
-    # disposition RESTRUCTURE TO INVARIANT). The bound is one sentence now:
+    # disposition RESTRUCTURE TO INVARIANT), as amended by review round 3,
+    # finding `review-r3-codex-verification-1` (confirmed P1). The bound is one
+    # sentence:
     #
     #   every unbound badged comment from the pinned actor whose stamp is at
-    #   or after the request time blocks, and is answered by comment id.
+    #   or after THE HEAD RESERVATION blocks, and is answered by comment id.
+    #
+    # The anchor is `reserved_at`, not `requested_at`. `attach` rebases
+    # `requested_at` to each new trigger comment, so bounding on the request
+    # time made the lower bound the LATEST trigger — and the one sanctioned
+    # re-trigger then moved it PAST a badge the connector had posted while
+    # attempt 1 was timing out. Nothing else could see that badge, because
+    # `comment_candidates` and `malformed_top_level` both require a
+    # `Reviewed commit` prefix an unbound badge does not have by definition,
+    # so a thumbs-up or a clean verdict on the second trigger exited 0 over a
+    # live undisposed P0. Reproduced exactly that way.
+    #
+    # `reserved_at` is the right anchor because it is HEAD-SCOPED and fixed:
+    # a new head begins at attempt 1 with a fresh reservation, and attempt 2
+    # of the same head carries the first one forward (see `reserve`). So the
+    # scan asks "did this arrive at any point during this heads review?",
+    # which is the question, rather than "did it arrive after the most recent
+    # thing we asked for?".
     #
     # No tiebreak, no edit detection, no provenance split. That deletes the
     # entire family of same-second predicates this scan accumulated over three
@@ -2863,33 +2914,63 @@ check)
     #
     # The usage-limit scan keeps its inclusive-plus-tiebreak bound on purpose.
     # The asymmetry is explained at that site.
-    unbound_badged_ids=$(jq -c \
+    unbound_badged_scan=$(jq -c \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" \
+        --arg reserved "$state_reserved" \
         --argjson disposed "$disposed_comments" \
         "$codex_verdict_defs"'
           # One stamp, one comparison. The GENEROUS stamp stays: a badge
           # added by an EDIT after the trigger is new evidence, which is
           # `challenge-r4-codex-adversarial-2`, while the clean path keeps
           # the conservative `created_at` for its own opposite reason.
-          [.[] | select(.user.id? == $id) |
-            (((.updated_at // .created_at) // "")) as $stamp |
-            select($stamp >= $requested) |
-            select(has_severity_marker) |
-            select(((.body // "") |
-              test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |
-            select(.id? | is_positive_integer) |
-            # `. as $comment` first: jq evaluates `index(f)` with `.` bound to
-            # the ARRAY being searched, so a bare `index(.id)` resolves `.id`
-            # against `$disposed` and dies "Cannot index array with string id"
-            # the moment anything IS disposed. Found by the round-4 fixture
-            # `challenge-r4-codex-adversarial-1` at its settle step.
-            . as $comment |
-            select(($disposed | index($comment.id)) == null) |
-            {id: $comment.id, time: $stamp}
-          ] | sort_by(.time, .id) | map(.id)
+          #
+          # Review round 3, finding `review-r3-codex-verification-3`
+          # (confirmed P2): the stamp was never validated as a timestamp, so a
+          # payload whose stamp is unusable was admitted here and then REFUSED
+          # by `settle`, leaving the head blocked with no answer available
+          # through this helper. The badged set is bound once and answered
+          # twice, so the unusable ones are REPORTED rather than silently
+          # ordered against a string comparison that means nothing: the scan
+          # must not enumerate a block it cannot describe, and the round-2
+          # claim that every shape this admits is answerable has to be true
+          # rather than asserted.
+          [.[] | select(.user.id? == $id) | select(has_severity_marker)] as $badged |
+          {
+            unusable: [$badged[] |
+              select((((.updated_at // .created_at) // "") | is_iso_second) | not) |
+              .id],
+            ids: ([$badged[] |
+              (((.updated_at // .created_at) // "")) as $stamp |
+              select($stamp >= $reserved) |
+              select(((.body // "") |
+                test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |
+              select(.id? | is_positive_integer) |
+              # `. as $comment` first: jq evaluates `index(f)` with `.` bound
+              # to the ARRAY being searched, so a bare `index(.id)` resolves
+              # `.id` against `$disposed` and dies "Cannot index array with
+              # string id" the moment anything IS disposed. Found by the
+              # round-4 fixture `challenge-r4-codex-adversarial-1` at its
+              # settle step.
+              . as $comment |
+              select(($disposed | index($comment.id)) == null) |
+              {id: $comment.id, time: $stamp}
+            ] | sort_by(.time, .id) | map(.id))
+          }
         ' "$workdir/comments.json") || {
         emit indeterminate "conversation comments could not be scanned for unbound badged findings"
+        exit 2
+    }
+    unbound_unusable=$(printf '%s' "$unbound_badged_scan" |
+        jq -er '.unusable | length') || {
+        emit indeterminate "unbound badged findings could not be checked for usable timestamps"
+        exit 2
+    }
+    [ "$unbound_unusable" -eq 0 ] || {
+        emit indeterminate "a badged conversation comment from the reviewer carries no usable timestamp, so it can be neither ordered against this cycle nor settled — re-read the comment rather than treating the head as reviewed"
+        exit 2
+    }
+    unbound_badged_ids=$(printf '%s' "$unbound_badged_scan" | jq -c '.ids') || {
+        emit indeterminate "unbound badged findings could not be enumerated"
         exit 2
     }
     unbound_badged_count=$(printf '%s' "$unbound_badged_ids" |
@@ -3717,8 +3798,16 @@ settle)
         ;;
     esac
 
+    # Review round 3, finding `review-r3-codex-verification-3` (confirmed P2):
+    # this read was `.created_at` alone while the blocking scan stamps a
+    # comment `(.updated_at // .created_at)`, so a payload the scan admitted
+    # could die here on `valid_time` and leave the head blocked with no
+    # disposition available — the stuck-cycle class, from the two sites
+    # reading different fields for the same fact. Same pair, same order, so
+    # whatever `check` blocks on, `settle` can time.
     case "$surface" in
-    comment) target_result_time=$(printf '%s' "$target" | jq -r '.created_at // ""') ;;
+    comment) target_result_time=$(printf '%s' "$target" |
+        jq -r '(.updated_at // .created_at) // ""') ;;
     review) target_result_time=$(printf '%s' "$target" | jq -r '.submitted_at // ""') ;;
     esac
     valid_time "$target_result_time" ||

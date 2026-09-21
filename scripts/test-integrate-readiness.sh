@@ -149,7 +149,9 @@ chmod +x "${bin_dir}/gh"
 # asserts the configured delay rather than hoping to observe it.
 #
 # It delegates to the real sleep whenever `SLEEP_CALL_LOG` is unset, so it can
-# never silently remove a delay some future case actually depends on.
+# never silently remove a delay some future case actually depends on — and
+# where no real sleep can be found it fails the suite rather than returning
+# success, because those are the only two ways to keep that promise.
 cat >"${bin_dir}/sleep" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -157,7 +159,18 @@ if [ -n "${SLEEP_CALL_LOG:-}" ]; then
     printf '%s\n' "$*" >>"$SLEEP_CALL_LOG"
     exit 0
 fi
-real_sleep="$(PATH=/usr/bin:/bin command -v sleep)" || exit 0
+# Review round 3, finding `review-r3-codex-verification-5` (confirmed P3):
+# this was `|| exit 0`, which is precisely the silent delay removal the
+# comment above promises can never happen — and suite-wide rather than for one
+# case. A harness that cannot honour a delay fails loudly.
+# `SLEEP_REAL_PATH` exists for the same reason `CODEX_RECHECK_RETRY_DELAY`
+# does: so a case can drive this branch. The lookup path was hardcoded, which
+# made the refusal below unprovable -- and an unprovable guard is how the
+# `|| exit 0` it replaced shipped in the first place.
+real_sleep="$(PATH="${SLEEP_REAL_PATH:-/usr/bin:/bin}" command -v sleep)" || {
+    printf 'test harness: no real sleep on PATH; refusing to skip a delay\n' >&2
+    exit 1
+}
 exec "$real_sleep" "$@"
 STUB
 chmod +x "${bin_dir}/sleep"
@@ -1607,13 +1620,106 @@ printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("no longer open")'
 printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("coderabbit-cloud")' >/dev/null ||
     fail "the finder condition must name which finder answered: $gate_out"
 
-echo "==> review-r2-codex-verification-4: an unrecognized finder exit_code uses the finder-prefixed catch-all"
-# The catch-all was `codex-indeterminate` on a per-finder condition, which is
-# `review-r1-codex-verification-2` verbatim at the sibling site.
+echo "==> review-r2/r3-codex-verification-4: a finder exit 2 is its own arm, not the catch-all"
+# Round 2 gave this case the title "an unrecognized finder exit_code" and drove
+# exit_code 2, which enshrined the one documented code the gate mis-described
+# as though being unrecognized were correct for it
+# (`review-r3-codex-verification-4`). 2 has its own arm now, and the assertion
+# below is on the DETAIL as well as the token: the token was already right, the
+# sentence the operator reads was not.
+#
+# The catch-all itself has no case, deliberately and on evidence: the gate
+# validates the integrator envelope before reading it, so an exit_code outside
+# the schema enum is rejected as `codex-indeterminate` ("is not a schema-valid
+# result.envelope") and never reaches `exit_condition` at all. An attempt to
+# drive it proved exactly that. It stays as defence against a future caller
+# that skips validation -- deleting it would let an unexpected value fall out
+# of the `case` with no condition at all -- and the enum sweep below is what
+# guarantees no DOCUMENTED code lands there.
 write_defaults
-fc_unknown="$(write_finder_cycle_result unknown-2 2)"
-run_gate_recheck_clean --integrator-result "$fc_unknown" --integration-cap 1
+fc_indet="$(write_finder_cycle_result indeterminate-2 2)"
+run_gate_recheck_clean --integrator-result "$fc_indet" --integration-cap 1
 assert_gate 2 indeterminate finder-indeterminate
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("could not determine a verdict")' >/dev/null ||
+    fail "a documented exit 2 must name the undetermined verdict, not call itself unrecognized: $gate_out"
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("not a recognized") | not' >/dev/null ||
+    fail "exit 2 is documented and must not be reported unrecognized: $gate_out"
+
+echo "==> review-r3-codex-verification-5: the sleep stub refuses to skip a delay it cannot honour"
+# Round 2 added this stub with `|| exit 0`, which silently removed the delay
+# whenever no real sleep was found -- precisely what its own comment promised
+# could never happen, and suite-wide rather than for one case. The branch is
+# unreachable through the gate (every case that reaches the stub sets
+# SLEEP_CALL_LOG, and every supported image has coreutils sleep), so it is
+# exercised directly against the stub. That is the whole point: the shipped
+# `|| exit 0` had no case at all.
+stub_rc=0
+(
+    unset SLEEP_CALL_LOG
+    SLEEP_REAL_PATH=/nonexistent bash "${bin_dir}/sleep" 1
+) >/dev/null 2>&1 || stub_rc=$?
+[ "$stub_rc" -eq 1 ] ||
+    fail "a harness that cannot honour a delay must fail loudly, got rc $stub_rc"
+stub_msg="$(
+    (
+        unset SLEEP_CALL_LOG
+        SLEEP_REAL_PATH=/nonexistent bash "${bin_dir}/sleep" 1
+    ) 2>&1 || true
+)"
+case "$stub_msg" in
+*"refusing to skip a delay"*) ;;
+*) fail "the refusal must name what it refused: $stub_msg" ;;
+esac
+# And where a real sleep exists it still delegates rather than no-oping.
+(
+    unset SLEEP_CALL_LOG
+    bash "${bin_dir}/sleep" 0
+) || fail "the stub must delegate to the real sleep when it can find one"
+
+echo "==> review-r3-codex-verification-4: every schema exit code has its own arm, on BOTH surfaces"
+# THE ASSERTION THAT ENDS THE ONE-MEMBER-PER-ROUND PATTERN. Three consecutive
+# review rounds each closed a single member of this enum by hand: r1 gave 14
+# an arm on the codex surface, r2 keyed the mapping by surface so 14 was right
+# on both, r3 found 2 still in the catch-all. Round 2's claim that adding a
+# code is now one arm in one place is only true if something checks that every
+# code was actually added -- so this reads the enum out of the schema and
+# drives every member through both surfaces, asserting none of them is
+# described as unrecognized and each carries its own surface prefix.
+#
+# 0 is excluded deliberately: it is the one code `exit_condition` does not
+# own, because its meaning IS surface-specific (the Codex cycle re-checks its
+# cached clean result, a finder cycle is simply terminal-clean), so it stays
+# at each call site and has its own cases elsewhere in this suite.
+# Every `exit_code` enum anywhere in the integrator schema, unioned: the
+# codex_cycle field and the finder_cycles mirror declare the same contract, so
+# a code documented on either must have an arm.
+enum_codes="$(jq -r '
+  .. | objects | select(has("exit_code")) | .exit_code.enum? // empty
+  | .[] | tostring' "${repo_root}/ai/schemas/result.integrator.schema.json" |
+    sort -u | grep -v '^0$' | tr '\n' ' ')"
+[ -n "$enum_codes" ] ||
+    fail "could not read the exit-code enum out of result.integrator.schema.json"
+echo "    enum members under test: $enum_codes"
+for enum_code in $enum_codes; do
+    # codex surface
+    write_defaults
+    enum_result="$(write_integrator_result "enum-codex-${enum_code}" "$(codex_cycle_json "$enum_code")")"
+    run_gate --integrator-result "$enum_result" --integration-cap 1
+    enum_line="$(printf '%s\n' "$gate_out" | tail -n 1)"
+    printf '%s\n' "$enum_line" | jq -e '.detail | test("not a recognized") | not' >/dev/null ||
+        fail "codex exit_code $enum_code is documented but reported unrecognized: $enum_line"
+    printf '%s\n' "$enum_line" | jq -e '.condition | startswith("codex-")' >/dev/null ||
+        fail "codex exit_code $enum_code must carry a codex-prefixed condition: $enum_line"
+    # finder surface
+    write_defaults
+    enum_fc="$(write_finder_cycle_result "enum-finder-${enum_code}" "$enum_code")"
+    run_gate_recheck_clean --integrator-result "$enum_fc" --integration-cap 1
+    enum_line="$(printf '%s\n' "$gate_out" | tail -n 1)"
+    printf '%s\n' "$enum_line" | jq -e '.detail | test("not a recognized") | not' >/dev/null ||
+        fail "finder exit_code $enum_code is documented but reported unrecognized: $enum_line"
+    printf '%s\n' "$enum_line" | jq -e '.condition | startswith("finder-")' >/dev/null ||
+        fail "finder exit_code $enum_code must carry a finder-prefixed condition: $enum_line"
+done
 
 echo "==> harmon-devkit#675: a BADGED bot follow-up still blocks"
 write_defaults
