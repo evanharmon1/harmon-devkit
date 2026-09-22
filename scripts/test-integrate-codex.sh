@@ -4158,6 +4158,43 @@ classify_reserve charged \
     '{"files":[{"filename":"src/a.js"}]}'
 assert_charge charged "reviewed file left the patch" 2 0
 
+echo "==> a base that moved between reservation and verdict records no proof"
+# Codex and Greptile pushed this from opposite sides: the reservation sample can
+# be too OLD, the verdict sample too NEW, and GitHub exposes no field naming the
+# base a review actually covered. So the two samples corroborate each other —
+# equal means that IS the reviewed base; different means it is unknown, and
+# unknown leaves the proof unset so the next cycle charges.
+new_cycle
+reserved_base="$(jq -r '.base_sha' "$state")"
+[ "$reserved_base" = "3333333333333333333333333333333333333333" ] ||
+    fail "fixture: expected the stub's base sha, got $reserved_base"
+# Move the base under the cycle, then let a terminal verdict be recorded.
+jq '.base.sha = "4444444444444444444444444444444444444444"' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9101,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+[ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = "$head_sha" ] ||
+    fail "a terminal verdict must record the reviewed head"
+[ "$(jq -r '.last_reviewed_base_sha // "unset"' "$state")" = "unset" ] ||
+    fail "a base that moved must leave no proof, got $(jq -r '.last_reviewed_base_sha' "$state")"
+
+# The positive half, without which the assertion above passes trivially for any
+# reason the base is unset — including the fetch simply not working.
+new_cycle
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9102,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+[ "$(jq -r '.last_reviewed_base_sha // "unset"' "$state")" = "3333333333333333333333333333333333333333" ] ||
+    fail "an unmoved base must be recorded as the reviewed base, got $(jq -r '.last_reviewed_base_sha // "unset"' "$state")"
+
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
     '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \

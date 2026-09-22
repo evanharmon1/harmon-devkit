@@ -649,16 +649,27 @@ reap_record() {
 mark_terminally_reviewed() {
     [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
     [ -n "${state_head:-}" ] || return 0
-    # Codex cloud cycle 4, P1 (confirmed): the base sampled at RESERVATION can
-    # be minutes stale by the time a verdict lands. If the base advances B0->B1
-    # while polling, the review saw B1 while state recorded B0, and a later
-    # merge adopting B1's version of a reviewed file could drop it from both
-    # reconstructed patches — a false exemption. Reconfirm the base as the
-    # verdict is recorded, and where it cannot be confirmed leave the proof
-    # UNSET so the next cycle charges rather than trusting a stale SHA.
+    # Two reviewers pushed this from opposite sides and both were right.
+    #
+    # Codex (cycle 4): the base sampled at RESERVATION can be minutes stale by
+    # the time a verdict lands — if it advanced while polling, the review saw a
+    # newer base than state recorded.
+    # Greptile: the base sampled when the verdict is RECORDED can be newer than
+    # the one the review actually covered, because the base can advance between
+    # the reviewer posting and this poll observing it.
+    #
+    # Neither sampling point is the base the review saw; GitHub gives us no
+    # field that is. So do not pick one — CORROBORATE. If the base is unchanged
+    # between reservation and verdict, that is the base reviewed, and it is
+    # recorded. If it moved, what the review covered is genuinely unknown, and
+    # per the governing invariant the proof is left UNSET so the next cycle
+    # charges rather than trusting either sample.
     reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
         jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
     valid_sha "$reviewed_base_sha" || reviewed_base_sha=
+    reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
+    [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
+        reviewed_base_sha=
     jq --arg h "$state_head" --arg b "$reviewed_base_sha" '.last_reviewed_head = $h
         | .last_reviewed_base_sha = (if $b == "" then null else $b end)' "$state_file" \
         >"${state_file}.reviewed" 2>/dev/null &&
@@ -1856,15 +1867,28 @@ reserve)
         payload_previous_trigger_comment_id=null
     fi
 
-    if [ -n "$run_id" ]; then
-        [ -f "$spend_file" ] || printf '{}' >"$spend_file"
-        jq --arg r "$run_id" --argjson c "$carried_charged" --argjson e "$carried_exempt" \
-            '.[$r] = {charged: $c, exempt: $e}' "$spend_file" >"${spend_file}.next" 2>/dev/null &&
-            mv "${spend_file}.next" "$spend_file" || {
-            rm -f "${spend_file}.next"
-            die "cannot record this run's spend in $spend_file; refusing to reserve a cycle whose spend would not be durable"
-        }
+    # Greptile, P1 (confirmed): the sidecar used to be written here, BEFORE the
+    # reservation state. A failed `write_state` then left spend recorded for a
+    # reservation that does not exist — and a retry, finding no state, charged
+    # the run a second time, consuming a ceiling with no review behind it.
+    #
+    # These two records cannot be made atomic with each other, so the sidecar is
+    # written after the state and ROLLED BACK if either step fails. The failure
+    # direction is then "reservation exists, spend not yet recorded", which the
+    # next reservation corrects from the state itself — rather than "spend
+    # recorded, reservation missing", which nothing corrects.
+    spend_snapshot=
+    if [ -n "$run_id" ] && [ -f "$spend_file" ]; then
+        spend_snapshot=$(cat "$spend_file" 2>/dev/null) || spend_snapshot=
     fi
+    restore_spend() {
+        [ -n "$run_id" ] || return 0
+        if [ -n "$spend_snapshot" ]; then
+            printf '%s' "$spend_snapshot" >"$spend_file" 2>/dev/null || true
+        else
+            rm -f "$spend_file"
+        fi
+    }
 
     payload=$(jq -cn \
         --arg repo "$repo" \
@@ -1900,7 +1924,20 @@ reserve)
           run_id:(if $run_id == "" then null else $run_id end),
           base_sha:(if $base_sha == "" then null else $base_sha end)
         }')
-    write_state "$state_file" "$payload"
+    write_state "$state_file" "$payload" || {
+        restore_spend
+        die "cannot write the reservation state; the run's spend is left as it was"
+    }
+    if [ -n "$run_id" ]; then
+        [ -f "$spend_file" ] || printf '{}' >"$spend_file"
+        jq --arg r "$run_id" --argjson c "$carried_charged" --argjson e "$carried_exempt" \
+            '.[$r] = {charged: $c, exempt: $e}' "$spend_file" >"${spend_file}.next" 2>/dev/null &&
+            mv "${spend_file}.next" "$spend_file" || {
+            rm -f "${spend_file}.next"
+            restore_spend
+            die "cannot record this run's spend in $spend_file; the reservation stands but its spend is not durable — re-run the reservation"
+        }
+    fi
     release_state_lock
     printf '%s\n' "$payload"
     ;;
