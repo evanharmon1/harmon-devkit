@@ -685,6 +685,28 @@ mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
 run_gate
 assert_gate 0 pass ready
 
+echo "==> a missing REST body stays malformed instead of becoming empty"
+write_defaults
+jq '.body = "" | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq 'del(.body)' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a GraphQL false body stays malformed instead of becoming empty"
+write_defaults
+jq '.body = false | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq '.body = null' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
 echo "==> a REST body of any other non-string shape stays malformed"
 write_defaults
 jq '.body = []' \

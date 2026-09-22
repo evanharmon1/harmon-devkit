@@ -398,7 +398,11 @@ indeterminate() {
 
 normalize_body_field() {
     jq -c '
-      .body = (.body // "")
+      if has("body") then
+        .body |= (if . == null then "" else . end)
+      else
+        error("body is missing")
+      end
       | if (.body | type) == "string" then
           .
         else
