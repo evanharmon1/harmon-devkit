@@ -5386,7 +5386,11 @@ echo "==> review-r4-codex-verification-6: settle reads get a FLAT per-call budge
 # The slow endpoint sleeps 5 seconds. Under the clamp the fetch is killed at
 # one and `settle` dies; with a flat budget it completes.
 trigger_id=123
-request_time="$(date -u -d '-20 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+if request_time="$(date -u -d '-20 minutes' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
+  :
+else
+  request_time="$(date -u -v-20M '+%Y-%m-%dT%H:%M:%SZ')"
+fi
 write_defaults
 rm -f "$state"
 "$helper" reserve \
