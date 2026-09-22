@@ -35,10 +35,15 @@ worktree lane. It is not a work contract for a bounded role subagent — see
 - Stay inside `{{worktree-path}}` for project files. This brief and
   `{{report-path}}` are control files: never commit or rename them.
 - Before writing the report, resolve the worktree root and the common Git
-  directory. If `{{report-path}}` is inside the worktree, require
-  `git check-ignore -q --no-index -- "{{report-path}}"`; otherwise require it to
-  resolve inside the common Git directory. Report BLOCKED if neither proof
-  holds. An assertion in this brief is not exclusion evidence.
+  directory, then take the **first** proof that holds: (1) `{{report-path}}`
+  resolves inside the common Git directory, or (2) it is inside the worktree and
+  `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. Report BLOCKED
+  only if neither holds. The order matters: in a main checkout the common Git
+  directory is *itself* inside the worktree root, and `check-ignore` never
+  matches a path under `.git` because git excludes it structurally rather than
+  by a pattern — so testing worktree containment first would reject the very
+  path this brief recommends. An assertion in this brief is not exclusion
+  evidence.
 - Git/sandbox rule: {{git-sandbox-note}}
 
 ## Hard rules
@@ -118,6 +123,22 @@ unclaim anything. **Keep every other refusal** — a closed or already-implement
 issue, or any live drift, is still a BLOCKED report rather than something to
 work around.
 
+**Branch handoff — read this before running the skill's step 3.** Your branch
+and worktree were provisioned before dispatch. The skill's branch step would
+otherwise fetch-and-switch, create `{{branch}}` off `{{default-branch}}`, and
+refresh the claim to name the branch it just made — all three of which
+§ "Identity and boundaries" forbids, and the first of which fails anyway because
+`{{branch}}` already exists. Override that step: **do not fetch-and-switch, do
+not create a branch, and do not refresh the claim.** Instead verify that
+`git branch --show-current` is exactly `{{branch}}`, that the worktree root is
+exactly `{{worktree-path}}`, and that the recorded base is `{{base-sha}}`;
+report BLOCKED on any mismatch. Then continue with the provisioned branch and
+worktree.
+
+These two overrides — step 1's ownership check and step 3's branch creation —
+are the only ones this brief grants. Every other step of the skill applies
+unchanged, and every other refusal in it still stands.
+
 ## Delegation contract
 
 One contract, stated once here and referenced — never restated — by every other
@@ -135,11 +156,13 @@ contracts:
   worktree lane — runs the whole brief, gates included, and finishes at a
   published draft PR. § "Reporting protocol" is its output contract.
 - A **bounded role subagent** — the `implementer`, `challenger`, `reviewer` and
-  `integrator` agent definitions — returns a typed result and writes nothing
-  outside it. It never pushes, never opens or promotes a PR, and never emits a
-  publication sentinel; those exclusions hold even where a repository's policy
-  says otherwise, so the publication half of this template does not bind it and
-  must never be dispatched to it as a work contract.
+  `integrator` agent definitions — answers through the typed result its dispatch
+  asked for. Its writes are exactly the ones its own agent definition permits,
+  which for some roles includes commits and durable state; what it never does is
+  push, open or promote a PR, or emit a publication sentinel. Those exclusions
+  hold even where a repository's policy says otherwise, so the publication half
+  of this template does not bind it and must never be dispatched to it as a work
+  contract.
 
 The first rule binds whoever dispatched you; the rest bind you. Both halves are
 printed in every brief because a worker that cannot see the caller's
@@ -287,7 +310,9 @@ promotion, no merge, no release. See § "Hard rules".
 ## Harness: Claude Code
 
 Invoke `/implement {{issue-url}}` with the Skill tool and follow it through
-draft-PR publication. Repository policy overrides the skill's final step for a
+draft-PR publication. Apply both § "Scope" overrides —
+the claim handoff before step 1, the branch handoff before step 3 — and no
+others. Repository policy overrides the skill's final step for a
 dispatched worker: record the confirmed draft handoff in `{{report-path}}` and
 return control to the supervising orchestrator instead of continuing into the
 integration stage. That one orchestrator owns every finding disposition,
@@ -299,7 +324,9 @@ refer to the reporting contract indirectly.
 ## Harness: Codex
 
 Read `.agents/skills/implement/SKILL.md` completely and follow it for
-`{{issue-url}}` through draft-PR publication, then record the confirmed draft
+`{{issue-url}}` through draft-PR publication, Apply both § "Scope" overrides —
+the claim handoff before step 1, the branch handoff before step 3 — and no
+others. then record the confirmed draft
 handoff in `{{report-path}}` and return control to the orchestrator. Apply the
 Git/sandbox rule from § "Identity and boundaries"; a permission failure is not
 authority to find another write route.
@@ -350,7 +377,9 @@ effort nobody disclosed.
 ## Harness: other
 
 For any other harness, read the portable vendored `implement` skill completely
-and follow it for `{{issue-url}}` through draft-PR publication, applying the
+and follow it for `{{issue-url}}` through draft-PR publication, Apply both § "Scope" overrides —
+the claim handoff before step 1, the branch handoff before step 3 — and no
+others. applying the
 same override: record the confirmed draft handoff in `{{report-path}}` and
 return control to the orchestrator. If the harness cannot read the policy, the
 skill, or the report path this brief names, report BLOCKED rather than inventing

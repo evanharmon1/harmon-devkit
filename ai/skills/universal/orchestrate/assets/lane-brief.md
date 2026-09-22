@@ -33,11 +33,14 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   deliberately not copied here.)
 - Stay inside this worktree for project files. The lane brief and
   `{{report-path}}` are git-excluded control files: never commit or rename them.
-- Before writing the report, resolve the worktree root and common Git directory.
-  If `{{report-path}}` is inside the worktree, require
-  `git check-ignore -q --no-index -- "{{report-path}}"`; otherwise require it to
-  resolve inside the common Git directory. Report BLOCKED if neither proof
-  holds. An assertion in this brief is not exclusion evidence.
+- Before writing the report, resolve the worktree root and common Git directory,
+  then take the **first** proof that holds: (1) `{{report-path}}` resolves inside
+  the common Git directory, or (2) it is inside the worktree and
+  `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. Report BLOCKED
+  only if neither holds. The order matters: in a main checkout the common Git
+  directory is *itself* inside the worktree root, and `check-ignore` never
+  matches a path under `.git` because git excludes it structurally rather than
+  by a pattern. An assertion in this brief is not exclusion evidence.
 - Git/sandbox rule: {{git-sandbox-note}}
 
 ## File-scope fence

@@ -589,6 +589,50 @@ grep -Fq 'fixture-claim-handoff' "$impl_rendered_file" ||
 grep -Fq 'Keep every other refusal' "$impl_rendered_file" ||
     fail "implementer-brief claim handoff drops the other step-1 refusals"
 
+# r3-2: the skill's branch step creates and switches branches and refreshes the
+# claim — all three forbidden by this brief, and the first fails anyway because
+# the branch already exists. The base template overrode step 1 and not step 3.
+grep -Fq "Branch handoff — read this before running the skill" "$impl_rendered_file" ||
+    fail "implementer-brief has no step-3 override for a provisioned branch"
+grep -Fq 'do not fetch-and-switch, do' "$impl_rendered_file" ||
+    fail "implementer-brief step-3 override does not forbid fetch-and-switch"
+grep -Fq 'not create a branch, and do not refresh the claim' "$impl_rendered_file" ||
+    fail "implementer-brief step-3 override does not forbid the claim refresh"
+grep -Fq 'are the only ones this brief grants' "$impl_rendered_file" ||
+    fail "implementer-brief does not bound which skill steps it overrides"
+# Every harness path routes through the skill, so every harness path owes both.
+impl_harness_sections=0
+while IFS= read -r line; do
+    case "$line" in
+    *'Apply both § "Scope" overrides'*) impl_harness_sections=$((impl_harness_sections + 1)) ;;
+    esac
+done <"$impl_rendered_file"
+[ "$impl_harness_sections" -eq 3 ] ||
+    fail "expected all 3 harness sections to apply the skill-step overrides (found $impl_harness_sections)"
+
+# r3-3: the proofs are alternatives tried in order, not a containment-keyed
+# if/else. In a MAIN checkout the common Git directory is inside the worktree
+# root, and check-ignore never matches under .git (structural exclusion, not a
+# pattern), so testing containment first rejects the recommended path.
+for brief in "$impl_rendered_file" "$rendered_file"; do
+    grep -Fq 'take the **first** proof that holds' "$brief" ||
+        fail "report-path proofs are not ordered alternatives in $brief"
+    grep -Fq 'excludes it structurally rather than' "$brief" ||
+        fail "report-path check does not explain why check-ignore cannot match under .git in $brief"
+done
+
+# r3-1: a bounded role's writes are what its own definition permits. The
+# deleted clause ("writes nothing outside it") was false for `implementer`,
+# which must commit, and `integrator`, which must persist state and post.
+for scoped in "$impl_rendered_file" ai/agents/challenger.md ai/agents/reviewer.md \
+    ai/agents/integrator.md ai/agents/implementer.md ai/agents/README.md; do
+    if grep -Eq 'writes? nothing outside it' "$scoped"; then
+        fail "$scoped still forbids writes a bounded role is required to make"
+    fi
+done
+grep -Fq 'Its writes are exactly the ones its own agent definition permits' "$impl_rendered_file" ||
+    fail "implementer-brief does not scope a bounded role's writes to its own definition"
+
 # Audience: the template finishes at a published draft PR, which a bounded role
 # subagent is forbidden to reach (ai/agents/implementer.md § Never).
 grep -Fq 'This brief is a **PR-owning** contract' "$impl_rendered_file" ||

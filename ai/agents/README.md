@@ -75,9 +75,9 @@ ignores the frontmatter.
   discover-don't-require rule above — `.agents/skills/implement/assets/`, then
   the harness-specific location, then one bounded glob — and where nothing is
   readable, say so in the result rather than guessing the contract.
-  Its rule 5 splits by audience: an agent defined here returns a typed result
-  and writes nothing outside it, while the report file and publication sentinels
-  belong to a PR-owning session or pane.
+  Its rule 5 splits by audience: an agent defined here answers through its typed
+  result and writes only what its own definition permits, while the report file
+  and publication sentinels belong to a PR-owning session or pane.
 - **`isolation` is a caller decision, not frontmatter** — exactly like `tools`,
   `model`, `color`, and `effort` above, and for the same reason: it is chosen
   per dispatch by the calling session, not baked into a shared file. Prefer

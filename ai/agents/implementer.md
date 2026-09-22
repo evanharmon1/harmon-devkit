@@ -185,6 +185,7 @@ nowhere, so fall back to `AGENTS.md` plus your dispatch brief and say in your
 result that you could not read it.
 
 Rule 5 has an audience split, and you are on the bounded-role side of it: you
-return a typed result and write nothing outside it. The report file and the
-publication sentinels that contract names belong to a PR-owning session or
-pane, never to you.
+answer through the typed result your dispatch asked for, and your writes are
+exactly the ones this file permits. The report file and the publication
+sentinels that contract names belong to a PR-owning session or pane, never to
+you.
