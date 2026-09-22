@@ -175,7 +175,14 @@ table before their intended sections.
 | `{{base-sha}}` | Lane creation record |
 | `{{worktree-path}}` | `git rev-parse --show-toplevel` in the lane |
 | `{{harness}}` | Selected implementer's registry harness |
+| `{{effort}}` | Reasoning effort the lane is expected to run at — the value its status line is checked against |
+| `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
+| `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true`. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
+| `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad; never the scratchpad root |
+| `{{repo-tier}}` | `light`, `standard`, or `heavy` — resolved by the base template's strongest-signal-wins procedure, never by matching a row's description |
+| `{{gate-bounds-override}}` | Repository's own measured gate bounds, or `None — use the base template's table.` |
+| `{{gate-commands}}` | The repository's actual gate invocations, one per line |
 | `{{generation}}` | Active pointer generation |
 | `{{active-state-path}}` | `assets/dev-flow-monitor.sh active-path` |
 | `{{record-directory}}` | Active run record directory |
@@ -185,6 +192,7 @@ table before their intended sections.
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
+| `{{unit-kind}}` | `implementation` or `proposal-only` — a proposal-only lane still runs every gate, commits, pushes and opens the draft PR; it stops there |
 | `{{claim-handoff}}` | Transaction-refreshed claim for the provisioned lane branch: authenticated comment ID, author ID, `updated_at`, expected assignees, and expected claim labels |
 | `{{verified-facts-and-rulings}}` | Orchestrator verification and attributed decisions |
 | `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |
@@ -234,8 +242,37 @@ Render `assets/lane-brief.md` for every end-to-end, PR-owning implementation lan
 instead of hand-authoring a brief. Council proposal and synthesis implementers,
 and bounded remediation implementers, use their schema-bound role briefs and
 return the artifact or fix their dispatch requested; they do not receive this
-draft-publication contract. For a PR-owning lane, the source catalog above is
-the complete input contract: source every value, select the harness procedure
+draft-publication contract.
+
+Never write an implementer brief freehand, whatever its shape. Outside a v2 run
+— a dispatch with no run record — render the `implement` skill's
+`assets/implementer-brief.md` against its own source catalog
+(`implement/SKILL.md` § "Brief template source catalog") instead. That template
+is the base contract this one extends: its § "Hard rules", § "Gate commands and
+time bounds", § "Proposal-only units" and § "Delegation contract" are stated
+there once, and `assets/lane-brief.md` § "Inherited base contract" names all
+four and supplies their per-lane values rather than restating them. A brief
+composed from memory is how the 2026-09-06 fan-out shipped three workers that
+each broke a different one of those rules.
+
+`implement` is a **required dependency** of this skill, declared in
+`assets/policy-contract.json`. `assets/lane-brief.md` is the superset of that
+skill's brief template and names four of its sections without restating them,
+so a consumer holding `orchestrate` without `implement` renders a lane brief
+whose hard rules, gate bounds, proposal-only clause and delegation contract are
+absent. The lane brief therefore **blocks** when the base template is
+unreadable, rather than degrading — a one-command vendoring fix, not a mode to
+run in. The agent definitions under `ai/agents/` keep the discover-don't-require
+degradation: a bounded role can return an honest typed result without the
+contract, a lane cannot open an honest PR without it.
+
+Neither template is a work contract for a **bounded role subagent**. Both
+finish at a published draft PR, which `ai/agents/implementer.md` § "Never"
+forbids non-overridably; a role agent gets its own schema-bound role brief and
+returns a typed result. The delegation contract's rule 5 is the one place the
+two audiences meet, and it splits there explicitly.
+
+For a PR-owning lane, the source catalog above is the complete input contract: source every value, select the harness procedure
 named by the rendered brief. Provision the lane branch/worktree, then
 transactionally refresh the existing claim so its record names that exact branch.
 Authenticate the refreshed claim into the handoff snapshot without transferring

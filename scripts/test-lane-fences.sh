@@ -688,6 +688,18 @@ grep -Fq 'A validator or test that rejects your change and that no other live la
 grep -Fq 'For every other out-of-fence edit, append a dated blocker' "$template" ||
     fail "lane-brief template lost the out-of-fence STOP rule"
 
+# The implement skill's base brief template restates the same fence prose, so
+# the two are asserted against identical literals: a reworded clause in either
+# file fails here rather than drifting until a worker reads two different rules.
+impl_template="ai/skills/universal/implement/assets/implementer-brief.md"
+for clause in \
+    'A validator or test that rejects your change and that no other live lane touches' \
+    'may be added to this fence by you ONCE' \
+    'For every other out-of-fence edit, append a dated blocker'; do
+    grep -Fq "$clause" "$impl_template" ||
+        fail "implementer-brief fence prose drifted from the lane template: $clause"
+done
+
 test_deps="$(yq -r '.tasks.test.deps[]' Taskfile.yml)"
 verify_cmds="$(yq -r '.tasks.verify.cmds[].task' Taskfile.yml)"
 grep -Fxq 'test:lane-fences' <<<"$test_deps" || fail "test:lane-fences is not wired into test deps"
