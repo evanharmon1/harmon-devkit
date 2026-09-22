@@ -3904,6 +3904,31 @@ set -e
 [ "$(jq -r '.exempt_cycles' "$state")" = "0" ] ||
     fail "the prior run's exempt spend must not carry over: $(jq -r '.exempt_cycles' "$state")"
 
+echo "==> another run's UNRESOLVED reservation stays blocked"
+# `reserved` is the write-ahead record taken before the trigger is posted, so
+# a foreign run sitting in it may already have a live @codex review out.
+# Replacing it loses the only reconciliation for that trigger. Foreign
+# ATTACHED state is replaceable (the case above); foreign RESERVED is not.
+write_defaults
+rm -f "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.phase' "$state")" = "reserved" ] ||
+    fail "fixture setup: expected a reserved phase"
+set +e
+blocked_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-b 2>&1)"
+blocked_rc=$?
+set -e
+[ "$blocked_rc" -ne 0 ] ||
+    fail "a foreign unresolved reservation must stay blocked: $blocked_out"
+case "$blocked_out" in
+*"unresolved reservation"*) ;;
+*) fail "the refusal must name the unresolved reservation: $blocked_out" ;;
+esac
+[ "$(jq -r '.run_id' "$state")" = "run-a" ] ||
+    fail "the blocked reservation must not have overwritten the owner"
+
 echo "==> reserve refuses a charged cycle once the integration cap is spent"
 # Review round 1, P1: the trigger is posted immediately after the reservation,
 # so a ceiling enforced only by the readiness gate is enforced after the review

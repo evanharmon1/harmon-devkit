@@ -930,11 +930,22 @@ reserve)
                 foreign_run_state=1
             fi
         fi
+        # Duplicate round-3 pass, P1 (confirmed): foreign ATTACHED state is
+        # replaceable, foreign RESERVED state is not. `reserved` is the
+        # write-ahead record taken before the trigger is posted, so another
+        # run sitting in it may already have a live `@codex review` out.
+        # Overwriting that record loses the only reconciliation for it, and
+        # the other run can then attach its trigger to this run's state —
+        # duplicate or misattributed cycles. The run-scope bypass below must
+        # therefore not extend to it: an unresolved reservation stays blocked
+        # whoever owns it, which is what the reserve-before-write contract
+        # requires.
+        if [ "$old_phase" = "reserved" ]; then
+            die "an unresolved reservation must be reconciled before replacing its head"
+        fi
         if [ "$foreign_run_state" = "1" ]; then
             [ "$attempt" = "1" ] ||
                 die "a reservation replacing another run's state must begin at attempt 1"
-        elif [ "$old_phase" = "reserved" ]; then
-            die "an unresolved reservation must be reconciled before replacing its head"
         fi
         if [ "$foreign_run_state" = "1" ]; then
             :
