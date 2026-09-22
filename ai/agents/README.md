@@ -63,6 +63,17 @@ ignores the frontmatter.
   nothing to read. A consumer that vendors no skills still gets a working agent.
 - **For delegated issue work, use the orchestrated-work brief contract.** See
   [`track-work`'s reference](../skills/universal/track-work/references/orchestrated-work.md).
+- **One delegation contract, stated once, referenced from here.** Exit plan mode
+  before spawning, keep the core work in the subagent's own context, the shared
+  working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
+  owes are in the `implement` skill's
+  [`assets/implementer-brief.md`](../skills/universal/implement/assets/implementer-brief.md)
+  § "Delegation contract" — the caller's obligations alongside the agent's. No
+  agent file restates it, for the same reason none restates a skill: a copy rots
+  against the original with nothing checking the two agree. `isolation` belongs
+  to that contract and to the calling session, exactly like `tools`, `model`,
+  `color`, and `effort` above — it is a per-dispatch decision, never a shared
+  frontmatter key.
 - **Don't name tools in prose.** Say what to do, not which tool does it — tool
   names are the least portable thing in the file.
 - **The repo's policy outranks the agent.** State it, the way the skills do:

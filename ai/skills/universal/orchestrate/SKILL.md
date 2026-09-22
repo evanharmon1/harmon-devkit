@@ -176,6 +176,7 @@ table before their intended sections.
 | `{{worktree-path}}` | `git rev-parse --show-toplevel` in the lane |
 | `{{harness}}` | Selected implementer's registry harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
+| `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad; never the scratchpad root |
 | `{{generation}}` | Active pointer generation |
 | `{{active-state-path}}` | `assets/dev-flow-monitor.sh active-path` |
 | `{{record-directory}}` | Active run record directory |
@@ -234,7 +235,17 @@ Render `assets/lane-brief.md` for every end-to-end, PR-owning implementation lan
 instead of hand-authoring a brief. Council proposal and synthesis implementers,
 and bounded remediation implementers, use their schema-bound role briefs and
 return the artifact or fix their dispatch requested; they do not receive this
-draft-publication contract. For a PR-owning lane, the source catalog above is
+draft-publication contract.
+
+Never write an implementer brief freehand, whatever its shape. Outside a v2 run
+— an ad-hoc implementer subagent, a dispatch with no run record — render the
+`implement` skill's `assets/implementer-brief.md` against its own source catalog
+(`implement/SKILL.md` § "Brief template source catalog") instead. That template
+is the base contract this one extends: the gate time bounds, the stop-at-draft
+rule, the proposal-only clause, and the delegation contract are stated there
+once, and `assets/lane-brief.md` references them rather than restating them. A
+brief composed from memory is how the 2026-09-06 fan-out shipped three workers
+that each broke a different one of those rules. For a PR-owning lane, the source catalog above is
 the complete input contract: source every value, select the harness procedure
 named by the rendered brief. Provision the lane branch/worktree, then
 transactionally refresh the existing claim so its record names that exact branch.

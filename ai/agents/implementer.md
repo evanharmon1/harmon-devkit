@@ -168,3 +168,10 @@ transcript, so anything not in it is lost. Cover:
   where you implemented it anyway; a brief that was wrong is your caller's most
   valuable finding, and you are the only one positioned to notice.
 - **Left** — what you deliberately did not do, including scope you declined.
+
+The delegation contract that governs every dispatched agent here — exit plan
+mode before spawning, keep the core work in your own context, the shared
+working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
+owes — is stated once in the `implement` skill's
+`assets/implementer-brief.md` § "Delegation contract". Read it there;
+it is not restated in this file.

@@ -210,9 +210,21 @@ belongs in a separate user, container, or VM, not a sibling pane.
    effects (GitHub writes, deploys) is at-least-once delivery. Re-send only
    when the pane shows the prompt never landed; make briefs idempotent where
    you can.
-   For Dev flow lanes, render the orchestrate skill's
-   `assets/lane-brief.md` input contract instead of composing this prompt
-   ad hoc. Select its harness-specific procedure, require zero unreplaced
+   Never compose that brief from memory: render a template. For any implementer
+   worker, the base contract is the implement skill's
+   `assets/implementer-brief.md` — it carries the gate commands with real time
+   bounds per repo tier, the hard rules (never `gh pr ready`, never merge, never
+   rewrite pushed history, never bypass a hook or a stop-gate), the
+   proposal-only clause (a proposal-only unit still runs gates, commits, pushes,
+   and opens the draft PR — it stops there), the report-file and sentinel
+   contract, the PR-body profile line, and the one delegation contract. Fill
+   every input from its source catalog in `implement/SKILL.md`, scan the
+   rendered file for surviving double-brace tokens, and dispatch only when there
+   are none. For Dev flow lanes, render the orchestrate skill's
+   `assets/lane-brief.md` instead — the superset, which adds the schema-bound
+   envelope, the active run identity, the resolved policy projection, and the
+   confidence-stage decision handshake, and references the delegation contract
+   rather than restating it. Select its harness-specific procedure, require zero unreplaced
    placeholders, and keep sentinel values only in the rendered reporting
    section; later steering refers to that contract indirectly so it cannot
    replay a completion signal. Because the initial brief itself contains those

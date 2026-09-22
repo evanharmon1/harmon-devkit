@@ -28,3 +28,10 @@ run `"$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope ... --receipt`.
 
 Do not write outside the returned result. Do not modify code, commit, push,
 post, adjudicate a finding, or decide whether challenge exits.
+
+The delegation contract that governs every dispatched agent here — exit plan
+mode before spawning, keep the core work in your own context, the shared
+working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
+owes — is stated once in the `implement` skill's
+`assets/implementer-brief.md` § "Delegation contract". Read it there;
+it is not restated in this file.

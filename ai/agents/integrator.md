@@ -848,3 +848,10 @@ your transcript. Cover:
   each reply you posted from §6, by comment ID.
 - **Blocked** — anything §1 stopped you on, or any read that failed and left
   a field `unknown` rather than a real value.
+
+The delegation contract that governs every dispatched agent here — exit plan
+mode before spawning, keep the core work in your own context, the shared
+working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
+owes — is stated once in the `implement` skill's
+`assets/implementer-brief.md` § "Delegation contract". Read it there;
+it is not restated in this file.
