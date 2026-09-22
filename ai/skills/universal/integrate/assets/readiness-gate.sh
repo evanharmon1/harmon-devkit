@@ -396,6 +396,16 @@ indeterminate() {
     exit 2
 }
 
+normalize_body_field() {
+    jq -c '
+      .body = (.body // "")
+      | if (.body | type) == "string" then
+          .
+        else
+          error("body is neither a string nor null")
+        end'
+}
+
 # A closing keyword is only a claim until GitHub resolves it to an issue
 # linkage. Normalize every claimed target to owner/repo#number and compare it
 # with the structured closingIssuesReferences from the SAME `gh pr view`
@@ -404,10 +414,8 @@ indeterminate() {
 assert_closing_linkage() {
     acl_payload=$1
     acl_phase=$2
-    acl_sets="$(jq -cer --arg repo "$repo" '
-      if (.body | type) != "string" then
-        error("body is not a string")
-      elif (.closingIssuesReferences | type) != "array" then
+    acl_sets="$(jq -cr --arg repo "$repo" '
+      if (.closingIssuesReferences | type) != "array" then
         error("closingIssuesReferences is not an array")
       else
         ([.body
@@ -627,6 +635,8 @@ fetch_fingerprint_surfaces() {
     if [ -z "$fp_pr" ]; then
         fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
             indeterminate fetch-failed "cannot fetch the PR object"
+        fp_pr="$(normalize_body_field <<<"$fp_pr")" ||
+            indeterminate malformed-data "PR object carries an invalid body"
     fi
     fp_reviews="$(run_gh api --paginate --slurp repos/"$repo"/pulls/"$pr"/reviews)" ||
         indeterminate fetch-failed "cannot fetch PR reviews"
@@ -785,6 +795,8 @@ fi
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
     --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName,body,closingIssuesReferences)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
+scalars="$(normalize_body_field <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries an invalid body"
 
 # This PR's own branch name — an extra signal `evaluate_checks` uses below to
 # narrow the case actions/runs' own `pull_requests[]` cannot: two open PRs
@@ -822,20 +834,15 @@ live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
 # head-moved check independent of the scalar fetch above.
 fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
     indeterminate fetch-failed "cannot fetch the PR object"
+fp_pr="$(normalize_body_field <<<"$fp_pr")" ||
+    indeterminate malformed-data "PR object carries an invalid body"
 rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
     indeterminate malformed-data "PR object carries no head commit"
 [ "$rest_head" = "$head" ] ||
     fail_condition head-moved "PR head changed while the gate was reading it"
-scalar_body="$(jq -er '.body | select(type == "string")' <<<"$scalars")" ||
+scalar_body="$(jq -r '.body' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no body"
-rest_body="$(jq -er '
-  if (has("body") and .body == null) then
-    ""
-  elif (.body | type) == "string" then
-    .body
-  else
-    error("body is neither a string nor null")
-  end' <<<"$fp_pr")" ||
+rest_body="$(jq -r '.body' <<<"$fp_pr")" ||
     indeterminate malformed-data "PR object carries no body"
 [ "$scalar_body" = "$rest_body" ] ||
     fail_condition content-moved "PR body changed between the linkage and fingerprint reads — re-adjudicate against the current body"
@@ -1861,6 +1868,8 @@ evaluate_checks
 final="$(run_gh pr view "$pr" --repo "$repo" \
     --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,baseRefOid,body,closingIssuesReferences)" ||
     indeterminate fetch-failed "cannot re-read the PR after the final comparison"
+final="$(normalize_body_field <<<"$final")" ||
+    indeterminate malformed-data "final PR payload carries an invalid body"
 jq -e '.state == "OPEN"' <<<"$final" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was comparing against the base"
 if [ "$require_draft" = 1 ]; then
@@ -1872,6 +1881,11 @@ else
 fi
 jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was comparing against the base"
+body_unchanged="$(jq -nr --argjson final "$final" --argjson verified "$fp_pr" \
+    '$final.body == $verified.body')" ||
+    indeterminate malformed-data "cannot compare the final and fingerprinted PR bodies"
+[ "$body_unchanged" = true ] ||
+    fail_condition content-moved "PR body changed after the fingerprint comparison — re-adjudicate against the current body"
 assert_closing_linkage "$final" "final snapshot"
 jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"

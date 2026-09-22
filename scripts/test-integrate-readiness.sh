@@ -3322,6 +3322,20 @@ jq -cn --arg head "$head_sha" \
 run_gate
 assert_gate 1 fail merge-state-dirty
 
+echo "==> a body edit after fingerprinting fails on the final re-read"
+write_defaults
+final_body="$(printf 'What/why prose edited after fingerprinting.\n\n## Verification\n\n- task verify\n')"
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+jq -cn --arg body "$final_body" \
+    '{body:$body,closingIssuesReferences:[]}' \
+    >"${fixtures}/second-closing-view.json"
+run_gate
+assert_gate 1 fail content-moved
+
 echo "==> the fingerprint is double-read: gated evaluation plus a fresh compare"
 write_defaults
 run_gate
