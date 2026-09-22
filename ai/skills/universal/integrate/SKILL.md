@@ -748,8 +748,11 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   reconciliation the record's own state must resolve before retrying, not
   something to force past. After every publish or other body edit lands,
   re-read `headRefOid,body,closingIssuesReferences` together and stop with a
-  blocker report if any closing keyword the body claims has no corresponding
-  linkage.
+  blocker report if any closing keyword the body claims targets an issue with
+  no corresponding linkage. Resolve claimed same-repo targets through the
+  issues endpoint first: a target whose payload identifies it as a pull
+  request is exempt because pull requests never appear in
+  `closingIssuesReferences`.
 - **Follow-ups still go through `track-work`.** Before filing one, **search
   the repo the follow-up is going into** — `track-work` §3 owns this step and
   the reasoning; the short form is
