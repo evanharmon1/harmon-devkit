@@ -992,6 +992,10 @@ for brief in "$impl_rendered_file" "$rendered_file"; do
         fail "report-path proofs are not ordered alternatives in $brief"
     grep -Fq 'excludes it structurally rather than' "$brief" ||
         fail "report-path check does not explain why check-ignore cannot match under .git in $brief"
+    grep -Fq 'git ls-files --error-unmatch' "$brief" ||
+        fail "report-path proof does not require the path to be untracked in $brief"
+    grep -Fq 'must FAIL' "$brief" ||
+        fail "report-path proof does not state the direction of the untracked check in $brief"
 done
 
 # r3-1: a bounded role's writes are what its own definition permits. The

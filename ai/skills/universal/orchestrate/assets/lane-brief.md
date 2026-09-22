@@ -41,11 +41,15 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
 - Before writing the report, resolve the worktree root and common Git directory,
   then take the **first** proof that holds: (1) `{{report-path}}` resolves inside
   the common Git directory, or (2) it is inside the worktree and
-  `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. Report BLOCKED
-  only if neither holds. The order matters: in a main checkout the common Git
-  directory is *itself* inside the worktree root, and `check-ignore` never
-  matches a path under `.git` because git excludes it structurally rather than
-  by a pattern. An assertion in this brief is not exclusion evidence.
+  `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. **Either way
+  it must also be untracked** — `git ls-files --error-unmatch -- "{{report-path}}"`
+  must FAIL. A tracked file can satisfy both proofs above and still be swept
+  into a commit, because `git add` stages a tracked path whatever the ignore
+  rules say. Report BLOCKED if neither proof holds, or if the path is tracked.
+  The order matters: in a main checkout the common Git directory is *itself*
+  inside the worktree root, and `check-ignore` never matches a path under `.git`
+  because git excludes it structurally rather than by a pattern. An assertion in
+  this brief is not exclusion evidence.
 - Git/sandbox rule: {{git-sandbox-note}}
 
 ## File-scope fence
