@@ -1315,13 +1315,26 @@ classify_cycle_charge() {
     # is exactly the case where the merge silently rewrote the change.
     # A ref may legally contain a slash (`release/2.x`), which would otherwise
     # be read as extra path segments and 404 the compare.
-    base_ref_encoded=$(jq -rn --arg s "$base_ref" '$s | @uri')
+    # Codex, P1 (confirmed): comparing the current patch against a branch NAME
+    # leaves it mutable — the name resolves when the request is made, not when
+    # the payload was read. If the base advances between the two, and the new
+    # base independently lands the same contents as a real fix to reviewed file
+    # F, then F appears in the moved comparison but drops out of this one, and
+    # a changed-code cycle is falsely exempted. Pin it to the SHA the payload
+    # named, or charge.
+    classify_head_base=$(jq -r '.base.sha // empty' <<<"$classify_pr_payload" 2>/dev/null) ||
+        classify_head_base=
+    if ! valid_sha "$classify_head_base"; then
+        charge_class=charged
+        charge_reason="the PR payload names no stable base commit for the current patch; charging"
+        return 0
+    fi
     prev_patch=$(run_gh api "repos/$classify_repo/compare/$classify_prev_base...$classify_prev") || {
         charge_class=charged
         charge_reason="cannot read the reviewed patch at $classify_prev; charging"
         return 0
     }
-    head_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref_encoded...$classify_head") || {
+    head_patch=$(run_gh api "repos/$classify_repo/compare/$classify_head_base...$classify_head") || {
         charge_class=charged
         charge_reason="cannot read the reviewed patch at $classify_head; charging"
         return 0
@@ -1370,8 +1383,21 @@ classify_cycle_charge() {
           # empty. Both names count, on both sides.
           def names: (.files // []) | map(.filename, .previous_filename) | map(select(. != null));
           ($moved | names | unique) as $changed
-          | (($prev | names) + ($head | names) | unique) as $under_review
-          | ($changed - ($changed - $under_review)) | join(", ")
+          | ($prev | names | unique) as $prev_files
+          | ($head | names | unique) as $head_files
+          | ($prev_files + $head_files | unique) as $under_review
+          # Codex, P1 (confirmed): restoring F to the previous patch does not
+          # restore it to the MOVED set. When the base independently lands the
+          # same final contents for a reviewed file, merging that base makes F
+          # leave the PR patch while the two head trees still agree on F — so
+          # the net previous...head comparison omits it entirely and the
+          # intersection comes back empty. A file entering or leaving the
+          # reviewed patch changed under review whether or not the trees
+          # differ, so the symmetric difference of the two patch file sets is
+          # charged alongside the intersection.
+          | (($prev_files - $head_files) + ($head_files - $prev_files)) as $patch_shift
+          | (($changed - ($changed - $under_review)) + $patch_shift | unique)
+          | join(", ")
         ') || {
         rm -rf "$classify_tmp"
         charge_class=charged

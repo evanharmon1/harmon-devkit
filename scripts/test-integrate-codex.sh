@@ -3921,7 +3921,7 @@ classify_reserve() {
     mv "${state}.next" "$state"
     printf '%s' "$2" >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
     printf '%s' "$3" >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
-    printf '%s' "$4" >"${fixtures}/compare-main___${classifier_new}.json"
+    printf '%s' "$4" >"${fixtures}/compare-${classifier_base}___${classifier_new}.json"
     printf '%s' "$classifier_new" >"${fixtures}/head"
     # A ceiling must be DECLARED for a cycle to be exempt: an undeclared one is
     # an unknown ceiling, and unknown charges.
@@ -4145,6 +4145,19 @@ case "$(jq -r '.charge_reason' "$state")" in
 *) fail "the reason must name the undeclared ceiling: $(jq -r '.charge_reason' "$state")" ;;
 esac
 
+echo "==> a reviewed file leaving the patch charges even when the trees agree"
+# Codex, P1: restoring F to the previous patch does not restore it to the MOVED
+# set. When the base independently lands the same final contents for reviewed
+# file F, merging it makes F leave the PR patch while both head trees still
+# agree on F — so the net previous...head comparison omits F entirely and the
+# intersection comes back empty. The symmetric difference of the two patch file
+# sets is what catches it.
+classify_reserve charged \
+    '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
+    '{"files":[{"filename":"src/a.js"},{"filename":"src/leaving.js"}]}' \
+    '{"files":[{"filename":"src/a.js"}]}'
+assert_charge charged "reviewed file left the patch" 2 0
+
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
     '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \
@@ -4306,9 +4319,9 @@ mv "${state}.next" "$state"
 printf '%s' '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \
     >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
 printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
-    >"${fixtures}/compare-main___${classifier_prev}.json"
+    >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
 printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
-    >"${fixtures}/compare-main___${classifier_new}.json"
+    >"${fixtures}/compare-${classifier_base}___${classifier_new}.json"
 printf '%s' "$classifier_new" >"${fixtures}/head"
 set +e
 overcap_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
@@ -4338,9 +4351,9 @@ mv "${state}.next" "$state"
 printf '%s' '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
     >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
 printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
-    >"${fixtures}/compare-main___${classifier_prev}.json"
+    >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
 printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
-    >"${fixtures}/compare-main___${classifier_new}.json"
+    >"${fixtures}/compare-${classifier_base}___${classifier_new}.json"
 printf '%s' "$classifier_new" >"${fixtures}/head"
 # Same evidence as the exempt case above — only the run differs.
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
