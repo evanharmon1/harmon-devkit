@@ -801,6 +801,32 @@ resolve_count="$(awk '$0 ~ /^api repos\/example\/repo\/issues\/493([[:space:]]|$
 [ "$resolve_count" -eq 1 ] ||
     fail "expected the same-repo PR target to resolve once, saw $resolve_count reads"
 
+echo "==> a null pull_request marker is malformed, not a PR-target exemption"
+write_defaults
+closing_body='Closes #493'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq -cn '{number:493,pull_request:null}' >"${fixtures}/issue-493.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a non-object pull_request marker is malformed, not a PR-target exemption"
+write_defaults
+closing_body='Closes #493'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq -cn '{number:493,pull_request:"not-an-object"}' >"${fixtures}/issue-493.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
 echo "==> a failed claimed-target resolve is indeterminate"
 write_defaults
 closing_body='Closes #380'

@@ -465,12 +465,16 @@ assert_closing_linkage() {
             acl_kind="$(jq -r '
               if type != "object" then
                 error("claimed target is not an object")
+              elif has("pull_request") and (.pull_request | type) != "object" then
+                "malformed-pull-request"
               elif has("pull_request") then
                 "pull-request"
               else
                 "issue"
               end' <<<"$acl_issue" 2>/dev/null)" ||
                 indeterminate fetch-failed "cannot resolve claimed closing target $acl_ref"
+            [ "$acl_kind" != malformed-pull-request ] ||
+                indeterminate malformed-data "claimed closing target $acl_ref carries a malformed pull_request field"
             closing_target_kinds="$(jq -c --arg ref "$acl_ref" --arg kind "$acl_kind" \
                 '. + {($ref):$kind}' <<<"$closing_target_kinds")"
         fi
