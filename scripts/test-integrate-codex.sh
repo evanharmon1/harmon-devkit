@@ -5386,11 +5386,8 @@ echo "==> review-r4-codex-verification-6: settle reads get a FLAT per-call budge
 # The slow endpoint sleeps 5 seconds. Under the clamp the fetch is killed at
 # one and `settle` dies; with a flat budget it completes.
 trigger_id=123
-if request_time="$(date -u -d '-20 minutes' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
-  :
-else
-  request_time="$(date -u -v-20M '+%Y-%m-%dT%H:%M:%SZ')"
-fi
+# jq, not `date -d`: GNU-only relative dates stop the suite on macOS (#1136).
+request_time="$(jq -nr 'now - 1200 | floor | todateiso8601')"
 write_defaults
 rm -f "$state"
 "$helper" reserve \
