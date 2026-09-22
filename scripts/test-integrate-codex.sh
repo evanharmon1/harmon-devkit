@@ -3851,6 +3851,36 @@ classify_reserve charged \
     '{"files":[{"filename":"src/a.js"}]}'
 assert_charge charged "diverged history" 2 0
 
+echo "==> check refuses to resume another run's cycle state"
+# Review round 2, P1: a new run starting on the SAME head finds the prior run's
+# attached state and resumes it, skipping `reserve` and its run-scope reset. The
+# guard has to live on the resume path because that is where the resume happens.
+new_cycle
+"$helper" attach --state "$state" --trigger-id 555 >/dev/null 2>&1 || true
+jq '.run_id = "run-a"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+foreign_out="$("$helper" check --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --timeout-min 15 --run-id run-b \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+foreign_rc=$?
+set -e
+[ "$foreign_rc" -eq 2 ] ||
+    fail "check must refuse another run's state, got rc $foreign_rc: $foreign_out"
+case "$foreign_out" in
+*"belongs to run run-a"*) ;;
+*) fail "the refusal must name the owning run: $foreign_out" ;;
+esac
+# The same state under its OWN run id must not be refused for this reason.
+set +e
+own_out="$("$helper" check --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --timeout-min 15 --run-id run-a \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+set -e
+case "$own_out" in
+*"belongs to run"*) fail "a matching run id must not be refused: $own_out" ;;
+esac
+
 echo "==> reserve refuses a charged cycle once the integration cap is spent"
 # Review round 1, P1: the trigger is posted immediately after the reservation,
 # so a ceiling enforced only by the readiness gate is enforced after the review

@@ -50,7 +50,11 @@ A workable brief names:
   merge that changed no file under review re-reads identical code and spends
   the exempt ceiling instead. You do not judge which it is — pass `--run-id`
   to `reserve` and it classifies from evidence, keeping the running totals in
-  its own state as `charged_cycles` / `exempt_cycles`. Copy those two numbers
+  its own state as `charged_cycles` / `exempt_cycles`. Pass BOTH ceilings on
+  every reservation as well: `reserve` refuses a cycle that would exceed the
+  one it belongs to, and that refusal is the only check that happens before
+  the trigger is posted — the readiness gate sees the overspend only after the
+  review has already run. Copy those two numbers
   onto your result as `codex_cycle.charged` and `codex_cycle.exempt`, so the
   readiness gate can check each ceiling against the counter it belongs to. An
   older brief that names neither is one whose cycles were all charged, and the
@@ -340,7 +344,8 @@ Three cases, mutually exclusive:
 
   ```bash
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-      --head "<head>" --attempt 1 --run-id "<run id>" || exit
+      --head "<head>" --attempt 1 --run-id "<run id>" \
+      --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" || exit
   trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger --repo "$repo" --pr <n>)" || exit
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   ```
@@ -476,7 +481,8 @@ explicit `--actor-id`:
 ```sh
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 "$helper" reserve --state "$state_finder" --repo "$repo" --pr <n> \
-    --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" || exit
+    --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
+    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" || exit
 ```
 
 The trigger mechanism varies by finder — the trusted registry determines which:

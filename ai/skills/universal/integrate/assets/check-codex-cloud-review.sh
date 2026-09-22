@@ -39,6 +39,7 @@ Usage:
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
+                                   [--run-id ID]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
@@ -1649,6 +1650,20 @@ check)
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
     state_phase=$(jq -r '.phase' "$state_file")
+    # Review round 2, P1 (confirmed): a new run that starts on the SAME head as
+    # a prior one finds that run's `attached` state and resumes it, skipping
+    # `reserve` — and with it the run-scope reset that lives there. The prior
+    # run's spend is then silently attributed to this one, and its cycle
+    # ordinal disagrees with the inherited totals. `reserve` cannot catch this
+    # because it is never called; the resume path has to, so the guard lives
+    # here where the resume actually happens.
+    if [ -n "$run_id" ]; then
+        state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ -n "$state_run_id" ] && [ "$state_run_id" != "$run_id" ]; then
+            emit indeterminate "this cycle state belongs to run $state_run_id, not $run_id — reserve a fresh cycle rather than resuming another run's spend"
+            exit 2
+        fi
+    fi
     [ "$state_phase" = "attached" ] || {
         emit indeterminate "review request was reserved but its exact trigger is not attached"
         exit 2
