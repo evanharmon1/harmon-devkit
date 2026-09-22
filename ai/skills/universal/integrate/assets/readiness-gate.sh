@@ -415,9 +415,11 @@ normalize_body_field() {
 # with the structured closingIssuesReferences from the SAME `gh pr view`
 # response. GitHub treats repository names case-insensitively; issue numbers
 # are numeric. A body with no claim produces an empty set and passes.
+closing_target_kinds='{}'
 assert_closing_linkage() {
     local acl_payload="$1" acl_phase="$2"
-    local acl_sets acl_missing_count acl_missing
+    local acl_sets acl_missing_count acl_missing acl_repo
+    local acl_ref acl_target acl_number acl_kind acl_issue acl_pr_targets
     acl_sets="$(jq -cr --arg repo "$repo" '
       if (.closingIssuesReferences | type) != "array" then
         error("closingIssuesReferences is not an array")
@@ -449,6 +451,35 @@ assert_closing_linkage() {
         | {claimed:$claimed, missing:($claimed - $linked)}
       end' <<<"$acl_payload" 2>/dev/null)" ||
         indeterminate malformed-data "closing-linkage payload is malformed ($acl_phase)"
+
+    acl_repo="$(jq -nr --arg repo "$repo" '$repo | ascii_downcase')"
+    acl_pr_targets='[]'
+    while IFS= read -r acl_ref; do
+        acl_target="${acl_ref%#*}"
+        [ "$acl_target" = "$acl_repo" ] || continue
+        acl_number="${acl_ref##*#}"
+        acl_kind="$(jq -r --arg ref "$acl_ref" '.[$ref] // ""' <<<"$closing_target_kinds")"
+        if [ -z "$acl_kind" ]; then
+            acl_issue="$(run_gh api repos/"$acl_target"/issues/"$acl_number")" ||
+                indeterminate fetch-failed "cannot resolve claimed closing target $acl_ref"
+            acl_kind="$(jq -r '
+              if type != "object" then
+                error("claimed target is not an object")
+              elif has("pull_request") then
+                "pull-request"
+              else
+                "issue"
+              end' <<<"$acl_issue" 2>/dev/null)" ||
+                indeterminate fetch-failed "cannot resolve claimed closing target $acl_ref"
+            closing_target_kinds="$(jq -c --arg ref "$acl_ref" --arg kind "$acl_kind" \
+                '. + {($ref):$kind}' <<<"$closing_target_kinds")"
+        fi
+        if [ "$acl_kind" = pull-request ]; then
+            acl_pr_targets="$(jq -c --arg ref "$acl_ref" '. + [$ref]' <<<"$acl_pr_targets")"
+        fi
+    done < <(jq -r '.claimed[]' <<<"$acl_sets")
+    acl_sets="$(jq -c --argjson prs "$acl_pr_targets" '.missing -= $prs' <<<"$acl_sets")"
+
     acl_missing_count="$(jq -r '.missing | length' <<<"$acl_sets")"
     [ "$acl_missing_count" -eq 0 ] || {
         acl_missing="$(jq -r '.missing | join(", ")' <<<"$acl_sets")"

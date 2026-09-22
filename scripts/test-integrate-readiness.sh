@@ -133,6 +133,11 @@ graphql) file=threads.pages.json ;;
 repos/*/pulls/*/comments*) file=inline.pages.json ;;
 repos/*/pulls/*/reviews*) file=reviews.pages.json ;;
 repos/*/issues/*/comments*) file=top.pages.json ;;
+repos/*/issues/[0-9]*)
+    issue_number="${endpoint##*/}"
+    file="issue-${issue_number}.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=issue.json
+    ;;
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/actions/runs*) file=workflow-runs.pages.json ;;
@@ -501,6 +506,7 @@ write_defaults() {
     # gate uses; mergeStateStatus above is only the cache.
     jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
+    jq -cn '{number:380}' >"${fixtures}/issue.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/top.pages.json"
@@ -511,6 +517,7 @@ write_defaults() {
     rm -f "${fixtures}/fail-closing-references"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
     rm -f "${fixtures}/second-closing-view.json"
+    rm -f "${fixtures}"/issue-*.json
     rm -f "${fixtures}"/count-* "${fixtures}"/second-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
@@ -776,6 +783,36 @@ jq --arg body "$cross_line_body" '.body = $body' \
 mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
 run_gate
 assert_gate 0 pass ready
+
+echo "==> a closing keyword targeting a pull request needs no issue linkage"
+write_defaults
+closing_body='Closes #493'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq -cn '{number:493,pull_request:{url:"https://api.github.test/repos/example/repo/pulls/493"}}' \
+    >"${fixtures}/issue-493.json"
+run_gate
+assert_gate 0 pass ready
+resolve_count="$(awk '$0 ~ /^api repos\/example\/repo\/issues\/493([[:space:]]|$)/ { count++ } END { print count + 0 }' "$log")"
+[ "$resolve_count" -eq 1 ] ||
+    fail "expected the same-repo PR target to resolve once, saw $resolve_count reads"
+
+echo "==> a failed claimed-target resolve is indeterminate"
+write_defaults
+closing_body='Closes #380'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+printf '%s\n' 'repos/example/repo/issues/380' >"${fixtures}/fail-endpoint"
+run_gate
+assert_gate 2 indeterminate fetch-failed
 
 echo "==> a claimed same-repo closing keyword with linkage passes"
 write_defaults
