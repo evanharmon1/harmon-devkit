@@ -286,7 +286,7 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
-          base:{ref:"main"}}' \
+          base:{ref:"main",sha:"3333333333333333333333333333333333333333"}}' \
         >"${fixtures}/pr.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/fail-endpoint-exact"
@@ -302,7 +302,7 @@ write_defaults() {
 
 new_cycle() {
     write_defaults
-    rm -f "$state"
+    rm -f "$state" "${state%.json}.spend.json"
     "$helper" reserve \
         --state "$state" --repo example/repo --pr 493 \
         --head "$head_sha" --attempt 1 >/dev/null
@@ -1923,7 +1923,7 @@ echo "==> reconstructed state around a pre-existing trusted trigger uses the ful
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -1954,7 +1954,7 @@ echo "==> reconstructed state detects a distinct trusted same-head trigger befor
 trigger_id=124
 request_time='2026-07-31T08:02:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s\n' '2026-07-31T08:00:00Z' \
     >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T08:01:00Z' \
@@ -2013,7 +2013,7 @@ echo "==> a check suite's server creation time bounds prior-trigger reconstructi
 trigger_id=150
 request_time='2026-07-31T08:10:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 # A commit date backdated AFTER the real prior trigger below: the old
 # commit-date boundary would exclude that trigger from reconstruction
 # entirely, hiding real same-head history behind a client-controlled clock.
@@ -2046,7 +2046,7 @@ echo "==> a trigger posted before any check starts is not hidden by a later chec
 trigger_id=161
 request_time='2026-07-31T08:10:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 # The commit's own dates are genuinely early (not spoofed) -- the check
 # suite just hasn't been created yet when the real trigger below was
 # posted, which is ordinary CI/webhook latency, not an attack.
@@ -2084,7 +2084,7 @@ echo "==> the earliest of several check suites bounds reconstruction, not just t
 trigger_id=171
 request_time='2026-07-31T08:40:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 # Commit dates are deliberately late so the check-suite boundary must win
 # this comparison on its own -- isolates the multi-suite handling from the
 # previous case's commit-date-vs-check-suite comparison. Two check suites
@@ -2132,7 +2132,7 @@ echo "==> a trigger that predates the check suite itself is a known, documented 
 trigger_id=180
 request_time='2026-07-31T08:10:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 # Commit dates are future-dated (spoofed later than reality), and -- unlike
 # the remediation-1 version of this test, which Codex cycle 2 correctly
 # found was not adversarial (its suite predated its own trigger) -- the
@@ -2274,7 +2274,7 @@ echo "==> a same-second prior trigger counts when its id precedes the attached t
 trigger_id=134
 request_time='2026-07-31T08:02:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s\n' '2026-07-31T08:00:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T08:01:00Z' >"${fixtures}/head-committed-at"
 jq -cn \
@@ -2382,7 +2382,7 @@ assert_status 2 indeterminate
 echo "==> pending window uses the attached request clock"
 request_time='2026-07-31T08:01:01Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -2394,7 +2394,7 @@ assert_status 11 pending
 
 echo "==> an existing state lock serializes reservations"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 mkdir "${state}.lock"
 printf '%s\n' "$$" >"${state}.lock/pid"
 set +e
@@ -2412,7 +2412,7 @@ grep -Fq "lock-held: holder_pid=$$ age=" <<<"$locked_out" ||
 
 echo "==> every existing lock is held and never auto-reclaimed"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 mkdir "${state}.lock"
 printf '%s\n' 99999999 >"${state}.lock/pid"
 set +e
@@ -2647,7 +2647,7 @@ rm -f "${fixtures}/fail-pr-493"
 
 echo "==> reserve refuses a PR that is no longer open, naming the state"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s\n' MERGED >"${fixtures}/pr-state-493"
 set +e
 closed_reserve_out="$("$helper" reserve \
@@ -2666,7 +2666,7 @@ esac
 
 echo "==> attach refuses a PR that closed after reservation, naming the state"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -3047,7 +3047,7 @@ iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601
 trigger_id=123
 request_time="$(iso_from_offset -300)"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --timeout-min 10 >/dev/null
@@ -3108,7 +3108,7 @@ echo "==> check rejects an explicit --timeout-min that conflicts with the persis
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --timeout-min 10 >/dev/null
@@ -3161,7 +3161,7 @@ iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601
 trigger_id=123
 request_time="$(iso_from_offset 0)"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -3230,7 +3230,7 @@ echo "==> attach's GitHub calls are budgeted by the persisted timeout, not the d
 trigger_id=123
 request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --timeout-min 5 >/dev/null
@@ -3287,7 +3287,7 @@ echo "==> attach rejects a zero --timeout-min instead of adopting and bricking t
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -3321,7 +3321,7 @@ iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601
 trigger_id=123
 request_time="$(iso_from_offset 0)"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -3368,7 +3368,7 @@ echo "==> reserve rejects a leading-zero --timeout-min outright (harmon-devkit#2
 # reachable false conflict. This test pins that first gate in place.
 trigger_id=123
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 set +e
 leading_zero_out="$("$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
@@ -3897,22 +3897,30 @@ EOF
 # regression would silently leave.
 classifier_prev=1111111111111111111111111111111111111111
 classifier_new=2222222222222222222222222222222222222222
+classifier_base=3333333333333333333333333333333333333333
 
 # $1 label, $2 moved-range JSON, $3 patch-at-prev JSON, $4 patch-at-head JSON
 classify_reserve() {
     write_defaults
-    rm -f "$state"
+    # Each case models a FRESH run, and run spend now deliberately outlives any
+    # one cycle's state — so the run-keyed sidecar has to go with it, or case N
+    # inherits case N-1's counters.
+    rm -f "$state" "${state%.json}.spend.json"
     printf '%s' "$classifier_prev" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
         --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
     # A reservation must be reconciled before its head may be replaced, which
     # is the real flow (reserve -> attach -> check -> next head). Move the
     # prior cycle out of `reserved` the way an attach would.
-    jq '.phase = "attached" | .trigger_comment_id = 4242 |
-        .requested_at = .reserved_at' "$state" >"${state}.next"
+    # A prior cycle is only a "previously reviewed head" once it reached a
+    # terminal verdict, which is what `emit clean|findings` records. Model that
+    # here rather than leaving merely-attached state, which now charges.
+    jq --arg base "$classifier_base" '.phase = "attached" | .trigger_comment_id = 4242 |
+        .requested_at = .reserved_at |
+        .last_reviewed_head = .head | .last_reviewed_base_sha = $base' "$state" >"${state}.next"
     mv "${state}.next" "$state"
     printf '%s' "$2" >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
-    printf '%s' "$3" >"${fixtures}/compare-main___${classifier_prev}.json"
+    printf '%s' "$3" >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
     printf '%s' "$4" >"${fixtures}/compare-main___${classifier_new}.json"
     printf '%s' "$classifier_new" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
@@ -3946,6 +3954,80 @@ big_unrelated="$(jq -cn '{status:"ahead", files:[range(250) | {filename:("vendor
 big_reviewed="$(jq -cn '{files:[range(250) | {filename:("src/module\(.)/another-long-path-component/impl.ts")}]}')"
 classify_reserve exempt "$big_unrelated" "$big_reviewed" "$big_reviewed"
 assert_charge exempt "large payloads" 1 1
+
+echo "==> a prior head that never got a verdict cannot license an exemption"
+# Codex cloud cycle 3, P1: a cycle that ended pending/transient/quota-blocked/
+# escalated still left its head in state, and classification read that as "the
+# last reviewed head" — so the first cycle that would actually produce a review
+# could be exempt. This PR demonstrated it: two cycles escalated on a 👀 alone.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+printf '%s' "$classifier_prev" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+# Attached, but NO terminal verdict — so no last_reviewed_head is recorded.
+# The recorded BASE is present and every compare fixture below describes a
+# clean, disjoint base merge, so the ONLY thing standing between this cycle and
+# an exemption is the missing terminal-review marker. Without that isolation
+# the case charges for a mundane reason (an unreadable patch) and proves
+# nothing — which is exactly how its first draft passed while the marker read
+# was mutated away.
+jq --arg base "$classifier_base" '.phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = .reserved_at | .last_reviewed_base_sha = $base' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s' '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
+    >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
+printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
+printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+    >"${fixtures}/compare-${classifier_base}___${classifier_new}.json"
+printf '%s' "$classifier_new" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.charge' "$state")" = "charged" ] ||
+    fail "an unreviewed prior head must charge: $(jq -r '.charge_reason' "$state")"
+
+echo "==> a reviewed head with no recorded base charges"
+# The prior patch must be compared against the base it was ACTUALLY reviewed
+# against; without that SHA there is nothing to compare and the cycle charges.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+printf '%s' "$classifier_prev" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = .reserved_at |
+    .last_reviewed_head = .head | .last_reviewed_base_sha = null' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s' '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
+    >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
+printf '%s' "$classifier_new" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.charge' "$state")" = "charged" ] ||
+    fail "a missing historical base must charge: $(jq -r '.charge_reason' "$state")"
+
+echo "==> run spend survives the documented state reset"
+# The documented quota-recovery path removes the cycle state. The totals bound
+# a RUN, so they must outlive any one cycle's state or an operator following
+# that procedure silently forgets the spend and can exceed the ceiling.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
+    fail "fixture: expected one charged cycle"
+rm -f "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.charged_cycles' "$state")" = "2" ] ||
+    fail "spend must survive the reset, got $(jq -r '.charged_cycles' "$state")"
+# A DIFFERENT run still starts clean.
+rm -f "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-b >/dev/null
+[ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
+    fail "a new run must not inherit spend, got $(jq -r '.charged_cycles' "$state")"
 
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
@@ -4073,7 +4155,7 @@ echo "==> another run's UNRESOLVED reservation stays blocked"
 # Replacing it loses the only reconciliation for that trigger. Foreign
 # ATTACHED state is replaceable (the case above); foreign RESERVED is not.
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
 [ "$(jq -r '.phase' "$state")" = "reserved" ] ||
@@ -4097,7 +4179,7 @@ echo "==> reserve refuses a charged cycle once the integration cap is spent"
 # so a ceiling enforced only by the readiness gate is enforced after the review
 # has already run. Refusal must happen here, at the last preventable point.
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
     --head "$classifier_prev" --attempt 1 --run-id run-a \
@@ -4130,7 +4212,7 @@ esac
 
 echo "==> state from a different run cannot license an exemption"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
     --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
@@ -4422,7 +4504,7 @@ echo "==> harmon-devkit#737: the fetch budget honours --now instead of decaying 
 # with a budget of 1 — so 30 is derivable only from `--now`, which is what
 # makes this discriminating rather than agreeing with both clocks.
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -5652,7 +5734,7 @@ echo "==> review-r4-codex-verification-2: a RECONSTRUCTED reservation cannot hid
 trigger_id=300
 request_time='2026-07-31T08:00:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -5702,7 +5784,7 @@ echo "==> review-r4-codex-verification-6: settle reads get a FLAT per-call budge
 trigger_id=123
 request_time="$(date -u -d '-20 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >/dev/null
@@ -5748,7 +5830,7 @@ echo "==> review-r5-codex-verification-1: a reconstruction anchors on the EARLIE
 trigger_id=1100
 request_time='2026-07-31T08:20:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-committed-at"
 jq -cn \
@@ -5869,7 +5951,7 @@ echo "==> review-r5-codex-verification-1: the anchor can only ever move DOWN"
 trigger_id=3100
 request_time='2026-07-31T08:20:00Z'
 write_defaults
-rm -f "$state"
+rm -f "$state" "${state%.json}.spend.json"
 printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T07:50:00Z' >"${fixtures}/head-committed-at"
 jq -cn \

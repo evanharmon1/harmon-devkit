@@ -676,7 +676,11 @@ recheck_codex_freshness() {
         # suite can drive the path without paying the wall-clock cost.
         sleep "${CODEX_RECHECK_RETRY_DELAY:-2}"
         codex_recheck_exit=0
-        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
+        # Scoped exactly as the first read is: during the retry delay another
+        # run can replace the shared same-head state, and an unscoped retry
+        # would accept that foreign run's cycle and settlements instead of
+        # refusing the ownership mismatch.
+        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
             indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"

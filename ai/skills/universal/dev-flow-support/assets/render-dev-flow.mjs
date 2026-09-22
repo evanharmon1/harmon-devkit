@@ -542,11 +542,17 @@ function validatePolicyShape(policy, file) {
     if (!(Number.isInteger(exempt) && exempt >= 0)) {
       fail(`${file}: rounds.integration_exempt, if present, must be a non-negative integer`)
     }
-    // A positive exempt ceiling under a zero charged cap would announce
-    // cycles the operator disabled: cloud review off leaves no cycle of
-    // either kind to run.
-    if (exempt > 0 && policy.rounds.integration === 0) {
-      fail(`${file}: rounds.integration_exempt must be 0 when rounds.integration is 0`)
+    // The resolver produces exactly two shapes: equal to `integration` on the
+    // operating path, and 0 on any historical decode. Anything else describes
+    // a policy that cannot exist, and the retro would parse it as the run's
+    // effective budget — so a fabricated ceiling fails here rather than being
+    // published. This subsumes the zero-cap case: with `integration: 0` the
+    // only permitted values are 0 and 0.
+    if (exempt !== 0 && exempt !== policy.rounds.integration) {
+      fail(
+        `${file}: rounds.integration_exempt must be 0 or equal to rounds.integration ` +
+          `(${policy.rounds.integration}), got ${exempt}`
+      )
     }
   }
   if (policy.disclosures !== undefined) {

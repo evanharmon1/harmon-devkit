@@ -1171,8 +1171,14 @@ function renderMarkdown(report) {
   l.push('')
   if (report.policy.present) {
     const r = report.policy.rounds
+    // harmon-init#1341, Codex cloud cycle 3 P2: this is the line a reader takes
+    // as the run's budget, so it must carry the exempt ceiling too — otherwise
+    // every new-format retro opens with an incomplete summary and only reveals
+    // the extra allowance further down.
+    const exemptSuffix =
+      r.integration_exempt === undefined ? '' : ` (+${r.integration_exempt} exempt)`
     l.push(
-      `rigor: \`${safe(report.policy.rigor.level)}\` (\`${safe(report.policy.rigor.source)}\`) → challenge ≤${r.challenge}, review ≤${r.review}, integration ${r.integration}, remediation ${r.remediation}, min_rounds ${r.min_rounds}`
+      `rigor: \`${safe(report.policy.rigor.level)}\` (\`${safe(report.policy.rigor.source)}\`) → challenge ≤${r.challenge}, review ≤${r.review}, integration ${r.integration}${exemptSuffix}, remediation ${r.remediation}, min_rounds ${r.min_rounds}`
     )
     l.push('')
     l.push(
