@@ -553,7 +553,29 @@ esac
 # sits on the next line is seen as one assertion. Negative assertions (the
 # `if grep … then fail` and `*'lit'*) fail …` forms) are excluded by
 # construction: those are the ones that must occur ZERO times.
-impl_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ta' -e '}' "$0")"
+# awk, not `sed -e ':a' … -e 'ta'`: the label/branch join and a literal `\n`
+# on a substitution's right-hand side are GNU extensions, so that form fails on
+# BSD/macOS sed — and this file ships to consumers. Byte-identical to the sed
+# it replaces, including the edge case of a final line left with an
+# unterminated continuation, which is why the raw form is kept for END.
+impl_joined="$(awk '
+    {
+        line = $0
+        if (pending != "") {
+            sub(/^[[:space:]]*/, "", line)
+            line = pending " " line
+            pending = ""
+        }
+        if (line ~ /\\$/) {
+            pending_raw = line
+            sub(/\\$/, "", line)
+            pending = line
+            next
+        }
+        print line
+    }
+    END { if (pending != "") print pending_raw }
+' "$0")"
 # shell-robustness: begin-exempt — the forbidden text `grep -Fq` appears here
 # only INSIDE the regex that searches this file FOR that text; these pipelines
 # use `grep -oE`, which reads its input to EOF and cannot SIGPIPE the producer.
