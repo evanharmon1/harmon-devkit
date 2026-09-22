@@ -1195,8 +1195,19 @@ if [ "$codex_cycle" != null ]; then
         # is exactly right for it and still applies unchanged. That is what
         # keeps this backward compatible with a pass driven by an older skill,
         # rather than silently granting it an exemption it never computed.
+        # Review round 4, P2 (recurring): the two counters are one statement,
+        # and the repo's schema validator is a subset that has no
+        # `dependentRequired`, so the pair cannot be expressed there. Enforce
+        # it here instead, where it is checkable and where the consequence
+        # lives: `exempt` without `charged` would otherwise fall through to
+        # the legacy single-counter branch and be silently ignored, which is
+        # the direction that hides spend.
+        cycle_exempt_probe="$(jq -er '.exempt | select(type == "number")' \
+            <<<"$codex_cycle" 2>/dev/null)" || cycle_exempt_probe=
         cycle_charged="$(jq -er '.charged | select(type == "number")' \
             <<<"$codex_cycle" 2>/dev/null)" || cycle_charged=
+        [ -n "$cycle_charged" ] || [ -z "$cycle_exempt_probe" ] ||
+            indeterminate malformed-data "codex_cycle reports exempt but no charged count"
         if [ -n "$cycle_charged" ]; then
             cycle_exempt="$(jq -er '.exempt | select(type == "number")' \
                 <<<"$codex_cycle" 2>/dev/null)" ||

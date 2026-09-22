@@ -194,6 +194,12 @@ valid_uint() {
     grep -Eq '^[1-9][0-9]*$' <<<"$1"
 }
 
+# A cycle counter is legitimately 0 before anything is spent, so it needs the
+# zero-permitting form rather than valid_uint's positive one.
+valid_uint_or_zero() {
+    grep -Eq '^(0|[1-9][0-9]*)$' <<<"$1"
+}
+
 valid_sha() {
     grep -Eq '^[0-9a-fA-F]{40}$' <<<"$1"
 }
@@ -839,12 +845,15 @@ classify_cycle_charge() {
     # reviewed head and as it stands now. A file that leaves the patch is still
     # under review for this decision, which is the direction that matters: it
     # is exactly the case where the merge silently rewrote the change.
-    prev_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref...$classify_prev") || {
+    # A ref may legally contain a slash (`release/2.x`), which would otherwise
+    # be read as extra path segments and 404 the compare.
+    base_ref_encoded=$(jq -rn --arg s "$base_ref" '$s | @uri')
+    prev_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref_encoded...$classify_prev") || {
         charge_class=charged
         charge_reason="cannot read the reviewed patch at $classify_prev; charging"
         return 0
     }
-    head_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref...$classify_head") || {
+    head_patch=$(run_gh api "repos/$classify_repo/compare/$base_ref_encoded...$classify_head") || {
         charge_class=charged
         charge_reason="cannot read the reviewed patch at $classify_head; charging"
         return 0
@@ -999,6 +1008,13 @@ reserve)
         else
             carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
             carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+            # These are read back and used as arithmetic against a ceiling, so
+            # a hand-edited or truncated state file must not silently become a
+            # budget. Refuse rather than coerce: a state whose counters cannot
+            # be read is a state whose spend is unknown, and per the governing
+            # invariant unknown spend is never treated as room to spend more.
+            valid_uint_or_zero "$carried_charged" && valid_uint_or_zero "$carried_exempt" ||
+                die "persisted cycle counters are not non-negative integers (charged=$carried_charged exempt=$carried_exempt)"
         fi
     fi
     charge_class=charged

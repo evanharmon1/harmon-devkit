@@ -2024,6 +2024,17 @@ clean_result="$(write_integrator_result cap-exempt-undeclared "$exempt_undeclare
 run_gate --integrator-result "$clean_result" --integration-cap 2
 assert_gate 2 indeterminate codex-cap-mismatch
 
+echo "==> exempt without charged is malformed-data"
+# The mirror of the case below. This direction is the dangerous one: without
+# the check, `exempt` alone falls through to the legacy single-counter branch
+# and is silently ignored, hiding spend rather than reporting it.
+write_defaults
+lone_exempt="$(jq -c '.cycle = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-lone-exempt "$lone_exempt")"
+run_gate --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate malformed-data
+
 echo "==> charged without exempt is malformed-data"
 write_defaults
 half_split="$(jq -c '.cycle = 2 | .charged = 2' <<<"$(codex_cycle_json 0)")"
