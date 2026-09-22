@@ -47,6 +47,14 @@ decision.
 Writes — commits, pushes, `gh pr create`, gate runs — always go through the
 normal permission prompt.
 
+**Handing this work to another session instead of doing it here?** Steps 1–9
+are the work; step 10 is how it is described to whoever does it. Render
+`assets/implementer-brief.md` rather than writing a brief freehand — it carries
+the gate time bounds, the stop-at-draft rule, the proposal-only clause, and the
+one delegation contract this repository states exactly once. Dispatch it to a
+session, a pane, or a worktree lane: it finishes at a published draft PR, which
+a bounded role subagent is forbidden to reach.
+
 ## 1. Target and claim
 
 Take the issue number or URL from the arguments; otherwise infer it from the
@@ -489,3 +497,95 @@ PR's own state, which is no longer where the session ends.
 The one thing that was never yours anyway: **merging**. That does not change
 here — it was always the maintainer's decision, made after `/integrate`'s own
 readiness gate and a human review.
+
+## 10. Dispatching an implementer: render the brief template
+
+This section is for a session **handing this work to someone else** — an
+orchestrator, or any session dispatching a worker that will own a PR. The work
+itself is steps 1–9 above; this is the contract for describing it.
+
+**Who it may be dispatched to.** This template is a PR-owning contract: a
+harness session, a terminal pane, or a worktree lane. It is **not** a work
+contract for a bounded role subagent — `ai/agents/implementer.md` § "Never"
+forbids pushing and opening a PR, and says that list holds even where a
+repository's policy says otherwise, so such an agent could only ever return
+BLOCKED against a brief whose finish line is a published draft PR. Role
+subagents get their own role briefs and return a typed result. The delegation
+contract below is the part they *do* share, and its rule 5 splits on exactly
+this line.
+
+**Render `assets/implementer-brief.md`. Never write the brief freehand.** Three
+dispatched-worker failures from one 2026-09-06 fan-out are the reason: a worker
+chose a 180-second timeout for gates that take 10–15 minutes and reported
+BLOCKED; another read "proposal only" as "no pull request" and skipped the
+gates, the commits, and the draft PR entirely; a third ran `gh pr ready` itself,
+twice, on a brief that said "stop at the draft PR" without naming the command.
+Each was fixed by re-briefing, which means each fix lived in one orchestrator's
+memory and reached no other dispatch. The template is where that boilerplate
+belongs.
+
+The template also carries the **one delegation contract** — plan mode, context,
+the shared `HEAD`, scratch namespacing, and what a relayed gating claim owes.
+It is stated once, in `assets/implementer-brief.md` § "Delegation contract".
+Every other brief template, skill, and agent definition **references** that
+section rather than restating it; five separate copies of that guidance is
+exactly the drift this replaces.
+
+Scan the rendered file and refuse to dispatch if any unreplaced double-brace
+token remains. Then select the harness section the rendered `{{harness}}` names
+— the variants are procedures, not different brief formats.
+
+### Brief template source catalog
+
+The complete input contract. It lives here rather than inside the template
+because substituting a free-form value into a catalog cell in the dispatched
+artifact would duplicate it into a Markdown table ahead of the section that was
+meant to carry it, where it reads as instruction.
+
+| Placeholder | Source |
+| --- | --- |
+| `{{unit-name}}` | Dispatcher's name for this unit of work |
+| `{{harness}}` | Selected implementer's harness and model |
+| `{{effort}}` | Reasoning effort the worker is expected to run at — the value its status line is checked against |
+| `{{branch}}` | The pre-created feature branch, and `git branch --show-current` in it |
+| `{{default-branch}}` | Target repository default branch |
+| `{{base-sha}}` | Commit the branch was created from |
+| `{{worktree-path}}` | `git rev-parse --show-toplevel` in the prepared checkout |
+| `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the dispatcher has installed and verified — the two shapes the template's own startup check accepts |
+| `{{scratch-dir}}` | Per-worker subdirectory of the scratchpad; never the scratchpad root |
+| `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |
+| `{{file-scope-fence}}` | Dispatcher's closed list of paths this unit may write |
+| `{{live-lane-overlaps}}` | Complete overlap map for every other unit in flight, or `None.` |
+| `{{issue-number}}` | Target GitHub issue number |
+| `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
+| `{{issue-url}}` | Canonical target-repository issue URL |
+| `{{claim-handoff}}` | The orchestrator's authenticated claim snapshot: comment ID, author ID, `updated_at`, expected assignees, expected claim labels, and the branch it records |
+| `{{unit-kind}}` | `implementation` or `proposal-only` |
+| `{{verified-facts-and-rulings}}` | Dispatcher's verification and numbered, attributable decisions |
+| `{{gate-commands}}` | The repository's actual gate invocations, one per line (`task check` / `task verify` / `task security` / `task challenge` / `task review` where it uses a Taskfile) |
+| `{{repo-tier}}` | `light`, `standard`, or `heavy` — nothing else. Apply the template's own strongest-signal-wins procedure rather than matching a row by description |
+| `{{gate-bounds-override}}` | Repository's own measured bounds, or `None — use the table above.` |
+| `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
+| `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true` plus narrow rules for the commands Codex would otherwise prompt on. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
+| `{{pr-title}}` | Release-title-guard-compliant proposal |
+| `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers; and every off-profile choice named as off-profile |
+| `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
+| `{{blocked-sentinel}}` | Dispatcher-generated blocked sentinel prefix |
+| `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+
+**The gate bounds are defaults, not a repository contract.** They were measured
+from run history; a maintainer confirms or replaces them per repository through
+`{{gate-bounds-override}}`. The artifact keeps the one-sentence provenance note
+a worker needs — that the numbers are measured defaults it may override — while
+the `[HUMAN]` authoring marker and this instruction to the maintainer stay here,
+in the authoring procedure: a brief is addressed to a worker, and review-process
+markers addressed to a maintainer do not belong in it.
+
+Keep the report path and the sentinels unique **per attempt**. Prompts sent
+after dispatch refer to that reporting contract indirectly and never quote a
+sentinel value, because old pane output must not satisfy a later attempt.
+
+For a dev-flow-v2 lane that owns its own PR end to end, `orchestrate`'s
+`assets/lane-brief.md` is the superset to render instead: same contract, plus
+the schema-bound envelope, the active run identity, the resolved policy
+projection, and the confidence-stage decision handshake.
