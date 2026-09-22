@@ -991,11 +991,16 @@ case "$lane_inherits" in
 esac
 # The declaration itself must exist, or the lane blocks citing a contract that
 # does not bind anything.
-python3 - <<'PYEOF' || fail "orchestrate does not declare implement a required skill"
-import json, sys
-d = json.load(open("ai/skills/universal/orchestrate/assets/policy-contract.json"))
-sys.exit(0 if "implement" in (d.get("requires_skills") or []) else 1)
-PYEOF
+# jq without -e, comparing the printed value. With -e the exit status encodes
+# the result, and under set -e a false answer kills the script before fail()
+# can print why: a missing declaration would report nothing at all, which is
+# the same silent-failure class the ordered-heading loops already hit here.
+# Comparing the printed value also lets an unreadable or malformed file reach
+# the message rather than vanishing into an exit code.
+requires_implement="$(jq -r '(.requires_skills // []) | index("implement") != null' \
+    ai/skills/universal/orchestrate/assets/policy-contract.json 2>/dev/null || true)"
+[ "$requires_implement" = "true" ] ||
+    fail "orchestrate does not declare implement a required skill (jq printed: ${requires_implement:-<nothing>})"
 grep -Fq 'required dependency' ai/skills/universal/orchestrate/SKILL.md ||
     fail "the orchestrate skill does not state the required dependency"
 # "Not restated here" has to be true. The inline copy drifted — it had lost
