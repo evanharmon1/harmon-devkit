@@ -143,6 +143,14 @@ including the `task verify` a fix owes before the next round.
 When a cap of 0 skips a stage outright, there is no round to number: omit
 `round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
 `round 0/0`.
+Where the integration stage has run any **exempt** cycle (harmon-init#1326),
+`round n/cap` counts the CHARGED ones and the exempt ones are named beside it
+— `cycle 3/4 (+1 exempt)` — never folded into `n`, and never left out. Folding
+them in would report a budget that was not spent; leaving them out would hide
+work that really happened, and the reviewer really was asked to look. Both
+numbers are read from the cycle state's `charged_cycles` / `exempt_cycles`,
+so the ledger and the readiness gate can never disagree about what was
+spent.
 Before a capped stage has begun its first round, a stage-entry or pending-wait
 ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
 waiting, checks, and reviewer latency do not spend a round. Once a finding or
@@ -180,7 +188,35 @@ from what `AGENTS.md` actually states, never from inferring its vintage.
 
 **Two caps, counted separately, never combined.** The **integration cap**
 bounds how many current-head Codex cloud-review cycles this stage may drive;
-the **remediation cap** bounds how many fix pushes it may make. A Codex cycle
+the **remediation cap** bounds how many fix pushes it may make.
+
+**The integration cap charges only cycles that review something new**
+(harmon-init#1326). A cycle whose head differs from the last reviewed head
+ONLY by a base merge that changed no file under review re-reads identical code
+by construction — it cannot find anything the previous cycle did not — so
+charging it would measure the base branch's traffic rather than this change's
+difficulty. Such a cycle is **exempt**: it runs, and it spends the separate
+`rounds.integration_exempt` ceiling instead. Exempt is not free, and that
+second ceiling is why: a busy base branch could otherwise spend a whole run
+re-reviewing code nobody changed.
+
+Do not classify a cycle by eye. `reserve` decides it from evidence — the previous head must be an
+ancestor of this one, and the files the new commits changed must not intersect
+the files the PR has under review — and keeps the two running totals in state
+as `charged_cycles` / `exempt_cycles`. It reads the previously reviewed head
+from that same state rather than from anything you pass, so there is nothing
+to supply and no way to misreport it; `--previous-head` exists only to have
+the reservation refuse if your idea of the last reviewed head disagrees with
+the record. Pass `--run-id` so the totals belong to this run and a later run
+on the same PR does not inherit its spend. A conflict resolution, or a fix slipped
+into the merge push, touches a file under review and charges normally.
+Anything the check cannot establish charges, because an exemption is a spend
+the reviewer never sanctioned. Report both counts on the integrator result as
+`codex_cycle.charged` and `codex_cycle.exempt`, and pass
+`--integration-exempt-cap` to the readiness gate alongside `--integration-cap`
+so both ceilings are checked; omit the counters and the gate applies the
+original single-counter rule, which is correct for a pass that never
+classified anything. A Codex cycle
 that a fix push directly answers is not a second charge against remediation —
 one fix push, however many findings (Codex's or a human reviewer's) it
 answers, is one remediation unit.
@@ -823,11 +859,15 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     fetch, never re-read at dispatch time (a mid-adjudication push would
     otherwise be laundered into "current");
   - the resolved `integration_round` ordinal (this run-wide pass number),
-    the resolved integration cap, and — where that cap is not 0 — this
-    pass's **Codex cycle number**: 1 for the stage's first cycle, one more
-    for each cycle a later pass actually drives, never above the cap (a
-    re-dispatch after a `pending` result continues the same cycle rather
-    than starting a new one). At cap 0 say so instead;
+    the resolved integration cap, the resolved `integration_exempt` ceiling,
+    and — where the integration cap is not 0 — this pass's **Codex cycle
+    number**: 1 for the stage's first cycle, one more for each cycle a later
+    pass actually drives (a re-dispatch after a `pending` result continues the
+    same cycle rather than starting a new one). At cap 0 say so instead.
+    That ordinal counts every cycle, so it may legitimately exceed the
+    integration cap once base-merge-only cycles are exempt from it
+    (harmon-init#1326) — what may not exceed the cap is the CHARGED count the
+    reserve state keeps, which is the number the readiness gate checks;
   - `run_id` and `initiated_by` — the active run's identity, read from
     `--record <dir>`'s own `run.json` (the same two values §6's gate binds
     the result to before trusting it);
@@ -1586,6 +1626,15 @@ that loops indefinitely:
      that closes the stage still echoes the fix that caused the final loop,
      per the `applied_dispositions` bullet in §5's dispatch input, and a
      pass that genuinely still owes a code change is not `clean` anyway.
+   - `--integration-exempt-cap <n>` — the resolved
+     `[rounds.<policy>].integration_exempt` ceiling (harmon-init#1326), which
+     bounds the base-merge-only cycles that do NOT spend `--integration-cap`.
+     Pass it whenever the result reports `codex_cycle.charged`/`.exempt`: an
+     exempt count under a caller that declared no ceiling has nothing to be
+     checked against, so the gate refuses it rather than trusting it. Omit it
+     only for a result that reports no split at all, which is one that never
+     classified its cycles and is therefore held to the original
+     single-counter rule.
    - `--codex-recheck <state file>` — the integrator's own
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
@@ -1599,6 +1648,7 @@ that loops indefinitely:
      --record <dir> \
      --integrator-result <file> \
      --integration-cap <n> \
+     --integration-exempt-cap <n> \
      --remediation-cap <n> \
      --codex-recheck <state file>
    ```

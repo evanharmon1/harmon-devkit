@@ -56,15 +56,42 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
+                                     [--previous-head SHA] [--run-id ID]
+                                     [--integration-cap N] [--integration-exempt-cap N]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
+                                   [--run-id ID]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 
 When --finder is given on reserve, actor identity and verdict classification
 are driven by the finder's profile in the trusted registry (C1-C3).
+
+`reserve` classifies each new cycle as charged or exempt against the two
+ceilings (harmon-init#1326) and keeps the running totals in state as
+`charged_cycles` / `exempt_cycles`. A cycle is exempt only when the previously
+reviewed head is an ancestor of this one AND the new commits changed no file
+the PR has under review — a base merge that re-reads identical code.
+Everything else, including anything that cannot be established, is charged.
+
+The previously reviewed head is taken from PERSISTED STATE, never from a
+caller: a caller free to name any SHA could otherwise skip past a fix commit
+and manufacture an exemption. `--previous-head` is therefore optional and
+purely confirmatory — supply it to have the reservation refuse rather than
+proceed if your idea of the last reviewed head disagrees with the record.
+
+--integration-cap and --integration-exempt-cap make `reserve` REFUSE a cycle
+that would exceed the ceiling it belongs to. A ceiling checked only by the
+readiness gate is checked after the review has already run, since the trigger
+is posted immediately after the reservation; this is the last point at which
+the spend can still be prevented. Omit them and the reservation proceeds, with
+the gate as the only backstop.
+
+--run-id scopes the totals to one run. The state file outlives the run that
+wrote it, so a second run against the same PR would otherwise inherit the
+first run's spend; naming a different run starts the totals again.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 15 quota exhausted, 16 transient read,
@@ -140,6 +167,10 @@ reap_lock=
 reap_budget_sec=60
 reap_deadline_epoch=
 finder_slug=
+previous_head=
+run_id=
+integration_cap=
+integration_exempt_cap=
 requested_at_arg=
 # harmon-devkit#573: the finder's usage-limit reply, once `check` has seen it.
 # Empty until the comment surface has actually been fetched and scanned, which
@@ -167,7 +198,7 @@ eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -180,6 +211,10 @@ while [ "$#" -gt 0 ]; do
         --actor-id) actor_id=$2 ;;
         --actor-login) actor_login=$2 ;;
         --finder) finder_slug=$2 ;;
+        --previous-head) previous_head=$2 ;;
+        --run-id) run_id=$2 ;;
+        --integration-cap) integration_cap=$2 ;;
+        --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
@@ -212,6 +247,12 @@ valid_repo() {
 
 valid_uint() {
     grep -Eq '^[1-9][0-9]*$' <<<"$1"
+}
+
+# A cycle counter is legitimately 0 before anything is spent, so it needs the
+# zero-permitting form rather than valid_uint's positive one.
+valid_uint_or_zero() {
+    grep -Eq '^(0|[1-9][0-9]*)$' <<<"$1"
 }
 
 valid_sha() {
@@ -595,9 +636,53 @@ reap_record() {
 # the older output reads exactly what it did before. harmon-devkit#737 uses it
 # to enumerate every unanswered inline thread alongside the `findings` verdict,
 # because one accepted review id cannot name findings that came from two.
+# Codex cloud cycle 3, P1 (confirmed): classification used the last RESERVED
+# head as "the last reviewed head". A cycle that never produced a verdict —
+# pending, transient, quota-blocked, escalated — still left its head there, so
+# the next reservation could exempt the first request that would actually
+# produce a review. This PR demonstrated it: two cycles escalated with only a
+# 👀, and their heads would have counted as reviewed.
+#
+# The marker is written HERE rather than at each terminal emit, because there
+# are six of those and this change has already shipped that mistake four times:
+# a fact recorded in one place cannot be forgotten at a call site.
+mark_terminally_reviewed() {
+    [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
+    [ -n "${state_head:-}" ] || return 0
+    # Two reviewers pushed this from opposite sides and both were right.
+    #
+    # Codex (cycle 4): the base sampled at RESERVATION can be minutes stale by
+    # the time a verdict lands — if it advanced while polling, the review saw a
+    # newer base than state recorded.
+    # Greptile: the base sampled when the verdict is RECORDED can be newer than
+    # the one the review actually covered, because the base can advance between
+    # the reviewer posting and this poll observing it.
+    #
+    # Neither sampling point is the base the review saw; GitHub gives us no
+    # field that is. So do not pick one — CORROBORATE. If the base is unchanged
+    # between reservation and verdict, that is the base reviewed, and it is
+    # recorded. If it moved, what the review covered is genuinely unknown, and
+    # per the governing invariant the proof is left UNSET so the next cycle
+    # charges rather than trusting either sample.
+    reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
+        jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
+    valid_sha "$reviewed_base_sha" || reviewed_base_sha=
+    reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
+    [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
+        reviewed_base_sha=
+    jq --arg h "$state_head" --arg b "$reviewed_base_sha" '.last_reviewed_head = $h
+        | .last_reviewed_base_sha = (if $b == "" then null else $b end)' "$state_file" \
+        >"${state_file}.reviewed" 2>/dev/null &&
+        mv "${state_file}.reviewed" "$state_file" ||
+        rm -f "${state_file}.reviewed"
+}
+
 emit() {
     result=$1
     detail=$2
+    case "$result" in
+    clean | findings) mark_terminally_reviewed ;;
+    esac
     surface=${3:-}
     accepted_id=${4:-}
     extra=${5:-}
@@ -1120,6 +1205,228 @@ codex_verdict_defs=$(
 JQDEFS
 )
 
+# harmon-init#1326: classify a cycle as CHARGED or EXEMPT against the
+# integration cap.
+#
+# The cap exists to bound how many times a reviewer is asked to look at work
+# that changed. A cycle whose head differs from the last reviewed head ONLY by
+# a base merge that touched nothing under review re-reads identical code by
+# construction — it cannot find anything the previous cycle did not — so
+# charging it measures the base branch's traffic rather than the change's
+# difficulty.
+#
+# The test is deliberately narrow, and it is a set intersection rather than a
+# judgement about merge commits:
+#
+#   exempt  <=>  previous_head is an ANCESTOR of head (the base was merged in,
+#                nothing was rewritten), AND no file the PR has under review
+#                appears among the files the new commits changed.
+#
+# "Under review" is computed from the CURRENT head, which is what makes the
+# rule self-correcting rather than a loophole:
+#   - a conflict resolution edits a file under review        -> intersects -> CHARGED
+#   - the author slips a real fix into the merge push        -> that file is
+#     under review at the new head                           -> intersects -> CHARGED
+#   - a clean merge of base commits touching other files     -> disjoint    -> EXEMPT
+#
+# THE INVARIANT: exempt only on positive proof. Every other outcome charges.
+#
+# Challenge rounds 1-3 each found a different way to be wrong about this, and
+# they all shared one shape — some input the classifier could not fully
+# establish, treated as if it had been. So the rule is stated once here and
+# every branch below obeys it: an uncertain compare, a truncated file list, a
+# state file that does not belong to this run, an unreadable patch, an
+# unexpected status — each charges. Under-exempting costs one cycle, which is
+# exactly the status quo this change improves on and never worse than it.
+# Over-exempting spends budget the reviewer never sanctioned, and no error in
+# that direction is recoverable once the cycle is gone.
+classify_cycle_charge() {
+    classify_prev=$1
+    classify_head=$2
+    classify_repo=$3
+    classify_pr=$4
+
+    if [ "$classify_prev" = "$classify_head" ]; then
+        charge_class=charged
+        charge_reason="head is unchanged from the last reviewed head"
+        return 0
+    fi
+
+    moved_payload=$(run_gh api "repos/$classify_repo/compare/$classify_prev...$classify_head") || {
+        charge_class=charged
+        charge_reason="cannot compare $classify_prev...$classify_head; charging"
+        return 0
+    }
+    # The compare API caps `files` at 300 with no truncation flag of its own,
+    # so a list at the cap may be incomplete and cannot prove that nothing
+    # under review moved. Per the invariant, that charges.
+    # A response without a usable `files` array tells us nothing about which
+    # files moved, and `// []` would turn that silence into an empty
+    # intersection — an exemption granted by absence of evidence, which is the
+    # one thing the invariant forbids.
+    if [ "$(jq -r '.files | type' <<<"$moved_payload" 2>/dev/null)" != "array" ]; then
+        charge_class=charged
+        charge_reason="the compare response carried no usable file array; charging"
+        return 0
+    fi
+    if [ "$(jq -r '(.files // []) | length' <<<"$moved_payload")" -ge 300 ]; then
+        charge_class=charged
+        charge_reason="the compare file list is at the API's 300-file cap and may be truncated; charging"
+        return 0
+    fi
+    moved_status=$(jq -r '.status // "unknown"' <<<"$moved_payload")
+    # "ahead" is the only status meaning the previously reviewed head is an
+    # ancestor of this one. "diverged" means history was rewritten under the
+    # cycle; "behind"/"identical" mean the head did not move forward. None is
+    # a base merge, and each charges.
+    if [ "$moved_status" != "ahead" ]; then
+        charge_class=charged
+        charge_reason="compare status is $moved_status, not a fast-forward base merge"
+        return 0
+    fi
+
+    # Parse locally rather than with `gh --jq`: the value is needed as a ref
+    # string either way, and one fewer flag on the read-only wrapper keeps its
+    # surface exactly as narrow as it documents.
+    classify_pr_payload=$(run_gh api "repos/$classify_repo/pulls/$classify_pr") ||
+        classify_pr_payload=
+    base_ref=$(jq -r '.base.ref // empty' <<<"$classify_pr_payload" 2>/dev/null) || base_ref=
+    if [ -z "$base_ref" ] || [ "$base_ref" = "null" ]; then
+        charge_class=charged
+        charge_reason="cannot read the PR base ref; charging"
+        return 0
+    fi
+
+    # Codex cloud cycle 3, P1 (confirmed): the PRIOR patch has to be compared
+    # against the base it was actually reviewed against. Computing both
+    # snapshots from the LIVE base hides the case this union exists to catch:
+    # if the reviewed head changed file F, and the base then independently
+    # lands the same final contents for F, then F drops out of both live-base
+    # comparisons AND out of the net moved list — an empty intersection, and an
+    # exemption, although a reviewed file left the patch. Per the invariant, a
+    # historical base that cannot be established charges rather than guesses.
+    classify_prev_base=$(jq -r '.last_reviewed_base_sha // empty' "$state_file" 2>/dev/null) ||
+        classify_prev_base=
+    if ! valid_sha "$classify_prev_base"; then
+        charge_class=charged
+        charge_reason="the base the previous cycle reviewed against is not recorded or not a commit SHA; charging"
+        return 0
+    fi
+
+    # Challenge round 1, P1 (confirmed): "under review" cannot be read from the
+    # CURRENT patch alone. A base merge that makes a reviewed file identical to
+    # base — or a conflict resolution that drops the branch's edit — removes
+    # that file from the current patch while it still shows up among the moved
+    # files. Intersecting against only the current set then finds nothing and
+    # exempts a cycle in which reviewed code really did change, or was lost.
+    #
+    # So compare against the union of the patch as it stood at the PREVIOUS
+    # reviewed head and as it stands now. A file that leaves the patch is still
+    # under review for this decision, which is the direction that matters: it
+    # is exactly the case where the merge silently rewrote the change.
+    # A ref may legally contain a slash (`release/2.x`), which would otherwise
+    # be read as extra path segments and 404 the compare.
+    # Codex, P1 (confirmed): comparing the current patch against a branch NAME
+    # leaves it mutable — the name resolves when the request is made, not when
+    # the payload was read. If the base advances between the two, and the new
+    # base independently lands the same contents as a real fix to reviewed file
+    # F, then F appears in the moved comparison but drops out of this one, and
+    # a changed-code cycle is falsely exempted. Pin it to the SHA the payload
+    # named, or charge.
+    classify_head_base=$(jq -r '.base.sha // empty' <<<"$classify_pr_payload" 2>/dev/null) ||
+        classify_head_base=
+    if ! valid_sha "$classify_head_base"; then
+        charge_class=charged
+        charge_reason="the PR payload names no stable base commit for the current patch; charging"
+        return 0
+    fi
+    prev_patch=$(run_gh api "repos/$classify_repo/compare/$classify_prev_base...$classify_prev") || {
+        charge_class=charged
+        charge_reason="cannot read the reviewed patch at $classify_prev; charging"
+        return 0
+    }
+    head_patch=$(run_gh api "repos/$classify_repo/compare/$classify_head_base...$classify_head") || {
+        charge_class=charged
+        charge_reason="cannot read the reviewed patch at $classify_head; charging"
+        return 0
+    }
+
+    for classify_payload in "$prev_patch" "$head_patch"; do
+        [ "$(jq -r '.files | type' <<<"$classify_payload" 2>/dev/null)" = "array" ] || {
+            charge_class=charged
+            charge_reason="a reviewed-patch response carried no usable file array; charging"
+            return 0
+        }
+    done
+    for truncation_check in "$prev_patch" "$head_patch"; do
+        [ "$(jq -r '(.files // []) | length' <<<"$truncation_check")" -lt 300 ] || {
+            charge_class=charged
+            charge_reason="a reviewed-patch file list is at the API's 300-file cap and may be truncated; charging"
+            return 0
+        }
+    done
+
+    # Self-found while driving this PR's own cycle 2: passing three full API
+    # payloads as `--argjson` arguments exceeds ARG_MAX on any sizeable PR
+    # ("Argument list too long"), the intersection then always fails, and the
+    # classifier can never grant an exemption — silently inert on exactly the
+    # PRs big enough to want one. The invariant held (it charged), which is why
+    # this was a lost exemption rather than a wrong one; the payloads now go
+    # through files instead of the argument vector.
+    classify_tmp=$(mktemp -d -t codex-classify-XXXXXX) || {
+        charge_class=charged
+        charge_reason="cannot create a scratch directory for classification; charging"
+        return 0
+    }
+    printf '%s' "$moved_payload" >"$classify_tmp/moved.json"
+    printf '%s' "$prev_patch" >"$classify_tmp/prev.json"
+    printf '%s' "$head_patch" >"$classify_tmp/head.json"
+    overlap=$(jq -r -n \
+        --slurpfile moved "$classify_tmp/moved.json" \
+        --slurpfile prev "$classify_tmp/prev.json" \
+        --slurpfile head "$classify_tmp/head.json" '
+          ($moved[0]) as $moved | ($prev[0]) as $prev | ($head[0]) as $head |
+          # Challenge round 2, P1 (confirmed): a rename is reported under the
+          # NEW name plus `previous_filename`. Matching only `filename` lets a
+          # merge that renames a reviewed file miss on both sides at once —
+          # the moved entry names the new path, the reviewed patch the old —
+          # and a file under review changes while the intersection stays
+          # empty. Both names count, on both sides.
+          def names: (.files // []) | map(.filename, .previous_filename) | map(select(. != null));
+          ($moved | names | unique) as $changed
+          | ($prev | names | unique) as $prev_files
+          | ($head | names | unique) as $head_files
+          | ($prev_files + $head_files | unique) as $under_review
+          # Codex, P1 (confirmed): restoring F to the previous patch does not
+          # restore it to the MOVED set. When the base independently lands the
+          # same final contents for a reviewed file, merging that base makes F
+          # leave the PR patch while the two head trees still agree on F — so
+          # the net previous...head comparison omits it entirely and the
+          # intersection comes back empty. A file entering or leaving the
+          # reviewed patch changed under review whether or not the trees
+          # differ, so the symmetric difference of the two patch file sets is
+          # charged alongside the intersection.
+          | (($prev_files - $head_files) + ($head_files - $prev_files)) as $patch_shift
+          | (($changed - ($changed - $under_review)) + $patch_shift | unique)
+          | join(", ")
+        ') || {
+        rm -rf "$classify_tmp"
+        charge_class=charged
+        charge_reason="cannot intersect the moved files with the reviewed patch; charging"
+        return 0
+    }
+    rm -rf "$classify_tmp"
+
+    if [ -n "$overlap" ]; then
+        charge_class=charged
+        charge_reason="the merge changed file(s) under review: $overlap"
+    else
+        charge_class=exempt
+        charge_reason="base merge touched no file under review"
+    fi
+    return 0
+}
+
 case "$command_name" in
 reserve)
     [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] && [ -n "$attempt" ] ||
@@ -1151,8 +1458,45 @@ reserve)
         old_phase=$(jq -r '.phase' "$state_file")
         [ "$old_repo" = "$repo" ] && [ "$old_pr" = "$pr" ] ||
             die "state belongs to a different PR"
-        [ "$old_phase" != "reserved" ] ||
+        # Review round 3, P1 (confirmed): `check` refuses to resume state owned
+        # by another run and tells the caller to reserve fresh — but every
+        # guard below is written for state belonging to THIS run, so the same
+        # head would then be refused as a duplicate trigger and an unresolved
+        # reservation. The caller had no move left. State from a different run
+        # is this run's history of nothing at all, so treat it as absent: a
+        # fresh attempt-1 reservation, with the totals restarting (they are
+        # already reset by the run-scope branch further down).
+        foreign_run_state=0
+        if [ -n "$run_id" ]; then
+            old_run_id=$(jq -r '.run_id // empty' "$state_file")
+            # Unowned state is not this run's either. State written before run
+            # scoping existed records no owner, and treating that as "mine"
+            # rejects a legitimate same-head fresh reservation as a duplicate
+            # while letting its counters be inherited on a different head. A
+            # scoped call handles a missing owner exactly like a different
+            # one; the unresolved-reservation guard above is unaffected and
+            # still blocks a write-ahead record whoever owns it.
+            if [ "$old_run_id" != "$run_id" ]; then
+                foreign_run_state=1
+            fi
+        fi
+        # Duplicate round-3 pass, P1 (confirmed): foreign ATTACHED state is
+        # replaceable, foreign RESERVED state is not. `reserved` is the
+        # write-ahead record taken before the trigger is posted, so another
+        # run sitting in it may already have a live `@codex review` out.
+        # Overwriting that record loses the only reconciliation for it, and
+        # the other run can then attach its trigger to this run's state —
+        # duplicate or misattributed cycles. The run-scope bypass below must
+        # therefore not extend to it: an unresolved reservation stays blocked
+        # whoever owns it, which is what the reserve-before-write contract
+        # requires.
+        if [ "$old_phase" = "reserved" ]; then
             die "an unresolved reservation must be reconciled before replacing its head"
+        fi
+        if [ "$foreign_run_state" = "1" ]; then
+            [ "$attempt" = "1" ] ||
+                die "a reservation replacing another run's state must begin at attempt 1"
+        fi
         # Challenge round 2, findings `challenge-r2-codex-adversarial-5`
         # and `-6` (2026-09-20, both confirmed P2, disposition DELETE):
         # round 1's item-B carve-out — a fresh attempt-1 reservation once a
@@ -1171,7 +1515,9 @@ reserve)
         # quota-exhausted head a safe recovery route is carried in #1115. Until
         # then the documented behaviour stands — report the blocker, and let a
         # push or an operator clear the state.
-        if [ "$old_head" = "$head" ]; then
+        if [ "$foreign_run_state" = "1" ]; then
+            :
+        elif [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
                 die "refusing an uncontrolled duplicate trigger for this head"
@@ -1221,6 +1567,13 @@ reserve)
         die "attempt 2 requires an attached attempt-1 state"
     fi
 
+    # The base this cycle is reviewed against, recorded now so a LATER cycle can
+    # compare the prior patch against the base it actually had rather than the
+    # live one (see classify_cycle_charge's historical-base note).
+    reserve_base_sha=$(run_gh api "repos/$repo/pulls/$pr" 2>/dev/null |
+        jq -r '.base.sha // empty' 2>/dev/null) || reserve_base_sha=
+    valid_sha "$reserve_base_sha" || reserve_base_sha=
+
     reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     # Settlements PERSIST as head-level statements for the record, but they
     # never CERTIFY a later attempt. Attempt 2 of the same head keeps them so
@@ -1240,6 +1593,160 @@ reserve)
     carried_settled='[]'
     if [ -f "$state_file" ] && [ "$(jq -r '.head' "$state_file")" = "$head" ]; then
         carried_settled=$(jq -c '.settled // []' "$state_file")
+    fi
+
+    # harmon-init#1326: the two cycle counters this stage spends. They persist
+    # across heads in this same state file, because the ceilings they answer to
+    # bound the STAGE, not a single cycle.
+    # Codex cloud cycle 3, P1 (confirmed): the documented quota-recovery path
+    # removes the cycle state, and these totals used to live only there — so an
+    # operator following the documented procedure silently forgot the run's
+    # spend, could then exceed the ceiling, and afterwards produced counters
+    # that disagree with the run-wide cycle ordinal and block readiness. (I did
+    # exactly this twice while driving this PR.) The totals bound a RUN, so they
+    # persist in a run-keyed sidecar that outlives any one cycle's state.
+    spend_file="${state_file%.json}.spend.json"
+    carried_charged=0
+    carried_exempt=0
+
+    # Claude cloud reviewer, P1 (confirmed): recovery used to be gated on the state
+    # file being ABSENT. But `reserve` supports a second path where the state
+    # exists and simply is not this run's — the foreign/unowned branch — and
+    # that path reset both counters to 0 without ever consulting the sidecar.
+    # Run A reserves on PR P; run B replaces the state; run A returns and gets
+    # a fresh full integration cap. Invisible to the gate's cross-check too,
+    # because after the reset the state and the reported split agree with each
+    # other.
+    #
+    # The question is not "does a state file exist" but "does it carry THIS
+    # run's counters". An unscoped call (no --run-id) keeps the old behaviour
+    # and reads whatever the state holds.
+    state_carries_my_counters=0
+    if [ -f "$state_file" ]; then
+        state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ -z "$run_id" ] || [ "$run_id" = "$state_run_id" ]; then
+            state_carries_my_counters=1
+        fi
+    fi
+
+    if [ "$state_carries_my_counters" = "1" ]; then
+        carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
+        carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+        # Read back as arithmetic against a ceiling, so a hand-edited or
+        # truncated state must not quietly become a budget.
+        valid_uint_or_zero "$carried_charged" && valid_uint_or_zero "$carried_exempt" ||
+            die "persisted cycle counters are not non-negative integers (charged=$carried_charged exempt=$carried_exempt)"
+    elif [ -n "$run_id" ] && [ -f "$spend_file" ]; then
+        # ABSENT is fine: no record means nothing spent. PRESENT BUT UNUSABLE
+        # is not — that is unknown spend, and unknown spend is never room to
+        # spend more.
+        jq -e . "$spend_file" >/dev/null 2>&1 ||
+            die "the run-spend sidecar $spend_file is unreadable; the run's spend cannot be established — repair or remove it deliberately rather than reserving against unknown spend"
+        if jq -e --arg r "$run_id" 'has($r)' "$spend_file" >/dev/null 2>&1; then
+            recovered_charged=$(jq -r --arg r "$run_id" '.[$r].charged // empty' "$spend_file" 2>/dev/null) || recovered_charged=
+            recovered_exempt=$(jq -r --arg r "$run_id" '.[$r].exempt // empty' "$spend_file" 2>/dev/null) || recovered_exempt=
+            valid_uint_or_zero "$recovered_charged" && valid_uint_or_zero "$recovered_exempt" ||
+                die "the run-spend sidecar records an unusable entry for run $run_id (charged=$recovered_charged exempt=$recovered_exempt); repair it rather than reserving against unknown spend"
+            carried_charged=$recovered_charged
+            carried_exempt=$recovered_exempt
+        fi
+    fi
+    charge_class=charged
+    charge_reason="no persisted prior reviewed head; charging"
+    if [ "$attempt" = "1" ]; then
+        # Attempt 1 of a head is a NEW cycle, and the only thing that spends a
+        # ceiling. Classify it, then charge whichever counter it belongs to.
+        # Challenge round 1, P1 (confirmed): the previous reviewed head is
+        # DERIVED from persisted state, never taken on a caller's word. The
+        # state already records it, and a caller free to name any SHA can
+        # manufacture an exemption: given reviewed head A, a fix commit B and
+        # a base merge C, passing B classifies only B...C and exempts a cycle
+        # in which A...C changed reviewed code. `--previous-head` may now only
+        # RESTATE what state already says, so a caller that disagrees with the
+        # record is refused rather than believed.
+        classify_prev_head=
+        if [ -f "$state_file" ]; then
+            # Only a head that actually received a terminal verdict is a
+            # "previously reviewed head"; absent that, there is nothing proven
+            # to compare against and the cycle charges.
+            classify_prev_head=$(jq -r '.last_reviewed_head // empty' "$state_file")
+            [ "$classify_prev_head" != "$head" ] || classify_prev_head=
+        fi
+        if [ -n "$previous_head" ]; then
+            valid_sha "$previous_head" ||
+                die "--previous-head must be a full 40-hex commit"
+            [ -n "$classify_prev_head" ] ||
+                die "--previous-head was supplied but no persisted prior head exists to confirm it against"
+            [ "$previous_head" = "$classify_prev_head" ] ||
+                die "--previous-head $previous_head disagrees with the persisted last-reviewed head $classify_prev_head"
+        fi
+        # Per the invariant: an exemption rests on the persisted record of what
+        # the last cycle reviewed, so that record must belong to THIS run. When
+        # the caller names a run and state carries a different one — or none at
+        # all — the prior head is not this run's history and cannot license an
+        # exemption, whatever it says.
+        if [ -n "$run_id" ] && [ "$(jq -r '.run_id // empty' "$state_file" 2>/dev/null)" != "$run_id" ]; then
+            classify_prev_head=
+            charge_reason="the persisted state belongs to a different run; charging"
+        fi
+        if [ -n "$classify_prev_head" ]; then
+            classify_cycle_charge "$classify_prev_head" "$head" "$repo" "$pr"
+        fi
+        # Review round 1, P1 (confirmed): a cap is a CEILING, and a ceiling
+        # enforced only by the readiness gate is enforced after the money is
+        # spent — the prescribed sequence posts the trigger immediately after
+        # this reservation, so the review has already run by the time the gate
+        # objects. Refuse the reservation instead, at the one point where the
+        # spend is still preventable.
+        # The resolver produces exactly two shapes — equal to the charged cap, or
+        # 0 on a historical decode — so any other pair describes a policy that
+        # cannot exist. Refusing it here, before a trigger is posted, is the
+        # point: a caller passing `--integration-cap 4 --integration-exempt-cap
+        # 99` could otherwise have cycles 5..99 approved as exempt.
+        if [ -n "$integration_exempt_cap" ] && [ -n "$integration_cap" ]; then
+            [ "$integration_exempt_cap" = "0" ] ||
+                [ "$integration_exempt_cap" = "$integration_cap" ] ||
+                die "--integration-exempt-cap ($integration_exempt_cap) must be 0 or equal to --integration-cap ($integration_cap); no resolved policy produces any other pair"
+        fi
+        # An exempt ceiling of 0 is not "no exempt budget left", it is a policy
+        # with no exemption at all — what every historical (legacy/v1) decode
+        # resolves to, because those shapes spend one shared total. Refusing
+        # there would cap a migration run earlier than its own merge-base
+        # policy allowed. Charge the cycle to the budget that does exist
+        # instead; the exemption simply does not apply under that policy.
+        # An exempt ceiling of 0 is a policy with no exemption (every historical
+        # decode). An UNDECLARED ceiling is an unknown one — and by the
+        # governing invariant unknown charges. Both collapse to the same
+        # outcome, which also makes a caller pinned before this flag existed
+        # degrade to today's behaviour rather than into a run the gate will
+        # refuse to promote (Claude cloud reviewer, P2, confirmed).
+        if [ "$charge_class" = "exempt" ] &&
+            { [ -z "$integration_exempt_cap" ] || [ "$integration_exempt_cap" = "0" ]; }; then
+            charge_class=charged
+            if [ -z "$integration_exempt_cap" ]; then
+                charge_reason="$charge_reason (charged: no exempt ceiling was declared)"
+            else
+                charge_reason="$charge_reason (charged: this policy has no exempt ceiling)"
+            fi
+        fi
+        if [ "$charge_class" = "exempt" ]; then
+            [ -z "$integration_exempt_cap" ] ||
+                [ "$((carried_exempt + 1))" -le "$integration_exempt_cap" ] ||
+                die "this cycle is exempt but the exempt ceiling ($integration_exempt_cap) is already spent; no cycle remains to reserve"
+            carried_exempt=$((carried_exempt + 1))
+        else
+            [ -z "$integration_cap" ] ||
+                [ "$((carried_charged + 1))" -le "$integration_cap" ] ||
+                die "the integration cap ($integration_cap) is already spent; no charged cycle remains to reserve"
+            carried_charged=$((carried_charged + 1))
+        fi
+    else
+        # Attempt 2 re-triggers the SAME cycle after an incomplete first
+        # attempt. Re-classifying would be wrong twice over: the head has not
+        # moved, and charging again would make a flaky reviewer cost budget
+        # that the change never asked for. Carry attempt 1's verdict.
+        charge_class=$(jq -r '.charge // "charged"' "$state_file")
+        charge_reason=$(jq -r '.charge_reason // ""' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
@@ -1360,6 +1867,29 @@ reserve)
         payload_previous_trigger_comment_id=null
     fi
 
+    # Greptile, P1 (confirmed): the sidecar used to be written here, BEFORE the
+    # reservation state. A failed `write_state` then left spend recorded for a
+    # reservation that does not exist — and a retry, finding no state, charged
+    # the run a second time, consuming a ceiling with no review behind it.
+    #
+    # These two records cannot be made atomic with each other, so the sidecar is
+    # written after the state and ROLLED BACK if either step fails. The failure
+    # direction is then "reservation exists, spend not yet recorded", which the
+    # next reservation corrects from the state itself — rather than "spend
+    # recorded, reservation missing", which nothing corrects.
+    spend_snapshot=
+    if [ -n "$run_id" ] && [ -f "$spend_file" ]; then
+        spend_snapshot=$(cat "$spend_file" 2>/dev/null) || spend_snapshot=
+    fi
+    restore_spend() {
+        [ -n "$run_id" ] || return 0
+        if [ -n "$spend_snapshot" ]; then
+            printf '%s' "$spend_snapshot" >"$spend_file" 2>/dev/null || true
+        else
+            rm -f "$spend_file"
+        fi
+    }
+
     payload=$(jq -cn \
         --arg repo "$repo" \
         --argjson pr "$pr" \
@@ -1370,6 +1900,12 @@ reserve)
         --argjson settled "$carried_settled" \
         --argjson finder "$finder_payload" \
         --argjson previous_trigger_comment_id "$payload_previous_trigger_comment_id" \
+        --arg charge "$charge_class" \
+        --arg charge_reason "$charge_reason" \
+        --argjson charged_cycles "$carried_charged" \
+        --argjson exempt_cycles "$carried_exempt" \
+        --arg run_id "$run_id" \
+        --arg base_sha "$reserve_base_sha" \
         --argjson first_trigger_comment_id "$payload_first_trigger_comment_id" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
@@ -1380,9 +1916,28 @@ reserve)
           requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
-          finder:$finder
+          finder:$finder,
+          charge:$charge,
+          charge_reason:$charge_reason,
+          charged_cycles:$charged_cycles,
+          exempt_cycles:$exempt_cycles,
+          run_id:(if $run_id == "" then null else $run_id end),
+          base_sha:(if $base_sha == "" then null else $base_sha end)
         }')
-    write_state "$state_file" "$payload"
+    write_state "$state_file" "$payload" || {
+        restore_spend
+        die "cannot write the reservation state; the run's spend is left as it was"
+    }
+    if [ -n "$run_id" ]; then
+        [ -f "$spend_file" ] || printf '{}' >"$spend_file"
+        jq --arg r "$run_id" --argjson c "$carried_charged" --argjson e "$carried_exempt" \
+            '.[$r] = {charged: $c, exempt: $e}' "$spend_file" >"${spend_file}.next" 2>/dev/null &&
+            mv "${spend_file}.next" "$spend_file" || {
+            rm -f "${spend_file}.next"
+            restore_spend
+            die "cannot record this run's spend in $spend_file; the reservation stands but its spend is not durable — re-run the reservation"
+        }
+    fi
     release_state_lock
     printf '%s\n' "$payload"
     ;;
@@ -1763,7 +2318,13 @@ reap)
     # into two, and a half-path that no longer resolves is a confusing way to
     # discover an unreadable directory. A find that could not complete is a
     # sweep that did not happen, so it fails rather than under-reporting.
-    find "$root_dir" -mindepth 3 -maxdepth 3 -type f -name '*.json' -print0 \
+    # `*.spend.json` is a run-keyed spend record, not a cycle state, so it is
+    # excluded here rather than enumerated and rejected: as a candidate it
+    # failed the schema check on every sweep, logging a permanent false
+    # "not a recognizable state file" entry and spending sweep budget
+    # (Claude cloud reviewer, P2, confirmed).
+    find "$root_dir" -mindepth 3 -maxdepth 3 -type f -name '*.json' \
+        ! -name '*.spend.json' -print0 \
         >"$reap_workdir/candidates" ||
         die "cannot enumerate state under $root_dir"
 
@@ -1859,6 +2420,11 @@ reap)
                 action=skipped
                 detail="state changed while its PR was being checked"
             elif rm -f "$candidate"; then
+                # The run-spend sidecar belongs to this state's PR and is only
+                # ever meaningful while that PR is open. It is removed together
+                # with a POSITIVELY identified closed-PR state — never on its
+                # own, since on its own it carries no PR identity to check.
+                rm -f "${candidate%.json}.spend.json"
                 rmdir "$reap_lock" 2>/dev/null || true
                 reap_lock=
                 action=reaped
@@ -1930,10 +2496,34 @@ check)
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
     state_phase=$(jq -r '.phase' "$state_file")
+    # Review round 2, P1 (confirmed): a new run that starts on the SAME head as
+    # a prior one finds that run's `attached` state and resumes it, skipping
+    # `reserve` — and with it the run-scope reset that lives there. The prior
+    # run's spend is then silently attributed to this one, and its cycle
+    # ordinal disagrees with the inherited totals. `reserve` cannot catch this
+    # because it is never called; the resume path has to, so the guard lives
+    # here where the resume actually happens.
     [ "$state_phase" = "attached" ] || {
         emit indeterminate "review request was reserved but its exact trigger is not attached"
         exit 2
     }
+    # Review round 5, P1 (confirmed): a caller that names a run is asking for
+    # EXACT ownership, so unowned state must not pass as this run's. State
+    # written before run scoping existed carries no owner, and treating that
+    # as "mine" is the same mistake as treating a foreign owner as mine — it
+    # just fails silently instead of loudly. A scoped call gets a scoped
+    # answer; an unscoped call (no --run-id) keeps the old behavior.
+    if [ -n "$run_id" ]; then
+        state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ -z "$state_run_id" ]; then
+            emit indeterminate "this cycle state records no owning run, so it cannot be confirmed as run $run_id's — reserve a fresh cycle"
+            exit 2
+        fi
+        if [ "$state_run_id" != "$run_id" ]; then
+            emit indeterminate "this cycle state belongs to run $state_run_id, not $run_id — reserve a fresh cycle rather than resuming another run's spend"
+            exit 2
+        fi
+    fi
 
     # Per-finder parameters (#804): when state carries a finder profile,
     # actor identity and classification are driven by it.

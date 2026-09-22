@@ -75,6 +75,16 @@
           "type": "integer",
           "minimum": 1
         },
+        "charged": {
+          "description": "How many of the run's cycles so far were CHARGED against the resolved [caps].integration cap (harmon-init#1326). Optional: a producer that does not classify its cycles omits both this and `exempt`, and the readiness gate then applies the original single-counter rule to `cycle` unchanged — every cycle it ran was charged. When present, `exempt` is required too, and `charged + exempt` must equal `cycle`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "exempt": {
+          "description": "How many of the run's cycles so far were EXEMPT from the integration cap (harmon-init#1326) — a cycle whose head differed from the last reviewed head only by a base merge that changed no file under review, which re-reads identical code by construction. Counted against the separate ceiling the resolver exposes as `rounds.integration_exempt`, never against [caps].integration. Required whenever `charged` is present.",
+          "type": "integer",
+          "minimum": 0
+        },
         "attempt": {
           "description": "AGENTS.md's integration stage allows exactly two attempts per captured head before an incomplete cycle escalates. Distinct from `cycle` — see its description.",
           "type": "integer",
@@ -136,6 +146,14 @@
           "cycle": {
             "type": "integer",
             "minimum": 1
+          },
+          "charged": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "exempt": {
+            "type": "integer",
+            "minimum": 0
           },
           "attempt": {
             "type": "integer",

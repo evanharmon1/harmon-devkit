@@ -44,6 +44,22 @@ A workable brief names:
 - **the resolved `[rounds].integration` cap and this pass's cycle number** —
   or that the cap is 0, in which case you skip the whole Codex cycle (§4) and
   report `codex_cycle: null`.
+- **the run id, and the resolved `[rounds].integration_exempt` ceiling**
+  (harmon-init#1326). `integration` charges only cycles that review something
+  new; a cycle whose head differs from the last reviewed head ONLY by a base
+  merge that changed no file under review re-reads identical code and spends
+  the exempt ceiling instead. You do not judge which it is — pass `--run-id`
+  to `reserve` and it classifies from evidence, keeping the running totals in
+  its own state as `charged_cycles` / `exempt_cycles`. Pass BOTH ceilings on
+  every reservation as well: `reserve` refuses a cycle that would exceed the
+  one it belongs to, and that refusal is the only check that happens before
+  the trigger is posted — the readiness gate sees the overspend only after the
+  review has already run. Copy those two numbers
+  onto your result as `codex_cycle.charged` and `codex_cycle.exempt`, so the
+  readiness gate can check each ceiling against the counter it belongs to. An
+  older brief that names neither is one whose cycles were all charged, and the
+  gate holds it to the single-counter rule; do not synthesize the split
+  yourself when the brief does not carry a run id.
 - **`applied_dispositions` to echo forward**, if the orchestrator wants them
   present on a clean verdict — a list of `{finding_id, disposition}` it has
   already decided and applied in an earlier round. You copy this list into
@@ -302,6 +318,15 @@ link broke, and a `;`-separated tail keeps running after a failure and
 reports on a cycle that never happened.
 Run the poll loop strictly sequentially in the foreground, never as a background task.
 
+**Compare the persisted `.run_id` with this run's before reusing any state.**
+Same-head attached state from ANOTHER run (or from before run scoping, which
+records no owner) is not this run's history: resuming it would attribute that
+run's spend here, and the scoped `check` refuses it with a terminal exit 2, so
+redispatching only repeats the same wall. Route it through a fresh attempt-1
+`reserve` with this run's `--run-id`, which is permitted precisely for attached
+foreign state. An unresolved `reserved` record is the one exception — it stays
+blocked whoever owns it, because a trigger may already be out against it.
+
 **Inspect the state file yourself before calling `reserve` — do not call it
 unconditionally and branch on what it reports.** `reserve --attempt 1`
 **dies** (nonzero, no distinguishing message your `|| exit` could branch on)
@@ -328,7 +353,8 @@ Three cases, mutually exclusive:
 
   ```bash
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-      --head "<head>" --attempt 1 || exit
+      --head "<head>" --attempt 1 --run-id "<run id>" \
+      --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" || exit
   trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger --repo "$repo" --pr <n>)" || exit
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   ```
@@ -389,7 +415,8 @@ Three cases, mutually exclusive:
 
 ```bash
 check_exit=0
-check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
+check_out="$("$helper" check --state "$state" --actor-id 199175422 \
+    --run-id "<run id>")" || check_exit=$?
 ```
 
 Run this exact pair — **both lines, every time** — immediately before
@@ -471,7 +498,8 @@ window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if diff
 consecutive_16=0
 while [ "$SECONDS" -lt "$window_end" ]; do
     check_exit=0
-    check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
+    check_out="$("$helper" check --state "$state" --actor-id 199175422 \
+    --run-id "<run id>")" || check_exit=$?
     # 16 (transient read) keeps polling for the same reason 11 does: the
     # remedy for a read that failed is to repeat the read. Only a terminal
     # code breaks the loop.
@@ -567,7 +595,8 @@ explicit `--actor-id`:
 ```sh
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 "$helper" reserve --state "$state_finder" --repo "$repo" --pr <n> \
-    --head "<head>" --attempt 1 --finder "$slug" || exit
+    --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
+    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" || exit
 ```
 
 The trigger mechanism varies by finder — the trusted registry determines which:
@@ -584,7 +613,7 @@ The trigger mechanism varies by finder — the trusted registry determines which
 
 ```bash
 check_exit=0
-check_out="$("$helper" check --state "$state_finder")" || check_exit=$?
+check_out="$("$helper" check --state "$state_finder" --run-id "<run id>")" || check_exit=$?
 ```
 
 No `--actor-id` argument is needed when `--finder` was passed to `reserve` —

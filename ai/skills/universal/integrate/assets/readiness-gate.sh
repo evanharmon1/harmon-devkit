@@ -155,11 +155,13 @@ usage() {
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      --remediation-cap N [--codex-recheck STATE_FILE]
+      --remediation-cap N [--integration-exempt-cap N]
+      [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      --remediation-cap N [--codex-recheck STATE_FILE]
+      --remediation-cap N [--integration-exempt-cap N]
+      [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
   readiness-gate.sh behind --repo OWNER/REPO --pr N
@@ -285,13 +287,14 @@ head=
 record_dir=
 integrator_result=
 integration_cap=
+integration_exempt_cap=
 remediation_cap=
 codex_recheck_state=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --integration-exempt-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -300,6 +303,7 @@ while [ "$#" -gt 0 ]; do
         --record) record_dir=$2 ;;
         --integrator-result) integrator_result=$2 ;;
         --integration-cap) integration_cap=$2 ;;
+        --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --remediation-cap) remediation_cap=$2 ;;
         --codex-recheck) codex_recheck_state=$2 ;;
         --allow-edited-root)
@@ -338,6 +342,17 @@ valid_repo "$repo" || die "invalid repository: $repo"
 valid_uint "$pr" || die "invalid PR number: $pr"
 [ -z "$integration_cap" ] || valid_uint_or_zero "$integration_cap" ||
     die "--integration-cap must be a non-negative integer"
+[ -z "$integration_exempt_cap" ] || valid_uint_or_zero "$integration_exempt_cap" ||
+    die "--integration-exempt-cap must be a non-negative integer"
+# Codex cloud cycle 4, P2 (confirmed): the PR-body validator rejecting an
+# impossible pair does not protect readiness, which never compares these flags
+# with the disclosure. The resolver produces only 0 or a ceiling equal to the
+# charged cap, so anything else here would let cycles beyond the real cap be
+# approved as exempt at the enforcement boundary itself.
+[ -z "$integration_exempt_cap" ] || [ -z "$integration_cap" ] ||
+    [ "$integration_exempt_cap" = "0" ] ||
+    [ "$integration_exempt_cap" = "$integration_cap" ] ||
+    die "--integration-exempt-cap ($integration_exempt_cap) must be 0 or equal to --integration-cap ($integration_cap); no resolved policy produces any other pair"
 [ -z "$remediation_cap" ] || valid_uint_or_zero "$remediation_cap" ||
     die "--remediation-cap must be a non-negative integer"
 
@@ -740,7 +755,12 @@ recheck_codex_freshness() {
     [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] && [ "$state_head" = "$head" ] ||
         indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
     codex_recheck_exit=0
-    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
+    # Review round 5, P1 (confirmed): this recheck is the gate's own use of the
+    # checker, and it was the one call site still not naming the run. A later
+    # run can replace the shared same-head state, so without the run id this
+    # call would happily validate a foreign run's cycle. `active_run_id` is
+    # read from --record's run.json well before this runs.
+    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" 2>&1)" ||
         codex_recheck_exit=$?
     # harmon-devkit#508: exit 16 means the checker could not READ the evidence,
     # not that the cached clean result went stale. This is the exact shape the
@@ -763,7 +783,11 @@ recheck_codex_freshness() {
         # suite can drive the path without paying the wall-clock cost.
         sleep "${CODEX_RECHECK_RETRY_DELAY:-2}"
         codex_recheck_exit=0
-        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
+        # Scoped exactly as the first read is: during the retry delay another
+        # run can replace the shared same-head state, and an unscoped retry
+        # would accept that foreign run's cycle and settlements instead of
+        # refusing the ownership mismatch.
+        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
             indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"
@@ -1513,8 +1537,80 @@ if [ "$codex_cycle" != null ]; then
             indeterminate malformed-data "codex_cycle carries no cycle number"
         [ "$integration_cap" -gt 0 ] ||
             indeterminate codex-cap-mismatch "codex_cycle is non-null but --integration-cap is 0 (harmon-devkit#685: a cap-0 pass must report a null codex_cycle)"
-        [ "$cycle_number" -le "$integration_cap" ] ||
-            indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
+        # harmon-init#1326: `cycle` is the stage's TOTAL cycle ordinal, and
+        # once base-merge-only cycles are exempt from the integration cap that
+        # total may legitimately exceed it. A producer that classifies its
+        # cycles says so by reporting `charged` (and `exempt`), and then the
+        # two ceilings are checked independently — charged against
+        # --integration-cap, exempt against --integration-exempt-cap.
+        #
+        # A producer that reports no `charged` is one that does not classify,
+        # so every cycle it ran was charged: the original single-counter rule
+        # is exactly right for it and still applies unchanged. That is what
+        # keeps this backward compatible with a pass driven by an older skill,
+        # rather than silently granting it an exemption it never computed.
+        # Review round 4, P2 (recurring): the two counters are one statement,
+        # and the repo's schema validator is a subset that has no
+        # `dependentRequired`, so the pair cannot be expressed there. Enforce
+        # it here instead, where it is checkable and where the consequence
+        # lives: `exempt` without `charged` would otherwise fall through to
+        # the legacy single-counter branch and be silently ignored, which is
+        # the direction that hides spend.
+        cycle_exempt_probe="$(jq -er '.exempt | select(type == "number")' \
+            <<<"$codex_cycle" 2>/dev/null)" || cycle_exempt_probe=
+        cycle_charged="$(jq -er '.charged | select(type == "number")' \
+            <<<"$codex_cycle" 2>/dev/null)" || cycle_charged=
+        [ -n "$cycle_charged" ] || [ -z "$cycle_exempt_probe" ] ||
+            indeterminate malformed-data "codex_cycle reports exempt but no charged count"
+        if [ -n "$cycle_charged" ]; then
+            cycle_exempt="$(jq -er '.exempt | select(type == "number")' \
+                <<<"$codex_cycle" 2>/dev/null)" ||
+                indeterminate malformed-data "codex_cycle reports charged but no exempt count"
+            [ "$((cycle_charged + cycle_exempt))" -eq "$cycle_number" ] ||
+                indeterminate malformed-data "codex_cycle.charged $cycle_charged + .exempt $cycle_exempt does not equal .cycle $cycle_number"
+            [ "$cycle_charged" -le "$integration_cap" ] ||
+                indeterminate codex-cap-mismatch "codex_cycle.charged $cycle_charged exceeds --integration-cap $integration_cap"
+            # An unbounded exemption is a budget hole: without a declared
+            # ceiling there is nothing to check an exempt count against, so a
+            # pass claiming exempt cycles under a caller that never declared
+            # one is refused rather than trusted.
+            [ -n "$integration_exempt_cap" ] || [ "$cycle_exempt" -eq 0 ] ||
+                indeterminate codex-cap-mismatch "codex_cycle reports $cycle_exempt exempt cycle(s) but no --integration-exempt-cap was declared"
+            [ -z "$integration_exempt_cap" ] ||
+                [ "$cycle_exempt" -le "$integration_exempt_cap" ] ||
+                indeterminate codex-cap-mismatch "codex_cycle.exempt $cycle_exempt exceeds --integration-exempt-cap $integration_exempt_cap"
+            # Challenge round 1, P1 (confirmed): internal arithmetic alone is
+            # not integrity. The result is agent-produced, so a schema-valid
+            # one whose counters merely add up can still move spend from the
+            # charged column into the exempt one and walk past both ceilings.
+            # Where the durable checker state is supplied, it is the record of
+            # what was actually reserved, and the reported split must match it.
+            if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+                state_charged="$(jq -er '.charged_cycles | select(type == "number")' \
+                    "$codex_recheck_state" 2>/dev/null)" || state_charged=
+                state_exempt="$(jq -er '.exempt_cycles | select(type == "number")' \
+                    "$codex_recheck_state" 2>/dev/null)" || state_exempt=
+                # A result that CLAIMS a split owes durable proof of it. State
+                # written before these counters existed carries neither — but a
+                # producer old enough to have written that state also omits the
+                # split entirely and takes the legacy single-counter branch
+                # above, so reaching here with a split and no state counters is
+                # not the backward-compatible case. It is an assertion with
+                # nothing behind it, and accepting it would let a producer move
+                # spend from the charged column into the exempt one and satisfy
+                # both ceilings on its own say-so.
+                if [ -n "$state_charged" ] && [ -n "$state_exempt" ]; then
+                    [ "$cycle_charged" -eq "$state_charged" ] &&
+                        [ "$cycle_exempt" -eq "$state_exempt" ] ||
+                        indeterminate codex-cap-mismatch "codex_cycle reports charged $cycle_charged / exempt $cycle_exempt but the checker state records charged $state_charged / exempt $state_exempt"
+                else
+                    indeterminate codex-cap-mismatch "codex_cycle reports a charged/exempt split but the checker state records no counters to confirm it against"
+                fi
+            fi
+        else
+            [ "$cycle_number" -le "$integration_cap" ] ||
+                indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
+        fi
     fi
     case "$codex_exit" in
     0) recheck_codex_freshness ;;

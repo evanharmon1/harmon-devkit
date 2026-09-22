@@ -852,8 +852,15 @@ function harvestTrajectory(stats, args, runId, trusted) {
 // puts on the same page.
 const POLICY_BEGIN = '<!-- dev-flow:begin:policy-disclosure -->'
 const POLICY_END = '<!-- dev-flow:end:policy-disclosure -->'
+// harmon-init#1341: the exempt-cycle ceiling renders as an optional
+// ` (+N exempt)` immediately after the charged integration cap. It has to be
+// OPTIONAL in this pattern, not merely added: a retro routinely reads PRs
+// opened before the ceiling existed, or by a repo whose harmon-init pin
+// predates it, and a required group would turn every one of those into
+// "does not open with a parseable rigor line" — silently dropping the caps
+// the report exists to show. Group 6 is the exempt count when present.
 const POLICY_LINE_RE =
-  /^rigor:\s*`([^`]*)`\s*\(`([^`]*)`\)\s*→\s*challenge ≤(\d+), review ≤(\d+), integration (\d+), remediation (\d+), min_rounds (\d+)\s*$/
+  /^rigor:\s*`([^`]*)`\s*\(`([^`]*)`\)\s*→\s*challenge ≤(\d+), review ≤(\d+), integration (\d+)(?: \(\+(\d+) exempt\))?, remediation (\d+), min_rounds (\d+)\s*$/
 
 function readPolicyDisclosure(body) {
   if (typeof body !== 'string' || !body.includes(POLICY_BEGIN)) {
@@ -896,8 +903,12 @@ function readPolicyDisclosure(body) {
       challenge: Number(match[3]),
       review: Number(match[4]),
       integration: Number(match[5]),
-      remediation: Number(match[6]),
-      min_rounds: Number(match[7])
+      // Absent group => the disclosure named no exempt ceiling, which is not
+      // the same as a ceiling of 0: undefined means "this run had no exempt
+      // budget concept at all", and a consumer must not render it as "+0".
+      ...(match[6] === undefined ? {} : { integration_exempt: Number(match[6]) }),
+      remediation: Number(match[7]),
+      min_rounds: Number(match[8])
     },
     disclosures: lines.slice(1).filter((line) => line.startsWith('- ')).map((line) => line.slice(2))
   }
@@ -961,7 +972,21 @@ function measure(trajectory, policy) {
     // always read as a misleading zero (harmon-devkit#962 maintainer
     // extension: never a count, never zero).
     if (stage === 'integration') {
-      return { stage, entries, cap, integration_evidence: trajectory.integration_evidence || 'unavailable', interventions: stageInterventions }
+      // harmon-init#1341, challenge round 1 P1 (confirmed): the parser reads
+      // the exempt ceiling, so the report must carry it. `cap` alone answers
+      // "how many cycles were allowed?" with only the charged half, and for
+      // the integration stage that is the number a reader uses to judge
+      // whether a run overspent. Omitted when the disclosure named none, which
+      // is not the same as a ceiling of 0 — see the parser's own note.
+      const exemptCap = policy.present ? policy.rounds.integration_exempt : undefined
+      return {
+        stage,
+        entries,
+        cap,
+        ...(exemptCap === undefined ? {} : { exempt_cap: exemptCap }),
+        integration_evidence: trajectory.integration_evidence || 'unavailable',
+        interventions: stageInterventions
+      }
     }
     return {
       stage,
@@ -1146,8 +1171,14 @@ function renderMarkdown(report) {
   l.push('')
   if (report.policy.present) {
     const r = report.policy.rounds
+    // harmon-init#1341, Codex cloud cycle 3 P2: this is the line a reader takes
+    // as the run's budget, so it must carry the exempt ceiling too — otherwise
+    // every new-format retro opens with an incomplete summary and only reveals
+    // the extra allowance further down.
+    const exemptSuffix =
+      r.integration_exempt === undefined ? '' : ` (+${r.integration_exempt} exempt)`
     l.push(
-      `rigor: \`${safe(report.policy.rigor.level)}\` (\`${safe(report.policy.rigor.source)}\`) → challenge ≤${r.challenge}, review ≤${r.review}, integration ${r.integration}, remediation ${r.remediation}, min_rounds ${r.min_rounds}`
+      `rigor: \`${safe(report.policy.rigor.level)}\` (\`${safe(report.policy.rigor.source)}\`) → challenge ≤${r.challenge}, review ≤${r.review}, integration ${r.integration}${exemptSuffix}, remediation ${r.remediation}, min_rounds ${r.min_rounds}`
     )
     l.push('')
     l.push(
@@ -1171,7 +1202,14 @@ function renderMarkdown(report) {
     // local evidence can never authenticate a round/pass/finding count for
     // it — disclose that instead of a count that would always read as zero.
     if (stage.stage === 'integration') {
-      const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
+      // harmon-init#1341: the charged cap alone understates what the run was
+      // allowed to spend once base-merge-only cycles have a ceiling of their
+      // own, and this line is where a reader judges whether a run overspent.
+      const exemptSuffix = stage.exempt_cap === undefined ? '' : ` + ${stage.exempt_cap} exempt`
+      const cap =
+        stage.cap === null
+          ? 'no cap recorded'
+          : `cap ${stage.cap}${exemptSuffix} (disclosed, unverified)`
       l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}) — integration passes carry no authenticated evidence marker today.`)
     } else if (stage.cap !== null || stage.rounds_spent > 0) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`

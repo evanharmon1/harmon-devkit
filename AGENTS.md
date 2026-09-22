@@ -380,6 +380,15 @@ wall-clock ceiling. Challenge and review bound confidence passes;
 `integration` bounds current-head Codex review cycles; `remediation` bounds
 integration-stage fix pushes. A zero cap disables only the work it names,
 never a deterministic gate, security scan, branch rule, or human approval.
+`integration` charges only cycles that review something new: one whose head
+differs from the last reviewed head **only** by a base merge that changed
+nothing under review re-reads identical code, so it spends the separate,
+equal `integration_exempt` ceiling the reader derives instead
+(harmon-init#1326). A merge that resolves a conflict, or that touches any file
+under review, charges normally; anything the classifier cannot establish
+charges, because an exemption is a spend no reviewer sanctioned. The ledger
+names which counter each cycle spent — `cycle n/cap (+m exempt)` — so
+`round n/cap` stays honest.
 
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,
