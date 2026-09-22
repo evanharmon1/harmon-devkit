@@ -189,6 +189,7 @@ table before their intended sections.
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
+| `{{unit-kind}}` | `implementation` or `proposal-only` — a proposal-only lane still runs every gate, commits, pushes and opens the draft PR; it stops there |
 | `{{claim-handoff}}` | Transaction-refreshed claim for the provisioned lane branch: authenticated comment ID, author ID, `updated_at`, expected assignees, and expected claim labels |
 | `{{verified-facts-and-rulings}}` | Orchestrator verification and attributed decisions |
 | `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |

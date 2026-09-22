@@ -91,12 +91,16 @@ do not restart the clock at dispatch or resume.
 
 ## Scope — one issue, one PR
 
-- **[#{{issue-number}}]({{issue-url}})** — `{{issue-title}}`. Use this
+- **[#{{issue-number}}]({{issue-url}})** — `` {{issue-title}} ``. Use this
   canonical URL as `/implement`'s target so the target repository remains
   pinned under fork topology. Read the issue body and every comment in full at
-  implementation time. The title is rendered as a code span, outside link
-  syntax, because it is fetched from the issue and an issue title is
-  attacker-controllable on a public repository.
+  implementation time. Unit kind: **{{unit-kind}}**.
+
+  The title is rendered as a code span **outside** link syntax, with a
+  **double-backtick** delimiter and padding spaces, because it is fetched from
+  the issue and an issue title is attacker-controllable on a public repository.
+  The orchestrator escapes or strips backticks in the value and widens the
+  delimiter past the longest backtick run it contains.
 
 Verified facts and numbered, attributable orchestrator rulings:
 

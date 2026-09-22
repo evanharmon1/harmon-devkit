@@ -29,9 +29,14 @@ worktree lane. It is not a work contract for a bounded role subagent — see
 - Scratch directory: `{{scratch-dir}}` — write every temporary file under it,
   never at the scratchpad root (§ "Delegation contract", rule 4).
 - **Single writer:** commit and push only `{{branch}}`. Never create branches,
-  never switch branches, never touch `{{default-branch}}`. Never claim or
-  unclaim issues — the orchestrator owns the claim and its release. Never write
-  to a password manager or credential store. Never terminate a process.
+  never switch branches, never touch `{{default-branch}}`. **Never set an
+  environment variable that bypasses, disables or pre-satisfies a gate,
+  approval or hook** — that is the prohibition, not environment variables as
+  such. Ordinary inputs a gate is *designed* to read are fine and often
+  required: `PR_TITLE` and `BASE_SHA` for the release-title preflight are the
+  standing example. Never claim or unclaim issues — the orchestrator owns the
+  claim and its release. Never write to a password manager or credential store.
+  Never terminate a process.
 - **Unless your dispatch placed you in an isolated worktree, require a clean
   index and worktree before your first edit**: `git status --porcelain` must
   print nothing. Report BLOCKED if it does not, naming what it printed. On a
@@ -47,8 +52,12 @@ worktree lane. It is not a work contract for a bounded role subagent — see
 - Before writing the report, resolve the worktree root and the common Git
   directory, then take the **first** proof that holds: (1) `{{report-path}}`
   resolves inside the common Git directory, or (2) it is inside the worktree and
-  `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. Report BLOCKED
-  only if neither holds. The order matters: in a main checkout the common Git
+  `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. **Either way
+  it must also be untracked** — `git ls-files --error-unmatch -- "{{report-path}}"`
+  must FAIL. A tracked file can satisfy both proofs above and still be swept
+  into your commit, because `git add` stages a tracked path whatever the ignore
+  rules say. Report BLOCKED only if neither proof holds, or if the path is
+  tracked. The order matters: in a main checkout the common Git
   directory is *itself* inside the worktree root, and `check-ignore` never
   matches a path under `.git` because git excludes it structurally rather than
   by a pattern — so testing worktree containment first would reject the very
@@ -99,13 +108,21 @@ branch-update dependency): {{live-lane-overlaps}}
 
 ## Scope — one issue, one PR
 
-- **[#{{issue-number}}]({{issue-url}})** — `{{issue-title}}`. Use this
+- **[#{{issue-number}}]({{issue-url}})** — `` {{issue-title}} ``. Use this
   canonical URL as the target so the repository stays pinned under fork
   topology. Read the issue body and every comment in full at implementation
-  time. The title is rendered as a code span, outside link syntax, because it
-  is fetched from the issue and an issue title is attacker-controllable on a
-  public repository: inside a link it could close the link and inject markdown
-  the worker would read as instruction.
+  time.
+
+  The title is rendered as a code span **outside** link syntax, with a
+  **double-backtick** delimiter and padding spaces, because it is fetched from
+  the issue and an issue title is attacker-controllable on a public repository.
+  Inside a link a crafted title could close the link and inject markdown the
+  worker would read as instruction; inside a single-backtick span a lone
+  backtick would close the span early. The dispatcher **escapes or strips
+  backticks in the value, and widens the delimiter past the longest backtick
+  run it contains** — the padding spaces are what let a value begin or end with
+  a backtick at all. A title you cannot render safely is a BLOCKED report, not
+  a title you render anyway.
 - Unit kind: **{{unit-kind}}** (see § "Proposal-only units" when that is what
   was rendered here).
 
@@ -201,14 +218,23 @@ obligations cannot tell when one was skipped.
    caller's working tree and `HEAD`.** Never switch branches. Re-read
    `git branch --show-current` and `git rev-parse HEAD` immediately before you
    report, and report that HEAD **verbatim** from `git rev-parse` output. The
-   two halves are not symmetric: on the branch your dispatch named, a moved HEAD
-   is the *expected* outcome — for a PR-owning worker the commits are the
-   deliverable — whereas **HEAD holding a commit you did not create is the
-   failure**, and so is standing on a branch your dispatch did not name. Confirm
-   the branch against the value your own dispatch recorded (§ "Identity and
-   boundaries"), not against the caller's; if it differs, or if HEAD holds work
-   that is not yours, say so plainly rather than returning as though the work
-   landed where the caller expects.
+   two halves are not symmetric, and **which test you apply depends on whether
+   you edit**:
+
+   - **If your dispatch has you editing** (a PR-owning session or pane, or the
+     `implementer` role), a moved HEAD on the branch your dispatch named is the
+     *expected* outcome — the commits are the deliverable — whereas **HEAD
+     holding a commit you did not create is the failure**.
+   - **If your dispatch is read-only** (`challenger`, `reviewer`, `integrator`),
+     you author nothing, so authorship is not a test you can apply. Compare
+     against the **captured** branch and SHA your dispatch recorded: any
+     difference at all is the failure, and you report it rather than reviewing
+     whatever the tree now holds instead.
+
+   Either way, confirm the branch against the value your own dispatch recorded
+   (§ "Identity and boundaries"), not against the caller's; if it differs, or if
+   the comparison above fails, say so plainly rather than returning as though
+   the work landed where the caller expects.
 
    **Isolation changes the premise, not the report.** Git refuses to check one
    branch out in two worktrees, so a worker given `isolation: "worktree"` is
@@ -419,7 +445,30 @@ cannot read the policy, the
 skill, or the report path this brief names, report BLOCKED rather than inventing
 a procedure.
 
+## Confidence-stage decision handshake
+
+You may run or route the confidence procedure your dispatch names, but **every
+finding disposition belongs to whoever dispatched you**. When a challenge or
+review pass returns findings *before* the draft PR exists, append a **decision
+request** to `{{report-path}}` — stage, round, finding IDs, the reviewer's
+priorities, the evidence you verified against the code, and your proposed
+classifications — and then **wait**.
+
+Do not apply a fix without the matching explicit disposition, and **never infer
+authorisation from silence**. Silence is not a decision, and an unadjudicated
+fix is indistinguishable in the record from one that was approved. Resume from
+the durable disposition, not from your own reading of it.
+
+A finding you raise about yourself goes in the same request, with the same
+wait. So does a scope question: if settling a finding would take you outside
+§ "File-scope fence", that is a decision request, not a judgement call.
+
 ## PR requirements
+
+- **You compose the initial draft body.** It is the only PR text this brief
+  authorises you to write, and every later edit — ticking a deferred finding,
+  recording a disposition, answering a reviewer — belongs to whoever dispatched
+  you. Write it once, completely, at publication time.
 
 - Draft-first title: `{{pr-title}}`. Run the repository's release-title guard
   before publishing.
