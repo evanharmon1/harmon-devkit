@@ -68,12 +68,24 @@ ignores the frontmatter.
   working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
   owes are in the `implement` skill's
   [`assets/implementer-brief.md`](../skills/universal/implement/assets/implementer-brief.md)
-  § "Delegation contract" — the caller's obligations alongside the agent's. No
-  agent file restates it, for the same reason none restates a skill: a copy rots
-  against the original with nothing checking the two agree. `isolation` belongs
-  to that contract and to the calling session, exactly like `tools`, `model`,
-  `color`, and `effort` above — it is a per-dispatch decision, never a shared
-  frontmatter key.
+  § "Delegation contract" — the caller's obligations alongside the agent's. It
+  is written to be read standalone, so it needs no rendered brief. No agent file
+  restates it, for the same reason none restates a skill: a copy rots against
+  the original with nothing checking the two agree. Resolve it under the
+  discover-don't-require rule above — `.agents/skills/implement/assets/`, then
+  the harness-specific location, then one bounded glob — and where nothing is
+  readable, say so in the result rather than guessing the contract.
+  Its rule 5 splits by audience: an agent defined here returns a typed result
+  and writes nothing outside it, while the report file and publication sentinels
+  belong to a PR-owning session or pane.
+- **`isolation` is a caller decision, not frontmatter** — exactly like `tools`,
+  `model`, `color`, and `effort` above, and for the same reason: it is chosen
+  per dispatch by the calling session, not baked into a shared file. Prefer
+  `isolation: "worktree"` for any subagent that edits files; it costs a checkout
+  and removes the shared-`HEAD` and dirty-tree exposure structurally instead of
+  detecting it after the fact. (The contract's rule 2 carries the same
+  recommendation as delegation advice; this bullet is what settles where the key
+  itself lives, because that is this file's own subject.)
 - **Don't name tools in prose.** Say what to do, not which tool does it — tool
   names are the least portable thing in the file.
 - **The repo's policy outranks the agent.** State it, the way the skills do:

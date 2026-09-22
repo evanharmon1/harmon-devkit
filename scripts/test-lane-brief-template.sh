@@ -22,14 +22,16 @@ required_placeholders=(
     '{{active-state-path}}'
     '{{attempt-nonce}}'
     '{{base-sha}}'
-    '{{brief-envelope-json}}'
     '{{blocked-sentinel}}'
     '{{branch}}'
+    '{{brief-envelope-json}}'
     '{{challenge-cap}}'
     '{{claim-handoff}}'
     '{{deadline}}'
     '{{default-branch}}'
     '{{file-scope-fence}}'
+    '{{gate-bounds-override}}'
+    '{{gate-commands}}'
     '{{generation}}'
     '{{git-sandbox-note}}'
     '{{handoff-sentinel}}'
@@ -50,24 +52,29 @@ required_placeholders=(
     '{{ready-sentinel}}'
     '{{record-directory}}'
     '{{remediation-cap}}'
+    '{{repo-tier}}'
     '{{report-path}}'
     '{{review-cap}}'
-    '{{rigor}}'
     '{{rigor-source}}'
+    '{{rigor}}'
     '{{role-tiers}}'
     '{{run-id}}'
     '{{scratch-dir}}'
-    '{{strategy}}'
     '{{strategy-source}}'
+    '{{strategy}}'
     '{{verified-facts-and-rulings}}'
     '{{wall-clock-min}}'
     '{{worktree-path}}'
 )
 
+# The prose rule is "any double-brace token", so the machine check is too:
+# a narrower class (lowercase/digit/hyphen) let `{{scratch_dir}}`, `{{Branch}}`
+# or `{{ branch }}` sit in the template unseen by BOTH the set-equality check
+# and the unrendered-token gate, shipping a literal token to a worker.
 placeholders=()
 while IFS= read -r token; do
     placeholders[${#placeholders[@]}]="$token"
-done < <(grep -oE '\{\{[a-z0-9-]+\}\}' "$template" | sort -u)
+done < <(grep -oE '\{\{[^}]*\}\}' "$template" | sort -u)
 
 [ "${#placeholders[@]}" -eq "${#required_placeholders[@]}" ] ||
     fail "template placeholder set differs from the required contract"
@@ -106,7 +113,7 @@ impl_rendered_file="$(mktemp)"
 trap 'rm -f "$rendered_file" "$impl_rendered_file"' EXIT
 printf '%s\n' "$rendered" >"$rendered_file"
 
-if grep -Eq '\{\{[a-z0-9-]+\}\}' "$rendered_file"; then
+if grep -Eq '\{\{[^}]*\}\}' "$rendered_file"; then
     fail "rendered fixture retains a placeholder"
 fi
 
@@ -230,10 +237,13 @@ impl_required_placeholders=(
     '{{base-sha}}'
     '{{blocked-sentinel}}'
     '{{branch}}'
+    '{{claim-handoff}}'
     '{{codex-model-id}}'
     '{{default-branch}}'
+    '{{effort}}'
     '{{file-scope-fence}}'
     '{{gate-bounds-override}}'
+    '{{gate-commands}}'
     '{{git-sandbox-note}}'
     '{{handoff-sentinel}}'
     '{{harness}}'
@@ -255,7 +265,7 @@ impl_required_placeholders=(
 impl_placeholders=()
 while IFS= read -r token; do
     impl_placeholders[${#impl_placeholders[@]}]="$token"
-done < <(grep -oE '\{\{[a-z0-9-]+\}\}' "$impl_template" | sort -u)
+done < <(grep -oE '\{\{[^}]*\}\}' "$impl_template" | sort -u)
 
 [ "${#impl_placeholders[@]}" -eq "${#impl_required_placeholders[@]}" ] ||
     fail "implementer-brief placeholder set differs from the required contract"
@@ -285,6 +295,10 @@ for token in "${impl_placeholders[@]}"; do
     handoff-sentinel) value="IMPL-FIXTURE-HANDOFF" ;;
     blocked-sentinel) value="IMPL-FIXTURE-BLOCKED" ;;
     attempt-nonce) value="a1b2c3" ;;
+    # The tier selects a table row, so the fixture must render a REAL one.
+    # Rendering it as `fixture-repo-tier` made the regression floor itself a
+    # demonstration that an out-of-vocabulary tier passes clean.
+    repo-tier) value="heavy" ;;
     *) value="fixture-$key" ;;
     esac
     impl_rendered="${impl_rendered//"$token"/"$value"}"
@@ -292,7 +306,7 @@ done
 
 printf '%s\n' "$impl_rendered" >"$impl_rendered_file"
 
-if grep -Eq '\{\{[a-z0-9-]+\}\}' "$impl_rendered_file"; then
+if grep -Eq '\{\{[^}]*\}\}' "$impl_rendered_file"; then
     fail "rendered implementer-brief retains a placeholder"
 fi
 if grep -Fq '| Placeholder | Source |' "$impl_rendered_file"; then
@@ -335,22 +349,56 @@ done
 
 # Gate bounds: the 180-second-timeout failure is the reason this table exists,
 # so the tier rows and their numbers are pinned, not just the heading.
-grep -Fq 'Resolved tier for this unit: **fixture-repo-tier**' "$impl_rendered_file" ||
+grep -Fq 'Resolved tier for this unit: **heavy**' "$impl_rendered_file" ||
     fail "implementer-brief does not resolve a gate-bounds tier per dispatch"
-for tier_row in \
-    '| `light` — docs/config repo' \
-    '| `standard` — ordinary app repo' \
-    '| `heavy` — large shell/lint surface'; do
+for tier_row in '| `light` |' '| `standard` |' '| `heavy` |'; do
     grep -Fq "$tier_row" "$impl_rendered_file" ||
         fail "implementer-brief gate-bounds table is missing row: $tier_row"
 done
-grep -Fq '[HUMAN] maintainer confirms' "$impl_rendered_file" ||
-    fail "implementer-brief gate bounds are not marked for maintainer confirmation"
+# The tier selects a table row, so it must be constrained to that table's
+# vocabulary. Rendering it as free prose let `medium`/`docs`/`small` produce a
+# brief pointing at no row at all — the worker then picks a bound from nothing,
+# which is the failure the table exists to prevent.
+grep -Fq 'one of `light`, `standard`, or' "$impl_rendered_file" ||
+    fail "implementer-brief does not enumerate the legal gate tiers"
+grep -Fq 'report BLOCKED rather than picking a row' "$impl_rendered_file" ||
+    fail "implementer-brief accepts an out-of-vocabulary gate tier"
+# A repo can match more than one row's description, so the row is decided by a
+# procedure, not by resemblance — and the asymmetric direction has to win.
+grep -Fq 'strongest signal wins' "$impl_rendered_file" ||
+    fail "implementer-brief gate tier has no tie-break procedure"
+grep -Fq 'does **not** make a repository `light`' "$impl_rendered_file" ||
+    fail "implementer-brief does not close the observed light/heavy misread"
+# Gate NAMES are not invocations; a worker in a repo whose gates are not
+# `task <name>` was handed bounds for commands it never received.
+grep -Fq 'Run the gates with these exact commands' "$impl_rendered_file" ||
+    fail "implementer-brief bounds gates it never names a command for"
+grep -Fq 'fixture-gate-commands' "$impl_rendered_file" ||
+    fail "implementer-brief does not render the repository's gate commands"
+# The maintainer-confirmation note belongs to the authoring procedure, not to
+# the artifact a worker reads; `[HUMAN]` is this repo's issue-criteria grammar.
+if grep -Fq '[HUMAN]' "$impl_rendered_file"; then
+    fail "implementer-brief freezes an authoring marker into the dispatched artifact"
+fi
+grep -Fq 'The gate bounds are defaults, not a repository contract.' "$impl_catalog" ||
+    fail "the implement skill does not carry the gate-bounds provenance note"
 grep -Fq 'A bound is the point at which you stop waiting, never the point at which you' \
     "$impl_rendered_file" ||
     fail "implementer-brief treats a hit timeout as a gate failure"
-grep -Fq 'GATE-EXIT=' "$impl_rendered_file" ||
-    fail "implementer-brief does not require a polled exit line for a long gate"
+# The same whole-file hole the Codex block already closed: `GATE-EXIT=` occurs
+# twice — once inside the nohup recipe that produces it, once in the prose that
+# polls for it — so a whole-file grep stays green after the recipe loses it,
+# shipping a detach pattern that writes no exit line against a template whose
+# own rule is "an absent exit line is not a pass".
+impl_detach="$(grep -F 'nohup bash -c' "$impl_rendered_file")"
+[ -n "$impl_detach" ] ||
+    fail "implementer-brief carries no detached-gate recipe"
+case "$impl_detach" in
+*'echo GATE-EXIT='*) ;;
+*) fail "implementer-brief detach recipe does not emit the polled exit line" ;;
+esac
+grep -Fq 'until it contains `GATE-EXIT=`' "$impl_rendered_file" ||
+    fail "implementer-brief does not require polling for the exit line"
 
 # Proposal-only: "proposal only" was read as "no pull request".
 grep -Fq '**A proposal-only unit still runs every gate, still commits, still pushes, and' \
@@ -383,34 +431,66 @@ case "$impl_launch" in
 *'--dangerously-bypass-approvals-and-sandbox'*) ;;
 *) fail "implementer-brief Codex launch command is missing the sandbox flag" ;;
 esac
-grep -Fq '`-c model_reasoning_effort` is accepted' "$impl_rendered_file" ||
+grep -Fq 'model_reasoning_effort` is accepted and ignored' "$impl_rendered_file" ||
     fail "implementer-brief Codex block is missing the reasoning-effort caveat"
 grep -Fq 'The TUI `/model` picker is the only lever' "$impl_rendered_file" ||
     fail "implementer-brief Codex block does not name the effort lever"
+# A caveat pinned to one exact patch version reads as not applying anywhere
+# else, and the failure it guards is silent (the flag is accepted either way).
+grep -Fq 'through at least 0.155.1' "$impl_rendered_file" ||
+    fail "implementer-brief pins the effort caveat to a single build"
+# The BLOCKED-on-mismatch rule cannot fire unless the effort is an input the
+# worker can actually identify in its own brief.
+grep -Fq 'reasoning effort `fixture-effort`' "$impl_rendered_file" ||
+    fail "implementer-brief demands an effort check against an undisclosed effort"
 grep -Fq '**A Codex brief forbids `gh pr ready` explicitly.**' "$impl_rendered_file" ||
     fail "implementer-brief Codex block does not restate the promotion prohibition"
 
 # The five delegation invariants (#296, #438, #447, #582, #431), stated once.
+# Each literal must be token-free, so the SAME string proves the rule is
+# present in the template and proves no referrer restates it. The two rules
+# that used to carry a value were asserted here in their POST-RENDER form
+# (`fixture-scratch-dir`, `fixture-report-path`) — strings a referrer could
+# never contain, which made the two assertions enforcing this change's central
+# "stated once" claim dead in every possible tree.
 impl_contract_rules=(
     '**Exit plan mode before spawning an implementer.**'
     "**You share the caller's working tree and \`HEAD\`.**"
     '**Keep the core work in your own context — no sub-delegation.**'
-    '**Namespace every scratch file under `fixture-scratch-dir`.**'
-    '**Report through `fixture-report-path` and the sentinels below, and re-read every'
+    '**Namespace every scratch file under the scratch directory your dispatch'
+    '**Report through the output contract your dispatch names, and re-read every'
 )
+for rule in "${impl_contract_rules[@]}"; do
+    case "$rule" in
+    *fixture-*) fail "anti-restatement literal is post-render and can never match a referrer: $rule" ;;
+    esac
+    grep -Fq "$rule" "$impl_template" ||
+        fail "anti-restatement literal does not match the UNRENDERED template: $rule"
+done
+
+# The contract is referenced from files that are read standalone, so it must
+# carry no value of its own: a reader following a pointer reads it unrendered.
+impl_contract_section="$(awk '/^## Delegation contract/{c=1} /^## Gate commands/{c=0} c' "$impl_template")"
+case "$impl_contract_section" in
+*'{{'*) fail "the referenced delegation contract carries a placeholder a standalone reader cannot resolve" ;;
+esac
+case "$impl_contract_section" in
+*'Two audiences, one contract'*) ;;
+*) fail "the delegation contract does not split the PR-owning and bounded-role audiences" ;;
+esac
 for rule in "${impl_contract_rules[@]}"; do
     grep -Fq "$rule" "$impl_rendered_file" ||
         fail "implementer-brief delegation contract is missing: $rule"
 done
-grep -Fq 'gate result standing in for the **PR' "$impl_rendered_file" ||
+grep -Fq "standing in for the **PR's** check status" "$impl_rendered_file" ||
     fail "delegation contract does not name the local-for-PR gate substitution"
 grep -Fq '"replied" and "resolved" are distinct thread states' "$impl_rendered_file" ||
     fail "delegation contract collapses replied and resolved"
-grep -Fq 'never reconstruct, abbreviate from' "$impl_rendered_file" ||
+grep -Fq 'reconstruct, abbreviate from memory, or infer one' "$impl_rendered_file" ||
     fail "delegation contract does not require verbatim SHAs"
 grep -Fq 'prefer an isolated worktree' "$impl_rendered_file" ||
     fail "delegation contract does not offer the structural fix for a shared HEAD"
-grep -Fq 'a dirty index, a stash entry, or' "$impl_rendered_file" ||
+grep -Fq 'a dirty index,' "$impl_rendered_file" ||
     fail "delegation contract names only branches as the shared-tree exposure"
 grep -Fq 'Read-only fan-out' "$impl_rendered_file" ||
     fail "delegation contract does not distinguish allowed read-only fan-out"
@@ -447,6 +527,76 @@ for sentinel in IMPL-FIXTURE-HANDOFF-a1b2c3 IMPL-FIXTURE-BLOCKED-a1b2c3; do
 done
 grep -Fq 'raw pane-history substring match' "$impl_rendered_file" ||
     fail "implementer-brief accepts pane history as completion evidence"
+
+# The claim handoff: without it the skill's own step-1 ownership ladder reads an
+# orchestrator-authored claim as "claimed by someone else" and halts the
+# dispatch before any implementation happens.
+grep -Fq 'Claim handoff — read this before running the skill' "$impl_rendered_file" ||
+    fail "implementer-brief has no claim-handoff override for a delegated claim"
+grep -Fq 'use of an existing claim, never a transfer' "$impl_rendered_file" ||
+    fail "implementer-brief claim handoff can be mistaken for a claim transfer"
+grep -Fq 'fixture-claim-handoff' "$impl_rendered_file" ||
+    fail "implementer-brief does not render the authenticated claim snapshot"
+grep -Fq 'Keep every other refusal' "$impl_rendered_file" ||
+    fail "implementer-brief claim handoff drops the other step-1 refusals"
+
+# Audience: the template finishes at a published draft PR, which a bounded role
+# subagent is forbidden to reach (ai/agents/implementer.md § Never).
+grep -Fq 'This brief is a **PR-owning** contract' "$impl_rendered_file" ||
+    fail "implementer-brief does not declare its audience"
+grep -Fq 'It is not a work contract for a bounded role subagent' "$impl_rendered_file" ||
+    fail "implementer-brief can still be dispatched to a bounded role subagent"
+for dispatcher in \
+    ai/skills/universal/implement/SKILL.md \
+    ai/skills/universal/orchestrate/SKILL.md; do
+    grep -Fq 'bounded role subagent' "$dispatcher" ||
+        fail "$dispatcher does not exclude bounded role subagents from the PR-owning template"
+done
+
+# The lane superset must actually inherit what two documents say it inherits.
+lane_inherits="$(awk '/^## Inherited base contract/{c=1} /^## Procedure/{c=0} c' \
+    ai/skills/universal/orchestrate/assets/lane-brief.md)"
+[ -n "$lane_inherits" ] ||
+    fail "lane-brief does not name the base contract it extends"
+for inherited in 'Delegation contract' 'Hard rules' 'Gate commands and time bounds' 'Proposal-only units'; do
+    case "$lane_inherits" in
+    *"$inherited"*) ;;
+    *) fail "lane-brief claims no inheritance of the base section: $inherited" ;;
+    esac
+done
+case "$lane_inherits" in
+*'{{repo-tier}}'*) ;;
+*) fail "lane-brief inherits gate bounds without rendering a tier" ;;
+esac
+case "$lane_inherits" in
+*'{{gate-commands}}'*) ;;
+*) fail "lane-brief inherits gate bounds without rendering the gate commands" ;;
+esac
+case "$lane_inherits" in
+*'.agents/skills/implement/assets/implementer-brief.md'*) ;;
+*) fail "lane-brief does not give the base contract a resolution path" ;;
+esac
+
+# Every referrer resolves the contract the way this repo resolves any skill
+# file, and says what to do when nothing is readable.
+for referrer in \
+    ai/agents/challenger.md \
+    ai/agents/reviewer.md \
+    ai/agents/integrator.md \
+    ai/agents/implementer.md; do
+    grep -Fq '.agents/skills/implement/assets/implementer-brief.md' "$referrer" ||
+        fail "$referrer has no resolution path for the delegation contract"
+    grep -Fq 'one bounded glob' "$referrer" ||
+        fail "$referrer does not degrade to a bounded glob"
+    grep -Fq 'do not guess the contract' "$referrer" ||
+        fail "$referrer does not say what to do when the contract is unreadable"
+    grep -Fq 'bounded-role side of it' "$referrer" ||
+        fail "$referrer does not place the role on the bounded side of rule 5"
+done
+grep -Fq 'discover-don' ai/agents/README.md ||
+    fail "the agents README does not bind the pointer to its own discovery rule"
+grep -Fq '`isolation` is a caller decision, not frontmatter' ai/agents/README.md ||
+    fail "the agents README does not own the isolation decision itself"
 
 # The orchestrator-facing instruction, in both dispatching skills.
 grep -Fq 'Render `assets/implementer-brief.md`. Never write the brief freehand.' \

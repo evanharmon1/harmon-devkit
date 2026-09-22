@@ -173,5 +173,18 @@ The delegation contract that governs every dispatched agent here — exit plan
 mode before spawning, keep the core work in your own context, the shared
 working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
 owes — is stated once in the `implement` skill's
-`assets/implementer-brief.md` § "Delegation contract". Read it there;
-it is not restated in this file.
+`assets/implementer-brief.md` § "Delegation contract". Read it there; it is
+not restated in this file. That section is written to be read standalone, so
+it needs no rendered brief to be usable.
+
+Resolve it the way this repository resolves any skill file: prefer
+`.agents/skills/implement/assets/implementer-brief.md`, then the
+harness-specific skills location, then one bounded glob. **If none of those
+is readable, do not guess the contract** — rules 1-4 of it are restated
+nowhere, so fall back to `AGENTS.md` plus your dispatch brief and say in your
+result that you could not read it.
+
+Rule 5 has an audience split, and you are on the bounded-role side of it: you
+return a typed result and write nothing outside it. The report file and the
+publication sentinels that contract names belong to a PR-owning session or
+pane, never to you.

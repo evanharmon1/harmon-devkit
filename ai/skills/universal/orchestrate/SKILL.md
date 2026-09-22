@@ -177,6 +177,9 @@ table before their intended sections.
 | `{{harness}}` | Selected implementer's registry harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
 | `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad; never the scratchpad root |
+| `{{repo-tier}}` | `light`, `standard`, or `heavy` — resolved by the base template's strongest-signal-wins procedure, never by matching a row's description |
+| `{{gate-bounds-override}}` | Repository's own measured gate bounds, or `None — use the base template's table.` |
+| `{{gate-commands}}` | The repository's actual gate invocations, one per line |
 | `{{generation}}` | Active pointer generation |
 | `{{active-state-path}}` | `assets/dev-flow-monitor.sh active-path` |
 | `{{record-directory}}` | Active run record directory |
@@ -238,14 +241,21 @@ return the artifact or fix their dispatch requested; they do not receive this
 draft-publication contract.
 
 Never write an implementer brief freehand, whatever its shape. Outside a v2 run
-— an ad-hoc implementer subagent, a dispatch with no run record — render the
-`implement` skill's `assets/implementer-brief.md` against its own source catalog
+— a dispatch with no run record — render the `implement` skill's
+`assets/implementer-brief.md` against its own source catalog
 (`implement/SKILL.md` § "Brief template source catalog") instead. That template
-is the base contract this one extends: the gate time bounds, the stop-at-draft
-rule, the proposal-only clause, and the delegation contract are stated there
-once, and `assets/lane-brief.md` references them rather than restating them. A
-brief composed from memory is how the 2026-09-06 fan-out shipped three workers
-that each broke a different one of those rules. For a PR-owning lane, the source catalog above is
+is the base contract this one extends: its § "Hard rules", § "Gate commands and
+time bounds", § "Proposal-only units" and § "Delegation contract" are stated
+there once, and `assets/lane-brief.md` § "Inherited base contract" names all
+four and supplies their per-lane values rather than restating them. A brief
+composed from memory is how the 2026-09-06 fan-out shipped three workers that
+each broke a different one of those rules.
+
+Neither template is a work contract for a **bounded role subagent**. Both
+finish at a published draft PR, which `ai/agents/implementer.md` § "Never"
+forbids non-overridably; a role agent gets its own schema-bound role brief and
+returns a typed result. The delegation contract's rule 5 is the one place the
+two audiences meet, and it splits there explicitly. For a PR-owning lane, the source catalog above is
 the complete input contract: source every value, select the harness procedure
 named by the rendered brief. Provision the lane branch/worktree, then
 transactionally refresh the existing claim so its record names that exact branch.

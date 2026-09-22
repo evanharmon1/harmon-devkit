@@ -47,11 +47,13 @@ decision.
 Writes — commits, pushes, `gh pr create`, gate runs — always go through the
 normal permission prompt.
 
-**Handing this work to a subagent instead of doing it here?** Steps 1–9 are the
-work; step 10 is how it is described to whoever does it. Render
+**Handing this work to another session instead of doing it here?** Steps 1–9
+are the work; step 10 is how it is described to whoever does it. Render
 `assets/implementer-brief.md` rather than writing a brief freehand — it carries
 the gate time bounds, the stop-at-draft rule, the proposal-only clause, and the
-one delegation contract this repository states exactly once.
+one delegation contract this repository states exactly once. Dispatch it to a
+session, a pane, or a worktree lane: it finishes at a published draft PR, which
+a bounded role subagent is forbidden to reach.
 
 ## 1. Target and claim
 
@@ -499,8 +501,18 @@ readiness gate and a human review.
 ## 10. Dispatching an implementer: render the brief template
 
 This section is for a session **handing this work to someone else** — an
-orchestrator, or any session spawning an implementer subagent. The work itself
-is steps 1–9 above; this is the contract for describing it.
+orchestrator, or any session dispatching a worker that will own a PR. The work
+itself is steps 1–9 above; this is the contract for describing it.
+
+**Who it may be dispatched to.** This template is a PR-owning contract: a
+harness session, a terminal pane, or a worktree lane. It is **not** a work
+contract for a bounded role subagent — `ai/agents/implementer.md` § "Never"
+forbids pushing and opening a PR, and says that list holds even where a
+repository's policy says otherwise, so such an agent could only ever return
+BLOCKED against a brief whose finish line is a published draft PR. Role
+subagents get their own role briefs and return a typed result. The delegation
+contract below is the part they *do* share, and its rule 5 splits on exactly
+this line.
 
 **Render `assets/implementer-brief.md`. Never write the brief freehand.** Three
 dispatched-worker failures from one 2026-09-06 fan-out are the reason: a worker
@@ -533,7 +545,8 @@ meant to carry it, where it reads as instruction.
 | Placeholder | Source |
 | --- | --- |
 | `{{unit-name}}` | Dispatcher's name for this unit of work |
-| `{{harness}}` | Selected implementer's harness, including model and effort |
+| `{{harness}}` | Selected implementer's harness and model |
+| `{{effort}}` | Reasoning effort the worker is expected to run at — the value its status line is checked against |
 | `{{branch}}` | The pre-created feature branch, and `git branch --show-current` in it |
 | `{{default-branch}}` | Target repository default branch |
 | `{{base-sha}}` | Commit the branch was created from |
@@ -546,9 +559,11 @@ meant to carry it, where it reads as instruction.
 | `{{issue-number}}` | Target GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
+| `{{claim-handoff}}` | The orchestrator's authenticated claim snapshot: comment ID, author ID, `updated_at`, expected assignees, expected claim labels, and the branch it records |
 | `{{unit-kind}}` | `implementation` or `proposal-only` |
 | `{{verified-facts-and-rulings}}` | Dispatcher's verification and numbered, attributable decisions |
-| `{{repo-tier}}` | `light`, `standard`, or `heavy` — which row of the gate-bounds table applies |
+| `{{gate-commands}}` | The repository's actual gate invocations, one per line (`task check` / `task verify` / `task security` / `task challenge` / `task review` where it uses a Taskfile) |
+| `{{repo-tier}}` | `light`, `standard`, or `heavy` — nothing else. Apply the template's own strongest-signal-wins procedure rather than matching a row by description |
 | `{{gate-bounds-override}}` | Repository's own measured bounds, or `None — use the table above.` |
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
 | `{{pr-title}}` | Release-title-guard-compliant proposal |
@@ -556,6 +571,12 @@ meant to carry it, where it reads as instruction.
 | `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
 | `{{blocked-sentinel}}` | Dispatcher-generated blocked sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+
+**The gate bounds are defaults, not a repository contract.** They were measured
+from run history; a maintainer confirms or replaces them per repository through
+`{{gate-bounds-override}}`. That note lives here, in the authoring procedure,
+rather than in the dispatched artifact — a brief is addressed to a worker, and
+review-process markers addressed to a maintainer do not belong in it.
 
 Keep the report path and the sentinels unique **per attempt**. Prompts sent
 after dispatch refer to that reporting contract indirectly and never quote a
