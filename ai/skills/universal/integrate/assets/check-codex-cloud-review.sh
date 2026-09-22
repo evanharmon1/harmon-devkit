@@ -1296,9 +1296,9 @@ classify_cycle_charge() {
     # historical base that cannot be established charges rather than guesses.
     classify_prev_base=$(jq -r '.last_reviewed_base_sha // empty' "$state_file" 2>/dev/null) ||
         classify_prev_base=
-    if [ -z "$classify_prev_base" ]; then
+    if ! valid_sha "$classify_prev_base"; then
         charge_class=charged
-        charge_reason="the base the previous cycle reviewed against is not recorded; charging"
+        charge_reason="the base the previous cycle reviewed against is not recorded or not a commit SHA; charging"
         return 0
     fi
 
@@ -1571,16 +1571,38 @@ reserve)
     spend_file="${state_file%.json}.spend.json"
     carried_charged=0
     carried_exempt=0
-    if [ ! -f "$state_file" ] && [ -n "$run_id" ] && [ -f "$spend_file" ]; then
-        # Codex cloud cycle 4, P1 (confirmed): recovery treated unreadable
-        # evidence as zero. A truncated or malformed sidecar — which the writer
-        # below could itself produce, since it ignored jq/mv failures — then
-        # silently reset the run's spend and let the next reservation exceed
-        # either ceiling.
-        #
-        # ABSENT is fine: no record means nothing spent. PRESENT BUT UNUSABLE is
-        # not: that is unknown spend, and by this change's governing invariant
-        # unknown spend is never treated as room to spend more. Refuse instead.
+
+    # Claude cloud reviewer, P1 (confirmed): recovery used to be gated on the state
+    # file being ABSENT. But `reserve` supports a second path where the state
+    # exists and simply is not this run's — the foreign/unowned branch — and
+    # that path reset both counters to 0 without ever consulting the sidecar.
+    # Run A reserves on PR P; run B replaces the state; run A returns and gets
+    # a fresh full integration cap. Invisible to the gate's cross-check too,
+    # because after the reset the state and the reported split agree with each
+    # other.
+    #
+    # The question is not "does a state file exist" but "does it carry THIS
+    # run's counters". An unscoped call (no --run-id) keeps the old behaviour
+    # and reads whatever the state holds.
+    state_carries_my_counters=0
+    if [ -f "$state_file" ]; then
+        state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ -z "$run_id" ] || [ "$run_id" = "$state_run_id" ]; then
+            state_carries_my_counters=1
+        fi
+    fi
+
+    if [ "$state_carries_my_counters" = "1" ]; then
+        carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
+        carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+        # Read back as arithmetic against a ceiling, so a hand-edited or
+        # truncated state must not quietly become a budget.
+        valid_uint_or_zero "$carried_charged" && valid_uint_or_zero "$carried_exempt" ||
+            die "persisted cycle counters are not non-negative integers (charged=$carried_charged exempt=$carried_exempt)"
+    elif [ -n "$run_id" ] && [ -f "$spend_file" ]; then
+        # ABSENT is fine: no record means nothing spent. PRESENT BUT UNUSABLE
+        # is not — that is unknown spend, and unknown spend is never room to
+        # spend more.
         jq -e . "$spend_file" >/dev/null 2>&1 ||
             die "the run-spend sidecar $spend_file is unreadable; the run's spend cannot be established — repair or remove it deliberately rather than reserving against unknown spend"
         if jq -e --arg r "$run_id" 'has($r)' "$spend_file" >/dev/null 2>&1; then
@@ -1590,29 +1612,6 @@ reserve)
                 die "the run-spend sidecar records an unusable entry for run $run_id (charged=$recovered_charged exempt=$recovered_exempt); repair it rather than reserving against unknown spend"
             carried_charged=$recovered_charged
             carried_exempt=$recovered_exempt
-        fi
-    fi
-    if [ -f "$state_file" ]; then
-        # Challenge round 2, P1 (confirmed): these totals bound a RUN, not a
-        # PR, and the state file outlives the run that wrote it. A second run
-        # against the same PR would otherwise inherit the first run's spend and
-        # start already over budget — or, worse, have its own honest counters
-        # read as a mismatch by the gate. When the caller names a run and it is
-        # not the run the totals were accumulated for, the totals start again.
-        state_run_id=$(jq -r '.run_id // empty' "$state_file")
-        if [ -n "$run_id" ] && [ "$run_id" != "$state_run_id" ]; then
-            carried_charged=0
-            carried_exempt=0
-        else
-            carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
-            carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
-            # These are read back and used as arithmetic against a ceiling, so
-            # a hand-edited or truncated state file must not silently become a
-            # budget. Refuse rather than coerce: a state whose counters cannot
-            # be read is a state whose spend is unknown, and per the governing
-            # invariant unknown spend is never treated as room to spend more.
-            valid_uint_or_zero "$carried_charged" && valid_uint_or_zero "$carried_exempt" ||
-                die "persisted cycle counters are not non-negative integers (charged=$carried_charged exempt=$carried_exempt)"
         fi
     fi
     charge_class=charged
@@ -1678,9 +1677,20 @@ reserve)
         # there would cap a migration run earlier than its own merge-base
         # policy allowed. Charge the cycle to the budget that does exist
         # instead; the exemption simply does not apply under that policy.
-        if [ "$charge_class" = "exempt" ] && [ "$integration_exempt_cap" = "0" ]; then
+        # An exempt ceiling of 0 is a policy with no exemption (every historical
+        # decode). An UNDECLARED ceiling is an unknown one — and by the
+        # governing invariant unknown charges. Both collapse to the same
+        # outcome, which also makes a caller pinned before this flag existed
+        # degrade to today's behaviour rather than into a run the gate will
+        # refuse to promote (Claude cloud reviewer, P2, confirmed).
+        if [ "$charge_class" = "exempt" ] &&
+            { [ -z "$integration_exempt_cap" ] || [ "$integration_exempt_cap" = "0" ]; }; then
             charge_class=charged
-            charge_reason="$charge_reason (charged: this policy has no exempt ceiling)"
+            if [ -z "$integration_exempt_cap" ]; then
+                charge_reason="$charge_reason (charged: no exempt ceiling was declared)"
+            else
+                charge_reason="$charge_reason (charged: this policy has no exempt ceiling)"
+            fi
         fi
         if [ "$charge_class" = "exempt" ]; then
             [ -z "$integration_exempt_cap" ] ||
@@ -2245,7 +2255,13 @@ reap)
     # into two, and a half-path that no longer resolves is a confusing way to
     # discover an unreadable directory. A find that could not complete is a
     # sweep that did not happen, so it fails rather than under-reporting.
-    find "$root_dir" -mindepth 3 -maxdepth 3 -type f -name '*.json' -print0 \
+    # `*.spend.json` is a run-keyed spend record, not a cycle state, so it is
+    # excluded here rather than enumerated and rejected: as a candidate it
+    # failed the schema check on every sweep, logging a permanent false
+    # "not a recognizable state file" entry and spending sweep budget
+    # (Claude cloud reviewer, P2, confirmed).
+    find "$root_dir" -mindepth 3 -maxdepth 3 -type f -name '*.json' \
+        ! -name '*.spend.json' -print0 \
         >"$reap_workdir/candidates" ||
         die "cannot enumerate state under $root_dir"
 

@@ -3923,8 +3923,11 @@ classify_reserve() {
     printf '%s' "$3" >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
     printf '%s' "$4" >"${fixtures}/compare-main___${classifier_new}.json"
     printf '%s' "$classifier_new" >"${fixtures}/head"
+    # A ceiling must be DECLARED for a cycle to be exempt: an undeclared one is
+    # an unknown ceiling, and unknown charges.
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+        --head "$classifier_new" --attempt 1 --run-id run-a \
+        --integration-cap 4 --integration-exempt-cap 4 >/dev/null
 }
 
 assert_charge() {
@@ -4076,6 +4079,71 @@ rm -f "$state" "${state%.json}.spend.json"
     --head "$head_sha" --attempt 1 --run-id run-a \
     --integration-cap 4 --integration-exempt-cap 0 >/dev/null ||
     fail "a zero exempt ceiling must be accepted"
+
+echo "==> a returning run recovers its spend even when foreign state exists"
+# Claude cloud reviewer, P1: recovery was gated on the state file being ABSENT,
+# so the foreign/unowned branch reset the counters to 0 without consulting the
+# sidecar. Run A reserves, run B replaces the state, run A returns — and used
+# to get a fresh full cap. The gate could not catch it either: after the reset
+# the state and the reported split agree with each other.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+rm -f "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.charged_cycles' "$state")" = "2" ] ||
+    fail "fixture: run-a should have spent 2, got $(jq -r '.charged_cycles' "$state")"
+# Run B takes the state over on the same head.
+jq '.phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = .reserved_at' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-b >/dev/null
+[ "$(jq -r '.run_id' "$state")" = "run-b" ] ||
+    fail "fixture: run-b should own the state"
+# Run A returns: the state exists but is B's, so A's own spend must come from
+# the sidecar rather than restarting at zero.
+jq '.phase = "attached" | .trigger_comment_id = 4243 |
+    .requested_at = .reserved_at' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+[ "$(jq -r '.charged_cycles' "$state")" = "3" ] ||
+    fail "a returning run must recover its own spend, got $(jq -r '.charged_cycles' "$state")"
+
+echo "==> an undeclared exempt ceiling charges rather than exempting"
+# An undeclared ceiling is an UNKNOWN ceiling, and unknown charges — otherwise
+# reserve spends without bound while the gate refuses the run afterwards.
+classify_reserve_nocap() {
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json"
+    printf '%s' "$classifier_prev" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+    jq --arg base "$classifier_base" '.phase = "attached" | .trigger_comment_id = 4242 |
+        .requested_at = .reserved_at |
+        .last_reviewed_head = .head | .last_reviewed_base_sha = $base' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    printf '%s' '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
+        >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
+    printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+        >"${fixtures}/compare-${classifier_base}___${classifier_prev}.json"
+    printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
+        >"${fixtures}/compare-${classifier_base}___${classifier_new}.json"
+    printf '%s' "$classifier_new" >"${fixtures}/head"
+    # Deliberately no --integration-exempt-cap.
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+}
+classify_reserve_nocap
+[ "$(jq -r '.charge' "$state")" = "charged" ] ||
+    fail "an undeclared ceiling must charge: $(jq -r '.charge_reason' "$state")"
+case "$(jq -r '.charge_reason' "$state")" in
+*"no exempt ceiling was declared"*) ;;
+*) fail "the reason must name the undeclared ceiling: $(jq -r '.charge_reason' "$state")" ;;
+esac
 
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
