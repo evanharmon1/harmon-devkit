@@ -251,6 +251,17 @@ four and supplies their per-lane values rather than restating them. A brief
 composed from memory is how the 2026-09-06 fan-out shipped three workers that
 each broke a different one of those rules.
 
+`implement` is a **required dependency** of this skill, declared in
+`assets/policy-contract.json`. `assets/lane-brief.md` is the superset of that
+skill's brief template and names four of its sections without restating them,
+so a consumer holding `orchestrate` without `implement` renders a lane brief
+whose hard rules, gate bounds, proposal-only clause and delegation contract are
+absent. The lane brief therefore **blocks** when the base template is
+unreadable, rather than degrading — a one-command vendoring fix, not a mode to
+run in. The agent definitions under `ai/agents/` keep the discover-don't-require
+degradation: a bounded role can return an honest typed result without the
+contract, a lane cannot open an honest PR without it.
+
 Neither template is a work contract for a **bounded role subagent**. Both
 finish at a published draft PR, which `ai/agents/implementer.md` § "Never"
 forbids non-overridably; a role agent gets its own schema-bound role brief and

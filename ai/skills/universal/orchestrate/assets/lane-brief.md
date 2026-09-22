@@ -91,10 +91,12 @@ do not restart the clock at dispatch or resume.
 
 ## Scope — one issue, one PR
 
-- **[#{{issue-number}} — {{issue-title}}]({{issue-url}}).** Use this canonical URL
-  as `/implement`'s target so the target repository remains pinned under fork
-  topology. Read the issue body and every comment in full at implementation
-  time.
+- **[#{{issue-number}}]({{issue-url}})** — `{{issue-title}}`. Use this
+  canonical URL as `/implement`'s target so the target repository remains
+  pinned under fork topology. Read the issue body and every comment in full at
+  implementation time. The title is rendered as a code span, outside link
+  syntax, because it is fetched from the issue and an issue title is
+  attacker-controllable on a public repository.
 
 Verified facts and numbered, attributable orchestrator rulings:
 
@@ -128,15 +130,20 @@ checks that they still agree. Read them there:
   still commits, still pushes, and still opens the draft PR; it stops there.
 
 Resolution order: prefer `.agents/skills/implement/assets/implementer-brief.md`,
-then the harness-specific skills location, then one bounded glob — the same
-discover-don't-require ladder every agent definition in this repository uses. A
-consumer vendors skills individually and may hold `orchestrate` without
-`implement`, so **not finding the file is a supported state, not a blocker**: if
-none of those paths is readable, do not reconstruct the sections from memory —
-fall back to `AGENTS.md`, which carries this repository's own binding form of
-the hard rules and the gate policy, plus this brief, and record in your report
-that the base contract was unreadable and which sections you therefore did not
-see.
+then the harness-specific skills location, then one bounded glob. **If none of
+those is readable, report BLOCKED and stop** — do not reconstruct the sections
+from memory and do not continue without them. This lane brief names four
+sections it deliberately does not restate, so an unreadable base template means
+a lane running with no hard rules, no gate bounds, no proposal-only clause and
+no delegation contract, on a unit that owns a PR. That is a **vendoring error
+the operator can fix in one command**, not a degraded mode worth running in:
+`orchestrate/assets/policy-contract.json` declares `implement` a required
+skill for exactly this reason.
+
+This is deliberately **stricter than the agent definitions**, which degrade to
+`AGENTS.md` plus their dispatch brief instead of blocking. A bounded role agent
+can still return an honest typed result without the contract; a lane cannot open
+an honest PR without it.
 
 The values those sections need for this lane:
 

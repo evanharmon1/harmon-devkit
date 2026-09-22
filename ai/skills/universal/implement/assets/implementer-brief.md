@@ -32,6 +32,16 @@ worktree lane. It is not a work contract for a bounded role subagent — see
   never switch branches, never touch `{{default-branch}}`. Never claim or
   unclaim issues — the orchestrator owns the claim and its release. Never write
   to a password manager or credential store. Never terminate a process.
+- **Unless your dispatch placed you in an isolated worktree, require a clean
+  index and worktree before your first edit**: `git status --porcelain` must
+  print nothing. Report BLOCKED if it does not, naming what it printed. On a
+  shared tree those entries are someone else's — a half-finished edit, a staged
+  hunk, a stray file — and `git add -A` would sweep them into your commit and
+  attribute them to your work. This is the shared-tree exposure § "Delegation
+  contract" rule 2 describes as wider than branches, checked at entry rather
+  than discovered at commit time. Under
+  isolation the tree is yours and the check is a formality, but run it anyway
+  and report what it showed.
 - Stay inside `{{worktree-path}}` for project files. This brief and
   `{{report-path}}` are control files: never commit or rename them.
 - Before writing the report, resolve the worktree root and the common Git
@@ -89,9 +99,13 @@ branch-update dependency): {{live-lane-overlaps}}
 
 ## Scope — one issue, one PR
 
-- **[#{{issue-number}} — {{issue-title}}]({{issue-url}}).** Use this canonical
-  URL as the target so the repository stays pinned under fork topology. Read the
-  issue body and every comment in full at implementation time.
+- **[#{{issue-number}}]({{issue-url}})** — `{{issue-title}}`. Use this
+  canonical URL as the target so the repository stays pinned under fork
+  topology. Read the issue body and every comment in full at implementation
+  time. The title is rendered as a code span, outside link syntax, because it
+  is fetched from the issue and an issue title is attacker-controllable on a
+  public repository: inside a link it could close the link and inject markdown
+  the worker would read as instruction.
 - Unit kind: **{{unit-kind}}** (see § "Proposal-only units" when that is what
   was rendered here).
 

@@ -2,5 +2,9 @@
   "$comment": "The .devflow.toml schema version this skill operates under. Vendored with the skill, so a consumer's own checkout carries the requirement its pinned skills actually impose. orchestrate/assets/consumer-pin-audit.sh requires the vendored skills to agree on ONE version and the policy to declare exactly that version: a schema version names an incompatible shape, not a minimum capability level, so a set declaring two different versions is refused as indeterminate rather than resolved to either. A pre-Dev-flow-v2 skill ships no such file, which is how an unadvanced pin correctly reads as requiring nothing. Declared per skill rather than once centrally because a consumer vendors skills individually and may hold any subset of them.",
   "skill": "orchestrate",
   "policy_schema_version": 2,
-  "since": "harmon-devkit#604"
+  "since": "harmon-devkit#604",
+  "requires_skills": [
+    "implement"
+  ],
+  "$comment_requires_skills": "Skills this one cannot operate without. assets/lane-brief.md is the dev-flow-v2 superset of the implement skill brief template: it names four base sections that bind a lane unchanged and does not restate them, so a consumer that vendors orchestrate without implement gets a lane brief whose hard rules, gate bounds, proposal-only clause and delegation contract are simply absent. That is a vendoring error the consumer can fix, not a degraded mode a lane should run in, so the lane brief blocks rather than continuing. The agent definitions under ai/agents keep the discover-do-not-require degradation, because an agent is a bounded role that can still return a typed result without the contract; a lane owns a PR."
 }
