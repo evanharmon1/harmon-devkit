@@ -1705,17 +1705,27 @@ check)
     # ordinal disagrees with the inherited totals. `reserve` cannot catch this
     # because it is never called; the resume path has to, so the guard lives
     # here where the resume actually happens.
-    if [ -n "$run_id" ]; then
-        state_run_id=$(jq -r '.run_id // empty' "$state_file")
-        if [ -n "$state_run_id" ] && [ "$state_run_id" != "$run_id" ]; then
-            emit indeterminate "this cycle state belongs to run $state_run_id, not $run_id — reserve a fresh cycle rather than resuming another run's spend"
-            exit 2
-        fi
-    fi
     [ "$state_phase" = "attached" ] || {
         emit indeterminate "review request was reserved but its exact trigger is not attached"
         exit 2
     }
+    # Review round 5, P1 (confirmed): a caller that names a run is asking for
+    # EXACT ownership, so unowned state must not pass as this run's. State
+    # written before run scoping existed carries no owner, and treating that
+    # as "mine" is the same mistake as treating a foreign owner as mine — it
+    # just fails silently instead of loudly. A scoped call gets a scoped
+    # answer; an unscoped call (no --run-id) keeps the old behavior.
+    if [ -n "$run_id" ]; then
+        state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ -z "$state_run_id" ]; then
+            emit indeterminate "this cycle state records no owning run, so it cannot be confirmed as run $run_id's — reserve a fresh cycle"
+            exit 2
+        fi
+        if [ "$state_run_id" != "$run_id" ]; then
+            emit indeterminate "this cycle state belongs to run $state_run_id, not $run_id — reserve a fresh cycle rather than resuming another run's spend"
+            exit 2
+        fi
+    fi
 
     # Per-finder parameters (#804): when state carries a finder profile,
     # actor identity and classification are driven by it.

@@ -529,7 +529,12 @@ recheck_codex_freshness() {
     [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] && [ "$state_head" = "$head" ] ||
         indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
     codex_recheck_exit=0
-    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
+    # Review round 5, P1 (confirmed): this recheck is the gate's own use of the
+    # checker, and it was the one call site still not naming the run. A later
+    # run can replace the shared same-head state, so without the run id this
+    # call would happily validate a foreign run's cycle. `active_run_id` is
+    # read from --record's run.json well before this runs.
+    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" 2>&1)" ||
         codex_recheck_exit=$?
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"

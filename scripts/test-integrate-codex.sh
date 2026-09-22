@@ -3904,6 +3904,37 @@ set -e
 [ "$(jq -r '.exempt_cycles' "$state")" = "0" ] ||
     fail "the prior run's exempt spend must not carry over: $(jq -r '.exempt_cycles' "$state")"
 
+echo "==> check refuses state that records no owning run when a run is named"
+# Review round 5, P1: a caller that names a run is asking for EXACT ownership.
+# Unowned state is not this run's — treating it as mine is the same mistake as
+# treating a foreign owner as mine, it just fails silently instead of loudly.
+new_cycle
+"$helper" attach --state "$state" --trigger-id 557 >/dev/null 2>&1 || true
+jq 'del(.run_id)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+unowned_out="$("$helper" check --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --timeout-min 15 --run-id run-a \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+unowned_rc=$?
+set -e
+[ "$unowned_rc" -eq 2 ] ||
+    fail "unowned state must not pass a scoped call, got rc $unowned_rc: $unowned_out"
+case "$unowned_out" in
+*"records no owning run"*) ;;
+*) fail "the refusal must say the state is unowned: $unowned_out" ;;
+esac
+# An UNSCOPED call keeps the old behavior — this is not a blanket new
+# requirement on every caller, only on one that asked to be scoped.
+set +e
+unscoped_out="$("$helper" check --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --timeout-min 15 \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+set -e
+case "$unscoped_out" in
+*"records no owning run"*) fail "an unscoped call must not require an owner: $unscoped_out" ;;
+esac
+
 echo "==> another run's UNRESOLVED reservation stays blocked"
 # `reserved` is the write-ahead record taken before the trigger is posted, so
 # a foreign run sitting in it may already have a live @codex review out.
