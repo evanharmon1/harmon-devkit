@@ -4029,6 +4029,54 @@ rm -f "$state"
 [ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
     fail "a new run must not inherit spend, got $(jq -r '.charged_cycles' "$state")"
 
+echo "==> an unusable run-spend sidecar refuses rather than resetting spend"
+# Codex cloud cycle 4, P1: recovery treated unreadable evidence as zero, so a
+# truncated sidecar silently reset the run's spend. ABSENT means nothing spent;
+# PRESENT BUT UNUSABLE means unknown spend, which is never room to spend more.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+rm -f "$state"
+printf '%s' '{"run-a": {"charged": ' >"${state%.json}.spend.json"
+set +e
+corrupt_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a 2>&1)"
+corrupt_rc=$?
+set -e
+[ "$corrupt_rc" -ne 0 ] ||
+    fail "an unreadable sidecar must refuse, not reset: $corrupt_out"
+case "$corrupt_out" in
+*"unreadable"*) ;;
+*) fail "the refusal must name the unreadable sidecar: $corrupt_out" ;;
+esac
+
+echo "==> an impossible exempt/charged cap pair is refused before any trigger"
+# The resolver produces only 0 or a ceiling equal to the charged cap, so any
+# other pair describes a policy that cannot exist — and would let cycles beyond
+# the real cap be approved as exempt.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+set +e
+badcap_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a \
+    --integration-cap 4 --integration-exempt-cap 99 2>&1)"
+badcap_rc=$?
+set -e
+[ "$badcap_rc" -ne 0 ] ||
+    fail "an impossible cap pair must be refused: $badcap_out"
+# The two legitimate shapes still work.
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a \
+    --integration-cap 4 --integration-exempt-cap 4 >/dev/null ||
+    fail "an equal pair must be accepted"
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-a \
+    --integration-cap 4 --integration-exempt-cap 0 >/dev/null ||
+    fail "a zero exempt ceiling must be accepted"
+
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
     '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \

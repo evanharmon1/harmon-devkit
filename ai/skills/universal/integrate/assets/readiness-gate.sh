@@ -343,6 +343,15 @@ valid_uint "$pr" || die "invalid PR number: $pr"
     die "--integration-cap must be a non-negative integer"
 [ -z "$integration_exempt_cap" ] || valid_uint_or_zero "$integration_exempt_cap" ||
     die "--integration-exempt-cap must be a non-negative integer"
+# Codex cloud cycle 4, P2 (confirmed): the PR-body validator rejecting an
+# impossible pair does not protect readiness, which never compares these flags
+# with the disclosure. The resolver produces only 0 or a ceiling equal to the
+# charged cap, so anything else here would let cycles beyond the real cap be
+# approved as exempt at the enforcement boundary itself.
+[ -z "$integration_exempt_cap" ] || [ -z "$integration_cap" ] ||
+    [ "$integration_exempt_cap" = "0" ] ||
+    [ "$integration_exempt_cap" = "$integration_cap" ] ||
+    die "--integration-exempt-cap ($integration_exempt_cap) must be 0 or equal to --integration-cap ($integration_cap); no resolved policy produces any other pair"
 [ -z "$remediation_cap" ] || valid_uint_or_zero "$remediation_cap" ||
     die "--remediation-cap must be a non-negative integer"
 

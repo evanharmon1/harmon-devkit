@@ -649,8 +649,18 @@ reap_record() {
 mark_terminally_reviewed() {
     [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
     [ -n "${state_head:-}" ] || return 0
-    jq --arg h "$state_head" '.last_reviewed_head = $h
-        | .last_reviewed_base_sha = (.base_sha // null)' "$state_file" \
+    # Codex cloud cycle 4, P1 (confirmed): the base sampled at RESERVATION can
+    # be minutes stale by the time a verdict lands. If the base advances B0->B1
+    # while polling, the review saw B1 while state recorded B0, and a later
+    # merge adopting B1's version of a reviewed file could drop it from both
+    # reconstructed patches — a false exemption. Reconfirm the base as the
+    # verdict is recorded, and where it cannot be confirmed leave the proof
+    # UNSET so the next cycle charges rather than trusting a stale SHA.
+    reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
+        jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
+    valid_sha "$reviewed_base_sha" || reviewed_base_sha=
+    jq --arg h "$state_head" --arg b "$reviewed_base_sha" '.last_reviewed_head = $h
+        | .last_reviewed_base_sha = (if $b == "" then null else $b end)' "$state_file" \
         >"${state_file}.reviewed" 2>/dev/null &&
         mv "${state_file}.reviewed" "$state_file" ||
         rm -f "${state_file}.reviewed"
@@ -1562,9 +1572,22 @@ reserve)
     carried_charged=0
     carried_exempt=0
     if [ ! -f "$state_file" ] && [ -n "$run_id" ] && [ -f "$spend_file" ]; then
-        recovered_charged=$(jq -r --arg r "$run_id" '.[$r].charged // empty' "$spend_file" 2>/dev/null) || recovered_charged=
-        recovered_exempt=$(jq -r --arg r "$run_id" '.[$r].exempt // empty' "$spend_file" 2>/dev/null) || recovered_exempt=
-        if valid_uint_or_zero "$recovered_charged" && valid_uint_or_zero "$recovered_exempt"; then
+        # Codex cloud cycle 4, P1 (confirmed): recovery treated unreadable
+        # evidence as zero. A truncated or malformed sidecar — which the writer
+        # below could itself produce, since it ignored jq/mv failures — then
+        # silently reset the run's spend and let the next reservation exceed
+        # either ceiling.
+        #
+        # ABSENT is fine: no record means nothing spent. PRESENT BUT UNUSABLE is
+        # not: that is unknown spend, and by this change's governing invariant
+        # unknown spend is never treated as room to spend more. Refuse instead.
+        jq -e . "$spend_file" >/dev/null 2>&1 ||
+            die "the run-spend sidecar $spend_file is unreadable; the run's spend cannot be established — repair or remove it deliberately rather than reserving against unknown spend"
+        if jq -e --arg r "$run_id" 'has($r)' "$spend_file" >/dev/null 2>&1; then
+            recovered_charged=$(jq -r --arg r "$run_id" '.[$r].charged // empty' "$spend_file" 2>/dev/null) || recovered_charged=
+            recovered_exempt=$(jq -r --arg r "$run_id" '.[$r].exempt // empty' "$spend_file" 2>/dev/null) || recovered_exempt=
+            valid_uint_or_zero "$recovered_charged" && valid_uint_or_zero "$recovered_exempt" ||
+                die "the run-spend sidecar records an unusable entry for run $run_id (charged=$recovered_charged exempt=$recovered_exempt); repair it rather than reserving against unknown spend"
             carried_charged=$recovered_charged
             carried_exempt=$recovered_exempt
         fi
@@ -1639,6 +1662,16 @@ reserve)
         # this reservation, so the review has already run by the time the gate
         # objects. Refuse the reservation instead, at the one point where the
         # spend is still preventable.
+        # The resolver produces exactly two shapes — equal to the charged cap, or
+        # 0 on a historical decode — so any other pair describes a policy that
+        # cannot exist. Refusing it here, before a trigger is posted, is the
+        # point: a caller passing `--integration-cap 4 --integration-exempt-cap
+        # 99` could otherwise have cycles 5..99 approved as exempt.
+        if [ -n "$integration_exempt_cap" ] && [ -n "$integration_cap" ]; then
+            [ "$integration_exempt_cap" = "0" ] ||
+                [ "$integration_exempt_cap" = "$integration_cap" ] ||
+                die "--integration-exempt-cap ($integration_exempt_cap) must be 0 or equal to --integration-cap ($integration_cap); no resolved policy produces any other pair"
+        fi
         # An exempt ceiling of 0 is not "no exempt budget left", it is a policy
         # with no exemption at all — what every historical (legacy/v1) decode
         # resolves to, because those shapes spend one shared total. Refusing
@@ -1791,8 +1824,10 @@ reserve)
         [ -f "$spend_file" ] || printf '{}' >"$spend_file"
         jq --arg r "$run_id" --argjson c "$carried_charged" --argjson e "$carried_exempt" \
             '.[$r] = {charged: $c, exempt: $e}' "$spend_file" >"${spend_file}.next" 2>/dev/null &&
-            mv "${spend_file}.next" "$spend_file" ||
+            mv "${spend_file}.next" "$spend_file" || {
             rm -f "${spend_file}.next"
+            die "cannot record this run's spend in $spend_file; refusing to reserve a cycle whose spend would not be durable"
+        }
     fi
 
     payload=$(jq -cn \
@@ -2306,6 +2341,11 @@ reap)
                 action=skipped
                 detail="state changed while its PR was being checked"
             elif rm -f "$candidate"; then
+                # The run-spend sidecar belongs to this state's PR and is only
+                # ever meaningful while that PR is open. It is removed together
+                # with a POSITIVELY identified closed-PR state — never on its
+                # own, since on its own it carries no PR identity to check.
+                rm -f "${candidate%.json}.spend.json"
                 rmdir "$reap_lock" 2>/dev/null || true
                 reap_lock=
                 action=reaped
