@@ -74,7 +74,8 @@ ignores the frontmatter.
   the original with nothing checking the two agree. Resolve it under the
   discover-don't-require rule above — `.agents/skills/implement/assets/`, then
   the harness-specific location, then one bounded glob — and where nothing is
-  readable, say so in the result rather than guessing the contract.
+  readable, continue on `AGENTS.md` plus the dispatch brief rather than guessing
+  the contract.
   Its rule 5 splits by audience: an agent defined here answers through its typed
   result and writes only what its own definition permits, while the report file
   and publication sentinels belong to a PR-owning session or pane.

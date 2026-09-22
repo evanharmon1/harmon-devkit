@@ -503,6 +503,17 @@ case "$impl_contract_section" in
 *'Two audiences, one contract'*) ;;
 *) fail "the delegation contract does not split the PR-owning and bounded-role audiences" ;;
 esac
+case "$impl_contract_section" in
+*'They differ in one place only — rule 5'*) ;;
+*) fail "the contract claims an audience split other than rule 5's" ;;
+esac
+# rule 2's asymmetry is universal — "a commit you did not create" binds every
+# audience identically — so it must not be recast as an audience split. An
+# `implementer` is a bounded role that commits, which is what made the second
+# claimed split false while every referrer still named only rule 5's.
+case "$impl_contract_section" in
+*'a moved HEAD is a deliverable for one audience'*) fail "rule 2 is described as an audience split it does not have" ;;
+esac
 for rule in "${impl_contract_rules[@]}"; do
     grep -Fq "$rule" "$impl_rendered_file" ||
         fail "implementer-brief delegation contract is missing: $rule"
@@ -531,30 +542,88 @@ case "$impl_contract_section" in
 esac
 
 # Sweep the class rather than the instance, and DERIVE the set from the
-# assertions themselves: a hand-maintained list covered 16 of the 42 literals
-# while this comment claimed all of them. Every literal positively asserted
+# assertions themselves. Two earlier shapes of this check were weaker than
+# their own comment: a hand list covered 16 of 42 literals, and the first
+# derived version read ONE assertion syntax, so a duplicate in a `case` arm or
+# in a line-continued `grep` survived. Every literal positively asserted
 # against the whole rendered brief must occur exactly once there, or its
-# assertion cannot fail when the load-bearing occurrence is deleted. Negative
-# assertions (the `if grep … then fail` form) are excluded by construction —
-# they are the ones that must occur zero times.
-impl_asserted_literals="$(grep -oE "^grep -Fq (-e )?'[^']+' \"\\\$impl_rendered_file\"" "$0" |
-    sed -E "s/^grep -Fq (-e )?'//; s/' \"\\\$impl_rendered_file\"$//")"
+# assertion cannot fail when the load-bearing occurrence is deleted.
+#
+# Continuation lines are joined first so a `grep -Fq 'lit' \` whose filename
+# sits on the next line is seen as one assertion. Negative assertions (the
+# `if grep … then fail` and `*'lit'*) fail …` forms) are excluded by
+# construction: those are the ones that must occur ZERO times.
+impl_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ta' -e '}' "$0")"
+# shell-robustness: begin-exempt — the forbidden text `grep -Fq` appears here
+# only INSIDE the regex that searches this file FOR that text; these pipelines
+# use `grep -oE`, which reads its input to EOF and cannot SIGPIPE the producer.
+impl_asserted_literals="$(
+    printf '%s\n' "$impl_joined" |
+        grep -oE "^grep -Fq (-e )?'[^']+' +\"\\\$impl_rendered_file\"" |
+        sed -E "s/^grep -Fq (-e )?'//; s/' +\"\\\$impl_rendered_file\"$//"
+    # Only `case` blocks whose subject is the WHOLE rendered brief. Arms under
+    # a scoped subject ($impl_launch, $impl_profile_block, $lane_inherits …)
+    # assert against an extract, so their literal may legitimately occur more
+    # than once in the brief — sweeping those reported a false duplicate.
+    printf '%s\n' "$impl_joined" |
+        awk '
+            /^case "\$impl_flat" in$/ { inblock = 1; next }
+            /^esac$/ { inblock = 0 }
+            inblock && /^\*'"'"'[^'"'"']+'"'"'\*\) ;;$/ {
+                line = $0
+                sub(/^\*'"'"'/, "", line)
+                sub(/'"'"'\*\) ;;$/, "", line)
+                print line
+            }
+        '
+)"
+# shell-robustness: end-exempt
 [ -n "$impl_asserted_literals" ] ||
     fail "could not derive the asserted-literal set from this test"
+
 impl_swept=0
+impl_swept_case=0
 while IFS= read -r literal; do
     [ -n "$literal" ] || continue
     impl_swept=$((impl_swept + 1))
-    # -e: several asserted literals begin with a dash (launch flags).
-    count="$(grep -Fc -e "$literal" "$impl_rendered_file" || true)"
-    [ "${count:-0}" -eq 1 ] ||
-        fail "assertion literal occurs ${count:-0} times in the rendered brief (needs exactly 1): $literal"
+    # Counted against the FLATTENED brief, not the file's lines: an asserted
+    # literal may straddle a wrap (every `case "$impl_flat"` literal does), so
+    # a line-oriented count reports 0 for a literal that is plainly present —
+    # and misses a duplicate that straddles a wrap, which is the very defect
+    # this sweep exists to catch.
+    count=0
+    scan="$impl_flat"
+    while :; do
+        case "$scan" in
+        *"$literal"*)
+            count=$((count + 1))
+            scan="${scan#*"$literal"}"
+            ;;
+        *) break ;;
+        esac
+    done
+    [ "$count" -eq 1 ] ||
+        fail "assertion literal occurs $count times in the rendered brief (needs exactly 1): $literal"
 done <<EOF
 $impl_asserted_literals
 EOF
-[ "$impl_swept" -ge 20 ] ||
-    fail "derived only $impl_swept asserted literals — the extraction regex has drifted from the assertions"
 
+# The probe review round 2 used, as a test case: the extraction must actually
+# reach the `case`-arm syntax, not merely the `grep -Fq` one. Round 1's version
+# passed its own floor check while missing 18 case arms and 12 continued
+# greps — and the same commit moved a literal from the covered syntax into an
+# uncovered one, narrowing coverage while claiming to widen it.
+for representative in \
+    'It overrides three of the skill' \
+    'the publication half of this template does not bind a bounded role'; do
+    case "$impl_asserted_literals" in
+    *"$representative"*) impl_swept_case=$((impl_swept_case + 1)) ;;
+    esac
+done
+[ "$impl_swept_case" -eq 2 ] ||
+    fail "the literal extraction no longer reaches case-arm assertions (found $impl_swept_case/2)"
+[ "$impl_swept" -ge 40 ] ||
+    fail "derived only $impl_swept asserted literals — the extraction has drifted from the assertions"
 # Fence prose, identical to the lane superset so the two cannot drift.
 grep -Fq 'A validator or test that rejects your change and that no other live lane touches' \
     "$impl_rendered_file" ||
@@ -575,6 +644,16 @@ esac
 # four caps, min_rounds, wall-clock, the breadth envelope, strategy+source and
 # all five tiers. The line enumerated three of those short, and the v2 superset
 # already rendered all three — the base under-specified against both.
+# Scoped to the profile-line bullet, not the whole brief: the catalog-row half
+# below is already scoped for exactly this reason, and an unscoped check here
+# passed a probe that deleted a field from the bullet while mentioning the same
+# phrase elsewhere in the template.
+impl_profile_block="$(awk '
+    /^- \*\*Include the profile line\*\*/ { collecting = 1 }
+    collecting { print; if ($0 ~ /Render it from:/) exit }
+' "$impl_rendered_file" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+[ -n "$impl_profile_block" ] ||
+    fail "implementer-brief has no profile-line bullet"
 for announced in \
     '`min_rounds` floor and wall-clock' \
     'breadth envelope' \
@@ -582,7 +661,7 @@ for announced in \
     'max_parallel_agents' \
     'all five role tiers' \
     'strategy and its source'; do
-    case "$impl_flat" in
+    case "$impl_profile_block" in
     *"$announced"*) ;;
     *) fail "PR-body profile line omits a field AGENTS.md's announce set requires: $announced" ;;
     esac
@@ -808,6 +887,15 @@ for referrer in \
         fail "$referrer does not degrade to a bounded glob"
     grep -Fq 'do not guess the contract' "$referrer" ||
         fail "$referrer does not say what to do when the contract is unreadable"
+    # The result schemas are additionalProperties:false with no free-text field
+    # for challenger/reviewer/integrator, so "say in your result" that a file
+    # was unreadable can only be obeyed by minting a finding or by mislabelling
+    # a completed pass as blocked. Ask only for what the ladder can deliver.
+    if grep -Fq 'say in your result that you could not read it' "$referrer"; then
+        fail "$referrer asks for a disclosure the typed result has no field to carry"
+    fi
+    grep -Fq 'continue on `AGENTS.md` plus your' "$referrer" ||
+        fail "$referrer does not continue on the degradation ladder it names"
     grep -Fq 'bounded-role side of it' "$referrer" ||
         fail "$referrer does not place the role on the bounded side of rule 5"
 done

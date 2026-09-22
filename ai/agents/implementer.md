@@ -180,9 +180,9 @@ it needs no rendered brief to be usable.
 Resolve it the way this repository resolves any skill file: prefer
 `.agents/skills/implement/assets/implementer-brief.md`, then the
 harness-specific skills location, then one bounded glob. **If none of those
-is readable, do not guess the contract** — rules 1-4 of it are restated
-nowhere, so fall back to `AGENTS.md` plus your dispatch brief and say in your
-result that you could not read it.
+is readable, do not guess the contract** — continue on `AGENTS.md` plus your
+dispatch brief, which is the degradation this repository's discover-don't-
+require rule prescribes, and keep to the narrower of what those two allow.
 
 Rule 5 has an audience split, and you are on the bounded-role side of it: you
 answer through the typed result your dispatch asked for, and your writes are

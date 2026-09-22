@@ -152,10 +152,9 @@ operable whether you reach it through a rendered brief or by opening the
 template itself. Where a rule needs a value, it names the section of your own
 dispatch that carries it.
 
-**Two audiences, one contract.** Every rule below binds every dispatched
-worker. Two of them read differently by audience, and say so where they do:
-rule 2, because a moved HEAD is a deliverable for one audience and drift for the
-other, and rule 5, because the two have different output contracts:
+**Two audiences, one contract.** Every rule below binds every dispatched worker
+identically. They differ in one place only — rule 5, because the two audiences
+have different output contracts:
 
 - A **PR-owning session or pane** — a harness session, a terminal pane, a
   worktree lane — runs the whole brief, gates included, and finishes at a
