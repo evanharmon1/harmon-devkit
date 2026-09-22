@@ -76,17 +76,31 @@ if [ -f "$GH_FIXTURES/ro-exit" ]; then
 fi
 
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
+    if [ -f "$GH_FIXTURES/fail-closing-references" ] &&
+        [[ "$*" = *closingIssuesReferences* ]]; then
+        exit 94
+    fi
     count_file="$GH_FIXTURES/pr-view-count"
     count=0
     [ ! -f "$count_file" ] || count="$(cat "$count_file")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$count_file"
     if [ "$count" -ge 3 ] && [ -f "$GH_FIXTURES/pr-view-third.json" ]; then
-        cat "$GH_FIXTURES/pr-view-third.json"
+        file="$GH_FIXTURES/pr-view-third.json"
     elif [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/pr-view-second.json" ]; then
-        cat "$GH_FIXTURES/pr-view-second.json"
+        file="$GH_FIXTURES/pr-view-second.json"
     else
-        cat "$GH_FIXTURES/pr-view.json"
+        file="$GH_FIXTURES/pr-view.json"
+    fi
+    if [[ "$*" = *closingIssuesReferences* ]]; then
+        linkage="$GH_FIXTURES/closing-view.json"
+        if [ "$count" -ge 3 ] && [ -f "$GH_FIXTURES/second-closing-view.json" ]; then
+            linkage="$GH_FIXTURES/second-closing-view.json"
+        fi
+        jq -c --slurpfile linkage "$linkage" \
+            '. + $linkage[0]' "$file"
+    else
+        cat "$file"
     fi
     exit 0
 fi
@@ -119,6 +133,11 @@ graphql) file=threads.pages.json ;;
 repos/*/pulls/*/comments*) file=inline.pages.json ;;
 repos/*/pulls/*/reviews*) file=reviews.pages.json ;;
 repos/*/issues/*/comments*) file=top.pages.json ;;
+repos/*/issues/[0-9]*)
+    issue_number="${endpoint##*/}"
+    file="issue-${issue_number}.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=issue.json
+    ;;
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/actions/runs*) file=workflow-runs.pages.json ;;
@@ -462,6 +481,9 @@ write_defaults() {
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
           headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
         >"${fixtures}/pr-view.json"
+    jq -cn --arg body "$(default_body)" \
+        '{body:$body,closingIssuesReferences:[]}' \
+        >"${fixtures}/closing-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
           head:{sha:$head},user:{id:4242,login:"pr-author"}}' \
@@ -484,6 +506,7 @@ write_defaults() {
     # gate uses; mergeStateStatus above is only the cache.
     jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
+    jq -cn '{number:380}' >"${fixtures}/issue.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/top.pages.json"
@@ -491,7 +514,10 @@ write_defaults() {
         '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"T1","isResolved":false}]}}}}}]' \
         >"${fixtures}/threads.pages.json"
     rm -f "${fixtures}/fail-endpoint"
+    rm -f "${fixtures}/fail-closing-references"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
+    rm -f "${fixtures}/second-closing-view.json"
+    rm -f "${fixtures}"/issue-*.json
     rm -f "${fixtures}"/count-* "${fixtures}"/second-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
@@ -654,6 +680,233 @@ echo "==> BLOCKED mergeStateStatus and REVIEW_REQUIRED are promotable (never req
 write_defaults
 run_gate
 assert_gate 0 pass ready
+
+echo "==> a GraphQL empty body and REST null body are the same no-claim description"
+write_defaults
+jq '.body = "" | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq '.body = null' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a missing REST body stays malformed instead of becoming empty"
+write_defaults
+jq '.body = "" | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq 'del(.body)' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a GraphQL false body stays malformed instead of becoming empty"
+write_defaults
+jq '.body = false | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq '.body = null' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a REST body of any other non-string shape stays malformed"
+write_defaults
+jq '.body = []' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a claimed same-repo closing keyword without linkage fails closed"
+write_defaults
+closing_body='Closes #380'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 1 fail closing-linkage-missing
+
+echo "==> a claimed full-URL closing keyword without linkage fails closed"
+write_defaults
+closing_body='Closes https://github.com/owner/repo/issues/5'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 1 fail closing-linkage-missing
+
+echo "==> a claimed full-URL closing keyword with linkage passes"
+write_defaults
+closing_body='Fixed https://github.com/owner/repo/issues/5'
+closing_refs='[{"number":5,"repository":{"name":"repo","owner":{"login":"owner"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a non-closing Refs-only body does not require linkage"
+write_defaults
+refs_body='Refs #380'
+jq --arg body "$refs_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$refs_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a closing keyword on one line does not claim a reference on the next"
+write_defaults
+cross_line_body="$(printf 'Closes\n#380\n')"
+jq --arg body "$cross_line_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$cross_line_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a closing keyword targeting a pull request needs no issue linkage"
+write_defaults
+closing_body='Closes #493'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq -cn '{number:493,pull_request:{url:"https://api.github.test/repos/example/repo/pulls/493"}}' \
+    >"${fixtures}/issue-493.json"
+run_gate
+assert_gate 0 pass ready
+resolve_count="$(awk '$0 ~ /^api repos\/example\/repo\/issues\/493([[:space:]]|$)/ { count++ } END { print count + 0 }' "$log")"
+[ "$resolve_count" -eq 1 ] ||
+    fail "expected the same-repo PR target to resolve once, saw $resolve_count reads"
+
+echo "==> a null pull_request marker is malformed, not a PR-target exemption"
+write_defaults
+closing_body='Closes #493'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq -cn '{number:493,pull_request:null}' >"${fixtures}/issue-493.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a non-object pull_request marker is malformed, not a PR-target exemption"
+write_defaults
+closing_body='Closes #493'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq -cn '{number:493,pull_request:"not-an-object"}' >"${fixtures}/issue-493.json"
+run_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> a failed claimed-target resolve is indeterminate"
+write_defaults
+closing_body='Closes #380'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+printf '%s\n' 'repos/example/repo/issues/380' >"${fixtures}/fail-endpoint"
+run_gate
+assert_gate 2 indeterminate fetch-failed
+
+echo "==> a claimed same-repo closing keyword with linkage passes"
+write_defaults
+closing_body='Fixed #380'
+closing_refs='[{"number":380,"repository":{"name":"repo","owner":{"login":"example"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a linked leading-zero issue number is normalized numerically"
+write_defaults
+closing_body='Closes #0380'
+closing_refs='[{"number":380,"repository":{"name":"repo","owner":{"login":"example"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> linkage disappearing before the final snapshot fails closed"
+write_defaults
+closing_body='Fixes #380'
+closing_refs='[{"number":380,"repository":{"name":"repo","owner":{"login":"example"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/second-closing-view.json"
+run_gate
+assert_gate 1 fail closing-linkage-missing
+
+echo "==> a claimed cross-repo closing keyword with linkage passes"
+write_defaults
+closing_body='Resolved owner/repo#5'
+closing_refs='[{"number":5,"repository":{"name":"repo","owner":{"login":"owner"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a closing-linkage fetch failure is indeterminate"
+write_defaults
+closing_body='Closes #380'
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+: >"${fixtures}/fail-closing-references"
+run_gate
+assert_gate 2 indeterminate fetch-failed
 
 # ---- SKILL.md base-reconciliation contract (harmon-devkit#873, #836) -------
 # Prose, not behaviour — but the prose is the whole fix for #873, and a
@@ -3262,6 +3515,20 @@ jq -cn --arg head "$head_sha" \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail merge-state-dirty
+
+echo "==> a body edit after fingerprinting fails on the final re-read"
+write_defaults
+final_body="$(printf 'What/why prose edited after fingerprinting.\n\n## Verification\n\n- task verify\n')"
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
+    >"${fixtures}/pr-view-third.json"
+jq -cn --arg body "$final_body" \
+    '{body:$body,closingIssuesReferences:[]}' \
+    >"${fixtures}/second-closing-view.json"
+run_gate
+assert_gate 1 fail content-moved
 
 echo "==> the fingerprint is double-read: gated evaluation plus a fresh compare"
 write_defaults
