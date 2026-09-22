@@ -183,16 +183,28 @@ obligations cannot tell when one was skipped.
    already stalled this way may be unresumable — the permission classifier can
    block the resume — so prefer a fresh spawn pointed at the stalled agent's
    written plan file over trying to revive it.
-2. **You share the caller's working tree and `HEAD`.** Never switch branches.
-   Re-read `git branch --show-current` and `git rev-parse HEAD` immediately
-   before you report, and report that HEAD **verbatim** from `git rev-parse`
-   output. The two halves are not symmetric: on the dispatched branch a moved
-   HEAD is the *expected* outcome — for a PR-owning worker the commits are the
-   deliverable — whereas a **changed branch is the failure**, and so is a HEAD
-   that moved to a commit you did not create. Confirm the branch is the one your
-   dispatch named (§ "Identity and boundaries"); if it is not, or if HEAD holds
-   work that is not yours, say so plainly rather than returning as though the
-   work landed where the caller expects. Quote every SHA verbatim from `git
+2. **Unless your dispatch placed you in an isolated worktree, you share the
+   caller's working tree and `HEAD`.** Never switch branches. Re-read
+   `git branch --show-current` and `git rev-parse HEAD` immediately before you
+   report, and report that HEAD **verbatim** from `git rev-parse` output. The
+   two halves are not symmetric: on the branch your dispatch named, a moved HEAD
+   is the *expected* outcome — for a PR-owning worker the commits are the
+   deliverable — whereas **HEAD holding a commit you did not create is the
+   failure**, and so is standing on a branch your dispatch did not name. Confirm
+   the branch against the value your own dispatch recorded (§ "Identity and
+   boundaries"), not against the caller's; if it differs, or if HEAD holds work
+   that is not yours, say so plainly rather than returning as though the work
+   landed where the caller expects.
+
+   **Isolation changes the premise, not the report.** Git refuses to check one
+   branch out in two worktrees, so a worker given `isolation: "worktree"` is
+   necessarily on its own branch or a detached HEAD, and shares neither tree nor
+   `HEAD` with its caller. Everything above still holds — never switch branches,
+   re-read both values, quote SHAs verbatim, flag a commit you did not create —
+   but the branch you confirm is the one **your** dispatch named, and your
+   caller learns where the work landed from your report rather than from its own
+   checkout. A worker isolated exactly as `ai/agents/README.md` recommends is
+   not in a failure state for standing somewhere its caller is not. Quote every SHA verbatim from `git
    rev-parse` output — never
    reconstruct, abbreviate from memory, or infer one. The caller's side of the
    same rule: capture the branch before delegating, re-read it after the

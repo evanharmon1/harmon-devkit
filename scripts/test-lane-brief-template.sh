@@ -480,7 +480,7 @@ grep -Fq '**A Codex brief forbids `gh pr ready` explicitly.**' "$impl_rendered_f
 # "stated once" claim dead in every possible tree.
 impl_contract_rules=(
     '**Exit plan mode before spawning an implementer.**'
-    "**You share the caller's working tree and \`HEAD\`.**"
+    "**Unless your dispatch placed you in an isolated worktree, you share the"
     '**Keep the core work in your own context — no sub-delegation.**'
     '**Namespace every scratch file under the scratch directory your dispatch'
     '**Report through the output contract your dispatch names, and re-read every'
@@ -559,8 +559,14 @@ impl_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ta' -e '}' "$0")"
 # use `grep -oE`, which reads its input to EOF and cannot SIGPIPE the producer.
 impl_asserted_literals="$(
     printf '%s\n' "$impl_joined" |
-        grep -oE "^grep -Fq (-e )?'[^']+' +\"\\\$impl_rendered_file\"" |
-        sed -E "s/^grep -Fq (-e )?'//; s/' +\"\\\$impl_rendered_file\"$//"
+        grep -oE "^[[:space:]]*grep -Fq (-e )?'[^']+' +\"\\\$impl_rendered_file\"" |
+        sed -E "s/^[[:space:]]*grep -Fq (-e )?'//; s/' +\"\\\$impl_rendered_file\"$//"
+    # Double-quoted literals too. Both live instances are double-quoted only
+    # because the literal contains an apostrophe, and a single-quote-only
+    # extraction made them invisible to the sweep for three rounds.
+    printf '%s\n' "$impl_joined" |
+        grep -oE "^[[:space:]]*grep -Fq (-e )?\"[^\"\\\$]+\" +\"\\\$impl_rendered_file\"" |
+        sed -E "s/^[[:space:]]*grep -Fq (-e )?\"//; s/\" +\"\\\$impl_rendered_file\"$//"
     # Only `case` blocks whose subject is the WHOLE rendered brief. Arms under
     # a scoped subject ($impl_launch, $impl_profile_block, $lane_inherits …)
     # assert against an extract, so their literal may legitimately occur more
@@ -580,6 +586,13 @@ impl_asserted_literals="$(
 # shell-robustness: end-exempt
 [ -n "$impl_asserted_literals" ] ||
     fail "could not derive the asserted-literal set from this test"
+
+impl_array_literals="$(
+    printf '%s\n' "${impl_hard_rules[@]}"
+    printf '%s\n' "${impl_contract_rules[@]}"
+)"
+impl_asserted_literals="$impl_asserted_literals
+$impl_array_literals"
 
 impl_swept=0
 impl_swept_case=0
@@ -622,6 +635,31 @@ for representative in \
 done
 [ "$impl_swept_case" -eq 2 ] ||
     fail "the literal extraction no longer reaches case-arm assertions (found $impl_swept_case/2)"
+
+# The surviving mutation probe from review round 3, as a test case: this
+# literal is DOUBLE-quoted (it contains an apostrophe) and was invisible to the
+# single-quote-only extraction, so duplicating it in the brief kept the suite
+# green while the load-bearing occurrence could then be deleted.
+case "$impl_asserted_literals" in
+*"standing in for the **PR's** check status"*) ;;
+*) fail "the literal extraction no longer reaches double-quoted assertions" ;;
+esac
+
+# Class closure: every `grep -Fq <literal> "$impl_rendered_file"` assertion in
+# this file must have been derived. Counted on the joined text, excluding the
+# `if`-guarded negative form, which must occur ZERO times and is swept
+# elsewhere. A mismatch means a literal form the extraction cannot read.
+# Variable-expansion assertions (`grep -Fq "$rule" …`) are excluded: their
+# literals come from the arrays swept just above, not from the line. Every
+# OTHER whole-brief grep assertion states its literal inline and must have been
+# derived.
+impl_assertion_lines="$(printf '%s\n' "$impl_joined" |
+    grep -E "^[[:space:]]*grep -Fq .* \"\\\$impl_rendered_file\"" |
+    grep -cvE "^[[:space:]]*grep -Fq (-e )?\"\\\$[A-Za-z_]" || true)"
+impl_derived_greps="$(printf '%s\n' "$impl_joined" |
+    grep -cE "^[[:space:]]*grep -Fq (-e )?('[^']+'|\"[^\"\\\$]+\") +\"\\\$impl_rendered_file\"" || true)"
+[ "${impl_assertion_lines:-0}" -eq "${impl_derived_greps:-0}" ] ||
+    fail "the sweep reads ${impl_derived_greps:-0} of ${impl_assertion_lines:-0} inline-literal whole-brief assertions — a literal form it cannot parse would go unswept"
 [ "$impl_swept" -ge 40 ] ||
     fail "derived only $impl_swept asserted literals — the extraction has drifted from the assertions"
 # Fence prose, identical to the lane superset so the two cannot drift.
@@ -654,6 +692,13 @@ impl_profile_block="$(awk '
 ' "$impl_rendered_file" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
 [ -n "$impl_profile_block" ] ||
     fail "implementer-brief has no profile-line bullet"
+# Both ends of the scope, not just the start. awk exits ON the terminator, so
+# a block that does not END with it ran past it to EOF.
+case "$impl_profile_block" in
+*'Render it from: ') ;;
+*'Render it from:') ;;
+*) fail "the profile-line block ran past its terminator — the scoped check has silently become whole-file" ;;
+esac
 for announced in \
     '`min_rounds` floor and wall-clock' \
     'breadth envelope' \
@@ -887,10 +932,16 @@ for referrer in \
         fail "$referrer does not degrade to a bounded glob"
     grep -Fq 'do not guess the contract' "$referrer" ||
         fail "$referrer does not say what to do when the contract is unreadable"
-    # The result schemas are additionalProperties:false with no free-text field
-    # for challenger/reviewer/integrator, so "say in your result" that a file
-    # was unreadable can only be obeyed by minting a finding or by mislabelling
-    # a completed pass as blocked. Ask only for what the ladder can deliver.
+    # Asserted against all four agent files, and here is why all four rather
+    # than the three the constraint strictly binds. `result.reviewer`,
+    # `result.challenger` and `result.integrator` are additionalProperties:false
+    # with no free-text field, so "say in your result" that a file was
+    # unreadable can only be obeyed there by minting a finding or by
+    # mislabelling a completed pass as blocked. `result.implementer` DOES carry
+    # `summary`/`handoff`/`blocked_question`, so that role could obey it — but
+    # the four files carry one identical paragraph by design, and a sentence
+    # true in three of them and different in the fourth is the drift this whole
+    # change exists to remove. The ladder is the disclosure path for all four.
     if grep -Fq 'say in your result that you could not read it' "$referrer"; then
         fail "$referrer asks for a disclosure the typed result has no field to carry"
     fi
