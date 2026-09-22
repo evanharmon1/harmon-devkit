@@ -481,7 +481,7 @@ assert_closing_linkage() {
         if [ "$acl_kind" = pull-request ]; then
             acl_pr_targets="$(jq -c --arg ref "$acl_ref" '. + [$ref]' <<<"$acl_pr_targets")"
         fi
-    done < <(jq -r '.claimed[]' <<<"$acl_sets")
+    done < <(jq -r '.missing[]' <<<"$acl_sets")
     acl_sets="$(jq -c --argjson prs "$acl_pr_targets" '.missing -= $prs' <<<"$acl_sets")"
 
     acl_missing_count="$(jq -r '.missing | length' <<<"$acl_sets")"
