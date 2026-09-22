@@ -411,10 +411,18 @@ assert_closing_linkage() {
         error("closingIssuesReferences is not an array")
       else
         ([.body
-          | scan("(?:^|[^A-Za-z0-9_-])(?:close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)[[:space:]]*:?[[:space:]]*((?:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)?#[0-9]+)"; "i")
+          | scan("(?:^|[^A-Za-z0-9_-])(?:close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)[[:space:]]*:?[[:space:]]*(https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+|#[0-9]+)"; "i")
           | .[0]
-          | if startswith("#") then ($repo + .) else . end
-          | ascii_downcase]
+          | ascii_downcase
+          | if startswith("#") then
+              ($repo | ascii_downcase) + "#" + (ltrimstr("#") | tonumber | tostring)
+            elif startswith("https://github.com/") then
+              capture("^https://github\\.com/(?<target>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/issues/(?<number>[0-9]+)$")
+              | .target + "#" + (.number | tonumber | tostring)
+            else
+              capture("^(?<target>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)#(?<number>[0-9]+)$")
+              | .target + "#" + (.number | tonumber | tostring)
+            end]
          | unique) as $claimed
         | ([.closingIssuesReferences[]
             | if ((.number | type) == "number"

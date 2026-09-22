@@ -686,6 +686,32 @@ mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
 run_gate
 assert_gate 1 fail closing-linkage-missing
 
+echo "==> a claimed full-URL closing keyword without linkage fails closed"
+write_defaults
+closing_body='Closes https://github.com/owner/repo/issues/5'
+jq --arg body "$closing_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 1 fail closing-linkage-missing
+
+echo "==> a claimed full-URL closing keyword with linkage passes"
+write_defaults
+closing_body='Fixed https://github.com/owner/repo/issues/5'
+closing_refs='[{"number":5,"repository":{"name":"repo","owner":{"login":"owner"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
 echo "==> a non-closing Refs-only body does not require linkage"
 write_defaults
 refs_body='Refs #380'
@@ -701,6 +727,20 @@ assert_gate 0 pass ready
 echo "==> a claimed same-repo closing keyword with linkage passes"
 write_defaults
 closing_body='Fixed #380'
+closing_refs='[{"number":380,"repository":{"name":"repo","owner":{"login":"example"}}}]'
+jq --arg body "$closing_body" --argjson refs "$closing_refs" \
+    '.body = $body | .closingIssuesReferences = $refs' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$closing_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a linked leading-zero issue number is normalized numerically"
+write_defaults
+closing_body='Closes #0380'
 closing_refs='[{"number":380,"repository":{"name":"repo","owner":{"login":"example"}}}]'
 jq --arg body "$closing_body" --argjson refs "$closing_refs" \
     '.body = $body | .closingIssuesReferences = $refs' \
