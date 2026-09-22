@@ -406,7 +406,8 @@ Three cases, mutually exclusive:
 
 ```bash
 check_exit=0
-check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
+check_out="$("$helper" check --state "$state" --actor-id 199175422 \
+    --run-id "<run id>")" || check_exit=$?
 ```
 
 Run this exact pair — **both lines, every time** — immediately before
@@ -438,7 +439,8 @@ brief's cap implies (10–15 minutes per attempt):
 window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if different
 while [ "$SECONDS" -lt "$window_end" ]; do
     check_exit=0
-    check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
+    check_out="$("$helper" check --state "$state" --actor-id 199175422 \
+    --run-id "<run id>")" || check_exit=$?
     [ "$check_exit" != "11" ] && break
     sleep 90
 done
@@ -499,7 +501,7 @@ The trigger mechanism varies by finder — the trusted registry determines which
 
 ```bash
 check_exit=0
-check_out="$("$helper" check --state "$state_finder")" || check_exit=$?
+check_out="$("$helper" check --state "$state_finder" --run-id "<run id>")" || check_exit=$?
 ```
 
 No `--actor-id` argument is needed when `--finder` was passed to `reserve` —

@@ -915,9 +915,30 @@ reserve)
         old_phase=$(jq -r '.phase' "$state_file")
         [ "$old_repo" = "$repo" ] && [ "$old_pr" = "$pr" ] ||
             die "state belongs to a different PR"
-        [ "$old_phase" != "reserved" ] ||
+        # Review round 3, P1 (confirmed): `check` refuses to resume state owned
+        # by another run and tells the caller to reserve fresh — but every
+        # guard below is written for state belonging to THIS run, so the same
+        # head would then be refused as a duplicate trigger and an unresolved
+        # reservation. The caller had no move left. State from a different run
+        # is this run's history of nothing at all, so treat it as absent: a
+        # fresh attempt-1 reservation, with the totals restarting (they are
+        # already reset by the run-scope branch further down).
+        foreign_run_state=0
+        if [ -n "$run_id" ]; then
+            old_run_id=$(jq -r '.run_id // empty' "$state_file")
+            if [ -n "$old_run_id" ] && [ "$old_run_id" != "$run_id" ]; then
+                foreign_run_state=1
+            fi
+        fi
+        if [ "$foreign_run_state" = "1" ]; then
+            [ "$attempt" = "1" ] ||
+                die "a reservation replacing another run's state must begin at attempt 1"
+        elif [ "$old_phase" = "reserved" ]; then
             die "an unresolved reservation must be reconciled before replacing its head"
-        if [ "$old_head" = "$head" ]; then
+        fi
+        if [ "$foreign_run_state" = "1" ]; then
+            :
+        elif [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
                 die "refusing an uncontrolled duplicate trigger for this head"

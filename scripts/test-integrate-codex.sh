@@ -3881,6 +3881,29 @@ case "$own_out" in
 *"belongs to run"*) fail "a matching run id must not be refused: $own_out" ;;
 esac
 
+echo "==> a new run can reserve over another run's state on the same head"
+# Review round 3, P1: `check` refuses to resume a foreign run's state and says
+# to reserve fresh — so `reserve` must actually allow that. Before this, the
+# same head was refused as a duplicate trigger and the caller had no move left.
+new_cycle
+"$helper" attach --state "$state" --trigger-id 556 >/dev/null 2>&1 || true
+jq '.run_id = "run-a" | .charged_cycles = 3 | .exempt_cycles = 2' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+fresh_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id run-b 2>&1)"
+fresh_rc=$?
+set -e
+[ "$fresh_rc" -eq 0 ] ||
+    fail "a new run must be able to reserve over a foreign run's state: $fresh_out"
+[ "$(jq -r '.run_id' "$state")" = "run-b" ] ||
+    fail "the reservation must take the new run id: $(jq -r '.run_id' "$state")"
+# The prior run's spend must not follow it across.
+[ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
+    fail "the new run starts its own count, got $(jq -r '.charged_cycles' "$state")"
+[ "$(jq -r '.exempt_cycles' "$state")" = "0" ] ||
+    fail "the prior run's exempt spend must not carry over: $(jq -r '.exempt_cycles' "$state")"
+
 echo "==> reserve refuses a charged cycle once the integration cap is spent"
 # Review round 1, P1: the trigger is posted immediately after the reservation,
 # so a ceiling enforced only by the readiness gate is enforced after the review
