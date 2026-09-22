@@ -57,7 +57,8 @@
 #   behind-base, base-retargeted                            (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
-#   deferred-unsettled, content-moved                        (fail)
+#   deferred-unsettled, closing-linkage-missing,
+#   content-moved                                            (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
@@ -393,6 +394,46 @@ fail_condition() {
 indeterminate() {
     emit indeterminate "$1" "$2"
     exit 2
+}
+
+# A closing keyword is only a claim until GitHub resolves it to an issue
+# linkage. Normalize every claimed target to owner/repo#number and compare it
+# with the structured closingIssuesReferences from the SAME `gh pr view`
+# response. GitHub treats repository names case-insensitively; issue numbers
+# are numeric. A body with no claim produces an empty set and passes.
+assert_closing_linkage() {
+    acl_payload=$1
+    acl_phase=$2
+    acl_sets="$(jq -cer --arg repo "$repo" '
+      if (.body | type) != "string" then
+        error("body is not a string")
+      elif (.closingIssuesReferences | type) != "array" then
+        error("closingIssuesReferences is not an array")
+      else
+        ([.body
+          | scan("(?:^|[^A-Za-z0-9_-])(?:close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)[[:space:]]*:?[[:space:]]*((?:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)?#[0-9]+)"; "i")
+          | .[0]
+          | if startswith("#") then ($repo + .) else . end
+          | ascii_downcase]
+         | unique) as $claimed
+        | ([.closingIssuesReferences[]
+            | if ((.number | type) == "number"
+                  and (.repository.name | type) == "string"
+                  and (.repository.owner.login | type) == "string") then
+                ((.repository.owner.login + "/" + .repository.name + "#"
+                  + (.number | tostring)) | ascii_downcase)
+              else
+                error("malformed closingIssuesReferences entry")
+              end]
+           | unique) as $linked
+        | {claimed:$claimed, missing:($claimed - $linked)}
+      end' <<<"$acl_payload" 2>/dev/null)" ||
+        indeterminate malformed-data "closing-linkage payload is malformed ($acl_phase)"
+    acl_missing_count="$(jq -r '.missing | length' <<<"$acl_sets")"
+    [ "$acl_missing_count" -eq 0 ] || {
+        acl_missing="$(jq -r '.missing | join(", ")' <<<"$acl_sets")"
+        fail_condition closing-linkage-missing "the PR body claims closing linkage that GitHub has not resolved ($acl_phase): $acl_missing"
+    }
 }
 
 # Review round 2, finding `review-r2-codex-verification-4` (confirmed P2,
@@ -734,7 +775,7 @@ fi
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName,body,closingIssuesReferences)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
 
 # This PR's own branch name — an extra signal `evaluate_checks` uses below to
@@ -777,6 +818,13 @@ rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
     indeterminate malformed-data "PR object carries no head commit"
 [ "$rest_head" = "$head" ] ||
     fail_condition head-moved "PR head changed while the gate was reading it"
+scalar_body="$(jq -er '.body | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no body"
+rest_body="$(jq -er '.body | select(type == "string")' <<<"$fp_pr")" ||
+    indeterminate malformed-data "PR object carries no body"
+[ "$scalar_body" = "$rest_body" ] ||
+    fail_condition content-moved "PR body changed between the linkage and fingerprint reads — re-adjudicate against the current body"
+assert_closing_linkage "$scalars" "initial snapshot"
 
 # 3. Checks, page-safe from the commit itself: check runs plus legacy commit
 # statuses are what the PR's checks tab aggregates. `gh pr view`'s
@@ -1796,7 +1844,7 @@ evaluate_checks
 # them. Bounded, not regressive: no further network call follows, and the
 # residual window is the caller's contractual pre-promotion re-read.
 final="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,baseRefOid)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,baseRefOid,body,closingIssuesReferences)" ||
     indeterminate fetch-failed "cannot re-read the PR after the final comparison"
 jq -e '.state == "OPEN"' <<<"$final" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was comparing against the base"
@@ -1809,6 +1857,7 @@ else
 fi
 jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was comparing against the base"
+assert_closing_linkage "$final" "final snapshot"
 jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
 jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null ||

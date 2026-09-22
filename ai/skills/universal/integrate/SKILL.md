@@ -741,12 +741,15 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   `render-dev-flow.sh publish --record <dir> --repo "$repo" --pr <n> --head
   <headRefOid> --sections deferred-findings[,policy-disclosure,adjudication-record
   as those also changed]`. The script does its own safe merge into the draft
-  PR body and its own concurrent-publish detection; do not additionally
-  hand-edit the body for these sections. It rejects (as `pr-mismatch`) a
-  `--pr` that disagrees with `run.json`'s own `pr` field, and detects a
-  second concurrent publish against the same record — treat either as a
-  reconciliation the record's own state must resolve before retrying, not
-  something to force past.
+   PR body and its own concurrent-publish detection; do not additionally
+   hand-edit the body for these sections. It rejects (as `pr-mismatch`) a
+   `--pr` that disagrees with `run.json`'s own `pr` field, and detects a
+   second concurrent publish against the same record — treat either as a
+   reconciliation the record's own state must resolve before retrying, not
+   something to force past. After every publish or other body edit lands,
+   re-read `headRefOid,body,closingIssuesReferences` together and stop with a
+   blocker report if any closing keyword the body claims has no corresponding
+   linkage.
 - **Follow-ups still go through `track-work`.** Before filing one, **search
   the repo the follow-up is going into** — `track-work` §3 owns this step and
   the reasoning; the short form is
@@ -1610,6 +1613,9 @@ that loops indefinitely:
    asynchronously, `skipping` is neutral, and a required context that never
    registered appears in no list at all, which is exactly what the
    automation-coverage paragraph below exists to hold;
+   every issue the current body claims through `Closes`, `Fixes`, `Resolves`,
+   or their inflections present in `closingIssuesReferences`, with a missing
+   entry failing as `closing-linkage-missing` rather than indeterminate;
    every adjudication document in `--record` matched by a
    `destination: issue` evidence comment for its own stage and round in
    `run.json` (a `pr` rollup never substitutes — harmon-devkit#685);
