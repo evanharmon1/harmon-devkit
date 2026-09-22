@@ -318,6 +318,15 @@ link broke, and a `;`-separated tail keeps running after a failure and
 reports on a cycle that never happened.
 Run the poll loop strictly sequentially in the foreground, never as a background task.
 
+**Compare the persisted `.run_id` with this run's before reusing any state.**
+Same-head attached state from ANOTHER run (or from before run scoping, which
+records no owner) is not this run's history: resuming it would attribute that
+run's spend here, and the scoped `check` refuses it with a terminal exit 2, so
+redispatching only repeats the same wall. Route it through a fresh attempt-1
+`reserve` with this run's `--run-id`, which is permitted precisely for attached
+foreign state. An unresolved `reserved` record is the one exception — it stays
+blocked whoever owns it, because a trigger may already be out against it.
+
 **Inspect the state file yourself before calling `reserve` — do not call it
 unconditionally and branch on what it reports.** `reserve --attempt 1`
 **dies** (nonzero, no distinguishing message your `|| exit` could branch on)

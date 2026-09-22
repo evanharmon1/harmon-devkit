@@ -2528,9 +2528,31 @@ write_defaults
 # cap-mismatch — that is the whole bug #1326 fixes.
 split_ok="$(jq -c '.cycle = 3 | .charged = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
 clean_result="$(write_integrator_result cap-split-ok "$split_ok")"
+# A claimed split owes durable proof, so the checker state carries the same
+# counters a real run would have written — the result agreeing with itself is
+# not evidence.
+jq '.charged_cycles = 2 | .exempt_cycles = 1' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
 run_gate_recheck_clean --integrator-result "$clean_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 0 pass ready
+
+echo "==> a claimed split with no durable counters is codex-cap-mismatch"
+# The result agreeing with itself is not evidence. A producer old enough to
+# have written counter-less state also omits the split entirely and takes the
+# legacy branch, so a split arriving with no state counters is an assertion
+# with nothing behind it — and accepting it would let spend be moved from the
+# charged column into the exempt one to satisfy both ceilings.
+write_defaults
+# The preceding case wrote counters into the shared recheck state; this case is
+# about their ABSENCE, so strip them rather than inherit them.
+jq 'del(.charged_cycles) | del(.exempt_cycles)' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+split_unproven="$(jq -c '.cycle = 3 | .charged = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-split-unproven "$split_unproven")"
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> charged cycles exceeding --integration-cap is still codex-cap-mismatch"
 write_defaults

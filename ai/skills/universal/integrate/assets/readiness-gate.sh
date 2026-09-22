@@ -1468,14 +1468,21 @@ if [ "$codex_cycle" != null ]; then
                     "$codex_recheck_state" 2>/dev/null)" || state_charged=
                 state_exempt="$(jq -er '.exempt_cycles | select(type == "number")' \
                     "$codex_recheck_state" 2>/dev/null)" || state_exempt=
-                # State written before these counters existed carries neither,
-                # and absence is not a mismatch — it is a pass this check
-                # cannot speak to, so it stays silent rather than failing a
-                # legitimate in-flight cycle.
+                # A result that CLAIMS a split owes durable proof of it. State
+                # written before these counters existed carries neither — but a
+                # producer old enough to have written that state also omits the
+                # split entirely and takes the legacy single-counter branch
+                # above, so reaching here with a split and no state counters is
+                # not the backward-compatible case. It is an assertion with
+                # nothing behind it, and accepting it would let a producer move
+                # spend from the charged column into the exempt one and satisfy
+                # both ceilings on its own say-so.
                 if [ -n "$state_charged" ] && [ -n "$state_exempt" ]; then
                     [ "$cycle_charged" -eq "$state_charged" ] &&
                         [ "$cycle_exempt" -eq "$state_exempt" ] ||
                         indeterminate codex-cap-mismatch "codex_cycle reports charged $cycle_charged / exempt $cycle_exempt but the checker state records charged $state_charged / exempt $state_exempt"
+                else
+                    indeterminate codex-cap-mismatch "codex_cycle reports a charged/exempt split but the checker state records no counters to confirm it against"
                 fi
             fi
         else

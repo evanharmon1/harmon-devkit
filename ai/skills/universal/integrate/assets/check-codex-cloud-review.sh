@@ -1216,6 +1216,15 @@ classify_cycle_charge() {
     # The compare API caps `files` at 300 with no truncation flag of its own,
     # so a list at the cap may be incomplete and cannot prove that nothing
     # under review moved. Per the invariant, that charges.
+    # A response without a usable `files` array tells us nothing about which
+    # files moved, and `// []` would turn that silence into an empty
+    # intersection — an exemption granted by absence of evidence, which is the
+    # one thing the invariant forbids.
+    if [ "$(jq -r '.files | type' <<<"$moved_payload" 2>/dev/null)" != "array" ]; then
+        charge_class=charged
+        charge_reason="the compare response carried no usable file array; charging"
+        return 0
+    fi
     if [ "$(jq -r '(.files // []) | length' <<<"$moved_payload")" -ge 300 ]; then
         charge_class=charged
         charge_reason="the compare file list is at the API's 300-file cap and may be truncated; charging"
@@ -1269,6 +1278,13 @@ classify_cycle_charge() {
         return 0
     }
 
+    for classify_payload in "$prev_patch" "$head_patch"; do
+        [ "$(jq -r '.files | type' <<<"$classify_payload" 2>/dev/null)" = "array" ] || {
+            charge_class=charged
+            charge_reason="a reviewed-patch response carried no usable file array; charging"
+            return 0
+        }
+    done
     for truncation_check in "$prev_patch" "$head_patch"; do
         [ "$(jq -r '(.files // []) | length' <<<"$truncation_check")" -lt 300 ] || {
             charge_class=charged
@@ -1346,7 +1362,14 @@ reserve)
         foreign_run_state=0
         if [ -n "$run_id" ]; then
             old_run_id=$(jq -r '.run_id // empty' "$state_file")
-            if [ -n "$old_run_id" ] && [ "$old_run_id" != "$run_id" ]; then
+            # Unowned state is not this run's either. State written before run
+            # scoping existed records no owner, and treating that as "mine"
+            # rejects a legitimate same-head fresh reservation as a duplicate
+            # while letting its counters be inherited on a different head. A
+            # scoped call handles a missing owner exactly like a different
+            # one; the unresolved-reservation guard above is unaffected and
+            # still blocks a write-ahead record whoever owns it.
+            if [ "$old_run_id" != "$run_id" ]; then
                 foreign_run_state=1
             fi
         fi
@@ -1471,7 +1494,7 @@ reserve)
         # read as a mismatch by the gate. When the caller names a run and it is
         # not the run the totals were accumulated for, the totals start again.
         state_run_id=$(jq -r '.run_id // empty' "$state_file")
-        if [ -n "$run_id" ] && [ -n "$state_run_id" ] && [ "$run_id" != "$state_run_id" ]; then
+        if [ -n "$run_id" ] && [ "$run_id" != "$state_run_id" ]; then
             carried_charged=0
             carried_exempt=0
         else
@@ -1530,6 +1553,16 @@ reserve)
         # this reservation, so the review has already run by the time the gate
         # objects. Refuse the reservation instead, at the one point where the
         # spend is still preventable.
+        # An exempt ceiling of 0 is not "no exempt budget left", it is a policy
+        # with no exemption at all — what every historical (legacy/v1) decode
+        # resolves to, because those shapes spend one shared total. Refusing
+        # there would cap a migration run earlier than its own merge-base
+        # policy allowed. Charge the cycle to the budget that does exist
+        # instead; the exemption simply does not apply under that policy.
+        if [ "$charge_class" = "exempt" ] && [ "$integration_exempt_cap" = "0" ]; then
+            charge_class=charged
+            charge_reason="$charge_reason (charged: this policy has no exempt ceiling)"
+        fi
         if [ "$charge_class" = "exempt" ]; then
             [ -z "$integration_exempt_cap" ] ||
                 [ "$((carried_exempt + 1))" -le "$integration_exempt_cap" ] ||
