@@ -12,13 +12,35 @@
 #   13 escalate (attempt 2 timed out)
 #   14 PR no longer open — GitHub answered and the PR is MERGED or CLOSED;
 #      terminal for the whole shepherd stage, never a wait-and-retry
+#   15 quota exhausted — the reviewer answered that it will NOT review this
+#      head: the finder replied to the trigger that its code-review usage
+#      limit is spent (harmon-devkit#573). Terminal non-result, never clean
+#      and never findings. Stop and report the blocker, naming the reset time
+#      where the reply carried one. Both `reserve --attempt 2` AND a fresh
+#      `--attempt 1` on the same head are refused — the one bounded
+#      re-trigger must not be spent on a reviewer that already said no, and
+#      there is deliberately no second same-head reservation route. So this
+#      head is not reviewable through this helper again: push a new commit,
+#      or have an operator remove this state file. A safe recovery route is
+#      carried in #1115.
+#   16 transient read — an evidence READ failed (harmon-devkit#508). Distinct
+#      from 12/13, which mean the reviewer's window elapsed with no verdict:
+#      nothing here says anything about the reviewer, so the caller retries
+#      the READ rather than the reviewer cycle, and a gate maps it to
+#      indeterminate-with-reason rather than to a not-clean failure.
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #
-# `settle` records the disposition of a badged finding that lives OUTSIDE an
+# 15 and 16 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so a
+# caller pinned to the older contract still reads every code it knew.
+#
+# `settle` records the disposition of a finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because
 # those two surfaces carry no reply linkage, so the in-thread adjudication path
 # can never reach them and `check` would report `findings` for them forever.
+# Its domain is everything `check` blocks on (`verdict_class == "findings"`),
+# not only badged bodies: a body misread as a finding must stay answerable, or
+# the misread strands the head instead of costing one recorded disposition.
 #
 # `reserve` creates the state a cycle runs on; `reap` is the other half of that
 # lifecycle. Nothing else removes a state file — a shepherded PR is still open
@@ -45,11 +67,21 @@ When --finder is given on reserve, actor identity and verdict classification
 are driven by the finder's profile in the trusted registry (C1-C3).
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
-14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
+14 PR no longer open, 15 quota exhausted, 16 transient read,
+2 indeterminate. Exit 15 is terminal for the HEAD, not just the cycle: no
+same-head reservation is accepted afterwards, so recovery is a new commit or
+an operator removing the state file (see #1115). Exit 14 means GitHub answered and
 the PR is MERGED or CLOSED: terminal for the whole shepherd stage — stop,
-never wait, re-run, or re-trigger. A PR fetch that FAILS is still the
-transient bounded-wait path (pending/retry/escalate); only a non-open
-answer is 14. `reserve` and `attach` refuse a non-open PR outright,
+never wait, re-run, or re-trigger. A PR fetch that FAILS is exit 16, a
+transient READ failure — retry the read, not the reviewer cycle; only a
+non-open answer is 14. Exit 15 means the finder answered that its review
+quota is spent. It is terminal for the HEAD, not just the cycle: `reserve
+--attempt 2` is refused, and so is a fresh `--attempt 1` on the same head, so
+nothing re-reviews that commit through this helper. Recover by pushing a new
+commit, or have an operator remove the cycle state file
+(`git rev-parse --git-path integrate-codex/<owner>/<repo>/<n>.json`).
+A safe recovery route is carried in #1115.
+`reserve` and `attach` refuse a non-open PR outright,
 exit 2 with a reason naming the reported state.
 
 State locks are never reclaimed automatically. On lock-held, inspect the
@@ -109,6 +141,29 @@ reap_budget_sec=60
 reap_deadline_epoch=
 finder_slug=
 requested_at_arg=
+# harmon-devkit#573: the finder's usage-limit reply, once `check` has seen it.
+# Empty until the comment surface has actually been fetched and scanned, which
+# is what keeps the pre-evidence failure paths behaving exactly as before.
+quota_comment_id=
+quota_detected_at=
+quota_reset_at=
+# harmon-devkit#655: whether the current attempt's trigger still carries the
+# finder's pending reaction (👀). Empty/0 until the reaction surface has been
+# fetched, for the same reason.
+pending_reaction_live=0
+# harmon-devkit#573: the reset time a usage-limit reply may carry. Since
+# challenge round 2 deleted the reset-time carve-out, NO CONTROL FLOW READS
+# THIS — it is context for the human reading the blocker and nothing else, and
+# it must stay that way: the head accepts no further reservation whatever the
+# reset time says, so branching on it again would rebuild exactly the
+# carve-out that round 2 removed (findings `challenge-r2-codex-adversarial-5`
+# and `-6`). It is still extracted and persisted because "the quota resets at
+# X" is genuinely useful to whoever decides when a fresh push is worth making.
+# The recovery route itself is carried in #1115.
+# harmon-devkit#655: the hard ceiling a live pending reaction may extend the
+# attempt window to, measured from the trigger. A reviewer that is visibly
+# working is not absent, but it cannot hold a PR open forever either.
+eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -172,6 +227,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 valid_time() {
     grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$1"
 }
+
+# Challenge round 1, item A (2026-09-20, confirmed P1): `--now` is validated
+# HERE, once, before any command runs — not inside the functions that consume
+# it. Those validations happen only after the first GitHub read, and one of
+# them (`clock_epoch`, for the harmon-devkit#737 fetch budget) is called from
+# inside a command substitution, where `die` kills the subshell rather than the
+# script: `current_epoch=$(clock_epoch) || return 1` then made `run_gh` fail,
+# `provider_head` fail, and the caller report **exit 16** (a transient read).
+# A permanent usage error therefore rendered as the one exit class with no
+# escalation path — the gate repeats the read and the integrator poll loop
+# treats it like `11`, so a malformed flag would be retried forever instead of
+# being reported.
+#
+# `injected_now_epoch` is resolved once here too, so no consumer needs to shell
+# out per call and no arithmetic path can fail mid-read. A parse failure at
+# this point is a startup `die` (exit 2), which is what a bad argument deserves.
+injected_now_epoch=
+if [ -n "$now" ]; then
+    valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+    injected_now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
+        die "--now is not a resolvable instant: $now"
+fi
 
 # harmon-devkit#223: the timeout governing an attempt cycle used to live only
 # in whatever `--timeout-min` a caller happened to pass, so `check
@@ -271,6 +348,32 @@ now_utc() {
     fi
 }
 
+# harmon-devkit#737 defect 2: the per-call fetch budget is computed against
+# the cycle's reservation, and it used the real wall clock for "now" while
+# every other time comparison in this helper honours `--now`. After a long
+# adjudication between `attach` and `check`, wall clock had already passed
+# the window, so `run_gh` clamped every request to one second and a review
+# that was unchanged and fully answered read as absent — `retry`/`pending`
+# for evidence that was sitting right there. The lane's workaround was to
+# reserve attempt 2 purely to buy a fresh budget, which posted a redundant
+# trigger.
+#
+# One clock for the whole invocation is the fix: when `--now` is supplied it
+# is authoritative for the budget exactly as it already is for `bounded_wait`
+# and `require_latest_window_elapsed`, so an injected clock makes the budget
+# reproducible instead of decaying in real time. Without `--now` this is the
+# unchanged `date -u '+%s'`.
+# Called from inside a command substitution, so it must never `die`: item A
+# above resolved and validated the injected clock at startup precisely so this
+# function is a pure echo with no failure mode of its own.
+clock_epoch() {
+    if [ -n "$injected_now_epoch" ]; then
+        printf '%s' "$injected_now_epoch"
+    else
+        date -u '+%s'
+    fi
+}
+
 # A disposition is recorded against the exact text it answered, so an edited
 # finding stops being settled. The body is hashed in its JSON-ENCODED form:
 # command substitution strips trailing newlines, and the encoded string keeps
@@ -297,8 +400,10 @@ content_fingerprint() {
 #   0 — the PR is OPEN; its headRefOid is on stdout.
 #   3 — GitHub answered and the PR is NOT open; the reported state
 #       (MERGED/CLOSED) is on stdout. Terminal, never a wait-and-retry.
-#   1 — the fetch failed or returned an unusable payload. Transient;
-#       callers route this to their bounded wait exactly as before.
+#   1 — the fetch failed or returned an unusable payload. Transient; `check`
+#       routes this to `transient_read_failure` (exit 16, harmon-devkit#508),
+#       `reserve`/`attach` still `die`. What it must never become is a
+#       window-elapsed retry: the read said nothing about the reviewer.
 # Always called via command substitution, so stdout carries the head (rc 0)
 # or the non-open state (rc 3) and nothing leaks into the caller's scope.
 provider_head() {
@@ -323,7 +428,7 @@ run_gh() {
         anchor_epoch=$(jq -nr \
             --arg value "$window_anchor" '$value | fromdateiso8601') ||
             return 1
-        current_epoch=$(date -u '+%s')
+        current_epoch=$(clock_epoch) || return 1
         remaining=$((anchor_epoch + timeout_min * 60 - current_epoch))
         if [ "$remaining" -le 0 ]; then
             # A post-window check still owes one terminal evidence sweep. Give
@@ -334,7 +439,18 @@ run_gh() {
                 call_timeout=1
             fi
         elif [ "$remaining" -lt "$call_timeout" ]; then
-            call_timeout=$remaining
+            # Challenge round 3, finding `challenge-r3-codex-adversarial-9`
+            # (confirmed P2): the carve-out above covered `remaining <= 0` but
+            # not the last minute before it, so a `check` landing inside the
+            # final 59 seconds of its window clamped every read to a
+            # sub-second budget and reported readable evidence absent — the
+            # same failure the carve-out exists to prevent, one minute
+            # earlier. `check` keeps its full budget on both sides of the
+            # boundary now; the clamp still applies to every other command,
+            # which has no terminal sweep to owe.
+            if [ "$command_name" != "check" ]; then
+                call_timeout=$remaining
+            fi
         fi
     elif [ -n "${reap_deadline_epoch:-}" ]; then
         # A sweep has no reservation to budget against, so without this every
@@ -408,7 +524,13 @@ read_state() {
         (.requires_full_window | type == "boolean")) and
       (.previous_trigger_comment_id == null or
         (.previous_trigger_comment_id | type == "number" and . > 0)) and
+      (.first_trigger_comment_id == null or
+        (.first_trigger_comment_id | type == "number" and . > 0)) and
       (.timeout_min == null or (.timeout_min | type == "number")) and
+      (.quota_exhausted_at == null or (.quota_exhausted_at | type == "string")) and
+      (.quota_reset_at == null or (.quota_reset_at | type == "string")) and
+      (.quota_comment_id == null or
+        (.quota_comment_id | type == "number" and . > 0)) and
       (.boundary_source == null or
         (.boundary_source == "check-suite" or .boundary_source == "commit-date")) and
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
@@ -468,11 +590,17 @@ reap_record() {
         }' >>"$reap_entries"
 }
 
+# `$5`, when given, is a JSON OBJECT of extra fields merged into the result —
+# additive only, so every existing key keeps its shape and a caller pinned to
+# the older output reads exactly what it did before. harmon-devkit#737 uses it
+# to enumerate every unanswered inline thread alongside the `findings` verdict,
+# because one accepted review id cannot name findings that came from two.
 emit() {
     result=$1
     detail=$2
     surface=${3:-}
     accepted_id=${4:-}
+    extra=${5:-}
     jq -cn \
         --arg status "$result" \
         --arg detail "$detail" \
@@ -480,10 +608,75 @@ emit() {
         --argjson attempt "${state_attempt:-0}" \
         --arg surface "$surface" \
         --arg accepted_id "$accepted_id" \
+        --argjson extra "${extra:-null}" \
         '{status:$status,detail:$detail,head:$head,attempt:$attempt}
          + (if $surface != "" and $accepted_id != "" then
               {accepted:{surface:$surface,id:$accepted_id,reviewed_commit:$head}}
-            else {} end)'
+            else {} end)
+         + (if ($extra | type) == "object" then $extra else {} end)'
+}
+
+# harmon-devkit#508: an evidence READ that failed says nothing about the
+# reviewer. Routing it through `bounded_wait` conflated the two, and because
+# `bounded_wait` compares against `requested_at` — always long past for a gate
+# re-checking a settled cycle — one flaky GitHub read turned an
+# adjudicated-clean cycle into a hard retry. This is its own terminal-shaped
+# answer with its own exit code, and the caller's remedy is to repeat the
+# READ, not to re-trigger a reviewer that was never absent.
+#
+# Deliberately NOT bounded by the attempt window: the window measures how long
+# the reviewer has had, and this result is not about the reviewer at all.
+transient_read_failure() {
+    emit transient-read "$1"
+    exit 16
+}
+
+# Records the usage-limit answer on the cycle's own state before reporting it,
+# so `reserve --attempt 2` can refuse the one bounded re-trigger rather than
+# spending it on a reviewer that has already said no. Runs under the caller's
+# existing state lock, like `persist_adopted_timeout`.
+persist_quota_evidence() {
+    payload=$(jq \
+        --argjson comment_id "$quota_comment_id" \
+        --arg detected "$quota_detected_at" \
+        --arg reset "$quota_reset_at" \
+        '.version = 2 |
+         .quota_comment_id = $comment_id |
+         .quota_exhausted_at = $detected |
+         .quota_reset_at = (if $reset == "" then null else $reset end)' \
+        "$state_file") || die "cannot record the usage-limit answer"
+    write_state "$state_file" "$payload"
+}
+
+# Reports the usage-limit answer and stops. Codex cloud-review cycle 2 on PR
+# harmon-devkit#1125, finding 4065974923 (confirmed P2): this used to live
+# ONLY inside `bounded_wait`, on the reasoning that absence of other evidence
+# is the only state a quota reply can be observed in. That is false. The reply
+# carries no `Reviewed commit` line, no verdict sentence and no badge, so it is
+# invisible to every classifier — but the classifiers themselves are not
+# invisible to it: a stale thumbs-up on the trigger, a clean review from an
+# earlier attempt, or a recorded disposition all exit 0 long before any path
+# reaches `bounded_wait`. The head was then certified clean by evidence that
+# predates the reviewer saying it would not review.
+#
+# So the answer is reported where it is READ, and this function is what both
+# sites call. It is terminal by construction: a usage limit is an answer, not
+# silence, and nothing later in the cycle can make it not one.
+quota_exhausted_terminal() {
+    persist_quota_evidence
+    quota_detail="$1; the finder replied that its code-review usage limit is exhausted (comment $quota_comment_id)"
+    if [ -n "$quota_reset_at" ]; then
+        quota_detail="$quota_detail; limit resets at $quota_reset_at"
+    else
+        quota_detail="$quota_detail; the reply named no reset time"
+    fi
+    # Challenge round 3, finding `challenge-r3-codex-adversarial-11`
+    # (confirmed P2): after the reset-time carve-out was deleted in round 2,
+    # every operator-facing string still implied the reset time was actionable
+    # and none named the route that actually exists. Name it.
+    quota_detail="$quota_detail; this head cannot be re-reviewed here — push a new commit or have an operator remove this state file (recovery route carried in #1115)"
+    emit quota-exhausted "$quota_detail"
+    exit 15
 }
 
 bounded_wait() {
@@ -492,6 +685,27 @@ bounded_wait() {
         now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     fi
     valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+    # harmon-devkit#573: the finder answering "I will not review this" is an
+    # ANSWER, not silence, so it must never be reported as waiting. Every path
+    # that would otherwise wait runs through here, which is exactly why the
+    # check lives here rather than at one call site: the quota reply is
+    # invisible to every classifier above (it carries no `Reviewed commit`
+    # line, no verdict sentence and no badge), so absence of other evidence is
+    # the only state it can ever be observed in. It is checked FIRST because
+    # it is terminal — a live 👀 alongside an exhausted quota is still a
+    # reviewer that is not going to answer.
+    #
+    # `$quota_comment_id` is empty on every pre-evidence failure path, so those
+    # keep their previous behaviour (and #508 has already moved read failures
+    # off this function entirely).
+    if [ -n "$quota_comment_id" ]; then
+        # Defence in depth only: the scan that sets `$quota_comment_id` now
+        # reports the answer terminally at the point it reads it (see
+        # `quota_exhausted_terminal`), so any path that still arrives here
+        # with one set has skipped that site and should not be allowed to
+        # wait on a reviewer that has already refused.
+        quota_exhausted_terminal "$detail"
+    fi
     requested_epoch=$(jq -nr \
         --arg value "$state_requested" '$value | fromdateiso8601') ||
         die "cannot parse request time"
@@ -504,6 +718,39 @@ bounded_wait() {
     if [ "$elapsed" -lt "$timeout_seconds" ]; then
         emit pending "$detail"
         exit 11
+    fi
+    # harmon-devkit#655: the window must be bounded by evidence that the
+    # reviewer is NOT working, never by wall clock alone. The finder signals
+    # acceptance of a trigger with its pending reaction and replaces it with a
+    # terminal result, so while that reaction is still on THIS attempt's
+    # trigger the review is in progress and elapsing the window only forces a
+    # redundant re-trigger — which the two-attempt contract then counts against
+    # the head, turning a slow-but-live review into an escalation for a
+    # reviewer that was never absent (observed on ponderousdev/omator#447).
+    #
+    # The extension is bounded by a hard ceiling from the trigger, because a
+    # reaction that never resolves must not hold a PR open indefinitely: past
+    # the ceiling this falls through to the unchanged retry/escalate below,
+    # and so does a reaction that has VANISHED without a result (the caller
+    # never set `pending_reaction_live`, so nothing extends).
+    #
+    # `max(ceiling, timeout)` so a caller that deliberately configured a
+    # LONGER window than the ceiling is never cut short by it: the extension
+    # may only ever add time.
+    if [ "$pending_reaction_live" = "1" ]; then
+        # Challenge round 5, finding `challenge-r5-codex-adversarial-8`
+        # (confirmed P3): a `max(ceiling, timeout)` clamp used to sit here,
+        # described by its own comment as stopping the ceiling from shortening
+        # a longer configured window. It was dead code. Reaching this point
+        # already requires `elapsed >= timeout_seconds`, so when the timeout
+        # exceeds the ceiling the comparison below is false with or without
+        # the clamp — it never changed an outcome. The property it claimed to
+        # protect still holds; only the misleading code is gone.
+        ceiling_seconds=$((eyes_ceiling_min * 60))
+        if [ "$elapsed" -lt "$ceiling_seconds" ]; then
+            emit pending "$detail; the finder's pending reaction is still live on this attempt's trigger, so the window is extended to ${eyes_ceiling_min} minutes from the trigger"
+            exit 11
+        fi
     fi
     if [ "$state_attempt" = "1" ]; then
         emit retry "$detail; attempt 1 window elapsed"
@@ -560,7 +807,7 @@ fetch_evidence() {
     fetch_pages "$endpoint" "$destination" || fetch_status=$?
     case "$fetch_status" in
     0) return ;;
-    1) bounded_wait "cannot fetch paginated $label" ;;
+    1) transient_read_failure "cannot fetch paginated $label" ;;
     *)
         emit indeterminate "paginated $label data is malformed"
         exit 2
@@ -601,8 +848,23 @@ codex_verdict_defs=$(
           # reuse the exact same removal and the exact same metadata pattern
           # instead of restating them. Same regexes, same flags, same order —
           # `rest_is_boilerplate` behaves identically to before the split.
+          # Challenge round 3, finding `challenge-r3-codex-adversarial-1`
+          # (confirmed P1, provenance ORIGINAL — this predates every round of
+          # this change): the removal used to start at `<details`, so with one
+          # benign collapsed section anywhere above the About block the match
+          # ran from THAT tag through the About block's closing tag and deleted
+          # every line in between — including a concern. It defeated the
+          # clean-path safety net, `is_carrier_only`, and the round-2
+          # whole-body self-report test, all three of which read the stripped
+          # body.
+          #
+          # Anchored on the About SUMMARY instead, with `[^<]*` between the
+          # tags so the match cannot span an intervening `<details` at all.
+          # Same intent the original comment states — "removal is anchored on
+          # the block's SUMMARY, not on `<details` alone" — now actually
+          # enforced by the pattern.
           def strip_about_block:
-            gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+            gsub("<details[^<]*<summary>[^<]*about codex[^<]*</summary>.*?</details>";
                  ""; "im");
           def is_reviewed_commit_line:
             test(
@@ -702,11 +964,159 @@ codex_verdict_defs=$(
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
               all(is_reviewed_commit_line or (. == carrier_sentence)));
+          # harmon-devkit#675: when a session replies "Fixed in <sha>" to an
+          # inline finding, the connector sometimes reads the thread as an
+          # instruction, runs a fix task of its own, and posts a report on what
+          # IT did — as a thread follow-up, and (observed on harmon-devkit#710,
+          # comment 5504087486) as a top-level comment that opens
+          # "### Summary" and happens to contain "Reviewed commit `<sha>`".
+          #
+          # That top-level shape is the damaging one here: the Reviewed-commit
+          # phrase makes it candidate verdict evidence, `verdict_class` calls it
+          # `findings` because it does not open with the clean sentence, and
+          # `settle` then refuses it precisely because it carries no badge — so
+          # the cycle could never report clean for that head through this
+          # checker whatever the real review said. It is neither: the bot is
+          # describing work, not reporting a finding, so it is INFORMATIONAL
+          # and contributes to no aggregate.
+          #
+          # The test is deliberately content-NEGATIVE on the part that decides
+          # severity — no badge anywhere in the body, the same whole-body scan
+          # everything else here uses — and structural on the part that
+          # identifies the shape: a `Summary` heading, or the bot naming a
+          # commit it made on a branch of its own. It reads no prose for
+          # intent, so it does not reopen the failure family documented above
+          # `verdict_class`.
+          #
+          # Both failure directions are safe. An unrecognised self-report shape
+          # keeps today's behaviour exactly (`findings`, blocking) — that is a
+          # false block, which is the direction this file always chooses. And
+          # nothing badged can reach this class at all, so a real finding
+          # stated in a self-report-shaped body still blocks.
+          def trimmed_lines:
+            (body_text | ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")));
+          def has_summary_heading:
+            (trimmed_lines |
+              any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$")));
+          # Challenge round 1, finding `challenge-r1-codex-adversarial-1`
+          # (2026-09-20, confirmed P1): a `Summary` HEADING IS NOT EVIDENCE OF
+          # ANYTHING. The first version of this predicate was
+          # `(no badge) and (has_summary_heading or claims_own_commit)`, so the
+          # heading alone sufficed — and because `informational` is excluded
+          # from all three blocking scans, an unbadged prose concern written
+          # under that heading became invisible where it had previously been
+          # `findings`/exit 10. AGENTS.md § Severity gating is explicit that a
+          # finding "not badged at all, is adjudicated as at least a P2", so an
+          # unbadged concern IS a finding; the original safety note here
+          # ("nothing badged can reach this class") only ever covered the
+          # badged half of the problem.
+          #
+          # Two conditions now, and both are POSITIVE evidence that the bot is
+          # describing its own work rather than reporting on the code:
+          #
+          #   1. a recognized self-work marker — the bot naming a commit it
+          #      made, a PR it could not open, or a review it performed that
+          #      needed no change. These are the verbatim shapes observed on
+          #      harmon-devkit#665 (follow-up 3886149775) and harmon-devkit#710
+          #      (top-level 5504087486).
+          #   2. no finding footer. "Useful? React with 👍 / 👎." is the
+          #      machine-emitted line Codex appends to a finding, and it is the
+          #      same class of stable signal as the badge — not prose whose
+          #      meaning has to be read.
+          #
+          # This is an allowlist of observed phrasings, which the long comment
+          # above `verdict_class` warns against for the CLEAN path — and the
+          # distinction is the failure direction. There, a non-match deadlocked
+          # genuinely clean PRs. Here a non-match is `findings`: the body
+          # blocks and a human adjudicates it. Drift costs a false block, never
+          # a false green, which is the trade this file takes everywhere.
+          def self_work_marker:
+            (body_text | ascii_downcase |
+              (test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`") or
+               test("a pull request could not be created") or
+               test("reviewed commit `[0-9a-f]{7,40}` and found no additional")));
+          def has_finding_footer:
+            (body_text | ascii_downcase | test("useful\\? react with"));
+          # Challenge round 2, findings `challenge-r2-codex-adversarial-1` and
+          # `-3` (confirmed P1, disposition RESTRUCTURE). Round 1 asked only
+          # whether a self-work marker appeared ANYWHERE, so a body could
+          # describe the bot's own work in one line and state an unanswered
+          # concern in the next and still classify `informational` — the
+          # concern then vanished from every blocking scan. The marker list
+          # was simultaneously too tight: a self-report phrased outside the
+          # three observed strings exited 10 with no way to answer it.
+          #
+          # The invariant, not the phrasing: **informational means the body
+          # states nothing but the bot's own work.** So the test is now
+          # whole-body and structural — every non-blank line outside the
+          # About block must be a heading, a bold-only label (`**Testing**`,
+          # which both observed reports use), or a list item. A free-standing
+          # prose paragraph is exactly what a concern looks like and exactly
+          # what a work report does not contain.
+          #
+          # The marker is kept as the positive half, because structure alone
+          # would admit any bulleted list. Both halves are required.
+          #
+          # Residual, stated rather than papered over: a concern written AS a
+          # bullet inside an otherwise-genuine report still classifies
+          # informational. That is why this predicate is only half the
+          # restructure — `settle` now accepts everything `check` blocks on,
+          # so misreading in the other direction costs one recorded
+          # disposition instead of a stranded head, and the classifier is free
+          # to fail closed.
+          # `is_reviewed_commit_line` rides along because it is Codex's OWN
+          # whole-line metadata — the same line `rest_is_boilerplate` accepts
+          # in a clean verdict — not prose a concern could hide in. Every other
+          # shape here is structural: a heading, a bold-only label, a list
+          # item.
+          def self_report_line:
+            (test("^#{1,6}[[:space:]]") or
+             test("^\\*\\*[^*]+\\*\\*[[:space:][:punct:]]*$") or
+             test("^[*+-][[:space:]]") or
+             test("^[0-9]+\\.[[:space:]]") or
+             is_reviewed_commit_line);
+          def states_only_own_work:
+            (body_text | ascii_downcase | strip_about_block | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(self_report_line));
+          def is_self_report:
+            (has_severity_marker | not) and
+            (has_finding_footer | not) and
+            has_summary_heading and
+            self_work_marker and
+            states_only_own_work;
+          # harmon-devkit#718's rolling "Codex Review Summary" table was
+          # accepted here as a verdict surface in round 1 and SPLIT OUT in
+          # challenge round 3 (findings `challenge-r3-codex-adversarial-2`,
+          # `-3`, `-4`, `-5`; carried in #1117). Reading a verdict out of that
+          # table meant deriving a head from parsed markdown, and three
+          # consecutive rounds reproduced a false-clean or stuck-head path
+          # through it: the Completed-row arm, the header/column resolution,
+          # the latest-row-per-commit keying, and the comment-level freshness
+          # stamp are all gone, with `settle`'s summary binding.
+          #
+          # What replaces it is a REJECTION FORM rather than a parser: a
+          # badged comment from the pinned actor, newer than the trigger, that
+          # this checker cannot bind to a head BLOCKS until it is settled by
+          # comment id (see the unbound-badged scan in `check`). The trigger
+          # already scopes the cycle to one PR and head, so nothing has to be
+          # derived from the body at all — which is what deletes the whole
+          # unbindable class instead of hardening it a fourth time.
+          # Restructured, not re-decided: a body that DOES open with the clean
+          # sentence classifies exactly as before (badge -> findings, trailing
+          # prose -> unrecognized, otherwise clean), and a body that does not
+          # is still `findings` unless it is the unbadged self-report shape
+          # above. The clean-template branch is checked first so a self-report
+          # heading can never reclassify a genuine clean verdict.
           def verdict_class:
-            if (first_line | startswith(clean_sentence) | not) then "findings"
-            elif has_severity_marker then "findings"
-            elif (rest_is_boilerplate | not) then "unrecognized"
-            else "clean" end;
+            if (first_line | startswith(clean_sentence)) then
+              (if has_severity_marker then "findings"
+               elif (rest_is_boilerplate | not) then "unrecognized"
+               else "clean" end)
+            elif is_self_report then "informational"
+            else "findings" end;
 JQDEFS
 )
 
@@ -731,6 +1141,7 @@ reserve)
     [ "$live_head" = "$head" ] || die "PR head changed before reservation"
 
     replaced_trigger_comment_id=
+    carried_first_trigger_comment_id=
     if [ -f "$state_file" ]; then
         read_state
         old_repo=$(jq -r '.repo' "$state_file")
@@ -742,6 +1153,24 @@ reserve)
             die "state belongs to a different PR"
         [ "$old_phase" != "reserved" ] ||
             die "an unresolved reservation must be reconciled before replacing its head"
+        # Challenge round 2, findings `challenge-r2-codex-adversarial-5`
+        # and `-6` (2026-09-20, both confirmed P2, disposition DELETE):
+        # round 1's item-B carve-out — a fresh attempt-1 reservation once a
+        # recorded reset time had passed — is gone, and its round-1
+        # disposition is reversed by the orchestrator on the round-2 record.
+        # It opened on any past timestamp scraped from the body (so a reply
+        # naming an old date re-triggered a reviewer that had just refused,
+        # the exact waste harmon-devkit#573 measured), it could never open in
+        # the observed case (no observed reply carries a reset time), and it
+        # could not open even when one did, because the extractor accepted
+        # minute resolution while `valid_time` requires seconds. It also gave
+        # a guard whose whole value is having exactly one same-head
+        # reservation route a second one.
+        #
+        # The underlying concern is real and is NOT dropped: giving a
+        # quota-exhausted head a safe recovery route is carried in #1115. Until
+        # then the documented behaviour stands — report the blocker, and let a
+        # push or an operator clear the state.
         if [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
@@ -755,6 +1184,35 @@ reserve)
             # recomputing this field from live GitHub evidence once a new
             # trigger is attached; this is only the value in between.
             replaced_trigger_comment_id=$(jq -r '.trigger_comment_id // empty' "$state_file")
+            # Review round 4, finding `review-r4-codex-verification-1`
+            # (confirmed P1, REPRODUCED): round 3 carried `reserved_at`
+            # forward here so the unbound-badge scan could bound on it. That
+            # made every attempt-2 `attach` read run under the one-second
+            # clamp, because `attach` sets no `requested_at` and `run_gh`
+            # therefore anchors its per-call budget on the reservation, which
+            # attempt 2 always finds elapsed. Five reads, two of them
+            # pagination sweeps, one second each: the re-trigger could not be
+            # attached at all, and the head stuck at `phase="reserved"`.
+            #
+            # The carry is GONE and `reserved_at` is stamped fresh per attempt
+            # again, because the scan no longer needs a clock at all — see the
+            # unbound-badge scan for the id-ordered invariant that replaced it.
+            # What DOES survive a re-reservation is the head FIRST TRIGGER id
+            # below, which is an id rather than a deadline and so cannot
+            # starve a fetch budget.
+            #
+            # Review round 5, finding `review-r5-codex-verification-2`
+            # (confirmed P2): this read the new field alone while `check`
+            # degrades a pre-field state with `// .trigger_comment_id`. So a
+            # state written before the field existed lost its anchor across the
+            # re-reservation, `attach` then filled the null with the SECOND
+            # trigger, and a badge answering the first one dropped below the
+            # boundary. Same fallback as `check`, for the same one upgrade
+            # case: the old state is `attached` here by the guard above, so its
+            # `trigger_comment_id` is the only first-trigger evidence there is.
+            carried_first_trigger_comment_id=$(jq -r \
+                '.first_trigger_comment_id // .trigger_comment_id // empty' \
+                "$state_file")
         else
             [ "$attempt" = "1" ] ||
                 die "a new head must begin at attempt 1"
@@ -764,15 +1222,43 @@ reserve)
     fi
 
     reserved_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    # Settlements are statements about a HEAD, not about an attempt, so attempt
-    # 2 of the same head keeps them — discarding them would make every attempt-2
-    # cycle re-block on findings a human already disposed of. A different head
-    # invalidates them, and this payload starts them empty.
+    # Settlements PERSIST as head-level statements for the record, but they
+    # never CERTIFY a later attempt. Attempt 2 of the same head keeps them so
+    # the cycle does not re-block on a finding a human already disposed of, and
+    # so the record of what was decided survives the reservation; a different
+    # head invalidates them and this payload starts empty.
+    #
+    # What persistence does not buy is a verdict. The `disposed_applied` exit
+    # still requires a disposed result NEWER than the latest trigger
+    # (`> $requested` there), because re-triggering asks for a new review and
+    # an older settlement says nothing about what that review found — the case
+    # `an earlier settled finding cannot make a re-trigger clean without new
+    # evidence` pins exactly that. Challenge round 3's finding
+    # `challenge-r3-codex-adversarial-10` proposed removing the filter and was
+    # adjudicated DECLINED as a false positive against this invariant: the
+    # change is a fail-open, and it makes that pinned case fail.
     carried_settled='[]'
     if [ -f "$state_file" ] && [ "$(jq -r '.head' "$state_file")" = "$head" ]; then
         carried_settled=$(jq -c '.settled // []' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
+        # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
+        # that did not answer. A reviewer that answered "my code-review usage
+        # limit is exhausted" DID answer, so spending attempt 2 on it buys a
+        # second window on a known-blocked reviewer and then escalates for the
+        # wrong reason — the ~30 minutes the original issue measured. `check`
+        # recorded that answer on this state when it reported exit 15; refuse
+        # here rather than re-deriving it from GitHub, so the refusal is as
+        # deterministic as the reservation it guards.
+        recorded_quota_at=$(jq -r '.quota_exhausted_at // empty' "$state_file")
+        if [ -n "$recorded_quota_at" ]; then
+            recorded_quota_reset=$(jq -r '.quota_reset_at // empty' "$state_file")
+            quota_refusal="attempt 1 ended with the finder reporting an exhausted code-review usage limit at $recorded_quota_at"
+            if [ -n "$recorded_quota_reset" ]; then
+                quota_refusal="$quota_refusal (resets at $recorded_quota_reset)"
+            fi
+            die "$quota_refusal — re-triggering cannot produce a review; report the blocker, and recover by pushing a new commit or removing this state file (route carried in #1115)"
+        fi
         previous_requested_at=$(jq -r '.requested_at' "$state_file")
         valid_time "$previous_requested_at" ||
             die "attempt 1 state has an invalid request time"
@@ -854,6 +1340,18 @@ reserve)
         rm -rf "$finder_tmpdir"
     fi
 
+    # The head first trigger id survives a re-reservation, unlike the
+    # reservation timestamp above: it is what the unbound-badge scan orders
+    # against, and rebasing it on attempt 2 would hide every badge the
+    # connector posted while attempt 1 was timing out (which is
+    # `review-r3-codex-verification-1`, in its clock-free form).
+    if [ -n "$carried_first_trigger_comment_id" ]; then
+        valid_uint "$carried_first_trigger_comment_id" ||
+            die "attempt 1 state has an invalid first trigger id to carry forward"
+        payload_first_trigger_comment_id=$carried_first_trigger_comment_id
+    else
+        payload_first_trigger_comment_id=null
+    fi
     if [ -n "$replaced_trigger_comment_id" ]; then
         valid_uint "$replaced_trigger_comment_id" ||
             die "attempt 1 state has an invalid trigger id to carry forward"
@@ -872,11 +1370,13 @@ reserve)
         --argjson settled "$carried_settled" \
         --argjson finder "$finder_payload" \
         --argjson previous_trigger_comment_id "$payload_previous_trigger_comment_id" \
+        --argjson first_trigger_comment_id "$payload_first_trigger_comment_id" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
           previous_trigger_comment_id:$previous_trigger_comment_id,
+          first_trigger_comment_id:$first_trigger_comment_id,
           requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
@@ -1104,6 +1604,10 @@ attach)
           )]
         ') || die "cannot classify prior review triggers"
 
+    # With no reconstruction evidence the only same-head trigger in view is the
+    # one being attached, so it IS the minimum. The branch below lowers this
+    # whenever it can authenticate an earlier one.
+    first_trigger_candidate=$trigger_id
     if [ "$requested_at" \< "$state_reserved" ] ||
         [ "$(printf '%s' "$prior_trigger_candidates" | jq 'length')" -gt 0 ]; then
         # A trigger that predates this local reservation is state-recovery
@@ -1142,6 +1646,33 @@ attach)
               [$candidates[] | select(.user.id as $id | $trusted | index($id))] |
               sort_by(.created_at, .id) | last // null | .id // null
             ')
+        # Review round 5, finding `review-r5-codex-verification-1` (confirmed
+        # P1, and a REPRODUCED false clean): the line above deliberately takes
+        # the NEWEST prior trigger, because that is what
+        # `previous_trigger_comment_id` means. The unbound-badge boundary needs
+        # the opposite — the EARLIEST — and it used to be filled with the
+        # trigger in hand instead, so a reconstruction over two same-head
+        # triggers anchored on the second and silently dropped every badge that
+        # answered the first. Reproduced as `rc=0 clean` over a live
+        # undisposed P0, with no `unbound_badged` key emitted at all.
+        #
+        # Same already-fetched, already-authenticated candidate set, no extra
+        # GitHub call: the minimum id among every same-head trigger this attach
+        # can see, including the one being attached. The boundary therefore
+        # only ever moves DOWN, which is the fail direction this scan commits
+        # to a few hundred lines below.
+        first_trigger_candidate=$(jq -nr \
+            --argjson candidates "$prior_trigger_candidates" \
+            --argjson attached "$trigger_id" \
+            --slurpfile registry "$trigger_registry_dir/registry.json" '
+              ($registry[0].trusted_orchestrator_actor_ids // []) as $trusted |
+              ([$candidates[] |
+                 select(.user.id as $id | $trusted | index($id)) | .id] +
+               [$attached]) |
+              map(select(type == "number" and . > 0)) | min // $attached
+            ')
+        valid_uint "$first_trigger_candidate" ||
+            die "cannot determine the head first trigger id from the fetched same-head triggers"
         rm -rf "$trigger_registry_dir"
         [ "$previous_trigger_comment_id" = null ] || requires_full_window=true
     fi
@@ -1150,6 +1681,7 @@ attach)
         --argjson id "$trigger_id" \
         --arg requested_at "$requested_at" \
         --argjson previous_trigger_comment_id "$previous_trigger_comment_id" \
+        --argjson first_trigger "$first_trigger_candidate" \
         --argjson requires_full_window "$requires_full_window" \
         --arg boundary_source "$boundary_source" \
         --arg commit_date_boundary "$commit_date_boundary" \
@@ -1159,6 +1691,24 @@ attach)
           .trigger_comment_id = $id |
           .requested_at = $requested_at |
           .previous_trigger_comment_id = $previous_trigger_comment_id |
+          # SET ONCE PER HEAD, then never rebased. This is the whole of the
+          # unbound-badge scan ordering now: no timestamps, no window, just
+          # "was this comment posted after the first thing we asked for on
+          # this head". A second attempt keeps attempt 1 id (carried through
+          # `reserve`), and a RECONSTRUCTION keeps whatever it was rebuilt
+          # around, because `//=` only fills a null. Rebasing it on a later
+          # attempt is exactly the defect `review-r3-codex-verification-1`
+          # reproduced, and anchoring it on a clock is the seam five
+          # consecutive rounds attacked.
+          # MONOTONE DECREASING, set once and then only ever lowered. A
+          # second attempt keeps attempt 1 id (carried through `reserve`), and
+          # a reconstruction that authenticates an EARLIER same-head trigger
+          # lowers it to that one — `review-r5-codex-verification-1`. It can
+          # never rise, so no later attach can hide a badge an earlier trigger
+          # had already drawn.
+          .first_trigger_comment_id =
+            ([(.first_trigger_comment_id // empty), $first_trigger] |
+              map(select(type == "number" and . > 0)) | min) |
           .requires_full_window = $requires_full_window |
           .boundary_source = $boundary_source |
           .commit_date_boundary = $commit_date_boundary |
@@ -1408,6 +1958,25 @@ check)
     state_trigger=$(jq -r '.trigger_comment_id // empty' "$state_file")
     state_reserved=$(jq -r '.reserved_at' "$state_file")
     state_requested=$(jq -r '.requested_at' "$state_file")
+    # The head FIRST trigger id, the unbound-badge scan whole ordering. A state
+    # written before this field existed has none, and there is no way to
+    # recover which trigger came first from a resumed state, so it degrades to
+    # the trigger in hand.
+    #
+    # Review round 5, finding `review-r5-codex-verification-4` (confirmed P3):
+    # the previous version of this comment also claimed every state this
+    # version writes carries the field, and that is FALSE for a
+    # requested-reviewer finder — `attach --requested-at` records when the
+    # reviewer was requested and there is no trigger comment to record, so
+    # BOTH fields are null and this read came back empty. The boundary then
+    # degraded to `0`, which would make every unbound badge block forever
+    # rather than "degrade to the trigger in hand". It was inert only because
+    # the one requested-reviewer finder in the registry does not declare the
+    # `comment` surface, so the scan is never reached — one registry edit from
+    # live. The degradation is explicit at the scan itself now rather than
+    # resting on that coincidence.
+    state_first_trigger=$(jq -r \
+        '.first_trigger_comment_id // .trigger_comment_id // empty' "$state_file")
     # trigger_comment_id is null for requested-reviewer finders
     if [ "$finder_trigger_mechanism" = "review-comment" ]; then
         valid_uint "$state_trigger" || die "state has an invalid trigger ID"
@@ -1434,7 +2003,7 @@ check)
             "PR is ${first_head:-no longer open} — the stage is over; stop, do not re-trigger or keep polling"
         exit 14
     elif [ "$provider_status" -ne 0 ]; then
-        bounded_wait "cannot fetch the current open PR head"
+        transient_read_failure "cannot fetch the current open PR head"
     fi
     [ "$first_head" = "$state_head" ] || {
         emit head-changed "recorded evidence belongs to an older PR head"
@@ -1445,7 +2014,7 @@ check)
     trap 'rm -rf "$workdir"; rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
     actor=$(run_gh api "users/$actor_login") || {
-        bounded_wait "cannot authenticate the configured finder actor"
+        transient_read_failure "cannot authenticate the configured finder actor"
     }
     printf '%s' "$actor" | jq -e \
         --argjson id "$actor_id" \
@@ -1462,7 +2031,7 @@ check)
     if [ "$finder_trigger_mechanism" = "review-comment" ] && [ -n "$state_trigger" ]; then
         expected_trigger_body=$(jq -r '.finder.trigger_body // "@codex review"' "$state_file")
         trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
-            bounded_wait "cannot re-fetch the exact trigger comment"
+            transient_read_failure "cannot re-fetch the exact trigger comment"
         }
         printf '%s' "$trigger" | jq -e \
             --argjson id "$state_trigger" \
@@ -1512,7 +2081,7 @@ check)
             "PR was closed or merged (${second_head:-state unknown}) while evidence was being fetched — the stage is over"
         exit 14
     elif [ "$provider_status" -ne 0 ]; then
-        bounded_wait "cannot re-fetch the PR head before verdict"
+        transient_read_failure "cannot re-fetch the PR head before verdict"
     fi
     [ "$second_head" = "$state_head" ] || {
         emit head-changed "PR head changed while evidence was being fetched"
@@ -1553,6 +2122,112 @@ check)
           .[] | select(.user.id? == $id and .commit_id? == $head) |
           [(.id? // "" | tostring), (.submitted_at? // "")] | @tsv
         ' "$workdir/reviews.json")
+
+    # harmon-devkit#573: the usage-limit reply. When the connector's
+    # code-review quota is spent it answers the trigger with a top-level
+    # comment — observed verbatim on evanharmon1/harmon-init#1020, comment
+    # 5380551548: "You have reached your Codex usage limits for code reviews.
+    # You can see your limits in the [Codex usage dashboard](…)". It carries no
+    # verdict sentence, no `Reviewed commit` line and no badge, so every
+    # classifier below is blind to it and the cycle sat `pending` for the whole
+    # window, then spent attempt 2 on the same answer before escalating: ~30
+    # minutes to learn something the bot said in five seconds, and a blocker
+    # report that could not name the reset time.
+    #
+    # Matched on the one phrase the message is built around, case-insensitively,
+    # and only from the pinned actor after this attempt's own trigger. The match
+    # is deliberately narrow: a reworded message simply is not recognised, which
+    # restores exactly today's behaviour (wait out the window) rather than
+    # inventing a terminal answer — the same fail-closed direction the rest of
+    # this file takes.
+    #
+    # `bounded_wait` acts on this, not the code here, because absence of other
+    # evidence is the only state a quota reply can ever be observed in, and
+    # every waiting path funnels through there.
+    if finder_has_surface comment; then
+        # `challenge-r5-codex-adversarial-4`, second site: a usage-limit reply
+        # posted in the triggers own second was missed by the strict bound, so
+        # the cycle waited out its window and reported 12 instead of the
+        # terminal 15 the reply had already given it. Inclusive bound plus the
+        # monotonic comment-id tiebreak.
+        #
+        # The unbound-badge scan above DROPPED that tiebreak in review round 2
+        # and this site deliberately keeps it, because the two scans fail in
+        # opposite directions. Admitting one extra badge costs one recorded
+        # disposition. Admitting one extra usage-limit reply costs the cycle
+        # outright: a quota answer is TERMINAL, so a stale refusal read as
+        # this attempt answer would end every later cycle on this head with a
+        # blocker nobody can settle. Here the id tiebreak is the only thing
+        # that can order a same-second reply against the trigger, and unlike
+        # the badge scan there is no second wire shape it cannot separate — a
+        # usage-limit reply is never edited into existence.
+        quota_record=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg requested "$state_requested" \
+            --argjson trigger "${state_trigger:-0}" '
+              [.[] | select(
+                .user.id? == $id and
+                (((.created_at? // "") > $requested) or
+                 (((.created_at? // "") == $requested) and
+                  ((.id? | type) == "number") and (.id > $trigger))) and
+                ((.body // "") | ascii_downcase |
+                  test("reached your codex usage limit"))
+              ) | select((.id? | type) == "number" and .id > 0)] |
+              sort_by(.created_at, .id) | last // null |
+              if . == null then ""
+              else
+                [(.id | tostring), (.created_at // ""),
+                 # A reset time where the reply carries one. No observed
+                 # instance does, so this stays empty rather than guessing;
+                 # the detail then says so explicitly instead of implying a
+                 # time nobody was told.
+                 ((((.body // "") | [match(
+                      "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z";
+                      "i"
+                    ).string] | first) // ""))] | join(",")
+              end
+            ' "$workdir/comments.json") || {
+            emit indeterminate "conversation comments could not be scanned for a usage-limit reply"
+            exit 2
+        }
+        if [ -n "$quota_record" ]; then
+            IFS=, read -r quota_comment_id quota_detected_at quota_reset_at \
+                <<<"$quota_record"
+            valid_time "$quota_detected_at" || {
+                emit indeterminate "the finder's usage-limit reply carries a malformed creation time"
+                exit 2
+            }
+            # Terminal HERE, not at the far end of the pass. Everything below
+            # this point is evidence evaluation, and several of its branches
+            # exit 0 — a thumbs-up on the trigger, a clean review, a recorded
+            # disposition. Each of those would certify a head the reviewer has
+            # just refused to review, which is the false clean finding
+            # 4065974923 reported.
+            quota_exhausted_terminal "the finder answered this attempt with a usage-limit reply"
+        fi
+    fi
+
+    # harmon-devkit#655: is the finder's pending reaction still on THIS
+    # attempt's trigger? `reactions.json` is fetched for the exact trigger
+    # comment and nothing else, so presence here is exactly the "current
+    # attempt's trigger" the issue asks about — and a reaction that has since
+    # been removed is simply absent from the fetch, which is how the
+    # vanished-without-result case keeps its existing retry behaviour.
+    #
+    # Read here rather than in `bounded_wait` so the extension can never be
+    # decided from an unfetched surface: a finder with no reaction surface, or
+    # a read that failed earlier (now exit 16), leaves this at 0.
+    if finder_has_surface reaction; then
+        pending_reaction_live=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg pending "$finder_pending_reaction" '
+              if any(.[]; .user.id? == $id and .content? == $pending)
+              then "1" else "0" end
+            ' "$workdir/reactions.json") || {
+            emit indeterminate "exact-trigger reactions could not be scanned for the pending signal"
+            exit 2
+        }
+    fi
 
     # Success reactions must carry usable evidence metadata just like review
     # and comment results. Only the exact latest trigger is consulted.
@@ -1686,13 +2361,31 @@ check)
     # `pull_request_review_id` cannot be attributed to anything, so it settles
     # nothing at all: the whole settled set collapses to empty rather than
     # letting an unattributable finding be counted against some other review.
+    #
+    # Review round 2, finding `review-r2-codex-verification-1` (confirmed P1):
+    # this count and the partition below were TWO DOMAINS FOR ONE QUESTION.
+    # Challenge round 5 (`challenge-r5-codex-adversarial-5`) taught the
+    # partition to exempt a self-fix summary and left this count unfiltered,
+    # so a head whose only actor inline comment was a self-report counted 1
+    # here and produced an EMPTY bot set there: nothing was unadjudicated, so
+    # `adjudicated_findings` was set, and the attribution assertion below —
+    # which requires at least one attributed review — could never be satisfied.
+    # The cycle exited 2 and handed a benign, informational state to a human,
+    # while the same head with ZERO actor inline comments reached the ordinary
+    # pending path. Reproduced as exactly that asymmetry (2 versus 11).
+    #
+    # In the merge base the two domains AGREED, because neither filtered. The
+    # divergence was created by narrowing one of two coupled sites, which is
+    # why the fix is one predicate rather than a second filter: the count now
+    # asks the same `is_self_report` question every other consumer asks.
     inline_head_findings=$(jq \
         --argjson id "$actor_id" \
-        --arg head "$state_head" '
+        --arg head "$state_head" \
+        "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.original_commit_id? == $head)
-          )] | length
+          ) | select(is_self_report | not)] | length
         ' "$workdir/inline.json")
 
     adjudicated_findings=0
@@ -1720,7 +2413,7 @@ check)
         # caller re-reads the four surfaces immediately before accepting a
         # result.
         pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
-            bounded_wait "cannot fetch the pull request author identity"
+            transient_read_failure "cannot fetch the pull request author identity"
         }
         pr_author_id=$(printf '%s' "$pr_payload" |
             jq -er 'select(.user.id | type == "number") | .user.id') || {
@@ -1741,10 +2434,15 @@ check)
             exit 2
         }
 
+        # The shared verdict defs are loaded here because the round-5 `-5`
+        # exemption below needs `is_self_report`, which lives in them. This is
+        # the same definition the top-level classifier and `readiness-gate.sh`
+        # use, which is the point: one predicate, three consumers.
         inline_partition=$(jq -c \
             --argjson id "$actor_id" \
             --argjson author "$pr_author_id" \
-            --arg head "$state_head" '
+            --arg head "$state_head" \
+            "$codex_verdict_defs"'
               def ts($value):
                 if ($value | type) == "string" and
                    ($value | test(
@@ -1757,14 +2455,45 @@ check)
               . as $all |
               [$all[] | select(
                 .user.id? == $id and (.original_commit_id? == $head)
-              )] as $bot |
+              )] as $bot_all |
+              # Challenge round 5, finding `challenge-r5-codex-adversarial-5`
+              # (confirmed P1, a CONTRACT BREAK against the governing file):
+              # AGENTS.md says a self-fix summary — an unbadged report from
+              # this bot describing a fix IT made, **in a thread** or as a
+              # top-level comment — is informational and owed no second reply.
+              # The top-level half was implemented in `verdict_class`, and
+              # `readiness-gate.sh` implements the thread half, but THIS
+              # partition selected every bot comment on the head with no
+              # exemption at all. So the bot own unbadged summary, posted
+              # after a session replied "Fixed in <sha>", held the cycle open
+              # and was named as the accepted finding evidence.
+              #
+              # It survived five rounds because every #675 fixture in this
+              # suite is top-level; the inline half of that sentence had no
+              # case, which is exactly how the two implementations diverged
+              # unnoticed. Same predicate as the other two consumers, so all
+              # three now answer the same question the same way.
+              [$bot_all[] | select(is_self_report | not)] as $bot |
               [$bot[] |
                 . as $comment |
                 ts($comment.created_at) as $posted |
                 ($comment | edited_at) as $edited |
+                # Challenge round 3, finding `challenge-r3-codex-adversarial-8`
+                # (confirmed P2): GitHub sets `in_reply_to_id` to the THREAD
+                # ROOT on every reply, not to the comment being answered, so
+                # matching `in_reply_to_id == $comment.id` only ever
+                # adjudicated a bot comment that was itself the root. A bot
+                # comment posted INTO an existing thread could never be
+                # answered — no reply names it — while `readiness-gate.sh` and
+                # `ai/agents/integrator.md` both group by root and reported the
+                # thread answered. Three implementations, two answers, and
+                # `settle` refuses inline targets, so the head could not be
+                # cleared. Grouping by root here makes all three agree.
+                ($comment.in_reply_to_id // $comment.id) as $root |
                 [$all[] | select(
-                  (($comment.id? | type) == "number") and
-                  (.in_reply_to_id? == $comment.id) and
+                  (($root | type) == "number") and
+                  ((.in_reply_to_id // .id) == $root) and
+                  ((.id? // null) != $comment.id) and
                   ((.user.id? | type) == "number") and
                   (.user.id != $id) and
                   ((((.author_association? // "") |
@@ -1775,6 +2504,23 @@ check)
                   (ts(.created_at) > $posted)
                 ) | ts(.created_at)] as $replies |
                 {
+                  comment: (
+                    if ($comment.id? | type) == "number"
+                    then $comment.id else null end
+                  ),
+                  # Challenge round 5, finding `challenge-r5-codex-adversarial-6`
+                  # (confirmed P2): `unanswered[]` emitted the per-comment id
+                  # while `ai/agents/integrator.md` tells the agent to feed it
+                  # into `unanswered_thread_roots`, and the schema defines
+                  # those as THREAD ids. A bot comment posted into an existing
+                  # thread is not its own root, so the agent was handed a value
+                  # the field does not accept. The root is what the reply
+                  # endpoint takes too, so it is the useful id either way.
+                  root: $root,
+                  path: (
+                    if ($comment.path? | type) == "string"
+                    then $comment.path else null end
+                  ),
                   review: (
                     if ($comment.pull_request_review_id? | type) == "number"
                     then $comment.pull_request_review_id else null end
@@ -1788,6 +2534,20 @@ check)
               {
                 unadjudicated:
                   ([$classified[] | select(.adjudicated | not)] | length),
+                # harmon-devkit#737 defect 1: every unanswered bot thread on
+                # this head, from EVERY review that posted one. The partition
+                # was already head-scoped rather than review-scoped, so the
+                # count was right; what a caller got back was one accepted
+                # review id, which cannot name findings that came from two
+                # reviews 18 minutes apart (observed on harmon-devkit#720, where
+                # the 14 inline findings of the second review went unanswered
+                # until the readiness gate caught them after every integration
+                # round was spent). Enumerating them is what lets the caller
+                # answer all of them in the round that surfaced them.
+                unanswered:
+                  ([$classified[] | select(.adjudicated | not) |
+                    {thread_root: .root, comment_id: .comment,
+                     review_id: .review, path: .path}]),
                 unattributed:
                   ([$classified[] | select(.review == null)] | length),
                 attributed:
@@ -1841,8 +2601,39 @@ check)
                       ) | .id | tostring] | last // ""
                     ' "$workdir/reviews.json")
             fi
+            inline_unanswered_extra=$(printf '%s' "$inline_partition" |
+                jq -c '{unanswered: (.unanswered // [])}') || {
+                emit indeterminate "unanswered current-head inline threads could not be enumerated"
+                exit 2
+            }
+            # Challenge round 3, finding `challenge-r3-codex-adversarial-7`
+            # (confirmed P2): `emit` omits `accepted` when the id is empty,
+            # but BOTH schemas require `accepted` on exit 10, so an exit 10
+            # with no citable review produced a result the validator rejects —
+            # the caller could not report the finding at all.
+            #
+            # A review is not the only thing that can be cited, and the
+            # finding is real either way: an inline comment with no fetchable
+            # review behind it (no review by the actor on this head, or one
+            # this check never saw) is still an unanswered finding, and the
+            # COMMENT is perfectly good accepted evidence for it. Cite that
+            # rather than downgrading a real finding to indeterminate.
+            inline_findings_surface=review
+            inline_findings_id=$inline_findings_review_id
+            if [ -z "$inline_findings_id" ]; then
+                inline_findings_surface=comment
+                inline_findings_id=$(printf '%s' "$inline_partition" | jq -r '
+                  [(.unanswered // [])[] |
+                   select((.comment_id | type) == "number") | .comment_id] |
+                  first // "" | tostring
+                ')
+            fi
+            [ -n "$inline_findings_id" ] || {
+                emit indeterminate "current-head inline findings are unanswered but carry no citable comment or review id"
+                exit 2
+            }
             emit findings "current-head inline review findings are unanswered by a trusted in-thread reply" \
-                review "$inline_findings_review_id"
+                "$inline_findings_surface" "$inline_findings_id" "$inline_unanswered_extra"
             exit 10
         fi
         adjudicated_findings=1
@@ -1926,6 +2717,10 @@ check)
                  disposed: ((.id as $rid | $disposed_reviews | index($rid)) != null)}
           ] + [
             $comments[0][] | select(.user.id? == $id) |
+            # harmon-devkit#675: an unbadged self-report body is not evidence
+            # about the review at all, so it must not be able to win "newest
+            # result" and hold a genuinely clean cycle at pending.
+            select(verdict_class != "informational") |
             ((.body // "") |
               try match(
                 "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
@@ -2092,18 +2887,25 @@ check)
     # candidacy elsewhere — an older, unrelated clean result could then be
     # accepted instead of failing closed on the newer, unclassifiable
     # comment. Matching the predicate here closes that gap.
+    # Informational self-reports (harmon-devkit#675) are deliberately NOT in
+    # this scan: the whole point of that class is that such a body is not
+    # evidence about the review, so an unusable id on one loses nothing there
+    # is to lose.
     malformed_top_level=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         "$codex_verdict_defs"'
           [.[] | select(.user.id? == $id) |
-            ((.body // "") |
-              try match(
-                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
-                "i"
-              ).captures[0].string catch "") as $prefix |
-            select($prefix != "") |
-            select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
+            select(verdict_class != "informational") |
+            select(
+              ((.body // "") |
+                try match(
+                  "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                  "i"
+                ).captures[0].string catch "") as $prefix |
+              ($prefix != "") and
+              (($head | ascii_downcase) | startswith($prefix | ascii_downcase))
+            ) |
             select((.id? | is_positive_integer) | not)
           ] | length
         ' "$workdir/comments.json") || {
@@ -2113,6 +2915,249 @@ check)
     if [ "$malformed_top_level" -gt 0 ]; then
         emit indeterminate "a Reviewed-commit top-level comment from the finder has no usable numeric id"
         exit 2
+    fi
+
+    # THE REJECTION FORM (challenge round 3, findings
+    # `challenge-r3-codex-adversarial-2` and `-3`, both P1, disposition SPLIT;
+    # the summary-table verdict surface it replaces is carried in #1117).
+    #
+    # Rounds 1 to 3 each tried to bind a badged comment to a head by PARSING
+    # its body, and each attempt reproduced a way to lose the badge: the
+    # Completed-row arm, then the header-driven columns, then a guard that
+    # asked whether the table named *any* commit when the question was whether
+    # it named *this* one — and whose `indeterminate` exit was unsettleable by
+    # construction, because it fired exactly when the binding it needed was
+    # unavailable.
+    #
+    # Nothing here derives a head any more. The reservation already pins one
+    # repo, one PR and one head, and the trigger already scopes the cycle, so a
+    # badged comment from the pinned actor posted after that trigger is either
+    # bound by its own `Reviewed commit` line — handled by the ordinary
+    # candidate path below, with its GitHub-verified prefix resolve — or it is
+    # not bound at all, and then it BLOCKS until a human settles it by comment
+    # id. `settle` accepts exactly that shape (see its own comment), so the
+    # block is always answerable: no parse, no unbindable class, and no way for
+    # a badge to be silently dropped.
+    #
+    # Fail direction: a badged comment about some OTHER head that names no
+    # commit also blocks here. That is one recorded disposition, which is the
+    # cheap side of this trade — the expensive side is the false clean this
+    # whole family of bugs produced.
+    # Challenge round 4, findings `challenge-r4-codex-adversarial-1` and `-2`
+    # (both confirmed P1). Two independent ways this scan dropped a live badge:
+    #
+    #   -1  It ended `sort_by(...) | last`, so only the NEWEST unbound badge
+    #       was ever considered and the disposed check tested only that one.
+    #       Settling the newest made every OLDER undisposed badge invisible —
+    #       reproduced as exit 0 with a live unsettled P0. Every undisposed
+    #       badge blocks now, and the OLDEST is cited so repeated settling
+    #       walks the list instead of clearing it in one go.
+    #
+    #   -2  The rejection form narrowed the stamp to `.created_at`, while the
+    #       guard it replaced used `(.updated_at // .created_at)`. A badge
+    #       ADDED BY AN EDIT after the trigger then vanished. One stamp policy
+    #       had been applied to three sites whose safety directions are
+    #       opposite: the CLEAN path wants the conservative `created_at` (that
+    #       is round 3's own `-4`), and this BLOCKING path wants the generous
+    #       one. Generous here, conservative there — they are different
+    #       questions, not one setting.
+    #
+    # Disposed ids are filtered inside the query so "is anything still
+    # unanswered" is one decision rather than a check against a single id.
+    # Challenge round 5, finding `challenge-r5-codex-adversarial-4` (confirmed
+    # P1, and a reproduced FALSE CLEAN over a live P0): this bound was strict
+    # while the clean-by-reaction path it races is inclusive
+    # (`.created_at? >= $requested`, pinned by the suite case
+    # `exact-trigger current-request +1 is clean`). So a badge stamped in the
+    # TRIGGERS OWN SECOND was dropped while a reaction in that same second
+    # certified the cycle clean — one second was the whole difference, and the
+    # result carried no `unbound_badged` key at all, so the caller was never
+    # told the finding existed.
+    #
+    # Conservative direction on a blocking scan: admitting one extra badge
+    # costs a recorded disposition, dropping one costs the invariant this
+    # whole form exists to hold.
+    #
+    # MAINTAINER RULING, review round 4 (findings `review-r4-codex-verification-1`
+    # and `-2`, both confirmed P1): this scan has NO CLOCK. The invariant is
+    #
+    #   every undisposed badged comment from the pinned actor that names no
+    #   reviewed commit and whose COMMENT ID exceeds the head FIRST TRIGGER
+    #   ID blocks, and is answered by comment id.
+    #
+    # Comment ids are monotonic within one resource type, and the first
+    # trigger id is written once per head at `attach` and never rebased, so
+    # there is nothing left to get wrong about seconds, edits, windows,
+    # reservations or reconstructions.
+    #
+    # MOOTED BY THIS RULING, and this is the point of it. Five consecutive
+    # rounds across two stages each closed one leak in one timestamp seam and
+    # each left another:
+    #
+    #   `challenge-r5-codex-adversarial-4`  strict bound dropped a badge in the
+    #                                       trigger own second; made it
+    #                                       inclusive, added an id tiebreak
+    #   `review-r1-codex-verification-1`     the stamp and the tiebreak read
+    #                                       different clocks; split the stamp
+    #                                       by edit provenance
+    #   `review-r2-codex-verification-2`     an edit inside the trigger second
+    #                                       is indistinguishable from no edit;
+    #                                       deleted the split, kept `>=`
+    #   `review-r3-codex-verification-1`     `attach` rebases the request time,
+    #                                       so a re-trigger hid a badge; moved
+    #                                       the anchor to the reservation
+    #   `review-r4-codex-verification-1`     that anchor starved `attach` own
+    #                                       fetch budget to one second
+    #   `review-r4-codex-verification-2`     and a reconstructed reservation can
+    #                                       postdate its trigger, hiding badges
+    #                                       again
+    #
+    # Every one of those was a correct fix to a real defect, and the family
+    # never converged, because a timestamp cannot answer "which request does
+    # this belong to" — ids can.
+    #
+    # DOCUMENTED BOUNDARY, accepted on the ruling rather than papered over: a
+    # comment that PRE-EXISTS the first trigger and is later EDITED to add a
+    # badge is NOT covered. Its id is below the boundary and no id ordering
+    # can see the edit. That reverses `review-r1-codex-verification-1`, whose
+    # suite case is retired with the tiebreak it pinned. The trade is
+    # deliberate: that shape needs the reviewer to edit an older comment
+    # instead of posting, while the clock-based alternatives demonstrably
+    # produced a fresh false clean every round. The same boundary is stated in
+    # `docs/glossary.md` and `docs/guides/codex-review.md`.
+    # `review-r5-codex-verification-4`: refuse rather than substitute a
+    # boundary. This scan orders comment ids against a comment id, so a state
+    # that has none — a requested-reviewer finder that nonetheless declares the
+    # `comment` surface — has no boundary to order against, and both available
+    # defaults are wrong: 0 blocks every badge the PR has ever carried, and
+    # "infinity" blocks none. Unknown is its own answer here as everywhere else
+    # in this file.
+    valid_uint "$state_first_trigger" || {
+        emit indeterminate "this cycle records no trigger comment id, so a badged conversation comment cannot be ordered against the review that asked for it — a finder that reads the comment surface must attach a trigger comment"
+        exit 2
+    }
+    unbound_badged_scan=$(jq -c \
+        --argjson id "$actor_id" \
+        --argjson first_trigger "$state_first_trigger" \
+        --argjson disposed "$disposed_comments" \
+        "$codex_verdict_defs"'
+          # The domain is bound ONCE and then answered exhaustively, which is
+          # `review-r4-codex-verification-3` and `-4`: the previous form
+          # computed its two keys from different filter sets, so a badge with
+          # a malformed id fell into NEITHER and was silently dropped
+          # (fail-open), while a head-bound, pre-trigger or already-disposed
+          # comment could land in the unusable key and block a head forever
+          # with no settle route (fail-closed). Same domain, three answers,
+          # and the shell checks they add up.
+          [.[] | select(.user.id? == $id) |
+            select(has_severity_marker) |
+            select(((.body // "") |
+              test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |
+            # `. as $comment` first: jq evaluates `index(f)` with `.` bound to
+            # the ARRAY being searched, so a bare `index(.id)` resolves `.id`
+            # against `$disposed` and dies "Cannot index array with string id"
+            # the moment anything IS disposed. Found by the round-4 fixture
+            # `challenge-r4-codex-adversarial-1` at its settle step.
+            . as $comment |
+            select(($disposed | index($comment.id)) == null)
+          ] as $domain |
+          {
+            domain: ($domain | length),
+            # Not orderable and not settleable: a badge whose id is not a
+            # positive integer cannot be compared with the trigger id nor
+            # named in a `settle` call, so it is reported rather than dropped.
+            unusable: [$domain[] | select((.id? | is_positive_integer) | not) | .id],
+            # Deliberately excluded, and counted so the partition is provable:
+            # a badge at or below the first trigger id predates this head
+            # review. This is the documented boundary above.
+            prior: [$domain[] |
+              select(.id? | is_positive_integer) |
+              select(.id <= $first_trigger) | .id] | length,
+            ids: ([$domain[] |
+              select(.id? | is_positive_integer) |
+              select(.id > $first_trigger) | .id] | sort)
+          }
+        ' "$workdir/comments.json") || {
+        emit indeterminate "conversation comments could not be scanned for unbound badged findings"
+        exit 2
+    }
+    # The partition is checked, not asserted. If these ever stop adding up a
+    # badge has gone missing, which is the one thing this form promises cannot
+    # happen — so say so instead of reporting a verdict built on it.
+    #
+    # Gemini finding 4066758522 on PR harmon-devkit#1125 (adjudicated P3):
+    # this read `jq -er`, and `-e` exits 1 when the last output is `false`.
+    # So the one outcome the check exists to detect took the generic
+    # "could not be partitioned" path and the specific message below could
+    # never be reached. With `-r` the two branches split the way they were
+    # meant to: a `false` result gets its own sentence below, and this generic
+    # arm keeps the case where jq cannot run at all (unparseable scan output,
+    # rc 5). Note what `false` covers, since it is more than a mismatched sum:
+    # jq treats a missing key as null and `0 + null` as 0, so a scan payload
+    # that lost a key also lands on the specific message — which is true of
+    # it, because a key that is gone did not account for anything.
+    #
+    # Worth stating plainly, because a green suite is not evidence either
+    # branch has fired: `false` is unreachable from the scan as it stands.
+    # Every domain member is a positive integer or not, and if it is, its id
+    # is either at-or-below the boundary or above it — the three keys are
+    # exhaustive and disjoint by construction. This is defence against a
+    # future edit to that query, not a live path, and no fixture can drive it
+    # without a production hook that exists only for the test.
+    unbound_partition_ok=$(printf '%s' "$unbound_badged_scan" | jq -r '
+      (.domain == ((.unusable | length) + .prior + (.ids | length)))
+    ') || {
+        emit indeterminate "unbound badged findings could not be partitioned"
+        exit 2
+    }
+    [ "$unbound_partition_ok" = "true" ] || {
+        emit indeterminate "the unbound badged scan did not account for every badged comment it read — refusing to report a verdict built on an incomplete scan"
+        exit 2
+    }
+    unbound_unusable_ids=$(printf '%s' "$unbound_badged_scan" |
+        jq -c '{unbound_unusable: .unusable}') || {
+        emit indeterminate "unbound badged findings could not be checked for usable ids"
+        exit 2
+    }
+    unbound_unusable=$(printf '%s' "$unbound_badged_scan" |
+        jq -er '.unusable | length') || {
+        emit indeterminate "unbound badged findings could not be counted"
+        exit 2
+    }
+    [ "$unbound_unusable" -eq 0 ] || {
+        # `review-r4-codex-verification-5`: the ids are computed here and were
+        # then thrown away, so the operator was told to re-read "the comment"
+        # without being told which. The sibling branch below passes its ids
+        # through `emit`s extra slot; so does this one.
+        emit indeterminate "a badged conversation comment from the reviewer carries no usable comment id, so it can be neither ordered against this cycle nor settled — re-read the comments named here rather than treating the head as reviewed" \
+            "" "" "$unbound_unusable_ids"
+        exit 2
+    }
+    unbound_badged_ids=$(printf '%s' "$unbound_badged_scan" | jq -c '.ids') || {
+        emit indeterminate "unbound badged findings could not be enumerated"
+        exit 2
+    }
+    unbound_badged_count=$(printf '%s' "$unbound_badged_ids" |
+        jq -er 'length') || {
+        emit indeterminate "unbound badged findings could not be counted"
+        exit 2
+    }
+    if [ "$unbound_badged_count" -gt 0 ]; then
+        unbound_badged_oldest=$(printf '%s' "$unbound_badged_ids" |
+            jq -er 'first | tostring')
+        unbound_badged_extra=$(jq -cn \
+            --argjson ids "$unbound_badged_ids" '{unbound_badged: $ids}')
+        # Challenge round 4, finding `challenge-r4-codex-adversarial-8` (P3):
+        # the earlier wording said the comment "cannot be bound to a head"
+        # while `accepted.reviewed_commit` sat beside it carrying this cycle's
+        # head. Both are true of different things and the phrasing hid that:
+        # the COMMENT names no commit, and the CYCLE is pinned to this head by
+        # its reservation — which is exactly why settling by comment id is
+        # sound. The schema requires `accepted`, so the field stays; the
+        # sentence now says which one is which.
+        emit findings "$unbound_badged_count badged finding(s) from the finder name no reviewed commit of their own; this cycle is pinned to its reserved head, so settle each by comment id" \
+            comment "$unbound_badged_oldest" "$unbound_badged_extra"
+        exit 10
     fi
 
     # Classifying a current-head result is three-way, not binary, because
@@ -2387,6 +3432,9 @@ check)
         --argjson id "$actor_id" \
         "$codex_verdict_defs"'
           .[] | select(.user.id? == $id) |
+          # An unbadged self-report (harmon-devkit#675) is informational
+          # rather than a finding, and contributes to no aggregate.
+          select(verdict_class != "informational") |
           ((.body // "") |
             try match(
               "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
@@ -2438,7 +3486,7 @@ check)
             continue
         fi
         resolved_payload=$(run_gh api "repos/$state_repo/commits/$prefix") ||
-            bounded_wait "cannot resolve a reviewed commit prefix through GitHub"
+            transient_read_failure "cannot resolve a reviewed commit prefix through GitHub"
         resolved=$(printf '%s' "$resolved_payload" | jq -er '.sha') || {
             emit indeterminate "GitHub returned malformed commit-prefix data"
             exit 2
@@ -2726,6 +3774,19 @@ check)
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
               sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/reviews.json")
+        # `created_at` throughout. The summary comment's edit-time stamp went
+        # out with the #718 verdict surface in challenge round 3 (carried in
+        # #1117); every comment this block can now see is dated once, when it
+        # was posted.
+        # `> $requested` is DELIBERATE and stays: a settlement recorded before
+        # the latest trigger cannot certify the re-review that trigger asked
+        # for. `an earlier settled finding cannot make a re-trigger clean
+        # without new evidence` pins it, and the reservation comment above
+        # states the same rule from the other side — settlements persist for
+        # the record, they do not certify a later attempt. Challenge round 3's
+        # finding `challenge-r3-codex-adversarial-10` proposed removing this
+        # filter and was adjudicated DECLINED as a false positive: removing it
+        # is a fail-open and makes that pinned case fail.
         disposed_comment_latest=$(jq -r \
             --argjson disposed "$disposed_comments" \
             --arg requested "$state_requested" '
@@ -2785,8 +3846,14 @@ settle)
     # answered it and `check` reports `findings` for that head forever — the
     # #275 deadlock, reappearing on the two surfaces the reply rule cannot
     # reach. This command is the local record of that answer, and it is
-    # deliberately narrow: it refuses anything it cannot prove is a badged
-    # finding, from the pinned actor, about the state's own head.
+    # deliberately narrow, and its DOMAIN IS WHAT `check` BLOCKS ON — every
+    # body whose `verdict_class` is `findings`, badged or not — never "what
+    # carries a badge" (challenge round 2, findings `-1`/`-3`; the pre-round-2
+    # badge-only wording was still stated here and in the file header, which
+    # is challenge round 5 finding `challenge-r5-codex-adversarial-3`). A
+    # target must still come from the pinned actor and resolve to this state's
+    # own head, or bind to it by comment id where the body names no commit of
+    # its own.
     [ -n "$surface" ] && [ -n "$target_id" ] && [ -n "$disposition" ] &&
         [ -n "$note" ] && [ -n "$actor_id" ] || usage
     valid_uint "$actor_id" || die "invalid actor ID"
@@ -2807,16 +3874,34 @@ settle)
     state_pr=$(jq -r '.pr' "$state_file")
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
-    state_requested=$(jq -r '.requested_at // empty' "$state_file")
+    settle_state_requested=$(jq -r '.requested_at // empty' "$state_file")
     valid_repo "$state_repo" || die "state has an invalid repository"
     valid_uint "$state_pr" || die "state has an invalid PR number"
     valid_sha "$state_head" || die "state has an invalid head"
-    valid_time "$state_requested" || die "state has an invalid request time"
-    # `state_reserved` is deliberately left unset, which gives `run_gh` its flat
-    # per-call budget: settlement is a human act that lands after the cycle
-    # reported findings, often long after the attempt window closed, and
-    # budgeting these reads against an elapsed reservation would leave them one
-    # second to complete.
+    valid_time "$settle_state_requested" ||
+        die "state has an invalid request time"
+    # Review round 4, finding `review-r4-codex-verification-6` (confirmed P2):
+    # this used to say `state_reserved` was "deliberately left unset, which
+    # gives `run_gh` its flat per-call budget" — and it is unset, but
+    # `window_anchor` is `${state_requested:-${state_reserved:-}}` and
+    # `state_requested` is read five lines up, so the anchor never reached the
+    # fallback the comment relied on. Settlement lands long after the window
+    # closes, so every read here ran on the one-second clamp: the comment
+    # described the intended behaviour and the code did the opposite.
+    #
+    # The budget is now flat because BOTH anchors are cleared for these reads,
+    # explicitly rather than by omission. Settlement is a human act that lands
+    # after the cycle reported findings, and a one-second budget on a
+    # `gh api` call makes it fail for reasons that have nothing to do with the
+    # disposition being recorded. The validated value is kept under its own
+    # name for the checks below.
+    # Read under its own name and never assigned to the anchor globals, so
+    # neither `state_requested` nor `state_reserved` is set in this scope and
+    # `window_anchor` stays empty. Cleared explicitly as well, because relying
+    # on a global being unset is exactly how the previous comment came to
+    # describe behaviour the code did not have.
+    state_requested=
+    state_reserved=
 
     case "$surface" in
     comment)
@@ -2833,33 +3918,53 @@ settle)
         # Same discipline `check` applies to a top-level result: the comment
         # must name a commit prefix that GitHub resolves to this head. A
         # disposition recorded against some other head answers nothing.
+        # THE REJECTION FORM's other half (challenge round 3, findings
+        # `challenge-r3-codex-adversarial-2`/`-3`; the summary-table binding
+        # this replaces is carried in #1117).
+        #
+        # A comment binds itself to a head with a `Reviewed commit` line, and
+        # when it carries one that binding is verified against GitHub exactly
+        # as before — a disposition recorded against another head answers
+        # nothing. What changed is the case with NO such line: `check` now
+        # blocks on a badged comment it cannot bind, so `settle` has to be able
+        # to answer it, or the block would be another stuck head. It can,
+        # because the head does not need to come from the body at all: THIS
+        # STATE already pins the repo, the PR and the head, and the caller is
+        # naming one comment id on that reserved cycle.
         settle_prefix=$(printf '%s' "$target" | jq -r '
-              (.body // "") |
-              try match(
+              (((.body // "") | [match(
                 "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
                 "i"
-              ).captures[0].string catch ""
+              ).captures[0].string] | first) // "")
             ')
-        grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$settle_prefix" ||
-            die "comment $target_id does not identify a reviewed commit"
-        settle_prefix_lower=$(printf '%s' "$settle_prefix" |
-            tr '[:upper:]' '[:lower:]')
-        settle_head_lower=$(printf '%s' "$state_head" |
-            tr '[:upper:]' '[:lower:]')
-        case "$settle_head_lower" in
-        "$settle_prefix_lower"*) ;;
-        *) die "comment $target_id reviews a commit that is not this head" ;;
-        esac
-        settle_resolved_payload=$(run_gh api \
-            "repos/$state_repo/commits/$settle_prefix") ||
-            die "cannot resolve the reviewed commit prefix through GitHub"
-        settle_resolved=$(printf '%s' "$settle_resolved_payload" |
-            jq -er '.sha') ||
-            die "GitHub returned malformed commit-prefix data"
-        valid_sha "$settle_resolved" ||
-            die "GitHub returned an invalid resolved commit"
-        [ "$settle_resolved" = "$state_head" ] ||
-            die "comment $target_id reviews a commit that is not this head"
+        if [ -z "$settle_prefix" ]; then
+            # Unbound: settled by comment id against this cycle's own head.
+            # The actor, the PR and the `verdict_class == "findings"` domain
+            # above have all already been checked, so nothing here is taken on
+            # trust from the body.
+            settle_resolved=$state_head
+        else
+            grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$settle_prefix" ||
+                die "comment $target_id names a malformed reviewed commit"
+            settle_prefix_lower=$(printf '%s' "$settle_prefix" |
+                tr '[:upper:]' '[:lower:]')
+            settle_head_lower=$(printf '%s' "$state_head" |
+                tr '[:upper:]' '[:lower:]')
+            case "$settle_head_lower" in
+            "$settle_prefix_lower"*) ;;
+            *) die "comment $target_id reviews a commit that is not this head" ;;
+            esac
+            settle_resolved_payload=$(run_gh api \
+                "repos/$state_repo/commits/$settle_prefix") ||
+                die "cannot resolve the reviewed commit prefix through GitHub"
+            settle_resolved=$(printf '%s' "$settle_resolved_payload" |
+                jq -er '.sha') ||
+                die "GitHub returned malformed commit-prefix data"
+            valid_sha "$settle_resolved" ||
+                die "GitHub returned an invalid resolved commit"
+            [ "$settle_resolved" = "$state_head" ] ||
+                die "comment $target_id reviews a commit that is not this head"
+        fi
         ;;
     review)
         target=$(run_gh api \
@@ -2875,19 +3980,42 @@ settle)
         ;;
     esac
 
+    # Review round 3, finding `review-r3-codex-verification-3` (confirmed P2):
+    # this read was `.created_at` alone while the blocking scan stamps a
+    # comment `(.updated_at // .created_at)`, so a payload the scan admitted
+    # could die here on `valid_time` and leave the head blocked with no
+    # disposition available — the stuck-cycle class, from the two sites
+    # reading different fields for the same fact. Same pair, same order, so
+    # whatever `check` blocks on, `settle` can time.
     case "$surface" in
-    comment) target_result_time=$(printf '%s' "$target" | jq -r '.created_at // ""') ;;
+    comment) target_result_time=$(printf '%s' "$target" |
+        jq -r '(.updated_at // .created_at) // ""') ;;
     review) target_result_time=$(printf '%s' "$target" | jq -r '.submitted_at // ""') ;;
     esac
     valid_time "$target_result_time" ||
         die "target $target_id has no usable result timestamp"
-    # The badge is the only machine-emitted signal that this is a finding at
-    # all. Requiring it keeps settlement off every other shape the surfaces
-    # carry — a clean verdict, a carrier body, an unrecognized one — none of
-    # which a disposition would mean anything about.
+    # Challenge round 2, findings `challenge-r2-codex-adversarial-1` and `-3`
+    # (confirmed P1, disposition RESTRUCTURE): settle's domain is WHAT `check`
+    # BLOCKS ON, not "what carries a badge".
+    #
+    # The badge-only rule was the second half of round 1's mistake. A bot
+    # comment that `check` classifies `findings` but that carries no badge —
+    # a self-report whose wording the `informational` test does not recognize,
+    # say — exits 10 with no way to be answered: `settle` refused it for
+    # having no badge, and there is no thread to reply in. The head was then
+    # un-reviewable through this helper, which is strictly worse than the
+    # "false block, recoverable by a human" the round-1 comment promised.
+    #
+    # Tying the domain to `verdict_class == "findings"` makes every blocking
+    # shape answerable, which is what lets the classifier above fail CLOSED
+    # safely: a body wrongly read as a finding now costs one recorded
+    # disposition instead of stranding the commit. It still keeps settlement
+    # off everything `check` does NOT block on — a clean verdict, a carrier
+    # body, an unrecognized one, an informational self-report — because none
+    # of those reaches `findings`.
     printf '%s' "$target" |
-        jq -e "$codex_verdict_defs"' has_severity_marker' >/dev/null ||
-        die "target $target_id carries no severity badge, so it is not a finding to settle"
+        jq -e "$codex_verdict_defs"' verdict_class == "findings"' >/dev/null ||
+        die "target $target_id is not a finding this checker blocks on, so there is nothing to settle"
 
     # A disposition settles the TARGET, and a target can hold more than one
     # finding: Codex sometimes states several in one body. Since the entry is
@@ -2910,8 +4038,13 @@ settle)
     # breaking the documented invocation. Matching the alt-text form counts
     # each badge once. A body that states findings as plain prose renders no
     # badge at all, so that shape falls back to the token scan, which is
-    # correct for it; `has_severity_marker` above has already established that
-    # at least one finding is present either way.
+    # correct for it.
+    #
+    # Since round 2 widened the domain above from "carries a badge" to "is
+    # what `check` blocks on", a target can legitimately count ZERO: an
+    # unbadged body that classifies `findings`. That needs no `--covers` —
+    # there are no separately-badged findings to under-answer — and the
+    # `> 1` guard below already says so without a special case.
     badge_count=$(printf '%s' "$target" |
         jq -r '((.body // "") | ascii_downcase) as $body |
                ([$body | scan("!\\[p[0-9]+ badge\\]")] | length) as $rendered |

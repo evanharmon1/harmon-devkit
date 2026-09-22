@@ -599,6 +599,29 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
   'result.integrator.schema/invalid/exit-code-10-with-pending.json',
   'result.integrator.schema/invalid/exit-code-2-with-pending.json',
+  // harmon-devkit#573/#508: the two new exit codes pair with a verdict the
+  // same way 13/2 and 11/12 already do, and that pairing lives in
+  // EXIT_CODE_VERDICT_CONSTRAINTS rather than in the schema — a JSON Schema
+  // if/then cannot express "which rule applies depends on this sibling
+  // value". `accepted` on a non-terminal exit is likewise the validator's
+  // checkCodexCycleAcceptedScope, exactly as for its 11 counterpart above.
+  'result.integrator.schema/invalid/exit-code-15-with-pending.json',
+  'result.integrator.schema/invalid/exit-code-15-with-accepted.json',
+  'result.integrator.schema/invalid/exit-code-16-with-escalate.json',
+  // harmon-devkit#1050 integration cycle 1, finding 4064588966: the same
+  // pairing aggregated over codex_cycle AND every finder_cycles[] entry, by
+  // precedence escalate > findings > pending > clean. A schema cannot express
+  // it for the same reason it cannot express the single-cycle rule, and less
+  // so: the governing cycle is whichever one demands the most, which is not a
+  // fixed node the way `codex_cycle` was.
+  // Codex cycle 3 finding 4067133478: 11/12/16 are a floor of `pending`, so
+  // `escalate` is rejected by the exclusion rather than by an equality, and a
+  // `clean` mis-statement is caught by the clean rule before the floor. Both
+  // are validator-side for the same reason the rest of this family is.
+  'result.integrator.schema/invalid/transient-read-claims-clean.json',
+  'result.integrator.schema/invalid/cycles-escalate-outranks-pending.json',
+  'result.integrator.schema/invalid/finder-cycle-quota-exhausted-claims-pending.json',
+  'result.integrator.schema/invalid/finder-cycle-transient-read-claims-clean.json',
   'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json',
   'result.integrator.schema/invalid/applied-dispositions-future-integration-round.json'
 ])

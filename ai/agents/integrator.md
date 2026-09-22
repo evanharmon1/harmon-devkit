@@ -404,12 +404,61 @@ Resetting to `0` first means every invocation starts from a known baseline
 and only moves off it when *this* call actually fails.
 
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
-PR no longer open, 2 indeterminate. On **12 (retry)**, repeat the
+PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
+**12 (retry)**, repeat the
 reserve/trigger/attach/check sequence once more with `--attempt 2` against
 the **same** state and head — this is the one bounded retry your brief
-expects; do not retry a second time. On **13 (escalate)**, **14**, or **2**,
+expects; do not retry a second time. On **13 (escalate)**, **14**, **15**, or
+**2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.
+
+On **15 (quota exhausted)** the reviewer answered that its code-review usage
+limit is spent (harmon-devkit#573). Do **not** re-trigger: `reserve
+--attempt 2` refuses that state by design, because the one bounded retry
+exists for a reviewer that did not answer, and this one did. Carry the exit
+code straight into your result as `verdict: "escalate"`, and put the checker's
+`detail` — which names the reset time where the reply carried one, and the
+recovery route — in your REPORT, never in `codex_cycle`. Challenge round 3,
+finding `challenge-r3-codex-adversarial-12`: `codex_cycle` is
+`additionalProperties: false` and has no `detail` field, so an agent
+complying literally with the older wording produced a schema-invalid result,
+and one complying loosely dropped the datum four documents ask for. You do not
+wait out the reset yourself, and you cannot re-open the cycle: a fresh
+`--attempt 1` on the same head is refused by the single same-head reservation
+guard, so the commit stays un-reviewable through this helper until a push
+moves the head or an operator clears the checker state. Report that route;
+it is carried in harmon-devkit#1115.
+
+On **16 (transient read)** an evidence READ failed (harmon-devkit#508). This
+is emphatically **not** a statement about the reviewer, so it is neither a
+retry of the cycle nor an escalation: repeat the **read**. Inside this
+dispatch, treat it like `11` — the same bounded poll loop below picks it up on
+its next iteration — and if the window runs out still on 16, report
+`codex_cycle` with `exit_code: 16` and `verdict: "pending"`, no `accepted`.
+Never re-trigger and never reserve a fresh attempt to "get past" a 16: the
+reviewer was never absent, and the orchestrator's gate reads 16 as
+indeterminate-with-reason rather than as a non-clean cycle.
+
+**But 16 is not `11` forever, and that is the one way it differs.** A `11`
+that persists means a reviewer still working; a 16 that persists means a read
+that keeps failing, and the causes that keep failing are the ones repeating
+will never fix — a revoked token, a permission that no longer covers the
+endpoint, a repository made private under you. Polling those to the end of the
+window and reporting `pending` asks the orchestrator to re-dispatch you into
+the identical failure, which spends the whole wall clock on a condition that
+was decided at the first read. So **count CONSECUTIVE 16s, and after the third
+break out of the loop** and return `status: "blocked"` with a blocker line
+naming the read that failed — the endpoint and the checker's own detail, so the
+operator can see it is an access problem and not a reviewer problem. The
+counter resets on any other exit code, because a 16 between two successful
+reads is the transient case this arm exists for.
+
+`blocked` is the envelope word for it: `result.envelope.schema.json`'s `status`
+enum is `completed` / `blocked` and nothing else, so "report indeterminate"
+would be a result no validator accepts. The gate has its own vocabulary for
+this condition (`codex-transient-read`, indeterminate-with-reason) and that is
+a different field on a different document — do not carry it onto the envelope.
 On **11 (pending)**, do not end the pass on the first pending read — that
 would spend the orchestrator's whole dispatch budget re-invoking you for
 every single poll, exactly the long-poll cost this role exists to absorb
@@ -419,20 +468,53 @@ brief's cap implies (10–15 minutes per attempt):
 
 ```sh
 window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if different
+consecutive_16=0
 while [ "$SECONDS" -lt "$window_end" ]; do
     check_exit=0
     check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
-    [ "$check_exit" != "11" ] && break
+    # 16 (transient read) keeps polling for the same reason 11 does: the
+    # remedy for a read that failed is to repeat the read. Only a terminal
+    # code breaks the loop.
+    [ "$check_exit" != "11" ] && [ "$check_exit" != "16" ] && break
+    # A read that fails three times running is not transient. Break and report
+    # `indeterminate` naming the failing read, rather than polling out the
+    # window and handing back a `pending` the orchestrator will re-dispatch
+    # into the same wall.
+    if [ "$check_exit" = "16" ]; then
+        consecutive_16=$((consecutive_16 + 1))
+        [ "$consecutive_16" -lt 3 ] || break
+    else
+        consecutive_16=0
+    fi
     sleep 90
 done
 ```
 
-Only once that loop exits — either a terminal `check_exit` broke it, or the
-window ran out still on 11 — do you stop driving the cycle for this pass.
-If the window elapsed still pending, report `codex_cycle` with
-`exit_code: 11` and no `accepted` (§7 shows the shape); a caller that wants
-another look dispatches you again for a fresh window, rather than this pass
-looping indefinitely on its own.
+Two things the loop's own window will not shorten. The checker extends an
+attempt while the bot's 👀 is still on that attempt's trigger, up to a hard
+ceiling of 30 minutes from the trigger (harmon-devkit#655), so a `11` that
+persists past your 15-minute poll is a review still running rather than an
+absent one — report it as `11` and let the orchestrator re-dispatch; do not
+re-trigger inside this dispatch. And a badged comment from the finder that
+carries no `Reviewed commit` line of its own does not disappear: it comes back
+as `findings` (exit 10) and is cleared by the orchestrator settling it by
+comment id, never by you. Reading a clean verdict out of the connector's
+rolling "Codex Review Summary" table was proposed and split back out
+(harmon-devkit#718, carried in harmon-devkit#1117) — do not expect a head to
+go terminal-clean from that row.
+
+Only once that loop exits — a terminal `check_exit` broke it, three
+consecutive 16s broke it, or the window ran out still on 11 — do you stop
+driving the cycle for this pass. If the window elapsed still pending, report
+`codex_cycle` with `exit_code: 11` and no `accepted` (§7 shows the shape); a
+caller that wants another look dispatches you again for a fresh window, rather
+than this pass looping indefinitely on its own. If the consecutive-16 budget
+broke it, report `status: "blocked"` with `codex_cycle.exit_code: 16`,
+`verdict: "pending"` (16's own rule in EXIT_CODE_VERDICT_CONSTRAINTS, which
+does not change because the read stopped being retriable) and a blocker line
+naming the failing read — the endpoint and the checker's detail — so the
+orchestrator escalates the access problem instead of spending its remaining
+dispatches on it.
 
 On **0 (clean)** or **10 (findings)**, `check_out` itself now carries the
 accepted evidence (harmon-devkit#639 gauntlet challenge round 4): build
@@ -442,6 +524,27 @@ reviewed_commit: (check_out | .accepted.reviewed_commit)}`. All three are
 always present together on these two exit codes; their absence is a
 malformed `check_out` your brief did not anticipate — stop and report it
 rather than fabricating a value.
+
+A `10` raised by inline threads also carries `unanswered[]` — one
+`{thread_root, comment_id, review_id, path}` entry per unadjudicated bot
+thread on the head, **across every review that posted one**
+(harmon-devkit#737). Feed every entry's **`thread_root`** into
+`unanswered_thread_roots`, and the entry into `findings[]`. Map the **unique**
+thread roots to **strings** as you assemble that array: two unadjudicated
+comments in one thread share a root and must contribute one id, not two, and
+the schema types the field as strings while the checker emits the root as a
+JSON number — so passing the numbers straight through produces a result the
+validator rejects, and passing duplicates through inflates the gate count of
+what is unanswered.
+
+The two ids are not interchangeable: GitHub sets `in_reply_to_id` to the thread ROOT on every
+reply, so `comment_id` names the bot comment that raised the finding while
+`thread_root` names the thread a reply must land in — and
+`unanswered_thread_roots` is defined as thread ids
+(harmon-devkit#1050, `challenge-r5-codex-adversarial-6`). The single
+`accepted.id` names one review, and the bot can post two on one head minutes
+apart, so trusting it alone is how the second review's findings reach the
+readiness gate unanswered.
 
 You never call `settle`. A badged finding sitting outside an inline thread
 (a top-level comment or a review body) is a **finding** you report like any
@@ -698,7 +801,12 @@ way the orchestrator's next move is to stop and reconcile rather than
 re-dispatch, so a timed-out cycle reported under any other verdict fails
 validation instead of returning the escalation evidence §4 promises. Exit
 `14` (the PR is no longer open) forbids `clean` and `pending` — report
-`findings` (the closed PR is the finding) or `escalate`. `codex_cycle`
+`findings` (the closed PR is the finding) or `escalate`. Exit `15` (the
+reviewer reported an exhausted usage limit) pairs with `escalate` for the
+same reason `13` does: the orchestrator's next move is to stop and report a
+blocker, never to re-dispatch. Exit `16` (a transient evidence read) pairs
+with `pending`, like `11` and `12` — the read is repeated, nothing is
+escalated over a GitHub call that would not answer. `codex_cycle`
 carries `accepted` only when its `exit_code` is 0 or 10 (omit the key
 otherwise, never null).
 

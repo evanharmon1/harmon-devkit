@@ -869,7 +869,8 @@ function checkIntegratorBlockedStatus(envelope, errors) {
 // OTHER exit code, since "required when" is the only shape if/then can
 // express. `accepted` is evidence of a terminal result, so its presence
 // alongside a non-terminal exit_code (11 pending, 12 retry, 13 escalate,
-// 14 PR no longer open, 2 indeterminate) is contradictory and forbidden
+// 14 PR no longer open, 15 quota exhausted, 16 transient read,
+// 2 indeterminate) is contradictory and forbidden
 // here, in the validator, the same way "required when" and "forbidden
 // otherwise" are two separate assertions throughout this family.
 function checkCodexCycleAcceptedScope(payload, errors) {
@@ -900,7 +901,8 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // documents, which is itself integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
-// indeterminate. checkIntegratorCleanVerdict separately requires exit_code
+// indeterminate, plus 15 quota exhausted and 16 transient read.
+// checkIntegratorCleanVerdict separately requires exit_code
 // 0 (with accepted present) when verdict IS clean — clean implies 0 — but
 // 0 does NOT imply clean: ai/agents/integrator.md §7's own verdict rule
 // says a substantive human finding or CI failure surfacing in the SAME
@@ -920,17 +922,69 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // "couldn't tell, so escalate" for what the orchestrator does next. Each
 // entry is either `equals` (verdict must be exactly this value) or
 // `excludes` (a set verdict must not be any member of).
+// 15 (quota exhausted, harmon-devkit#573) joins 13 and 2 on `escalate`: the
+// finder answered that it will not review this head, so the orchestrator's
+// next move is to stop and report the blocker — the same thing it does for a
+// timed-out or unreadable cycle, and never a re-dispatch. 16 (transient read,
+// harmon-devkit#508) joins 11 and 12 on `pending`: the read failed, which says
+// nothing about the reviewer, so the remedy is to repeat the READ — a bounded
+// wait and a fresh pass, exactly like a pending window. Pairing 16 with
+// `escalate` would spend a human on a flaky GitHub call, and pairing it with
+// `clean` or `findings` would assert a verdict over evidence nobody managed
+// to read.
+// Codex cloud-review cycle 3 on PR harmon-devkit#1125, finding 4067133478
+// (confirmed P2): 11, 12 and 16 used to be `equals: 'pending'`, which
+// contradicted ai/agents/integrator.md's own verdict rule — `pending` is for
+// "still waiting on CI or the Codex window WITH NOTHING ELSE OUTSTANDING",
+// and a CI failure or a human finding beside an unfinished Codex window is
+// exactly something else outstanding. The truthful verdict there is
+// `findings`, and the validator rejected it.
+//
+// They are a FLOOR of `pending` now, expressed the way exit 0 and 14 already
+// express theirs: `clean` and `escalate` stay rejected — nothing is clean
+// while a window is open or a read failed, and neither state needs the
+// remediation cap — while `findings` is permitted.
+//
+// The condition that `findings` be backed by evidence needs no check here:
+// the schema itself requires `findings` to have at least one item whenever
+// the verdict is `findings` (result.integrator.schema.json allOf[0]), so a
+// vacuous `findings` cannot validate in the first place. A pass with
+// unanswered threads but no findings[] is `pending`, which the floor allows.
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
   0: { excludes: new Set(['pending', 'escalate']) },
   10: { equals: 'findings' },
-  11: { equals: 'pending' },
-  12: { equals: 'pending' },
+  11: { excludes: new Set(['clean', 'escalate']) },
+  12: { excludes: new Set(['clean', 'escalate']) },
   13: { equals: 'escalate' },
   14: { excludes: new Set(['clean', 'pending']) },
+  15: { equals: 'escalate' },
+  16: { excludes: new Set(['clean', 'escalate']) },
   2: { equals: 'escalate' }
 }
 
-// checkCodexCycleExitCodeVerdict — verdict and codex_cycle.exit_code are
+// VERDICT_RANK — the precedence ladder the aggregate verdict is resolved on.
+// A payload can carry MORE THAN ONE cycle (codex_cycle plus one
+// finder_cycles[] entry per configured PR-side finder), and they can disagree
+// about what the pass means: a clean Codex cycle beside a finder that exited
+// 15 is a real state, not a contradiction. The truthful verdict is the
+// STRONGEST thing any cycle demands, so the ladder is
+// clean < pending < findings < escalate.
+const VERDICT_RANK = { clean: 0, pending: 1, findings: 2, escalate: 3 }
+const VERDICT_BY_RANK = ['clean', 'pending', 'findings', 'escalate']
+
+// cycleVerdictDemand — the WEAKEST verdict a single cycle will accept. An
+// `equals` entry demands exactly its value; an `excludes` entry is permissive
+// and demands only the weakest verdict it does not forbid (exit 0 demands
+// `clean`, exit 14 demands `findings`, because 14 forbids both clean and
+// pending).
+function cycleVerdictDemand(exitCode) {
+  const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[exitCode]
+  if (!constraint) return null
+  if (constraint.equals) return constraint.equals
+  return VERDICT_BY_RANK.find((verdict) => !constraint.excludes.has(verdict)) ?? null
+}
+
+// checkCodexCycleExitCodeVerdict — verdict and every cycle's exit_code are
 // sibling fields of one payload instance, but the CONDITION each
 // EXIT_CODE_VERDICT_CONSTRAINTS entry expresses is either "must equal
 // exactly this value" for a specific exit_code (a fixed value a JSON
@@ -939,19 +993,90 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
 // itself data-dependent, which if/then's single conditional-per-node
 // shape cannot encode as one schema-level rule the way
 // checkIntegratorCleanVerdict's fixed verdict:clean condition can.
+//
+// harmon-devkit#1050, integration cycle 1 finding 4064588966 (confirmed P2):
+// this used to read `payload.codex_cycle` and nothing else, so a pass whose
+// Codex cycle was clean while a finder cycle exited 15 or 16 could not state
+// the truth. Exit 0 excludes `pending` and `escalate`, so the honest
+// `escalate` was rejected; the only verdicts that validated were the two that
+// misdescribed the pass. The constraint is aggregated over codex_cycle AND
+// every finder_cycles[] entry now, resolved by precedence:
+//
+//   * every cycle contributes its own demand (see cycleVerdictDemand);
+//   * the REQUIRED verdict is the highest-ranked demand — the strongest cycle
+//     wins, which is why a clean Codex beside a finder 15 must say `escalate`;
+//   * a cycle may still forbid a value through `excludes`, but an explicit
+//     `equals` demand from another cycle OVERRIDES that exclusion. That is the
+//     whole of the fix: exit 0 forbids `pending` because a terminal Codex
+//     cycle has nothing left to wait for, and a finder at 16 is precisely the
+//     something-left-to-wait-for that makes `pending` true again.
+//
+// A verdict STRONGER than the requirement stays legal, as it was before: a
+// Codex-clean cycle beside a fresh human finding in the same pass is the
+// routine mixed-source `findings` case (ai/agents/integrator.md §7).
 function checkCodexCycleExitCodeVerdict(payload, errors) {
-  const cycle = payload.codex_cycle
-  if (!cycle || typeof cycle !== 'object') return
-  const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[cycle.exit_code]
-  if (!constraint) return
-  if (constraint.equals && payload.verdict !== constraint.equals) {
-    errors.push(
-      `$result.payload.verdict: must be ${JSON.stringify(constraint.equals)} when codex_cycle.exit_code is ${cycle.exit_code}, found ${JSON.stringify(payload.verdict)}`
-    )
+  const cycles = []
+  if (payload.codex_cycle && typeof payload.codex_cycle === 'object') {
+    cycles.push({ label: 'codex_cycle', exitCode: payload.codex_cycle.exit_code })
   }
-  if (constraint.excludes && constraint.excludes.has(payload.verdict)) {
+  if (Array.isArray(payload.finder_cycles)) {
+    payload.finder_cycles.forEach((cycle, index) => {
+      if (!cycle || typeof cycle !== 'object') return
+      const slug = typeof cycle.finder === 'string' ? ` (${cycle.finder})` : ''
+      cycles.push({ label: `finder_cycles[${index}]${slug}`, exitCode: cycle.exit_code })
+    })
+  }
+  if (cycles.length === 0) return
+
+  let required = null
+  for (const cycle of cycles) {
+    const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[cycle.exitCode]
+    if (!constraint) continue
+    const demand = cycleVerdictDemand(cycle.exitCode)
+    if (demand === null) continue
+    if (required === null || VERDICT_RANK[demand] > VERDICT_RANK[required.verdict]) {
+      required = { verdict: demand, cycle, exact: Boolean(constraint.equals) }
+    }
+  }
+  if (required === null) return
+
+  const actualRank = VERDICT_RANK[payload.verdict]
+  if (actualRank === undefined) return
+  // A cycle with an `equals` constraint pins the verdict exactly; a cycle with
+  // an `excludes` constraint is permissive and only sets a floor. The
+  // strongest demand of either kind is the one that governs, which is what
+  // lets a finder at 15 override a clean Codex cycle without letting a
+  // Codex-only 16 be reported as `escalate` (that pairing spends a human on a
+  // flaky GitHub call, and the constraint table says so at 16).
+  if (required.exact && payload.verdict !== required.verdict) {
     errors.push(
-      `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when codex_cycle.exit_code is ${cycle.exit_code}`
+      `$result.payload.verdict: must be ${JSON.stringify(required.verdict)} when ${required.cycle.label}.exit_code is ${required.cycle.exitCode}, found ${JSON.stringify(payload.verdict)}`
+    )
+    return
+  }
+  if (!required.exact && actualRank < VERDICT_RANK[required.verdict]) {
+    errors.push(
+      `$result.payload.verdict: must be at least ${JSON.stringify(required.verdict)} when ${required.cycle.label}.exit_code is ${required.cycle.exitCode}, found ${JSON.stringify(payload.verdict)}`
+    )
+    return
+  }
+  for (const cycle of cycles) {
+    const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[cycle.exitCode]
+    if (!constraint?.excludes) continue
+    if (!constraint.excludes.has(payload.verdict)) continue
+    // An exclusion only binds if the excluding cycle is itself as strong as
+    // the governing requirement. This is the whole precedence rule: exit 0
+    // forbids `pending` and `escalate` because a terminal Codex cycle has
+    // nothing left to wait for and nothing needing the remediation cap — but
+    // a finder at 16 or 15 in the same pass is exactly that something, and it
+    // outranks a cycle whose own demand is only `clean`. Without this, the
+    // truthful verdict for a clean Codex beside a spent finder is
+    // unstateable, which is harmon-devkit#1050 integration cycle 1 finding
+    // 4064588966.
+    const demand = cycleVerdictDemand(cycle.exitCode)
+    if (demand !== null && VERDICT_RANK[demand] < VERDICT_RANK[required.verdict]) continue
+    errors.push(
+      `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when ${cycle.label}.exit_code is ${cycle.exitCode}`
     )
   }
 }
