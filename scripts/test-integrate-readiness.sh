@@ -765,6 +765,18 @@ mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
 run_gate
 assert_gate 0 pass ready
 
+echo "==> a closing keyword on one line does not claim a reference on the next"
+write_defaults
+cross_line_body="$(printf 'Closes\n#380\n')"
+jq --arg body "$cross_line_body" '.body = $body | .closingIssuesReferences = []' \
+    "${fixtures}/closing-view.json" >"${fixtures}/closing-view.json.tmp"
+mv "${fixtures}/closing-view.json.tmp" "${fixtures}/closing-view.json"
+jq --arg body "$cross_line_body" '.body = $body' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.json.tmp"
+mv "${fixtures}/pr.json.tmp" "${fixtures}/pr.json"
+run_gate
+assert_gate 0 pass ready
+
 echo "==> a claimed same-repo closing keyword with linkage passes"
 write_defaults
 closing_body='Fixed #380'

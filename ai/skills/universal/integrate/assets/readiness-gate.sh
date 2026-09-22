@@ -416,14 +416,14 @@ normalize_body_field() {
 # response. GitHub treats repository names case-insensitively; issue numbers
 # are numeric. A body with no claim produces an empty set and passes.
 assert_closing_linkage() {
-    acl_payload=$1
-    acl_phase=$2
+    local acl_payload="$1" acl_phase="$2"
+    local acl_sets acl_missing_count acl_missing
     acl_sets="$(jq -cr --arg repo "$repo" '
       if (.closingIssuesReferences | type) != "array" then
         error("closingIssuesReferences is not an array")
       else
         ([.body
-          | scan("(?:^|[^A-Za-z0-9_-])(?:close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)[[:space:]]*:?[[:space:]]*(https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+|#[0-9]+)"; "i")
+          | scan("(?:^|[^A-Za-z0-9_-])(?:close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)[[:blank:]]*:?[[:blank:]]*(https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/issues/[0-9]+|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+|#[0-9]+)"; "i")
           | .[0]
           | ascii_downcase
           | if startswith("#") then
