@@ -828,7 +828,14 @@ rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
     fail_condition head-moved "PR head changed while the gate was reading it"
 scalar_body="$(jq -er '.body | select(type == "string")' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no body"
-rest_body="$(jq -er '.body | select(type == "string")' <<<"$fp_pr")" ||
+rest_body="$(jq -er '
+  if (has("body") and .body == null) then
+    ""
+  elif (.body | type) == "string" then
+    .body
+  else
+    error("body is neither a string nor null")
+  end' <<<"$fp_pr")" ||
     indeterminate malformed-data "PR object carries no body"
 [ "$scalar_body" = "$rest_body" ] ||
     fail_condition content-moved "PR body changed between the linkage and fingerprint reads — re-adjudicate against the current body"
