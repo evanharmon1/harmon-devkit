@@ -138,7 +138,11 @@ headings=(
 )
 previous=0
 for heading in "${headings[@]}"; do
-    line="$(grep -nFx "$heading" "$rendered_file" | cut -d: -f1)"
+    # `|| true`: under `set -o pipefail` a non-matching grep makes the whole
+    # assignment non-zero, and `set -e` then kills the script BEFORE the
+    # `[ -n "$line" ]` check below can report which heading is missing — a test
+    # that fails with no message at all.
+    line="$(grep -nFx "$heading" "$rendered_file" | cut -d: -f1 || true)"
     [ -n "$line" ] || fail "missing converged section: $heading"
     [ "$line" -gt "$previous" ] || fail "section is out of order: $heading"
     previous="$line"
@@ -335,7 +339,7 @@ impl_headings=(
 )
 previous=0
 for heading in "${impl_headings[@]}"; do
-    line="$(grep -nFx "$heading" "$impl_rendered_file" | cut -d: -f1)"
+    line="$(grep -nFx "$heading" "$impl_rendered_file" | cut -d: -f1 || true)"
     [ -n "$line" ] || fail "implementer-brief is missing mandatory section: $heading"
     [ "$line" -gt "$previous" ] || fail "implementer-brief section is out of order: $heading"
     previous="$line"
@@ -526,32 +530,30 @@ case "$impl_contract_section" in
 *) fail "delegation contract does not forbid the scratchpad root" ;;
 esac
 
-# Sweep the class rather than the instance: every literal asserted against the
-# whole rendered brief must occur exactly once there, or its assertion cannot
-# fail when the load-bearing occurrence is deleted.
-impl_single_occurrence=(
-    'A bound is the point at which you stop waiting, never the point at which you'
-    'Run the gates with these exact commands'
-    'strongest signal wins'
-    'does **not** make a repository `light`'
-    'one of `light`, `standard`, or'
-    'report BLOCKED rather than picking a row'
-    '**A proposal-only unit still runs every gate, still commits, still pushes, and'
-    'still opens the DRAFT PR. It stops there.'
-    'This brief is a **PR-owning** contract'
-    'It is not a work contract for a bounded role subagent'
-    'Claim handoff — read this before running the skill'
-    'use of an existing claim, never a transfer'
-    'Keep every other refusal'
-    '**Include the profile line**'
-    'through at least 0.155.1'
-    'The TUI `/model` picker is the only lever'
-)
-for literal in "${impl_single_occurrence[@]}"; do
-    count="$(grep -Fc "$literal" "$impl_rendered_file" || true)"
-    [ "$count" -eq 1 ] ||
-        fail "assertion literal occurs $count times in the rendered brief (needs exactly 1): $literal"
-done
+# Sweep the class rather than the instance, and DERIVE the set from the
+# assertions themselves: a hand-maintained list covered 16 of the 42 literals
+# while this comment claimed all of them. Every literal positively asserted
+# against the whole rendered brief must occur exactly once there, or its
+# assertion cannot fail when the load-bearing occurrence is deleted. Negative
+# assertions (the `if grep … then fail` form) are excluded by construction —
+# they are the ones that must occur zero times.
+impl_asserted_literals="$(grep -oE "^grep -Fq (-e )?'[^']+' \"\\\$impl_rendered_file\"" "$0" |
+    sed -E "s/^grep -Fq (-e )?'//; s/' \"\\\$impl_rendered_file\"$//")"
+[ -n "$impl_asserted_literals" ] ||
+    fail "could not derive the asserted-literal set from this test"
+impl_swept=0
+while IFS= read -r literal; do
+    [ -n "$literal" ] || continue
+    impl_swept=$((impl_swept + 1))
+    # -e: several asserted literals begin with a dash (launch flags).
+    count="$(grep -Fc -e "$literal" "$impl_rendered_file" || true)"
+    [ "${count:-0}" -eq 1 ] ||
+        fail "assertion literal occurs ${count:-0} times in the rendered brief (needs exactly 1): $literal"
+done <<EOF
+$impl_asserted_literals
+EOF
+[ "$impl_swept" -ge 20 ] ||
+    fail "derived only $impl_swept asserted literals — the extraction regex has drifted from the assertions"
 
 # Fence prose, identical to the lane superset so the two cannot drift.
 grep -Fq 'A validator or test that rejects your change and that no other live lane touches' \
@@ -565,8 +567,38 @@ grep -Fq 'git check-ignore -q --no-index' "$impl_rendered_file" ||
 # PR requirements, including the profile line #855 asks for.
 grep -Fq '**Include the profile line**' "$impl_rendered_file" ||
     fail "implementer-brief does not require the PR-body profile line"
-grep -Fq 'every off-profile choice — model family, tier, or' "$impl_rendered_file" ||
-    fail "PR-body profile line does not require off-profile disclosure"
+case "$impl_flat" in
+*'every off-profile choice — model family, tier, or effort — named as off-profile'*) ;;
+*) fail "PR-body profile line does not require off-profile disclosure" ;;
+esac
+# AGENTS.md § "Rigor and Strategy" mandates the announce set: rigor+source, the
+# four caps, min_rounds, wall-clock, the breadth envelope, strategy+source and
+# all five tiers. The line enumerated three of those short, and the v2 superset
+# already rendered all three — the base under-specified against both.
+for announced in \
+    '`min_rounds` floor and wall-clock' \
+    'breadth envelope' \
+    'max_agent_runs' \
+    'max_parallel_agents' \
+    'all five role tiers' \
+    'strategy and its source'; do
+    case "$impl_flat" in
+    *"$announced"*) ;;
+    *) fail "PR-body profile line omits a field AGENTS.md's announce set requires: $announced" ;;
+    esac
+done
+# Scoped to the ROW, not the file: `min_rounds` also appears in unrelated prose
+# in this skill, so a whole-file grep passes after the row loses it — the same
+# defect class this change has now found five times.
+impl_profile_row="$(grep -F '| `{{policy-profile}}` |' "$impl_catalog")"
+[ -n "$impl_profile_row" ] ||
+    fail "the implement catalog has no profile-line row"
+for announced in 'min_rounds' 'wall-clock' 'breadth envelope' 'max_agent_runs' 'max_parallel_agents'; do
+    case "$impl_profile_row" in
+    *"$announced"*) ;;
+    *) fail "the profile-line catalog row omits an announce-set field: $announced" ;;
+    esac
+done
 grep -Fq 'gh pr create --draft' "$impl_rendered_file" ||
     fail "implementer-brief does not open the PR as a draft"
 
@@ -613,8 +645,23 @@ esac
 case "$impl_flat" in
 *'are the only ones this brief grants'*) fail "implementer-brief kept the false exhaustiveness claim" ;;
 esac
-grep -Fq 'returns control to whoever dispatched it instead of' "$impl_rendered_file" ||
+grep -Fq 'returns control to whoever dispatched it' "$impl_rendered_file" ||
     fail "the override enumeration omits the final-step override that prevents promotion"
+# Name the steps by NUMBER and bind each number to the skill's actual heading.
+# The enumeration named the third override by position ("its final step"), and
+# this change then appended § 10 to the skill, so the position silently moved to
+# a section addressed to dispatchers rather than to the worker.
+for step in 1 3 9; do
+    case "$impl_flat" in
+    *"**step $step**"*) ;;
+    *) fail "the override enumeration does not name skill step $step by number" ;;
+    esac
+    grep -Eq "^## $step\. " "$impl_catalog" ||
+        fail "the brief overrides skill step $step, which the skill does not number that way"
+done
+case "$impl_flat" in
+*'its **final step**'* | *'the **final step**'*) fail "an override is named by position instead of by step number" ;;
+esac
 # Every harness path routes through the skill, so every harness path owes both.
 # Counted on the NORMALISED text, and on the whole phrase rather than a
 # fragment of it: the clause wraps across lines, and it was once spliced into
@@ -803,21 +850,70 @@ grep -Fq 'Never write an implementer brief freehand, whatever its shape.' \
 grep -Fq 'assets/implementer-brief.md' ai/skills/universal/orchestrate/SKILL.md ||
     fail "the orchestrate skill does not point non-v2 dispatches at the base template"
 
-# Stated once: the lane superset and every agent reference it, none restates it.
+# Stated once: the lane superset, every agent, and the operator guide reference
+# it; none restates it. Matched on a whitespace-normalised, emphasis-stripped
+# form of both sides — the previous line-oriented `grep -Fq` over hard-wrapped
+# Markdown only fired on a restatement that happened to reproduce the
+# template's exact wrap column and its `**` markers, so a copy wrapped one word
+# earlier, or set without bold, escaped the guard that enforces this change's
+# central claim. Same normalisation the bounded-role guard already uses.
+normalise_prose() {
+    tr '\n' ' ' <"$1" | sed 's/\*\*//g; s/`//g' | tr -s '[:space:]' ' '
+}
 for referrer in \
     ai/skills/universal/orchestrate/assets/lane-brief.md \
     ai/agents/README.md \
     ai/agents/implementer.md \
     ai/agents/challenger.md \
     ai/agents/reviewer.md \
-    ai/agents/integrator.md; do
+    ai/agents/integrator.md \
+    docs/guides/herdr.md; do
     grep -Fq 'implementer-brief.md' "$referrer" ||
         fail "$referrer does not reference the one delegation contract"
+    referrer_flat="$(normalise_prose "$referrer")"
     for rule in "${impl_contract_rules[@]}"; do
-        if grep -Fq "$rule" "$referrer"; then
-            fail "$referrer restates the delegation contract instead of referencing it"
-        fi
+        rule_flat="$(printf '%s' "$rule" | sed 's/\*\*//g; s/`//g' | tr -s '[:space:]' ' ')"
+        case "$referrer_flat" in
+        *"$rule_flat"*) fail "$referrer restates the delegation contract instead of referencing it" ;;
+        esac
     done
+done
+
+# rv1-7: the operator guide is the most claim-dense referrer and had no floor at
+# all — and challenge-r1-13 was exactly one of its claims having gone false.
+# Each claim it makes about the base template is pinned to the template here.
+herdr_flat="$(normalise_prose docs/guides/herdr.md)"
+for claimed in \
+    'assets/implementer-brief.md' \
+    'gate commands with real time bounds per repo tier' \
+    'strongest-signal-wins procedure' \
+    'never gh pr ready' \
+    'proposal-only unit still runs gates, commits, pushes' \
+    'claim-handoff override' \
+    'report-file and sentinel contract' \
+    'PR-body profile line' \
+    'one delegation contract' \
+    'source catalog in implement/SKILL.md' \
+    'Inherited base contract'; do
+    case "$herdr_flat" in
+    *"$claimed"*) ;;
+    *) fail "docs/guides/herdr.md no longer makes the claim this test pins: $claimed" ;;
+    esac
+done
+# Each of those claims must be TRUE of the artifact, not merely present in the guide.
+for backed in \
+    'Gate commands and time bounds' \
+    'strongest signal wins' \
+    'Never run `gh pr ready`.' \
+    'Proposal-only units' \
+    'Claim handoff — read this before running the skill' \
+    'Reporting protocol' \
+    'Include the profile line' \
+    'Delegation contract'; do
+    case "$impl_flat" in
+    *"$backed"*) ;;
+    *) fail "herdr.md advertises something the template does not carry: $backed" ;;
+    esac
 done
 
 echo "implementer-brief template: ok"

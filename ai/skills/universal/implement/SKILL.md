@@ -568,7 +568,7 @@ meant to carry it, where it reads as instruction.
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
 | `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true` plus narrow rules for the commands Codex would otherwise prompt on. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{pr-title}}` | Release-title-guard-compliant proposal |
-| `{{policy-profile}}` | The PR-body profile line: resolved rigor and source, round caps, strategy and source, all role tiers, and every off-profile choice named as off-profile |
+| `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers; and every off-profile choice named as off-profile |
 | `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
 | `{{blocked-sentinel}}` | Dispatcher-generated blocked sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |

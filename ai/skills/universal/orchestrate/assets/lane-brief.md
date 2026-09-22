@@ -31,6 +31,8 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   rewrite pushed history, bypass a git hook, disable a stop-gate, or widen your
   own scope — are the base template's § "Hard rules", inherited below and
   deliberately not copied here.)
+- Scratch directory: `{{scratch-dir}}` — write every temporary file under it,
+  never at the scratchpad root (base contract § "Delegation contract", rule 4).
 - Stay inside this worktree for project files. The lane brief and
   `{{report-path}}` are git-excluded control files: never commit or rename them.
 - Before writing the report, resolve the worktree root and common Git directory,
@@ -138,7 +140,6 @@ see.
 
 The values those sections need for this lane:
 
-- Scratch namespace: `{{scratch-dir}}` — never the scratchpad root.
 - Entry branch and HEAD: `{{branch}}` @ `{{base-sha}}`, re-read and compared
   before you report.
 - Report file and sentinels: `{{report-path}}` and § "Reporting protocol" below.

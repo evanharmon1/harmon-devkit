@@ -137,10 +137,10 @@ worktree.
 
 Where this brief and the skill disagree, this brief wins. It overrides three of
 the skill's steps: **step 1**'s ownership check (the claim handoff above),
-**step 3**'s branch creation (the branch handoff above), and its **final
-step** — a dispatched worker ends at the verified draft PR, records the handoff
-in `{{report-path}}`, and returns control to whoever dispatched it instead of
-continuing into the integration stage. Every refusal the skill states still
+**step 3**'s branch creation (the branch handoff above), and **step 9**'s
+continuation into the integration stage — a dispatched worker ends at the
+verified draft PR instead, records the handoff in `{{report-path}}`, and
+returns control to whoever dispatched it. Every refusal the skill states still
 stands.
 
 ## Delegation contract
@@ -152,9 +152,10 @@ operable whether you reach it through a rendered brief or by opening the
 template itself. Where a rule needs a value, it names the section of your own
 dispatch that carries it.
 
-**Two audiences, one contract.** Rules 1–4 bind every dispatched worker
-identically. They differ only in rule 5, because they have different output
-contracts:
+**Two audiences, one contract.** Every rule below binds every dispatched
+worker. Two of them read differently by audience, and say so where they do:
+rule 2, because a moved HEAD is a deliverable for one audience and drift for the
+other, and rule 5, because the two have different output contracts:
 
 - A **PR-owning session or pane** — a harness session, a terminal pane, a
   worktree lane — runs the whole brief, gates included, and finishes at a
@@ -163,9 +164,9 @@ contracts:
   `integrator` agent definitions — answers through the typed result its dispatch
   asked for. Its writes are exactly the ones its own agent definition grants; no
   copy of that authority is kept here, because `agent-registry.json` `roles[]`
-  and `specs/dev-flow-v2.md` § "Roles and authority" already carry it and
-  `task verify` validates them. **The one invariant this contract adds is that
-  the publication half of this template does not bind a bounded role**: it never
+  and `specs/dev-flow-v2.md` § "Roles and authority" already carry it. **The one
+  invariant this contract adds is that the publication half of this template
+  does not bind a bounded role**: it never
   publishes, promotes, or emits a publication sentinel, and this brief must
   never be dispatched to it as a work contract.
 
@@ -185,10 +186,15 @@ obligations cannot tell when one was skipped.
    written plan file over trying to revive it.
 2. **You share the caller's working tree and `HEAD`.** Never switch branches.
    Re-read `git branch --show-current` and `git rev-parse HEAD` immediately
-   before you report, compare them to the entry branch and base commit your
-   dispatch recorded (§ "Identity and boundaries"), and if either moved, say so
-   in your report rather than returning as though the work landed where the
-   caller expects. Quote every SHA verbatim from `git rev-parse` output — never
+   before you report, and report that HEAD **verbatim** from `git rev-parse`
+   output. The two halves are not symmetric: on the dispatched branch a moved
+   HEAD is the *expected* outcome — for a PR-owning worker the commits are the
+   deliverable — whereas a **changed branch is the failure**, and so is a HEAD
+   that moved to a commit you did not create. Confirm the branch is the one your
+   dispatch named (§ "Identity and boundaries"); if it is not, or if HEAD holds
+   work that is not yours, say so plainly rather than returning as though the
+   work landed where the caller expects. Quote every SHA verbatim from `git
+   rev-parse` output — never
    reconstruct, abbreviate from memory, or infer one. The caller's side of the
    same rule: capture the branch before delegating, re-read it after the
    subagent returns, treat a move as invalidating everything run since rather
@@ -209,7 +215,7 @@ obligations cannot tell when one was skipped.
    many files for a conclusion — is fine and is what delegation is for. The
    deliverable is not.
 4. **Namespace every scratch file under the scratch directory your dispatch
-   names** (§ "Identity and boundaries"). Parallel workers inherit one
+   names.** Parallel workers inherit one
    scratchpad directory, and each reaching for the obvious name (`pr-body.md`,
    `findings.md`, `notes.json`) overwrites the others with no error and no
    warning — the write succeeds and the file simply holds someone else's
@@ -364,7 +370,8 @@ choice. This matters because the sandbox is the last enforcement layer under
 the Git/sandbox rule in § "Identity and boundaries" and under § "File-scope
 fence": with approvals and the sandbox off, "a permission failure is not
 authority to find another write route" describes a failure that can no longer
-occur, and every boundary in this brief is prose alone. **Reasoning effort is not settable from the command
+occur, and every boundary in this brief is prose alone. **Reasoning effort is
+not settable from the command
 line or config** on codex-cli through at least 0.155.1 — `-c
 model_reasoning_effort` is accepted and ignored, observed on 0.153.0 and again
 on 0.155.1. Assume it still holds on any later build until you have checked,
@@ -382,7 +389,8 @@ effort nobody disclosed.
 For any other harness, read the portable vendored `implement` skill completely
 and follow it for `{{issue-url}}` through draft-PR publication, applying the
 three § "Scope" step overrides and no others. Record the confirmed draft handoff
-in `{{report-path}}` and return control to the orchestrator. If the harness cannot read the policy, the
+in `{{report-path}}` and return control to the orchestrator. If the harness
+cannot read the policy, the
 skill, or the report path this brief names, report BLOCKED rather than inventing
 a procedure.
 
@@ -399,9 +407,13 @@ a procedure.
   complete sidecar directory before publishing.
 - **Include the profile line**, as a visible line for the human reviewer rather
   than something inferred from behavior. It states the resolved rigor and its
-  source, the round caps used as ledger denominators, the strategy and its
-  source, every role tier, and every off-profile choice — model family, tier, or
-  effort — named as off-profile. A Codex dispatch launched outside the sandbox
+  source; the rounds policy's challenge, review, integration and remediation
+  caps (the ledger denominators) **plus its `min_rounds` floor and wall-clock
+  ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`);
+  the strategy and its source; all five role tiers; and every off-profile
+  choice — model family, tier, or effort — named as off-profile. That is the
+  repository policy's own announce set; a shorter line is an under-disclosure,
+  not a style choice. A Codex dispatch launched outside the sandbox
   is disclosed here too: it weakens an enforcement boundary, and a reviewer
   cannot otherwise tell. Render it from:
 

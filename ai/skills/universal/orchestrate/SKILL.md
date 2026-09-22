@@ -255,8 +255,9 @@ Neither template is a work contract for a **bounded role subagent**. Both
 finish at a published draft PR, which `ai/agents/implementer.md` § "Never"
 forbids non-overridably; a role agent gets its own schema-bound role brief and
 returns a typed result. The delegation contract's rule 5 is the one place the
-two audiences meet, and it splits there explicitly. For a PR-owning lane, the source catalog above is
-the complete input contract: source every value, select the harness procedure
+two audiences meet, and it splits there explicitly.
+
+For a PR-owning lane, the source catalog above is the complete input contract: source every value, select the harness procedure
 named by the rendered brief. Provision the lane branch/worktree, then
 transactionally refresh the existing claim so its record names that exact branch.
 Authenticate the refreshed claim into the handoff snapshot without transferring
