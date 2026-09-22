@@ -4,10 +4,11 @@ The supervising orchestrator must render every input from the source catalog in
 `orchestrate/SKILL.md` before dispatch. A rendered brief with any double-brace
 token left is invalid. The catalog stays outside this rendered artifact so a
 free-form value is substituted exactly at its intended use sites and cannot
-inject into a Markdown catalog cell. A rendered brief that still contains one
-of the catalog's own placeholder names in double braces is invalid; scan for
-those names rather than for any double-brace sequence, because a free-form
-value may legitimately contain one.
+inject into a Markdown catalog cell. **Validate the template's placeholder set
+against the catalog in a single pass over the unrendered template, then
+substitute every value in one pass**; do not rescan the output for placeholder
+names. After insertion a value that legitimately contains a known token is
+indistinguishable from a field the render failed to resolve.
 
 <!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->
 

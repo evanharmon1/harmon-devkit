@@ -117,10 +117,13 @@ impl_rendered_file="$(mktemp)"
 trap 'rm -f "$rendered_file" "$impl_rendered_file"' EXIT
 printf '%s\n' "$rendered" >"$rendered_file"
 
+# Checked on the UNRENDERED template, before any value is inserted: every
+# catalog name must be present there, so a field the catalog declares can
+# never be silently absent from the artifact. The rendered output is NOT
+# rescanned — see the validate-then-insert rule the templates state.
 for expected in "${required_placeholders[@]}"; do
-    if grep -Fq "$expected" "$rendered_file"; then
-        fail "rendered fixture retains a placeholder: $expected"
-    fi
+    grep -Fq "$expected" "$template" ||
+        fail "the catalog declares a placeholder the template never uses: $expected"
 done
 
 node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs brief "$rendered_file" >/dev/null ||
@@ -326,10 +329,13 @@ impl_flat="$(tr '\n' ' ' <"$impl_rendered_file" | tr -s '[:space:]' ' ')"
 # sequence: a free-form value can legitimately contain one (an issue title
 # quoting a template, a verified fact citing a token), and refusing on that
 # would block a dispatch over a value the render handled correctly.
+# Checked on the UNRENDERED template, before any value is inserted: every
+# catalog name must be present there, so a field the catalog declares can
+# never be silently absent from the artifact. The rendered output is NOT
+# rescanned — see the validate-then-insert rule the templates state.
 for expected in "${impl_required_placeholders[@]}"; do
-    if grep -Fq "$expected" "$impl_rendered_file"; then
-        fail "rendered implementer-brief retains a placeholder: $expected"
-    fi
+    grep -Fq "$expected" "$impl_template" ||
+        fail "the catalog declares a placeholder the template never uses: $expected"
 done
 if grep -Fq '| Placeholder | Source |' "$impl_rendered_file"; then
     fail "free-form values can still be substituted into an output catalog"
@@ -796,11 +802,17 @@ grep -Fq 'gh pr create --draft' "$impl_rendered_file" ||
 # Sentinels: exactly one occurrence each, inside the reporting section.
 impl_reporting_line="$(grep -nFx '## Reporting protocol' "$impl_rendered_file" | cut -d: -f1)"
 for sentinel in IMPL-FIXTURE-HANDOFF-a1b2c3 IMPL-FIXTURE-BLOCKED-a1b2c3; do
-    count="$(grep -Fc "$sentinel" "$impl_rendered_file")"
-    [ "$count" -eq 1 ] || fail "$sentinel must appear exactly once (found $count)"
-    line="$(grep -nF "$sentinel" "$impl_rendered_file" | cut -d: -f1)"
-    [ "$line" -gt "$impl_reporting_line" ] ||
-        fail "$sentinel appears outside Reporting protocol"
+    count="$(grep -Fc "$sentinel" "$impl_rendered_file" || true)"
+    [ "${count:-0}" -ge 1 ] || fail "$sentinel does not appear in the rendered brief"
+    # EVERY occurrence must sit inside § "Reporting protocol" — that is the
+    # invariant (a sentinel outside it could be replayed from other prose).
+    # Not "exactly once": the blocked sentinel legitimately appears twice, once
+    # for the output-only startup blocker and once in the list below it.
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        [ "$line" -gt "$impl_reporting_line" ] ||
+            fail "$sentinel appears outside Reporting protocol (line $line)"
+    done < <(grep -nF "$sentinel" "$impl_rendered_file" | cut -d: -f1)
 done
 grep -Fq 'raw pane-history substring match' "$impl_rendered_file" ||
     fail "implementer-brief accepts pane history as completion evidence"
@@ -833,48 +845,70 @@ case "$impl_flat" in
 *) fail "implementer-brief does not block on a dirty shared tree" ;;
 esac
 
-# BRACED-VALUE FIXTURE. A free-form value may legitimately contain `{{` — an
-# issue title quoting a template, a verified fact citing a token name. Render
-# with such a value and require the post-render scan to accept it, then prove
-# the scan still rejects a genuinely unreplaced placeholder, so the relaxation
-# did not simply disable the check.
-braced_value='see {{not-a-real-placeholder}} and {{branch-ish}} in the docs'
-braced_rendered="$(<"$impl_template")"
+# KNOWN-TOKEN-IN-VALUE FIXTURE. The case a post-insertion scan cannot decide:
+# a free-form value that legitimately contains one of the catalog's OWN names.
+# Render with `Support {{branch}}` as the issue title and require (a) the value
+# to survive verbatim, (b) the render not to substitute into it, and (c) every
+# real field to still be resolved. This is why validation happens on the
+# template before insertion rather than on the output after it.
+known_token_value='Support {{branch}} and {{report-path}} in the template'
+# SINGLE PASS, demonstrated rather than asserted. Every token is first replaced
+# by a unique marker, and only then are markers replaced by values, so an
+# inserted value is never rescanned by a later substitution. A naive loop of
+# replacements has exactly the defect this fixture exists to catch: it inserts
+# the title, then a later iteration substitutes {{branch}} INSIDE it.
+known_rendered="$(<"$impl_template")"
+known_i=0
+known_names=()
+known_values=()
 while IFS= read -r token; do
     [ -n "$token" ] || continue
     key="${token#\{\{}"
     key="${key%\}\}}"
     case "$key" in
-    issue-title | verified-facts-and-rulings) value="$braced_value" ;;
+    issue-title) value="$known_token_value" ;;
     *) value="fixture-$key" ;;
     esac
-    braced_rendered="${braced_rendered//"$token"/"$value"}"
+    known_names[known_i]="$(printf '\001%03d\001' "$known_i")"
+    known_values[known_i]="$value"
+    known_rendered="${known_rendered//"$token"/"${known_names[known_i]}"}"
+    known_i=$((known_i + 1))
 done <<EOF
 $(grep -oE '\{\{[^}]*\}\}' "$impl_template" | sort -u)
 EOF
-for expected in "${impl_required_placeholders[@]}"; do
-    case "$braced_rendered" in
-    *"$expected"*) fail "the braced-value render left a real placeholder: $expected" ;;
-    esac
+known_j=0
+while [ "$known_j" -lt "$known_i" ]; do
+    known_rendered="${known_rendered//"${known_names[known_j]}"/"${known_values[known_j]}"}"
+    known_j=$((known_j + 1))
 done
-case "$braced_rendered" in
-*'{{not-a-real-placeholder}}'*) ;;
-*) fail "the braced-value fixture did not exercise a braced free-form value" ;;
+# (a) the value survives verbatim — the tokens inside it were NOT substituted.
+case "$known_rendered" in
+*"$known_token_value"*) ;;
+*) fail "a value containing known placeholder names was rewritten by the render" ;;
 esac
-# Negative half: a real placeholder left unreplaced must still be caught.
-unreplaced_probe="${braced_rendered//fixture-branch/\{\{branch\}\}}"
-case "$unreplaced_probe" in
-*'{{branch}}'*) ;;
-*) fail "the unreplaced-placeholder probe did not construct its own input" ;;
-esac
-probe_caught=0
-for expected in "${impl_required_placeholders[@]}"; do
-    case "$unreplaced_probe" in
-    *"$expected"*) probe_caught=1 ;;
-    esac
+# (b) every real field still resolved: the only occurrences of those two names
+# left in the output are the ones inside the inserted value.
+for token_name in '{{branch}}' '{{report-path}}'; do
+    total=0
+    scan="$known_rendered"
+    while :; do
+        case "$scan" in
+        *"$token_name"*)
+            total=$((total + 1))
+            scan="${scan#*"$token_name"}"
+            ;;
+        *) break ;;
+        esac
+    done
+    [ "$total" -eq 1 ] ||
+        fail "expected $token_name to survive only inside the inserted value (found $total)"
 done
-[ "$probe_caught" -eq 1 ] ||
-    fail "the post-render scan no longer catches a genuinely unreplaced placeholder"
+# (c) a genuinely unresolved field is still caught — on the template, where the
+# check belongs.
+for expected in "${impl_required_placeholders[@]}"; do
+    grep -Fq "$expected" "$impl_template" ||
+        fail "the catalog declares a placeholder the template never uses: $expected"
+done
 
 # HOSTILE-TITLE FIXTURE. `{{issue-title}}` is fetched from the issue, so on a
 # public repository it is attacker-controllable. Rendered inside link syntax a
@@ -1263,6 +1297,57 @@ case "$lane_launch" in
 *) fail "lane-brief launch command does not render the model id" ;;
 esac
 
+# 4074773355: the Codex harness section resolves the skill through the same
+# vendor-path ladder, not a single hardcoded `.agents/skills` path.
+impl_codex_section="$(awk '/^## Harness: Codex/{c=1} /^## Harness: other/{c=0} c' \
+    "$impl_rendered_file" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+[ -n "$impl_codex_section" ] || fail "implementer-brief has no Codex harness section"
+for vendor_path in \
+    '`.agents/skills/implement/SKILL.md`' \
+    '`.claude/skills/implement/SKILL.md`' \
+    'harness-specific skills location' \
+    'one bounded glob'; do
+    case "$impl_codex_section" in
+    *"$vendor_path"*) ;;
+    *) fail "the Codex harness section is missing a supported vendor path: $vendor_path" ;;
+    esac
+done
+
+# 4074773367: read-only fan-out belongs to a PR-owning session, and a role
+# definition that forbids spawning outright is the narrower rule that wins —
+# `implementer` and `integrator` both list it under their own Never.
+case "$impl_flat" in
+*'is fine **for a PR-owning session or pane**'*) ;;
+*) fail "read-only fan-out is not scoped to PR-owning sessions" ;;
+esac
+case "$impl_flat" in
+*'**A stricter role rule wins.**'*) ;;
+*) fail "the fan-out allowance does not yield to a stricter role rule" ;;
+esac
+case "$impl_flat" in
+*'you spawn nothing — not even read-only fan-out'*) ;;
+*) fail "the stricter-role rule does not say what it forbids" ;;
+esac
+
+# 4074773384: a failed report-path proof demands BLOCKED, but the worker cannot
+# write the report — so exactly one blocker is output-only.
+case "$impl_flat" in
+*'**If the report file itself cannot be written**'*) ;;
+*) fail "implementer-brief has no output-only startup blocker" ;;
+esac
+case "$impl_flat" in
+*'final line of your final message only'*) ;;
+*) fail "the output-only blocker does not say where it is emitted" ;;
+esac
+case "$impl_flat" in
+*'treats it as the handoff and does not wait for a file that cannot exist'*) ;;
+*) fail "the output-only blocker does not say how the dispatcher reads it" ;;
+esac
+case "$impl_flat" in
+*'Do not invent another path to write to'*) ;;
+*) fail "the output-only blocker does not close the write-somewhere-else escape" ;;
+esac
+
 # 4073927758: every supported vendor path, in order. `.claude/skills` is a real
 # destination — this repository dogfoods its own skills through it — so a
 # ladder naming only `.agents/skills` misses the source repo's own layout.
@@ -1291,14 +1376,27 @@ esac
 # 4073927779: the post-render scan is for the catalog's own NAMES. Scanning for
 # any double-brace sequence refuses a dispatch over a free-form value that
 # legitimately contains one.
+# 4074773362: validate the template's placeholder set BEFORE inserting, then
+# insert in one pass. After insertion a value containing a known token — an
+# issue title reading `Support {{branch}}` — is indistinguishable from a field
+# the render failed to resolve, so a post-insertion scan either refuses a
+# correct dispatch or learns to ignore what it exists to catch.
 case "$impl_flat" in
-*'Scan for the *names*, not for any'*) ;;
-*) fail "implementer-brief still refuses any double-brace sequence" ;;
+*'Validate before you insert, then insert once.'*) ;;
+*) fail "implementer-brief does not state the validate-then-insert order" ;;
+esac
+case "$impl_flat" in
+*'do not rescan the output for placeholder names'*) ;;
+*) fail "implementer-brief still rescans the rendered output for placeholder names" ;;
 esac
 lane_render_rule="$(tr '\n' ' ' <ai/skills/universal/orchestrate/assets/lane-brief.md | tr -s '[:space:]' ' ')"
 case "$lane_render_rule" in
-*'scan for those names rather than for any double-brace sequence'*) ;;
-*) fail "lane-brief still refuses any double-brace sequence" ;;
+*'single pass over the unrendered template'*) ;;
+*) fail "lane-brief does not state the validate-then-insert order" ;;
+esac
+case "$lane_render_rule" in
+*'do not rescan the output for placeholder names'*) ;;
+*) fail "lane-brief still rescans the rendered output for placeholder names" ;;
 esac
 
 # 4073927783: the hard-rules copy of the env-var prohibition, narrowed exactly

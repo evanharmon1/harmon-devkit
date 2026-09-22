@@ -5,12 +5,18 @@ freehand. Every input comes from the source catalog in `implement/SKILL.md`
 § "Brief template source catalog". The catalog stays out of this file on
 purpose: a free-form value substituted into a catalog cell inside the dispatched
 artifact would be duplicated into a Markdown table ahead of its intended
-section, where it reads as instruction. A rendered brief that still contains
-**one of the catalog's own placeholder names** in double braces is invalid —
-scan for those names and refuse to dispatch. Scan for the *names*, not for any
-double-brace sequence: a free-form value can legitimately contain `{{` — an
-issue title quoting a template, a verified fact citing one — and refusing on
-that would block a dispatch over a value the render handled correctly.
+section, where it reads as instruction.
+
+**Validate before you insert, then insert once.** Take the template's
+placeholder set in a single pass over the *unrendered* template and require it
+to equal the catalog's; then substitute every value in one pass, and do not
+rescan the output for placeholder names. The order is load-bearing, not
+stylistic: after insertion a value that legitimately contains a known token —
+an issue title reading `Support {{branch}}`, a verified fact citing a field by
+name — is indistinguishable from a field the render failed to resolve, so a
+post-insertion scan either refuses a correct dispatch or learns to ignore the
+thing it exists to catch. A single pass also stops an inserted value being
+re-substituted by a later replacement.
 
 Read the repository's `AGENTS.md` first. It is the policy; the vendored stage
 skills are procedures beneath it, and this brief is the dispatch contract on top
@@ -274,8 +280,15 @@ obligations cannot tell when one was skipped.
    the coordinator's resume messages reach a forwarder rather than the worker,
    and a legitimate escalation can read as permission laundering because it
    traversed the chain. Read-only fan-out — exploration, search, reading across
-   many files for a conclusion — is fine and is what delegation is for. The
-   deliverable is not.
+   many files for a conclusion — is fine **for a PR-owning session or pane**,
+   and is what delegation is for. The deliverable is not.
+
+   **A stricter role rule wins.** Several role definitions forbid spawning at
+   all: `ai/agents/implementer.md` and `ai/agents/integrator.md` list "Spawn
+   another agent" under their own `Never`, and say that list holds even where a
+   repository's policy says otherwise. This allowance does not loosen them. If
+   your own definition forbids spawning, you spawn nothing — not even read-only
+   fan-out — and the narrower rule is the one you follow wherever the two meet.
 4. **Namespace every scratch file under the scratch directory your dispatch
    names.** Parallel workers inherit one
    scratchpad directory, and each reaching for the obvious name (`pr-body.md`,
@@ -395,7 +408,10 @@ refer to the reporting contract indirectly.
 
 ## Harness: Codex
 
-Read `.agents/skills/implement/SKILL.md` completely and follow it for
+Read the vendored `implement` skill completely — resolve it through the
+supported vendor paths in order: `.agents/skills/implement/SKILL.md`, then
+`.claude/skills/implement/SKILL.md`, then the harness-specific skills location,
+then one bounded glob — and follow it for
 `{{issue-url}}` through draft-PR publication, applying the three § "Scope" step
 overrides and no others. Then record the confirmed draft handoff in
 `{{report-path}}` and return control to the orchestrator. Apply the
@@ -522,8 +538,16 @@ wait. So does a scope question: if settling a finding would take you outside
   when it is the final nonblank line of fresh worker output *and* the identical
   final nonblank line of `{{report-path}}`; a raw pane-history substring match
   is never completion evidence.
-- Append exactly one of the following to `{{report-path}}` and print the same
-  value as the final line of your final message:
+- **If the report file itself cannot be written** — the startup proof above
+  fails, the path is tracked, the directory is unwritable — then emit
+  `{{blocked-sentinel}}-{{attempt-nonce}}` as the **final line of your final
+  message only**, and say in that message why the file half is missing and what
+  the proof returned. This is the one blocker that is output-only; whoever
+  dispatched you treats it as the handoff and does not wait for a file that
+  cannot exist. Do not invent another path to write to, and do not proceed
+  without a report because you could not write one.
+- Otherwise append exactly one of the following to `{{report-path}}` and print
+  the same value as the final line of your final message:
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — you published and verified the
     draft PR, and returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — you stopped on a blocker, a cap,
