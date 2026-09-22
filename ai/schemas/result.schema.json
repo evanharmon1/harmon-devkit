@@ -550,7 +550,7 @@
               "minLength": 1
             },
             "accepted": {
-              "description": "Present only when the cycle reached a terminal, non-escalated result (exit_code 0 or 10) — absent for exit codes 2/11/12/13/14, where no accepted evidence exists yet.",
+              "description": "Present only when the cycle reached a terminal, non-escalated result (exit_code 0 or 10) — absent for exit codes 2/11/12/13/14/15/16, where no accepted evidence exists yet.",
               "type": "object",
               "additionalProperties": false,
               "required": ["surface", "id", "reviewed_commit"],
@@ -567,8 +567,8 @@
               }
             },
             "exit_code": {
-              "description": "The verbatim exit code from ai/skills/universal/integrate/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2 indeterminate.",
-              "enum": [0, 2, 10, 11, 12, 13, 14]
+              "description": "The verbatim exit code from ai/skills/universal/integrate/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted (the finder answered that its code-review usage limit is spent \u2014 harmon-devkit#573), 16 transient read (an evidence read failed, which is NOT evidence the cycle is not clean \u2014 harmon-devkit#508), 2 indeterminate. 15 and 16 are additions: every older code keeps its exact meaning.",
+              "enum": [0, 2, 10, 11, 12, 13, 14, 15, 16]
             }
           },
           "if": {
@@ -636,7 +636,8 @@
                 }
               },
               "exit_code": {
-                "enum": [0, 2, 10, 11, 12, 13, 14]
+                "description": "Same contract as codex_cycle.exit_code above, including 15 (quota exhausted) and 16 (transient read).",
+                "enum": [0, 2, 10, 11, 12, 13, 14, 15, 16]
               }
             },
             "if": {

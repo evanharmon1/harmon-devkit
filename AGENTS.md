@@ -528,11 +528,57 @@ the current-head cycle above: stale activity is not evidence for the current
 commit, and a lone 👀 that disappears or never resolves is an incomplete
 attempt.
 
+**Proposed, for the maintainer to reconcile: a fourth terminal-clean form.**
+The § "Who decides, and what is delegated" contract names three — a clean
+review or top-level comment whose `Reviewed commit:` names the head, a fresh
+👍 on the exact trigger, and adjudicated findings naming the head. The
+connector now also maintains a rolling **"Codex Review Summary"** comment
+whose per-head table row flips from Running to **Completed**, and on some runs
+that row is the *only* clean signal it emits: harmon-devkit#710 at head
+`fa06c6e` got no 👍, no review and no verdict comment, so attempt 1 burned its
+whole window as pending and attempt 2 spent a second trigger on a review that
+had already finished clean. The proposed sentence: *a Completed row in that
+summary comment, for the exact current head, posted or edited by actor
+`199175422` after the trigger, with no findings on any surface, is terminal-clean.*
+Every qualifier is load-bearing — a Running row is pending, a Completed row
+for another head is stale, a row edited before the trigger belongs to an
+earlier cycle, and a badge anywhere in that comment makes it findings.
+
+**This remains a proposal, and it is NOT implemented.** An implementation was
+attempted in harmon-devkit#1050 and **split back out** in that change's
+challenge round 3: reading a verdict out of the table meant deriving a head by
+parsing markdown, and three consecutive review rounds each reproduced a
+false-clean or a stuck-head path through it. The work is carried in
+harmon-devkit#1117 and must land under head-binding invariants rather than a
+parser. Until it does, the three-form contract above is the whole of it — and
+a badged comment the checker cannot bind to a head blocks until it is settled
+by comment id, rather than being read out of a table.
+
+Two further reply shapes the same change taught the checker, both of which
+alter what "no terminal evidence" means rather than adding a clean form:
+
+- A **usage-limit reply** ("You have reached your Codex usage limits for code
+  reviews…") is the reviewer *answering that it will not review* — terminal,
+  never pending, and never clean or findings. Stop and report the blocker with
+  its reset time where the reply carried one; the one bounded re-trigger is
+  not spent on it (harmon-devkit#573).
+- A **self-fix summary** — an unbadged report from that bot describing a fix
+  *it* made, in a thread or as a top-level comment — is informational. It is
+  neither a finding to adjudicate nor a reviewer follow-up owed a second reply
+  (harmon-devkit#675). A badged follow-up still blocks, unconditionally.
+
 **Both procedures for that cycle live here**, because a repo can answer
 `use_codex_review` yes and `use_skills_sync` no. Post `@codex review` on entry and after every fix push, keep the
 comment ID returned for that trigger, and give each attempt a full 10–15 minute
-window, re-triggering once after an incomplete first attempt. If both attempts
-are incomplete, stop and escalate without reporting green.
+window, re-triggering once after an incomplete first attempt. **While that
+bot's 👀 is still on the current attempt's trigger, the attempt is not
+incomplete** — the window extends to a hard ceiling of 30 minutes from the
+trigger, because the window is meant to bound a reviewer that is *not*
+working, and re-triggering a live one costs a trigger and then escalates for a
+reviewer that was never absent (harmon-devkit#655). A 👀 that has vanished with
+no result, or one still sitting there past the ceiling, ends the attempt
+exactly as before. If both attempts are incomplete, stop and escalate without
+reporting green.
 **Where the pinned checker is vendored**
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`, with
 `.claude/skills/shepherd/assets/check-codex-cloud-review.sh` as legacy
@@ -541,7 +587,8 @@ required implementation — never hand-roll the polling: `reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then post `@codex review`, `attach` the comment
 ID it returned, and `check`, acting on its exit code (0 clean, 10 findings,
-11 pending, 12 retry, 13 escalate, 2 indeterminate). It never writes to GitHub,
+11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted,
+16 transient read, 2 indeterminate). It never writes to GitHub,
 so posting the trigger stays yours, and its `settle` subcommand records the
 disposition of a badged finding stated outside an inline thread.
 **Where it is not vendored**, the same contract is satisfied by hand: post the

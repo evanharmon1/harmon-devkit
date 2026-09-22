@@ -651,20 +651,79 @@ checkout; nothing below overrides it.
 
 **Where the pinned checker is vendored**
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`), its exit codes
-are the contract. Two things about it are worth knowing because they are not
+are the contract:
+
+| Exit | Status | What it means, and what the caller does |
+|---|---|---|
+| `0` | `clean` | Terminal-clean for the exact head. Proceed. |
+| `10` | `findings` | Adjudicate. Inline-raised findings carry `unanswered[]` — every unanswered bot thread on the head, across **every** review that posted one. |
+| `11` | `pending` | No terminal evidence yet, inside the window. Keep polling. |
+| `12` | `retry` | Attempt 1's window elapsed. One re-trigger with `--attempt 2`. |
+| `13` | `escalate` | Both windows elapsed. Stop; escalate. |
+| `14` | `pr-not-open` | GitHub answered MERGED/CLOSED. Terminal for the whole stage — never wait, re-run, or re-trigger. |
+| `15` | `quota-exhausted` | The reviewer *answered* that its code-review usage limit is spent. Terminal; never clean, never findings. Report the blocker with the reset time where the reply carried one. `reserve --attempt 2` is refused, so the one bounded retry is not spent on a reviewer that already said no, and so is a fresh `--attempt 1` on the same head — the commit stays un-reviewable through this checker until a push moves the head, or an operator removes the cycle state file at `$(git rev-parse --git-path integrate-codex/<owner>/<repo>/<n>.json)` (`reap` deliberately keeps state for an open PR, and there is no `release` subcommand, so removing that file is the route). A safe recovery route is carried in harmon-devkit#1115. |
+| `16` | `transient-read` | An evidence **read** failed. This says nothing about the reviewer: repeat the *read*, never the reviewer cycle. The readiness gate reports it as `codex-transient-read` (indeterminate with the reason), never `codex-not-clean`. |
+| `2` | `indeterminate` | Malformed, changed head, usage error, or an unclassifiable verdict. |
+
+`15` and `16` are additions (harmon-devkit#1050, children #573 and #508);
+every older code keeps its exact meaning, so a caller pinned to the earlier
+contract still reads every code it knew.
+
+**Terminal-clean forms.** `AGENTS.md` § "Who decides, and what is delegated"
+names three, and there are three: a clean review or top-level comment whose
+`Reviewed commit:` names the head, a fresh 👍 on the exact trigger, or
+adjudicated findings naming the head. § "Second-Model Review" carries a
+**proposed** fourth — the Completed row in the connector's rolling "Codex
+Review Summary" comment (harmon-devkit#718) — which is **not implemented**: an
+implementation was split back out for deriving a head by parsing markdown, and
+is carried in harmon-devkit#1117. Do not expect a head to go clean from that
+row.
+
+**Two shapes that are neither clean nor findings.** A **self-fix summary** —
+an unbadged report from the bot describing a fix *it* made, in a thread or as
+a top-level comment — is informational (harmon-devkit#675); a badged follow-up
+still blocks. Informational means the body states **nothing but** the bot's own
+work: every non-blank line a heading, a bold-only label, or a list item, plus a
+recognized self-work marker. Anything else is `findings`, which is safe
+precisely because `settle`'s domain is *what `check` blocks on* rather than
+*what carries a badge* — so a body misread as a finding costs one recorded
+disposition instead of stranding the head. And a badged comment carrying no
+`Reviewed commit` line of its own **blocks** (`findings`, exit 10) until it is
+settled by comment id — every undisposed one blocks, oldest cited first.
+"After the trigger" means **by comment id**, not by any timestamp: a badge
+blocks when its id exceeds the head's *first* trigger id, which is recorded at
+the first `attach` and never rebased by a second attempt or a reconstruction.
+Ids are monotonic, so there is no window, second, or edit to get wrong — five
+consecutive review rounds each closed one leak in a timestamp bound and each
+left another, and the clock came out. The **documented boundary** of that
+trade: a comment that pre-existed the first trigger and is later edited to add
+a badge is not covered, because its id is below the boundary and no id
+ordering can see the edit. Nothing is parsed out of the body either: the cycle
+is pinned to its reserved head. And while the bot's 👀 is still on the current attempt's trigger,
+the attempt window **extends** to a hard ceiling of 30 minutes from the
+trigger rather than returning `12`, because the window exists to bound a
+reviewer that is not working (harmon-devkit#655). A 👀 that vanished with no
+result, or one still there past the ceiling, ends the attempt as before.
+
+Two further things about the checker are worth knowing because they are not
 symmetric:
 
 - An **inline** finding is classified independently of its badge and is
   answered by a trusted in-thread reply, so an inline cloud P3 is on the
   ordinary reply path with everything else.
-- A badged finding stated **outside** an inline thread has no reply linkage,
-  and `settle` currently refuses a badge it does not recognize as `p[0-2]`.
-  So an unfixed, non-inline cloud P3 has no way to be recorded as settled
-  *by that checker*: fix it and push (which starts a fresh-head cycle and
-  resolves it), or if it genuinely needs no change, report the blocker and
-  leave the PR draft. That gap is being fixed upstream in
-  evanharmon1/harmon-devkit#530 and re-pinned here; it is a limitation of the
-  current pin, not a rule.
+- A finding stated **outside** an inline thread has no reply linkage, so
+  `settle` is the route: it records the disposition locally, against the
+  cycle's own state. Its domain is *what `check` blocks on* — every body whose
+  verdict is `findings` — rather than *what carries a badge*, so an unbadged
+  body the classifier reads as a finding stays answerable instead of stranding
+  the head. A target that names no commit of its own binds by comment id to
+  the head the cycle already reserved; one that names a different commit is
+  still refused. So a non-inline cloud finding at any severity, P3 included,
+  can be declined with reasoning or filed as follow-up rather than reporting
+  `findings` forever — the earlier limitation here (only `p[0-2]` badges were
+  settleable, leaving an unfixed non-inline P3 with no recorded resolution and
+  the PR stuck in draft) is gone, and evanharmon1/harmon-devkit#530 tracked
+  exactly that.
 
 **Where it is not vendored**, that limitation does not exist to work around:
 `AGENTS.md`'s checker-absent procedure governs, and a non-inline finding is
