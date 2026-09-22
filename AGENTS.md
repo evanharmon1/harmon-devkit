@@ -277,6 +277,8 @@ its current `headRefOid`:
 - Every inline review comment has its required per-thread reply.
 - Every finding the PR body defers to this stage is ticked with its
   disposition.
+- Every issue the current PR body claims through a closing keyword appears in
+  `closingIssuesReferences`; a missing linkage is a failed condition.
 - `reviewDecision` is not `CHANGES_REQUESTED`.
 - `mergeStateStatus` is none of `DIRTY`, `BEHIND`, `UNKNOWN`.
 - Every required workflow and review app ran on the draft, or was explicitly

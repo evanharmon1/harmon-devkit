@@ -746,7 +746,13 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   `--pr` that disagrees with `run.json`'s own `pr` field, and detects a
   second concurrent publish against the same record — treat either as a
   reconciliation the record's own state must resolve before retrying, not
-  something to force past.
+  something to force past. After every publish or other body edit lands,
+  re-read `headRefOid,body,closingIssuesReferences` together and stop with a
+  blocker report if any closing keyword the body claims targets an issue with
+  no corresponding linkage. Resolve claimed same-repo targets through the
+  issues endpoint first: a target whose payload identifies it as a pull
+  request is exempt because pull requests never appear in
+  `closingIssuesReferences`.
 - **Follow-ups still go through `track-work`.** Before filing one, **search
   the repo the follow-up is going into** — `track-work` §3 owns this step and
   the reasoning; the short form is
@@ -1610,6 +1616,9 @@ that loops indefinitely:
    asynchronously, `skipping` is neutral, and a required context that never
    registered appears in no list at all, which is exactly what the
    automation-coverage paragraph below exists to hold;
+   every issue the current body claims through `Closes`, `Fixes`, `Resolves`,
+   or their inflections present in `closingIssuesReferences`, with a missing
+   entry failing as `closing-linkage-missing` rather than indeterminate;
    every adjudication document in `--record` matched by a
    `destination: issue` evidence comment for its own stage and round in
    `run.json` (a `pr` rollup never substitutes — harmon-devkit#685);
