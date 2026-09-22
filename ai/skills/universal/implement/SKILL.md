@@ -551,7 +551,7 @@ meant to carry it, where it reads as instruction.
 | `{{default-branch}}` | Target repository default branch |
 | `{{base-sha}}` | Commit the branch was created from |
 | `{{worktree-path}}` | `git rev-parse --show-toplevel` in the prepared checkout |
-| `{{report-path}}` | Per-attempt path outside the worktree, or one whose worktree exclusion the dispatcher has installed and verified |
+| `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the dispatcher has installed and verified — the two shapes the template's own startup check accepts |
 | `{{scratch-dir}}` | Per-worker subdirectory of the scratchpad; never the scratchpad root |
 | `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |
 | `{{file-scope-fence}}` | Dispatcher's closed list of paths this unit may write |
@@ -566,6 +566,7 @@ meant to carry it, where it reads as instruction.
 | `{{repo-tier}}` | `light`, `standard`, or `heavy` — nothing else. Apply the template's own strongest-signal-wins procedure rather than matching a row by description |
 | `{{gate-bounds-override}}` | Repository's own measured bounds, or `None — use the table above.` |
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
+| `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true` plus narrow rules for the commands Codex would otherwise prompt on. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{pr-title}}` | Release-title-guard-compliant proposal |
 | `{{policy-profile}}` | The PR-body profile line: resolved rigor and source, round caps, strategy and source, all role tiers, and every off-profile choice named as off-profile |
 | `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
@@ -574,9 +575,11 @@ meant to carry it, where it reads as instruction.
 
 **The gate bounds are defaults, not a repository contract.** They were measured
 from run history; a maintainer confirms or replaces them per repository through
-`{{gate-bounds-override}}`. That note lives here, in the authoring procedure,
-rather than in the dispatched artifact — a brief is addressed to a worker, and
-review-process markers addressed to a maintainer do not belong in it.
+`{{gate-bounds-override}}`. The artifact keeps the one-sentence provenance note
+a worker needs — that the numbers are measured defaults it may override — while
+the `[HUMAN]` authoring marker and this instruction to the maintainer stay here,
+in the authoring procedure: a brief is addressed to a worker, and review-process
+markers addressed to a maintainer do not belong in it.
 
 Keep the report path and the sentinels unique **per attempt**. Prompts sent
 after dispatch refer to that reporting contract indirectly and never quote a

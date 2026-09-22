@@ -23,11 +23,14 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
 - Run: `{{run-id}}` · Lane: `{{lane-name}}` · Branch: `{{branch}}` (already
   created off `{{default-branch}}` @ `{{base-sha}}`; you are in its worktree).
   Worktree: `{{worktree-path}}`.
-- **Single writer:** commit and push only `{{branch}}`. Never create branches,
-  touch `{{default-branch}}`, merge, force-push, use `--no-verify`, disable a
-  stop-gate, or set gate/approval environment variables. Never claim or unclaim
-  issues. Never write to a password manager or credential store. Never
-  terminate a process.
+- **Single writer:** commit and push only `{{branch}}`. Never create branches
+  and never touch `{{default-branch}}`. Never set gate or approval environment
+  variables. Never claim or unclaim issues. Never write to a password manager or
+  credential store. Never terminate a process. (The prohibitions this lane
+  shares with every other dispatch — never promote, merge, cut a release,
+  rewrite pushed history, bypass a git hook, disable a stop-gate, or widen your
+  own scope — are the base template's § "Hard rules", inherited below and
+  deliberately not copied here.)
 - Stay inside this worktree for project files. The lane brief and
   `{{report-path}}` are git-excluded control files: never commit or rename them.
 - Before writing the report, resolve the worktree root and common Git directory.
@@ -120,9 +123,15 @@ checks that they still agree. Read them there:
   still commits, still pushes, and still opens the draft PR; it stops there.
 
 Resolution order: prefer `.agents/skills/implement/assets/implementer-brief.md`,
-then the harness-specific skills location, then one bounded glob. If none is
-readable, report BLOCKED rather than proceeding on a remembered version of any
-of them.
+then the harness-specific skills location, then one bounded glob — the same
+discover-don't-require ladder every agent definition in this repository uses. A
+consumer vendors skills individually and may hold `orchestrate` without
+`implement`, so **not finding the file is a supported state, not a blocker**: if
+none of those paths is readable, do not reconstruct the sections from memory —
+fall back to `AGENTS.md`, which carries this repository's own binding form of
+the hard rules and the gate policy, plus this brief, and record in your report
+that the base contract was unreadable and which sections you therefore did not
+see.
 
 The values those sections need for this lane:
 

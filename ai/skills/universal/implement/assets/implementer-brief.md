@@ -316,11 +316,25 @@ The orchestrator launches this pane as:
 ```sh
 codex --model {{codex-model-id}} \
   -c check_for_update_on_startup=false \
-  --dangerously-bypass-approvals-and-sandbox
+  {{codex-launch-flags}}
 ```
 
 `-c check_for_update_on_startup=false` keeps a version-check prompt from
-swallowing the first brief. **Reasoning effort is not settable from the command
+swallowing the first brief.
+
+`{{codex-launch-flags}}` carries the **approval and sandbox policy the
+dispatcher chose** — it is rendered, never assumed. The default is the
+sandboxed form this repository's operator guidance specifies,
+`-a never -s workspace-write -c sandbox_workspace_write.network_access=true`,
+plus narrow rules for exactly the commands Codex would otherwise prompt on.
+Running outside the sandbox (`--dangerously-bypass-approvals-and-sandbox`) is a
+deliberate per-dispatch override, never the default, and the dispatcher
+discloses it on the PR-body profile line as it would any other off-profile
+choice. This matters because the sandbox is the last enforcement layer under
+the Git/sandbox rule in § "Identity and boundaries" and under § "File-scope
+fence": with approvals and the sandbox off, "a permission failure is not
+authority to find another write route" describes a failure that can no longer
+occur, and every boundary in this brief is prose alone. **Reasoning effort is not settable from the command
 line or config** on codex-cli through at least 0.155.1 — `-c
 model_reasoning_effort` is accepted and ignored, observed on 0.153.0 and again
 on 0.155.1. Assume it still holds on any later build until you have checked,
@@ -357,7 +371,9 @@ a procedure.
   than something inferred from behavior. It states the resolved rigor and its
   source, the round caps used as ledger denominators, the strategy and its
   source, every role tier, and every off-profile choice — model family, tier, or
-  effort — named as off-profile. Render it from:
+  effort — named as off-profile. A Codex dispatch launched outside the sandbox
+  is disclosed here too: it weakens an enforcement boundary, and a reviewer
+  cannot otherwise tell. Render it from:
 
   {{policy-profile}}
 

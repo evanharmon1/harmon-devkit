@@ -238,6 +238,7 @@ impl_required_placeholders=(
     '{{blocked-sentinel}}'
     '{{branch}}'
     '{{claim-handoff}}'
+    '{{codex-launch-flags}}'
     '{{codex-model-id}}'
     '{{default-branch}}'
     '{{effort}}'
@@ -427,10 +428,25 @@ case "$impl_launch" in
 *'-c check_for_update_on_startup=false'*) ;;
 *) fail "implementer-brief Codex launch command is missing the update-check flag" ;;
 esac
+# The launch command must carry the dispatcher's RENDERED approval/sandbox
+# policy, never a hardcoded one. Hardcoding the bypass flag mandated a
+# sandbox-off dispatch for every consumer and left the Git/sandbox rule and the
+# file-scope fence with no enforcement layer at all.
 case "$impl_launch" in
-*'--dangerously-bypass-approvals-and-sandbox'*) ;;
-*) fail "implementer-brief Codex launch command is missing the sandbox flag" ;;
+*'fixture-codex-launch-flags'*) ;;
+*) fail "implementer-brief Codex launch command does not render the dispatcher's sandbox policy" ;;
 esac
+case "$impl_launch" in
+*'--dangerously-bypass'*) fail "implementer-brief hardcodes a sandbox-off Codex launch" ;;
+esac
+grep -Fq -e '-a never -s workspace-write' "$impl_rendered_file" ||
+    fail "implementer-brief does not name the sandboxed launch default"
+grep -Fq 'deliberate per-dispatch override, never the default' "$impl_rendered_file" ||
+    fail "implementer-brief does not mark the sandbox-off launch as an override"
+grep -Fq 'every boundary in this brief is prose alone' "$impl_rendered_file" ||
+    fail "implementer-brief does not say what running outside the sandbox costs"
+grep -Fq 'launched outside the sandbox' "$impl_rendered_file" ||
+    fail "a sandbox-off Codex dispatch is not disclosed on the profile line"
 grep -Fq 'model_reasoning_effort` is accepted and ignored' "$impl_rendered_file" ||
     fail "implementer-brief Codex block is missing the reasoning-effort caveat"
 grep -Fq 'The TUI `/model` picker is the only lever' "$impl_rendered_file" ||
@@ -496,8 +512,41 @@ grep -Fq 'Read-only fan-out' "$impl_rendered_file" ||
     fail "delegation contract does not distinguish allowed read-only fan-out"
 grep -Fq 'may be unresumable' "$impl_rendered_file" ||
     fail "delegation contract omits the plan-mode recovery path"
-grep -Fq 'never at the scratchpad' "$impl_rendered_file" ||
-    fail "delegation contract does not forbid the scratchpad root"
+# Scoped to the contract section, not the whole file: round 1's restructure
+# added a second occurrence of this literal in § "Identity and boundaries", so
+# a whole-file grep survives deleting rule 4's clause and the failure message
+# would be a lie. Same defect class as the GATE-EXIT= hole above.
+case "$impl_contract_section" in
+*'never at the scratchpad root'*) ;;
+*) fail "delegation contract does not forbid the scratchpad root" ;;
+esac
+
+# Sweep the class rather than the instance: every literal asserted against the
+# whole rendered brief must occur exactly once there, or its assertion cannot
+# fail when the load-bearing occurrence is deleted.
+impl_single_occurrence=(
+    'A bound is the point at which you stop waiting, never the point at which you'
+    'Run the gates with these exact commands'
+    'strongest signal wins'
+    'does **not** make a repository `light`'
+    'one of `light`, `standard`, or'
+    'report BLOCKED rather than picking a row'
+    '**A proposal-only unit still runs every gate, still commits, still pushes, and'
+    'still opens the DRAFT PR. It stops there.'
+    'This brief is a **PR-owning** contract'
+    'It is not a work contract for a bounded role subagent'
+    'Claim handoff — read this before running the skill'
+    'use of an existing claim, never a transfer'
+    'Keep every other refusal'
+    '**Include the profile line**'
+    'through at least 0.155.1'
+    'The TUI `/model` picker is the only lever'
+)
+for literal in "${impl_single_occurrence[@]}"; do
+    count="$(grep -Fc "$literal" "$impl_rendered_file" || true)"
+    [ "$count" -eq 1 ] ||
+        fail "assertion literal occurs $count times in the rendered brief (needs exactly 1): $literal"
+done
 
 # Fence prose, identical to the lane superset so the two cannot drift.
 grep -Fq 'A validator or test that rejects your change and that no other live lane touches' \
@@ -576,6 +625,34 @@ case "$lane_inherits" in
 *'.agents/skills/implement/assets/implementer-brief.md'*) ;;
 *) fail "lane-brief does not give the base contract a resolution path" ;;
 esac
+# A consumer may vendor `orchestrate` without `implement`, so an unreadable
+# base contract degrades the way every agent definition degrades; it is not a
+# blocker that strands a supported configuration.
+case "$lane_inherits" in
+*'not finding the file is a supported state, not a blocker'*) ;;
+*) fail "lane-brief blocks instead of degrading when the base contract is absent" ;;
+esac
+case "$lane_inherits" in
+*'fall back to `AGENTS.md`'*) ;;
+*) fail "lane-brief names no degradation target for an unreadable base contract" ;;
+esac
+# "Not restated here" has to be true. The inline copy drifted — it had lost
+# `gh pr ready`, the release/tag clause, amend/rebase, and the scope rule — so
+# it was deleted rather than completed: one copy, in the base template.
+lane_identity="$(awk '/^## Identity and boundaries/{c=1} /^## File-scope fence/{c=0} c' \
+    ai/skills/universal/orchestrate/assets/lane-brief.md)"
+# The parenthetical NAMES the inherited rules as a pointer, which is the point;
+# what must not come back is an imperative copy of them. These two literals
+# appear only in a restatement, never in the pointer's own wording.
+for restated in 'gh pr ready' 'force-push'; do
+    case "$lane_identity" in
+    *"$restated"*) fail "lane-brief restates a base hard rule it declares inherited: $restated" ;;
+    esac
+done
+case "$lane_identity" in
+*'deliberately not copied here'*) ;;
+*) fail "lane-brief does not point at the base hard rules it no longer copies" ;;
+esac
 
 # Every referrer resolves the contract the way this repo resolves any skill
 # file, and says what to do when nothing is readable.
@@ -604,6 +681,28 @@ grep -Fq 'Render `assets/implementer-brief.md`. Never write the brief freehand.'
     fail "the implement skill does not require rendering the template"
 grep -Fq 'Brief template source catalog' "$impl_catalog" ||
     fail "the implement skill ships no external source catalog"
+
+# A catalog row that describes a value the template's own startup check
+# refuses renders an unstartable brief: the dispatcher follows the row, the
+# worker BLOCKs before implementation, and it cannot even write that blocker
+# to the path it was given. The two shapes the check accepts are the only two
+# the row may offer.
+impl_report_row="$(grep -F '| `{{report-path}}` |' "$impl_catalog")"
+case "$impl_report_row" in
+*'common Git directory'*) ;;
+*) fail "the report-path catalog row omits the shape the startup check accepts" ;;
+esac
+case "$impl_report_row" in
+*'outside the worktree'*) fail "the report-path catalog row offers a shape the startup check refuses" ;;
+esac
+
+# The artifact keeps the one-sentence provenance note (r1-16 kept it
+# deliberately), so the authoring procedure must not claim the note lives only
+# there — a later editor would believe the artifact is already clean and not look.
+if grep -Fq 'defaults measured from run history' "$impl_template"; then
+    grep -Fq 'The artifact keeps the one-sentence provenance note' "$impl_catalog" ||
+        fail "the implement skill misdescribes where the gate-bounds note lives"
+fi
 grep -Fq 'Never write an implementer brief freehand, whatever its shape.' \
     ai/skills/universal/orchestrate/SKILL.md ||
     fail "the orchestrate skill permits a freehand implementer brief"
