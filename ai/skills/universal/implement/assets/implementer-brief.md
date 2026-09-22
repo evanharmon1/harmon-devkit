@@ -135,9 +135,13 @@ exactly `{{worktree-path}}`, and that the recorded base is `{{base-sha}}`;
 report BLOCKED on any mismatch. Then continue with the provisioned branch and
 worktree.
 
-These two overrides — step 1's ownership check and step 3's branch creation —
-are the only ones this brief grants. Every other step of the skill applies
-unchanged, and every other refusal in it still stands.
+Where this brief and the skill disagree, this brief wins. It overrides three of
+the skill's steps: **step 1**'s ownership check (the claim handoff above),
+**step 3**'s branch creation (the branch handoff above), and its **final
+step** — a dispatched worker ends at the verified draft PR, records the handoff
+in `{{report-path}}`, and returns control to whoever dispatched it instead of
+continuing into the integration stage. Every refusal the skill states still
+stands.
 
 ## Delegation contract
 
@@ -157,12 +161,13 @@ contracts:
   published draft PR. § "Reporting protocol" is its output contract.
 - A **bounded role subagent** — the `implementer`, `challenger`, `reviewer` and
   `integrator` agent definitions — answers through the typed result its dispatch
-  asked for. Its writes are exactly the ones its own agent definition permits,
-  which for some roles includes commits and durable state; what it never does is
-  push, open or promote a PR, or emit a publication sentinel. Those exclusions
-  hold even where a repository's policy says otherwise, so the publication half
-  of this template does not bind it and must never be dispatched to it as a work
-  contract.
+  asked for. Its writes are exactly the ones its own agent definition grants; no
+  copy of that authority is kept here, because `agent-registry.json` `roles[]`
+  and `specs/dev-flow-v2.md` § "Roles and authority" already carry it and
+  `task verify` validates them. **The one invariant this contract adds is that
+  the publication half of this template does not bind a bounded role**: it never
+  publishes, promotes, or emits a publication sentinel, and this brief must
+  never be dispatched to it as a work contract.
 
 The first rule binds whoever dispatched you; the rest bind you. Both halves are
 printed in every brief because a worker that cannot see the caller's
@@ -310,8 +315,7 @@ promotion, no merge, no release. See § "Hard rules".
 ## Harness: Claude Code
 
 Invoke `/implement {{issue-url}}` with the Skill tool and follow it through
-draft-PR publication. Apply both § "Scope" overrides —
-the claim handoff before step 1, the branch handoff before step 3 — and no
+draft-PR publication, applying the three § "Scope" step overrides and no
 others. Repository policy overrides the skill's final step for a
 dispatched worker: record the confirmed draft handoff in `{{report-path}}` and
 return control to the supervising orchestrator instead of continuing into the
@@ -324,10 +328,9 @@ refer to the reporting contract indirectly.
 ## Harness: Codex
 
 Read `.agents/skills/implement/SKILL.md` completely and follow it for
-`{{issue-url}}` through draft-PR publication, Apply both § "Scope" overrides —
-the claim handoff before step 1, the branch handoff before step 3 — and no
-others. then record the confirmed draft
-handoff in `{{report-path}}` and return control to the orchestrator. Apply the
+`{{issue-url}}` through draft-PR publication, applying the three § "Scope" step
+overrides and no others. Then record the confirmed draft handoff in
+`{{report-path}}` and return control to the orchestrator. Apply the
 Git/sandbox rule from § "Identity and boundaries"; a permission failure is not
 authority to find another write route.
 
@@ -377,11 +380,9 @@ effort nobody disclosed.
 ## Harness: other
 
 For any other harness, read the portable vendored `implement` skill completely
-and follow it for `{{issue-url}}` through draft-PR publication, Apply both § "Scope" overrides —
-the claim handoff before step 1, the branch handoff before step 3 — and no
-others. applying the
-same override: record the confirmed draft handoff in `{{report-path}}` and
-return control to the orchestrator. If the harness cannot read the policy, the
+and follow it for `{{issue-url}}` through draft-PR publication, applying the
+three § "Scope" step overrides and no others. Record the confirmed draft handoff
+in `{{report-path}}` and return control to the orchestrator. If the harness cannot read the policy, the
 skill, or the report path this brief names, report BLOCKED rather than inventing
 a procedure.
 

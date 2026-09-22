@@ -307,6 +307,11 @@ done
 
 printf '%s\n' "$impl_rendered" >"$impl_rendered_file"
 
+# Whitespace-normalised view of the rendered brief. These are hard-wrapped
+# Markdown files, so any assertion about a phrase that can straddle a line
+# break must run against this rather than against the file's lines.
+impl_flat="$(tr '\n' ' ' <"$impl_rendered_file" | tr -s '[:space:]' ' ')"
+
 if grep -Eq '\{\{[^}]*\}\}' "$impl_rendered_file"; then
     fail "rendered implementer-brief retains a placeholder"
 fi
@@ -598,17 +603,38 @@ grep -Fq 'do not fetch-and-switch, do' "$impl_rendered_file" ||
     fail "implementer-brief step-3 override does not forbid fetch-and-switch"
 grep -Fq 'not create a branch, and do not refresh the claim' "$impl_rendered_file" ||
     fail "implementer-brief step-3 override does not forbid the claim refresh"
-grep -Fq 'are the only ones this brief grants' "$impl_rendered_file" ||
-    fail "implementer-brief does not bound which skill steps it overrides"
+# The count was false — the harness sections grant a third override, of the
+# skill's final step, which is the one that keeps a worker out of promotion.
+# One enumeration, in § Scope, naming all three.
+case "$impl_flat" in
+*'It overrides three of the skill'*) ;;
+*) fail "implementer-brief does not enumerate the skill steps it overrides" ;;
+esac
+case "$impl_flat" in
+*'are the only ones this brief grants'*) fail "implementer-brief kept the false exhaustiveness claim" ;;
+esac
+grep -Fq 'returns control to whoever dispatched it instead of' "$impl_rendered_file" ||
+    fail "the override enumeration omits the final-step override that prevents promotion"
 # Every harness path routes through the skill, so every harness path owes both.
+# Counted on the NORMALISED text, and on the whole phrase rather than a
+# fragment of it: the clause wraps across lines, and it was once spliced into
+# the middle of two of the three sentences and shipped as broken prose. The
+# phrase below can only match where the clause follows "publication," and
+# closes its own sentence, so placement and count are proven together.
+impl_override_phrase='publication, applying the three § "Scope" step overrides and no others.'
 impl_harness_sections=0
-while IFS= read -r line; do
-    case "$line" in
-    *'Apply both § "Scope" overrides'*) impl_harness_sections=$((impl_harness_sections + 1)) ;;
+impl_scan="$impl_flat"
+while :; do
+    case "$impl_scan" in
+    *"$impl_override_phrase"*)
+        impl_harness_sections=$((impl_harness_sections + 1))
+        impl_scan="${impl_scan#*"$impl_override_phrase"}"
+        ;;
+    *) break ;;
     esac
-done <"$impl_rendered_file"
+done
 [ "$impl_harness_sections" -eq 3 ] ||
-    fail "expected all 3 harness sections to apply the skill-step overrides (found $impl_harness_sections)"
+    fail "expected all 3 harness sections to close a sentence with the skill-step overrides (found $impl_harness_sections)"
 
 # r3-3: the proofs are alternatives tried in order, not a containment-keyed
 # if/else. In a MAIN checkout the common Git directory is inside the worktree
@@ -624,14 +650,38 @@ done
 # r3-1: a bounded role's writes are what its own definition permits. The
 # deleted clause ("writes nothing outside it") was false for `implementer`,
 # which must commit, and `integrator`, which must persist state and post.
+# Whitespace-normalised and widened from one wording to the defect class: these
+# are hard-wrapped Markdown files, so a line-oriented grep missed the exact
+# clause reintroduced at its natural wrap point, and pinning one phrasing let a
+# paraphrase through. `implementer` is granted round pushes through the broker
+# by agent-registry.json and specs/dev-flow-v2.md, so an absolute write or push
+# prohibition on a bounded role is false whatever words it uses.
 for scoped in "$impl_rendered_file" ai/agents/challenger.md ai/agents/reviewer.md \
     ai/agents/integrator.md ai/agents/implementer.md ai/agents/README.md; do
-    if grep -Eq 'writes? nothing outside it' "$scoped"; then
-        fail "$scoped still forbids writes a bounded role is required to make"
-    fi
+    flat="$(tr '\n' ' ' <"$scoped" | tr -s '[:space:]' ' ')"
+    for forbidden in \
+        'writes nothing outside it' \
+        'write nothing outside it' \
+        'never does is push' \
+        'never pushes, never opens'; do
+        case "$flat" in
+        *"$forbidden"*) fail "$scoped states an absolute write/push prohibition a bounded role is granted: $forbidden" ;;
+        esac
+    done
 done
-grep -Fq 'Its writes are exactly the ones its own agent definition permits' "$impl_rendered_file" ||
-    fail "implementer-brief does not scope a bounded role's writes to its own definition"
+# The authority itself is referenced, never copied — the change's own thesis.
+case "$impl_flat" in
+*'its own agent definition grants; no copy of that authority is kept here'*) ;;
+*) fail "implementer-brief keeps its own copy of a bounded role's write authority" ;;
+esac
+case "$impl_flat" in
+*'`agent-registry.json` `roles[]`'*) ;;
+*) fail "implementer-brief does not reference the machine-validated role authority" ;;
+esac
+case "$impl_flat" in
+*'the publication half of this template does not bind a bounded role'*) ;;
+*) fail "implementer-brief lost the one invariant the two-audience split adds" ;;
+esac
 
 # Audience: the template finishes at a published draft PR, which a bounded role
 # subagent is forbidden to reach (ai/agents/implementer.md § Never).
