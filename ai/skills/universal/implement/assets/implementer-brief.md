@@ -5,8 +5,12 @@ freehand. Every input comes from the source catalog in `implement/SKILL.md`
 § "Brief template source catalog". The catalog stays out of this file on
 purpose: a free-form value substituted into a catalog cell inside the dispatched
 artifact would be duplicated into a Markdown table ahead of its intended
-section, where it reads as instruction. A rendered brief with any double-brace
-token left is invalid — scan the whole file and refuse to dispatch.
+section, where it reads as instruction. A rendered brief that still contains
+**one of the catalog's own placeholder names** in double braces is invalid —
+scan for those names and refuse to dispatch. Scan for the *names*, not for any
+double-brace sequence: a free-form value can legitimately contain `{{` — an
+issue title quoting a template, a verified fact citing one — and refusing on
+that would block a dispatch over a value the render handled correctly.
 
 Read the repository's `AGENTS.md` first. It is the policy; the vendored stage
 skills are procedures beneath it, and this brief is the dispatch contract on top
@@ -82,8 +86,12 @@ preference.
   or force-pushed. No `git push --force`, no `--force-with-lease`, no
   `git rebase` of a pushed commit.
 - **Never bypass a git hook.** The flag that skips them is forbidden; so is
-  unsetting `core.hooksPath`, deleting a hook, or setting a gate or approval
-  environment variable. If a hook fails, fix the cause.
+  unsetting `core.hooksPath` or deleting a hook, and so is setting any
+  environment variable that **bypasses, disables or pre-satisfies** a gate,
+  approval or hook. That last clause is about bypass, not about environment
+  variables as such — a variable a gate is designed to read is an input, and
+  `PR_TITLE`/`BASE_SHA` for the release-title preflight are the standing
+  legitimate example. If a hook fails, fix the cause.
 - **Never disable a stop-gate.** Where the repository runs an automatic
   second-model stop-gate, a BLOCK is adjudicated or escalated — never switched
   off to get past it.
@@ -239,9 +247,12 @@ obligations cannot tell when one was skipped.
    **Isolation changes the premise, not the report.** Git refuses to check one
    branch out in two worktrees, so a worker given `isolation: "worktree"` is
    necessarily on its own branch or a detached HEAD, and shares neither tree nor
-   `HEAD` with its caller. Everything above still holds — never switch branches,
-   re-read both values, quote SHAs verbatim, flag a commit you did not create —
-   but the branch you confirm is the one **your** dispatch named, and your
+   `HEAD` with its caller. Everything above still holds, **including which test
+   your role applies** — never switch branches, re-read both values, quote SHAs
+   verbatim, and then run your own comparison: authorship if you edit, the
+   captured branch and SHA if you are read-only. Isolation changes where you
+   stand, not which test you are entitled to make. The branch you confirm is
+   the one **your** dispatch named, and your
    caller learns where the work landed from your report rather than from its own
    checkout. A worker isolated exactly as `ai/agents/README.md` recommends is
    not in a failure state for standing somewhere its caller is not. Quote every SHA verbatim from `git

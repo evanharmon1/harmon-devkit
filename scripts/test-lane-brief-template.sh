@@ -27,6 +27,9 @@ required_placeholders=(
     '{{brief-envelope-json}}'
     '{{challenge-cap}}'
     '{{claim-handoff}}'
+    '{{codex-launch-flags}}'
+    '{{codex-model-id}}'
+    '{{effort}}'
     '{{deadline}}'
     '{{default-branch}}'
     '{{file-scope-fence}}'
@@ -114,9 +117,11 @@ impl_rendered_file="$(mktemp)"
 trap 'rm -f "$rendered_file" "$impl_rendered_file"' EXIT
 printf '%s\n' "$rendered" >"$rendered_file"
 
-if grep -Eq '\{\{[^}]*\}\}' "$rendered_file"; then
-    fail "rendered fixture retains a placeholder"
-fi
+for expected in "${required_placeholders[@]}"; do
+    if grep -Fq "$expected" "$rendered_file"; then
+        fail "rendered fixture retains a placeholder: $expected"
+    fi
+done
 
 node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs brief "$rendered_file" >/dev/null ||
     fail "rendered fixture does not satisfy the brief envelope schema"
@@ -317,9 +322,15 @@ printf '%s\n' "$impl_rendered" >"$impl_rendered_file"
 # break must run against this rather than against the file's lines.
 impl_flat="$(tr '\n' ' ' <"$impl_rendered_file" | tr -s '[:space:]' ' ')"
 
-if grep -Eq '\{\{[^}]*\}\}' "$impl_rendered_file"; then
-    fail "rendered implementer-brief retains a placeholder"
-fi
+# Scan for the catalog's own placeholder NAMES, not for any double-brace
+# sequence: a free-form value can legitimately contain one (an issue title
+# quoting a template, a verified fact citing a token), and refusing on that
+# would block a dispatch over a value the render handled correctly.
+for expected in "${impl_required_placeholders[@]}"; do
+    if grep -Fq "$expected" "$impl_rendered_file"; then
+        fail "rendered implementer-brief retains a placeholder: $expected"
+    fi
+done
 if grep -Fq '| Placeholder | Source |' "$impl_rendered_file"; then
     fail "free-form values can still be substituted into an output catalog"
 fi
@@ -822,6 +833,49 @@ case "$impl_flat" in
 *) fail "implementer-brief does not block on a dirty shared tree" ;;
 esac
 
+# BRACED-VALUE FIXTURE. A free-form value may legitimately contain `{{` — an
+# issue title quoting a template, a verified fact citing a token name. Render
+# with such a value and require the post-render scan to accept it, then prove
+# the scan still rejects a genuinely unreplaced placeholder, so the relaxation
+# did not simply disable the check.
+braced_value='see {{not-a-real-placeholder}} and {{branch-ish}} in the docs'
+braced_rendered="$(<"$impl_template")"
+while IFS= read -r token; do
+    [ -n "$token" ] || continue
+    key="${token#\{\{}"
+    key="${key%\}\}}"
+    case "$key" in
+    issue-title | verified-facts-and-rulings) value="$braced_value" ;;
+    *) value="fixture-$key" ;;
+    esac
+    braced_rendered="${braced_rendered//"$token"/"$value"}"
+done <<EOF
+$(grep -oE '\{\{[^}]*\}\}' "$impl_template" | sort -u)
+EOF
+for expected in "${impl_required_placeholders[@]}"; do
+    case "$braced_rendered" in
+    *"$expected"*) fail "the braced-value render left a real placeholder: $expected" ;;
+    esac
+done
+case "$braced_rendered" in
+*'{{not-a-real-placeholder}}'*) ;;
+*) fail "the braced-value fixture did not exercise a braced free-form value" ;;
+esac
+# Negative half: a real placeholder left unreplaced must still be caught.
+unreplaced_probe="${braced_rendered//fixture-branch/\{\{branch\}\}}"
+case "$unreplaced_probe" in
+*'{{branch}}'*) ;;
+*) fail "the unreplaced-placeholder probe did not construct its own input" ;;
+esac
+probe_caught=0
+for expected in "${impl_required_placeholders[@]}"; do
+    case "$unreplaced_probe" in
+    *"$expected"*) probe_caught=1 ;;
+    esac
+done
+[ "$probe_caught" -eq 1 ] ||
+    fail "the post-render scan no longer catches a genuinely unreplaced placeholder"
+
 # HOSTILE-TITLE FIXTURE. `{{issue-title}}` is fetched from the issue, so on a
 # public repository it is attacker-controllable. Rendered inside link syntax a
 # crafted title could close the link and inject markdown the worker reads as
@@ -1161,6 +1215,102 @@ for referrer in \
         esac
     done
 done
+
+# 4073927793: the lane brief must carry the Codex harness contract itself —
+# launch command, the rendered sandbox policy, the effort caveat and the
+# status-line check — not merely inherit a section that names none of its
+# per-lane values.
+lane_codex="$(awk '/^### Codex CLI/{c=1} /^### Other supported harness/{c=0} c' \
+    ai/skills/universal/orchestrate/assets/lane-brief.md |
+    tr '\n' ' ' | tr -s '[:space:]' ' ')"
+[ -n "$lane_codex" ] || fail "lane-brief has no Codex harness section"
+for needed in \
+    'codex --model {{codex-model-id}}' \
+    '-c check_for_update_on_startup=false' \
+    '{{codex-launch-flags}}' \
+    '-a never -s workspace-write' \
+    'deliberate per-dispatch override, never the default' \
+    'every boundary in this brief is prose alone' \
+    'through at least 0.155.1' \
+    'reasoning effort `{{effort}}`' \
+    'report BLOCKED on a mismatch'; do
+    case "$lane_codex" in
+    *"$needed"*) ;;
+    *) fail "lane-brief Codex contract is missing: $needed" ;;
+    esac
+done
+# The launch COMMAND, extracted, not the section: the section names the bypass
+# flag in prose as the override, so a section-wide search cannot tell a
+# rendered policy from a hardcoded one.
+lane_launch="$(awk '
+    /^codex --model / { collecting = 1 }
+    collecting { print; if ($0 !~ /\\$/) exit }
+' ai/skills/universal/orchestrate/assets/lane-brief.md)"
+[ -n "$lane_launch" ] || fail "lane-brief carries no codex launch command"
+case "$lane_launch" in
+*'{{codex-launch-flags}}'*) ;;
+*) fail "lane-brief launch command does not render the orchestrator's sandbox policy" ;;
+esac
+case "$lane_launch" in
+*'--dangerously-bypass'*) fail "lane-brief hardcodes a sandbox-off Codex launch" ;;
+esac
+case "$lane_launch" in
+*'{{codex-model-id}}'*) ;;
+*) fail "lane-brief launch command does not render the model id" ;;
+esac
+
+# 4073927758: every supported vendor path, in order. `.claude/skills` is a real
+# destination — this repository dogfoods its own skills through it — so a
+# ladder naming only `.agents/skills` misses the source repo's own layout.
+for vendor_path in \
+    '`.agents/skills/implement/assets/implementer-brief.md`' \
+    '`.claude/skills/implement/assets/implementer-brief.md`' \
+    'harness-specific skills location' \
+    'one bounded glob'; do
+    case "$lane_inherits" in
+    *"$vendor_path"*) ;;
+    *) fail "lane-brief resolution ladder is missing a supported vendor path: $vendor_path" ;;
+    esac
+done
+
+# 4073927769: isolation must not re-universalise the authorship test it sits
+# next to — the role split above is the whole point of that paragraph.
+case "$impl_flat" in
+*'including which test your role applies'*) ;;
+*) fail "the isolation paragraph does not preserve the per-role HEAD test" ;;
+esac
+case "$impl_flat" in
+*'authorship if you edit, the captured branch and SHA if you are read-only'*) ;;
+*) fail "the isolation paragraph does not name both role tests" ;;
+esac
+
+# 4073927779: the post-render scan is for the catalog's own NAMES. Scanning for
+# any double-brace sequence refuses a dispatch over a free-form value that
+# legitimately contains one.
+case "$impl_flat" in
+*'Scan for the *names*, not for any'*) ;;
+*) fail "implementer-brief still refuses any double-brace sequence" ;;
+esac
+lane_render_rule="$(tr '\n' ' ' <ai/skills/universal/orchestrate/assets/lane-brief.md | tr -s '[:space:]' ' ')"
+case "$lane_render_rule" in
+*'scan for those names rather than for any double-brace sequence'*) ;;
+*) fail "lane-brief still refuses any double-brace sequence" ;;
+esac
+
+# 4073927783: the hard-rules copy of the env-var prohibition, narrowed exactly
+# as the identity section was. Scoped to the Hard rules section, because the
+# identity section carries its own copy of the same words.
+impl_hard_rules_section="$(awk '/^## Hard rules/{c=1} /^## File-scope fence/{c=0} c' \
+    "$impl_rendered_file" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+[ -n "$impl_hard_rules_section" ] || fail "implementer-brief has no Hard rules section"
+case "$impl_hard_rules_section" in
+*'bypasses, disables or pre-satisfies'*) ;;
+*) fail "the hard-rules env-var prohibition is still categorical" ;;
+esac
+case "$impl_hard_rules_section" in
+*'`PR_TITLE`/`BASE_SHA`'*) ;;
+*) fail "the hard-rules env-var prohibition does not name the legitimate inputs" ;;
+esac
 
 # rv1-7: the operator guide is the most claim-dense referrer and had no floor at
 # all — and challenge-r1-13 was exactly one of its claims having gone false.

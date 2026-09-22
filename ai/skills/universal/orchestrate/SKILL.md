@@ -175,6 +175,9 @@ table before their intended sections.
 | `{{base-sha}}` | Lane creation record |
 | `{{worktree-path}}` | `git rev-parse --show-toplevel` in the lane |
 | `{{harness}}` | Selected implementer's registry harness |
+| `{{effort}}` | Reasoning effort the lane is expected to run at — the value its status line is checked against |
+| `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
+| `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true`. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
 | `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad; never the scratchpad root |
 | `{{repo-tier}}` | `light`, `standard`, or `heavy` — resolved by the base template's strongest-signal-wins procedure, never by matching a row's description |

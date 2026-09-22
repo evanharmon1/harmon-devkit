@@ -4,7 +4,10 @@ The supervising orchestrator must render every input from the source catalog in
 `orchestrate/SKILL.md` before dispatch. A rendered brief with any double-brace
 token left is invalid. The catalog stays outside this rendered artifact so a
 free-form value is substituted exactly at its intended use sites and cannot
-inject into a Markdown catalog cell.
+inject into a Markdown catalog cell. A rendered brief that still contains one
+of the catalog's own placeholder names in double braces is invalid; scan for
+those names rather than for any double-brace sequence, because a free-form
+value may legitimately contain one.
 
 <!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->
 
@@ -133,8 +136,13 @@ checks that they still agree. Read them there:
 - § **"Proposal-only units"** — a proposal-only unit still runs every gate,
   still commits, still pushes, and still opens the draft PR; it stops there.
 
-Resolution order: prefer `.agents/skills/implement/assets/implementer-brief.md`,
-then the harness-specific skills location, then one bounded glob. **If none of
+Resolution order, the supported vendor paths in order:
+`.agents/skills/implement/assets/implementer-brief.md`, then
+`.claude/skills/implement/assets/implementer-brief.md`, then the
+harness-specific skills location, then one bounded glob. Both of the first two
+are real destinations — a consumer vendors to `.agents/skills/`, and this
+repository dogfoods its own skills through `.claude/skills/` symlinks — so a
+ladder naming only the first misses the layout the source repo itself uses. **If none of
 those is readable, report BLOCKED and stop** — do not reconstruct the sections
 from memory and do not continue without them. This lane brief names four
 sections it deliberately does not restate, so an unreadable base template means
@@ -210,6 +218,31 @@ decisions and writes. Apply the Git/sandbox rule from Identity and boundaries;
 a permission failure is not authority to find another write route. Never paste
 a terminal sentinel value into another prompt; refer to the reporting contract
 indirectly.
+
+The orchestrator launches this pane as:
+
+```sh
+codex --model {{codex-model-id}} \
+  -c check_for_update_on_startup=false \
+  {{codex-launch-flags}}
+```
+
+`{{codex-launch-flags}}` carries the **approval and sandbox policy the
+orchestrator chose** — rendered, never assumed. The default is the sandboxed
+form this repository's operator guidance specifies,
+`-a never -s workspace-write -c sandbox_workspace_write.network_access=true`.
+Running outside the sandbox (`--dangerously-bypass-approvals-and-sandbox`) is a
+deliberate per-dispatch override, never the default, and it is disclosed on the
+PR-body profile line: with approvals and the sandbox off, the Git/sandbox rule
+above and § "File-scope fence" lose their last enforcement layer and every
+boundary in this brief is prose alone.
+
+**Reasoning effort is not settable from the command line or config** on
+codex-cli through at least 0.155.1 — `-c model_reasoning_effort` is accepted and
+ignored. The TUI `/model` picker is the only lever and the status line is the
+readout. **Check the status line against the two values this brief discloses** —
+model `{{codex-model-id}}` and reasoning effort `{{effort}}` — and report
+BLOCKED on a mismatch rather than working at an effort nobody disclosed.
 
 ### Other supported harness (read the skill)
 
