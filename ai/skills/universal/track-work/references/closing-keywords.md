@@ -51,6 +51,11 @@ Exit 0 safe, 1 violation, 2 could not verify — and *could not verify* is not
 *clean*. In a repo that wires it up, `task guard:closing-keywords` runs the same
 check, and CI runs it on every PR at `opened`/`edited`.
 
+That guard proves a closing keyword is **allowed** because the target issue has
+no unfinished checklist work; the integration readiness gate separately proves
+the keyword **took effect** by requiring every claimed target to appear in the
+PR's `closingIssuesReferences` before promotion.
+
 **Clearing a red check.** Editing the PR title or body re-runs it automatically.
 Ticking the issue's boxes does **not** — the workflow watches pull-request
 events, not issues, so that path needs the check re-run by hand.
