@@ -3936,6 +3936,17 @@ classify_reserve exempt \
     '{"files":[{"filename":"src/a.js"}]}'
 assert_charge exempt "clean base merge" 1 1
 
+echo "==> a large compare payload still classifies (no ARG_MAX failure)"
+# Self-found on this PR's own cycle 2: the payloads used to ride the argument
+# vector, so a sizeable PR produced "Argument list too long", the intersection
+# always failed, and the classifier could never grant an exemption — inert on
+# exactly the PRs big enough to want one. 250 files stays under the 300-entry
+# truncation rule while being far past ARG_MAX for three such payloads.
+big_unrelated="$(jq -cn '{status:"ahead", files:[range(250) | {filename:("vendor/pkg\(.)/a-fairly-long-path-component/file.txt")}]}')"
+big_reviewed="$(jq -cn '{files:[range(250) | {filename:("src/module\(.)/another-long-path-component/impl.ts")}]}')"
+classify_reserve exempt "$big_unrelated" "$big_reviewed" "$big_reviewed"
+assert_charge exempt "large payloads" 1 1
+
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
     '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \

@@ -1293,7 +1293,26 @@ classify_cycle_charge() {
         }
     done
 
-    overlap=$(jq -r -n --argjson moved "$moved_payload" --argjson prev "$prev_patch" --argjson head "$head_patch" '
+    # Self-found while driving this PR's own cycle 2: passing three full API
+    # payloads as `--argjson` arguments exceeds ARG_MAX on any sizeable PR
+    # ("Argument list too long"), the intersection then always fails, and the
+    # classifier can never grant an exemption — silently inert on exactly the
+    # PRs big enough to want one. The invariant held (it charged), which is why
+    # this was a lost exemption rather than a wrong one; the payloads now go
+    # through files instead of the argument vector.
+    classify_tmp=$(mktemp -d -t codex-classify-XXXXXX) || {
+        charge_class=charged
+        charge_reason="cannot create a scratch directory for classification; charging"
+        return 0
+    }
+    printf '%s' "$moved_payload" >"$classify_tmp/moved.json"
+    printf '%s' "$prev_patch" >"$classify_tmp/prev.json"
+    printf '%s' "$head_patch" >"$classify_tmp/head.json"
+    overlap=$(jq -r -n \
+        --slurpfile moved "$classify_tmp/moved.json" \
+        --slurpfile prev "$classify_tmp/prev.json" \
+        --slurpfile head "$classify_tmp/head.json" '
+          ($moved[0]) as $moved | ($prev[0]) as $prev | ($head[0]) as $head |
           # Challenge round 2, P1 (confirmed): a rename is reported under the
           # NEW name plus `previous_filename`. Matching only `filename` lets a
           # merge that renames a reviewed file miss on both sides at once —
@@ -1305,10 +1324,12 @@ classify_cycle_charge() {
           | (($prev | names) + ($head | names) | unique) as $under_review
           | ($changed - ($changed - $under_review)) | join(", ")
         ') || {
+        rm -rf "$classify_tmp"
         charge_class=charged
         charge_reason="cannot intersect the moved files with the reviewed patch; charging"
         return 0
     }
+    rm -rf "$classify_tmp"
 
     if [ -n "$overlap" ]; then
         charge_class=charged
