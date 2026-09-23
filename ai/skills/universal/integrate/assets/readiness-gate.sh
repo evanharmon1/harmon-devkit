@@ -1640,6 +1640,26 @@ if [ "$codex_cycle" != null ]; then
     # Without that state there is nothing behind the claim but the producer's
     # word, so a claimed carry with no state is indeterminate rather than a
     # pass; `--codex-recheck` stays advisory for every other shape.
+    # Challenge round 5, finding `challenge-r5-codex-adversarial-1` (confirmed
+    # P1): every carried check below fires on the result CLAIMING a carry, so
+    # omitting the claim skipped all of them. A producer could then set
+    # `accepted.reviewed_commit` to the envelope head — schema-valid, since
+    # without `carried` the ordinary head-agreement rule is satisfied — and the
+    # freshness recheck would accept the very state that says this head was
+    # never reviewed, promoting a retained result whose provenance is false.
+    #
+    # The obligation is therefore BIDIRECTIONAL. A result may not claim a carry
+    # the state does not record, and it may not omit one the state does: the
+    # disclosure exists precisely so a head attested without a reviewer reading
+    # it is visible, and a disclosure that can be dropped discloses nothing.
+    if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+        state_attests_head="$(jq -r '.carry.attests_head // empty' \
+            "$codex_recheck_state" 2>/dev/null)" || state_attests_head=
+        if [ "$state_attests_head" = "$head" ]; then
+            jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1 ||
+                indeterminate codex-carried-unproven "the checker state records that $head is attested by a cycle for an earlier commit, but codex_cycle discloses no carried record — a result that omits the carry asserts a reviewer read this head when none did"
+        fi
+    fi
     if jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1; then
         [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ] ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but no --codex-recheck state was supplied to confirm it against — a carry means no reviewer read this head, so the claim cannot rest on the result alone"

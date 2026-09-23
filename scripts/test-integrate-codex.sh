@@ -4428,10 +4428,16 @@ verdict_arm="$(printf '%s\n' "$emit_body" |
     awk '/clean \| findings\)/{inside=1} inside{print} inside && /;;/{exit}')"
 [ -n "$verdict_arm" ] ||
     fail "emit() has no clean|findings arm — the verification has nowhere to be"
-case "$verdict_arm" in
+# Challenge round 5, finding `challenge-r5-codex-adversarial-2` (confirmed P2):
+# the first version matched the raw arm, which CONTAINS the identifier in its
+# own explanatory comment — so commenting the call out left the assertion
+# passing. A structural test that reads comments is not reading the structure.
+# Strip them and match executable text only.
+verdict_arm_code="$(printf '%s\n' "$verdict_arm" | sed 's/#.*//')"
+case "$verdict_arm_code" in
 *verify_carried_attestation*) ;;
 *)
-    fail "emit()'s clean|findings arm does not verify the carried attestation, so a verdict can be emitted on a stale identity:
+    fail "emit()'s clean|findings arm does not CALL verify_carried_attestation (mentioning it in a comment is not calling it), so a verdict can be emitted on a stale identity:
 $verdict_arm"
     ;;
 esac

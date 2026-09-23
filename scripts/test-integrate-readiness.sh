@@ -3953,6 +3953,28 @@ mv "${recheck_state}.next" "$recheck_state"
 # script's gate on the same day — and the fix was replicated to one of the two
 # sites, which is the shape the whole finding was about. So the property lives
 # here too now: every flag the gate's own synopsis documents must parse.
+echo "==> OMITTING the carried disclosure when the state attests this head is codex-carried-unproven"
+# Challenge round 5, finding `challenge-r5-codex-adversarial-1` (confirmed P1):
+# every carried check fired on the result CLAIMING a carry, so omitting the
+# claim skipped all of them. The producer sets `accepted.reviewed_commit` to
+# the envelope head — schema-valid, because without `carried` the ordinary
+# head-agreement rule is satisfied — and the freshness recheck then accepts the
+# very state that says this head was never reviewed. A disclosure that can be
+# dropped discloses nothing, so the obligation runs in both directions.
+write_defaults
+jq --arg o "$carried_origin" \
+    --argjson carry "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha" |
+        jq -c 'del(.origin_head)')" \
+    '.head = $o | .carry = $carry' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+# An ORDINARY-looking result: no `carried`, receipt naming the gated head.
+undisclosed="$(write_integrator_result carried-undisclosed "$(codex_cycle_json 0)")"
+node "$validator" envelope "$undisclosed" >/dev/null ||
+    fail "the undisclosed-carry fixture must itself be schema-valid — the point is that the GATE refuses it, not the schema"
+run_gate_recheck_clean --integrator-result "$undisclosed" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-carried-unproven
+
 echo "==> a non-codex finder claiming a carry is codex-carried-unproven"
 # There is no carry mechanism for any finder but codex-cloud, and nothing
 # durable records one, so the claim is unfounded by construction rather than
