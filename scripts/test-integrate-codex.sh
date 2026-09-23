@@ -4136,6 +4136,23 @@ assert_status 0 clean
 [ "$(jq -r '.last_reviewed_base_sha' "$state")" = "$carry_base_one" ] ||
     fail "re-checking must not re-corroborate the reviewed base against the moved one: $(cat "$state")"
 
+echo "==> diff display preferences in the re-deriving checkout cannot move the identity"
+# Integration cycle 3 (claude), finding `integration-r3-claude-1` (confirmed
+# P2, REPRODUCED): the carry recorded its identity above under a default
+# config. Every key below changed the hashed text when unpinned; the re-check
+# must still derive the SAME identity, or an unchanged change is reported as
+# moved. One case for all five, so a key dropped from the pin list fails it.
+carry_knobs="diff.srcPrefix=i/ diff.dstPrefix=w/ diff.interHunkContext=10 diff.suppressBlankEmpty=true"
+printf 'g.txt\nf.txt\n' >"${test_tmp}/carry-order"
+for carry_kv in $carry_knobs "diff.orderFile=${test_tmp}/carry-order"; do
+    git -C "$carry_repo" config "${carry_kv%%=*}" "${carry_kv#*=}"
+done
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+for carry_kv in $carry_knobs diff.orderFile=; do
+    git -C "$carry_repo" config --unset "${carry_kv%%=*}"
+done
+assert_status 0 clean
+
 echo "==> a finding that lands on the reviewed head AFTER the carry still blocks"
 # The case the carry must not create: the reviewed head is never looked at
 # again, so a late finding is invisible and promotion passes. Because the cycle
@@ -4564,6 +4581,13 @@ echo "==> a graft in a PLAIN repo is caught when --repo-dir is not the cwd"
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
 seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
 carry_plain_git="$(git -C "$carry_repo" rev-parse --path-format=absolute --git-dir)"
+# Integration cycle 3 (claude), finding `integration-r3-claude-4` (P3): a
+# foreign cwd only makes a RELATIVE path harmful, so the case must also prove
+# git really returns one here — otherwise it passes with
+# `--path-format=absolute` deleted, for a reason that does not generalize.
+case "$(git -C "$carry_repo" rev-parse --git-path info/grafts)" in
+/*) fail "this case needs --git-path to return a RELATIVE path for a plain repo, or it cannot catch the bug it guards" ;;
+esac
 mkdir -p "${carry_plain_git}/info"
 printf '%s\n' "$carry_origin_head" >"${carry_plain_git}/info/grafts"
 run_carry "$carry_merged_head"

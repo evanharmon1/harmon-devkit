@@ -376,6 +376,9 @@ carry_out="$("$helper" carry --state "$state" --head "<head>" \
 - **exit 17** — not carried, for the reason in the output. This is the
   ordinary answer, not an error: continue to the three cases below exactly as
   if you had never called it.
+- **exit 14** — the PR is merged or closed. The stage is over: reserve,
+  trigger, and poll nothing, and report `codex_cycle.exit_code: 14`, exactly as
+  a `check` that returned 14.
 - **any other exit** — treat as 17 and continue. `carry` is an optimization
   over a cycle you were going to run anyway, so a broken one costs a cycle
   rather than a verdict.

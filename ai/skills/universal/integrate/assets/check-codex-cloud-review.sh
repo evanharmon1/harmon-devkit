@@ -120,15 +120,18 @@ keeps working on the cycle it always worked on: `settle` still binds to the
 commit a reviewer read, and `check` still runs the one evidence scan it always
 ran — against that same cycle — so a finding landing on the reviewed head
 after the carry blocks exactly as it would have without one. What the carry
-removes is the second REVIEW, never the second look. `check` re-derives the
-identity as a PRECONDITION, before reading any evidence: a cycle that cannot
-prove it attests the live head is being asked the wrong question.
+removes is the second REVIEW, never the second look. Before reading evidence
+`check` validates only the carry record's SHAPE; it re-derives the identity in
+`emit`, immediately before any verdict, so no interval exists between the proof
+and the answer it licenses.
 
   exit 0   carried: state now attests this head, no cycle was spent, and
            `check` will re-derive the same proof rather than trust the record.
   exit 17  not carried: reserve and trigger a cycle exactly as before. This is
            a normal negative answer, not an error, and every fail-closed path
-           lands here with its reason.
+           that leaves the PR open lands here with its reason.
+  exit 14  the PR is MERGED or CLOSED: the stage is over. Stop — do not
+           reserve, trigger, or poll.
   exit 2   usage error or unreadable state.
 
 --repo-dir names the checkout `carry` (and a later `check` re-verifying it)
@@ -590,11 +593,25 @@ run_gh() {
 #   `--unified=3`, `--no-renames`, `-c diff.algorithm=myers`,
 #   `-c diff.indentHeuristic=true`, `-c diff.noprefix=false`,
 #   `-c diff.mnemonicPrefix=false`, `-c diff.relative=false`,
-#   `-c core.quotePath=true` — every knob that could make the same two trees
-#   render as different text is pinned, because this value is recorded once and
-#   re-derived later, possibly in another checkout. Unpinned, drift produces a
-#   REFUSAL rather than a false carry, but a refusal costs the cycle the
-#   mechanism exists to save.
+#   `-c core.quotePath=true`, `-c diff.srcPrefix=a/`, `-c diff.dstPrefix=b/`,
+#   `-c diff.interHunkContext=0`, `-c diff.suppressBlankEmpty=false`,
+#   `-O/dev/null` — the knobs that make the same two trees render as different
+#   text, pinned because this value is recorded once and re-derived later,
+#   possibly in another checkout. Unpinned, drift produces a REFUSAL rather
+#   than a false carry, but a refusal costs the cycle the mechanism exists to
+#   save and misreports an unchanged change as moved.
+#
+#   Integration cycle 3 (claude), finding `integration-r3-claude-1` (confirmed
+#   P2, REPRODUCED): this comment called the list exhaustive and it was not.
+#   `diff.srcPrefix`/`diff.dstPrefix` survive `diff.noprefix=false`,
+#   `diff.interHunkContext` fuses hunks and rewrites the `@@` headers,
+#   `diff.suppressBlankEmpty` has no flag at all, and `diff.orderFile` reorders
+#   the files (overridden by `-O/dev/null`; an EMPTY `diff.orderFile` makes git
+#   fail outright). Each changed the hashed text on git 2.55; each is restored
+#   by its pin; and all five pins are byte-identical to default output, so no
+#   existing change id moves and `algorithm` keeps its `v1`. The list is closed
+#   against the diff-output keys git documents, not against every future one —
+#   a new one costs a refusal, never a false carry.
 #
 #   `--no-ext-diff`, `--no-textconv` — a branch can ship `.gitattributes` and
 #   the repository can carry config that routes a file through an external
@@ -689,9 +706,13 @@ change_identity() {
         -c diff.relative=false \
         -c diff.algorithm=myers \
         -c diff.indentHeuristic=true \
+        -c diff.srcPrefix=a/ \
+        -c diff.dstPrefix=b/ \
+        -c diff.interHunkContext=0 \
+        -c diff.suppressBlankEmpty=false \
         diff --no-color --no-ext-diff --no-textconv --no-renames --binary \
         --full-index --unified=3 --ignore-submodules=none --submodule=short \
-        "${ci_base}...${ci_head}" |
+        -O/dev/null "${ci_base}...${ci_head}" |
         git -C "$repo_dir" hash-object -t blob --stdin) || {
         change_identity_error="cannot compute a change identity for ${ci_base}...${ci_head}"
         return 1
@@ -915,12 +936,17 @@ mark_terminally_reviewed() {
     # recorded. If it moved, what the review covered is genuinely unknown, and
     # per the governing invariant the proof is left UNSET so the next cycle
     # charges rather than trusting either sample.
-    reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
-        jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
-    valid_sha "$reviewed_base_sha" || reviewed_base_sha=
-    reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
-    [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
-        reviewed_base_sha=
+    # Integration cycle 3 (claude), nit (accepted): a carrying cycle discards
+    # this sample below, so it does not spend the API read on one.
+    reviewed_base_sha=
+    if [ -z "$carry_present" ]; then
+        reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
+            jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
+        valid_sha "$reviewed_base_sha" || reviewed_base_sha=
+        reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
+        [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
+            reviewed_base_sha=
+    fi
     jq --arg h "$state_head" --arg b "$reviewed_base_sha" \
         --arg v "$reviewed_verdict" --arg carrying "$carry_present" \
         '.last_reviewed_head = $h
@@ -2762,9 +2788,12 @@ carry)
         # Integration cycle 2, nit (accepted): 14 is this helper's documented
         # code for "GitHub answered and the PR is MERGED or CLOSED", and `carry`
         # was reporting it through `die` — exit 2, non-JSON — in a file that
-        # otherwise documents its exit codes to the letter. Nothing broke,
-        # because the caller treats anything but 0 and 17 as "reserve one", but
-        # it cost an API call and gave a misleading reason.
+        # otherwise documents its exit codes to the letter.
+        # Integration cycle 3 (claude), finding `integration-r3-claude-2`: the
+        # caller was told to treat anything but 0 and 17 as "reserve one",
+        # which would call `reserve`, die with exit 2, and report a closed PR
+        # as indeterminate. 14 is now documented at every site that lists
+        # `carry`'s exits, as terminal.
         emit pr-not-open \
             "PR is ${live_head:-no longer open} — the stage is over; stop, do not re-trigger or keep polling"
         exit 14

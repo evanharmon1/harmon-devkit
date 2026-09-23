@@ -219,7 +219,8 @@ only when the two identities are equal. (Not `git patch-id`: it ignores hunk
 offsets, so a reviewed edit relocated between two identically-surrounded
 regions — a conflict resolution — gets the same id from two different trees.)
 Run it before `reserve`; exit 0 means carried (post no trigger, go straight to
-`check`), exit 17 means reserve the ordinary cycle. The carry does **not** move
+`check`), exit 17 means reserve the ordinary cycle, and exit 14 means the PR is
+merged or closed — the stage is over. The carry does **not** move
 the cycle: it records that an existing cycle's verdict also attests a later
 head. `check` then runs the one evidence scan it always ran, against the
 commit a reviewer actually read, and re-derives the claim immediately before

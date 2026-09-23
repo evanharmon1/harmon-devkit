@@ -616,7 +616,8 @@ reporting green.
 fallback), it is the
 required implementation — never hand-roll the polling: `carry` first, on a
 head that moved (exit 0 carries the previous clean verdict and there is no
-cycle to run; exit 17 is the ordinary "reserve one" answer), otherwise
+cycle to run; exit 17 is the ordinary "reserve one" answer; exit 14 means the
+PR is merged or closed and the stage is over), otherwise
 `reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then post `@codex review`, `attach` the comment
