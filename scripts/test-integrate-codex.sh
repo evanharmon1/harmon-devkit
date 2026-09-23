@@ -4193,6 +4193,63 @@ case "$carry_out" in
 *) fail "the refusal must cite the findings verdict, not something else: $carry_out" ;;
 esac
 
+echo "==> a settled late finding is judged on a carried cycle exactly as on an ordinary one"
+# Integration cycle 4, finding `integration-r4-codex-cloud-1` (confirmed P1):
+# the case above records `findings`, and `check`'s pre-scan guard demanded a
+# CLEAN recorded verdict — so once a late finding landed, every later `check`
+# exited 2 before it could see a settlement, and the documented settle path
+# for a carried cycle could never converge.
+#
+# The property is PARITY, not a particular verdict: what a settled finding
+# means for the cycle is the ordinary checker's rule, and a carry must neither
+# strand the cycle outside that rule nor change its outcome. So the same
+# evidence and the same settlement are judged twice — once on the carried
+# cycle, once on an ordinary one at the same head — and must agree.
+write_late_finding_fixtures() {
+    jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+        --arg prefix "$carry_origin_head" \
+        '[[{id:77,user:{id:$id,login:$login},
+            created_at:"2026-07-31T08:00:02Z",
+            body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix[0:10] + "`")},
+           {id:78,user:{id:$id,login:$login},
+            created_at:"2026-07-31T08:03:00Z",updated_at:"2026-07-31T08:03:00Z",
+            issue_url:"https://api.github.com/repos/example/repo/issues/493",
+            body:("**P1** a real defect found late\n\n**Reviewed commit:** `" + $prefix[0:10] + "`")}]]' \
+        >"${fixtures}/comments.pages.json"
+    # `settle` reads the one comment by ID; the list `check` classifies must
+    # carry the SAME object, edit timestamp included.
+    jq -c '.[0][1]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-78.json"
+}
+settle_late_finding() {
+    set +e
+    settle_out="$("$helper" settle --state "$state" --actor-id "$actor_id" \
+        --surface comment --id 78 --disposition declined \
+        --note "verified against the code: not reproducible" --now '2026-07-31T08:04:00Z' 2>&1)"
+    settle_rc=$?
+    set -e
+    [ "$settle_rc" -eq 0 ] || fail "settling the late finding must succeed, got rc $settle_rc: $settle_out"
+}
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+write_late_finding_fixtures
+[ "$(jq -r '.carry.attests_head' "$state")" = "$carry_merged_head" ] ||
+    fail "this case needs the state the late-finding case left: still carrying $carry_merged_head"
+settle_late_finding
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+carried_rc=$check_rc carried_out=$check_out
+[ "$carried_rc" -ne 2 ] ||
+    fail "a settled late finding must not strand a carried cycle as indeterminate: $carried_out"
+# The ordinary twin: the same cycle, never carried, at the reviewed head.
+seed_origin_cycle
+carry_fixtures "$carry_origin_head" "$carry_base_one"
+write_late_finding_fixtures
+settle_late_finding
+run_check '2026-07-31T08:05:00Z'
+[ "$check_rc" -eq "$carried_rc" ] ||
+    fail "a carried cycle must judge a settled finding as an ordinary one does: carried rc $carried_rc ($carried_out), ordinary rc $check_rc ($check_out)"
+[ "$(printf '%s' "$carried_out" | jq -r '.status')" = "$(printf '%s' "$check_out" | jq -r '.status')" ] ||
+    fail "carried and ordinary cycles must reach the same status: $carried_out vs $check_out"
+rm -f "${fixtures}/comment-78.json"
+
 echo "==> a carried proof cannot be re-derived from a checkout without the history"
 seed_origin_cycle
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"

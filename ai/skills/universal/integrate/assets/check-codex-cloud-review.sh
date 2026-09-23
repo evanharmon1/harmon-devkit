@@ -3258,12 +3258,26 @@ check)
     if [ -n "$carry_attests" ]; then
         carry_recorded_identity=$(jq -r '.carry.change_id // empty' "$state_file")
         carry_origin_base=$(jq -r '.last_reviewed_base_sha // empty' "$state_file")
+        # Integration cycle 4, finding `integration-r4-codex-cloud-1`
+        # (confirmed P1): this demanded a CLEAN recorded verdict. A late finding
+        # records `findings`, so every later `check` then exited 2 here before
+        # it could see a settlement, and the carried cycle could never
+        # converge. The clean requirement belongs where a carry is CREATED
+        # (`carry` refuses any other verdict); here the evidence scan below is
+        # the authority, so a recorded verdict of either class is admissible.
+        carry_recorded_verdict=$(jq -r '.last_reviewed_verdict // empty' "$state_file")
         if ! valid_sha "$carry_attests" || ! valid_sha "$carry_recorded_identity" ||
-            ! valid_sha "$carry_origin_base" ||
-            [ "$(jq -r '.last_reviewed_verdict // empty' "$state_file")" != clean ]; then
-            emit indeterminate "this cycle claims to attest a later head but its carry record is incomplete: it must name that head, the identity it proved, and the clean verdict and base it rests on"
+            ! valid_sha "$carry_origin_base"; then
+            emit indeterminate "this cycle claims to attest a later head but its carry record is incomplete: it must name that head, the identity it proved, and the verdict and base it rests on"
             exit 2
         fi
+        case "$carry_recorded_verdict" in
+        clean | findings) ;;
+        *)
+            emit indeterminate "this cycle claims to attest a later head but records no verdict it was carried from"
+            exit 2
+            ;;
+        esac
         expected_live_head=$carry_attests
     fi
     if [ "$first_head" != "$expected_live_head" ]; then
