@@ -4473,6 +4473,26 @@ case "$carry_out" in
 *) fail "the refusal must name the usage limit: $carry_out" ;;
 esac
 
+echo "==> a carry recorded under another identity algorithm is malformed state"
+# gemini-code-assist review of d3656eeb (inline, medium): the state reader did
+# not check `.carry.algorithm`. A check was added in 920157fe, but no case
+# exercised it, so deleting it left the suite green. A record from a different
+# identity scheme would otherwise be compared as if its change_id meant the
+# same thing this helper's does.
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "foreign-algorithm setup"
+jq '.carry.algorithm = "git-patch-id-verbatim/three-dot"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a carry under another identity algorithm must be refused as malformed, got rc $check_rc: $check_out"
+case "$check_out" in
+*"malformed state file"*) ;;
+*) fail "a foreign identity algorithm must be named as malformed: $check_out" ;;
+esac
+
 echo "==> a fractional carry generation is malformed state, not a budget"
 # Challenge round 4, finding `challenge-r4-codex-adversarial-3` (confirmed P2):
 # jq's `number` admits 1.5, which then reaches shell integer arithmetic and
