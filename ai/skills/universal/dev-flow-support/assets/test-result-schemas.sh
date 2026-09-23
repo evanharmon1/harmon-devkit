@@ -583,6 +583,10 @@ const SEMANTIC_ONLY = new Set([
   // sibling object's CONTENT (carried.origin_head), which no keyword in this
   // subset can compare a field against — the same category as the line above.
   'result.integrator.schema/invalid/carried-receipt-names-neither-head.json',
+  // harmon-init#752 round 3: which head a carry ATTESTS is a cross-field
+  // comparison against the envelope, which no keyword in this subset can
+  // express — same category as the two lines above.
+  'result.integrator.schema/invalid/carried-attests-another-head.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
   'result.integrator.schema/invalid/clean-with-empty-checks.json',

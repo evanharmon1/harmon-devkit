@@ -811,6 +811,27 @@ function expectedReviewedCommit(cycle, head) {
   return head
 }
 
+// checkCarriedAttestation — a carried receipt must attest THIS envelope's head.
+//
+// Challenge round 3, finding `challenge-r3-codex-adversarial-3` (confirmed
+// P2): the carve-out above changes which commit the receipt may name, and
+// nothing checked which commit the carry claims to be ABOUT. Mutating
+// `attests_head` to an unrelated SHA left the result validating cleanly, even
+// though the schema describes it as the gated head. The readiness gate
+// happened to catch it downstream, but this validator is published and read on
+// its own — Foreman's Python consumer re-implements the same contract — so a
+// cross-head receipt must be refused here, where the contract is stated.
+function checkCarriedAttestation(location, cycle, head, errors) {
+  const carried = cycle && cycle.carried
+  if (!carried || typeof carried !== 'object') return
+  if (typeof carried.attests_head !== 'string') return
+  if (carried.attests_head !== head) {
+    errors.push(
+      `${location}.carried.attests_head: ${carried.attests_head} does not match envelope head ${head}`
+    )
+  }
+}
+
 // checkHeadAgreement — every head-shaped field in a payload must equal the
 // envelope's head (specs/dev-flow-v2.md § Results, "Heads must agree").
 function checkHeadAgreement(kind, envelope, errors) {
@@ -830,6 +851,7 @@ function checkHeadAgreement(kind, envelope, errors) {
         `$result.payload.codex_cycle.head: ${payload.codex_cycle.head} does not match envelope head ${head}`
       )
     }
+    checkCarriedAttestation('$result.payload.codex_cycle', payload.codex_cycle, head, errors)
     const accepted = payload.codex_cycle.accepted
     if (accepted && typeof accepted === 'object' && typeof accepted.reviewed_commit === 'string') {
       const expected = expectedReviewedCommit(payload.codex_cycle, head)
@@ -848,6 +870,7 @@ function checkHeadAgreement(kind, envelope, errors) {
           `$result.payload.finder_cycles[${i}].head: ${fc.head} does not match envelope head ${head}`
         )
       }
+      checkCarriedAttestation(`$result.payload.finder_cycles[${i}]`, fc, head, errors)
       const fcAccepted = fc.accepted
       if (fcAccepted && typeof fcAccepted === 'object' && typeof fcAccepted.reviewed_commit === 'string') {
         const fcExpected = expectedReviewedCommit(fc, head)

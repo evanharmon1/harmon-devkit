@@ -3916,6 +3916,14 @@ printf 'alpha\nCHARLIE\n' >"${carry_repo}/f.txt"
 git -C "$carry_repo" commit -q -am "the reviewed change, replayed"
 carry_rebased_head="$(git -C "$carry_repo" rev-parse HEAD)"
 
+# A SECOND, distinct merge of the same base into the reviewed head. It descends
+# from the reviewed head and has the identical diff, but the first merge is not
+# in its history at all — which is what a force-push over an already-attested
+# head looks like.
+git -C "$carry_repo" checkout -q -b pr-branch-rewritten "$carry_origin_head"
+git -C "$carry_repo" merge -q --no-edit -m "a different merge of the same base" "$carry_base_two"
+carry_rewritten_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
 # A head whose three-dot diff is EMPTY — no change to identify at all.
 git -C "$carry_repo" checkout -q -b pr-branch-empty "$carry_base_one"
 git -C "$carry_repo" commit -q --allow-empty -m "no change at all"
@@ -4172,6 +4180,44 @@ carry_fixtures "$carry_empty_head" "$carry_base_one" "$carry_origin_head"
 seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
 run_carry "$carry_empty_head"
 assert_carry 17 not-carried "empty diff"
+
+echo "==> a force-push over an already-attested head is a rewrite, not a catch-up"
+# Challenge round 3, finding `challenge-r3-codex-adversarial-2` (confirmed P1):
+# the reviewed head is an ancestor of BOTH merges, so anchoring ancestry only
+# there let a chain launder a rewrite — and then record `from_head` naming a
+# commit no longer in the branch's history, provenance the gate promotes byte
+# for byte. Every hop is anchored to the head it last attested as well.
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "chain setup"
+[ "$(git -C "$carry_repo" merge-base --is-ancestor "$carry_origin_head" "$carry_rewritten_head" &&
+    echo yes)" = yes ] ||
+    fail "the rewrite fixture must still descend from the reviewed head, or it proves nothing"
+git -C "$carry_repo" merge-base --is-ancestor "$carry_merged_head" "$carry_rewritten_head" 2>/dev/null &&
+    fail "the rewrite fixture must NOT descend from the already-attested head, or it proves nothing"
+carry_fixtures "$carry_rewritten_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_rewritten_head"
+assert_carry 17 not-carried "force-push over an attested head"
+case "$carry_out" in
+*"$carry_merged_head is not an ancestor"*) ;;
+*) fail "the refusal must name the attested head that was rewritten away: $carry_out" ;;
+esac
+
+echo "==> a base retargeted while evidence is fetched invalidates the attestation"
+# Challenge round 3, finding `challenge-r3-codex-adversarial-1` (confirmed P1):
+# the identity is a function of (base, head), and every liveness check compares
+# the head alone. A PR retargeted — or its base force-pushed — under an
+# unchanged head changes the three-dot diff, so a verdict derived before that
+# is about a diff that no longer exists.
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "retarget setup"
+jq --arg base "$carry_base_one" '.base.sha = $base' "${fixtures}/pr.json" >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+assert_status 2 indeterminate
 
 echo "==> a cycle still in flight has nothing to carry"
 # `reserved` is the write-ahead record taken before a trigger is posted, and an

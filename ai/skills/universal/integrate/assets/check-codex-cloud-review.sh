@@ -888,6 +888,69 @@ mark_terminally_reviewed() {
         rm -f "${state_file}.reviewed"
 }
 
+# harmon-init#752 — does this cycle still attest the head the PR is at?
+#
+# Challenge round 3, finding `challenge-r3-codex-adversarial-1` (confirmed P1):
+# the first version derived this once, up front, and then let a minutes-long
+# evidence scan run before emitting a verdict. Every liveness check in that
+# window compares the HEAD alone, so a PR retargeted to a different base — or a
+# base branch force-pushed — changes the three-dot diff under an unchanged head
+# and the verdict is about a diff that no longer exists. The identity is a
+# function of (base, head), and both have to still hold at the moment the
+# verdict is made.
+#
+# So it runs exactly once, immediately before the verdict, at the point that
+# dominates every clean/findings/pending exit. Comparing the two fresh
+# identities to EACH OTHER is not enough on its own either: that would confirm
+# the change is self-consistent right now while saying nothing about whether it
+# is still the change the carry was proved over, so a state file edited to name
+# a different head would pass. Both fresh values are also compared against the
+# recorded one.
+#
+# Returns 0 when there is nothing to verify (this cycle carries nothing) or the
+# claim holds. Emits and exits otherwise — every failure is indeterminate,
+# never a weaker verdict.
+verify_carried_attestation() {
+    [ -n "${carry_attests:-}" ] || return 0
+    vca_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
+        transient_read_failure "cannot read the PR base to re-derive what this cycle attests"
+    }
+    vca_live_head=$(jq -r '.head.sha // empty' <<<"$vca_payload" 2>/dev/null) || vca_live_head=
+    vca_live_base=$(jq -r '.base.sha // empty' <<<"$vca_payload" 2>/dev/null) || vca_live_base=
+    if ! valid_sha "$vca_live_base" || ! valid_sha "$vca_live_head"; then
+        emit indeterminate "the PR payload names no stable base and head, so what this cycle attests cannot be re-derived"
+        exit 2
+    fi
+    if [ "$vca_live_head" != "$carry_attests" ]; then
+        emit head-changed "this cycle attests $carry_attests but the PR is at $vca_live_head"
+        exit 2
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        emit indeterminate "git is required to re-derive what this cycle attests"
+        exit 2
+    fi
+    if ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
+        "$state_head" "$carry_attests" 2>/dev/null; then
+        emit indeterminate "the reviewed head $state_head is no longer an ancestor of $carry_attests (history was rewritten, or the commits are not in $repo_dir) — this cycle no longer attests it"
+        exit 2
+    fi
+    if ! change_identity "$carry_origin_base" "$state_head"; then
+        emit indeterminate "cannot re-derive the reviewed change's identity: $change_identity_error"
+        exit 2
+    fi
+    vca_origin_identity=$change_identity_value
+    if ! change_identity "$vca_live_base" "$carry_attests"; then
+        emit indeterminate "cannot re-derive the attested head's change identity: $change_identity_error"
+        exit 2
+    fi
+    if [ "$vca_origin_identity" != "$change_identity_value" ] ||
+        [ "$change_identity_value" != "$carry_recorded_identity" ]; then
+        emit indeterminate "this cycle no longer attests $carry_attests: the reviewed change is now $vca_origin_identity, that head's is $change_identity_value, and the carry recorded $carry_recorded_identity — reserve a fresh cycle"
+        exit 2
+    fi
+    return 0
+}
+
 emit() {
     result=$1
     detail=$2
@@ -2604,12 +2667,29 @@ carry)
     # that can legitimately carry the same change identity while being a
     # different line of history — new commits, new authorship, a base the
     # reviewer never saw underneath. The carve-out this implements is a base
-    # CATCH-UP: the reviewed head must still be in the new head's history.
-    if ! command -v git >/dev/null 2>&1 ||
-        ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor "$carry_cycle_head" "$head" 2>/dev/null; then
-        emit not-carried "the reviewed head $carry_cycle_head is not an ancestor of $head (history was rewritten, or the commits are not in $repo_dir) — a fresh cycle is required"
+    # CATCH-UP, so EVERY hop must be one.
+    #
+    # Challenge round 3, finding `challenge-r3-codex-adversarial-2` (confirmed
+    # P1): checking only that the REVIEWED head is an ancestor lets a chain
+    # launder a rewrite. Having carried O to H1, a force-push to an H2 that
+    # still descends from O passes — H1 is not in H2's history at all — and the
+    # record then states `from_head: H1`, provenance that is false and which
+    # the gate now promotes byte for byte. Each generation is anchored to the
+    # head it last attested as well as to the reviewed one.
+    carry_anchors=$carry_cycle_head
+    [ -z "$carry_previous_attests" ] ||
+        carry_anchors="$carry_anchors $carry_previous_attests"
+    if ! command -v git >/dev/null 2>&1; then
+        emit not-carried "git is required to establish that $head is a catch-up rather than a rewrite"
         exit 17
     fi
+    for carry_anchor in $carry_anchors; do
+        if ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
+            "$carry_anchor" "$head" 2>/dev/null; then
+            emit not-carried "$carry_anchor is not an ancestor of $head (history was rewritten, or the commits are not in $repo_dir) — a fresh cycle is required"
+            exit 17
+        fi
+    done
 
     if ! change_identity "$carry_origin_base" "$carry_cycle_head"; then
         emit not-carried "cannot establish the reviewed change's identity: $change_identity_error"
@@ -3032,49 +3112,6 @@ check)
         exit 2
     fi
 
-    # The identity is RE-DERIVED here, before a byte of evidence is read, and
-    # it is compared both ways: the two fresh identities against each other,
-    # and against the one the carry recorded. Comparing only the two fresh
-    # values would confirm the change is self-consistent right now while saying
-    # nothing about whether it is still the change the proof was made over, so
-    # a state file edited to name a different head would pass that weaker test.
-    #
-    # It is a PRECONDITION rather than a postcondition on the verdict: a cycle
-    # that cannot prove it attests this head is not a weaker clean result, it
-    # is a cycle being asked the wrong question, and reading evidence under
-    # that is how a wrong answer gets a receipt. The live base is read for it —
-    # one extra call, and only for a cycle that is actually carrying.
-    if [ -n "$carry_attests" ]; then
-        carry_pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
-            transient_read_failure "cannot read the PR base to re-derive what this cycle attests"
-        }
-        carry_live_base=$(jq -r '.base.sha // empty' <<<"$carry_pr_payload" 2>/dev/null) || carry_live_base=
-        if ! valid_sha "$carry_live_base"; then
-            emit indeterminate "the PR payload names no stable base commit, so what this cycle attests cannot be re-derived"
-            exit 2
-        fi
-        if ! command -v git >/dev/null 2>&1 ||
-            ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
-                "$state_head" "$carry_attests" 2>/dev/null; then
-            emit indeterminate "the reviewed head $state_head is no longer an ancestor of $carry_attests (history was rewritten, or the commits are not in $repo_dir) — this cycle no longer attests it"
-            exit 2
-        fi
-        if ! change_identity "$carry_origin_base" "$state_head"; then
-            emit indeterminate "cannot re-derive the reviewed change's identity: $change_identity_error"
-            exit 2
-        fi
-        carry_origin_identity=$change_identity_value
-        if ! change_identity "$carry_live_base" "$carry_attests"; then
-            emit indeterminate "cannot re-derive the attested head's change identity: $change_identity_error"
-            exit 2
-        fi
-        if [ "$carry_origin_identity" != "$change_identity_value" ] ||
-            [ "$change_identity_value" != "$carry_recorded_identity" ]; then
-            emit indeterminate "this cycle no longer attests $carry_attests: the reviewed change is now $carry_origin_identity, that head's is $change_identity_value, and the carry recorded $carry_recorded_identity — reserve a fresh cycle"
-            exit 2
-        fi
-    fi
-
     workdir=$(mktemp -d -t codex-cloud-review-XXXXXX)
     trap 'rm -rf "$workdir"; rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
@@ -3152,6 +3189,11 @@ check)
         emit head-changed "PR head changed while evidence was being fetched"
         exit 2
     }
+    # The one place a carried attestation is verified: after the evidence is in
+    # hand and before any verdict can be reached from it. Placing it here rather
+    # than before the scan is the whole of round 3's first finding — the window
+    # between the two is exactly where a retarget or a base force-push lands.
+    verify_carried_attestation
 
     for evidence in reactions comments reviews inline; do
         case "$evidence" in
