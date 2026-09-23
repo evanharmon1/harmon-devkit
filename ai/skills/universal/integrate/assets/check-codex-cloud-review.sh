@@ -929,11 +929,23 @@ verify_carried_attestation() {
         emit indeterminate "git is required to re-derive what this cycle attests"
         exit 2
     fi
-    if ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
-        "$state_head" "$carry_attests" 2>/dev/null; then
-        emit indeterminate "the reviewed head $state_head is no longer an ancestor of $carry_attests (history was rewritten, or the commits are not in $repo_dir) — this cycle no longer attests it"
-        exit 2
-    fi
+    # Review round 2, finding `review-r2-codex-verification-1` (confirmed P2):
+    # this proved only that the REVIEWED head is an ancestor, while `carry`
+    # anchors every hop to the head it last attested as well. State that is
+    # repaired, restored from a backup, or otherwise altered could therefore
+    # pass `check` on a rewrite that `carry` itself refuses — the two sides of
+    # the same rule disagreeing. Both anchors, both places.
+    vca_anchors=$state_head
+    vca_from=$(jq -r '.carry.from_head // empty' "$state_file" 2>/dev/null) || vca_from=
+    [ -z "$vca_from" ] || [ "$vca_from" = "$state_head" ] ||
+        vca_anchors="$vca_anchors $vca_from"
+    for vca_anchor in $vca_anchors; do
+        if ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
+            "$vca_anchor" "$carry_attests" 2>/dev/null; then
+            emit indeterminate "$vca_anchor is no longer an ancestor of $carry_attests (history was rewritten, or the commits are not in $repo_dir) — this cycle no longer attests it"
+            exit 2
+        fi
+    done
     if ! change_identity "$carry_origin_base" "$state_head"; then
         emit indeterminate "cannot re-derive the reviewed change's identity: $change_identity_error"
         exit 2
@@ -946,6 +958,22 @@ verify_carried_attestation() {
     if [ "$vca_origin_identity" != "$change_identity_value" ] ||
         [ "$change_identity_value" != "$carry_recorded_identity" ]; then
         emit indeterminate "this cycle no longer attests $carry_attests: the reviewed change is now $vca_origin_identity, that head's is $change_identity_value, and the carry recorded $carry_recorded_identity — reserve a fresh cycle"
+        exit 2
+    fi
+    # Review round 2, finding `review-r2-codex-verification-2` (confirmed P2):
+    # the (base, head) pair was read once and then hashed, so a retarget during
+    # the hashing itself would have been published as a verdict about the pair
+    # that no longer holds. Rounds 3 and 4 chased this interval by moving the
+    # check later each time, which is a regress with no end — so END it here
+    # instead: re-read the pair AFTER the hashing and require both unchanged.
+    # Nothing is derived after this point, only compared, so there is no later
+    # interval for a further round to find.
+    vca_final=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
+        transient_read_failure "cannot re-confirm the PR head and base after hashing"
+    }
+    if [ "$(jq -r '.head.sha // empty' <<<"$vca_final" 2>/dev/null)" != "$carry_attests" ] ||
+        [ "$(jq -r '.base.sha // empty' <<<"$vca_final" 2>/dev/null)" != "$vca_live_base" ]; then
+        emit indeterminate "the PR head or base moved while this cycle's attestation was being re-derived — the verdict would describe a change that is no longer the PR's; re-check rather than trusting it"
         exit 2
     fi
     return 0

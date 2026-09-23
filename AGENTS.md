@@ -403,8 +403,12 @@ trees, one id, exactly what a conflict resolution can produce. Equal
 identities carry the verdict forward and the head spends **neither** ceiling;
 anything else — a changed diff, rewritten history rather than a catch-up
 merge, a base the verdict was never corroborated against, a checkout without
-the commits, a checkout whose history is overridden by replace refs or grafts
-— runs the ordinary cycle. Three things never move with it. CI always re-runs
+the commits — runs the ordinary cycle. A checkout whose history is overridden
+is handled by kind rather than lumped together: `refs/replace` entries are
+**ignored**, because every command in the proof path disables them and the
+identity is taken from the real objects, while a `info/grafts` file is a
+**refusal**, because no flag disables it and the SHAs would stop being
+authoritative. Three things never move with it. CI always re-runs
 on the new head in full, because what a base merge can change is everything
 *outside* the diff and that is CI's to catch. **The cycle itself does not
 move**: a carry records that an existing cycle's verdict also attests a later

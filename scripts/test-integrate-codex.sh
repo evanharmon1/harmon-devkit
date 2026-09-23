@@ -3942,10 +3942,18 @@ git -C "$carry_repo" checkout -q -b pr-branch-rewritten "$carry_origin_head"
 git -C "$carry_repo" merge -q --no-edit -m "a different merge of the same base" "$carry_base_two"
 carry_rewritten_head="$(git -C "$carry_repo" rev-parse HEAD)"
 
-# A head whose three-dot diff is EMPTY — no change to identify at all.
+# A reviewed head whose three-dot diff is EMPTY, and a real catch-up descending
+# from it that is still empty. Review round 2, finding
+# `review-r2-codex-verification-4` (confirmed P2): the first version branched
+# from the base and was compared against a NON-empty reviewed head, so ancestry
+# refused it before the empty-identity check ran — removing that refusal left
+# the case green. Both ends have to be empty and the ancestry has to hold, or
+# the case tests something else.
 git -C "$carry_repo" checkout -q -b pr-branch-empty "$carry_base_one"
 git -C "$carry_repo" commit -q --allow-empty -m "no change at all"
 carry_empty_head="$(git -C "$carry_repo" rev-parse HEAD)"
+git -C "$carry_repo" merge -q --no-edit "$carry_base_two"
+carry_empty_merged="$(git -C "$carry_repo" rev-parse HEAD)"
 
 # The relocated-hunk pair. Challenge round 1, finding
 # `challenge-r1-codex-adversarial-1` (confirmed P1, REPRODUCED): these two
@@ -3954,22 +3962,40 @@ carry_empty_head="$(git -C "$carry_repo" rev-parse HEAD)"
 # both, because it discards hunk offsets and the two stanzas have identical
 # context. A conflict resolution that relocates a reviewed edit is exactly this
 # shape. This pair is the regression test for the identity itself.
+# Review round 2, finding `review-r2-codex-verification-3` (confirmed P2): the
+# first version branched both heads from the base, so they were SIBLINGS — the
+# ancestry guard refused the second before `change_identity` ever ran, and the
+# suite would have stayed green against a regression to `git patch-id`. The
+# collision test has to be a real CATCH-UP whose conflict resolution moved the
+# edit: the reviewed head is an ancestor, every other refusal passes, and the
+# identity comparison is the only thing left to refuse it.
 git -C "$carry_repo" checkout -q -b pr-relocate-a "$carry_base_one"
 awk 'NR==4{sub(/ANCHOR/,"EDITED")}1' "${carry_repo}/repeated.txt" >"${carry_repo}/repeated.new"
 mv "${carry_repo}/repeated.new" "${carry_repo}/repeated.txt"
 git -C "$carry_repo" commit -q -am "edit the first stanza"
 carry_relocate_a="$(git -C "$carry_repo" rev-parse HEAD)"
-git -C "$carry_repo" checkout -q -b pr-relocate-b "$carry_base_one"
-awk 'NR==11{sub(/ANCHOR/,"EDITED")}1' "${carry_repo}/repeated.txt" >"${carry_repo}/repeated.new"
+# A base catch-up merge whose resolution relocates the reviewed edit from the
+# first stanza to the second — a descendant of the reviewed head, different
+# tree, same patch id.
+git -C "$carry_repo" merge -q --no-commit --no-ff "$carry_base_two" 2>/dev/null || true
+awk 'NR==4{sub(/EDITED/,"ANCHOR")} NR==11{sub(/ANCHOR/,"EDITED")}1' \
+    "${carry_repo}/repeated.txt" >"${carry_repo}/repeated.new"
 mv "${carry_repo}/repeated.new" "${carry_repo}/repeated.txt"
-git -C "$carry_repo" commit -q -am "edit the second stanza"
+git -C "$carry_repo" add -A
+git -C "$carry_repo" commit -q -m "catch-up merge whose resolution moved the edit"
 carry_relocate_b="$(git -C "$carry_repo" rev-parse HEAD)"
+# Three premises, each asserted, because this case guards the single most
+# important finding of the change and a silent regression in any of them would
+# make it prove nothing.
+git -C "$carry_repo" --no-replace-objects merge-base --is-ancestor \
+    "$carry_relocate_a" "$carry_relocate_b" ||
+    fail "the relocation fixture must be a DESCENDANT of the reviewed head, or ancestry refuses it before the identity is ever compared"
 [ "$(git -C "$carry_repo" rev-parse "${carry_relocate_a}^{tree}")" != \
     "$(git -C "$carry_repo" rev-parse "${carry_relocate_b}^{tree}")" ] ||
     fail "the relocated-hunk fixture must leave DIFFERENT trees, or it proves nothing"
 [ "$(git -C "$carry_repo" diff --full-index -U3 "${carry_base_one}...${carry_relocate_a}" |
     git patch-id --verbatim | cut -d' ' -f1)" = \
-    "$(git -C "$carry_repo" diff --full-index -U3 "${carry_base_one}...${carry_relocate_b}" |
+    "$(git -C "$carry_repo" diff --full-index -U3 "${carry_base_two}...${carry_relocate_b}" |
         git patch-id --verbatim | cut -d' ' -f1)" ] ||
     fail "the relocated-hunk fixture must COLLIDE under git patch-id, or it is not testing the finding"
 
@@ -4161,11 +4187,16 @@ run_check_in_carry_repo '2026-07-31T08:05:00Z'
 assert_status 2 indeterminate
 
 echo "==> a relocated identical hunk is a DIFFERENT change, though patch-id collides"
-carry_fixtures "$carry_relocate_a" "$carry_base_one"
+carry_fixtures "$carry_relocate_b" "$carry_base_two" "$carry_relocate_a"
 seed_reviewed_state "$carry_relocate_a" "$carry_relocate_a" "$carry_base_one" clean run-a
-carry_fixtures "$carry_relocate_b" "$carry_base_one" "$carry_relocate_a"
 run_carry "$carry_relocate_b"
 assert_carry 17 not-carried "relocated hunk"
+# The refusal must be the IDENTITY, not ancestry or anything earlier — that is
+# the difference between testing the finding and testing the fixture.
+case "$carry_out" in
+*"the change moved"*) ;;
+*) fail "the relocated hunk must be refused on identity, not on an earlier guard: $carry_out" ;;
+esac
 
 echo "==> one byte of the reviewed change forces a fresh cycle"
 carry_fixtures "$carry_moved_head" "$carry_base_two" "$carry_origin_head"
@@ -4194,10 +4225,22 @@ case "$carry_out" in
 esac
 
 echo "==> an empty reviewed change has no identity to carry"
-carry_fixtures "$carry_empty_head" "$carry_base_one" "$carry_origin_head"
-seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
-run_carry "$carry_empty_head"
+# Both premises asserted: the reviewed head really is empty against its base,
+# and the catch-up really descends from it — otherwise an earlier guard, not
+# the empty-identity refusal, is what this case measures.
+[ -z "$(git -C "$carry_repo" diff "${carry_base_one}...${carry_empty_head}")" ] ||
+    fail "the empty-diff fixture is not empty, so this case cannot reach the empty-identity refusal"
+git -C "$carry_repo" --no-replace-objects merge-base --is-ancestor \
+    "$carry_empty_head" "$carry_empty_merged" ||
+    fail "the empty-diff catch-up must descend from the reviewed head, or ancestry refuses it first"
+carry_fixtures "$carry_empty_merged" "$carry_base_two" "$carry_empty_head"
+seed_reviewed_state "$carry_empty_head" "$carry_empty_head" "$carry_base_one" clean run-a
+run_carry "$carry_empty_merged"
 assert_carry 17 not-carried "empty diff"
+case "$carry_out" in
+*"is empty"*) ;;
+*) fail "an empty change must be refused for HAVING NO IDENTITY, not by an earlier guard: $carry_out" ;;
+esac
 
 echo "==> a force-push over an already-attested head is a rewrite, not a catch-up"
 # Challenge round 3, finding `challenge-r3-codex-adversarial-2` (confirmed P1):
@@ -4264,6 +4307,63 @@ esac
 # read would have seen only the honest payload and reported findings.
 [ "$(cat "${fixtures}/pulls-call-count")" -ge 2 ] ||
     fail "the interval was never constructed: only $(cat "${fixtures}/pulls-call-count") PR read(s) happened, so this case cannot distinguish an early derivation from a late one"
+rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" "${fixtures}/pr-late.json"
+
+echo "==> a repaired carry record whose immediate hop was rewritten is refused"
+# Review round 2, finding `review-r2-codex-verification-1` (confirmed P2):
+# `carry` anchors every hop to the head it last attested AND to the reviewed
+# one; `check` was only re-proving the reviewed one. State that is repaired or
+# restored could therefore pass `check` on a rewrite `carry` itself refuses.
+#
+# This state cannot be reached through `carry` — that is the point — so it is
+# constructed directly, the way the fractional-generation case is. The recorded
+# `from_head` is a commit the attested head does not descend from, while the
+# REVIEWED head still does, so only the second anchor can produce the refusal.
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "rewritten-hop setup"
+git -C "$carry_repo" --no-replace-objects merge-base --is-ancestor \
+    "$carry_origin_head" "$carry_merged_head" ||
+    fail "the reviewed head must still be an ancestor, or the FIRST anchor refuses and this case proves nothing"
+git -C "$carry_repo" --no-replace-objects merge-base --is-ancestor \
+    "$carry_rewritten_head" "$carry_merged_head" 2>/dev/null &&
+    fail "the substituted from_head must NOT be an ancestor, or there is nothing for the second anchor to catch"
+jq --arg h "$carry_rewritten_head" '.carry.from_head = $h' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+assert_status 2 indeterminate
+case "$check_out" in
+*"$carry_rewritten_head is no longer an ancestor"*) ;;
+*) fail "the refusal must name the rewritten hop, not the reviewed head: $check_out" ;;
+esac
+
+echo "==> a head that moves DURING the re-derivation is not published as a verdict"
+# Review round 2, finding `review-r2-codex-verification-2` (confirmed P2): the
+# pair was read once and then hashed, so a retarget during the hashing itself
+# would have been published. The verifier now re-reads afterwards and requires
+# both unchanged — and because nothing is derived after that read, only
+# compared, this is the END of the interval rather than one more step along it.
+#
+# `pr-json-after 1` gives the verifier's FIRST read the honest payload and its
+# SECOND — the post-hash confirmation — the moved one, which is precisely the
+# window the finding describes.
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "mid-derivation move setup"
+jq --arg h "$carry_moved_head" '.head.sha = $h' "${fixtures}/pr.json" \
+    >"${fixtures}/pr-late.json"
+printf '1' >"${fixtures}/pr-json-after"
+rm -f "${fixtures}/pulls-call-count"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+assert_status 2 indeterminate
+case "$check_out" in
+*"moved while this cycle's attestation was being re-derived"*) ;;
+*) fail "a move during the re-derivation must be named as such: $check_out" ;;
+esac
+[ "$(cat "${fixtures}/pulls-call-count")" -ge 2 ] ||
+    fail "the verifier must read the pair TWICE, or the post-hash confirmation does not exist"
 rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" "${fixtures}/pr-late.json"
 
 echo "==> a quota-exhausted cycle cannot be carried"
