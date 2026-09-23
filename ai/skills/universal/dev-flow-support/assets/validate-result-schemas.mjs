@@ -882,8 +882,15 @@ function checkHeadAgreement(kind, envelope, errors) {
   // agree closes the hole exactly, and closes the receipt with it — a mirror
   // that keeps `carried` must then name `carried.origin_head`, which the
   // receipt check above already enforces.
-  if (kind === 'integrator' && Array.isArray(payload.finder_cycles) && payload.codex_cycle) {
-    const cycleCarried = canonicalJson(payload.codex_cycle.carried ?? null)
+  // Integration cycle 2, finding `integration-r2-claude-3` (confirmed P2): the
+  // guard required `codex_cycle` to be truthy, so with a null one — a resolved
+  // integration cap of 0 — a `codex-cloud` entry could still carry a `carried`
+  // object that nothing corroborates: this check did not run, the gate skips
+  // that entry, and its whole carried block sits inside the non-null branch.
+  // The same hole in the same shape as the one this function was added to
+  // close, and `?? null` already handles the absent case.
+  if (kind === 'integrator' && Array.isArray(payload.finder_cycles)) {
+    const cycleCarried = canonicalJson(payload.codex_cycle?.carried ?? null)
     for (const fc of payload.finder_cycles) {
       if (!fc || typeof fc !== 'object' || fc.finder !== 'codex-cloud') continue
       if (canonicalJson(fc.carried ?? null) !== cycleCarried) {

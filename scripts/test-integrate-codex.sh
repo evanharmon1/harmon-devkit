@@ -4154,6 +4154,28 @@ run_check_in_carry_repo '2026-07-31T08:05:00Z'
 [ "$check_rc" -eq 10 ] ||
     fail "a late finding on the reviewed head must block the carried head, got rc $check_rc: $check_out"
 
+echo "==> a late finding makes a FURTHER carry refuse, not cite the stale clean"
+# Integration cycle 2, finding `integration-r2-claude-2` (confirmed P2): the
+# carry guard in `mark_terminally_reviewed` suppressed the whole marker, so the
+# `findings` verdict from the case above never reached
+# `last_reviewed_verdict`. A second carry then read `clean`, passed every other
+# guard, and reported "the clean verdict for <O> attests <H2> with no cycle
+# spent" for a cycle whose live verdict was findings.
+#
+# The state here is the one the previous case left: carried, and re-checked
+# into findings by the late P1 still sitting in the comments fixture.
+[ "$(jq -r '.last_reviewed_verdict' "$state")" = findings ] ||
+    fail "the late finding must have been recorded as the verdict class, got $(jq -r '.last_reviewed_verdict' "$state")"
+[ "$(jq -r '.last_reviewed_base_sha' "$state")" = "$carry_base_one" ] ||
+    fail "recording the verdict must NOT re-corroborate the reviewed base against the moved one: $(jq -r '.last_reviewed_base_sha' "$state")"
+carry_fixtures "$carry_moved_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_moved_head"
+assert_carry 17 not-carried "further carry after a late finding"
+case "$carry_out" in
+*"last recorded verdict: findings"*) ;;
+*) fail "the refusal must cite the findings verdict, not something else: $carry_out" ;;
+esac
+
 echo "==> a carried proof cannot be re-derived from a checkout without the history"
 seed_origin_cycle
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
@@ -4473,6 +4495,34 @@ true_id="$(git -C "$carry_repo" --no-replace-objects diff --full-index -U3 \
 run_carry "$carry_merged_head"
 assert_carry 0 carried "replace ref ignored"
 git -C "$carry_repo" replace -d "$carry_origin_head"
+
+echo "==> a graft in a PLAIN repo is caught when --repo-dir is not the cwd"
+# Integration cycle 2, finding `integration-r2-claude-1` (confirmed P1,
+# REPRODUCED): `--git-path` prints a path RELATIVE to the git process's cwd,
+# and in a plain repository that is `.git/info/grafts` — while the `[ -e ]`
+# that follows is evaluated by the shell, whose cwd is elsewhere. The graft was
+# therefore missed for every plain-repo carry, which is the configuration
+# `--codex-repo-dir` exists for and the one THIS SUITE uses: it `cd`s to
+# `$test_repo` while the carry fixtures live in `$carry_repo`.
+#
+# The linked-worktree case below cannot catch it — that path comes back
+# absolute — so this case drives the plain repo explicitly, and asserts the
+# premise that makes it meaningful: that the suite's cwd is a DIFFERENT
+# repository from the one under test.
+[ "$(git rev-parse --show-toplevel)" != "$(git -C "$carry_repo" rev-parse --show-toplevel)" ] ||
+    fail "this case needs the caller cwd to be a different repo from --repo-dir, or it cannot detect a relative path"
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+carry_plain_git="$(git -C "$carry_repo" rev-parse --path-format=absolute --git-dir)"
+mkdir -p "${carry_plain_git}/info"
+printf '%s\n' "$carry_origin_head" >"${carry_plain_git}/info/grafts"
+run_carry "$carry_merged_head"
+assert_carry 17 not-carried "graft in a plain repo, driven from a foreign cwd"
+case "$carry_out" in
+*grafts*) ;;
+*) fail "a grafts file must be named as the reason: $carry_out" ;;
+esac
+rm -f "${carry_plain_git}/info/grafts"
 
 echo "==> a graft in the COMMON git dir is caught from a linked worktree"
 # Integration cycle 1, finding `integration-r1-codex-cloud-2` (confirmed P2):

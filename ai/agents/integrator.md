@@ -368,8 +368,8 @@ carry_out="$("$helper" carry --state "$state" --head "<head>" \
 - **exit 0** — carried. Post **no** trigger, run no `attach`, and skip the
   fresh-cycle sequence entirely. Go straight to `check` below. The carry does
   not move the cycle — it records that an existing cycle's verdict also attests
-  this head — so `check` re-derives that claim as a precondition and then runs
-  the same evidence scan it always runs. It can therefore come back `findings`
+  this head — so `check` runs the same evidence scan it always runs and
+  re-derives that claim immediately before any verdict it reaches. It can therefore come back `findings`
   (exit 10) like any other: that is a late finding on the commit a reviewer
   read, handled exactly as one, and `settle` answers it against this same
   state.

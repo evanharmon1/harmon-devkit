@@ -218,8 +218,9 @@ regions — a conflict resolution — gets the same id from two different trees.
 Run it before `reserve`; exit 0 means carried (post no trigger, go straight to
 `check`), exit 17 means reserve the ordinary cycle. The carry does **not** move
 the cycle: it records that an existing cycle's verdict also attests a later
-head. `check` then re-derives that claim as a precondition and runs the one
-evidence scan it always ran, against the commit a reviewer actually read — so a
+head. `check` then runs the one evidence scan it always ran, against the
+commit a reviewer actually read, and re-derives the claim immediately before
+any verdict — so a
 finding landing there after the carry still blocks, and `settle` still answers
 it on that same state. The carry removes the second review, never the second
 look.

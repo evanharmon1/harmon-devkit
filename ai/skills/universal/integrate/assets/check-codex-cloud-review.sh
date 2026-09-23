@@ -643,13 +643,28 @@ change_identity() {
     # P2): the path was built from `--git-dir`, which in a LINKED WORKTREE is
     # `.git/worktrees/<name>` — while grafts live in the COMMON directory and
     # git honours them from there. Every agent worktree in this repo is a
-    # linked one, so the check was looking in the one place the file never is,
-    # and the fixture only passed because a plain fixture repo makes the two
-    # paths identical. Ask git where the file would be rather than constructing
-    # it: `--git-path` resolves to the common directory when that is where git
-    # would read it.
-    ci_grafts=$(git -C "$repo_dir" rev-parse --git-path info/grafts 2>/dev/null) || ci_grafts=
-    if [ -n "$ci_grafts" ] && [ -e "$ci_grafts" ]; then
+    # linked one, so the check was looking in the one place the file never is.
+    #
+    # Integration cycle 2, finding `integration-r2-claude-1` (confirmed P1,
+    # REPRODUCED): the FIX for that was itself inoperative. `--git-path`
+    # prints a path relative to the git process's cwd, and in a plain
+    # repository that is `.git/info/grafts` — while the `[ -e ]` that follows
+    # is evaluated by the SHELL, whose cwd is not `$repo_dir`. Measured with a
+    # planted graft and a foreign cwd: MISSED. The linked-worktree fixture
+    # passed only because that case happens to return an absolute path — it
+    # passed for a reason that does not generalize, exactly like the fixture it
+    # replaced. `--path-format=absolute` makes the answer independent of who is
+    # asking.
+    #
+    # Same clause, second half: a `rev-parse` that FAILS used to clear the
+    # variable and skip the check, which is a fail-OPEN inside a function whose
+    # contract is that every failure is a refusal. It refuses now.
+    if ! ci_grafts=$(git -C "$repo_dir" rev-parse --path-format=absolute \
+        --git-path info/grafts 2>/dev/null) || [ -z "$ci_grafts" ]; then
+        change_identity_error="cannot resolve where $repo_dir keeps info/grafts, so it cannot be shown that commit history is not overridden"
+        return 1
+    fi
+    if [ -e "$ci_grafts" ]; then
         change_identity_error="$ci_grafts exists, so commit history in this checkout is overridden and no SHA is authoritative"
         return 1
     fi
@@ -760,7 +775,7 @@ read_state() {
         (.carry.from_head | type == "string") and
         (.carry.base_sha | type == "string") and
         (.carry.change_id | type == "string") and
-        (.carry.algorithm | type == "string") and
+        (.carry.algorithm == "git-diff-digest/three-dot/v1") and
         (.carry.generation | type == "number" and . >= 1 and floor == .) and
         (.carry.carried_at | type == "string"))) and
       (.requires_full_window == null or
@@ -858,13 +873,24 @@ mark_terminally_reviewed() {
     reviewed_verdict=${1:-}
     [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
     [ -n "${state_head:-}" ] || return 0
-    # harmon-init#752: once a cycle has carried, re-marking it would
-    # re-corroborate the reviewed base against the LIVE base — which the base
-    # merge has moved — and resolve it to unset, stranding every later carry
-    # and every later exemption. The verdict is not new either way: this cycle
-    # already produced it. The guard is a fact about the state rather than
-    # about the caller, so no emit site can forget it.
-    [ -z "$(jq -r '.carry // empty' "$state_file" 2>/dev/null)" ] || return 0
+    # harmon-init#752: once a cycle has carried, re-corroborating the reviewed
+    # base against the LIVE base — which the base merge has moved — resolves it
+    # to unset and strands every later carry and every later exemption.
+    #
+    # Integration cycle 2, finding `integration-r2-claude-2` (confirmed P2),
+    # with the round-2 scaffolding checkpoint applied since this guard exists
+    # only because an earlier round added `.carry`. Disposition: IN SCOPE, but
+    # RESTRUCTURED — the guard was written as "skip the whole marker", which
+    # also suppressed the VERDICT CLASS, and that is the field `carry` gates
+    # on. A late `findings` on a carried cycle therefore left
+    # `last_reviewed_verdict` reading `clean`, and a further carry cited a
+    # clean verdict that had been contradicted — the exact fail-open the
+    # comment below it claims cannot arise.
+    #
+    # The guard now protects the one field that needs base corroboration and
+    # nothing else. The verdict class is a fact about THIS cycle's evidence and
+    # needs no base to be true, so it is always recorded.
+    carry_present=$(jq -r '.carry // empty' "$state_file" 2>/dev/null) || carry_present=
     # Two reviewers pushed this from opposite sides and both were right.
     #
     # Codex (cycle 4): the base sampled at RESERVATION can be minutes stale by
@@ -887,8 +913,11 @@ mark_terminally_reviewed() {
     [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
         reviewed_base_sha=
     jq --arg h "$state_head" --arg b "$reviewed_base_sha" \
-        --arg v "$reviewed_verdict" '.last_reviewed_head = $h
-        | .last_reviewed_base_sha = (if $b == "" then null else $b end)
+        --arg v "$reviewed_verdict" --arg carrying "$carry_present" \
+        '.last_reviewed_head = $h
+        | .last_reviewed_base_sha =
+            (if $carrying != "" then .last_reviewed_base_sha
+             elif $b == "" then null else $b end)
         | .last_reviewed_verdict = (if $v == "" then null else $v end)' "$state_file" \
         >"${state_file}.reviewed" 2>/dev/null &&
         mv "${state_file}.reviewed" "$state_file" ||
@@ -2721,7 +2750,15 @@ carry)
     provider_status=0
     live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
     if [ "$provider_status" -eq 3 ]; then
-        die "PR is ${live_head:-not open} — a closed or merged PR has no verdict to carry"
+        # Integration cycle 2, nit (accepted): 14 is this helper's documented
+        # code for "GitHub answered and the PR is MERGED or CLOSED", and `carry`
+        # was reporting it through `die` — exit 2, non-JSON — in a file that
+        # otherwise documents its exit codes to the letter. Nothing broke,
+        # because the caller treats anything but 0 and 17 as "reserve one", but
+        # it cost an API call and gave a misleading reason.
+        emit pr-not-open \
+            "PR is ${live_head:-no longer open} — the stage is over; stop, do not re-trigger or keep polling"
+        exit 14
     elif [ "$provider_status" -ne 0 ]; then
         emit not-carried "cannot confirm the open PR head; not carrying"
         exit 17
@@ -3160,14 +3197,24 @@ check)
     # The distinction is named once, here, because there are three liveness
     # sites and the first draft of this patched one of them.
     #
-    # Second, the identity is re-derived HERE, before any evidence is read,
-    # rather than bolted onto the verdict afterwards. A state claiming to
-    # attest a head it cannot prove is not a weaker clean result — it is a
-    # precondition failure, and reading evidence under it would be answering
-    # the wrong question. Everything after this point is the ORDINARY cycle
-    # check: challenge round 2 deleted the recursive re-check round 1 added,
-    # because re-checking the cycle is not something this code needs to do when
-    # the cycle was never copied in the first place.
+    # Second, what is checked HERE is the RECORD'S SHAPE — a claim missing any
+    # field the proof is re-derived from is malformed state, and there is no
+    # point reading evidence under it. The IDENTITY itself is re-derived
+    # elsewhere: in `emit`, immediately before any verdict, because rounds 3
+    # and 4 each showed that a fixed point earlier than that leaves an interval
+    # in which a retarget can land. See `verify_carried_attestation`.
+    #
+    # Integration cycle 2, finding `integration-r2-claude-4` (confirmed P3):
+    # this comment still said the identity was re-derived here "before any
+    # evidence is read", which round 4 made false and which contradicts the
+    # comment on the post-hash re-read. These are where the trust argument is
+    # written down, so two of them telling a reader opposite things about where
+    # the boundary sits is a real defect, not a typo.
+    #
+    # Everything after this point is the ORDINARY cycle check: challenge round
+    # 2 deleted the recursive re-check round 1 added, because re-checking the
+    # cycle is not something this code needs to do when the cycle was never
+    # copied in the first place.
     expected_live_head=$state_head
     carry_attests=$(jq -r '.carry.attests_head // empty' "$state_file")
     if [ -n "$carry_attests" ]; then
