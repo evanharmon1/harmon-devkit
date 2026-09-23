@@ -366,9 +366,12 @@ carry_out="$("$helper" carry --state "$state" --head "<head>" \
 ```
 
 - **exit 0** — carried. Post **no** trigger, run no `attach`, and skip the
-  fresh-cycle sequence entirely. Go straight to `check` below, which
-  re-derives the same proof rather than reading the record back, and report
-  the cycle as described under `codex_cycle.carried` in §5.
+  fresh-cycle sequence entirely. Go straight to `check` below, which re-runs
+  the origin cycle against live evidence AND re-derives the identity rather
+  than reading either back, and report the cycle as described under
+  `codex_cycle.carried` in §5. A carried `check` can therefore come back
+  `findings` (exit 10) like any other — that is a late finding on the reviewed
+  head, and it is handled exactly as one.
 - **exit 17** — not carried, for the reason in the output. This is the
   ordinary answer, not an error: continue to the three cases below exactly as
   if you had never called it.
@@ -586,8 +589,10 @@ always present together on these two exit codes; their absence is a
 malformed `check_out` your brief did not anticipate — stop and report it
 rather than fabricating a value.
 
-A **carried** clean (harmon-init#752) also carries `check_out.carried`. Copy
-that object verbatim to `codex_cycle.carried`, exactly as you copy `accepted`
+A **carried** clean (harmon-init#752) also carries `check_out.carried` and a
+`check_out.trigger_comment_id` — the ORIGIN cycle's trigger, since this cycle
+posted none and the schema requires one. Use both verbatim. Copy
+`check_out.carried` to `codex_cycle.carried`, exactly as you copy `accepted`
 — it is the disclosure the readiness gate cross-checks against the durable
 checker state, and a gate that is given a carried result it cannot corroborate
 there reports `codex-carried-unproven` rather than promoting. On this one

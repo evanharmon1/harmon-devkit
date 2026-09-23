@@ -3851,21 +3851,19 @@ set -e
 # runs it — but it can refuse a claim with nothing durable behind it, which is
 # the same integrity rule the charged/exempt split answers to.
 carried_origin=0a1b2c3d4e5f60718293a4b5c6d7e8f900112233
-carried_patch=fedcba9876543210fedcba9876543210fedcba98
+carried_id=fedcba9876543210fedcba9876543210fedcba98
 
-# $1 origin head, $2 patch id
+# $1 origin head, $2 change id
 carried_cycle_json() {
-    jq -c --arg origin "$1" --arg patch "$2" '
+    jq -c --arg origin "$1" --arg id "$2" '
       .accepted.reviewed_commit = $origin |
       .carried = {
         origin_head: $origin,
         origin_base_sha: "1122334455667788990011223344556677889900",
-        origin_surface: "review",
-        origin_id: "1",
         from_head: $origin,
         base_sha: "99887766554433221100998877665544332211aa",
-        patch_id: $patch,
-        algorithm: "git-patch-id-verbatim/three-dot",
+        change_id: $id,
+        algorithm: "git-diff-digest/three-dot/v1",
         generation: 1,
         carried_at: "2026-09-22T12:00:00Z"
       }' <<<"$(codex_cycle_json 0)"
@@ -3873,10 +3871,10 @@ carried_cycle_json() {
 
 echo "==> a carried verdict the checker state corroborates passes"
 write_defaults
-jq --arg o "$carried_origin" --arg p "$carried_patch" \
-    '.carry = {origin_head: $o, patch_id: $p}' "$recheck_state" >"${recheck_state}.next"
+jq --arg o "$carried_origin" --arg p "$carried_id" \
+    '.carry = {origin_head: $o, change_id: $p}' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
-carried_result="$(write_integrator_result carried-ok "$(carried_cycle_json "$carried_origin" "$carried_patch")")"
+carried_result="$(write_integrator_result carried-ok "$(carried_cycle_json "$carried_origin" "$carried_id")")"
 run_gate_recheck_clean --integrator-result "$carried_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 0 pass ready
@@ -3885,7 +3883,7 @@ echo "==> a carried verdict with no --codex-recheck state is codex-carried-unpro
 # The advisory flag stops being advisory for exactly this shape: with no
 # reviewer evidence for this head, the result's own say-so is all there is.
 write_defaults
-carried_result="$(write_integrator_result carried-no-state "$(carried_cycle_json "$carried_origin" "$carried_patch")")"
+carried_result="$(write_integrator_result carried-no-state "$(carried_cycle_json "$carried_origin" "$carried_id")")"
 run_gate --integrator-result "$carried_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 2 indeterminate codex-carried-unproven
@@ -3894,7 +3892,7 @@ echo "==> a carried verdict the checker state does not record is codex-carried-u
 write_defaults
 jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
-carried_result="$(write_integrator_result carried-unrecorded "$(carried_cycle_json "$carried_origin" "$carried_patch")")"
+carried_result="$(write_integrator_result carried-unrecorded "$(carried_cycle_json "$carried_origin" "$carried_id")")"
 run_gate_recheck_clean --integrator-result "$carried_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 2 indeterminate codex-carried-unproven
@@ -3903,8 +3901,8 @@ echo "==> a carried verdict whose identity disagrees with the state is codex-car
 # The direction that matters: a producer naming a DIFFERENT proven change
 # would otherwise have this head accepted on a verdict about other bytes.
 write_defaults
-jq --arg o "$carried_origin" --arg p "$carried_patch" \
-    '.carry = {origin_head: $o, patch_id: $p}' "$recheck_state" >"${recheck_state}.next"
+jq --arg o "$carried_origin" --arg p "$carried_id" \
+    '.carry = {origin_head: $o, change_id: $p}' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 carried_result="$(write_integrator_result carried-wrong-patch \
     "$(carried_cycle_json "$carried_origin" 1111111111111111111111111111111111111111)")"
@@ -3922,6 +3920,41 @@ mv "${recheck_state}.next" "$recheck_state"
 # script's gate on the same day — and the fix was replicated to one of the two
 # sites, which is the shape the whole finding was about. So the property lives
 # here too now: every flag the gate's own synopsis documents must parse.
+echo "==> a non-codex finder claiming a carry is codex-carried-unproven"
+# There is no carry mechanism for any finder but codex-cloud, and nothing
+# durable records one, so the claim is unfounded by construction rather than
+# merely unproven. The receipt validator's carve-out is schema-wide; this is
+# where that breadth is closed.
+write_defaults
+jq --arg o "$carried_origin" --arg p "$carried_id" \
+    '.carry = {origin_head: $o, change_id: $p}' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+carried_base="$(write_integrator_result carried-foreign-finder \
+    "$(carried_cycle_json "$carried_origin" "$carried_id")")"
+jq --arg origin "$carried_origin" --arg id "$carried_id" '
+    .payload.finder_cycles = [{
+      finder: "coderabbit-cloud", head: .head, cycle: 1, attempt: 1,
+      trigger_comment_id: "9001", exit_code: 0,
+      accepted: {surface: "review", id: "9002", reviewed_commit: $origin},
+      carried: {origin_head: $origin,
+                origin_base_sha: "1122334455667788990011223344556677889900",
+                from_head: $origin,
+                base_sha: "99887766554433221100998877665544332211aa",
+                change_id: $id, algorithm: "git-diff-digest/three-dot/v1",
+                generation: 1, carried_at: "2026-09-22T12:00:00Z"}}]' \
+    "$carried_base" >"${fixtures}/integrator-result-carried-foreign-finder-fc.json"
+node "$validator" envelope \
+    "${fixtures}/integrator-result-carried-foreign-finder-fc.json" >/dev/null ||
+    fail "the foreign-finder carry fixture must itself be schema-valid — the point is that the GATE refuses it, not the schema"
+run_gate_recheck_clean \
+    --integrator-result "${fixtures}/integrator-result-carried-foreign-finder-fc.json" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-carried-unproven
+
+write_defaults
+jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+
 echo "==> every flag named in the gate's usage text is actually parsed"
 gate_usage="$("$gate" --help 2>&1 || true)"
 gate_flags="$(printf '%s\n' "$gate_usage" |

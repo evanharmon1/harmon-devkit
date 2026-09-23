@@ -394,19 +394,25 @@ names which counter each cycle spent — `cycle n/cap (+m exempt)` — so
 (harmon-init#752). The exemption above still spends a reviewer window on a
 re-read; where the reviewed change is not merely untouched by file but
 **identical**, the clean verdict already attests this head and the cycle is
-skipped outright. Identity is `git patch-id --verbatim` over the PR's own
-three-dot diff, taken from immutable commit SHAs in the local checkout: local
-git, never a reconstruction from the API of what a reviewer saw. Equal
+skipped outright. Identity is a **digest of the PR's own three-dot diff
+text**, taken from immutable commit SHAs in the local checkout: local git,
+never a reconstruction from the API of what a reviewer saw. It is deliberately
+not `git patch-id`, which ignores hunk offsets and so returns the same id for a
+reviewed edit RELOCATED between two identically-surrounded regions — different
+trees, one id, exactly what a conflict resolution can produce. Equal
 identities carry the verdict forward and the head spends **neither** ceiling;
-anything else — a changed patch, rewritten history rather than a catch-up
+anything else — a changed diff, rewritten history rather than a catch-up
 merge, a base the verdict was never corroborated against, a checkout without
-the commits — runs the ordinary cycle. The proof is recorded, and re-derived
-rather than re-read, every time it is relied on. Two things never move with
-it: CI always re-runs on the new head in full, because what a base merge can
-change is everything *outside* the diff and that is CI's to catch; and the
-ledger names a carried head — `cycle n/cap (+m exempt, +k carried)` — because
-a head attested without a reviewer reading it is precisely what a human must
-be able to see.
+the commits, a checkout whose history is overridden by replace refs or grafts
+— runs the ordinary cycle. Three things never move with it. CI always re-runs
+on the new head in full, because what a base merge can change is everything
+*outside* the diff and that is CI's to catch. The **origin cycle is re-checked
+against live evidence** every time the carried verdict is relied on, so a
+finding that lands on the reviewed head after the carry still blocks: what a
+carry removes is the second REVIEW, never the second look. And the ledger names
+a carried head — `cycle n/cap (+m exempt, +k carried)` — because a head
+attested without a reviewer reading it is precisely what a human must be able
+to see.
 
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,

@@ -1634,22 +1634,22 @@ if [ "$codex_cycle" != null ]; then
     # Without that state there is nothing behind the claim but the producer's
     # word, so a claimed carry with no state is indeterminate rather than a
     # pass; `--codex-recheck` stays advisory for every other shape.
-    cycle_carried_patch="$(jq -er '.carried.patch_id | select(type == "string")' \
-        <<<"$codex_cycle" 2>/dev/null)" || cycle_carried_patch=
-    if [ -n "$cycle_carried_patch" ]; then
+    cycle_carried_id="$(jq -er '.carried.change_id | select(type == "string")' \
+        <<<"$codex_cycle" 2>/dev/null)" || cycle_carried_id=
+    if [ -n "$cycle_carried_id" ]; then
         cycle_carried_origin="$(jq -er '.carried.origin_head | select(type == "string")' \
             <<<"$codex_cycle" 2>/dev/null)" || cycle_carried_origin=
         [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ] ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but no --codex-recheck state was supplied to confirm it against — a carry means no reviewer read this head, so the claim cannot rest on the result alone"
-        state_carry_patch="$(jq -er '.carry.patch_id | select(type == "string")' \
-            "$codex_recheck_state" 2>/dev/null)" || state_carry_patch=
+        state_carry_id="$(jq -er '.carry.change_id | select(type == "string")' \
+            "$codex_recheck_state" 2>/dev/null)" || state_carry_id=
         state_carry_origin="$(jq -er '.carry.origin_head | select(type == "string")' \
             "$codex_recheck_state" 2>/dev/null)" || state_carry_origin=
-        [ -n "$state_carry_patch" ] ||
+        [ -n "$state_carry_id" ] ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but the checker state records no carry to confirm it against"
-        [ "$cycle_carried_patch" = "$state_carry_patch" ] &&
+        [ "$cycle_carried_id" = "$state_carry_id" ] &&
             [ "$cycle_carried_origin" = "$state_carry_origin" ] ||
-            indeterminate codex-carried-unproven "codex_cycle claims a verdict carried from ${cycle_carried_origin:-?} with patch identity $cycle_carried_patch, but the checker state records ${state_carry_origin:-none} / ${state_carry_patch:-none}"
+            indeterminate codex-carried-unproven "codex_cycle claims a verdict carried from ${cycle_carried_origin:-?} with change identity $cycle_carried_id, but the checker state records ${state_carry_origin:-none} / ${state_carry_id:-none}"
     fi
     case "$codex_exit" in
     0) recheck_codex_freshness ;;
@@ -1682,6 +1682,18 @@ if [ "$finder_cycles_len" -gt 0 ]; then
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
         [ "$fc_head" = "$head" ] ||
             indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
+        # harmon-init#752, challenge round 1, finding
+        # `challenge-r1-codex-adversarial-4` (confirmed P1): the receipt
+        # validator's carried carve-out applies to every finder entry, but a
+        # carry is corroborated against durable checker state that exists only
+        # for codex-cloud — and the codex-cloud entry is skipped here because
+        # codex_cycle already covers it. So a non-codex entry claiming
+        # `carried` could re-present an older receipt with nothing behind it.
+        # There is no carry mechanism for those finders at all, which makes the
+        # claim unfounded by construction rather than merely unproven.
+        if jq -e ".[$fc_idx] | has(\"carried\")" <<<"$finder_cycles" >/dev/null 2>&1; then
+            indeterminate codex-carried-unproven "finder_cycles[$fc_idx] ($fc_slug) claims a carried-forward verdict, but no carry mechanism exists for any finder but codex-cloud and nothing durable records one — re-run that finder against this head"
+        fi
         fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
         case "$fc_exit" in

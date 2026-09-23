@@ -210,11 +210,16 @@ reviewer window and 10–15 minutes of wall clock to re-read bytes nobody
 changed. When the change is not merely *untouched by file* but **identical**,
 the previous clean verdict already covers this head, and the cycle can be
 skipped outright rather than paid for out of a second ceiling. `carry` decides
-that: it takes `git patch-id --verbatim` over the PR's three-dot diff at the
-reviewed head and at this one, from immutable commit SHAs in the local
-checkout, and carries the verdict only when the two identities are equal. Run
-it before `reserve`; exit 0 means carried (post no trigger, go straight to
-`check`, which re-derives the proof), exit 17 means reserve the ordinary cycle.
+that: it digests the PR's three-dot diff TEXT at the reviewed head and at this
+one, from immutable commit SHAs in the local checkout, and carries the verdict
+only when the two identities are equal. (Not `git patch-id`: it ignores hunk
+offsets, so a reviewed edit relocated between two identically-surrounded
+regions — a conflict resolution — gets the same id from two different trees.)
+Run it before `reserve`; exit 0 means carried (post no trigger, go straight to
+`check`), exit 17 means reserve the ordinary cycle. `check` on a carried head
+re-runs the ORIGIN cycle against live GitHub evidence and re-derives the
+identity, so a finding that lands on the reviewed head after the carry still
+blocks — the carry removes the second review, never the second look.
 A carried head spends neither ceiling and advances no cycle ordinal, and the
 ledger names it as such — `cycle 3/4 (+1 exempt, +1 carried)` — because a head
 attested without a reviewer reading it is exactly the thing a human reader must

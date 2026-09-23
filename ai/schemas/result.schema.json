@@ -575,7 +575,7 @@
                 "origin_base_sha",
                 "from_head",
                 "base_sha",
-                "patch_id",
+                "change_id",
                 "algorithm",
                 "generation",
                 "carried_at"
@@ -591,26 +591,6 @@
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
-                "origin_surface": {
-                  "description": "Where the carried verdict was read, when the cycle that produced it recorded one.",
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "enum": [
-                    "review",
-                    "comment",
-                    "reaction",
-                    null
-                  ]
-                },
-                "origin_id": {
-                  "description": "The id of that review, comment, or reaction -- the pointer a resumed session follows to the verdict itself.",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
                 "from_head": {
                   "description": "The head the state attested immediately before this carry. Equal to origin_head on the first carry, and to the previous carried head on a later one, so the hops are recoverable.",
                   "type": "string",
@@ -621,14 +601,14 @@
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
-                "patch_id": {
-                  "description": "The identity both patches hashed to. Equality of this one value IS the carry.",
+                "change_id": {
+                  "description": "The identity both diffs hashed to. Equality of this one value IS the carry.",
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
                 "algorithm": {
                   "description": "Pinned so a future identity change is a visible schema change rather than a silent re-interpretation of recorded proofs.",
-                  "const": "git-patch-id-verbatim/three-dot"
+                  "const": "git-diff-digest/three-dot/v1"
                 },
                 "generation": {
                   "description": "How many consecutive carries this head is away from the reviewed one. 1 is the first.",
@@ -719,7 +699,7 @@
                   "origin_base_sha",
                   "from_head",
                   "base_sha",
-                  "patch_id",
+                  "change_id",
                   "algorithm",
                   "generation",
                   "carried_at"
@@ -735,26 +715,6 @@
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
-                  "origin_surface": {
-                    "description": "Where the carried verdict was read, when the cycle that produced it recorded one.",
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "enum": [
-                      "review",
-                      "comment",
-                      "reaction",
-                      null
-                    ]
-                  },
-                  "origin_id": {
-                    "description": "The id of that review, comment, or reaction -- the pointer a resumed session follows to the verdict itself.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
                   "from_head": {
                     "description": "The head the state attested immediately before this carry. Equal to origin_head on the first carry, and to the previous carried head on a later one, so the hops are recoverable.",
                     "type": "string",
@@ -765,14 +725,14 @@
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
-                  "patch_id": {
-                    "description": "The identity both patches hashed to. Equality of this one value IS the carry.",
+                  "change_id": {
+                    "description": "The identity both diffs hashed to. Equality of this one value IS the carry.",
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
                   "algorithm": {
                     "description": "Pinned so a future identity change is a visible schema change rather than a silent re-interpretation of recorded proofs.",
-                    "const": "git-patch-id-verbatim/three-dot"
+                    "const": "git-diff-digest/three-dot/v1"
                   },
                   "generation": {
                     "description": "How many consecutive carries this head is away from the reviewed one. 1 is the first.",

@@ -2,7 +2,7 @@ FAIL: $result.payload.codex_cycle.carried: missing required property origin_head
 FAIL: $result.payload.codex_cycle.carried: missing required property origin_base_sha
 FAIL: $result.payload.codex_cycle.carried: missing required property from_head
 FAIL: $result.payload.codex_cycle.carried: missing required property base_sha
-FAIL: $result.payload.codex_cycle.carried: missing required property patch_id
+FAIL: $result.payload.codex_cycle.carried: missing required property change_id
 FAIL: $result.payload.codex_cycle.carried: missing required property algorithm
 FAIL: $result.payload.codex_cycle.carried: missing required property generation
 FAIL: $result.payload.codex_cycle.carried: missing required property carried_at
@@ -10,7 +10,7 @@ FAIL: $result.payload.finder_cycles[0].carried: missing required property origin
 FAIL: $result.payload.finder_cycles[0].carried: missing required property origin_base_sha
 FAIL: $result.payload.finder_cycles[0].carried: missing required property from_head
 FAIL: $result.payload.finder_cycles[0].carried: missing required property base_sha
-FAIL: $result.payload.finder_cycles[0].carried: missing required property patch_id
+FAIL: $result.payload.finder_cycles[0].carried: missing required property change_id
 FAIL: $result.payload.finder_cycles[0].carried: missing required property algorithm
 FAIL: $result.payload.finder_cycles[0].carried: missing required property generation
 FAIL: $result.payload.finder_cycles[0].carried: missing required property carried_at
