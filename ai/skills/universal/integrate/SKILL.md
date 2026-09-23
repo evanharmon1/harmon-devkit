@@ -145,7 +145,11 @@ When a cap of 0 skips a stage outright, there is no round to number: omit
 `round 0/0`.
 Where the integration stage has run any **exempt** cycle (harmon-init#1326),
 `round n/cap` counts the CHARGED ones and the exempt ones are named beside it
-— `cycle 3/4 (+1 exempt)` — never folded into `n`, and never left out. Folding
+— `cycle 3/4 (+1 exempt)` — never folded into `n`, and never left out. A head
+whose verdict was **carried** (harmon-init#752) ran no cycle at all and so
+moves no counter; it is named the same way, `(+1 carried)`, for the opposite
+reason — nothing was spent, and a reader must still be able to see that a head
+is attested without a reviewer having read it. Folding
 them in would report a budget that was not spent; leaving them out would hide
 work that really happened, and the reviewer really was asked to look. Both
 numbers are read from the cycle state's `charged_cycles` / `exempt_cycles`,
@@ -200,6 +204,28 @@ difficulty. Such a cycle is **exempt**: it runs, and it spends the separate
 second ceiling is why: a busy base branch could otherwise spend a whole run
 re-reviewing code nobody changed.
 
+**Before either ceiling, ask whether the cycle is needed at all**
+(harmon-init#752). The exemption above still runs the review — it spends a
+reviewer window and 10–15 minutes of wall clock to re-read bytes nobody
+changed. When the change is not merely *untouched by file* but **identical**,
+the previous clean verdict already covers this head, and the cycle can be
+skipped outright rather than paid for out of a second ceiling. `carry` decides
+that: it takes `git patch-id --verbatim` over the PR's three-dot diff at the
+reviewed head and at this one, from immutable commit SHAs in the local
+checkout, and carries the verdict only when the two identities are equal. Run
+it before `reserve`; exit 0 means carried (post no trigger, go straight to
+`check`, which re-derives the proof), exit 17 means reserve the ordinary cycle.
+A carried head spends neither ceiling and advances no cycle ordinal, and the
+ledger names it as such — `cycle 3/4 (+1 exempt, +1 carried)` — because a head
+attested without a reviewer reading it is exactly the thing a human reader must
+be able to see.
+
+The two mechanisms compose and do not overlap wastefully: `carry` is strictly
+stronger (content identity, local git, no API reconstruction) and strictly
+cheaper (no cycle), so it is tried first; the exemption catches what it cannot
+prove — a checkout without the history, a base the verdict was never
+corroborated against — where a cycle must run but should not be charged.
+
 Do not classify a cycle by eye. `reserve` decides it from evidence — the previous head must be an
 ancestor of this one, and the files the new commits changed must not intersect
 the files the PR has under review — and keeps the two running totals in state
@@ -212,7 +238,9 @@ on the same PR does not inherit its spend. A conflict resolution, or a fix slipp
 into the merge push, touches a file under review and charges normally.
 Anything the check cannot establish charges, because an exemption is a spend
 the reviewer never sanctioned. Report both counts on the integrator result as
-`codex_cycle.charged` and `codex_cycle.exempt`, and pass
+`codex_cycle.charged` and `codex_cycle.exempt`, report a carried head as
+`codex_cycle.carried` (the gate cross-checks it against the durable checker
+state and refuses a claim that state does not record), and pass
 `--integration-exempt-cap` to the readiness gate alongside `--integration-cap`
 so both ceilings are checked; omit the counters and the gate applies the
 original single-counter rule, which is correct for a pass that never

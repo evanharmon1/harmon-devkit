@@ -1,0 +1,65 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "b7c1e4d09a52f3861c4d7e08f9a2b3c4d5e6f708",
+  "produced_at": "2026-09-22T12:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-opus-5",
+    "tier": "apex"
+  },
+  "run": {
+    "run_id": "run-752-carried-empty",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "3001",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "b7c1e4d09a52f3861c4d7e08f9a2b3c4d5e6f708",
+      "cycle": 1,
+      "charged": 1,
+      "exempt": 0,
+      "attempt": 1,
+      "trigger_comment_id": "804001",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "804002",
+        "reviewed_commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233"
+      },
+      "carried": {}
+    },
+    "integration_round": 2,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-09-22T12:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": [],
+    "finder_cycles": [
+      {
+        "finder": "codex-cloud",
+        "head": "b7c1e4d09a52f3861c4d7e08f9a2b3c4d5e6f708",
+        "cycle": 1,
+        "charged": 1,
+        "exempt": 0,
+        "attempt": 1,
+        "trigger_comment_id": "804001",
+        "exit_code": 0,
+        "accepted": {
+          "surface": "review",
+          "id": "804002",
+          "reviewed_commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233"
+        },
+        "carried": {}
+      }
+    ]
+  }
+}

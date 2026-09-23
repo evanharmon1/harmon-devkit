@@ -3849,6 +3849,290 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
     fail "the detail must name the surviving disposition: $check_out"
+# ---------------------------------------------------------------------------
+# harmon-init#752: carrying a clean verdict across a base catch-up push.
+#
+# The mechanism is LOCAL git — `git patch-id --verbatim` over the PR's own
+# three-dot diff, taken twice from immutable commit SHAs — so these cases build
+# real history in their own repository and let the helper read it, rather than
+# stubbing an identity the code under test would then be trusted to compute.
+# Nothing here asserts a hash value: a fixture pinning one would pass against a
+# helper that returned the same wrong hash twice.
+#
+# The governing invariant is the one harmon-init#1326 established and this
+# inherits: a carry needs positive proof, and every other outcome runs the
+# ordinary cycle. So most of these cases assert NOT CARRIED — that is the safe
+# direction, and the one a regression leaves silently.
+carry_repo="${test_tmp}/carry-repo"
+git init -q "$carry_repo"
+git -C "$carry_repo" config user.name "Carry Test"
+git -C "$carry_repo" config user.email "carry-test@example.invalid"
+git -C "$carry_repo" config commit.gpgsign false
+printf 'alpha\nbravo\n' >"${carry_repo}/f.txt"
+printf 'untouched\n' >"${carry_repo}/g.txt"
+git -C "$carry_repo" add -A
+git -C "$carry_repo" commit -q -m "base one"
+carry_base_one="$(git -C "$carry_repo" rev-parse HEAD)"
+carry_trunk="$(git -C "$carry_repo" symbolic-ref --short HEAD)"
+
+# The reviewed change: one edit to f.txt.
+git -C "$carry_repo" checkout -q -b pr-branch
+printf 'alpha\nCHARLIE\n' >"${carry_repo}/f.txt"
+git -C "$carry_repo" commit -q -am "the reviewed change"
+carry_origin_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# The base moves under it, touching only a file the PR does not.
+git -C "$carry_repo" checkout -q "$carry_trunk"
+printf 'untouched\nplus a base-only line\n' >"${carry_repo}/g.txt"
+git -C "$carry_repo" commit -q -am "base two"
+carry_base_two="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# The catch-up merge. Same change, new head.
+git -C "$carry_repo" checkout -q pr-branch
+git -C "$carry_repo" merge -q --no-edit "$carry_base_two"
+carry_merged_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# One byte more, on top of the merge.
+git -C "$carry_repo" checkout -q -b pr-branch-moved
+printf 'alpha\nCHARLIf\n' >"${carry_repo}/f.txt"
+git -C "$carry_repo" commit -q -am "one byte of the reviewed change"
+carry_moved_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# The same change with one trailing space. `git patch-id --stable` — the flag
+# the issue proposed and the obvious thing to reach for — hashes this
+# IDENTICALLY to the reviewed change, because it documents that "all whitespace
+# within the patch is ignored". `--verbatim` is what makes this case fail to
+# carry, so this fixture is the one that fails if that flag is ever relaxed.
+git -C "$carry_repo" checkout -q -b pr-branch-whitespace "$carry_merged_head"
+printf 'alpha\nCHARLIE \n' >"${carry_repo}/f.txt"
+git -C "$carry_repo" commit -q -am "reformat the reviewed hunk"
+carry_whitespace_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# The identical change replayed on the new base as a fresh commit: same patch
+# identity, but the reviewed head is NOT in its history. A rebase or a
+# force-push looks exactly like this, and the carve-out is a base CATCH-UP.
+git -C "$carry_repo" checkout -q -b pr-branch-rebased "$carry_base_two"
+printf 'alpha\nCHARLIE\n' >"${carry_repo}/f.txt"
+git -C "$carry_repo" commit -q -am "the reviewed change, replayed"
+carry_rebased_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# A head whose three-dot diff is EMPTY. `git patch-id` prints nothing at all
+# for an empty patch, so two empty diffs would compare equal as two empty
+# strings — a carry resting on no evidence whatever.
+git -C "$carry_repo" checkout -q -b pr-branch-empty "$carry_base_one"
+git -C "$carry_repo" commit -q --allow-empty -m "no change at all"
+carry_empty_head="$(git -C "$carry_repo" rev-parse HEAD)"
+
+# $1 live head, $2 live base sha
+carry_fixtures() {
+    write_defaults
+    printf '%s' "$1" >"${fixtures}/head"
+    jq -cn --argjson author "$pr_author_id" --arg head "$1" --arg base "$2" \
+        '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
+          base:{ref:"main",sha:$base}}' >"${fixtures}/pr.json"
+}
+
+# $1 state head, $2 last reviewed head, $3 last reviewed base, $4 verdict,
+# $5 run id
+seed_reviewed_state() {
+    jq -cn --arg head "$1" --arg reviewed "$2" --arg base "$3" \
+        --arg verdict "$4" --arg run "$5" '{
+          version:2, repo:"example/repo", pr:493, head:$head, attempt:1,
+          phase:"attached", reserved_at:"2026-07-31T08:00:00Z",
+          requested_at:"2026-07-31T08:00:00Z", trigger_comment_id:4242,
+          previous_trigger_comment_id:null, first_trigger_comment_id:4242,
+          requires_full_window:false, timeout_min:null, settled:[], finder:null,
+          charge:"charged", charge_reason:"seeded", charged_cycles:2,
+          exempt_cycles:1, run_id:$run, base_sha:$base,
+          last_reviewed_head:(if $reviewed == "" then null else $reviewed end),
+          last_reviewed_base_sha:(if $base == "" then null else $base end),
+          last_reviewed_verdict:(if $verdict == "" then null else $verdict end),
+          last_reviewed_surface:"review", last_reviewed_id:"9001"
+        }' >"$state"
+}
+
+# `check` re-derives a carried proof in the checkout named by --repo-dir, the
+# same as `carry` does. The suite's cwd is a DIFFERENT repository, so a carried
+# state must be re-checked against the one that holds the history — which is
+# also the property this asserts: the checkout is an argument, not an ambient
+# assumption about where the helper happens to be run from.
+run_check_in_carry_repo() {
+    set +e
+    check_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
+        --state "$state" --actor-id "$actor_id" \
+        --actor-login "$actor_login" --timeout-min 15 \
+        --repo-dir "$carry_repo" --now "$1" 2>&1)"
+    check_rc=$?
+    set -e
+    check_watchdog "$check_rc" run_check_in_carry_repo "$check_out"
+}
+
+run_carry() {
+    set +e
+    carry_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" carry \
+        --state "$state" --head "$1" --run-id "${2:-run-a}" \
+        --repo-dir "$carry_repo" 2>&1)"
+    carry_rc=$?
+    set -e
+    check_watchdog "$carry_rc" run_carry "$carry_out"
+}
+
+assert_carry() {
+    [ "$carry_rc" -eq "$1" ] ||
+        fail "$3: expected rc $1, got $carry_rc: $carry_out"
+    carry_status="$(printf '%s' "$carry_out" | jq -r '.status' 2>/dev/null || true)"
+    [ "$carry_status" = "$2" ] ||
+        fail "$3: expected status $2, got '$carry_status': $carry_out"
+}
+
+echo "==> an unchanged reviewed change carries the clean verdict across a base merge"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_merged_head"
+assert_carry 0 carried "base-merge carry"
+[ "$(jq -r '.phase' "$state")" = carried ] ||
+    fail "a carried verdict must leave the state in the carried phase: $(cat "$state")"
+[ "$(jq -r '.head' "$state")" = "$carry_merged_head" ] ||
+    fail "a carried verdict must attest the new head: $(cat "$state")"
+[ "$(jq -r '.carry.origin_head' "$state")" = "$carry_origin_head" ] ||
+    fail "the carry record must name the head a reviewer actually read: $(cat "$state")"
+[ "$(jq -r '.carry.generation' "$state")" = 1 ] ||
+    fail "the first carry is generation 1: $(cat "$state")"
+[ "$(jq -r '.trigger_comment_id' "$state")" = null ] ||
+    fail "a carried head has no trigger of its own: $(cat "$state")"
+# The whole point: no cycle was reserved, so neither ceiling moved.
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] && [ "$(jq -r '.exempt_cycles' "$state")" = 1 ] ||
+    fail "a carry must spend neither ceiling: $(cat "$state")"
+# `last_reviewed_head` still names the head a reviewer read, so a later carry
+# re-proves against real evidence rather than against this carry.
+[ "$(jq -r '.last_reviewed_head' "$state")" = "$carry_origin_head" ] ||
+    fail "a carry must not overwrite the reviewed head: $(cat "$state")"
+
+echo "==> check re-derives the carried proof instead of reading it back"
+run_check_in_carry_repo "$request_time"
+assert_status 0 clean
+[ "$(printf '%s' "$check_out" | jq -r '.carried.origin_head')" = "$carry_origin_head" ] ||
+    fail "a carried clean result must disclose where the verdict came from: $check_out"
+# The receipt is the ORIGIN's, reviewed_commit and all: a carried cycle
+# re-presents a review that really happened rather than stamping this head.
+[ "$(printf '%s' "$check_out" | jq -r '.accepted.reviewed_commit')" = "$carry_origin_head" ] ||
+    fail "a carried receipt must name the commit the reviewer actually read: $check_out"
+[ "$(printf '%s' "$check_out" | jq -r '.accepted.surface')" = review ] &&
+    [ "$(printf '%s' "$check_out" | jq -r '.accepted.id')" = 9001 ] ||
+    fail "a carried receipt must re-present the origin cycle's own evidence: $check_out"
+[ "$(jq -r '.last_reviewed_head' "$state")" = "$carry_origin_head" ] ||
+    fail "re-checking a carried state must not re-mark it as reviewed: $(cat "$state")"
+
+echo "==> check refuses a carried proof that no longer matches the record"
+jq '.carry.patch_id = "4444444444444444444444444444444444444444"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check_in_carry_repo "$request_time"
+assert_status 2 indeterminate
+
+echo "==> a carried proof cannot be re-derived from a checkout without the history"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_merged_head"
+assert_carry 0 carried "foreign-checkout setup"
+run_check "$request_time"
+assert_status 2 indeterminate
+
+echo "==> one byte of the reviewed change forces a fresh cycle"
+carry_fixtures "$carry_moved_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_moved_head"
+assert_carry 17 not-carried "one byte changed"
+[ "$(jq -r '.phase' "$state")" = attached ] ||
+    fail "a refused carry must leave the state untouched: $(cat "$state")"
+[ "$(jq -r '.head' "$state")" = "$carry_origin_head" ] ||
+    fail "a refused carry must not move the head: $(cat "$state")"
+
+echo "==> a whitespace-only reformat of the reviewed hunk forces a fresh cycle"
+# This is the case `git patch-id --stable` cannot see. It fails if the identity
+# ever falls back to the whitespace-blind hash.
+carry_fixtures "$carry_whitespace_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_whitespace_head"
+assert_carry 17 not-carried "whitespace-only change"
+
+echo "==> an identical patch on rewritten history is not a base catch-up"
+carry_fixtures "$carry_rebased_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_rebased_head"
+assert_carry 17 not-carried "rebased head"
+case "$carry_out" in
+*"is not an ancestor"*) ;;
+*) fail "a rebased head must be refused for ancestry, not for identity: $carry_out" ;;
+esac
+
+echo "==> an empty reviewed change has no identity to carry"
+carry_fixtures "$carry_empty_head" "$carry_base_one"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_empty_head"
+assert_carry 17 not-carried "empty diff"
+
+echo "==> a clean verdict with no recorded receipt cannot be carried"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+jq '.last_reviewed_surface = null | .last_reviewed_id = null' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_carry "$carry_merged_head"
+assert_carry 17 not-carried "no recorded receipt"
+
+echo "==> a findings verdict is never carried"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" findings run-a
+run_carry "$carry_merged_head"
+assert_carry 17 not-carried "findings verdict"
+
+echo "==> an unrecorded reviewed base leaves the reviewed patch with no identity"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "" clean run-a
+run_carry "$carry_merged_head"
+assert_carry 17 not-carried "no recorded base"
+
+echo "==> another run's clean verdict cannot be carried into this one"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-b
+run_carry "$carry_merged_head" run-a
+assert_carry 17 not-carried "foreign run"
+
+echo "==> a carried head can still be given the ordinary cycle it skipped"
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+run_carry "$carry_merged_head"
+assert_carry 0 carried "escape-hatch setup"
+rm -f "${state%.json}.spend.json"
+set +e
+reserve_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$carry_merged_head" --attempt 2 --run-id run-a 2>&1)"
+reserve_rc=$?
+set -e
+[ "$reserve_rc" -ne 0 ] ||
+    fail "attempt 2 on a carried head has no attempt 1 to re-trigger: $reserve_out"
+# The replacement is an ordinary cycle, so it is classified the ordinary way —
+# and on this history harmon-init#1326 reaches the same conclusion the carry
+# did, one layer down: the merge touched no file under review. The two
+# mechanisms compose rather than contradict, and the cycle lands on the exempt
+# ceiling rather than the charged one.
+printf '%s' '{"status":"ahead","files":[{"filename":"g.txt"}]}' \
+    >"${fixtures}/compare-${carry_origin_head}___${carry_merged_head}.json"
+printf '%s' '{"files":[{"filename":"f.txt"}]}' \
+    >"${fixtures}/compare-${carry_base_one}___${carry_origin_head}.json"
+printf '%s' '{"files":[{"filename":"f.txt"}]}' \
+    >"${fixtures}/compare-${carry_base_two}___${carry_merged_head}.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$carry_merged_head" --attempt 1 --run-id run-a \
+    --integration-cap 4 --integration-exempt-cap 4 >/dev/null ||
+    fail "a carried head must accept a fresh attempt-1 reservation"
+[ "$(jq -r '.phase' "$state")" = reserved ] ||
+    fail "the replacement reservation must leave an ordinary reserved cycle: $(cat "$state")"
+[ "$(jq -r '.charge' "$state")" = exempt ] ||
+    fail "the replacement cycle re-reads identical code and must be exempt: $(jq -r '.charge_reason' "$state")"
+
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+
 # harmon-init#1326, challenge round 3, P1 (confirmed): every documented flag
 # must actually PARSE. This script's argument handling is two nested `case`
 # blocks — an outer one that allowlists the flag NAMES and an inner one that

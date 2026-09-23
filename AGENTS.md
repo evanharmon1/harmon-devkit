@@ -390,6 +390,24 @@ charges, because an exemption is a spend no reviewer sanctioned. The ledger
 names which counter each cycle spent — `cycle n/cap (+m exempt)` — so
 `round n/cap` stays honest.
 
+**A cycle that would re-read identical bytes is not run at all**
+(harmon-init#752). The exemption above still spends a reviewer window on a
+re-read; where the reviewed change is not merely untouched by file but
+**identical**, the clean verdict already attests this head and the cycle is
+skipped outright. Identity is `git patch-id --verbatim` over the PR's own
+three-dot diff, taken from immutable commit SHAs in the local checkout: local
+git, never a reconstruction from the API of what a reviewer saw. Equal
+identities carry the verdict forward and the head spends **neither** ceiling;
+anything else — a changed patch, rewritten history rather than a catch-up
+merge, a base the verdict was never corroborated against, a checkout without
+the commits — runs the ordinary cycle. The proof is recorded, and re-derived
+rather than re-read, every time it is relied on. Two things never move with
+it: CI always re-runs on the new head in full, because what a base merge can
+change is everything *outside* the diff and that is CI's to catch; and the
+ledger names a carried head — `cycle n/cap (+m exempt, +k carried)` — because
+a head attested without a reviewer reading it is precisely what a human must
+be able to see.
+
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,
 `challenger_tier`, `reviewer_tier`, and `integrator_tier`; `[role.*]` supplies
@@ -585,12 +603,17 @@ reporting green.
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`, with
 `.claude/skills/shepherd/assets/check-codex-cloud-review.sh` as legacy
 fallback), it is the
-required implementation — never hand-roll the polling: `reserve` the cycle
+required implementation — never hand-roll the polling: `carry` first, on a
+head that moved (exit 0 carries the previous clean verdict and there is no
+cycle to run; exit 17 is the ordinary "reserve one" answer), otherwise
+`reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then post `@codex review`, `attach` the comment
 ID it returned, and `check`, acting on its exit code (0 clean, 10 findings,
 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted,
-16 transient read, 2 indeterminate). It never writes to GitHub,
+16 transient read, 2 indeterminate). `check` is run either way: on a carried
+head it re-derives the proof instead of polling, so the gate's one re-check
+covers both shapes. It never writes to GitHub,
 so posting the trigger stays yours, and its `settle` subcommand records the
 disposition of a badged finding stated outside an inline thread.
 **Where it is not vendored**, the same contract is satisfied by hand: post the

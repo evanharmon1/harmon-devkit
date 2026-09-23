@@ -3845,4 +3845,115 @@ set -e
 [ "$wb_rc" -eq 7 ] ||
     fail "gh-write-broker should propagate gh's exit 7, got $wb_rc"
 
+# harmon-init#752: a CARRIED cycle is the one result shape claiming that no
+# reviewer ever read the gated head. The gate cannot re-derive the patch
+# identity itself — that is the checker's job, and --codex-recheck is what
+# runs it — but it can refuse a claim with nothing durable behind it, which is
+# the same integrity rule the charged/exempt split answers to.
+carried_origin=0a1b2c3d4e5f60718293a4b5c6d7e8f900112233
+carried_patch=fedcba9876543210fedcba9876543210fedcba98
+
+# $1 origin head, $2 patch id
+carried_cycle_json() {
+    jq -c --arg origin "$1" --arg patch "$2" '
+      .accepted.reviewed_commit = $origin |
+      .carried = {
+        origin_head: $origin,
+        origin_base_sha: "1122334455667788990011223344556677889900",
+        origin_surface: "review",
+        origin_id: "1",
+        from_head: $origin,
+        base_sha: "99887766554433221100998877665544332211aa",
+        patch_id: $patch,
+        algorithm: "git-patch-id-verbatim/three-dot",
+        generation: 1,
+        carried_at: "2026-09-22T12:00:00Z"
+      }' <<<"$(codex_cycle_json 0)"
+}
+
+echo "==> a carried verdict the checker state corroborates passes"
+write_defaults
+jq --arg o "$carried_origin" --arg p "$carried_patch" \
+    '.carry = {origin_head: $o, patch_id: $p}' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+carried_result="$(write_integrator_result carried-ok "$(carried_cycle_json "$carried_origin" "$carried_patch")")"
+run_gate_recheck_clean --integrator-result "$carried_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 0 pass ready
+
+echo "==> a carried verdict with no --codex-recheck state is codex-carried-unproven"
+# The advisory flag stops being advisory for exactly this shape: with no
+# reviewer evidence for this head, the result's own say-so is all there is.
+write_defaults
+carried_result="$(write_integrator_result carried-no-state "$(carried_cycle_json "$carried_origin" "$carried_patch")")"
+run_gate --integrator-result "$carried_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-carried-unproven
+
+echo "==> a carried verdict the checker state does not record is codex-carried-unproven"
+write_defaults
+jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+carried_result="$(write_integrator_result carried-unrecorded "$(carried_cycle_json "$carried_origin" "$carried_patch")")"
+run_gate_recheck_clean --integrator-result "$carried_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-carried-unproven
+
+echo "==> a carried verdict whose identity disagrees with the state is codex-carried-unproven"
+# The direction that matters: a producer naming a DIFFERENT proven change
+# would otherwise have this head accepted on a verdict about other bytes.
+write_defaults
+jq --arg o "$carried_origin" --arg p "$carried_patch" \
+    '.carry = {origin_head: $o, patch_id: $p}' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+carried_result="$(write_integrator_result carried-wrong-patch \
+    "$(carried_cycle_json "$carried_origin" 1111111111111111111111111111111111111111)")"
+run_gate_recheck_clean --integrator-result "$carried_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-carried-unproven
+
+write_defaults
+jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+
+# harmon-init#752. The checker suite grew this property test at
+# harmon-init#1326's challenge round 3, after a flag was added to the inner assigning
+# `case` and not the outer name allowlist. The same mistake was made in THIS
+# script's gate on the same day — and the fix was replicated to one of the two
+# sites, which is the shape the whole finding was about. So the property lives
+# here too now: every flag the gate's own synopsis documents must parse.
+echo "==> every flag named in the gate's usage text is actually parsed"
+gate_usage="$("$gate" --help 2>&1 || true)"
+gate_flags="$(printf '%s\n' "$gate_usage" |
+    awk '/^Usage:/{inblock=1; next} inblock && /^[[:space:]]*$/{exit} inblock' |
+    grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+[ -n "$gate_flags" ] || fail "could not extract any flag from the gate's usage text"
+while IFS= read -r gate_flag; do
+    [ -n "$gate_flag" ] || continue
+    case "$gate_flag" in
+    --help) continue ;;
+    esac
+    # Unlike the checker's probe, this one has to supply every REQUIRED flag
+    # first: the gate prints usage for a missing one, so a bare probe reports
+    # each parsed flag as unparsed and the property test would fail on all of
+    # them at once — which is a test that can never pass rather than one that
+    # catches the bug. With the requirements satisfied, `probe` as a VALUE is
+    # rejected by the gate's own validation (`die`, no usage block), so usage
+    # in the output can only mean the flag name itself fell through.
+    gate_probe="$("$gate" check \
+        --repo example/repo --pr 493 \
+        --head 1111111111111111111111111111111111111111 \
+        --record "${test_tmp}/no-such-record" \
+        --integrator-result "${test_tmp}/no-such-result.json" \
+        --integration-cap 1 --remediation-cap 1 \
+        "$gate_flag" probe 2>&1 || true)"
+    case "$gate_probe" in
+    *"Usage:"*)
+        fail "flag $gate_flag appears in the gate's usage text but is not parsed (missing from the outer allowlist?)"
+        ;;
+    esac
+done <<EOF
+$gate_flags
+EOF
+
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

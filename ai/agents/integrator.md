@@ -56,7 +56,13 @@ A workable brief names:
   the trigger is posted — the readiness gate sees the overspend only after the
   review has already run. Copy those two numbers
   onto your result as `codex_cycle.charged` and `codex_cycle.exempt`, so the
-  readiness gate can check each ceiling against the counter it belongs to. An
+  readiness gate can check each ceiling against the counter it belongs to.
+  harmon-init#752 adds a third outcome above both ceilings: a head whose
+  reviewed change is provably unchanged spends NOTHING, because no cycle runs
+  at all. `carry` (§4) decides that, also from evidence; when it succeeds,
+  `cycle`, `charged`, and `exempt` all stay exactly where the last real cycle
+  left them, and `codex_cycle.carried` is what discloses why the head is
+  attested without a reviewer having read it. An
   older brief that names neither is one whose cycles were all charged, and the
   gate holds it to the single-counter rule; do not synthesize the split
   yourself when the brief does not carry a run id.
@@ -346,6 +352,33 @@ else
 fi
 ```
 
+**Before reserving a fresh cycle, ask whether one is needed at all**
+(harmon-init#752). When the head advanced only by a base catch-up merge, the
+PR's diff can be byte-identical to the one a reviewer already called clean —
+re-reviewing it re-attests the same bytes, and the cost is a full reviewer
+window plus a cap slot. `carry` answers that question from local git and
+writes no GitHub state:
+
+```sh
+carry_exit=0
+carry_out="$("$helper" carry --state "$state" --head "<head>" \
+    --run-id "<run id>" --repo-dir "$(git rev-parse --show-toplevel)")" || carry_exit=$?
+```
+
+- **exit 0** — carried. Post **no** trigger, run no `attach`, and skip the
+  fresh-cycle sequence entirely. Go straight to `check` below, which
+  re-derives the same proof rather than reading the record back, and report
+  the cycle as described under `codex_cycle.carried` in §5.
+- **exit 17** — not carried, for the reason in the output. This is the
+  ordinary answer, not an error: continue to the three cases below exactly as
+  if you had never called it.
+- **any other exit** — treat as 17 and continue. `carry` is an optimization
+  over a cycle you were going to run anyway, so a broken one costs a cycle
+  rather than a verdict.
+
+Run it only when the state file exists and names a DIFFERENT head; there is
+nothing to carry otherwise, and `carry` will say so.
+
 Three cases, mutually exclusive:
 
 - **No state file, or state for a different head.** This is a fresh cycle.
@@ -552,6 +585,20 @@ reviewed_commit: (check_out | .accepted.reviewed_commit)}`. All three are
 always present together on these two exit codes; their absence is a
 malformed `check_out` your brief did not anticipate — stop and report it
 rather than fabricating a value.
+
+A **carried** clean (harmon-init#752) also carries `check_out.carried`. Copy
+that object verbatim to `codex_cycle.carried`, exactly as you copy `accepted`
+— it is the disclosure the readiness gate cross-checks against the durable
+checker state, and a gate that is given a carried result it cannot corroborate
+there reports `codex-carried-unproven` rather than promoting. On this one
+shape `accepted.reviewed_commit` is deliberately NOT this head: it names
+`carried.origin_head`, the commit the reviewer actually read, because a cycle
+that asked nobody anything must re-present a real receipt rather than mint one.
+Copy what `check_out` gives you; the receipt validator knows about this case
+and refuses any other pairing. Leave `cycle`, `charged`, and `exempt` at the
+numbers the last real cycle left — a carried head ran no cycle and spent
+nothing, and inflating any of the three makes the gate's arithmetic disagree
+with the checker state.
 
 A `10` raised by inline threads also carries `unanswered[]` — one
 `{thread_root, comment_id, review_id, path}` entry per unadjudicated bot
@@ -811,7 +858,10 @@ both being "now" (Codex cloud-review cycle on this PR, harmon-devkit#758).
 own `head`, `payload.codex_cycle.head` (when non-null),
 `payload.codex_cycle.accepted.reviewed_commit` (when present), and every
 `payload.finder_cycles[].head` and `.accepted.reviewed_commit` must all be
-identical, never separate reads of "the current head".
+identical, never separate reads of "the current head". The single exception is
+a CARRIED cycle (harmon-init#752), where `accepted.reviewed_commit` names
+`carried.origin_head` instead; every other field on that list still equals
+this head, including `codex_cycle.head` itself.
 
 Derive `$verdict` mechanically, never by feel: `clean` only when every
 required check is `pass` (or non-required and `skipping`), the Codex cycle

@@ -112,6 +112,81 @@
             }
           }
         },
+        "carried": {
+          "description": "Present only when this cycle spent NOTHING because a clean verdict for an earlier head still attests this one (harmon-init#752). The head advanced by a base catch-up merge that left the PR's three-dot diff byte-identical, so re-reviewing it would re-attest the same bytes; `carry` proved that with `git patch-id --verbatim` over immutable commit SHAs, and `check` re-derives the same proof rather than reading the record back. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever the last real cycle left them at -- and it asked no reviewer anything, so its `accepted` and `trigger_comment_id` name the ORIGIN cycle's evidence: the real review and the real trigger that produced the verdict. `accepted.reviewed_commit` is therefore `origin_head` rather than this head -- the one place a receipt's reviewed_commit may differ from the envelope head, permitted by the validator's receipt pass only when this object is present.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "origin_head",
+            "origin_base_sha",
+            "from_head",
+            "base_sha",
+            "patch_id",
+            "algorithm",
+            "generation",
+            "carried_at"
+          ],
+          "properties": {
+            "origin_head": {
+              "description": "The head a reviewer actually read, and whose clean verdict this cycle carries. Never the previous carry: a chain re-proves against the original evidence rather than against another proof.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "origin_base_sha": {
+              "description": "The base that verdict was read against, corroborated between reservation and verdict. Half of the reviewed patch's identity.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "origin_surface": {
+              "description": "Where the carried verdict was read, when the cycle that produced it recorded one.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "review",
+                "comment",
+                "reaction",
+                null
+              ]
+            },
+            "origin_id": {
+              "description": "The id of that review, comment, or reaction -- the pointer a resumed session follows to the verdict itself.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_head": {
+              "description": "The head the state attested immediately before this carry. Equal to origin_head on the first carry, and to the previous carried head on a later one, so the hops are recoverable.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "base_sha": {
+              "description": "The base this head's patch identity was taken against.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "patch_id": {
+              "description": "The identity both patches hashed to. Equality of this one value IS the carry.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "algorithm": {
+              "description": "Pinned so a future identity change is a visible schema change rather than a silent re-interpretation of recorded proofs.",
+              "const": "git-patch-id-verbatim/three-dot"
+            },
+            "generation": {
+              "description": "How many consecutive carries this head is away from the reviewed one. 1 is the first.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "carried_at": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "exit_code": {
           "description": "The verbatim exit code from ai/skills/universal/integrate/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted (the finder answered that its code-review usage limit is spent — harmon-devkit#573), 16 transient read (an evidence read failed, which is NOT evidence the cycle is not clean — harmon-devkit#508), 2 indeterminate. 15 and 16 are additions: every older code keeps its exact meaning.",
           "enum": [0, 2, 10, 11, 12, 13, 14, 15, 16]
@@ -178,6 +253,81 @@
               "reviewed_commit": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{40}$"
+              }
+            }
+          },
+          "carried": {
+            "description": "Present only when this cycle spent NOTHING because a clean verdict for an earlier head still attests this one (harmon-init#752). The head advanced by a base catch-up merge that left the PR's three-dot diff byte-identical, so re-reviewing it would re-attest the same bytes; `carry` proved that with `git patch-id --verbatim` over immutable commit SHAs, and `check` re-derives the same proof rather than reading the record back. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever the last real cycle left them at -- and it asked no reviewer anything, so its `accepted` and `trigger_comment_id` name the ORIGIN cycle's evidence: the real review and the real trigger that produced the verdict. `accepted.reviewed_commit` is therefore `origin_head` rather than this head -- the one place a receipt's reviewed_commit may differ from the envelope head, permitted by the validator's receipt pass only when this object is present.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "origin_head",
+              "origin_base_sha",
+              "from_head",
+              "base_sha",
+              "patch_id",
+              "algorithm",
+              "generation",
+              "carried_at"
+            ],
+            "properties": {
+              "origin_head": {
+                "description": "The head a reviewer actually read, and whose clean verdict this cycle carries. Never the previous carry: a chain re-proves against the original evidence rather than against another proof.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "origin_base_sha": {
+                "description": "The base that verdict was read against, corroborated between reservation and verdict. Half of the reviewed patch's identity.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "origin_surface": {
+                "description": "Where the carried verdict was read, when the cycle that produced it recorded one.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "review",
+                  "comment",
+                  "reaction",
+                  null
+                ]
+              },
+              "origin_id": {
+                "description": "The id of that review, comment, or reaction -- the pointer a resumed session follows to the verdict itself.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "from_head": {
+                "description": "The head the state attested immediately before this carry. Equal to origin_head on the first carry, and to the previous carried head on a later one, so the hops are recoverable.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "base_sha": {
+                "description": "The base this head's patch identity was taken against.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "patch_id": {
+                "description": "The identity both patches hashed to. Equality of this one value IS the carry.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "algorithm": {
+                "description": "Pinned so a future identity change is a visible schema change rather than a silent re-interpretation of recorded proofs.",
+                "const": "git-patch-id-verbatim/three-dot"
+              },
+              "generation": {
+                "description": "How many consecutive carries this head is away from the reviewed one. 1 is the first.",
+                "type": "integer",
+                "minimum": 1
+              },
+              "carried_at": {
+                "type": "string",
+                "minLength": 1
               }
             }
           },

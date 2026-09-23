@@ -579,6 +579,10 @@ const SEMANTIC_ONLY = new Set([
   'result.challenger.schema/invalid/attack-scenario-unknown-finding-reference.json',
   'result.challenger.schema/invalid/attack-scenario-duplicate-id.json',
   'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
+  // harmon-init#752: which commit a receipt must name is conditional on a
+  // sibling object's CONTENT (carried.origin_head), which no keyword in this
+  // subset can compare a field against — the same category as the line above.
+  'result.integrator.schema/invalid/carried-receipt-names-neither-head.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
   'result.integrator.schema/invalid/clean-with-empty-checks.json',

@@ -1,0 +1,2 @@
+FAIL: $result.payload.codex_cycle.carried.origin_surface: must be one of "review", "comment", "reaction", null
+FAIL: $result.payload.finder_cycles[0].carried.origin_surface: must be one of "review", "comment", "reaction", null

@@ -787,6 +787,30 @@ function checkChallengerAttackScenarios(envelope, errors) {
   }
 }
 
+// expectedReviewedCommit — which commit a cycle's accepted receipt must name.
+//
+// Normally the envelope head, because the receipt is the reviewer's own stamp
+// that it read THIS commit. harmon-init#752 adds the one exception: a CARRIED
+// cycle asked no reviewer anything. Its receipt is the original cycle's — a
+// real review of a real commit — re-presented for a head whose change was
+// proved byte-identical, so it names `carried.origin_head` and saying anything
+// else would forge the stamp. The exception is granted only by a
+// well-formed `carried` object naming a commit-shaped origin: a producer that
+// simply wants a mismatch accepted has to assert the carry, which the gate
+// then re-derives from the durable checker state rather than believes.
+function expectedReviewedCommit(cycle, head) {
+  const carried = cycle && cycle.carried
+  if (
+    carried &&
+    typeof carried === 'object' &&
+    typeof carried.origin_head === 'string' &&
+    /^[0-9a-f]{40}$/.test(carried.origin_head)
+  ) {
+    return carried.origin_head
+  }
+  return head
+}
+
 // checkHeadAgreement — every head-shaped field in a payload must equal the
 // envelope's head (specs/dev-flow-v2.md § Results, "Heads must agree").
 function checkHeadAgreement(kind, envelope, errors) {
@@ -808,9 +832,10 @@ function checkHeadAgreement(kind, envelope, errors) {
     }
     const accepted = payload.codex_cycle.accepted
     if (accepted && typeof accepted === 'object' && typeof accepted.reviewed_commit === 'string') {
-      if (accepted.reviewed_commit !== head) {
+      const expected = expectedReviewedCommit(payload.codex_cycle, head)
+      if (accepted.reviewed_commit !== expected) {
         errors.push(
-          `$result.payload.codex_cycle.accepted.reviewed_commit: ${accepted.reviewed_commit} does not match envelope head ${head}`
+          `$result.payload.codex_cycle.accepted.reviewed_commit: ${accepted.reviewed_commit} does not match ${expected === head ? `envelope head ${head}` : `carried.origin_head ${expected}`}`
         )
       }
     }
@@ -825,9 +850,10 @@ function checkHeadAgreement(kind, envelope, errors) {
       }
       const fcAccepted = fc.accepted
       if (fcAccepted && typeof fcAccepted === 'object' && typeof fcAccepted.reviewed_commit === 'string') {
-        if (fcAccepted.reviewed_commit !== head) {
+        const fcExpected = expectedReviewedCommit(fc, head)
+        if (fcAccepted.reviewed_commit !== fcExpected) {
           errors.push(
-            `$result.payload.finder_cycles[${i}].accepted.reviewed_commit: ${fcAccepted.reviewed_commit} does not match envelope head ${head}`
+            `$result.payload.finder_cycles[${i}].accepted.reviewed_commit: ${fcAccepted.reviewed_commit} does not match ${fcExpected === head ? `envelope head ${head}` : `carried.origin_head ${fcExpected}`}`
           )
         }
       }
