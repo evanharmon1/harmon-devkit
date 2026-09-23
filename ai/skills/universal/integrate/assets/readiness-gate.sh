@@ -766,8 +766,14 @@ recheck_codex_freshness() {
     state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
     state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
     state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
-    [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] && [ "$state_head" = "$head" ] ||
-        indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
+    # harmon-init#752: a cycle can attest a LATER head than its own, so the
+    # state's head legitimately differs from the gated one — but only when the
+    # state itself says so. The claim is the state's, never the caller's, and
+    # the checker re-derives the identity behind it on the very next line.
+    state_attests="$(jq -r '.carry.attests_head // empty' "$codex_recheck_state" 2>/dev/null)"
+    [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] &&
+        { [ "$state_head" = "$head" ] || [ "$state_attests" = "$head" ]; } ||
+        indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}${state_attests:+ (attesting $state_attests)}, not the gated $repo#$pr@$head"
     codex_recheck_exit=0
     # Review round 5, P1 (confirmed): this recheck is the gate's own use of the
     # checker, and it was the one call site still not naming the run. A later
@@ -1634,22 +1640,33 @@ if [ "$codex_cycle" != null ]; then
     # Without that state there is nothing behind the claim but the producer's
     # word, so a claimed carry with no state is indeterminate rather than a
     # pass; `--codex-recheck` stays advisory for every other shape.
-    cycle_carried_id="$(jq -er '.carried.change_id | select(type == "string")' \
-        <<<"$codex_cycle" 2>/dev/null)" || cycle_carried_id=
-    if [ -n "$cycle_carried_id" ]; then
-        cycle_carried_origin="$(jq -er '.carried.origin_head | select(type == "string")' \
-            <<<"$codex_cycle" 2>/dev/null)" || cycle_carried_origin=
+    if jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1; then
         [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ] ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but no --codex-recheck state was supplied to confirm it against — a carry means no reviewer read this head, so the claim cannot rest on the result alone"
-        state_carry_id="$(jq -er '.carry.change_id | select(type == "string")' \
-            "$codex_recheck_state" 2>/dev/null)" || state_carry_id=
-        state_carry_origin="$(jq -er '.carry.origin_head | select(type == "string")' \
-            "$codex_recheck_state" 2>/dev/null)" || state_carry_origin=
-        [ -n "$state_carry_id" ] ||
-            indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but the checker state records no carry to confirm it against"
-        [ "$cycle_carried_id" = "$state_carry_id" ] &&
-            [ "$cycle_carried_origin" = "$state_carry_origin" ] ||
-            indeterminate codex-carried-unproven "codex_cycle claims a verdict carried from ${cycle_carried_origin:-?} with change identity $cycle_carried_id, but the checker state records ${state_carry_origin:-none} / ${state_carry_id:-none}"
+        # Challenge round 2, finding `challenge-r2-codex-adversarial-3`
+        # (confirmed P2): spot-checking two fields let a schema-valid result
+        # alter `from_head`, `base_sha`, `generation` or `carried_at` while
+        # keeping the two that were compared — a promoted result carrying false
+        # provenance. The disclosure IS the record, so compare it AS the
+        # record: one exact object equality, which cannot be partial and cannot
+        # fall behind a field added later.
+        #
+        # `origin_head` is the one field the envelope adds, because the receipt
+        # carve-out needs it; the state expresses the same fact as the cycle's
+        # own head, so it is checked against that.
+        cycle_carried_origin="$(jq -er '.carried.origin_head | select(type == "string")' \
+            <<<"$codex_cycle" 2>/dev/null)" ||
+            indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict with no origin_head"
+        state_cycle_head="$(jq -er '.head | select(type == "string")' \
+            "$codex_recheck_state" 2>/dev/null)" || state_cycle_head=
+        jq -e --argjson cycle "$codex_cycle" \
+            '(.carry // null) as $state
+             | ($cycle.carried | del(.origin_head)) as $claimed
+             | ($state != null) and ($state == $claimed)' \
+            "$codex_recheck_state" >/dev/null 2>&1 ||
+            indeterminate codex-carried-unproven "codex_cycle's carried record does not match the checker state's byte for byte — claimed $(jq -c '.carried | del(.origin_head)' <<<"$codex_cycle"), recorded $(jq -c '.carry // null' "$codex_recheck_state")"
+        [ "$cycle_carried_origin" = "$state_cycle_head" ] ||
+            indeterminate codex-carried-unproven "codex_cycle says the verdict was carried from $cycle_carried_origin but the checker state's cycle is ${state_cycle_head:-none}"
     fi
     case "$codex_exit" in
     0) recheck_codex_freshness ;;

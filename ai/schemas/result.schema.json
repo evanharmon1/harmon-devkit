@@ -560,19 +560,19 @@
                 },
                 "id": { "type": "string", "minLength": 1 },
                 "reviewed_commit": {
-                  "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass, exactly like `head` above (this is the second, GitHub-side stamp of the same invariant).",
+                  "description": "Must equal the envelope's `head` -- enforced by the validator's receipt-validation pass, exactly like `head` above (this is the second, GitHub-side stamp of the same invariant). The single exception is a CARRIED cycle (harmon-init#752), where no reviewer read the envelope head at all: the receipt then names `carried.origin_head`, the commit that was reviewed, and asserting `carried` is what licenses the difference.",
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 }
               }
             },
             "carried": {
-              "description": "Present only when this cycle spent NOTHING because a clean verdict for an earlier head still attests this one (harmon-init#752). The head advanced by a base catch-up merge that left the PR's three-dot diff byte-identical, so re-reviewing it would re-attest the same bytes; `carry` proved that with `git patch-id --verbatim` over immutable commit SHAs, and `check` re-derives the same proof rather than reading the record back. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever the last real cycle left them at -- and it asked no reviewer anything, so its `accepted` and `trigger_comment_id` name the ORIGIN cycle's evidence: the real review and the real trigger that produced the verdict. `accepted.reviewed_commit` is therefore `origin_head` rather than this head -- the one place a receipt's reviewed_commit may differ from the envelope head, permitted by the validator's receipt pass only when this object is present.",
+              "description": "Present only when this cycle spent NOTHING on the gated head: a clean verdict this cycle already produced for an EARLIER head still attests it, because the head advanced by a base catch-up merge that left the PR's three-dot diff identical (harmon-init#752). The identity is a digest of that diff's own text, taken from immutable commit SHAs -- deliberately not `git patch-id`, which ignores hunk offsets and so returns one id for a reviewed edit relocated between two identically-surrounded regions. The checker re-derives it before reading any evidence, and the readiness gate compares THIS OBJECT byte for byte against the record the checker keeps, so it is the disclosure and the proof at once. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever it left them at -- and it asked no reviewer anything about the gated head, so its `accepted` and `trigger_comment_id` name the cycle's own evidence: the real review, of the real commit a reviewer read. `accepted.reviewed_commit` is therefore `origin_head` rather than the envelope head -- the one place a receipt's reviewed_commit may differ, permitted by the validator's receipt pass only when this object is present.",
               "type": "object",
               "additionalProperties": false,
               "required": [
                 "origin_head",
-                "origin_base_sha",
+                "attests_head",
                 "from_head",
                 "base_sha",
                 "change_id",
@@ -582,22 +582,22 @@
               ],
               "properties": {
                 "origin_head": {
-                  "description": "The head a reviewer actually read, and whose clean verdict this cycle carries. Never the previous carry: a chain re-proves against the original evidence rather than against another proof.",
+                  "description": "The head this cycle reviewed, and whose clean verdict it carries to the envelope head. Equal to the checker state's own cycle head -- the gate checks it against exactly that.",
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
-                "origin_base_sha": {
-                  "description": "The base that verdict was read against, corroborated between reservation and verdict. Half of the reviewed patch's identity.",
+                "attests_head": {
+                  "description": "The later head this cycle attests. Equal to the envelope head; a carry naming anything else would be attesting a commit nobody gated.",
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
                 "from_head": {
-                  "description": "The head the state attested immediately before this carry. Equal to origin_head on the first carry, and to the previous carried head on a later one, so the hops are recoverable.",
+                  "description": "The head this cycle attested immediately before, so a chain of catch-up merges is recoverable. Equal to origin_head on the first carry.",
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
                 "base_sha": {
-                  "description": "The base this head's patch identity was taken against.",
+                  "description": "The base the attested head's identity was taken against.",
                   "type": "string",
                   "pattern": "^[0-9a-f]{40}$"
                 },
@@ -611,7 +611,7 @@
                   "const": "git-diff-digest/three-dot/v1"
                 },
                 "generation": {
-                  "description": "How many consecutive carries this head is away from the reviewed one. 1 is the first.",
+                  "description": "How many consecutive carries the attested head is away from the reviewed one. 1 is the first.",
                   "type": "integer",
                   "minimum": 1
                 },
@@ -691,12 +691,12 @@
                 }
               },
               "carried": {
-                "description": "Present only when this cycle spent NOTHING because a clean verdict for an earlier head still attests this one (harmon-init#752). The head advanced by a base catch-up merge that left the PR's three-dot diff byte-identical, so re-reviewing it would re-attest the same bytes; `carry` proved that with `git patch-id --verbatim` over immutable commit SHAs, and `check` re-derives the same proof rather than reading the record back. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever the last real cycle left them at -- and it asked no reviewer anything, so its `accepted` and `trigger_comment_id` name the ORIGIN cycle's evidence: the real review and the real trigger that produced the verdict. `accepted.reviewed_commit` is therefore `origin_head` rather than this head -- the one place a receipt's reviewed_commit may differ from the envelope head, permitted by the validator's receipt pass only when this object is present.",
+                "description": "Present only when this cycle spent NOTHING on the gated head: a clean verdict this cycle already produced for an EARLIER head still attests it, because the head advanced by a base catch-up merge that left the PR's three-dot diff identical (harmon-init#752). The identity is a digest of that diff's own text, taken from immutable commit SHAs -- deliberately not `git patch-id`, which ignores hunk offsets and so returns one id for a reviewed edit relocated between two identically-surrounded regions. The checker re-derives it before reading any evidence, and the readiness gate compares THIS OBJECT byte for byte against the record the checker keeps, so it is the disclosure and the proof at once. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever it left them at -- and it asked no reviewer anything about the gated head, so its `accepted` and `trigger_comment_id` name the cycle's own evidence: the real review, of the real commit a reviewer read. `accepted.reviewed_commit` is therefore `origin_head` rather than the envelope head -- the one place a receipt's reviewed_commit may differ, permitted by the validator's receipt pass only when this object is present.",
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
                   "origin_head",
-                  "origin_base_sha",
+                  "attests_head",
                   "from_head",
                   "base_sha",
                   "change_id",
@@ -706,22 +706,22 @@
                 ],
                 "properties": {
                   "origin_head": {
-                    "description": "The head a reviewer actually read, and whose clean verdict this cycle carries. Never the previous carry: a chain re-proves against the original evidence rather than against another proof.",
+                    "description": "The head this cycle reviewed, and whose clean verdict it carries to the envelope head. Equal to the checker state's own cycle head -- the gate checks it against exactly that.",
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
-                  "origin_base_sha": {
-                    "description": "The base that verdict was read against, corroborated between reservation and verdict. Half of the reviewed patch's identity.",
+                  "attests_head": {
+                    "description": "The later head this cycle attests. Equal to the envelope head; a carry naming anything else would be attesting a commit nobody gated.",
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
                   "from_head": {
-                    "description": "The head the state attested immediately before this carry. Equal to origin_head on the first carry, and to the previous carried head on a later one, so the hops are recoverable.",
+                    "description": "The head this cycle attested immediately before, so a chain of catch-up merges is recoverable. Equal to origin_head on the first carry.",
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
                   "base_sha": {
-                    "description": "The base this head's patch identity was taken against.",
+                    "description": "The base the attested head's identity was taken against.",
                     "type": "string",
                     "pattern": "^[0-9a-f]{40}$"
                   },
@@ -735,7 +735,7 @@
                     "const": "git-diff-digest/three-dot/v1"
                   },
                   "generation": {
-                    "description": "How many consecutive carries this head is away from the reviewed one. 1 is the first.",
+                    "description": "How many consecutive carries the attested head is away from the reviewed one. 1 is the first.",
                     "type": "integer",
                     "minimum": 1
                   },

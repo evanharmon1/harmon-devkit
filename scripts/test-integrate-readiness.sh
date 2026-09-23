@@ -3853,26 +3853,38 @@ set -e
 carried_origin=0a1b2c3d4e5f60718293a4b5c6d7e8f900112233
 carried_id=fedcba9876543210fedcba9876543210fedcba98
 
-# $1 origin head, $2 change id
-carried_cycle_json() {
-    jq -c --arg origin "$1" --arg id "$2" '
-      .accepted.reviewed_commit = $origin |
-      .carried = {
+# The carry record, as BOTH the result discloses it and the checker state
+# records it — one definition, because challenge round 2 made the gate compare
+# them as whole objects rather than field by field, and two definitions here
+# would let this suite pass a mismatch the gate is supposed to catch.
+# $1 origin head, $2 change id, $3 attested head
+carried_record_json() {
+    jq -cn --arg origin "$1" --arg id "$2" --arg attests "$3" '{
         origin_head: $origin,
-        origin_base_sha: "1122334455667788990011223344556677889900",
+        attests_head: $attests,
         from_head: $origin,
         base_sha: "99887766554433221100998877665544332211aa",
         change_id: $id,
         algorithm: "git-diff-digest/three-dot/v1",
         generation: 1,
         carried_at: "2026-09-22T12:00:00Z"
-      }' <<<"$(codex_cycle_json 0)"
+      }'
+}
+
+# $1 origin head, $2 change id
+carried_cycle_json() {
+    jq -c --arg origin "$1" \
+        --argjson carried "$(carried_record_json "$1" "$2" "$head_sha")" '
+      .accepted.reviewed_commit = $origin |
+      .carried = $carried' <<<"$(codex_cycle_json 0)"
 }
 
 echo "==> a carried verdict the checker state corroborates passes"
 write_defaults
-jq --arg o "$carried_origin" --arg p "$carried_id" \
-    '.carry = {origin_head: $o, change_id: $p}' "$recheck_state" >"${recheck_state}.next"
+jq --arg o "$carried_origin" \
+    --argjson carry "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha" |
+        jq -c 'del(.origin_head)')" \
+    '.head = $o | .carry = $carry' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 carried_result="$(write_integrator_result carried-ok "$(carried_cycle_json "$carried_origin" "$carried_id")")"
 run_gate_recheck_clean --integrator-result "$carried_result" \
@@ -3890,7 +3902,7 @@ assert_gate 2 indeterminate codex-carried-unproven
 
 echo "==> a carried verdict the checker state does not record is codex-carried-unproven"
 write_defaults
-jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
+jq --arg h "$head_sha" 'del(.carry) | .head = $h' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 carried_result="$(write_integrator_result carried-unrecorded "$(carried_cycle_json "$carried_origin" "$carried_id")")"
 run_gate_recheck_clean --integrator-result "$carried_result" \
@@ -3901,8 +3913,10 @@ echo "==> a carried verdict whose identity disagrees with the state is codex-car
 # The direction that matters: a producer naming a DIFFERENT proven change
 # would otherwise have this head accepted on a verdict about other bytes.
 write_defaults
-jq --arg o "$carried_origin" --arg p "$carried_id" \
-    '.carry = {origin_head: $o, change_id: $p}' "$recheck_state" >"${recheck_state}.next"
+jq --arg o "$carried_origin" \
+    --argjson carry "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha" |
+        jq -c 'del(.origin_head)')" \
+    '.head = $o | .carry = $carry' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 carried_result="$(write_integrator_result carried-wrong-patch \
     "$(carried_cycle_json "$carried_origin" 1111111111111111111111111111111111111111)")"
@@ -3910,8 +3924,27 @@ run_gate_recheck_clean --integrator-result "$carried_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 2 indeterminate codex-carried-unproven
 
+echo "==> a carried record altered in ANY field is codex-carried-unproven"
+# Challenge round 2, finding `challenge-r2-codex-adversarial-3` (confirmed P2):
+# spot-checking two fields let a schema-valid result rewrite the rest of the
+# provenance — `from_head`, `base_sha`, `generation`, `carried_at` — and still
+# pass. The disclosure IS the record, so it is compared as one object; this
+# case mutates a field nobody would think to check individually.
 write_defaults
-jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
+jq --arg o "$carried_origin" \
+    --argjson carry "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha" |
+        jq -c 'del(.origin_head)')" \
+    '.head = $o | .carry = $carry' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+carried_result="$(write_integrator_result carried-altered-provenance \
+    "$(jq -c '.carried.generation = 7' \
+        <<<"$(carried_cycle_json "$carried_origin" "$carried_id")")")"
+run_gate_recheck_clean --integrator-result "$carried_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 2 indeterminate codex-carried-unproven
+
+write_defaults
+jq --arg h "$head_sha" 'del(.carry) | .head = $h' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 
 # harmon-init#752. The checker suite grew this property test at
@@ -3926,22 +3959,20 @@ echo "==> a non-codex finder claiming a carry is codex-carried-unproven"
 # merely unproven. The receipt validator's carve-out is schema-wide; this is
 # where that breadth is closed.
 write_defaults
-jq --arg o "$carried_origin" --arg p "$carried_id" \
-    '.carry = {origin_head: $o, change_id: $p}' "$recheck_state" >"${recheck_state}.next"
+jq --arg o "$carried_origin" \
+    --argjson carry "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha" |
+        jq -c 'del(.origin_head)')" \
+    '.head = $o | .carry = $carry' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 carried_base="$(write_integrator_result carried-foreign-finder \
     "$(carried_cycle_json "$carried_origin" "$carried_id")")"
-jq --arg origin "$carried_origin" --arg id "$carried_id" '
+jq --arg origin "$carried_origin" \
+    --argjson carried "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha")" '
     .payload.finder_cycles = [{
       finder: "coderabbit-cloud", head: .head, cycle: 1, attempt: 1,
       trigger_comment_id: "9001", exit_code: 0,
       accepted: {surface: "review", id: "9002", reviewed_commit: $origin},
-      carried: {origin_head: $origin,
-                origin_base_sha: "1122334455667788990011223344556677889900",
-                from_head: $origin,
-                base_sha: "99887766554433221100998877665544332211aa",
-                change_id: $id, algorithm: "git-diff-digest/three-dot/v1",
-                generation: 1, carried_at: "2026-09-22T12:00:00Z"}}]' \
+      carried: $carried}]' \
     "$carried_base" >"${fixtures}/integrator-result-carried-foreign-finder-fc.json"
 node "$validator" envelope \
     "${fixtures}/integrator-result-carried-foreign-finder-fc.json" >/dev/null ||
@@ -3952,7 +3983,7 @@ run_gate_recheck_clean \
 assert_gate 2 indeterminate codex-carried-unproven
 
 write_defaults
-jq 'del(.carry)' "$recheck_state" >"${recheck_state}.next"
+jq --arg h "$head_sha" 'del(.carry) | .head = $h' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 
 echo "==> every flag named in the gate's usage text is actually parsed"

@@ -366,12 +366,13 @@ carry_out="$("$helper" carry --state "$state" --head "<head>" \
 ```
 
 - **exit 0** — carried. Post **no** trigger, run no `attach`, and skip the
-  fresh-cycle sequence entirely. Go straight to `check` below, which re-runs
-  the origin cycle against live evidence AND re-derives the identity rather
-  than reading either back, and report the cycle as described under
-  `codex_cycle.carried` in §5. A carried `check` can therefore come back
-  `findings` (exit 10) like any other — that is a late finding on the reviewed
-  head, and it is handled exactly as one.
+  fresh-cycle sequence entirely. Go straight to `check` below. The carry does
+  not move the cycle — it records that an existing cycle's verdict also attests
+  this head — so `check` re-derives that claim as a precondition and then runs
+  the same evidence scan it always runs. It can therefore come back `findings`
+  (exit 10) like any other: that is a late finding on the commit a reviewer
+  read, handled exactly as one, and `settle` answers it against this same
+  state.
 - **exit 17** — not carried, for the reason in the output. This is the
   ordinary answer, not an error: continue to the three cases below exactly as
   if you had never called it.
@@ -589,21 +590,23 @@ always present together on these two exit codes; their absence is a
 malformed `check_out` your brief did not anticipate — stop and report it
 rather than fabricating a value.
 
-A **carried** clean (harmon-init#752) also carries `check_out.carried` and a
-`check_out.trigger_comment_id` — the ORIGIN cycle's trigger, since this cycle
-posted none and the schema requires one. Use both verbatim. Copy
-`check_out.carried` to `codex_cycle.carried`, exactly as you copy `accepted`
-— it is the disclosure the readiness gate cross-checks against the durable
-checker state, and a gate that is given a carried result it cannot corroborate
-there reports `codex-carried-unproven` rather than promoting. On this one
-shape `accepted.reviewed_commit` is deliberately NOT this head: it names
-`carried.origin_head`, the commit the reviewer actually read, because a cycle
-that asked nobody anything must re-present a real receipt rather than mint one.
-Copy what `check_out` gives you; the receipt validator knows about this case
-and refuses any other pairing. Leave `cycle`, `charged`, and `exempt` at the
-numbers the last real cycle left — a carried head ran no cycle and spent
-nothing, and inflating any of the three makes the gate's arithmetic disagree
-with the checker state.
+A cycle that **carries** (harmon-init#752) reports `check_out.carried`. Copy
+that object to `codex_cycle.carried` **verbatim** and add `origin_head`, which
+is `check_out.head` — the gate compares the whole object, byte for byte,
+against the record the checker keeps, so a single altered field reports
+`codex-carried-unproven` rather than promoting.
+
+Two things about this shape will catch you out if you copy by reflex:
+
+- **`check_out.head` is NOT the envelope head here.** It is the commit the
+  reviewer read, which is the point. `codex_cycle.head` is still the head your
+  brief named (the gated one); `codex_cycle.carried.origin_head` and
+  `accepted.reviewed_commit` are both `check_out.head`. That is the single
+  exception to heads-must-agree, and the receipt validator permits it only
+  when `carried` is present.
+- **Leave `cycle`, `charged`, and `exempt` where the last real cycle left
+  them.** A carried head ran no cycle and spent nothing; inflating any of the
+  three makes the gate's arithmetic disagree with the checker state.
 
 A `10` raised by inline threads also carries `unanswered[]` — one
 `{thread_root, comment_id, review_id, path}` entry per unadjudicated bot

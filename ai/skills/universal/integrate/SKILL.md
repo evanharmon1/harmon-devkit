@@ -216,10 +216,13 @@ only when the two identities are equal. (Not `git patch-id`: it ignores hunk
 offsets, so a reviewed edit relocated between two identically-surrounded
 regions — a conflict resolution — gets the same id from two different trees.)
 Run it before `reserve`; exit 0 means carried (post no trigger, go straight to
-`check`), exit 17 means reserve the ordinary cycle. `check` on a carried head
-re-runs the ORIGIN cycle against live GitHub evidence and re-derives the
-identity, so a finding that lands on the reviewed head after the carry still
-blocks — the carry removes the second review, never the second look.
+`check`), exit 17 means reserve the ordinary cycle. The carry does **not** move
+the cycle: it records that an existing cycle's verdict also attests a later
+head. `check` then re-derives that claim as a precondition and runs the one
+evidence scan it always ran, against the commit a reviewer actually read — so a
+finding landing there after the carry still blocks, and `settle` still answers
+it on that same state. The carry removes the second review, never the second
+look.
 A carried head spends neither ceiling and advances no cycle ordinal, and the
 ledger names it as such — `cycle 3/4 (+1 exempt, +1 carried)` — because a head
 attested without a reviewer reading it is exactly the thing a human reader must

@@ -406,13 +406,14 @@ merge, a base the verdict was never corroborated against, a checkout without
 the commits, a checkout whose history is overridden by replace refs or grafts
 — runs the ordinary cycle. Three things never move with it. CI always re-runs
 on the new head in full, because what a base merge can change is everything
-*outside* the diff and that is CI's to catch. The **origin cycle is re-checked
-against live evidence** every time the carried verdict is relied on, so a
-finding that lands on the reviewed head after the carry still blocks: what a
-carry removes is the second REVIEW, never the second look. And the ledger names
-a carried head — `cycle n/cap (+m exempt, +k carried)` — because a head
-attested without a reviewer reading it is precisely what a human must be able
-to see.
+*outside* the diff and that is CI's to catch. **The cycle itself does not
+move**: a carry records that an existing cycle's verdict also attests a later
+head, and changes nothing else — so the ordinary evidence scan keeps running
+against the commit a reviewer actually read, a finding landing there after the
+carry still blocks, and it is still settled the ordinary way. What a carry
+removes is the second REVIEW, never the second look. And the ledger names a
+carried head — `cycle n/cap (+m exempt, +k carried)` — because a head attested
+without a reviewer reading it is precisely what a human must be able to see.
 
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,

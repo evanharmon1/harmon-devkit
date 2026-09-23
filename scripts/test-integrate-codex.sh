@@ -4037,25 +4037,27 @@ seed_origin_cycle
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
 run_carry "$carry_merged_head"
 assert_carry 0 carried "base-merge carry"
-[ "$(jq -r '.phase' "$state")" = carried ] ||
-    fail "a carried verdict must leave the state in the carried phase: $(cat "$state")"
-[ "$(jq -r '.head' "$state")" = "$carry_merged_head" ] ||
-    fail "a carried verdict must attest the new head: $(cat "$state")"
-[ "$(jq -r '.carry.origin_head' "$state")" = "$carry_origin_head" ] ||
-    fail "the carry record must name the head a reviewer actually read: $(cat "$state")"
+# Challenge round 2 deleted the moving head and the origin snapshot: a carry
+# records that THIS cycle also attests a later head, and changes nothing else.
+# Everything `settle` and the evidence scan key off therefore stays put, which
+# is the whole reason the deletion was the right remedy.
+[ "$(jq -r '.head' "$state")" = "$carry_origin_head" ] ||
+    fail "a carry must not move the cycle: $(cat "$state")"
+[ "$(jq -r '.phase' "$state")" = attached ] ||
+    fail "a carry must not change the cycle's phase: $(cat "$state")"
+[ "$(jq -r '.trigger_comment_id' "$state")" = "$trigger_id" ] ||
+    fail "a carry must leave the cycle's own trigger in place: $(cat "$state")"
+[ "$(jq -r '.requested_at' "$state")" != null ] ||
+    fail "a carry must leave the request time settle binds to: $(cat "$state")"
+[ "$(jq -r '.carry.attests_head' "$state")" = "$carry_merged_head" ] ||
+    fail "the carry record must name the head it attests: $(cat "$state")"
 [ "$(jq -r '.carry.generation' "$state")" = 1 ] ||
     fail "the first carry is generation 1: $(cat "$state")"
-# The origin cycle's own state is kept whole, because re-checking it is how a
-# late finding on the reviewed head still blocks this one.
-[ "$(jq -r '.carry.origin_state.head' "$state")" = "$carry_origin_head" ] ||
-    fail "the carry must keep the origin cycle's own state: $(cat "$state")"
-[ "$(jq -r '.carry.origin_state.trigger_comment_id' "$state")" = "$trigger_id" ] ||
-    fail "the origin trigger id must survive the carry — the result schema requires one: $(cat "$state")"
 # The whole point: no cycle was reserved, so neither ceiling moved.
 [ "$(jq -r '.charged_cycles' "$state")" = 1 ] && [ "$(jq -r '.exempt_cycles' "$state")" = 0 ] ||
     fail "a carry must spend neither ceiling: $(cat "$state")"
 [ "$(jq -r '.last_reviewed_head' "$state")" = "$carry_origin_head" ] ||
-    fail "a carry must not overwrite the reviewed head: $(cat "$state")"
+    fail "a carry must not disturb the reviewed-head record: $(cat "$state")"
 
 echo "==> carrying again for the same head re-proves it without rewriting the record"
 carry_generation_before="$(jq -r '.carry.generation' "$state")"
@@ -4066,26 +4068,27 @@ assert_carry 0 carried "idempotent carry"
     [ "$(jq -r '.carry.from_head' "$state")" = "$carry_from_before" ] ||
     fail "re-carrying a head it already carries must not rewrite its provenance: $(cat "$state")"
 
-echo "==> check re-derives the proof AND re-checks the origin cycle"
+echo "==> check re-derives what the cycle attests, then runs the ordinary scan"
 run_check_in_carry_repo '2026-07-31T08:05:00Z'
 assert_status 0 clean
-[ "$(printf '%s' "$check_out" | jq -r '.carried.origin_head')" = "$carry_origin_head" ] ||
-    fail "a carried clean result must disclose where the verdict came from: $check_out"
-# The receipt is the ORIGIN's, reviewed_commit and all, and it comes from the
-# live re-check rather than from the record.
+[ "$(printf '%s' "$check_out" | jq -r '.carried.attests_head')" = "$carry_merged_head" ] ||
+    fail "a carrying cycle must disclose what it attests: $check_out"
+# `head` stays the CYCLE's head, and so does the receipt: this is the ordinary
+# scan of the ordinary cycle, which is exactly what makes the receipt honest.
+[ "$(printf '%s' "$check_out" | jq -r '.head')" = "$carry_origin_head" ] ||
+    fail "a carrying cycle still reports its own head: $check_out"
 [ "$(printf '%s' "$check_out" | jq -r '.accepted.reviewed_commit')" = "$carry_origin_head" ] ||
-    fail "a carried receipt must name the commit the reviewer actually read: $check_out"
+    fail "the receipt must name the commit the reviewer actually read: $check_out"
 [ "$(printf '%s' "$check_out" | jq -r '.accepted.id')" = 77 ] ||
-    fail "a carried receipt must re-present the origin cycle's own evidence: $check_out"
-[ "$(printf '%s' "$check_out" | jq -r '.trigger_comment_id')" = "$trigger_id" ] ||
-    fail "a carried result must report the origin trigger the schema requires: $check_out"
-[ "$(jq -r '.last_reviewed_head' "$state")" = "$carry_origin_head" ] ||
-    fail "re-checking a carried state must not re-mark it as reviewed: $(cat "$state")"
+    fail "the receipt must be the cycle's own evidence: $check_out"
+[ "$(jq -r '.last_reviewed_base_sha' "$state")" = "$carry_base_one" ] ||
+    fail "re-checking must not re-corroborate the reviewed base against the moved one: $(cat "$state")"
 
 echo "==> a finding that lands on the reviewed head AFTER the carry still blocks"
 # The case the carry must not create: the reviewed head is never looked at
-# again, so a late finding is invisible and promotion passes. `check` re-runs
-# the ORIGIN cycle against live evidence, so it is seen.
+# again, so a late finding is invisible and promotion passes. Because the cycle
+# never moved, this is not a special path at all — it is the ordinary scan
+# finding an ordinary finding, and `settle` can answer it on this same state.
 jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
     --arg prefix "$carry_origin_head" \
     '[[{id:77,user:{id:$id,login:$login},
@@ -4107,20 +4110,29 @@ assert_carry 0 carried "foreign-checkout setup"
 run_check "$request_time"
 assert_status 2 indeterminate
 
-echo "==> check refuses a carried record whose origin cycle state was stripped"
-# The origin state is what a carried verdict is re-checked against, so a
-# carried record without one is not a weaker proof — it is no proof, and
-# `read_state` rejects it as malformed rather than letting `check` reach a
-# softer verdict on it.
-jq 'del(.carry.origin_state)' "$state" >"${state}.next"
+echo "==> check refuses a carry record missing the identity it proved"
+# The record is the whole claim, so one missing field is not a weaker proof —
+# it is no proof, and `read_state` rejects it as malformed rather than letting
+# `check` reach a softer verdict on it.
+jq 'del(.carry.change_id)' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 run_check_in_carry_repo '2026-07-31T08:05:00Z'
 [ "$check_rc" -eq 2 ] ||
-    fail "a carried record with no origin state must be refused, got rc $check_rc: $check_out"
+    fail "a carry record with no identity must be refused, got rc $check_rc: $check_out"
 case "$check_out" in
 *"malformed state file"*) ;;
-*) fail "a carried record with no origin state must be named as malformed: $check_out" ;;
+*) fail "an incomplete carry record must be named as malformed: $check_out" ;;
 esac
+
+echo "==> check refuses a carry record whose identity no longer holds"
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "tampered-identity setup"
+jq '.carry.change_id = "4444444444444444444444444444444444444444"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+assert_status 2 indeterminate
 
 echo "==> a relocated identical hunk is a DIFFERENT change, though patch-id collides"
 carry_fixtures "$carry_relocate_a" "$carry_base_one"
@@ -4161,10 +4173,10 @@ seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" 
 run_carry "$carry_empty_head"
 assert_carry 17 not-carried "empty diff"
 
-echo "==> a cycle still in flight is never carried past"
+echo "==> a cycle still in flight has nothing to carry"
 # `reserved` is the write-ahead record taken before a trigger is posted, and an
-# `attached` head with no verdict is a live cycle. Replacing either loses the
-# only reconciliation for a review that may already be out.
+# `attached` head with no verdict is a live cycle. Neither has produced a
+# verdict, so neither can attest anything.
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
 seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
 jq --arg h "$carry_moved_head" '.head = $h | .phase = "reserved"' "$state" >"${state}.next"
@@ -4175,6 +4187,29 @@ case "$carry_out" in
 *"in flight"*) ;;
 *) fail "an in-flight cycle must be refused as such: $carry_out" ;;
 esac
+
+echo "==> a diff driver cannot decide what the change is"
+# Not determinism — a trust boundary. The `diff=` attribute is branch content,
+# so without `--no-ext-diff` the branch under review would have a say in what
+# its own diff looks like. Measured on this fixture: an UNPINNED `git diff`
+# dies on the driver and hashes to the EMPTY blob, which would make every head
+# digest identically and therefore every pair carry. Two independent guards
+# stop it — the flag, and the empty-diff refusal behind it.
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+git -C "$carry_repo" config diff.evil.command /nonexistent/diff-driver
+printf 'f.txt diff=evil\n' >"${carry_repo}/.gitattributes"
+# The unpinned diff DIES on the driver, so its failure is tolerated here on
+# purpose: what is being measured is the bytes a naive implementation would
+# have hashed, which is exactly nothing.
+unpinned="$({ git -C "$carry_repo" diff "${carry_base_one}...${carry_origin_head}" 2>/dev/null || true; } |
+    git -C "$carry_repo" hash-object -t blob --stdin)"
+[ "$unpinned" = e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 ] ||
+    fail "the hostile-driver fixture must make an UNPINNED diff collapse to the empty blob, or it proves nothing (got $unpinned)"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "hostile diff driver"
+rm -f "${carry_repo}/.gitattributes"
+git -C "$carry_repo" config --unset diff.evil.command
 
 echo "==> replacement objects and grafts are refused, not silently honoured"
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
@@ -4220,7 +4255,7 @@ reserve_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
 reserve_rc=$?
 set -e
 [ "$reserve_rc" -ne 0 ] ||
-    fail "attempt 2 on a carried head has no attempt 1 to re-trigger: $reserve_out"
+    fail "a head that ran no attempt 1 has nothing to re-trigger: $reserve_out"
 # The replacement is an ordinary cycle, so it is classified the ordinary way —
 # and on this history harmon-init#1326 reaches the same conclusion the carry
 # did, one layer down: the merge touched no file under review. The two

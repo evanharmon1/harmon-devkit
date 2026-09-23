@@ -37,13 +37,13 @@
       },
       "carried": {
         "origin_head": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
-        "origin_base_sha": "1122334455667788990011223344556677889900",
+        "attests_head": "b7c1e4d09a52f3861c4d7e08f9a2b3c4d5e6f708",
         "from_head": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
         "base_sha": "99887766554433221100998877665544332211aa",
+        "change_id": "fedcba9876543210fedcba9876543210fedcba98",
         "algorithm": "git-diff-digest/three-dot/v1",
         "generation": 1,
-        "carried_at": "2026-09-22T12:00:00Z",
-        "change_id": "fedcba9876543210fedcba9876543210fedcba98"
+        "carried_at": "2026-09-22T12:00:00Z"
       }
     },
     "integration_round": 2,
@@ -69,13 +69,13 @@
         },
         "carried": {
           "origin_head": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
-          "origin_base_sha": "1122334455667788990011223344556677889900",
+          "attests_head": "b7c1e4d09a52f3861c4d7e08f9a2b3c4d5e6f708",
           "from_head": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
           "base_sha": "99887766554433221100998877665544332211aa",
+          "change_id": "fedcba9876543210fedcba9876543210fedcba98",
           "algorithm": "git-diff-digest/three-dot/v1",
           "generation": 1,
-          "carried_at": "2026-09-22T12:00:00Z",
-          "change_id": "fedcba9876543210fedcba9876543210fedcba98"
+          "carried_at": "2026-09-22T12:00:00Z"
         }
       }
     ]
