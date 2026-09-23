@@ -630,20 +630,27 @@ change_identity() {
         change_identity_error="git is required to establish a change identity"
         return 1
     fi
-    if ! ci_git_dir=$(git -C "$repo_dir" rev-parse --git-dir 2>/dev/null); then
+    if ! git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1; then
         change_identity_error="--repo-dir $repo_dir is not a git checkout, so no change identity can be established"
         return 1
     fi
-    case "$ci_git_dir" in
-    /*) ;;
-    *) ci_git_dir="$repo_dir/$ci_git_dir" ;;
-    esac
     # `--no-replace-objects` covers `refs/replace`. Grafts are the older,
     # deprecated form of the same override and no command-line flag disables
     # them, so their presence is a refusal rather than something to work
     # around.
-    if [ -e "$ci_git_dir/info/grafts" ]; then
-        change_identity_error="$ci_git_dir/info/grafts exists, so commit history in this checkout is overridden and no SHA is authoritative"
+    #
+    # Integration cycle 1, finding `integration-r1-codex-cloud-2` (confirmed
+    # P2): the path was built from `--git-dir`, which in a LINKED WORKTREE is
+    # `.git/worktrees/<name>` — while grafts live in the COMMON directory and
+    # git honours them from there. Every agent worktree in this repo is a
+    # linked one, so the check was looking in the one place the file never is,
+    # and the fixture only passed because a plain fixture repo makes the two
+    # paths identical. Ask git where the file would be rather than constructing
+    # it: `--git-path` resolves to the common directory when that is where git
+    # would read it.
+    ci_grafts=$(git -C "$repo_dir" rev-parse --git-path info/grafts 2>/dev/null) || ci_grafts=
+    if [ -n "$ci_grafts" ] && [ -e "$ci_grafts" ]; then
+        change_identity_error="$ci_grafts exists, so commit history in this checkout is overridden and no SHA is authoritative"
         return 1
     fi
     for ci_object in "$ci_base" "$ci_head"; do

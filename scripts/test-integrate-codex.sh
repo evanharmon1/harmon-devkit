@@ -4474,19 +4474,39 @@ run_carry "$carry_merged_head"
 assert_carry 0 carried "replace ref ignored"
 git -C "$carry_repo" replace -d "$carry_origin_head"
 
-echo "==> replacement objects and grafts are refused, not silently honoured"
+echo "==> a graft in the COMMON git dir is caught from a linked worktree"
+# Integration cycle 1, finding `integration-r1-codex-cloud-2` (confirmed P2):
+# the check built its path from `--git-dir`, which in a linked worktree is
+# `.git/worktrees/<name>` — while grafts live in the COMMON directory and git
+# honours them from there. Every agent worktree in this repo is a linked one,
+# so the check looked in the one place the file never is.
+#
+# The original fixture could not have caught that: it ran in a PLAIN repo,
+# where the two paths are the same. Run it where the bug lives — from a linked
+# worktree, with the graft in the common directory — so the case tests the
+# environment the code actually runs in.
+carry_linked="${test_tmp}/carry-linked"
+git -C "$carry_repo" worktree add -q --detach "$carry_linked" "$carry_merged_head"
+[ "$(git -C "$carry_linked" rev-parse --git-dir)" != \
+    "$(git -C "$carry_linked" rev-parse --git-common-dir)" ] ||
+    fail "the linked-worktree fixture is not linked, so it cannot reproduce the finding"
+carry_common_dir="$(git -C "$carry_linked" rev-parse --path-format=absolute --git-common-dir)"
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
 seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
-carry_git_dir="$(git -C "$carry_repo" rev-parse --absolute-git-dir)"
-mkdir -p "${carry_git_dir}/info"
-printf '%s\n' "$carry_origin_head" >"${carry_git_dir}/info/grafts"
-run_carry "$carry_merged_head"
-assert_carry 17 not-carried "grafts present"
+mkdir -p "${carry_common_dir}/info"
+printf '%s\n' "$carry_origin_head" >"${carry_common_dir}/info/grafts"
+set +e
+carry_out="$("$helper" carry --state "$state" --head "$carry_merged_head" \
+    --run-id run-a --repo-dir "$carry_linked" 2>&1)"
+carry_rc=$?
+set -e
+assert_carry 17 not-carried "graft in the common dir, seen from a linked worktree"
 case "$carry_out" in
 *grafts*) ;;
 *) fail "a grafts file must be named as the reason: $carry_out" ;;
 esac
-rm -f "${carry_git_dir}/info/grafts"
+rm -f "${carry_common_dir}/info/grafts"
+git -C "$carry_repo" worktree remove --force "$carry_linked"
 
 echo "==> a findings verdict is never carried"
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"

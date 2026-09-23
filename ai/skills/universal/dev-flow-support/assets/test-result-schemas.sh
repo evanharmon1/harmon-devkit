@@ -587,6 +587,10 @@ const SEMANTIC_ONLY = new Set([
   // comparison against the envelope, which no keyword in this subset can
   // express — same category as the two lines above.
   'result.integrator.schema/invalid/carried-attests-another-head.json',
+  // harmon-init#752 integration cycle 1: whether the codex-cloud mirror
+  // agrees with codex_cycle is a comparison between two sibling objects,
+  // which no keyword in this subset can express.
+  'result.integrator.schema/invalid/carried-mirror-contradicts-cycle.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
   'result.integrator.schema/invalid/clean-with-empty-checks.json',

@@ -151,7 +151,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { createSchemaValidator } from './lib/json-schema-subset.mjs'
+import { createSchemaValidator, canonicalJson } from './lib/json-schema-subset.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -858,6 +858,37 @@ function checkHeadAgreement(kind, envelope, errors) {
       if (accepted.reviewed_commit !== expected) {
         errors.push(
           `$result.payload.codex_cycle.accepted.reviewed_commit: ${accepted.reviewed_commit} does not match ${expected === head ? `envelope head ${head}` : `carried.origin_head ${expected}`}`
+        )
+      }
+    }
+  }
+  // checkCodexMirrorCarry — the codex-cloud entry of finder_cycles[] describes
+  // the SAME cycle as codex_cycle, so the two cannot disagree about whether a
+  // reviewer read the gated head.
+  //
+  // Integration cycle 1, finding `integration-r1-codex-cloud-1` (confirmed
+  // P2): each entry was validated on its own, so dropping `carried` from the
+  // mirror and pointing its receipt at the envelope head still validated —
+  // while the readiness gate skips that entry precisely because codex_cycle
+  // covers it. The retained envelope then said both that no reviewer read the
+  // gated head and that one did, and a generalized consumer reading
+  // finder_cycles saw only the half that hides the carry.
+  //
+  // Scoped to `carried` rather than to whole-object equality on purpose. The
+  // reviewer offered "match the canonical cycle, or remove the mirror", and
+  // full equality is a WIDER contract change than this defect needs: the
+  // existing corpus has an honest mirror that omits `trigger_comment_id`,
+  // which the finder_cycles schema explicitly allows. Requiring the carry to
+  // agree closes the hole exactly, and closes the receipt with it — a mirror
+  // that keeps `carried` must then name `carried.origin_head`, which the
+  // receipt check above already enforces.
+  if (kind === 'integrator' && Array.isArray(payload.finder_cycles) && payload.codex_cycle) {
+    const cycleCarried = canonicalJson(payload.codex_cycle.carried ?? null)
+    for (const fc of payload.finder_cycles) {
+      if (!fc || typeof fc !== 'object' || fc.finder !== 'codex-cloud') continue
+      if (canonicalJson(fc.carried ?? null) !== cycleCarried) {
+        errors.push(
+          '$result.payload.finder_cycles[codex-cloud].carried: disagrees with codex_cycle.carried — the two describe the same cycle, so one of them is claiming a reviewer read the gated head while the other says none did'
         )
       }
     }
