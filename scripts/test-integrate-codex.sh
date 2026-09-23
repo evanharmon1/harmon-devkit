@@ -4307,15 +4307,21 @@ echo "==> a cycle still in flight has nothing to carry"
 # `reserved` is the write-ahead record taken before a trigger is posted, and an
 # `attached` head with no verdict is a live cycle. Neither has produced a
 # verdict, so neither can attest anything.
+# Review round 1, finding `review-r1-codex-verification-1` (confirmed P2): the
+# first version of this case ALSO moved `.head`, so the head mismatch fired
+# first and the phase was never the reason for the refusal. Isolate it — change
+# the phase and nothing else, so only the phase check can produce the failure.
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
 seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
-jq --arg h "$carry_moved_head" '.head = $h | .phase = "reserved"' "$state" >"${state}.next"
+jq '.phase = "reserved"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
+[ "$(jq -r '.last_reviewed_head' "$state")" = "$(jq -r '.head' "$state")" ] ||
+    fail "this case must leave the verdict marker INTACT, or it is testing the head check again"
 run_carry "$carry_merged_head"
 assert_carry 17 not-carried "in-flight reserved cycle"
 case "$carry_out" in
-*"in flight"*) ;;
-*) fail "an in-flight cycle must be refused as such: $carry_out" ;;
+*"phase reserved"*) ;;
+*) fail "the refusal must name the reserved phase, not something else: $carry_out" ;;
 esac
 
 echo "==> a diff driver cannot decide what the change is"
@@ -4340,6 +4346,33 @@ run_carry "$carry_merged_head"
 assert_carry 0 carried "hostile diff driver"
 rm -f "${carry_repo}/.gitattributes"
 git -C "$carry_repo" config --unset diff.evil.command
+
+echo "==> a replace ref cannot redefine the history the identity is taken from"
+# Review round 1, finding `review-r1-codex-verification-2` (confirmed P2): the
+# case below claims to cover replacement objects AND grafts, and only ever
+# created `info/grafts` — so `--no-replace-objects` could be removed with the
+# suite staying green, leaving the documented behaviour unprotected.
+#
+# `refs/replace` is the live half and it works differently from grafts: git
+# APPLIES it transparently, so the right assertion is not a refusal but that
+# the identity is computed from the REAL objects. The replacement here points
+# the reviewed head at a commit whose diff differs, so honouring it would
+# change the identity and refuse the carry. The carry must still succeed.
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+git -C "$carry_repo" replace --force "$carry_origin_head" "$carry_moved_head"
+[ -n "$(git -C "$carry_repo" replace -l)" ] ||
+    fail "the replace-ref fixture was not created, so this case proves nothing"
+# Prove the replacement WOULD change the answer if it were honoured.
+replaced_id="$(git -C "$carry_repo" diff --full-index -U3 \
+    "${carry_base_one}...${carry_origin_head}" | git -C "$carry_repo" hash-object -t blob --stdin)"
+true_id="$(git -C "$carry_repo" --no-replace-objects diff --full-index -U3 \
+    "${carry_base_one}...${carry_origin_head}" | git -C "$carry_repo" hash-object -t blob --stdin)"
+[ "$replaced_id" != "$true_id" ] ||
+    fail "the replace ref does not change the diff, so this case cannot detect a missing --no-replace-objects"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "replace ref ignored"
+git -C "$carry_repo" replace -d "$carry_origin_head"
 
 echo "==> replacement objects and grafts are refused, not silently honoured"
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"

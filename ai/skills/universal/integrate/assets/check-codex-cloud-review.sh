@@ -2630,8 +2630,17 @@ carry)
     # is a live cycle; neither has produced anything to carry.
     carry_verdict=$(jq -r '.last_reviewed_verdict // empty' "$state_file")
     carry_reviewed_head=$(jq -r '.last_reviewed_head // empty' "$state_file")
-    if [ "$carry_reviewed_head" != "$carry_cycle_head" ]; then
-        emit not-carried "this cycle is still in flight for $carry_cycle_head (phase $(jq -r '.phase' "$state_file")) and has reached no verdict — there is nothing to carry"
+    carry_phase=$(jq -r '.phase' "$state_file")
+    # Review round 1, finding `review-r1-codex-verification-1` (confirmed P2):
+    # the verdict marker alone was the test, on the reasoning that `reserve`
+    # writes a fresh payload and so cannot leave `last_reviewed_head` behind.
+    # That holds for state this helper produces, and the condition was checking
+    # a CONSEQUENCE rather than the thing the comment claims — so hand-repaired
+    # or legacy state carrying both a `reserved` phase and a stale clean marker
+    # would have been carried past a live reservation. Both facts are cheap to
+    # assert and neither implies the other.
+    if [ "$carry_phase" != "attached" ] || [ "$carry_reviewed_head" != "$carry_cycle_head" ]; then
+        emit not-carried "this cycle is still in flight for $carry_cycle_head (phase $carry_phase) and has reached no verdict — there is nothing to carry"
         exit 17
     fi
     # `findings` is a terminal verdict too, and it is recorded on the same
