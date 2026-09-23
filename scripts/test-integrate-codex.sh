@@ -159,7 +159,23 @@ repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 # The PR object, fetched only for its author identity when the head carries
 # inline findings. It must sort AFTER the sub-resource patterns above, which it
 # would otherwise shadow.
-repos/*/pulls/*) file=pr.json ;;
+#
+# harmon-init#752 round 4: `pr-json-after` holds a call count. Up to and
+# including it the ordinary `pr.json` is served; every later call gets
+# `pr-late.json`. That is what lets a case put a base retarget INSIDE a check
+# rather than before it — the distinction a reviewer caught this suite failing
+# to make.
+repos/*/pulls/*)
+    file=pr.json
+    if [ -f "$GH_FIXTURES/pr-json-after" ]; then
+        pulls_calls=0
+        [ ! -f "$GH_FIXTURES/pulls-call-count" ] ||
+            pulls_calls="$(cat "$GH_FIXTURES/pulls-call-count")"
+        pulls_calls=$((pulls_calls + 1))
+        printf '%s' "$pulls_calls" >"$GH_FIXTURES/pulls-call-count"
+        [ "$pulls_calls" -le "$(cat "$GH_FIXTURES/pr-json-after")" ] || file=pr-late.json
+    fi
+    ;;
 # harmon-init#1326: the exemption classifier compares three ref pairs — the
 # moved range, and the reviewed patch at each end. Key the fixture by the ref
 # pair so one case can answer all three differently; fall back to a single
@@ -288,6 +304,8 @@ write_defaults() {
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
           base:{ref:"main",sha:"3333333333333333333333333333333333333333"}}' \
         >"${fixtures}/pr.json"
+    rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" \
+        "${fixtures}/pr-late.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/fail-endpoint-exact"
     rm -f "${fixtures}"/fail-pr-after-* "${fixtures}"/pr-call-count-*
@@ -4204,20 +4222,86 @@ case "$carry_out" in
 *) fail "the refusal must name the attested head that was rewritten away: $carry_out" ;;
 esac
 
-echo "==> a base retargeted while evidence is fetched invalidates the attestation"
-# Challenge round 3, finding `challenge-r3-codex-adversarial-1` (confirmed P1):
-# the identity is a function of (base, head), and every liveness check compares
-# the head alone. A PR retargeted — or its base force-pushed — under an
-# unchanged head changes the three-dot diff, so a verdict derived before that
-# is about a diff that no longer exists.
+echo "==> a base retargeted DURING the check invalidates the attestation"
+# Challenge round 3, finding `challenge-r3-codex-adversarial-1`, and round 4's
+# `challenge-r4-codex-adversarial-1` which showed the first version of THIS
+# CASE was vacuous: the identity is a function of (base, head) and every
+# liveness check compares the head alone, so a retarget under an unchanged head
+# changes the three-dot diff. Retargeting before the check would be caught by
+# any implementation that looked once, anywhere; the defect is the INTERVAL
+# between looking and emitting, so the retarget has to land inside it.
+#
+# Constructing the interval takes a little care, and the care is the point.
+# An inline finding on the reviewed head makes `check` fetch the PR once for
+# its author BEFORE it reaches a verdict, so `pr-json-after 1` gives that first
+# read the honest payload and the retargeted one to every read after it. The
+# verification's own read is therefore strictly later than a read the check has
+# already taken — which is exactly the shape a cached or early-derived value
+# would get wrong, and exactly what the previous version of this case failed to
+# construct.
 seed_origin_cycle
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
 run_carry "$carry_merged_head"
 assert_carry 0 carried "retarget setup"
-jq --arg base "$carry_base_one" '.base.sha = $base' "${fixtures}/pr.json" >"${fixtures}/pr.json.next"
-mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    --arg head "$carry_origin_head" \
+    '[[{id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,
+        body:"P1: a finding, so the PR is fetched before any verdict"}]]' \
+    >"${fixtures}/inline.pages.json"
+jq --arg base "$carry_base_one" '.base.sha = $base' "${fixtures}/pr.json" \
+    >"${fixtures}/pr-late.json"
+printf '1' >"${fixtures}/pr-json-after"
+rm -f "${fixtures}/pulls-call-count"
 run_check_in_carry_repo '2026-07-31T08:05:00Z'
 assert_status 2 indeterminate
+case "$check_out" in
+*"no longer attests"*) ;;
+*) fail "a mid-check retarget must be named as the attestation failing: $check_out" ;;
+esac
+# Two reads happened, and the verification took the SECOND one. A single early
+# read would have seen only the honest payload and reported findings.
+[ "$(cat "${fixtures}/pulls-call-count")" -ge 2 ] ||
+    fail "the interval was never constructed: only $(cat "${fixtures}/pulls-call-count") PR read(s) happened, so this case cannot distinguish an early derivation from a late one"
+rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" "${fixtures}/pr-late.json"
+
+echo "==> a quota-exhausted cycle cannot be carried"
+# Challenge round 4, finding `challenge-r4-codex-adversarial-2` (confirmed P1):
+# a cycle recorded clean can LATER receive a usage-limit reply, which exit 15
+# persists while leaving the clean verdict in place. Carrying it skips the
+# fresh trigger and replays that terminal on the new head, so the documented
+# recovery — push a new commit — cannot recover: the new commit is carried
+# rather than reserved, and the run is stuck at a terminal it can never clear.
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a
+jq '.quota_exhausted_at = "2026-07-31T08:04:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_carry "$carry_merged_head"
+assert_carry 17 not-carried "quota-exhausted cycle"
+case "$carry_out" in
+*"exhausted usage limit"*) ;;
+*) fail "the refusal must name the usage limit: $carry_out" ;;
+esac
+
+echo "==> a fractional carry generation is malformed state, not a budget"
+# Challenge round 4, finding `challenge-r4-codex-adversarial-3` (confirmed P2):
+# jq's `number` admits 1.5, which then reaches shell integer arithmetic and
+# aborts outside the documented exit-17 path, and would disclose a record the
+# result schema rejects.
+seed_origin_cycle
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+run_carry "$carry_merged_head"
+assert_carry 0 carried "fractional-generation setup"
+jq '.carry.generation = 1.5' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+[ "$check_rc" -eq 2 ] ||
+    fail "a fractional generation must be refused as malformed, got rc $check_rc: $check_out"
+case "$check_out" in
+*"malformed state file"*) ;;
+*) fail "a fractional generation must be named as malformed: $check_out" ;;
+esac
 
 echo "==> a cycle still in flight has nothing to carry"
 # `reserved` is the write-ahead record taken before a trigger is posted, and an
@@ -4324,6 +4408,34 @@ printf '%s' '{"files":[{"filename":"f.txt"}]}' \
 
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
+# harmon-init#752, challenge round 4: a carried attestation is verified inside
+# `emit` itself, on the `clean | findings` arm. Rounds 3 and 4 each moved the
+# call one step later and each time a reviewer found a remaining interval, so
+# the fix was to stop choosing a point: a verdict cannot be emitted without the
+# verification, by construction.
+#
+# That is a structural property of `emit`, and structure is what regresses
+# silently — someone "tidies" the case arm, or adds a third verdict status that
+# skips it. Assert it.
+#
+# `pending`, `transient-read`, `indeterminate` and `pr-not-open` are
+# deliberately NOT covered: none can promote, so reaching one unverified costs
+# nothing. Only `clean` and `findings` are verdicts a gate acts on.
+echo "==> emit verifies the carried attestation before any verdict"
+emit_body="$(awk '/^emit\(\) \{/{inside=1} inside{print} inside && /^\}/{exit}' "$helper")"
+[ -n "$emit_body" ] || fail "could not extract emit()'s body from $helper"
+verdict_arm="$(printf '%s\n' "$emit_body" |
+    awk '/clean \| findings\)/{inside=1} inside{print} inside && /;;/{exit}')"
+[ -n "$verdict_arm" ] ||
+    fail "emit() has no clean|findings arm — the verification has nowhere to be"
+case "$verdict_arm" in
+*verify_carried_attestation*) ;;
+*)
+    fail "emit()'s clean|findings arm does not verify the carried attestation, so a verdict can be emitted on a stale identity:
+$verdict_arm"
+    ;;
+esac
+
 # harmon-init#1326, challenge round 3, P1 (confirmed): every documented flag
 # must actually PARSE. This script's argument handling is two nested `case`
 # blocks — an outer one that allowlists the flag NAMES and an inner one that

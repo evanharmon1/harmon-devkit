@@ -284,7 +284,14 @@ Every result is an **envelope** wrapping a per-role payload
 - **Heads must agree.** Receipt validation rejects any result whose payload
   names a head (`reviewed_head`, the integrator's reviewed-commit stamp)
   different from the envelope's `head`; a schema-valid result can never carry
-  stale evidence under a current-head label.
+  stale evidence under a current-head label. The one exception is a **carried**
+  Codex cycle (harmon-init#752), where no reviewer read the envelope head at
+  all because an earlier cycle's clean verdict provably attests it: the receipt
+  then names `carried.origin_head`, the commit that WAS reviewed, and
+  `carried.attests_head` must equal the envelope head instead. The exception is
+  granted only by asserting `carried`, and receipt validation enforces both
+  halves of it — so "stale evidence under a current-head label" stays
+  impossible, because the label says which commit the evidence is about.
 - The envelope's runtime-attested `producer` names the resolved `family` as
   well as its harness, model, and tier. Retained results therefore prove both
   council `distinct_families` and every disclosed horizontal family fallback.

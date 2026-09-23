@@ -754,7 +754,7 @@ read_state() {
         (.carry.base_sha | type == "string") and
         (.carry.change_id | type == "string") and
         (.carry.algorithm | type == "string") and
-        (.carry.generation | type == "number" and . >= 1) and
+        (.carry.generation | type == "number" and . >= 1 and floor == .) and
         (.carry.carried_at | type == "string"))) and
       (.requires_full_window == null or
         (.requires_full_window | type == "boolean")) and
@@ -958,7 +958,24 @@ emit() {
     accepted_id=${4:-}
     extra=${5:-}
     case "$result" in
-    clean | findings) mark_terminally_reviewed "$result" ;;
+    clean | findings)
+        # harmon-init#752, challenge round 4, finding
+        # `challenge-r4-codex-adversarial-1` (confirmed P1): the attestation was
+        # verified at a fixed point in `check`, and rounds 3 and 4 each showed
+        # that point was not late enough — a retarget or base force-push during
+        # any later read (the PR-author fetch, a commit-prefix resolution)
+        # changes the three-dot diff under an unchanged head, and head-only
+        # liveness cannot see it. Moving the call one step later each round is a
+        # game with no end state, so it lives HERE instead: a verdict cannot be
+        # emitted without it, by construction, and there is no interval left to
+        # attack.
+        #
+        # No recursion is possible. `verify_carried_attestation` reports only
+        # `indeterminate`, `head-changed` and `transient-read`, none of which
+        # match this case, so its own emits pass straight through.
+        verify_carried_attestation
+        mark_terminally_reviewed "$result"
+        ;;
     esac
     # harmon-init#752: `head` stays the CYCLE's head — the commit a reviewer
     # read and the one every receipt names — and a cycle that also attests a
@@ -2626,6 +2643,19 @@ carry)
         emit not-carried "no clean verdict is recorded for $carry_cycle_head (last recorded verdict: ${carry_verdict:-none}) — there is nothing to carry"
         exit 17
     fi
+    # Challenge round 4, finding `challenge-r4-codex-adversarial-2` (confirmed
+    # P1): a cycle can be recorded clean and LATER receive a usage-limit reply,
+    # which exit 15 persists here while leaving the clean verdict in place.
+    # Carrying such a cycle skips the fresh trigger and then replays exit 15
+    # from it, so the documented recovery — push a new commit — cannot recover:
+    # the new commit gets carried instead of reserved, and the run is stuck at a
+    # terminal it can never clear. Exit 15 means this head is finished; a carry
+    # must not extend it to another one.
+    carry_quota_at=$(jq -r '.quota_exhausted_at // empty' "$state_file")
+    if [ -n "$carry_quota_at" ]; then
+        emit not-carried "the cycle for $carry_cycle_head ended with the finder reporting an exhausted usage limit at $carry_quota_at — that terminal cannot be carried to another head; reserve a fresh cycle"
+        exit 17
+    fi
     # Without the base the verdict was read against there is no reviewed change
     # to take an identity of. That base is recorded only when the reservation
     # and the verdict agreed on it (see mark_terminally_reviewed); when they
@@ -3189,11 +3219,6 @@ check)
         emit head-changed "PR head changed while evidence was being fetched"
         exit 2
     }
-    # The one place a carried attestation is verified: after the evidence is in
-    # hand and before any verdict can be reached from it. Placing it here rather
-    # than before the scan is the whole of round 3's first finding — the window
-    # between the two is exactly where a retarget or a base force-push lands.
-    verify_carried_attestation
 
     for evidence in reactions comments reviews inline; do
         case "$evidence" in
