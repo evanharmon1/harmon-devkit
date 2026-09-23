@@ -4301,6 +4301,55 @@ run_check '2026-07-31T08:05:00Z'
     fail "carried and ordinary cycles must reach the same status: $carried_out vs $check_out"
 rm -f "${fixtures}/comment-78.json"
 
+echo "==> hunk-header funcname context cannot move the identity"
+# Integration cycle 5 (codex-cloud, attempt 2), finding
+# `integration-r5-codex-cloud-1` (confirmed P2, REPRODUCED): the text after a
+# hunk header's closing `@@` is chosen by `diff.<driver>.xfuncname`, and a
+# file with NO driver attribute still uses the built-in default, which
+# `diff.default.xfuncname` rewrites. The carry fixtures above all edit near
+# the top of a file, where no header carries funcname text, so this builds its
+# own: an edit far enough down that git fills the header in.
+xf_commit() { # $1 tree-ish to start from, $2 path, $3 content file, $4.. parents
+    xf_src=$1 xf_path=$2 xf_file=$3
+    shift 3
+    xf_parents=
+    for xf_p in "$@"; do xf_parents="$xf_parents -p $xf_p"; done
+    GIT_INDEX_FILE="${test_tmp}/xf-index" git -C "$carry_repo" read-tree "$xf_src"
+    xf_blob="$(git -C "$carry_repo" hash-object -w "$xf_file")"
+    GIT_INDEX_FILE="${test_tmp}/xf-index" git -C "$carry_repo" update-index --add \
+        --cacheinfo "100644,${xf_blob},${xf_path}"
+    xf_tree="$(GIT_INDEX_FILE="${test_tmp}/xf-index" git -C "$carry_repo" write-tree)"
+    # shellcheck disable=SC2086 # the parent flags are deliberately split
+    git -C "$carry_repo" commit-tree "$xf_tree" $xf_parents -m "funcname fixture"
+}
+{
+    for xf_i in 1 2 3 4 5 6; do printf 'line%s\n' "$xf_i"; done
+    printf 'FUNC main\n'
+    for xf_i in 1 2 3 4 5 6; do printf 'body%s\n' "$xf_i"; done
+} >"${test_tmp}/xf-long"
+sed 's/^body5$/BODY5/' "${test_tmp}/xf-long" >"${test_tmp}/xf-long-edited"
+printf 'base-only\n' >"${test_tmp}/xf-other"
+xf_base_one="$(xf_commit "$carry_base_one" long.txt "${test_tmp}/xf-long" "$carry_base_one")"
+xf_origin="$(xf_commit "$xf_base_one" long.txt "${test_tmp}/xf-long-edited" "$xf_base_one")"
+xf_base_two="$(xf_commit "$xf_base_one" other.txt "${test_tmp}/xf-other" "$xf_base_one")"
+xf_merged="$(xf_commit "$xf_base_two" long.txt "${test_tmp}/xf-long-edited" "$xf_origin" "$xf_base_two")"
+# Premise: unpinned, the config really does change the header text.
+xf_plain="$(git -C "$carry_repo" diff --no-color "${xf_base_one}...${xf_origin}" | grep '^@@')"
+xf_config="$(git -C "$carry_repo" -c 'diff.default.xfuncname=^FUNC.*' diff --no-color \
+    "${xf_base_one}...${xf_origin}" | grep '^@@')"
+[ "$xf_plain" != "$xf_config" ] ||
+    fail "diff.default.xfuncname must change the UNPINNED hunk header, or this case proves nothing: $xf_plain"
+seed_reviewed_state "$xf_origin" "$xf_origin" "$xf_base_one" clean run-a
+carry_fixtures "$xf_merged" "$xf_base_two" "$xf_origin"
+run_carry "$xf_merged"
+assert_carry 0 carried "funcname fixture carry"
+# Re-carrying the same head re-derives BOTH identities and compares them with
+# the recorded one — so a config that moved the bytes would refuse here.
+git -C "$carry_repo" config diff.default.xfuncname '^FUNC.*'
+run_carry "$xf_merged"
+git -C "$carry_repo" config --unset diff.default.xfuncname
+assert_carry 0 carried "funcname context under a different xfuncname"
+
 echo "==> a carried proof cannot be re-derived from a checkout without the history"
 seed_origin_cycle
 carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"

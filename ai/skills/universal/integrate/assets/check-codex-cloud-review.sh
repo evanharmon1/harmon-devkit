@@ -623,6 +623,22 @@ run_gh() {
 #   That is the whole claim — closed over the config keys and attribute sources
 #   git documents, not over every future one.
 #
+#   The `sed` that strips everything after a hunk header's closing `@@` —
+#   integration cycle 5 (codex-cloud, attempt 2), finding
+#   `integration-r5-codex-cloud-1` (confirmed P2, REPRODUCED): the text after
+#   `@@ -a,b +c,d @@` is funcname CONTEXT, chosen by a driver's
+#   `diff.<driver>.xfuncname`. Sourcing attributes from the empty tree removes
+#   every named driver, but a file with none still uses git's built-in
+#   default, and `diff.default.xfuncname` in config still rewrote its headers
+#   (reproduced: `@@ … @@ body1` vs `@@ … @@ FUNC main`). No flag disables it,
+#   so the representation drops it. Nothing about the change is lost: the
+#   offsets, the context lines, and every changed line are kept, and funcname
+#   is display text derived from the pre-image. Only a hunk header can start
+#   `@@ -` — content lines carry a ` `/`+`/`-` prefix and binary-patch lines
+#   a length letter. This moves the bytes `v1` hashes for any hunk with
+#   funcname text; no release has shipped `v1`, so its definition is fixed
+#   here rather than versioned.
+#
 #   `--no-ext-diff`, `--no-textconv` — a branch can ship `.gitattributes` and
 #   the repository can carry config that routes a file through an external
 #   diff driver or a textconv filter. Either would let branch-controlled code
@@ -745,6 +761,7 @@ change_identity() {
         diff --no-color --no-ext-diff --no-textconv --no-renames --binary \
         --full-index --unified=3 --ignore-submodules=none --submodule=short \
         -O/dev/null "${ci_base}...${ci_head}" |
+        LC_ALL=C sed -E 's/^(@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@).*$/\1/' |
         git -C "$repo_dir" hash-object -t blob --stdin) || {
         change_identity_error="cannot compute a change identity for ${ci_base}...${ci_head}"
         return 1
