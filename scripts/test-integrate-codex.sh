@@ -4220,6 +4220,56 @@ case "$carry_out" in
 *) fail "the relocated hunk must be refused on identity, not on an earlier guard: $carry_out" ;;
 esac
 
+echo "==> a submodule display preference cannot abbreviate a gitlink into a collision"
+# Integration cycle 3, finding `integration-r3-codex-cloud-3` (confirmed P2,
+# REPRODUCED): `diff.submodule=log` is a checkout preference `--full-index`
+# does not override, and it renders a pointer move as
+# `Submodule sub 1111111...2222222` — seven hex digits of each side. Two
+# DIFFERENT pointer transitions sharing those prefixes then hash identically.
+# Gitlinks need not name objects that exist, so the collision is built
+# directly: the reviewed change moves the pointer 1111111a… → 2222222a…, and
+# a real catch-up merge (reviewed head an ancestor, every other guard passing)
+# resolves it to 1111111b… → 2222222b….
+sm_commit() { # $1 parent tree-ish, $2 gitlink sha, $3.. parents
+    sm_tree_src=$1 sm_link=$2
+    shift 2
+    sm_parents=
+    for sm_p in "$@"; do sm_parents="$sm_parents -p $sm_p"; done
+    GIT_INDEX_FILE="${test_tmp}/sm-index" git -C "$carry_repo" read-tree "$sm_tree_src"
+    GIT_INDEX_FILE="${test_tmp}/sm-index" git -C "$carry_repo" update-index --add \
+        --cacheinfo "160000,${sm_link},sub"
+    sm_new_tree="$(GIT_INDEX_FILE="${test_tmp}/sm-index" git -C "$carry_repo" write-tree)"
+    # shellcheck disable=SC2086 # the parent flags are deliberately split
+    git -C "$carry_repo" commit-tree "$sm_new_tree" $sm_parents -m "submodule pointer"
+}
+sm_a1=1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+sm_a2=2222222aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+sm_b1=1111111bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+sm_b2=2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+sm_base_one="$(sm_commit "$carry_base_one" "$sm_a1" "$carry_base_one")"
+sm_origin="$(sm_commit "$sm_base_one" "$sm_a2" "$sm_base_one")"
+sm_base_two="$(sm_commit "$sm_base_one" "$sm_b1" "$sm_base_one")"
+sm_merged="$(sm_commit "$sm_base_two" "$sm_b2" "$sm_origin" "$sm_base_two")"
+git -C "$carry_repo" config diff.submodule log
+# Premise: under the preference, the two DIFFERENT changes really do render
+# identically — or this case is not testing the finding.
+[ "$(git -C "$carry_repo" diff --no-ext-diff --full-index "${sm_base_one}...${sm_origin}" |
+    git -C "$carry_repo" hash-object -t blob --stdin)" = \
+    "$(git -C "$carry_repo" diff --no-ext-diff --full-index "${sm_base_two}...${sm_merged}" |
+        git -C "$carry_repo" hash-object -t blob --stdin)" ] ||
+    fail "the submodule fixture must COLLIDE under diff.submodule=log, or it proves nothing"
+git -C "$carry_repo" --no-replace-objects merge-base --is-ancestor "$sm_origin" "$sm_merged" ||
+    fail "the submodule fixture must be a catch-up DESCENDANT, or ancestry refuses it first"
+carry_fixtures "$sm_merged" "$sm_base_two" "$sm_origin"
+seed_reviewed_state "$sm_origin" "$sm_origin" "$sm_base_one" clean run-a
+run_carry "$sm_merged"
+git -C "$carry_repo" config --unset diff.submodule
+assert_carry 17 not-carried "abbreviated submodule pointer"
+case "$carry_out" in
+*"the change moved"*) ;;
+*) fail "the submodule pointer move must be refused on identity, not on an earlier guard: $carry_out" ;;
+esac
+
 echo "==> one byte of the reviewed change forces a fresh cycle"
 carry_fixtures "$carry_moved_head" "$carry_base_two" "$carry_origin_head"
 seed_reviewed_state "$carry_origin_head" "$carry_origin_head" "$carry_base_one" clean run-a

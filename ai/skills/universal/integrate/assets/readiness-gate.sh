@@ -1719,18 +1719,11 @@ if [ "$finder_cycles_len" -gt 0 ]; then
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
         [ "$fc_head" = "$head" ] ||
             indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
-        # harmon-init#752, challenge round 1, finding
-        # `challenge-r1-codex-adversarial-4` (confirmed P1): the receipt
-        # validator's carried carve-out applies to every finder entry, but a
-        # carry is corroborated against durable checker state that exists only
-        # for codex-cloud — and the codex-cloud entry is skipped here because
-        # codex_cycle already covers it. So a non-codex entry claiming
-        # `carried` could re-present an older receipt with nothing behind it.
-        # There is no carry mechanism for those finders at all, which makes the
-        # claim unfounded by construction rather than merely unproven.
-        if jq -e ".[$fc_idx] | has(\"carried\")" <<<"$finder_cycles" >/dev/null 2>&1; then
-            indeterminate codex-carried-unproven "finder_cycles[$fc_idx] ($fc_slug) claims a carried-forward verdict, but no carry mechanism exists for any finder but codex-cloud and nothing durable records one — re-run that finder against this head"
-        fi
+        # harmon-init#752: a `carried` claim on a non-codex finder used to be
+        # refused here. Integration cycle 3 (finding
+        # `integration-r3-codex-cloud-2`) moved that rule into the result
+        # schema, which the validation at step 8 above enforces before this
+        # loop runs — so the shape cannot reach this point.
         fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
         case "$fc_exit" in

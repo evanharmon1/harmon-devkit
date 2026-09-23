@@ -302,7 +302,14 @@
         },
         "then": {
           "required": ["accepted"]
-        }
+        },
+        "allOf": [
+          {
+            "$comment": "harmon-init#752, integration cycle 3 finding integration-r3-codex-cloud-2: only the Codex checker can record a carry, so a carried block on any other finder is a stale receipt dressed as an attestation. A second, independent {if, then} member, since this engine's if/then is a single conditional per schema node.",
+            "if": { "required": ["carried"] },
+            "then": { "properties": { "finder": { "const": "codex-cloud" } } }
+          }
+        ]
       }
     },
     "integration_round": {

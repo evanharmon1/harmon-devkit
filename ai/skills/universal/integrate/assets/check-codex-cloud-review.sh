@@ -608,6 +608,14 @@ run_gh() {
 #   `--ignore-submodules=none` — a submodule pointer move is a change to the
 #   reviewed tree, and the default can hide it.
 #
+#   `--submodule=short` — integration cycle 3, finding
+#   `integration-r3-codex-cloud-3` (confirmed P2, REPRODUCED): `diff.submodule`
+#   is a display preference `--full-index` does not override. Under `log` a
+#   pointer move renders as `Submodule sub 1111111...2222222`, seven hex digits
+#   of each side, so two DIFFERENT pointer moves sharing those prefixes hashed
+#   identically and a changed submodule inherited the earlier clean verdict.
+#   `short` is the one format that prints both full gitlink IDs.
+#
 #   `--no-replace-objects` — challenge round 1, finding
 #   `challenge-r1-codex-adversarial-5` (confirmed P2): `refs/replace` entries
 #   are applied transparently by `cat-file`, `merge-base`, and `diff`, so a
@@ -682,7 +690,8 @@ change_identity() {
         -c diff.algorithm=myers \
         -c diff.indentHeuristic=true \
         diff --no-color --no-ext-diff --no-textconv --no-renames --binary \
-        --full-index --unified=3 --ignore-submodules=none "${ci_base}...${ci_head}" |
+        --full-index --unified=3 --ignore-submodules=none --submodule=short \
+        "${ci_base}...${ci_head}" |
         git -C "$repo_dir" hash-object -t blob --stdin) || {
         change_identity_error="cannot compute a change identity for ${ci_base}...${ci_head}"
         return 1

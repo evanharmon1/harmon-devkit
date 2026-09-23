@@ -3996,13 +3996,19 @@ jq --arg origin "$carried_origin" \
       accepted: {surface: "review", id: "9002", reviewed_commit: $origin},
       carried: $carried}]' \
     "$carried_base" >"${fixtures}/integrator-result-carried-foreign-finder-fc.json"
-node "$validator" envelope \
-    "${fixtures}/integrator-result-carried-foreign-finder-fc.json" >/dev/null ||
-    fail "the foreign-finder carry fixture must itself be schema-valid — the point is that the GATE refuses it, not the schema"
+# Integration cycle 3, finding `integration-r3-codex-cloud-2`: the SCHEMA now
+# refuses a carry on any finder but codex-cloud, and the gate validates its
+# input against that schema before reading a single finder entry. Assert the
+# premise, then that the gate really does refuse the shape — through the
+# validation it runs itself, not a check that could be deleted unnoticed.
+if node "$validator" envelope \
+    "${fixtures}/integrator-result-carried-foreign-finder-fc.json" >/dev/null 2>&1; then
+    fail "the schema must refuse a carried verdict on a non-codex finder"
+fi
 run_gate_recheck_clean \
     --integrator-result "${fixtures}/integrator-result-carried-foreign-finder-fc.json" \
     --integration-cap 2 --integration-exempt-cap 2
-assert_gate 2 indeterminate codex-carried-unproven
+assert_gate 2 indeterminate codex-indeterminate
 
 write_defaults
 jq --arg h "$head_sha" 'del(.carry) | .head = $h' "$recheck_state" >"${recheck_state}.next"

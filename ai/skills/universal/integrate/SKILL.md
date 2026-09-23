@@ -147,14 +147,17 @@ Where the integration stage has run any **exempt** cycle (harmon-init#1326),
 `round n/cap` counts the CHARGED ones and the exempt ones are named beside it
 — `cycle 3/4 (+1 exempt)` — never folded into `n`, and never left out. A head
 whose verdict was **carried** (harmon-init#752) ran no cycle at all and so
-moves no counter; it is named the same way, `(+1 carried)`, for the opposite
+moves no counter; it is named the same way, `(+k carried)`, for the opposite
 reason — nothing was spent, and a reader must still be able to see that a head
-is attested without a reviewer having read it. Folding
+is attested without a reviewer having read it. `k` is the cycle state's
+`.carry.generation`, the number of heads the current cycle has attested without
+a fresh review, never a constant 1: after two catch-up carries a `+1` would
+hide the first. Folding
 them in would report a budget that was not spent; leaving them out would hide
-work that really happened, and the reviewer really was asked to look. Both
-numbers are read from the cycle state's `charged_cycles` / `exempt_cycles`,
-so the ledger and the readiness gate can never disagree about what was
-spent.
+work that really happened, and the reviewer really was asked to look. The
+spent numbers are read from the cycle state's `charged_cycles` /
+`exempt_cycles`, so the ledger and the readiness gate can never disagree about
+what was spent.
 Before a capped stage has begun its first round, a stage-entry or pending-wait
 ledger omits `round n/cap` and writes `waiting (no round yet)` in `Stage`;
 waiting, checks, and reviewer latency do not spend a round. Once a finding or
@@ -225,7 +228,8 @@ finding landing there after the carry still blocks, and `settle` still answers
 it on that same state. The carry removes the second review, never the second
 look.
 A carried head spends neither ceiling and advances no cycle ordinal, and the
-ledger names it as such — `cycle 3/4 (+1 exempt, +1 carried)` — because a head
+ledger names it as such — `cycle 3/4 (+1 exempt, +2 carried)`, the carried
+count read from `.carry.generation` — because a head
 attested without a reviewer reading it is exactly the thing a human reader must
 be able to see.
 
