@@ -609,9 +609,19 @@ run_gh() {
 #   the files (overridden by `-O/dev/null`; an EMPTY `diff.orderFile` makes git
 #   fail outright). Each changed the hashed text on git 2.55; each is restored
 #   by its pin; and all five pins are byte-identical to default output, so no
-#   existing change id moves and `algorithm` keeps its `v1`. The list is closed
-#   against the diff-output keys git documents, not against every future one —
-#   a new one costs a refusal, never a false carry.
+#   existing change id moves and `algorithm` keeps its `v1`.
+#
+#   `GIT_ATTR_SOURCE=<empty tree>`, `-c core.attributesFile=/dev/null` —
+#   integration cycle 5 (claude), finding `integration-r5-claude-1`: that list
+#   was closed over CONFIG KEYS, and attributes are the other input to
+#   rendering. They are read from the WORKING TREE, not the commits diffed, so
+#   the identity of two immutable SHAs depended on what was checked out.
+#   Sourcing attributes from the empty tree removes both that and any
+#   branch-shipped `.gitattributes`; `info/attributes` is refused above. On a
+#   clean config this is byte-identical to default output. A git older than
+#   2.40 ignores the variable: drift there costs a refusal, never a false carry.
+#   That is the whole claim — closed over the config keys and attribute sources
+#   git documents, not over every future one.
 #
 #   `--no-ext-diff`, `--no-textconv` — a branch can ship `.gitattributes` and
 #   the repository can carry config that routes a file through an external
@@ -693,13 +703,35 @@ change_identity() {
         change_identity_error="$ci_grafts exists, so commit history in this checkout is overridden and no SHA is authoritative"
         return 1
     fi
+    # Integration cycle 5 (claude), finding `integration-r5-claude-1`
+    # (confirmed P2, REPRODUCED): git ATTRIBUTES change how the same two trees
+    # render (`-diff` turns a text hunk into a binary patch; a `diff=` driver's
+    # xfuncname rewrites the `@@` context). The per-directory `.gitattributes`
+    # and `core.attributesFile` are neutralized in the command below. This one
+    # is not: `$GIT_DIR/info/attributes` is local, unversioned, and outranks
+    # every other source — the same shape as `info/grafts` above, so it gets the
+    # same answer.
+    if ! ci_attributes=$(git -C "$repo_dir" rev-parse --path-format=absolute \
+        --git-path info/attributes 2>/dev/null) || [ -z "$ci_attributes" ]; then
+        change_identity_error="cannot resolve where $repo_dir keeps info/attributes, so it cannot be shown that diff rendering is not overridden"
+        return 1
+    fi
+    if [ -s "$ci_attributes" ]; then
+        change_identity_error="$ci_attributes is not empty, so this checkout overrides how diffs render and the change identity would depend on it"
+        return 1
+    fi
+    ci_empty_tree=$(git -C "$repo_dir" hash-object -t tree /dev/null) || {
+        change_identity_error="cannot compute the empty tree for $repo_dir's object format"
+        return 1
+    }
     for ci_object in "$ci_base" "$ci_head"; do
         if ! git -C "$repo_dir" --no-replace-objects cat-file -e "${ci_object}^{commit}" 2>/dev/null; then
             change_identity_error="commit $ci_object is not in the object database at $repo_dir; fetch it, or run from the checkout the PR was pushed from"
             return 1
         fi
     done
-    ci_output=$(git -C "$repo_dir" --no-replace-objects \
+    ci_output=$(GIT_ATTR_SOURCE=$ci_empty_tree git -C "$repo_dir" --no-replace-objects \
+        -c core.attributesFile=/dev/null \
         -c core.quotePath=true \
         -c diff.noprefix=false \
         -c diff.mnemonicPrefix=false \
@@ -971,7 +1003,10 @@ mark_terminally_reviewed() {
 # verdict is made.
 #
 # So it runs exactly once, immediately before the verdict, at the point that
-# dominates every clean/findings/pending exit. Comparing the two fresh
+# dominates every clean and findings exit. A pending exit reports no verdict,
+# so it neither needs nor gets the proof. (Integration cycle 5 (claude),
+# finding `integration-r5-claude-3`: this sentence said "clean/findings/pending"
+# after `emit`'s hook became `clean | findings)` — the last of three sites.) Comparing the two fresh
 # identities to EACH OTHER is not enough on its own either: that would confirm
 # the change is self-consistent right now while saying nothing about whether it
 # is still the change the carry was proved over, so a state file edited to name
@@ -2860,6 +2895,18 @@ carry)
     # itself — so a resumed session doing the obvious thing corrupted its own
     # provenance chain. Re-proving and saying so is the right answer to a
     # repeated question; rewriting the record is not.
+    #
+    # Integration cycle 5 (claude), finding `integration-r5-claude-4` (P3):
+    # this path re-proved the two FRESH identities against each other and never
+    # against the RECORDED one, the rule `verify_carried_attestation` states and
+    # `check` enforces. Under any rendering drift it answered "the proof still
+    # holds" while re-presenting a record whose change_id differed. Now it asks
+    # the same question every other consumer asks.
+    if [ "$carry_previous_attests" = "$head" ] &&
+        [ "$(jq -r '.carry.change_id // empty' "$state_file")" != "$carry_head_identity" ]; then
+        emit not-carried "this cycle's carry record for $head names change identity $(jq -r '.carry.change_id // empty' "$state_file"), but the change now derives $carry_head_identity — the record no longer describes this head; a fresh cycle is required"
+        exit 17
+    fi
     if [ "$carry_previous_attests" = "$head" ]; then
         release_state_lock
         emit carried \

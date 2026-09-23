@@ -4120,6 +4120,23 @@ assert_carry 0 carried "idempotent carry"
     [ "$(jq -r '.carry.from_head' "$state")" = "$carry_from_before" ] ||
     fail "re-carrying a head it already carries must not rewrite its provenance: $(cat "$state")"
 
+echo "==> re-carrying a head whose record no longer matches the proof refuses"
+# Integration cycle 5 (claude), finding `integration-r5-claude-4` (P3): the
+# idempotent path compared the two fresh identities to each other and never
+# to the RECORDED one, so it answered "the proof still holds" while
+# re-presenting a record that said something else.
+carry_recorded_before="$(jq -r '.carry.change_id' "$state")"
+jq '.carry.change_id = "0000000000000000000000000000000000000001"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+run_carry "$carry_merged_head"
+assert_carry 17 not-carried "re-carry against a record that no longer matches"
+case "$carry_out" in
+*"no longer describes this head"*) ;;
+*) fail "the refusal must name the record/proof mismatch: $carry_out" ;;
+esac
+jq --arg id "$carry_recorded_before" '.carry.change_id = $id' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+
 echo "==> check re-derives what the cycle attests, then runs the ordinary scan"
 run_check_in_carry_repo '2026-07-31T08:05:00Z'
 assert_status 0 clean
@@ -4152,6 +4169,40 @@ for carry_kv in $carry_knobs diff.orderFile=; do
     git -C "$carry_repo" config --unset "${carry_kv%%=*}"
 done
 assert_status 0 clean
+
+echo "==> attributes in the re-deriving checkout cannot move the identity"
+# Integration cycle 5 (claude), finding `integration-r5-claude-1` (confirmed
+# P2, REPRODUCED): attributes are read from the WORKING TREE and from
+# core.attributesFile, not from the commits diffed, and `-diff` turns the text
+# hunk into a binary patch. Premise first: unpinned, this attribute really
+# does change the hashed text — or the case proves nothing.
+printf 'f.txt -diff\n' >"${carry_repo}/.gitattributes"
+printf 'f.txt -diff\n' >"${test_tmp}/carry-global-attributes"
+carry_unpinned_attr="$(git -C "$carry_repo" diff --no-color --full-index \
+    "${carry_base_one}...${carry_origin_head}" | git -C "$carry_repo" hash-object -t blob --stdin)"
+rm -f "${carry_repo}/.gitattributes"
+carry_unpinned_plain="$(git -C "$carry_repo" diff --no-color --full-index \
+    "${carry_base_one}...${carry_origin_head}" | git -C "$carry_repo" hash-object -t blob --stdin)"
+[ "$carry_unpinned_attr" != "$carry_unpinned_plain" ] ||
+    fail "a -diff attribute must change the UNPINNED diff text, or this case cannot catch the drift"
+printf 'f.txt -diff\n' >"${carry_repo}/.gitattributes"
+git -C "$carry_repo" config core.attributesFile "${test_tmp}/carry-global-attributes"
+run_check_in_carry_repo '2026-07-31T08:05:00Z'
+rm -f "${carry_repo}/.gitattributes"
+git -C "$carry_repo" config --unset core.attributesFile
+assert_status 0 clean
+
+echo "==> a local info/attributes override is refused, like a graft"
+carry_info_attributes="$(git -C "$carry_repo" rev-parse --path-format=absolute --git-path info/attributes)"
+mkdir -p "$(dirname "$carry_info_attributes")"
+printf 'f.txt -diff\n' >"$carry_info_attributes"
+run_carry "$carry_merged_head"
+rm -f "$carry_info_attributes"
+assert_carry 17 not-carried "local info/attributes override"
+case "$carry_out" in
+*"info/attributes"*) ;;
+*) fail "the refusal must name info/attributes as the reason: $carry_out" ;;
+esac
 
 echo "==> a finding that lands on the reviewed head AFTER the carry still blocks"
 # The case the carry must not create: the reviewed head is never looked at

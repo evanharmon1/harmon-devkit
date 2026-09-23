@@ -291,7 +291,9 @@ Every result is an **envelope** wrapping a per-role payload
   `carried.attests_head` must equal the envelope head instead. The exception is
   granted only by asserting `carried`, and receipt validation enforces both
   halves of it — so "stale evidence under a current-head label" stays
-  impossible, because the label says which commit the evidence is about.
+  impossible, because the label says which commit the evidence is about. The
+  `codex-cloud` entry of `finder_cycles[]` must carry the identical `carried`
+  object, since both describe one cycle, and no other finder may carry one.
 - The envelope's runtime-attested `producer` names the resolved `family` as
   well as its harness, model, and tier. Retained results therefore prove both
   council `distinct_families` and every disclosed horizontal family fallback.

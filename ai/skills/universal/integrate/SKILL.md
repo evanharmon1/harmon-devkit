@@ -254,7 +254,9 @@ Anything the check cannot establish charges, because an exemption is a spend
 the reviewer never sanctioned. Report both counts on the integrator result as
 `codex_cycle.charged` and `codex_cycle.exempt`, report a carried head as
 `codex_cycle.carried` (the gate cross-checks it against the durable checker
-state and refuses a claim that state does not record), and pass
+state and refuses a claim that state does not record) and, identically, on the
+`codex-cloud` entry of `finder_cycles[]` (the two describe one cycle, and
+receipt validation rejects an envelope where they disagree), and pass
 `--integration-exempt-cap` to the readiness gate alongside `--integration-cap`
 so both ceilings are checked; omit the counters and the gate applies the
 original single-counter rule, which is correct for a pass that never

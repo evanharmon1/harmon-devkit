@@ -610,6 +610,12 @@ Two things about this shape will catch you out if you copy by reflex:
 - **Leave `cycle`, `charged`, and `exempt` where the last real cycle left
   them.** A carried head ran no cycle and spent nothing; inflating any of the
   three makes the gate's arithmetic disagree with the checker state.
+- **The `codex-cloud` entry of `finder_cycles[]` carries the SAME `carried`
+  object**, `origin_head` included. The two describe one cycle, and receipt
+  validation rejects the whole envelope when they disagree, including when the
+  mirror simply omits it. (Integration cycle 5, finding
+  `integration-r5-claude-2`: this rule was enforced in both validators and
+  stated nowhere a producer reads.) No other finder may carry one.
 
 A `10` raised by inline threads also carries `unanswered[]` — one
 `{thread_root, comment_id, review_id, path}` entry per unadjudicated bot
