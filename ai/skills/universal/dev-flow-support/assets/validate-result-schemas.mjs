@@ -151,7 +151,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { createSchemaValidator } from './lib/json-schema-subset.mjs'
+import { createSchemaValidator, canonicalJson } from './lib/json-schema-subset.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -787,6 +787,51 @@ function checkChallengerAttackScenarios(envelope, errors) {
   }
 }
 
+// expectedReviewedCommit — which commit a cycle's accepted receipt must name.
+//
+// Normally the envelope head, because the receipt is the reviewer's own stamp
+// that it read THIS commit. harmon-init#752 adds the one exception: a CARRIED
+// cycle asked no reviewer anything. Its receipt is the original cycle's — a
+// real review of a real commit — re-presented for a head whose change was
+// proved byte-identical, so it names `carried.origin_head` and saying anything
+// else would forge the stamp. The exception is granted only by a
+// well-formed `carried` object naming a commit-shaped origin: a producer that
+// simply wants a mismatch accepted has to assert the carry, which the gate
+// then re-derives from the durable checker state rather than believes.
+function expectedReviewedCommit(cycle, head) {
+  const carried = cycle && cycle.carried
+  if (
+    carried &&
+    typeof carried === 'object' &&
+    typeof carried.origin_head === 'string' &&
+    /^[0-9a-f]{40}$/.test(carried.origin_head)
+  ) {
+    return carried.origin_head
+  }
+  return head
+}
+
+// checkCarriedAttestation — a carried receipt must attest THIS envelope's head.
+//
+// Challenge round 3, finding `challenge-r3-codex-adversarial-3` (confirmed
+// P2): the carve-out above changes which commit the receipt may name, and
+// nothing checked which commit the carry claims to be ABOUT. Mutating
+// `attests_head` to an unrelated SHA left the result validating cleanly, even
+// though the schema describes it as the gated head. The readiness gate
+// happened to catch it downstream, but this validator is published and read on
+// its own — Foreman's Python consumer re-implements the same contract — so a
+// cross-head receipt must be refused here, where the contract is stated.
+function checkCarriedAttestation(location, cycle, head, errors) {
+  const carried = cycle && cycle.carried
+  if (!carried || typeof carried !== 'object') return
+  if (typeof carried.attests_head !== 'string') return
+  if (carried.attests_head !== head) {
+    errors.push(
+      `${location}.carried.attests_head: ${carried.attests_head} does not match envelope head ${head}`
+    )
+  }
+}
+
 // checkHeadAgreement — every head-shaped field in a payload must equal the
 // envelope's head (specs/dev-flow-v2.md § Results, "Heads must agree").
 function checkHeadAgreement(kind, envelope, errors) {
@@ -806,11 +851,51 @@ function checkHeadAgreement(kind, envelope, errors) {
         `$result.payload.codex_cycle.head: ${payload.codex_cycle.head} does not match envelope head ${head}`
       )
     }
+    checkCarriedAttestation('$result.payload.codex_cycle', payload.codex_cycle, head, errors)
     const accepted = payload.codex_cycle.accepted
     if (accepted && typeof accepted === 'object' && typeof accepted.reviewed_commit === 'string') {
-      if (accepted.reviewed_commit !== head) {
+      const expected = expectedReviewedCommit(payload.codex_cycle, head)
+      if (accepted.reviewed_commit !== expected) {
         errors.push(
-          `$result.payload.codex_cycle.accepted.reviewed_commit: ${accepted.reviewed_commit} does not match envelope head ${head}`
+          `$result.payload.codex_cycle.accepted.reviewed_commit: ${accepted.reviewed_commit} does not match ${expected === head ? `envelope head ${head}` : `carried.origin_head ${expected}`}`
+        )
+      }
+    }
+  }
+  // checkCodexMirrorCarry — the codex-cloud entry of finder_cycles[] describes
+  // the SAME cycle as codex_cycle, so the two cannot disagree about whether a
+  // reviewer read the gated head.
+  //
+  // Integration cycle 1, finding `integration-r1-codex-cloud-1` (confirmed
+  // P2): each entry was validated on its own, so dropping `carried` from the
+  // mirror and pointing its receipt at the envelope head still validated —
+  // while the readiness gate skips that entry precisely because codex_cycle
+  // covers it. The retained envelope then said both that no reviewer read the
+  // gated head and that one did, and a generalized consumer reading
+  // finder_cycles saw only the half that hides the carry.
+  //
+  // Scoped to `carried` rather than to whole-object equality on purpose. The
+  // reviewer offered "match the canonical cycle, or remove the mirror", and
+  // full equality is a WIDER contract change than this defect needs: the
+  // existing corpus has an honest mirror that omits `trigger_comment_id`,
+  // which the finder_cycles schema explicitly allows. Requiring the carry to
+  // agree closes the hole exactly, and closes the receipt with it — a mirror
+  // that keeps `carried` must then name `carried.origin_head`, which the
+  // receipt check above already enforces.
+  // Integration cycle 2, finding `integration-r2-claude-3` (confirmed P2): the
+  // guard required `codex_cycle` to be truthy, so with a null one — a resolved
+  // integration cap of 0 — a `codex-cloud` entry could still carry a `carried`
+  // object that nothing corroborates: this check did not run, the gate skips
+  // that entry, and its whole carried block sits inside the non-null branch.
+  // The same hole in the same shape as the one this function was added to
+  // close, and `?? null` already handles the absent case.
+  if (kind === 'integrator' && Array.isArray(payload.finder_cycles)) {
+    const cycleCarried = canonicalJson(payload.codex_cycle?.carried ?? null)
+    for (const fc of payload.finder_cycles) {
+      if (!fc || typeof fc !== 'object' || fc.finder !== 'codex-cloud') continue
+      if (canonicalJson(fc.carried ?? null) !== cycleCarried) {
+        errors.push(
+          '$result.payload.finder_cycles[codex-cloud].carried: disagrees with codex_cycle.carried — the two describe the same cycle, so one of them is claiming a reviewer read the gated head while the other says none did'
         )
       }
     }
@@ -823,11 +908,13 @@ function checkHeadAgreement(kind, envelope, errors) {
           `$result.payload.finder_cycles[${i}].head: ${fc.head} does not match envelope head ${head}`
         )
       }
+      checkCarriedAttestation(`$result.payload.finder_cycles[${i}]`, fc, head, errors)
       const fcAccepted = fc.accepted
       if (fcAccepted && typeof fcAccepted === 'object' && typeof fcAccepted.reviewed_commit === 'string') {
-        if (fcAccepted.reviewed_commit !== head) {
+        const fcExpected = expectedReviewedCommit(fc, head)
+        if (fcAccepted.reviewed_commit !== fcExpected) {
           errors.push(
-            `$result.payload.finder_cycles[${i}].accepted.reviewed_commit: ${fcAccepted.reviewed_commit} does not match envelope head ${head}`
+            `$result.payload.finder_cycles[${i}].accepted.reviewed_commit: ${fcAccepted.reviewed_commit} does not match ${fcExpected === head ? `envelope head ${head}` : `carried.origin_head ${fcExpected}`}`
           )
         }
       }

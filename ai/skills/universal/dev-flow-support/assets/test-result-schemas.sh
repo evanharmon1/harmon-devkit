@@ -579,6 +579,18 @@ const SEMANTIC_ONLY = new Set([
   'result.challenger.schema/invalid/attack-scenario-unknown-finding-reference.json',
   'result.challenger.schema/invalid/attack-scenario-duplicate-id.json',
   'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
+  // harmon-init#752: which commit a receipt must name is conditional on a
+  // sibling object's CONTENT (carried.origin_head), which no keyword in this
+  // subset can compare a field against — the same category as the line above.
+  'result.integrator.schema/invalid/carried-receipt-names-neither-head.json',
+  // harmon-init#752 round 3: which head a carry ATTESTS is a cross-field
+  // comparison against the envelope, which no keyword in this subset can
+  // express — same category as the two lines above.
+  'result.integrator.schema/invalid/carried-attests-another-head.json',
+  // harmon-init#752 integration cycle 1: whether the codex-cloud mirror
+  // agrees with codex_cycle is a comparison between two sibling objects,
+  // which no keyword in this subset can express.
+  'result.integrator.schema/invalid/carried-mirror-contradicts-cycle.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
   'result.integrator.schema/invalid/clean-with-empty-checks.json',

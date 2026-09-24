@@ -390,6 +390,35 @@ charges, because an exemption is a spend no reviewer sanctioned. The ledger
 names which counter each cycle spent — `cycle n/cap (+m exempt)` — so
 `round n/cap` stays honest.
 
+**A cycle that would re-read identical bytes is not run at all**
+(harmon-init#752). The exemption above still spends a reviewer window on a
+re-read; where the reviewed change is not merely untouched by file but
+**identical**, the clean verdict already attests this head and the cycle is
+skipped outright. Identity is a **digest of the PR's own three-dot diff
+text**, taken from immutable commit SHAs in the local checkout: local git,
+never a reconstruction from the API of what a reviewer saw. It is deliberately
+not `git patch-id`, which ignores hunk offsets and so returns the same id for a
+reviewed edit RELOCATED between two identically-surrounded regions — different
+trees, one id, exactly what a conflict resolution can produce. Equal
+identities carry the verdict forward and the head spends **neither** ceiling;
+anything else — a changed diff, rewritten history rather than a catch-up
+merge, a base the verdict was never corroborated against, a checkout without
+the commits — runs the ordinary cycle. A checkout whose history is overridden
+is handled by kind rather than lumped together: `refs/replace` entries are
+**ignored**, because every command in the proof path disables them and the
+identity is taken from the real objects, while a `info/grafts` file is a
+**refusal**, because no flag disables it and the SHAs would stop being
+authoritative. Three things never move with it. CI always re-runs
+on the new head in full, because what a base merge can change is everything
+*outside* the diff and that is CI's to catch. **The cycle itself does not
+move**: a carry records that an existing cycle's verdict also attests a later
+head, and changes nothing else — so the ordinary evidence scan keeps running
+against the commit a reviewer actually read, a finding landing there after the
+carry still blocks, and it is still settled the ordinary way. What a carry
+removes is the second REVIEW, never the second look. And the ledger names a
+carried head — `cycle n/cap (+m exempt, +k carried)` — because a head attested
+without a reviewer reading it is precisely what a human must be able to see.
+
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,
 `challenger_tier`, `reviewer_tier`, and `integrator_tier`; `[role.*]` supplies
@@ -585,12 +614,18 @@ reporting green.
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`, with
 `.claude/skills/shepherd/assets/check-codex-cloud-review.sh` as legacy
 fallback), it is the
-required implementation — never hand-roll the polling: `reserve` the cycle
+required implementation — never hand-roll the polling: `carry` first, on a
+head that moved (exit 0 carries the previous clean verdict and there is no
+cycle to run; exit 17 is the ordinary "reserve one" answer; exit 14 means the
+PR is merged or closed and the stage is over), otherwise
+`reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then post `@codex review`, `attach` the comment
 ID it returned, and `check`, acting on its exit code (0 clean, 10 findings,
 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted,
-16 transient read, 2 indeterminate). It never writes to GitHub,
+16 transient read, 2 indeterminate). `check` is run either way: on a carried
+head it re-derives the proof instead of polling, so the gate's one re-check
+covers both shapes. It never writes to GitHub,
 so posting the trigger stays yours, and its `settle` subcommand records the
 disposition of a badged finding stated outside an inline thread.
 **Where it is not vendored**, the same contract is satisfied by hand: post the

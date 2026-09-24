@@ -156,12 +156,12 @@ Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
       --remediation-cap N [--integration-exempt-cap N]
-      [--codex-recheck STATE_FILE]
+      [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
       [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
       --remediation-cap N [--integration-exempt-cap N]
-      [--codex-recheck STATE_FILE]
+      [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
   readiness-gate.sh behind --repo OWNER/REPO --pr N
@@ -214,6 +214,13 @@ have gone stale since. Omitting it skips this one extra guard — unlike
 --integration-cap, this one remains advisory, since resuming it needs an
 on-disk state file that can genuinely be absent for operational reasons the
 caller does not control; every real caller supplies it anyway.
+--codex-repo-dir DIR is the checkout the --codex-recheck re-check computes
+patch identities in when the cycle state carries a verdict forward from an
+earlier head (harmon-init#752). It defaults to the working directory. A
+checkout that does not hold the PR's history cannot re-derive that proof, and
+the re-check then reports indeterminate rather than accepting the record — so
+this flag is how a gate run outside the PR's worktree stays able to confirm a
+carried verdict instead of failing one.
 --allow-edited-root ID clears an edited-since-reply line for that thread
 root only — the named-exception rule: the caller's report must say why the
 edit needs no reply.
@@ -290,11 +297,17 @@ integration_cap=
 integration_exempt_cap=
 remediation_cap=
 codex_recheck_state=
+# harmon-init#752: the checkout the re-check re-derives a CARRIED verdict's
+# patch identity in. It defaults to the working directory, which is the PR's
+# own worktree in every real invocation; naming it explicitly is what lets a
+# caller run this gate from anywhere else without the carried proof silently
+# becoming unprovable.
+codex_repo_dir=.
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --integration-exempt-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --integration-exempt-cap | --remediation-cap | --codex-recheck | --codex-repo-dir | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -306,6 +319,7 @@ while [ "$#" -gt 0 ]; do
         --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --remediation-cap) remediation_cap=$2 ;;
         --codex-recheck) codex_recheck_state=$2 ;;
+        --codex-repo-dir) codex_repo_dir=$2 ;;
         --allow-edited-root)
             grep -Eq '^[1-9][0-9]*$' <<<"$2" ||
                 die "--allow-edited-root must be a thread root comment ID"
@@ -752,15 +766,21 @@ recheck_codex_freshness() {
     state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
     state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
     state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
-    [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] && [ "$state_head" = "$head" ] ||
-        indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
+    # harmon-init#752: a cycle can attest a LATER head than its own, so the
+    # state's head legitimately differs from the gated one — but only when the
+    # state itself says so. The claim is the state's, never the caller's, and
+    # the checker re-derives the identity behind it on the very next line.
+    state_attests="$(jq -r '.carry.attests_head // empty' "$codex_recheck_state" 2>/dev/null)"
+    [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] &&
+        { [ "$state_head" = "$head" ] || [ "$state_attests" = "$head" ]; } ||
+        indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}${state_attests:+ (attesting $state_attests)}, not the gated $repo#$pr@$head"
     codex_recheck_exit=0
     # Review round 5, P1 (confirmed): this recheck is the gate's own use of the
     # checker, and it was the one call site still not naming the run. A later
     # run can replace the shared same-head state, so without the run id this
     # call would happily validate a foreign run's cycle. `active_run_id` is
     # read from --record's run.json well before this runs.
-    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" 2>&1)" ||
+    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
         codex_recheck_exit=$?
     # harmon-devkit#508: exit 16 means the checker could not READ the evidence,
     # not that the cached clean result went stale. This is the exact shape the
@@ -787,7 +807,7 @@ recheck_codex_freshness() {
         # run can replace the shared same-head state, and an unscoped retry
         # would accept that foreign run's cycle and settlements instead of
         # refusing the ownership mismatch.
-        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" 2>&1)" ||
+        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
             indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"
@@ -1612,6 +1632,62 @@ if [ "$codex_cycle" != null ]; then
                 indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
         fi
     fi
+    # harmon-init#752. A CARRIED cycle is the one shape where no reviewer
+    # looked at the gated head at all: the result asserts that a clean verdict
+    # for an earlier head still attests this one. The assertion is checkable
+    # and therefore must be checked — against the durable checker state, which
+    # is what actually made the proof, exactly as the charged/exempt split is.
+    # Without that state there is nothing behind the claim but the producer's
+    # word, so a claimed carry with no state is indeterminate rather than a
+    # pass; `--codex-recheck` stays advisory for every other shape.
+    # Challenge round 5, finding `challenge-r5-codex-adversarial-1` (confirmed
+    # P1): every carried check below fires on the result CLAIMING a carry, so
+    # omitting the claim skipped all of them. A producer could then set
+    # `accepted.reviewed_commit` to the envelope head — schema-valid, since
+    # without `carried` the ordinary head-agreement rule is satisfied — and the
+    # freshness recheck would accept the very state that says this head was
+    # never reviewed, promoting a retained result whose provenance is false.
+    #
+    # The obligation is therefore BIDIRECTIONAL. A result may not claim a carry
+    # the state does not record, and it may not omit one the state does: the
+    # disclosure exists precisely so a head attested without a reviewer reading
+    # it is visible, and a disclosure that can be dropped discloses nothing.
+    if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+        state_attests_head="$(jq -r '.carry.attests_head // empty' \
+            "$codex_recheck_state" 2>/dev/null)" || state_attests_head=
+        if [ "$state_attests_head" = "$head" ]; then
+            jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1 ||
+                indeterminate codex-carried-unproven "the checker state records that $head is attested by a cycle for an earlier commit, but codex_cycle discloses no carried record — a result that omits the carry asserts a reviewer read this head when none did"
+        fi
+    fi
+    if jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1; then
+        [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ] ||
+            indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but no --codex-recheck state was supplied to confirm it against — a carry means no reviewer read this head, so the claim cannot rest on the result alone"
+        # Challenge round 2, finding `challenge-r2-codex-adversarial-3`
+        # (confirmed P2): spot-checking two fields let a schema-valid result
+        # alter `from_head`, `base_sha`, `generation` or `carried_at` while
+        # keeping the two that were compared — a promoted result carrying false
+        # provenance. The disclosure IS the record, so compare it AS the
+        # record: one exact object equality, which cannot be partial and cannot
+        # fall behind a field added later.
+        #
+        # `origin_head` is the one field the envelope adds, because the receipt
+        # carve-out needs it; the state expresses the same fact as the cycle's
+        # own head, so it is checked against that.
+        cycle_carried_origin="$(jq -er '.carried.origin_head | select(type == "string")' \
+            <<<"$codex_cycle" 2>/dev/null)" ||
+            indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict with no origin_head"
+        state_cycle_head="$(jq -er '.head | select(type == "string")' \
+            "$codex_recheck_state" 2>/dev/null)" || state_cycle_head=
+        jq -e --argjson cycle "$codex_cycle" \
+            '(.carry // null) as $state
+             | ($cycle.carried | del(.origin_head)) as $claimed
+             | ($state != null) and ($state == $claimed)' \
+            "$codex_recheck_state" >/dev/null 2>&1 ||
+            indeterminate codex-carried-unproven "codex_cycle's carried record does not match the checker state's byte for byte — claimed $(jq -c '.carried | del(.origin_head)' <<<"$codex_cycle"), recorded $(jq -c '.carry // null' "$codex_recheck_state")"
+        [ "$cycle_carried_origin" = "$state_cycle_head" ] ||
+            indeterminate codex-carried-unproven "codex_cycle says the verdict was carried from $cycle_carried_origin but the checker state's cycle is ${state_cycle_head:-none}"
+    fi
     case "$codex_exit" in
     0) recheck_codex_freshness ;;
     *) exit_condition codex "$codex_exit" "the current-head Codex cycle" ;;
@@ -1643,6 +1719,11 @@ if [ "$finder_cycles_len" -gt 0 ]; then
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
         [ "$fc_head" = "$head" ] ||
             indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
+        # harmon-init#752: a `carried` claim on a non-codex finder used to be
+        # refused here. Integration cycle 3 (finding
+        # `integration-r3-codex-cloud-2`) moved that rule into the result
+        # schema, which the validation at step 8 above enforces before this
+        # loop runs — so the shape cannot reach this point.
         fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
             indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
         case "$fc_exit" in

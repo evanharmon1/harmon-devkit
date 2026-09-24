@@ -182,7 +182,12 @@ sequence checks below run; those later checks remain script responsibilities.
   and every `finder_cycles[].head` / `.accepted.reviewed_commit`,
   must equal the enclosing envelope's `head`. The payload schema validates
   `payload` alone and has no visibility into the envelope; only the script,
-  which has both, can compare them.
+  which has both, can compare them. The one exception is a CARRIED cycle (harmon-init#752), where no reviewer
+  read the envelope head at all: the receipt then names
+  `carried.origin_head` — the commit that WAS reviewed — and
+  `carried.attests_head` must equal the envelope head instead. Asserting
+  `carried` is what licenses the difference, and receipt validation
+  enforces both halves.
 - **Run matching** — the envelope's `run` must match the run the caller
   considers active (`--run-id`/`--initiated-by`), which is external context
   no single document carries.
@@ -2834,7 +2839,9 @@ same pinned ref, without either implementation reading the other's source.
   finder slug or `human`.
 - Every head-shaped field in a payload (`reviewed_head`, `codex_cycle.head`,
   `codex_cycle.accepted.reviewed_commit`) must equal the enclosing envelope's
-  `head`.
+  `head` — except a **carried** cycle's receipt, which names
+  `carried.origin_head` while `carried.attests_head` carries the envelope-head
+  obligation (harmon-init#752).
 - An envelope's `run` (`run_id` + `initiated_by`) must match the run the
   caller considers active; nothing in `run` is ever mutated after the fact.
 - A finding has exactly one adjudication (one `adjudications[]` entry, in

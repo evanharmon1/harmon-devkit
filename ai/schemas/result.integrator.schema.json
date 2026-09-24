@@ -106,9 +106,64 @@
             },
             "id": { "type": "string", "minLength": 1 },
             "reviewed_commit": {
-              "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass, exactly like `head` above (this is the second, GitHub-side stamp of the same invariant).",
+              "description": "Must equal the envelope's `head` -- enforced by the validator's receipt-validation pass, exactly like `head` above (this is the second, GitHub-side stamp of the same invariant). The single exception is a CARRIED cycle (harmon-init#752), where no reviewer read the envelope head at all: the receipt then names `carried.origin_head`, the commit that was reviewed, and asserting `carried` is what licenses the difference.",
               "type": "string",
               "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        },
+        "carried": {
+          "description": "Present only when this cycle spent NOTHING on the gated head: a clean verdict this cycle already produced for an EARLIER head still attests it, because the head advanced by a base catch-up merge that left the PR's three-dot diff identical (harmon-init#752). The identity is a digest of that diff's own text, taken from immutable commit SHAs -- deliberately not `git patch-id`, which ignores hunk offsets and so returns one id for a reviewed edit relocated between two identically-surrounded regions. The checker re-derives it before reading any evidence, and the readiness gate compares THIS OBJECT byte for byte against the record the checker keeps, so it is the disclosure and the proof at once. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever it left them at -- and it asked no reviewer anything about the gated head, so its `accepted` and `trigger_comment_id` name the cycle's own evidence: the real review, of the real commit a reviewer read. `accepted.reviewed_commit` is therefore `origin_head` rather than the envelope head -- the one place a receipt's reviewed_commit may differ, permitted by the validator's receipt pass only when this object is present.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "origin_head",
+            "attests_head",
+            "from_head",
+            "base_sha",
+            "change_id",
+            "algorithm",
+            "generation",
+            "carried_at"
+          ],
+          "properties": {
+            "origin_head": {
+              "description": "The head this cycle reviewed, and whose clean verdict it carries to the envelope head. Equal to the checker state's own cycle head -- the gate checks it against exactly that.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "attests_head": {
+              "description": "The later head this cycle attests. Equal to the envelope head; a carry naming anything else would be attesting a commit nobody gated.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "from_head": {
+              "description": "The head this cycle attested immediately before, so a chain of catch-up merges is recoverable. Equal to origin_head on the first carry.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "base_sha": {
+              "description": "The base the attested head's identity was taken against.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "change_id": {
+              "description": "The identity both diffs hashed to. Equality of this one value IS the carry.",
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "algorithm": {
+              "description": "Pinned so a future identity change is a visible schema change rather than a silent re-interpretation of recorded proofs.",
+              "const": "git-diff-digest/three-dot/v1"
+            },
+            "generation": {
+              "description": "How many consecutive carries the attested head is away from the reviewed one. 1 is the first.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "carried_at": {
+              "type": "string",
+              "minLength": 1
             }
           }
         },
@@ -181,6 +236,61 @@
               }
             }
           },
+          "carried": {
+            "description": "Present only when this cycle spent NOTHING on the gated head: a clean verdict this cycle already produced for an EARLIER head still attests it, because the head advanced by a base catch-up merge that left the PR's three-dot diff identical (harmon-init#752). The identity is a digest of that diff's own text, taken from immutable commit SHAs -- deliberately not `git patch-id`, which ignores hunk offsets and so returns one id for a reviewed edit relocated between two identically-surrounded regions. The checker re-derives it before reading any evidence, and the readiness gate compares THIS OBJECT byte for byte against the record the checker keeps, so it is the disclosure and the proof at once. A carried cycle advances no counter -- `cycle`, `charged` and `exempt` are whatever it left them at -- and it asked no reviewer anything about the gated head, so its `accepted` and `trigger_comment_id` name the cycle's own evidence: the real review, of the real commit a reviewer read. `accepted.reviewed_commit` is therefore `origin_head` rather than the envelope head -- the one place a receipt's reviewed_commit may differ, permitted by the validator's receipt pass only when this object is present.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "origin_head",
+              "attests_head",
+              "from_head",
+              "base_sha",
+              "change_id",
+              "algorithm",
+              "generation",
+              "carried_at"
+            ],
+            "properties": {
+              "origin_head": {
+                "description": "The head this cycle reviewed, and whose clean verdict it carries to the envelope head. Equal to the checker state's own cycle head -- the gate checks it against exactly that.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "attests_head": {
+                "description": "The later head this cycle attests. Equal to the envelope head; a carry naming anything else would be attesting a commit nobody gated.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "from_head": {
+                "description": "The head this cycle attested immediately before, so a chain of catch-up merges is recoverable. Equal to origin_head on the first carry.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "base_sha": {
+                "description": "The base the attested head's identity was taken against.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "change_id": {
+                "description": "The identity both diffs hashed to. Equality of this one value IS the carry.",
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "algorithm": {
+                "description": "Pinned so a future identity change is a visible schema change rather than a silent re-interpretation of recorded proofs.",
+                "const": "git-diff-digest/three-dot/v1"
+              },
+              "generation": {
+                "description": "How many consecutive carries the attested head is away from the reviewed one. 1 is the first.",
+                "type": "integer",
+                "minimum": 1
+              },
+              "carried_at": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
           "exit_code": {
             "description": "Same contract as codex_cycle.exit_code above, including 15 (quota exhausted) and 16 (transient read).",
             "enum": [0, 2, 10, 11, 12, 13, 14, 15, 16]
@@ -192,7 +302,14 @@
         },
         "then": {
           "required": ["accepted"]
-        }
+        },
+        "allOf": [
+          {
+            "$comment": "harmon-init#752, integration cycle 3 finding integration-r3-codex-cloud-2: only the Codex checker can record a carry, so a carried block on any other finder is a stale receipt dressed as an attestation. A second, independent {if, then} member, since this engine's if/then is a single conditional per schema node.",
+            "if": { "required": ["carried"] },
+            "then": { "properties": { "finder": { "const": "codex-cloud" } } }
+          }
+        ]
       }
     },
     "integration_round": {

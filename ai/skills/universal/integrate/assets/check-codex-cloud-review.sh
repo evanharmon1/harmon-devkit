@@ -28,11 +28,17 @@
 #      nothing here says anything about the reviewer, so the caller retries
 #      the READ rather than the reviewer cycle, and a gate maps it to
 #      indeterminate-with-reason rather than to a not-clean failure.
+#   17 not carried — `carry` only (harmon-init#752). The previously reviewed
+#      clean verdict could not be shown to attest this head, so a fresh cycle
+#      is required: reserve and trigger exactly as before. A normal negative
+#      answer, never an error, and every fail-closed path in `carry` lands
+#      here with its reason rather than on 2.
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #
-# 15 and 16 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so a
-# caller pinned to the older contract still reads every code it knew.
+# 15, 16 and 17 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so
+# a caller pinned to the older contract still reads every code it knew — and 17
+# is reachable only from a subcommand that contract has never called.
 #
 # `settle` records the disposition of a finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because
@@ -60,8 +66,9 @@ Usage:
                                      [--integration-cap N] [--integration-exempt-cap N]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
+  check-codex-cloud-review.sh carry --state FILE --head SHA [--run-id ID] [--repo-dir DIR]
   check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
-                                   [--run-id ID]
+                                   [--run-id ID] [--repo-dir DIR]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
@@ -92,6 +99,45 @@ the gate as the only backstop.
 --run-id scopes the totals to one run. The state file outlives the run that
 wrote it, so a second run against the same PR would otherwise inherit the
 first run's spend; naming a different run starts the totals again.
+
+`carry` (harmon-init#752) answers one question before a cycle is reserved:
+does the previously reviewed clean verdict still attest THIS head? It does
+when the head advanced by a base merge that left the reviewed change
+byte-identical — the case a fresh cycle re-attests the same bytes at the cost
+of a full reviewer window. Identity is a digest of the PR's own three-dot diff
+TEXT, computed twice from IMMUTABLE commit SHAs: once for the reviewed head
+against the base recorded for its verdict, once for the new head against the
+base GitHub reports now. Equal ids carry the verdict; anything else, including
+anything that cannot be established, requires a fresh cycle. It reads local git
+only — no reconstruction of what a reviewer saw from the API — and writes no
+GitHub state. (It is deliberately NOT `git patch-id`, which ignores hunk
+offsets and collides on a relocated identical edit; see `change_identity`.)
+
+A carry does not move the cycle. The state's head, trigger, request time and
+settlements all stay exactly where they were; the record simply adds that this
+cycle's verdict ALSO attests a later head. Everything downstream therefore
+keeps working on the cycle it always worked on: `settle` still binds to the
+commit a reviewer read, and `check` still runs the one evidence scan it always
+ran — against that same cycle — so a finding landing on the reviewed head
+after the carry blocks exactly as it would have without one. What the carry
+removes is the second REVIEW, never the second look. Before reading evidence
+`check` validates only the carry record's SHAPE; it re-derives the identity in
+`emit`, immediately before any verdict, so no interval exists between the proof
+and the answer it licenses.
+
+  exit 0   carried: state now attests this head, no cycle was spent, and
+           `check` will re-derive the same proof rather than trust the record.
+  exit 17  not carried: reserve and trigger a cycle exactly as before. This is
+           a normal negative answer, not an error, and every fail-closed path
+           that leaves the PR open lands here with its reason.
+  exit 14  the PR is MERGED or CLOSED: the stage is over. Stop — do not
+           reserve, trigger, or poll.
+  exit 2   usage error or unreadable state.
+
+--repo-dir names the checkout `carry` (and a later `check` re-verifying it)
+computes identities in; it defaults to the working directory. The identity is
+taken between named commits and never against the index or the working tree,
+so an unstaged edit cannot influence it.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 15 quota exhausted, 16 transient read,
@@ -169,6 +215,11 @@ reap_deadline_epoch=
 finder_slug=
 previous_head=
 run_id=
+# harmon-init#752: the checkout `carry` computes patch identities in. Every
+# identity is taken between two named commits, so this directory supplies the
+# object database and nothing else — the index and the working tree are never
+# read.
+repo_dir=.
 integration_cap=
 integration_exempt_cap=
 requested_at_arg=
@@ -198,7 +249,7 @@ eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --repo-dir)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -213,6 +264,7 @@ while [ "$#" -gt 0 ]; do
         --finder) finder_slug=$2 ;;
         --previous-head) previous_head=$2 ;;
         --run-id) run_id=$2 ;;
+        --repo-dir) repo_dir=$2 ;;
         --integration-cap) integration_cap=$2 ;;
         --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
@@ -507,6 +559,230 @@ run_gh() {
     "$timeout_bin" -k 1 "$call_timeout" gh "$@"
 }
 
+# harmon-init#752 — the change identity a carried verdict rests on.
+#
+# The PR's reviewed artifact is its three-dot diff (`base...head`), which is
+# exactly what GitHub renders and what the cloud reviewer reads. Two heads
+# whose three-dot diffs are the same text ARE the same change, so a verdict
+# about one is a verdict about the other. That is the whole carry-forward
+# argument, and it is why the mechanism is local git rather than an API
+# reconstruction of what the reviewer saw: both inputs are immutable commit
+# SHAs, and git answers from the object database.
+#
+# The identity is a digest of the CANONICAL DIFF TEXT, not `git patch-id`.
+#
+# Challenge round 1, finding `challenge-r1-codex-adversarial-1` (confirmed P1,
+# REPRODUCED): `git patch-id` deliberately ignores hunk offsets, so it collides
+# on a hunk RELOCATED between two regions whose context lines are identical —
+# which is exactly what a conflict resolution can do to a reviewed edit. A
+# fixture with two byte-identical stanzas produces two different trees and one
+# patch id:
+#
+#     first-anchor  id: 0ebecfe39dfcd94a8b1e857f41c8bdd9d6d08cf3
+#     second-anchor id: 0ebecfe39dfcd94a8b1e857f41c8bdd9d6d08cf3   trees equal? NO
+#
+# `--verbatim` does not help: it governs whitespace, not offsets. Nor does
+# `--full-index`, which the earlier design leaned on — the two `index` lines
+# above differ and the id is the same, so patch-id is not hashing them. The
+# fix is not a better patch-id flag; it is to stop discarding information. The
+# diff text already IS the canonical statement of the change, `@@` headers
+# included, so hashing it verbatim is both simpler and strictly stronger.
+#
+# What the flags buy, none of them incidental:
+#
+#   `--unified=3`, `--no-renames`, `-c diff.algorithm=myers`,
+#   `-c diff.indentHeuristic=true`, `-c diff.noprefix=false`,
+#   `-c diff.mnemonicPrefix=false`, `-c diff.relative=false`,
+#   `-c core.quotePath=true`, `-c diff.srcPrefix=a/`, `-c diff.dstPrefix=b/`,
+#   `-c diff.interHunkContext=0`, `-c diff.suppressBlankEmpty=false`,
+#   `-O/dev/null` — the knobs that make the same two trees render as different
+#   text, pinned because this value is recorded once and re-derived later,
+#   possibly in another checkout. Unpinned, drift produces a REFUSAL rather
+#   than a false carry, but a refusal costs the cycle the mechanism exists to
+#   save and misreports an unchanged change as moved.
+#
+#   Integration cycle 3 (claude), finding `integration-r3-claude-1` (confirmed
+#   P2, REPRODUCED): this comment called the list exhaustive and it was not.
+#   `diff.srcPrefix`/`diff.dstPrefix` survive `diff.noprefix=false`,
+#   `diff.interHunkContext` fuses hunks and rewrites the `@@` headers,
+#   `diff.suppressBlankEmpty` has no flag at all, and `diff.orderFile` reorders
+#   the files (overridden by `-O/dev/null`; an EMPTY `diff.orderFile` makes git
+#   fail outright). Each changed the hashed text on git 2.55; each is restored
+#   by its pin; and all five pins are byte-identical to default output, so no
+#   existing change id moves and `algorithm` keeps its `v1`.
+#
+#   `GIT_ATTR_SOURCE=<empty tree>`, `-c core.attributesFile=/dev/null` —
+#   integration cycle 5 (claude), finding `integration-r5-claude-1`: that list
+#   was closed over CONFIG KEYS, and attributes are the other input to
+#   rendering. They are read from the WORKING TREE, not the commits diffed, so
+#   the identity of two immutable SHAs depended on what was checked out.
+#   Sourcing attributes from the empty tree removes both that and any
+#   branch-shipped `.gitattributes`; `info/attributes` is refused above. On a
+#   clean config this is byte-identical to default output. A git older than
+#   2.40 ignores the variable: drift there costs a refusal, never a false carry.
+#   That is the whole claim — closed over the config keys and attribute sources
+#   git documents, not over every future one.
+#
+#   The `sed` that strips everything after a hunk header's closing `@@` —
+#   integration cycle 5 (codex-cloud, attempt 2), finding
+#   `integration-r5-codex-cloud-1` (confirmed P2, REPRODUCED): the text after
+#   `@@ -a,b +c,d @@` is funcname CONTEXT, chosen by a driver's
+#   `diff.<driver>.xfuncname`. Sourcing attributes from the empty tree removes
+#   every named driver, but a file with none still uses git's built-in
+#   default, and `diff.default.xfuncname` in config still rewrote its headers
+#   (reproduced: `@@ … @@ body1` vs `@@ … @@ FUNC main`). No flag disables it,
+#   so the representation drops it. Nothing about the change is lost: the
+#   offsets, the context lines, and every changed line are kept, and funcname
+#   is display text derived from the pre-image. Only a hunk header can start
+#   `@@ -` — content lines carry a ` `/`+`/`-` prefix and binary-patch lines
+#   a length letter. This moves the bytes `v1` hashes for any hunk with
+#   funcname text; no release has shipped `v1`, so its definition is fixed
+#   here rather than versioned.
+#
+#   `--no-ext-diff`, `--no-textconv` — a branch can ship `.gitattributes` and
+#   the repository can carry config that routes a file through an external
+#   diff driver or a textconv filter. Either would let branch-controlled code
+#   decide what the "change" looks like, which is a trust boundary this must
+#   not cross. Both are disabled.
+#
+#   `--binary`, `--full-index` — a binary edit must be visible rather than
+#   collapsing to the constant text "Binary files ... differ".
+#
+#   `--ignore-submodules=none` — a submodule pointer move is a change to the
+#   reviewed tree, and the default can hide it.
+#
+#   `--submodule=short` — integration cycle 3, finding
+#   `integration-r3-codex-cloud-3` (confirmed P2, REPRODUCED): `diff.submodule`
+#   is a display preference `--full-index` does not override. Under `log` a
+#   pointer move renders as `Submodule sub 1111111...2222222`, seven hex digits
+#   of each side, so two DIFFERENT pointer moves sharing those prefixes hashed
+#   identically and a changed submodule inherited the earlier clean verdict.
+#   `short` is the one format that prints both full gitlink IDs.
+#
+#   `--no-replace-objects` — challenge round 1, finding
+#   `challenge-r1-codex-adversarial-5` (confirmed P2): `refs/replace` entries
+#   are applied transparently by `cat-file`, `merge-base`, and `diff`, so a
+#   checkout carrying one can make an immutable SHA resolve to a synthetic
+#   commit — and both the carry and the later re-derivation would reproduce the
+#   same synthetic proof. The immutability the whole argument rests on is a
+#   property of the object database, so the one feature that overrides it is
+#   turned off for every command in this path, and the deprecated grafts file
+#   is refused outright since no flag disables it.
+#
+# Sets change_identity_value on success; change_identity_error and a non-zero
+# return otherwise. Every failure is a refusal to prove identity, never a
+# claim that the change differs — callers charge a fresh cycle on both.
+change_identity() {
+    ci_base=$1
+    ci_head=$2
+    change_identity_value=
+    change_identity_error=
+    if ! command -v git >/dev/null 2>&1; then
+        change_identity_error="git is required to establish a change identity"
+        return 1
+    fi
+    if ! git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1; then
+        change_identity_error="--repo-dir $repo_dir is not a git checkout, so no change identity can be established"
+        return 1
+    fi
+    # `--no-replace-objects` covers `refs/replace`. Grafts are the older,
+    # deprecated form of the same override and no command-line flag disables
+    # them, so their presence is a refusal rather than something to work
+    # around.
+    #
+    # Integration cycle 1, finding `integration-r1-codex-cloud-2` (confirmed
+    # P2): the path was built from `--git-dir`, which in a LINKED WORKTREE is
+    # `.git/worktrees/<name>` — while grafts live in the COMMON directory and
+    # git honours them from there. Every agent worktree in this repo is a
+    # linked one, so the check was looking in the one place the file never is.
+    #
+    # Integration cycle 2, finding `integration-r2-claude-1` (confirmed P1,
+    # REPRODUCED): the FIX for that was itself inoperative. `--git-path`
+    # prints a path relative to the git process's cwd, and in a plain
+    # repository that is `.git/info/grafts` — while the `[ -e ]` that follows
+    # is evaluated by the SHELL, whose cwd is not `$repo_dir`. Measured with a
+    # planted graft and a foreign cwd: MISSED. The linked-worktree fixture
+    # passed only because that case happens to return an absolute path — it
+    # passed for a reason that does not generalize, exactly like the fixture it
+    # replaced. `--path-format=absolute` makes the answer independent of who is
+    # asking.
+    #
+    # Same clause, second half: a `rev-parse` that FAILS used to clear the
+    # variable and skip the check, which is a fail-OPEN inside a function whose
+    # contract is that every failure is a refusal. It refuses now.
+    if ! ci_grafts=$(git -C "$repo_dir" rev-parse --path-format=absolute \
+        --git-path info/grafts 2>/dev/null) || [ -z "$ci_grafts" ]; then
+        change_identity_error="cannot resolve where $repo_dir keeps info/grafts, so it cannot be shown that commit history is not overridden"
+        return 1
+    fi
+    if [ -e "$ci_grafts" ]; then
+        change_identity_error="$ci_grafts exists, so commit history in this checkout is overridden and no SHA is authoritative"
+        return 1
+    fi
+    # Integration cycle 5 (claude), finding `integration-r5-claude-1`
+    # (confirmed P2, REPRODUCED): git ATTRIBUTES change how the same two trees
+    # render (`-diff` turns a text hunk into a binary patch; a `diff=` driver's
+    # xfuncname rewrites the `@@` context). The per-directory `.gitattributes`
+    # and `core.attributesFile` are neutralized in the command below. This one
+    # is not: `$GIT_DIR/info/attributes` is local, unversioned, and outranks
+    # every other source — the same shape as `info/grafts` above, so it gets the
+    # same answer.
+    if ! ci_attributes=$(git -C "$repo_dir" rev-parse --path-format=absolute \
+        --git-path info/attributes 2>/dev/null) || [ -z "$ci_attributes" ]; then
+        change_identity_error="cannot resolve where $repo_dir keeps info/attributes, so it cannot be shown that diff rendering is not overridden"
+        return 1
+    fi
+    if [ -s "$ci_attributes" ]; then
+        change_identity_error="$ci_attributes is not empty, so this checkout overrides how diffs render and the change identity would depend on it"
+        return 1
+    fi
+    ci_empty_tree=$(git -C "$repo_dir" hash-object -t tree /dev/null) || {
+        change_identity_error="cannot compute the empty tree for $repo_dir's object format"
+        return 1
+    }
+    for ci_object in "$ci_base" "$ci_head"; do
+        if ! git -C "$repo_dir" --no-replace-objects cat-file -e "${ci_object}^{commit}" 2>/dev/null; then
+            change_identity_error="commit $ci_object is not in the object database at $repo_dir; fetch it, or run from the checkout the PR was pushed from"
+            return 1
+        fi
+    done
+    ci_output=$(GIT_ATTR_SOURCE=$ci_empty_tree git -C "$repo_dir" --no-replace-objects \
+        -c core.attributesFile=/dev/null \
+        -c core.quotePath=true \
+        -c diff.noprefix=false \
+        -c diff.mnemonicPrefix=false \
+        -c diff.relative=false \
+        -c diff.algorithm=myers \
+        -c diff.indentHeuristic=true \
+        -c diff.srcPrefix=a/ \
+        -c diff.dstPrefix=b/ \
+        -c diff.interHunkContext=0 \
+        -c diff.suppressBlankEmpty=false \
+        diff --no-color --no-ext-diff --no-textconv --no-renames --binary \
+        --full-index --unified=3 --ignore-submodules=none --submodule=short \
+        -O/dev/null "${ci_base}...${ci_head}" |
+        LC_ALL=C sed -E 's/^(@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@).*$/\1/' |
+        git -C "$repo_dir" hash-object -t blob --stdin) || {
+        change_identity_error="cannot compute a change identity for ${ci_base}...${ci_head}"
+        return 1
+    }
+    # An EMPTY diff hashes to the empty blob rather than to nothing, so unlike
+    # `git patch-id` it does not produce an empty string that two empty patches
+    # would compare equal on. It is still refused: a PR whose diff has become
+    # empty is abandoned, not reviewed clean (AGENTS.md, "one endpoint is worth
+    # knowing"), and carrying a verdict onto no change at all attests nothing.
+    if [ "$ci_output" = "$(printf '' | git -C "$repo_dir" hash-object -t blob --stdin)" ]; then
+        change_identity_error="the diff ${ci_base}...${ci_head} is empty, so it has no change to identify"
+        return 1
+    fi
+    if ! valid_sha "$ci_output"; then
+        change_identity_error="git returned an unusable identity for ${ci_base}...${ci_head}"
+        return 1
+    fi
+    change_identity_value=$ci_output
+    return 0
+}
+
 write_state() {
     destination=$1
     payload=$2
@@ -529,6 +805,16 @@ write_state() {
 # record — it is no record at all, and honouring one would let `check` report
 # clean with nothing behind it. Corrupted or hand-reconstructed state must
 # reach the malformed-state refusal instead.
+#
+# harmon-init#752 added the `carry` record — a statement that this cycle's
+# verdict also attests a LATER head, proved by change identity. It adds no
+# phase and moves no head: the cycle is the same cycle, so `settle`, the
+# evidence scan, and the receipt all keep working on exactly the fields they
+# already used. The record's shape is validated here with everything else
+# `check` would otherwise have to trust, because a claim missing any field the
+# proof is re-derived from is malformed state rather than a weaker proof. It
+# stays version 2 because the fields are additive — a reader that has never
+# heard of them sees a state file it can still parse.
 #
 # Version 2 added `settled`. A version-1 file is read as if it were empty and
 # is REWRITTEN as version 2 by the next command that writes it, so an in-flight
@@ -561,6 +847,16 @@ read_state() {
       (.head | type == "string") and
       (.attempt == 1 or .attempt == 2) and
       (.phase == "reserved" or .phase == "attached") and
+      (.last_reviewed_verdict == null or .last_reviewed_verdict == "clean" or
+        .last_reviewed_verdict == "findings") and
+      (.carry == null or ((.carry | type == "object") and
+        (.carry.attests_head | type == "string") and
+        (.carry.from_head | type == "string") and
+        (.carry.base_sha | type == "string") and
+        (.carry.change_id | type == "string") and
+        (.carry.algorithm == "git-diff-digest/three-dot/v1") and
+        (.carry.generation | type == "number" and . >= 1 and floor == .) and
+        (.carry.carried_at | type == "string"))) and
       (.requires_full_window == null or
         (.requires_full_window | type == "boolean")) and
       (.previous_trigger_comment_id == null or
@@ -646,9 +942,34 @@ reap_record() {
 # The marker is written HERE rather than at each terminal emit, because there
 # are six of those and this change has already shipped that mistake four times:
 # a fact recorded in one place cannot be forgotten at a call site.
+#
+# harmon-init#752: the marker also records WHICH verdict landed. The exemption
+# classifier only ever needed "this head was reviewed", but a carried-forward
+# verdict is a claim that a specific CLEAN result still attests a later head,
+# so `clean` has to be distinguishable from `findings` here — nothing else on
+# the state file distinguishes them.
 mark_terminally_reviewed() {
+    reviewed_verdict=${1:-}
     [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
     [ -n "${state_head:-}" ] || return 0
+    # harmon-init#752: once a cycle has carried, re-corroborating the reviewed
+    # base against the LIVE base — which the base merge has moved — resolves it
+    # to unset and strands every later carry and every later exemption.
+    #
+    # Integration cycle 2, finding `integration-r2-claude-2` (confirmed P2),
+    # with the round-2 scaffolding checkpoint applied since this guard exists
+    # only because an earlier round added `.carry`. Disposition: IN SCOPE, but
+    # RESTRUCTURED — the guard was written as "skip the whole marker", which
+    # also suppressed the VERDICT CLASS, and that is the field `carry` gates
+    # on. A late `findings` on a carried cycle therefore left
+    # `last_reviewed_verdict` reading `clean`, and a further carry cited a
+    # clean verdict that had been contradicted — the exact fail-open the
+    # comment below it claims cannot arise.
+    #
+    # The guard now protects the one field that needs base corroboration and
+    # nothing else. The verdict class is a fact about THIS cycle's evidence and
+    # needs no base to be true, so it is always recorded.
+    carry_present=$(jq -r '.carry // empty' "$state_file" 2>/dev/null) || carry_present=
     # Two reviewers pushed this from opposite sides and both were right.
     #
     # Codex (cycle 4): the base sampled at RESERVATION can be minutes stale by
@@ -664,37 +985,168 @@ mark_terminally_reviewed() {
     # recorded. If it moved, what the review covered is genuinely unknown, and
     # per the governing invariant the proof is left UNSET so the next cycle
     # charges rather than trusting either sample.
-    reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
-        jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
-    valid_sha "$reviewed_base_sha" || reviewed_base_sha=
-    reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
-    [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
-        reviewed_base_sha=
-    jq --arg h "$state_head" --arg b "$reviewed_base_sha" '.last_reviewed_head = $h
-        | .last_reviewed_base_sha = (if $b == "" then null else $b end)' "$state_file" \
+    # Integration cycle 3 (claude), nit (accepted): a carrying cycle discards
+    # this sample below, so it does not spend the API read on one.
+    reviewed_base_sha=
+    if [ -z "$carry_present" ]; then
+        reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
+            jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
+        valid_sha "$reviewed_base_sha" || reviewed_base_sha=
+        reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
+        [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
+            reviewed_base_sha=
+    fi
+    jq --arg h "$state_head" --arg b "$reviewed_base_sha" \
+        --arg v "$reviewed_verdict" --arg carrying "$carry_present" \
+        '.last_reviewed_head = $h
+        | .last_reviewed_base_sha =
+            (if $carrying != "" then .last_reviewed_base_sha
+             elif $b == "" then null else $b end)
+        | .last_reviewed_verdict = (if $v == "" then null else $v end)' "$state_file" \
         >"${state_file}.reviewed" 2>/dev/null &&
         mv "${state_file}.reviewed" "$state_file" ||
         rm -f "${state_file}.reviewed"
 }
 
+# harmon-init#752 — does this cycle still attest the head the PR is at?
+#
+# Challenge round 3, finding `challenge-r3-codex-adversarial-1` (confirmed P1):
+# the first version derived this once, up front, and then let a minutes-long
+# evidence scan run before emitting a verdict. Every liveness check in that
+# window compares the HEAD alone, so a PR retargeted to a different base — or a
+# base branch force-pushed — changes the three-dot diff under an unchanged head
+# and the verdict is about a diff that no longer exists. The identity is a
+# function of (base, head), and both have to still hold at the moment the
+# verdict is made.
+#
+# So it runs exactly once, immediately before the verdict, at the point that
+# dominates every clean and findings exit. A pending exit reports no verdict,
+# so it neither needs nor gets the proof. (Integration cycle 5 (claude),
+# finding `integration-r5-claude-3`: this sentence said "clean/findings/pending"
+# after `emit`'s hook became `clean | findings)` — the last of three sites.) Comparing the two fresh
+# identities to EACH OTHER is not enough on its own either: that would confirm
+# the change is self-consistent right now while saying nothing about whether it
+# is still the change the carry was proved over, so a state file edited to name
+# a different head would pass. Both fresh values are also compared against the
+# recorded one.
+#
+# Returns 0 when there is nothing to verify (this cycle carries nothing) or the
+# claim holds. Emits and exits otherwise — every failure is indeterminate,
+# never a weaker verdict.
+verify_carried_attestation() {
+    [ -n "${carry_attests:-}" ] || return 0
+    vca_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
+        transient_read_failure "cannot read the PR base to re-derive what this cycle attests"
+    }
+    vca_live_head=$(jq -r '.head.sha // empty' <<<"$vca_payload" 2>/dev/null) || vca_live_head=
+    vca_live_base=$(jq -r '.base.sha // empty' <<<"$vca_payload" 2>/dev/null) || vca_live_base=
+    if ! valid_sha "$vca_live_base" || ! valid_sha "$vca_live_head"; then
+        emit indeterminate "the PR payload names no stable base and head, so what this cycle attests cannot be re-derived"
+        exit 2
+    fi
+    if [ "$vca_live_head" != "$carry_attests" ]; then
+        emit head-changed "this cycle attests $carry_attests but the PR is at $vca_live_head"
+        exit 2
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        emit indeterminate "git is required to re-derive what this cycle attests"
+        exit 2
+    fi
+    # Review round 2, finding `review-r2-codex-verification-1` (confirmed P2):
+    # this proved only that the REVIEWED head is an ancestor, while `carry`
+    # anchors every hop to the head it last attested as well. State that is
+    # repaired, restored from a backup, or otherwise altered could therefore
+    # pass `check` on a rewrite that `carry` itself refuses — the two sides of
+    # the same rule disagreeing. Both anchors, both places.
+    vca_anchors=$state_head
+    vca_from=$(jq -r '.carry.from_head // empty' "$state_file" 2>/dev/null) || vca_from=
+    [ -z "$vca_from" ] || [ "$vca_from" = "$state_head" ] ||
+        vca_anchors="$vca_anchors $vca_from"
+    for vca_anchor in $vca_anchors; do
+        if ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
+            "$vca_anchor" "$carry_attests" 2>/dev/null; then
+            emit indeterminate "$vca_anchor is no longer an ancestor of $carry_attests (history was rewritten, or the commits are not in $repo_dir) — this cycle no longer attests it"
+            exit 2
+        fi
+    done
+    if ! change_identity "$carry_origin_base" "$state_head"; then
+        emit indeterminate "cannot re-derive the reviewed change's identity: $change_identity_error"
+        exit 2
+    fi
+    vca_origin_identity=$change_identity_value
+    if ! change_identity "$vca_live_base" "$carry_attests"; then
+        emit indeterminate "cannot re-derive the attested head's change identity: $change_identity_error"
+        exit 2
+    fi
+    if [ "$vca_origin_identity" != "$change_identity_value" ] ||
+        [ "$change_identity_value" != "$carry_recorded_identity" ]; then
+        emit indeterminate "this cycle no longer attests $carry_attests: the reviewed change is now $vca_origin_identity, that head's is $change_identity_value, and the carry recorded $carry_recorded_identity — reserve a fresh cycle"
+        exit 2
+    fi
+    # Review round 2, finding `review-r2-codex-verification-2` (confirmed P2):
+    # the (base, head) pair was read once and then hashed, so a retarget during
+    # the hashing itself would have been published as a verdict about the pair
+    # that no longer holds. Rounds 3 and 4 chased this interval by moving the
+    # check later each time, which is a regress with no end — so END it here
+    # instead: re-read the pair AFTER the hashing and require both unchanged.
+    # Nothing is derived after this point, only compared, so there is no later
+    # interval for a further round to find.
+    vca_final=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
+        transient_read_failure "cannot re-confirm the PR head and base after hashing"
+    }
+    if [ "$(jq -r '.head.sha // empty' <<<"$vca_final" 2>/dev/null)" != "$carry_attests" ] ||
+        [ "$(jq -r '.base.sha // empty' <<<"$vca_final" 2>/dev/null)" != "$vca_live_base" ]; then
+        emit indeterminate "the PR head or base moved while this cycle's attestation was being re-derived — the verdict would describe a change that is no longer the PR's; re-check rather than trusting it"
+        exit 2
+    fi
+    return 0
+}
+
 emit() {
     result=$1
     detail=$2
-    case "$result" in
-    clean | findings) mark_terminally_reviewed ;;
-    esac
     surface=${3:-}
     accepted_id=${4:-}
     extra=${5:-}
+    case "$result" in
+    clean | findings)
+        # harmon-init#752, challenge round 4, finding
+        # `challenge-r4-codex-adversarial-1` (confirmed P1): the attestation was
+        # verified at a fixed point in `check`, and rounds 3 and 4 each showed
+        # that point was not late enough — a retarget or base force-push during
+        # any later read (the PR-author fetch, a commit-prefix resolution)
+        # changes the three-dot diff under an unchanged head, and head-only
+        # liveness cannot see it. Moving the call one step later each round is a
+        # game with no end state, so it lives HERE instead: a verdict cannot be
+        # emitted without it, by construction, and there is no interval left to
+        # attack.
+        #
+        # No recursion is possible. `verify_carried_attestation` reports only
+        # `indeterminate`, `head-changed` and `transient-read`, none of which
+        # match this case, so its own emits pass straight through.
+        verify_carried_attestation
+        mark_terminally_reviewed "$result"
+        ;;
+    esac
+    # harmon-init#752: `head` stays the CYCLE's head — the commit a reviewer
+    # read and the one every receipt names — and a cycle that also attests a
+    # later head says so alongside it rather than by overwriting it. A caller
+    # that has never heard of carrying reads exactly the fields it always did.
+    carry_disclosure=null
+    if [ -n "${state_file:-}" ] && [ -f "$state_file" ]; then
+        carry_disclosure=$(jq -c '.carry // null' "$state_file" 2>/dev/null) || carry_disclosure=null
+    fi
     jq -cn \
         --arg status "$result" \
         --arg detail "$detail" \
         --arg head "${state_head:-}" \
+        --argjson carried "${carry_disclosure:-null}" \
         --argjson attempt "${state_attempt:-0}" \
         --arg surface "$surface" \
         --arg accepted_id "$accepted_id" \
         --argjson extra "${extra:-null}" \
         '{status:$status,detail:$detail,head:$head,attempt:$attempt}
+         + (if ($carried | type) == "object" then {carried:$carried} else {} end)
          + (if $surface != "" and $accepted_id != "" then
               {accepted:{surface:$surface,id:$accepted_id,reviewed_commit:$head}}
             else {} end)
@@ -2275,6 +2727,239 @@ attach)
     printf '%s\n' "$payload"
     ;;
 
+carry)
+    # harmon-init#752. See the usage block for the argument the mechanism rests
+    # on; what follows is the order the refusals are made in, which is itself
+    # part of the contract: every precondition that can be answered from local
+    # state is answered before GitHub is called, so a run that cannot possibly
+    # carry does not spend a read finding that out.
+    #
+    # Challenge round 2, scaffolding checkpoint (findings
+    # `challenge-r2-codex-adversarial-1` P1, `-2` and `-3` P2 — every one of
+    # them reported as existing "only because round 1 added it"): round 1 made a
+    # carry MOVE the state to the new head and keep a snapshot of the old cycle
+    # to re-check recursively. The obligation was right — a carried verdict must
+    # be re-checked against live evidence, not re-read — but the mechanism grew
+    # its own failure surface: a disposable copy the documented `settle` path
+    # could not reach, a second liveness read racing the first, and a receipt
+    # the gate could only spot-check.
+    #
+    # All three are DELETED rather than hardened. The cycle state does not move.
+    # A carry records that this cycle's verdict also attests a LATER head, and
+    # nothing else changes: the head, the trigger, the request time, and the
+    # settlements stay exactly where `settle` and `check` already look for them.
+    # Re-checking the cycle is then not a thing this code does at all — it is
+    # what `check` already was, because it is still the same cycle.
+    [ -n "$head" ] || usage
+    valid_sha "$head" || die "head must be a full 40-hex commit"
+    acquire_state_lock
+    read_state
+
+    state_repo=$(jq -r '.repo' "$state_file")
+    state_pr=$(jq -r '.pr' "$state_file")
+    carry_cycle_head=$(jq -r '.head' "$state_file")
+    state_head=$carry_cycle_head
+    state_attempt=$(jq -r '.attempt' "$state_file")
+
+    # A carried verdict is a claim about what THIS run has already paid for.
+    # State owned by another run — or by no run at all, which a scoped caller
+    # cannot tell apart from a foreign one — is not this run's history, so it
+    # licenses nothing. Exactly the rule `reserve` applies to the exemption
+    # classifier, for exactly the same reason.
+    if [ -n "$run_id" ]; then
+        carry_state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ "$carry_state_run_id" != "$run_id" ]; then
+            emit not-carried "this cycle state belongs to run ${carry_state_run_id:-no run}, not $run_id — a verdict another run obtained cannot be carried into this one"
+            exit 17
+        fi
+    fi
+
+    # Self-found while re-reading the state machine: `carry` checked the
+    # VERDICT record and never the phase, so it would happily attest a later
+    # head from a cycle still in flight. `reserved` is the write-ahead record
+    # taken before a trigger is posted, and an `attached` head with no verdict
+    # is a live cycle; neither has produced anything to carry.
+    carry_verdict=$(jq -r '.last_reviewed_verdict // empty' "$state_file")
+    carry_reviewed_head=$(jq -r '.last_reviewed_head // empty' "$state_file")
+    carry_phase=$(jq -r '.phase' "$state_file")
+    # Review round 1, finding `review-r1-codex-verification-1` (confirmed P2):
+    # the verdict marker alone was the test, on the reasoning that `reserve`
+    # writes a fresh payload and so cannot leave `last_reviewed_head` behind.
+    # That holds for state this helper produces, and the condition was checking
+    # a CONSEQUENCE rather than the thing the comment claims — so hand-repaired
+    # or legacy state carrying both a `reserved` phase and a stale clean marker
+    # would have been carried past a live reservation. Both facts are cheap to
+    # assert and neither implies the other.
+    if [ "$carry_phase" != "attached" ] || [ "$carry_reviewed_head" != "$carry_cycle_head" ]; then
+        emit not-carried "this cycle is still in flight for $carry_cycle_head (phase $carry_phase) and has reached no verdict — there is nothing to carry"
+        exit 17
+    fi
+    # `findings` is a terminal verdict too, and it is recorded on the same
+    # marker — which is why the verdict class had to become part of the record.
+    # Only a clean one is carryable: carrying "there are findings" forward
+    # would attest nothing the gate can pass on, and carrying it as though it
+    # were clean is the fail-open this whole mechanism must not have.
+    if [ "$carry_verdict" != "clean" ]; then
+        emit not-carried "no clean verdict is recorded for $carry_cycle_head (last recorded verdict: ${carry_verdict:-none}) — there is nothing to carry"
+        exit 17
+    fi
+    # Challenge round 4, finding `challenge-r4-codex-adversarial-2` (confirmed
+    # P1): a cycle can be recorded clean and LATER receive a usage-limit reply,
+    # which exit 15 persists here while leaving the clean verdict in place.
+    # Carrying such a cycle skips the fresh trigger and then replays exit 15
+    # from it, so the documented recovery — push a new commit — cannot recover:
+    # the new commit gets carried instead of reserved, and the run is stuck at a
+    # terminal it can never clear. Exit 15 means this head is finished; a carry
+    # must not extend it to another one.
+    carry_quota_at=$(jq -r '.quota_exhausted_at // empty' "$state_file")
+    if [ -n "$carry_quota_at" ]; then
+        emit not-carried "the cycle for $carry_cycle_head ended with the finder reporting an exhausted usage limit at $carry_quota_at — that terminal cannot be carried to another head; reserve a fresh cycle"
+        exit 17
+    fi
+    # Without the base the verdict was read against there is no reviewed change
+    # to take an identity of. That base is recorded only when the reservation
+    # and the verdict agreed on it (see mark_terminally_reviewed); when they
+    # disagreed it is deliberately left unset, and unset is the invariant's
+    # answer, not a gap to fill with the live base.
+    carry_origin_base=$(jq -r '.last_reviewed_base_sha // empty' "$state_file")
+    if ! valid_sha "$carry_origin_base"; then
+        emit not-carried "the base the clean verdict was read against is not recorded — the reviewed change has no identity to compare against"
+        exit 17
+    fi
+    if [ "$carry_cycle_head" = "$head" ]; then
+        emit not-carried "this head IS the head the clean verdict named; no carry is needed or possible"
+        exit 17
+    fi
+
+    carry_previous_attests=$(jq -r '.carry.attests_head // empty' "$state_file")
+    carry_generation=$(jq -r '.carry.generation // 0' "$state_file")
+
+    provider_status=0
+    live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
+    if [ "$provider_status" -eq 3 ]; then
+        # Integration cycle 2, nit (accepted): 14 is this helper's documented
+        # code for "GitHub answered and the PR is MERGED or CLOSED", and `carry`
+        # was reporting it through `die` — exit 2, non-JSON — in a file that
+        # otherwise documents its exit codes to the letter.
+        # Integration cycle 3 (claude), finding `integration-r3-claude-2`: the
+        # caller was told to treat anything but 0 and 17 as "reserve one",
+        # which would call `reserve`, die with exit 2, and report a closed PR
+        # as indeterminate. 14 is now documented at every site that lists
+        # `carry`'s exits, as terminal.
+        emit pr-not-open \
+            "PR is ${live_head:-no longer open} — the stage is over; stop, do not re-trigger or keep polling"
+        exit 14
+    elif [ "$provider_status" -ne 0 ]; then
+        emit not-carried "cannot confirm the open PR head; not carrying"
+        exit 17
+    fi
+    if [ "$live_head" != "$head" ]; then
+        emit not-carried "the PR head is $live_head, not the $head this carry was asked about"
+        exit 17
+    fi
+    carry_pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || carry_pr_payload=
+    carry_base=$(jq -r '.base.sha // empty' <<<"$carry_pr_payload" 2>/dev/null) || carry_base=
+    if ! valid_sha "$carry_base"; then
+        emit not-carried "the PR payload names no stable base commit for this head; not carrying"
+        exit 17
+    fi
+
+    # Ancestry, not just difference. A rebase or a force-push produces a head
+    # that can legitimately carry the same change identity while being a
+    # different line of history — new commits, new authorship, a base the
+    # reviewer never saw underneath. The carve-out this implements is a base
+    # CATCH-UP, so EVERY hop must be one.
+    #
+    # Challenge round 3, finding `challenge-r3-codex-adversarial-2` (confirmed
+    # P1): checking only that the REVIEWED head is an ancestor lets a chain
+    # launder a rewrite. Having carried O to H1, a force-push to an H2 that
+    # still descends from O passes — H1 is not in H2's history at all — and the
+    # record then states `from_head: H1`, provenance that is false and which
+    # the gate now promotes byte for byte. Each generation is anchored to the
+    # head it last attested as well as to the reviewed one.
+    carry_anchors=$carry_cycle_head
+    [ -z "$carry_previous_attests" ] ||
+        carry_anchors="$carry_anchors $carry_previous_attests"
+    if ! command -v git >/dev/null 2>&1; then
+        emit not-carried "git is required to establish that $head is a catch-up rather than a rewrite"
+        exit 17
+    fi
+    for carry_anchor in $carry_anchors; do
+        if ! git -C "$repo_dir" --no-replace-objects merge-base --is-ancestor \
+            "$carry_anchor" "$head" 2>/dev/null; then
+            emit not-carried "$carry_anchor is not an ancestor of $head (history was rewritten, or the commits are not in $repo_dir) — a fresh cycle is required"
+            exit 17
+        fi
+    done
+
+    if ! change_identity "$carry_origin_base" "$carry_cycle_head"; then
+        emit not-carried "cannot establish the reviewed change's identity: $change_identity_error"
+        exit 17
+    fi
+    carry_origin_identity=$change_identity_value
+    if ! change_identity "$carry_base" "$head"; then
+        emit not-carried "cannot establish this head's change identity: $change_identity_error"
+        exit 17
+    fi
+    carry_head_identity=$change_identity_value
+    if [ "$carry_origin_identity" != "$carry_head_identity" ]; then
+        emit not-carried "the change moved: the reviewed change is $carry_origin_identity and this head's is $carry_head_identity — a fresh cycle is required"
+        exit 17
+    fi
+
+    # Self-found: re-running `carry` for a head it already attests used to
+    # re-carry it, inflating `generation` and setting `from_head` to that head
+    # itself — so a resumed session doing the obvious thing corrupted its own
+    # provenance chain. Re-proving and saying so is the right answer to a
+    # repeated question; rewriting the record is not.
+    #
+    # Integration cycle 5 (claude), finding `integration-r5-claude-4` (P3):
+    # this path re-proved the two FRESH identities against each other and never
+    # against the RECORDED one, the rule `verify_carried_attestation` states and
+    # `check` enforces. Under any rendering drift it answered "the proof still
+    # holds" while re-presenting a record whose change_id differed. Now it asks
+    # the same question every other consumer asks.
+    if [ "$carry_previous_attests" = "$head" ] &&
+        [ "$(jq -r '.carry.change_id // empty' "$state_file")" != "$carry_head_identity" ]; then
+        emit not-carried "this cycle's carry record for $head names change identity $(jq -r '.carry.change_id // empty' "$state_file"), but the change now derives $carry_head_identity — the record no longer describes this head; a fresh cycle is required"
+        exit 17
+    fi
+    if [ "$carry_previous_attests" = "$head" ]; then
+        release_state_lock
+        emit carried \
+            "this cycle already attests $head, and the proof still holds (change identity $carry_head_identity)" \
+            "" "" "$(jq -c '{carried: .carry}' "$state_file")"
+        exit 0
+    fi
+
+    carried_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    carry_generation=$((carry_generation + 1))
+    carry_payload=$(jq \
+        --arg attests "$head" \
+        --arg carried_at "$carried_at" \
+        --arg from_head "${carry_previous_attests:-$carry_cycle_head}" \
+        --arg base_sha "$carry_base" \
+        --arg identity "$carry_head_identity" \
+        --argjson generation "$carry_generation" '
+          .version = 2 |
+          .carry = {
+            attests_head: $attests,
+            from_head: $from_head,
+            base_sha: $base_sha,
+            change_id: $identity,
+            algorithm: "git-diff-digest/three-dot/v1",
+            generation: $generation,
+            carried_at: $carried_at
+          }
+        ' "$state_file")
+    write_state "$state_file" "$carry_payload"
+    release_state_lock
+    emit carried \
+        "the reviewed change is unchanged (change identity $carry_head_identity); the clean verdict for $carry_cycle_head attests $head with no cycle spent" \
+        "" "" "$(jq -c '{carried: .carry}' <<<"$carry_payload")"
+    exit 0
+    ;;
+
 show)
     read_state
     cat "$state_file"
@@ -2595,10 +3280,74 @@ check)
     elif [ "$provider_status" -ne 0 ]; then
         transient_read_failure "cannot fetch the current open PR head"
     fi
-    [ "$first_head" = "$state_head" ] || {
+    # harmon-init#752. A cycle can attest a LATER head than its own: `carry`
+    # proved that head's change is byte-identical to the one this cycle
+    # reviewed. Two consequences, and they are the whole of it.
+    #
+    # First, two different heads are in play, and conflating them is how this
+    # breaks:
+    #
+    #   $state_head          — the head of the CYCLE. Every EVIDENCE binding
+    #                          keys off it: a `Reviewed commit:` line, a
+    #                          settled comment's prefix, the receipt this cycle
+    #                          emits. It is the head a reviewer actually read.
+    #   $expected_live_head  — the head the PR is expected to be AT. Every
+    #                          LIVENESS check keys off it. With no carry the
+    #                          two are the same value and every check below
+    #                          behaves exactly as it did before this existed.
+    #
+    # The distinction is named once, here, because there are three liveness
+    # sites and the first draft of this patched one of them.
+    #
+    # Second, what is checked HERE is the RECORD'S SHAPE — a claim missing any
+    # field the proof is re-derived from is malformed state, and there is no
+    # point reading evidence under it. The IDENTITY itself is re-derived
+    # elsewhere: in `emit`, immediately before any verdict, because rounds 3
+    # and 4 each showed that a fixed point earlier than that leaves an interval
+    # in which a retarget can land. See `verify_carried_attestation`.
+    #
+    # Integration cycle 2, finding `integration-r2-claude-4` (confirmed P3):
+    # this comment still said the identity was re-derived here "before any
+    # evidence is read", which round 4 made false and which contradicts the
+    # comment on the post-hash re-read. These are where the trust argument is
+    # written down, so two of them telling a reader opposite things about where
+    # the boundary sits is a real defect, not a typo.
+    #
+    # Everything after this point is the ORDINARY cycle check: challenge round
+    # 2 deleted the recursive re-check round 1 added, because re-checking the
+    # cycle is not something this code needs to do when the cycle was never
+    # copied in the first place.
+    expected_live_head=$state_head
+    carry_attests=$(jq -r '.carry.attests_head // empty' "$state_file")
+    if [ -n "$carry_attests" ]; then
+        carry_recorded_identity=$(jq -r '.carry.change_id // empty' "$state_file")
+        carry_origin_base=$(jq -r '.last_reviewed_base_sha // empty' "$state_file")
+        # Integration cycle 4, finding `integration-r4-codex-cloud-1`
+        # (confirmed P1): this demanded a CLEAN recorded verdict. A late finding
+        # records `findings`, so every later `check` then exited 2 here before
+        # it could see a settlement, and the carried cycle could never
+        # converge. The clean requirement belongs where a carry is CREATED
+        # (`carry` refuses any other verdict); here the evidence scan below is
+        # the authority, so a recorded verdict of either class is admissible.
+        carry_recorded_verdict=$(jq -r '.last_reviewed_verdict // empty' "$state_file")
+        if ! valid_sha "$carry_attests" || ! valid_sha "$carry_recorded_identity" ||
+            ! valid_sha "$carry_origin_base"; then
+            emit indeterminate "this cycle claims to attest a later head but its carry record is incomplete: it must name that head, the identity it proved, and the verdict and base it rests on"
+            exit 2
+        fi
+        case "$carry_recorded_verdict" in
+        clean | findings) ;;
+        *)
+            emit indeterminate "this cycle claims to attest a later head but records no verdict it was carried from"
+            exit 2
+            ;;
+        esac
+        expected_live_head=$carry_attests
+    fi
+    if [ "$first_head" != "$expected_live_head" ]; then
         emit head-changed "recorded evidence belongs to an older PR head"
         exit 2
-    }
+    fi
 
     workdir=$(mktemp -d -t codex-cloud-review-XXXXXX)
     trap 'rm -rf "$workdir"; rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
@@ -2673,7 +3422,7 @@ check)
     elif [ "$provider_status" -ne 0 ]; then
         transient_read_failure "cannot re-fetch the PR head before verdict"
     fi
-    [ "$second_head" = "$state_head" ] || {
+    [ "$second_head" = "$expected_live_head" ] || {
         emit head-changed "PR head changed while evidence was being fetched"
         exit 2
     }
@@ -3019,7 +3768,7 @@ check)
             emit indeterminate "pull request payload reports a malformed head commit"
             exit 2
         }
-        [ "$pr_head" = "$state_head" ] || {
+        [ "$pr_head" = "$expected_live_head" ] || {
             emit head-changed "PR head changed while findings were being adjudicated"
             exit 2
         }
