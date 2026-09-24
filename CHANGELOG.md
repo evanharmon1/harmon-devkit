@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.47.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.46.0...v0.47.0) (2026-09-24)
+
+
+### Features
+
+* **dev-flow:** vendor the v2 runtime with the skills as dev-flow-support ([#1108](https://github.com/evanharmon1/harmon-devkit/issues/1108)) ([93fd90f](https://github.com/evanharmon1/harmon-devkit/commit/93fd90fc0df371edda280fcb84e288fa84896903))
+* **groom:** redesign the report and link its sections together ([#1101](https://github.com/evanharmon1/harmon-devkit/issues/1101)) ([af22980](https://github.com/evanharmon1/harmon-devkit/commit/af229809b41624d982fd9313902c1c251a7f77fc))
+* **integrate:** carry a clean verdict across a base catch-up when the change is provably unchanged ([#1163](https://github.com/evanharmon1/harmon-devkit/issues/1163)) ([26ff601](https://github.com/evanharmon1/harmon-devkit/commit/26ff6016a008c134d009a10ebb474ab07f14f22f))
+* **integrate:** stop charging the integration cap for base-merge-only review cycles ([#1135](https://github.com/evanharmon1/harmon-devkit/issues/1135)) ([4531788](https://github.com/evanharmon1/harmon-devkit/commit/453178811869eaa28909b3c899c40e19e906c5bc))
+* **skills:** ship the implementer brief template and the one delegation contract ([#1138](https://github.com/evanharmon1/harmon-devkit/issues/1138)) ([fcf31d2](https://github.com/evanharmon1/harmon-devkit/commit/fcf31d21ddc783a8f11f59c1ac7f1df5c9371241))
+
+
+### Bug Fixes
+
+* **devcontainer:** relax protect-files to credential-shaped paths only ([#1095](https://github.com/evanharmon1/harmon-devkit/issues/1095)) ([212c2b6](https://github.com/evanharmon1/harmon-devkit/commit/212c2b61ea31ccd81493ab34006ab8f77698b537))
+* **integrate:** classify every Codex reply shape the current-head checker has met in practice ([#1125](https://github.com/evanharmon1/harmon-devkit/issues/1125)) ([bd20c2a](https://github.com/evanharmon1/harmon-devkit/commit/bd20c2a2c3442bfee354e7aace5a8df9f2a6c186))
+* **integrate:** fail the readiness gate when a claimed closing keyword has no closing-issue linkage ([#1137](https://github.com/evanharmon1/harmon-devkit/issues/1137)) ([89f344d](https://github.com/evanharmon1/harmon-devkit/commit/89f344db35f33622e3b08416174c6d893e34988d))
+* **integrate:** gate on behind_by, reconcile the base once, and name the merge direction ([#1123](https://github.com/evanharmon1/harmon-devkit/issues/1123)) ([e763ebc](https://github.com/evanharmon1/harmon-devkit/commit/e763ebc6379c3fe4f061609b919ff50550924640))
+* let test-integrate-codex pass the settle timestamp on macOS ([#1144](https://github.com/evanharmon1/harmon-devkit/issues/1144)) ([61b91cb](https://github.com/evanharmon1/harmon-devkit/commit/61b91cb436058851749cabecb5306788571848d9))
+* **orchestrator:** retry transient GitHub read failures in lane-watch with bounded backoff ([#1102](https://github.com/evanharmon1/harmon-devkit/issues/1102)) ([3760968](https://github.com/evanharmon1/harmon-devkit/commit/3760968b9bd25e54177841219daab165c609b167)), closes [#1041](https://github.com/evanharmon1/harmon-devkit/issues/1041)
+* **skills:** load the shared conformance projection without a nested include ([#1100](https://github.com/evanharmon1/harmon-devkit/issues/1100)) ([b90cd85](https://github.com/evanharmon1/harmon-devkit/commit/b90cd85c395b4774573504c91e128cc5444d78e6))
+* **skills:** state the stage-exit, sequencing, and CI-concluded rules at the point of use ([#1116](https://github.com/evanharmon1/harmon-devkit/issues/1116)) ([12bbde1](https://github.com/evanharmon1/harmon-devkit/commit/12bbde114720c77cd0faf890967e7545d9e8b583)), closes [#918](https://github.com/evanharmon1/harmon-devkit/issues/918)
+
 ## [0.46.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.45.0...v0.46.0) (2026-09-19)
 
 
