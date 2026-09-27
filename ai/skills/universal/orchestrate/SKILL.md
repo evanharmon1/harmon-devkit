@@ -361,6 +361,47 @@ and durably accounts every slot under the active-run lock. A crash after
 reservation spends the slot; an exact event re-arm adopts it without spending
 twice. A changed or exhausted budget blocks before dispatch.
 
+## Lane launch and waits
+
+A headless lane has nobody to answer an editor. Start every lane with
+`GIT_MERGE_AUTOEDIT=no` in its environment. Under herdr, set it on the tab and
+on every pane that hosts a lane:
+
+```bash
+herdr tab create --workspace <workspace> --label <lane> --no-focus --env GIT_MERGE_AUTOEDIT=no
+herdr pane split … --cwd <worktree> --no-focus --env GIT_MERGE_AUTOEDIT=no
+```
+
+Under any other launcher, export it into the lane's environment before the
+harness starts. The variable is the backstop, not the instruction: if and
+where a lane is permitted to merge the default branch into its own (this
+skill's lane brief does not grant it; a consumer's may), every brief and every
+relay spells the command `git merge --no-edit origin/<default-branch>`. A lane
+stuck in an editor reports BLOCKED and is escalated to the orchestrator and
+the maintainer; it is never recovered by the lane, or the orchestrator,
+terminating a process — that is the maintainer's decision.
+
+`assets/settle-wait.sh` is the required primitive for every bounded lane
+settle and CI settle. Both modes take **seconds**:
+
+```bash
+bash <skill-dir>/assets/settle-wait.sh agent <lane> --timeout-seconds 3600 [--until <state>]
+bash <skill-dir>/assets/settle-wait.sh checks --repo <owner/repo> --pr <n> --timeout-seconds 1800 [--interval-seconds 30]
+```
+
+`agent` converts seconds to herdr's millisecond `--timeout` itself; never pass
+a raw `--timeout` to `herdr agent wait` or `herdr agent prompt --wait` — prompt
+without `--wait`, then settle with the asset. `checks` reads each Actions run's
+own `.status` and `.conclusion` for the PR's current head; never settle CI with
+`gh run watch --exit-status` or `gh pr checks --watch`, which report stale or
+partial conclusions across re-run attempts. It covers Actions workflow runs,
+not external status checks; the readiness gate still owns the full check
+verdict. The exit status is the verdict (`--help` lists the codes; 0 is the
+only settle, and expiry is non-zero). Never follow a wait with `; echo`,
+`|| true`, or anything else that discards that status: an expired wait must
+never read as settled. `lane-watch.sh` below stays the persistent monitor;
+this asset is for a single bounded wait.
+
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step. Use the harness's

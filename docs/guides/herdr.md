@@ -189,7 +189,9 @@ belongs in a separate user, container, or VM, not a sibling pane.
 1. **Lay out** — a fresh tab for the fan-out, one pane per unit, each with
    its cwd (a worktree for work that edits the repo; the checkout itself for
    pane jobs): `tab create --workspace … --label … --no-focus`, then
-   `pane split … --cwd … --no-focus`; `--env` for any authorized gate variables.
+   `pane split … --cwd … --no-focus`, each with `--env GIT_MERGE_AUTOEDIT=no`
+   so a merge can never open an editor nobody in a headless pane will answer;
+   `--env` too for any authorized gate variables.
 2. **Start** — `agent start <name> --kind <kind> --pane <id> -- <native args>`
    with a distinctive name per unit (`triage-omator`, `prune-site`).
 3. **Prompt** — one self-contained brief per worker, ending with a
@@ -242,7 +244,9 @@ belongs in a separate user, container, or VM, not a sibling pane.
    detection stays `unknown` or whose harness hangs would otherwise block
    the orchestrator forever. On timeout, `agent get` / `agent read` /
    `agent explain` it and decide — nudge, take over, or retire — rather than
-   waiting again blind. For multi-lane Dev Loop runs, invoke the orchestrate skill's
+   waiting again blind. `--timeout` is milliseconds; an orchestrated run
+   uses the orchestrate skill's `assets/settle-wait.sh`, which takes seconds,
+   converts, and reports expiry as a non-zero exit. For multi-lane Dev Loop runs, invoke the orchestrate skill's
    `assets/lane-watch.sh` as a Bash script in the persistent monitor primitive;
    its state file deduplicates report-first sentinels across re-arms and it
    continues watching review activity briefly after promotion. Never paste the
