@@ -26,6 +26,25 @@ test_tmp="$(mktemp -d -t round-push-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 export GIT_CONFIG_GLOBAL="${test_tmp}/gitconfig"
+# Config injected through the environment outranks every file, so isolating the
+# global file alone is not isolation: a host that sets
+# url.https://github.com/.insteadOf via GIT_CONFIG_COUNT (as provisioned hosts
+# and hosted agent containers do) rewrites every fixture's ssh:// pushurl to
+# the real GitHub, and ls-remote then fails against a repository that does not
+# exist. The fixtures own their whole config: the numbered pairs go too, so a
+# later case that sets GIT_CONFIG_COUNT for one command cannot pick up the
+# host's leftovers (the same scrub scripts/test-hooks.sh does).
+export GIT_CONFIG_NOSYSTEM=1
+git_config_count="${GIT_CONFIG_COUNT:-0}"
+case "$git_config_count" in
+'' | *[!0-9]*) git_config_count=0 ;;
+esac
+i=0
+while [ "$i" -lt "$git_config_count" ]; do
+    unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"
+    i=$((i + 1))
+done
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 git config --global init.defaultBranch main
 git config --global user.email t@example.invalid
 git config --global user.name Test
