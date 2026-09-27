@@ -308,11 +308,17 @@ PR harmon-devkit#758):
 pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
 ```
 
-If `.state` is not `OPEN`, `.isDraft` is not `true`, or `.headRefOid`
-disagrees with the head your brief named, **post no trigger**: skip the rest
-of this section, report `codex_cycle: null` with the mismatch as a finding
-(§5), and leave any reservation you already hold untouched — the next
-dispatch's reconcile path runs this same read before it would post. A
+If `.state` is not `OPEN` or `.isDraft` is not `true`, **post no trigger**:
+skip the rest of this section, report `codex_cycle: null` with the mismatch
+as a finding (§5), and leave any reservation you already hold untouched — the
+next dispatch's reconcile path runs this same read before it would post. A
+`.headRefOid` that disagrees with the head your brief named is the same
+refusal on the zero-candidate reconcile path, where the reservation already
+confirmed the head once; on the fresh-cycle path it may be GitHub still
+reporting the previous head a few seconds after a push, so do **not** bail
+there — call `reserve` with the brief's head and let its bounded head wait
+decide (the exit codes are below). Never substitute the head `pr_now`
+reports for the brief's. A
 `@codex review` on an already-promoted PR starts a cloud cycle *after* the
 handoff the orchestrating skill is gating, which is exactly the review its
 own re-entry rule forbids starting on a non-draft.
@@ -406,9 +412,14 @@ Three cases, mutually exclusive:
   and it is orphaned (harmon-devkit#1189). `reserve` already waits a bounded
   time for GitHub to report a just-pushed head. **Exit 18** means GitHub still
   reports a predecessor of `<head>` after that wait and nothing was reserved:
-  re-run the same `reserve` once, and report a blocker if it refuses again.
-  **Exit 2** naming a changed head means the PR moved past `<head>` — a newer
-  push: re-capture the head and start this case over, never retry the old one.
+  re-run the same `reserve` once; if it exits 18 again, post no trigger,
+  report `codex_cycle: null`, and report the lag as a blocker (§5). **Exit 2**
+  naming a changed head means the PR moved past the brief's head — rewritten
+  or superseded: post no trigger, report `codex_cycle: null` with the
+  mismatch as a finding (§5), and stop this section. **Never re-capture the
+  head yourself**: your brief's head is the one §3 settled CI for and the one
+  `codex_cycle.head` must equal, so a cycle on any other head is one you were
+  not dispatched to run — the orchestrator's next dispatch names the new head.
 
   This is the one piece of finding-independent, brief-independent text you
   are always allowed to post: the literal `@codex review` string the broker

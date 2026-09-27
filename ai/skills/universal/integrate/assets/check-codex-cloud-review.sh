@@ -42,12 +42,13 @@
 #
 # `reserve` adds one code of its own (harmon-devkit#1189):
 #   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
-#      polling every CODEX_RESERVE_HEAD_POLL_SEC, default 2) GitHub still
-#      reports a PREDECESSOR of the requested head. Nothing was reserved:
-#      re-run `reserve`, and never post the trigger until it exits 0. A head
-#      that differs any other way — a newer push, or ancestry that cannot be
-#      read — stays exit 2, "PR head changed before reservation": re-capture
-#      the head rather than retrying.
+#      at most 120, polling every CODEX_RESERVE_HEAD_POLL_SEC, default 2)
+#      GitHub still reports a PREDECESSOR of the requested head. Nothing was
+#      reserved and no trigger may be posted: re-run `reserve` once, and if it
+#      exits 18 again, report a blocker. A head that differs any other way —
+#      rewritten or superseded, or ancestry that cannot be read — stays exit
+#      2, "PR head rewritten or superseded before reservation": never retry
+#      it against the same head.
 #
 # `settle` records the disposition of a finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because
@@ -166,13 +167,16 @@ A safe recovery route is carried in #1115.
 `reserve` and `attach` refuse a non-open PR outright,
 exit 2 with a reason naming the reported state.
 
-`reserve` waits up to CODEX_RESERVE_HEAD_WAIT_SEC seconds (default 30, polled
-every CODEX_RESERVE_HEAD_POLL_SEC, default 2) for the PR head GitHub reports to
-reach --head, because GitHub lags a push by a few seconds. Still behind after
-that — GitHub reports a predecessor of --head — is exit 18: nothing was
-reserved, re-run reserve. Any other difference (a newer push, or unreadable
-ancestry) is exit 2: re-capture the head. On ANY non-zero exit from reserve,
-do not post the trigger. `attach` re-checks the head strictly and never waits.
+`reserve` waits up to CODEX_RESERVE_HEAD_WAIT_SEC seconds (default 30, at most
+120 — a larger value is exit 2) for the PR head GitHub reports to reach --head,
+because GitHub lags a push by a few seconds; it re-reads every
+CODEX_RESERVE_HEAD_POLL_SEC seconds (default 2; 0 is accepted for tests only
+and busy-polls). Still behind after that — GitHub reports a predecessor of
+--head — is exit 18: nothing was reserved; re-run reserve once, and if it
+exits 18 again, report a blocker. Any other difference (the head rewritten or
+superseded, or unreadable ancestry) is exit 2: never retry it against the same
+head. On ANY non-zero exit from reserve, do not post the trigger. `attach`
+re-checks the head strictly and never waits.
 
 State locks are never reclaimed automatically. On lock-held, inspect the
 reported PID and age; removing a lock directory is an explicit human recovery
@@ -944,6 +948,28 @@ reap_record() {
         }' >>"$reap_entries"
 }
 
+# harmon-devkit#1173: how far before the trigger the base-event window opens.
+# `requested_at` can be the local host's clock rather than GitHub's (see
+# mark_terminally_reviewed), so the window is widened by this margin: a host
+# clock up to five minutes fast still sees every base event GitHub stamped
+# inside the review window, and a wider window can only fail closed.
+BASE_EVENT_SKEW_SEC=300
+
+# Print the canonical start of the base-event window for the cycle recorded in
+# the state file: the earlier of `requested_at` and `reserved_at` (whichever
+# are canonical times; `requested_at` is required), minus BASE_EVENT_SKEW_SEC.
+# Non-zero, printing nothing, when there is no usable anchor.
+base_events_window_start() {
+    local requested reserved
+    requested=$(jq -r '.requested_at // empty' "$1" 2>/dev/null) || return 1
+    valid_time "$requested" || return 1
+    reserved=$(jq -r '.reserved_at // empty' "$1" 2>/dev/null) || reserved=
+    valid_time "$reserved" || reserved=
+    jq -nr --arg r "$requested" --arg s "$reserved" --argjson skew "$BASE_EVENT_SKEW_SEC" '
+        [$r, ($s | select(. != ""))] | map(fromdateiso8601) | min
+        | . - $skew | todate' 2>/dev/null
+}
+
 # `$5`, when given, is a JSON OBJECT of extra fields merged into the result —
 # additive only, so every existing key keeps its shape and a caller pinned to
 # the older output reads exactly what it did before. harmon-devkit#737 uses it
@@ -1018,33 +1044,61 @@ mark_terminally_reviewed() {
         # reviewer read a different diff, and that SHA would become the proof
         # carry (harmon-init#752) and the exemption (harmon-init#1326) trust.
         # The issue timeline is the one record of what happened BETWEEN the
-        # samples, so any base event at or after the trigger leaves the proof
-        # unset. The anchor is `requested_at`, GitHub's own timestamp on the
-        # trigger, so the comparison never mixes clocks; a change that settled
-        # before the trigger is what the reviewer read and the samples already
-        # cover it. A read that fails, a page that is not an array, or a
-        # missing anchor proves nothing either way — unset, per the governing
-        # invariant.
+        # samples, so any base event at or after the window's start leaves the
+        # proof unset. A change that settled well before the trigger is what
+        # the reviewer read, and the samples already cover it.
+        #
+        # The anchor MIXES CLOCKS and is built to be conservative about it:
+        # `requested_at` is GitHub's time for a comment trigger but the local
+        # host's for a requested-reviewer finder (the broker stamps it with
+        # `date -u`), and `reserved_at` is always the local host's. So the
+        # window opens at the EARLIER of the two, minus BASE_EVENT_SKEW_SEC —
+        # a fast host clock then only widens it, and a wider window counts
+        # more events, which can only leave the proof unset (fail closed).
+        #
+        # Every base event must carry a canonical `YYYY-MM-DDTHH:MM:SSZ`
+        # `created_at`: only that form compares correctly as a string, so any
+        # other shape proves nothing and leaves the proof unset. Base events
+        # are the two `base_ref_*` kinds GitHub documents, any other event it
+        # may add under that prefix, and the automatic base changes it makes
+        # when a base branch is merged away. A read that fails, a page that is
+        # not an array, or a missing anchor proves nothing either way —
+        # unset, per the governing invariant, with one stderr line naming why.
+        base_proof_unset_reason=
         if [ -n "$reviewed_base_sha" ]; then
-            base_events_anchor=$(jq -r '.requested_at // empty' "$state_file" 2>/dev/null) ||
+            base_events_anchor=$(base_events_window_start "$state_file") ||
                 base_events_anchor=
-            valid_time "$base_events_anchor" || reviewed_base_sha=
+            valid_time "$base_events_anchor" ||
+                base_proof_unset_reason="no readable trigger or reservation time to anchor the base-event window"
         fi
-        if [ -n "$reviewed_base_sha" ]; then
+        if [ -n "$reviewed_base_sha" ] && [ -z "$base_proof_unset_reason" ]; then
             base_events_tmp=$(mktemp -d -t codex-base-events-XXXXXX) || base_events_tmp=
-            if [ -z "$base_events_tmp" ] ||
-                ! fetch_pages "repos/${state_repo:-}/issues/${state_pr:-}/timeline?per_page=100" \
-                    "$base_events_tmp/timeline.json" 2>/dev/null ||
-                ! jq -e --arg since "$base_events_anchor" '
+            if [ -z "$base_events_tmp" ]; then
+                base_proof_unset_reason="could not create a scratch directory for the timeline read"
+            elif ! fetch_pages "repos/${state_repo:-}/issues/${state_pr:-}/timeline?per_page=100" \
+                "$base_events_tmp/timeline.json" 2>/dev/null; then
+                base_proof_unset_reason="the PR timeline could not be read"
+            elif ! jq -e --arg since "$base_events_anchor" '
                     all(.[];
                       (type == "object") and
-                      (((.event == "base_ref_changed" or .event == "base_ref_force_pushed")
-                        | not)
-                        or ((.created_at | type) == "string" and .created_at < $since)))
+                      (((.event | type) == "string"
+                        and (.event | startswith("base_ref_")
+                             or . == "automatic_base_change_succeeded"
+                             or . == "automatic_base_change_failed")
+                       | not)
+                       or ((.created_at | type) == "string"
+                           and (.created_at
+                                | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                           and .created_at < $since)))
                   ' "$base_events_tmp/timeline.json" >/dev/null 2>&1; then
-                reviewed_base_sha=
+                base_proof_unset_reason="the PR timeline shows a base change at or after $base_events_anchor, carries one without a canonical time, or is not a readable page"
             fi
             [ -z "$base_events_tmp" ] || rm -rf "$base_events_tmp"
+        fi
+        if [ -n "$reviewed_base_sha" ] && [ -n "$base_proof_unset_reason" ]; then
+            printf 'codex-cloud-review: %s\n' \
+                "reviewed base left unset (the next cycle charges): $base_proof_unset_reason" >&2
+            reviewed_base_sha=
         fi
     fi
     jq --arg h "$state_head" --arg b "$reviewed_base_sha" \
@@ -1946,10 +2000,15 @@ reserve)
     # time turns the race into a pass. The bound is overridable so tests run
     # fast; the wait holds the state lock deliberately, since nothing else may
     # reserve this PR while its head is still being confirmed.
+    RESERVE_HEAD_WAIT_MAX_SEC=120
     head_wait_sec=${CODEX_RESERVE_HEAD_WAIT_SEC:-30}
     head_poll_sec=${CODEX_RESERVE_HEAD_POLL_SEC:-2}
     valid_uint_or_zero "$head_wait_sec" ||
         die "CODEX_RESERVE_HEAD_WAIT_SEC must be a non-negative integer"
+    # The wait holds the state lock, so its bound is capped: an operator
+    # override may shorten or lengthen it, never make it unbounded.
+    [ "$head_wait_sec" -le "$RESERVE_HEAD_WAIT_MAX_SEC" ] ||
+        die "CODEX_RESERVE_HEAD_WAIT_SEC must be at most $RESERVE_HEAD_WAIT_MAX_SEC"
     valid_uint_or_zero "$head_poll_sec" ||
         die "CODEX_RESERVE_HEAD_POLL_SEC must be a non-negative integer"
     acquire_state_lock
@@ -1971,7 +2030,8 @@ reserve)
         # Still different after the bound, which is one of two answers that
         # need opposite responses: GitHub is still behind (the head it reports
         # is a predecessor of the requested one — re-run `reserve`), or the PR
-        # moved past the requested head (a newer push — re-capture the head).
+        # moved past the requested head (rewritten or superseded — no retry
+        # against this head can succeed).
         # Only a positive ancestry answer earns the retryable exit 18; an
         # unreadable one is the non-retryable refusal, because re-running
         # `reserve` against a head that was superseded can never succeed.
@@ -1981,10 +2041,10 @@ reserve)
                 jq -r '.status // empty' 2>/dev/null) || head_lag_status=
         fi
         if [ "$head_lag_status" = ahead ]; then
-            printf 'codex-cloud-review: %s\n' "PR head lagging: after ${head_wait_sec}s GitHub still reports $live_head, a predecessor of $head; nothing was reserved — re-run reserve, and do not post the trigger until it succeeds" >&2
+            printf 'codex-cloud-review: %s\n' "PR head lagging: after ${head_wait_sec}s GitHub still reports $live_head, a predecessor of $head; nothing was reserved and no trigger may be posted — re-run reserve once, and if it exits 18 again, report a blocker" >&2
             exit 18
         fi
-        die "PR head changed before reservation: GitHub reports ${live_head}, which is not a predecessor of $head (a newer push); re-capture the head"
+        die "PR head changed before reservation: GitHub reports ${live_head}, which is not a predecessor of $head — head rewritten or superseded; do not post the trigger, and do not retry reserve for this head"
     fi
 
     replaced_trigger_comment_id=

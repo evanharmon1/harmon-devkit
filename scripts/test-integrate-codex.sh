@@ -366,6 +366,23 @@ run_check() {
     check_watchdog "$check_rc" run_check "$check_out"
 }
 
+# Same as run_check but keeps stderr apart in $check_err, so a case can assert
+# on a diagnostic line while $check_out stays the parseable JSON result
+# (harmon-devkit#1173: an unset base proof names its reason on stderr).
+run_check_split() {
+    check_err_file="$(mktemp "${test_tmp}/check-err.XXXXXX")"
+    set +e
+    check_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
+        --state "$state" --actor-id "$actor_id" \
+        --actor-login "$actor_login" --timeout-min 15 \
+        --now "$1" 2>"$check_err_file")"
+    check_rc=$?
+    set -e
+    check_err="$(cat "$check_err_file")"
+    rm -f "$check_err_file"
+    check_watchdog "$check_rc" run_check_split "$check_out $check_err"
+}
+
 # Same as run_check but omits --timeout-min entirely, for cases that need to
 # exercise the flagless default/adoption path rather than an explicit 15
 # that happens to equal the default (harmon-devkit#223 challenge round 2).
@@ -5286,7 +5303,7 @@ base_event_verdict_with() {
         '[[{id:9103,user:{id:$id,login:$login,type:"User"},
             content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
         >"${fixtures}/reactions.pages.json"
-    run_check '2026-07-31T08:01:00Z'
+    run_check_split '2026-07-31T08:01:00Z'
     assert_status 0 clean
 }
 
@@ -5319,11 +5336,56 @@ assert_base_proof unset "untimed base event"
 
 echo "==> a retarget settled before the trigger still records the base"
 # What the reviewer read is the base after that change, and both samples
-# corroborate it — the positive half that keeps the cases above honest.
-printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:59:00Z"}]]' \
+# corroborate it — the positive half that keeps the cases above honest. It
+# sits outside the clock-skew margin (BASE_EVENT_SKEW_SEC, 300s) too.
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:54:59Z"}]]' \
     >"${test_tmp}/early-timeline.json"
 base_event_verdict_with "${test_tmp}/early-timeline.json"
 assert_base_proof 3333333333333333333333333333333333333333 "retarget before the trigger"
+
+echo "==> a retarget just before the trigger, inside the skew margin, records no proof"
+# `requested_at` may be the local host's clock, so an event GitHub stamped a
+# little before it can still be inside the review window on GitHub's clock.
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:57:00Z"}]]' \
+    >"${test_tmp}/margin-timeline.json"
+base_event_verdict_with "${test_tmp}/margin-timeline.json"
+assert_base_proof unset "retarget inside the skew margin"
+grep -Fq 'reviewed base left unset' <<<"$check_err" ||
+    fail "an unset base proof must say why on stderr: $check_err"
+
+echo "==> the window opens at the earlier of requested_at and reserved_at"
+new_cycle
+jq '.reserved_at = "2026-07-31T07:50:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:46:00Z"}]]' \
+    >"${fixtures}/timeline.pages.json"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9105,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_base_proof unset "event inside the margin before an earlier reservation"
+
+echo "==> a base event with a non-canonical time records no proof"
+# Only the canonical form compares correctly as a string: this one is later
+# than the trigger yet sorts before it.
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31 08:00:10Z"}]]' \
+    >"${test_tmp}/noncanonical-timeline.json"
+base_event_verdict_with "${test_tmp}/noncanonical-timeline.json"
+assert_base_proof unset "non-canonical base event time"
+
+echo "==> an automatic base change inside the review window records no proof"
+printf '%s\n' '[[{"event":"automatic_base_change_succeeded","created_at":"2026-07-31T08:00:10Z"}]]' \
+    >"${test_tmp}/automatic-timeline.json"
+base_event_verdict_with "${test_tmp}/automatic-timeline.json"
+assert_base_proof unset "automatic base change"
+
+echo "==> an unrecognised base_ref_ event inside the review window records no proof"
+printf '%s\n' '[[{"event":"base_ref_deleted","created_at":"2026-07-31T08:00:10Z"}]]' \
+    >"${test_tmp}/prefixed-timeline.json"
+base_event_verdict_with "${test_tmp}/prefixed-timeline.json"
+assert_base_proof unset "base_ref_ prefixed event"
 
 echo "==> a failed timeline read records no proof"
 new_cycle
@@ -5332,9 +5394,11 @@ jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
     '[[{id:9104,user:{id:$id,login:$login,type:"User"},
         content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
     >"${fixtures}/reactions.pages.json"
-run_check '2026-07-31T08:01:00Z'
+run_check_split '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_base_proof unset "failed timeline read"
+grep -Fq 'reviewed base left unset (the next cycle charges): the PR timeline could not be read' <<<"$check_err" ||
+    fail "a failed timeline read must name itself on stderr: $check_err"
 
 echo "==> a truncated timeline read records no proof"
 printf '%s\n' '[[{"event":"commented","created_at":"2026-07-31T08:00:05Z"}],{"message":"truncated"}]' \
@@ -7623,6 +7687,8 @@ run_reserve
     fail "a head that is not a predecessor must exit 2: rc=$reserve_rc $reserve_out"
 grep -Fq 'PR head changed before reservation' <<<"$reserve_out" ||
     fail "the newer-push refusal must name a head change: $reserve_out"
+grep -Fq 'head rewritten or superseded' <<<"$reserve_out" ||
+    fail "the newer-push refusal must cover a rewrite and a newer push: $reserve_out"
 [ ! -f "$state" ] || fail "a head-change refusal must reserve nothing"
 
 echo "==> unreadable ancestry after the bound is a head change, never a retry"
@@ -7661,6 +7727,22 @@ bad_wait_rc=$?
 set -e
 [ "$bad_wait_rc" -eq 2 ] ||
     fail "a malformed wait bound must exit 2: rc=$bad_wait_rc $bad_wait_out"
+
+echo "==> a wait bound above the cap is a usage error, and takes no lock"
+write_defaults
+rm -f "$state"
+set +e
+long_wait_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=121 "$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+long_wait_rc=$?
+set -e
+[ "$long_wait_rc" -eq 2 ] ||
+    fail "a wait bound above 120s must exit 2: rc=$long_wait_rc $long_wait_out"
+grep -Fq 'at most 120' <<<"$long_wait_out" ||
+    fail "the over-cap refusal must name the cap: $long_wait_out"
+[ ! -f "$state" ] || fail "an over-cap wait bound must reserve nothing"
+[ ! -d "${state}.lock" ] || fail "an over-cap wait bound must take no lock"
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
