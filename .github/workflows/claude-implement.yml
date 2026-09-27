@@ -20,7 +20,7 @@ jobs:
     # not org membership. The `if:` gate and the Verify step below both derive
     # from this list, so they stay in sync.
     if: >-
-      (github.event.sender.login == 'evanharmon1') &&
+      (github.event.sender.login == 'evanharmon1' || github.event.sender.login == 'evanharmon1-bot' || github.event.sender.login == 'admiralfraggle' || github.event.sender.login == 'admiralfraggle-bot') &&
       (contains(github.event.comment.body, '@claude implement') ||
        contains(github.event.review.body, '@claude implement'))
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
@@ -61,6 +61,9 @@ jobs:
         run: |
           case "$(printf '%s' "$SENDER" | tr '[:upper:]' '[:lower:]')" in
             "evanharmon1") echo "$SENDER is authorized"; exit 0 ;;
+            "evanharmon1-bot") echo "$SENDER is authorized"; exit 0 ;;
+            "admiralfraggle") echo "$SENDER is authorized"; exit 0 ;;
+            "admiralfraggle-bot") echo "$SENDER is authorized"; exit 0 ;;
           esac
           echo "::error::$SENDER is not an authorized sender"
           exit 1
