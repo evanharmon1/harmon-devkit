@@ -1326,7 +1326,17 @@ chmod 000 "$c/sealed-dir"
 run_audit "$c"
 chmod 700 "$c/sealed-dir"
 expect_status "#905: find traversal failure exits 2 (indeterminate)" 2
-expect_says "#905: it names the traversal failure" "traversal failed"
+# Root is the exception and has to be named rather than tripped over: UID 0
+# reads through a mode-000 directory, so `find` never fails and the premise
+# cannot hold. The audit still refuses — it then finds the sealed stamp, which
+# is indeterminate for its own reason — so the exit assertion above keeps its
+# meaning and only the traversal message is unobservable. Record that instead
+# of failing the suite for a container that happens to run as root.
+if [ "$(id -u)" -eq 0 ]; then
+    ok "#905: the traversal-failure message is unobservable as root"
+else
+    expect_says "#905: it names the traversal failure" "traversal failed"
+fi
 
 echo
 echo "== consumer-pin-audit: #859 — resolve guards every detected-v2 policy =="
