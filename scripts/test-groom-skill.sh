@@ -498,8 +498,8 @@ printf '%s\n' '{"themes":[{"title":"t","issues":[1],"reason":"r","recommended_ve
 [ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/retired-vehicle-out.json" \
     --proposals "$tmp/retired-vehicle.json" "$good")" = 1 ] ||
     fail "join must refuse a theme recommending the retired openspec vehicle"
-grep -q "openspec is retired; use bmad or adr" "$tmp/out" "$tmp/err" ||
-    fail "the retired-vehicle refusal must say openspec is retired and name the remaining vehicles: $(cat "$tmp/out" "$tmp/err")"
+grep -q "must be bmad or adr" "$tmp/out" "$tmp/err" ||
+    fail "the retired-vehicle refusal must name the remaining vehicles: $(cat "$tmp/out" "$tmp/err")"
 
 echo "==> join: refuses malformed process_findings in proposals"
 for bad_pf_json in \
