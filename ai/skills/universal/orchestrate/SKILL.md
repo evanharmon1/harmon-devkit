@@ -381,7 +381,9 @@ where a lane is permitted to merge the default branch into its own (this
 skill's lane brief does not grant it; a consumer's may), every brief and every
 relay spells the command `git merge --no-edit origin/<default-branch>`. A
 merge that stops on a conflict is finished by resolving the files, `git add`
-on each, then `git commit --no-edit`; `git merge --abort` backs it out
+on each, then `git commit --no-edit --cleanup=strip` (the cleanup drops the
+`# Conflicts:` comment block `--no-edit` would otherwise keep in the pushed
+message); `git merge --abort` backs it out
 instead. A lane stuck in an editor anyway reports BLOCKED and is escalated to
 the orchestrator and the maintainer; it is never recovered by the lane, or the
 orchestrator, terminating a process — that is the maintainer's decision.
@@ -415,8 +417,8 @@ still owns the full check verdict.
 
 The exit status is the verdict, and it means different things per mode. In
 `checks` mode: 0 settled green, 1 settled with a failing run, 2 usage, 3
-indeterminate (the PR never reported `--head`, or the last poll could not be
-read), 4 expired with runs pending. In `agent` mode the status is herdr's
+indeterminate (the PR head was not `--head` at the last poll, or that poll
+could not be read or listed no runs), 4 expired with runs pending. In `agent` mode the status is herdr's
 own: 0 settled and anything else not settled — herdr's 1 (server error) and
 2 (usage) are not the `checks` codes — with 124 when the backstop killed an
 overrunning herdr. Never follow a wait, or the delivery check, with `; echo`,

@@ -4,7 +4,7 @@
 # - #1190: every herdr lane launch carries GIT_MERGE_AUTOEDIT=no and
 #   GIT_EDITOR=true, no lane guidance spells a merge (or a merging pull)
 #   without --no-edit, a conflicted merge is finished with
-#   `git commit --no-edit`, and a lane stuck in an editor is escalated rather
+#   `git commit --no-edit --cleanup=strip`, and a lane stuck in an editor is escalated rather
 #   than recovered by terminating a process.
 # - #1192: the herdr skill states the millisecond unit beside its first
 #   --timeout example, and the orchestrate skill names settle-wait.sh as the
@@ -161,7 +161,7 @@ contains "$guide" 'each with `--env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true`
 # A conflicted merge is finished without an editor, or backed out.
 for doc in "$skill" "$brief"; do
     contains "$doc" '`git add`'
-    contains "$doc" '`git commit --no-edit`'
+    contains "$doc" '`git commit --no-edit --cleanup=strip`'
     contains "$doc" '`git merge --abort`'
 done
 

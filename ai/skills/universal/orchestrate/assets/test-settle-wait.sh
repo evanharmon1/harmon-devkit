@@ -330,6 +330,22 @@ expect_rc 1 "newest run of the workflow fails"
 expect_out "FAILING 82" "newest run fails"
 expect_out "runs=2 pending=0 failing=1 skipped=0 superseded=1" "newest run fails"
 
+# C2-1: outside pull_request*, runs of one workflow on one head run side by
+# side (a workflow_run fan-in here), so none supersedes another: the older
+# failing one still counts.
+reset_fixtures
+write_page 1 \
+    "$(run_json 86 completed failure 1 "$sha_a" 950 workflow_run 10 2026-09-27T00:00:00Z)" \
+    "$(run_json 87 completed success 1 "$sha_a" 950 workflow_run 11 2026-09-27T00:01:00Z)"
+for id in 86 87; do
+    jq -c --argjson id "$id" '.workflow_runs[] | select(.id == $id)' \
+        "$fix/runs.1.json" >"$fix/run.$id.json"
+done
+run_checks --timeout-seconds 5 --interval-seconds 1
+expect_rc 1 "parallel workflow_run runs are not collapsed"
+expect_out "FAILING 86" "parallel workflow_run runs"
+expect_out "superseded=0" "parallel workflow_run runs"
+
 # C1-1: equal run_numbers break ties on created_at, then id.
 reset_fixtures
 write_page 1 \

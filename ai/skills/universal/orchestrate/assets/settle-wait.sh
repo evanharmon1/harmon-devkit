@@ -76,8 +76,8 @@ Exit status, checks mode:
   0    settled: every newest run completed with success, neutral or skipped
   1    settled, but at least one newest run failed (FAILING lines name them)
   2    usage error, or a required tool is missing
-  3    indeterminate at expiry: the PR never reported --head, or the last
-       poll could not be read or listed no runs; never a settle
+  3    indeterminate at expiry: the PR head was not --head at the last poll,
+       or that poll could not be read or listed no runs; never a settle
   4    expired: the timeout passed with runs on --head still pending
 
 Never follow a wait with `; echo`, `|| true`, or anything else that discards
@@ -277,8 +277,15 @@ newest_run_ids() {
         page=$((page + 1))
     done
     printf '%s' "$rows" | jq -rs '
+        # Only a pull_request / pull_request_target run is replaced by a newer
+        # run of the same workflow (a push or an edit re-runs it, with
+        # cancel-in-progress); for any other event two runs of one workflow on
+        # one head run side by side (workflow_run fan-in, a branch and a tag
+        # push, repeated dispatches), so every such run counts.
         (unique_by(.id)) as $all
-        | ($all | group_by([.w, .e]) | map(max_by([.n, .c, .id]))) as $newest
+        | ($all | map(select(.e == "pull_request" or .e == "pull_request_target"))
+            | group_by([.w, .e]) | map(max_by([.n, .c, .id]))) as $pr_newest
+        | ($pr_newest + ($all | map(select(.e != "pull_request" and .e != "pull_request_target")))) as $newest
         | ($newest[] | .id), "superseded=\(($all | length) - ($newest | length))"'
 }
 
