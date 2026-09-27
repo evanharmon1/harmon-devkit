@@ -191,7 +191,7 @@ the report can render them (rather than carrying them by hand):
 cat >"$SCRATCH/proposals.json" <<'JSON'
 {"parents":[{"parent":12,"title":"CI hardening","children":[45,46]}],
  "milestones":[{"action":"rename","title":"v1","new_title":"v1.1","issues":[45,46],"reason":"extend scope"}],
- "themes":[{"title":"Report engine redesign","issues":[1061,1062,1063],"reason":"cohesive architectural refresh","recommended_vehicle":"openspec"}],
+ "themes":[{"title":"Report engine redesign","issues":[1061,1062,1063],"reason":"cohesive architectural refresh","recommended_vehicle":"bmad"}],
  "process_findings":[{"finding":"Issue titles truncated by bulk retitle","recommended_action":"Restore full titles from git log history"}]}
 JSON
 ```

@@ -50,9 +50,9 @@ category as a unit rather than resolving a runtime path some other way.
 
 **Version 2 only.** This skill and its readiness gate
 (`assets/readiness-gate.sh`) operate under a `schema_version = 2`
-`.devflow.toml` and under nothing else (`openspec/changes/dev-flow-v2` task
-5.1; harmon-devkit#604). The gate requires a real dev-flow-v2 record
-directory — `run.json` plus `adjudications/*.json` — as `--record`; `/review`
+`.devflow.toml` and under nothing else (harmon-devkit#604). The gate requires
+a real dev-flow-v2 record directory — `run.json` plus `adjudications/*.json` —
+as `--record`; `/review`
 (harmon-devkit#638) writes it, so that half of the transition is done. What
 can still be missing is the policy shape, and the answer to a policy that has
 not migrated is a **refusal, not a fallback**: the reader stops with one
