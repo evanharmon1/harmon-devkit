@@ -31,7 +31,7 @@ readonly EXIT_EXPIRED=4
 usage() {
     cat <<'EOF'
 Usage:
-  settle-wait.sh agent LANE --timeout-seconds N [--until STATE]
+  settle-wait.sh agent LANE --until STATE --timeout-seconds N
   settle-wait.sh checks --repo OWNER/REPO --pr N --head SHA --timeout-seconds N
                         [--interval-seconds N] [--call-timeout-seconds N]
                         [--per-page N]
@@ -39,7 +39,7 @@ Usage:
 Every duration is in SECONDS.
 
 agent   Wait for a herdr lane agent to settle. Runs
-        `herdr agent wait LANE [--until STATE] --timeout <N*1000>` (herdr's
+        `herdr agent wait LANE --until STATE --timeout <N*1000>` (herdr's
         flag is milliseconds; the conversion happens here). A GNU timeout
         backstop of N+30s kills a herdr that overruns its own timeout.
         Confirm a prompt was delivered first (`herdr agent prompt LANE "..."
@@ -61,8 +61,8 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         only, not external status checks, and cannot see a run GitHub has
         not created yet.
         --interval-seconds  poll interval (default 30)
-        --call-timeout-seconds  bound on each gh call (default 30); a poll
-                            may overrun the deadline by at most one such call
+        --call-timeout-seconds  bound on each gh call (default 30); the last
+                            poll may overrun the deadline, by at most one poll
         --per-page  runs listed per page (default 100; tests)
 
 Exit status, agent mode:
@@ -90,11 +90,13 @@ die_usage() {
     exit "$EXIT_USAGE"
 }
 
+# A positive integer no larger than one day, so no later arithmetic (the
+# seconds-to-milliseconds conversion) can overflow.
 positive_int() {
     case "$1" in
     '' | *[!0-9]* | 0*) return 1 ;;
     esac
-    return 0
+    [ "${#1}" -le 5 ] && [ "$1" -le 86400 ]
 }
 
 now() {
@@ -148,18 +150,17 @@ agent)
     [ -n "$lane" ] || die_usage "agent mode needs a LANE"
     positive_int "$timeout_seconds" ||
         die_usage "--timeout-seconds must be a positive integer of seconds"
-    if [ -n "$until_state" ]; then
-        case "$until_state" in
-        *[!a-z_]*) die_usage "invalid --until state: $until_state" ;;
-        esac
-    fi
+    # --until is required: herdr's default settled set includes `blocked`, so
+    # a lane stopped at an approval prompt would otherwise read as settled.
+    [ -n "$until_state" ] || die_usage "agent mode needs --until STATE"
+    case "$until_state" in
+    *[!a-z_]*) die_usage "invalid --until state: $until_state" ;;
+    esac
     [ -n "$timeout_bin" ] || die_usage "GNU timeout (timeout or gtimeout) is required"
     command -v herdr >/dev/null 2>&1 || die_usage "herdr is not on PATH"
 
     timeout_ms=$((timeout_seconds * 1000))
-    set -- herdr agent wait "$lane"
-    [ -z "$until_state" ] || set -- "$@" --until "$until_state"
-    set -- "$@" --timeout "$timeout_ms"
+    set -- herdr agent wait "$lane" --until "$until_state" --timeout "$timeout_ms"
     "$timeout_bin" --kill-after=5 "$((timeout_seconds + 30))" "$@"
     status=$?
     if [ "$status" -eq 0 ]; then
@@ -230,8 +231,8 @@ short=${want_head:0:8}
 
 # One bounded REST read, always given the full --call-timeout-seconds: a call
 # is never clamped to the time left before the deadline, so the final poll can
-# still classify what it reads (a poll may overrun the deadline by at most one
-# bounded call) instead of timing out into an indeterminate verdict.
+# still classify what it reads (the last poll may overrun the deadline, by at
+# most that one poll) instead of timing out into an indeterminate verdict.
 api() {
     "$timeout_bin" --kill-after=2 "$call_timeout_seconds" gh api "$1" </dev/null 2>/dev/null
 }
@@ -267,7 +268,7 @@ newest_run_ids() {
                    and (.event | type) == "string"
                    and (.run_number | type) == "number"
                 then {w: .workflow_id, e: .event, n: .run_number,
-                      c: (.created_at // ""), id: .id}
+                      c: (.created_at // ""), id: .id, s: (.status // "")}
                 else error("foreign or malformed run") end
             end' 2>/dev/null)" || return 1
         count="$(printf '%s' "$body" | jq -r '.workflow_runs | length')" || return 1
@@ -278,13 +279,18 @@ newest_run_ids() {
     done
     printf '%s' "$rows" | jq -rs '
         # Only a pull_request / pull_request_target run is replaced by a newer
-        # run of the same workflow (a push or an edit re-runs it, with
-        # cancel-in-progress); for any other event two runs of one workflow on
-        # one head run side by side (workflow_run fan-in, a branch and a tag
-        # push, repeated dispatches), so every such run counts.
+        # run of the same workflow (a push or an edit re-runs it), and only
+        # once it has completed: a superseded run still in flight counts, since
+        # without cancel-in-progress it can still fail. For any other event two
+        # runs of one workflow on one head run side by side (workflow_run
+        # fan-in, a branch and a tag push, repeated dispatches), so every such
+        # run counts.
         (unique_by(.id)) as $all
         | ($all | map(select(.e == "pull_request" or .e == "pull_request_target"))
-            | group_by([.w, .e]) | map(max_by([.n, .c, .id]))) as $pr_newest
+            | group_by([.w, .e])
+            | map(max_by([.n, .c, .id]) as $m
+                  | [$m] + map(select(.id != $m.id and .s != "completed")))
+            | add // []) as $pr_newest
         | ($pr_newest + ($all | map(select(.e != "pull_request" and .e != "pull_request_target")))) as $newest
         | ($newest[] | .id), "superseded=\(($all | length) - ($newest | length))"'
 }

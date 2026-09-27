@@ -368,7 +368,10 @@ A headless lane has nobody to answer an editor. Start every lane with
 keeps `git merge` from opening one, the second makes any command that still
 asks for a message (`git commit` while finishing a conflicted merge,
 `git merge --continue`) accept the prepared one instead of waiting. Under
-herdr, set both on the tab and on every pane that hosts a lane:
+herdr, set both on the tab and on every pane that hosts a lane, and never
+start a lane in the root pane `herdr worktree open` or `worktree create`
+gives you (neither takes `--env`); open a tab or split a pane with the
+variables inside that workspace instead:
 
 ```bash
 herdr tab create --workspace <workspace> --label <lane> --no-focus --env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true

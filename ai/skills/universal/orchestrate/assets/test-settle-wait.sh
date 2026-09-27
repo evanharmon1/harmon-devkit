@@ -126,11 +126,11 @@ $out" ;;
 # ── agent mode ────────────────────────────────────────────────────────
 reset_fixtures
 set +e
-out="$("$wait_sh" agent alpha --timeout-seconds 3600 2>&1)"
+out="$("$wait_sh" agent alpha --until idle --timeout-seconds 3600 2>&1)"
 rc=$?
 set -e
 expect_rc 0 "agent settle"
-[ "$(cat "$fix/herdr.calls")" = "agent wait alpha --timeout 3600000" ] ||
+[ "$(cat "$fix/herdr.calls")" = "agent wait alpha --until idle --timeout 3600000" ] ||
     fail "herdr did not receive milliseconds: $(cat "$fix/herdr.calls")"
 expect_out "SETTLED agent alpha" "agent settle"
 
@@ -141,25 +141,30 @@ reset_fixtures
 
 reset_fixtures
 set +e
-out="$(SW_HERDR_RC=7 "$wait_sh" agent alpha --timeout-seconds 2 2>&1)"
+out="$(SW_HERDR_RC=7 "$wait_sh" agent alpha --until idle --timeout-seconds 2 2>&1)"
 rc=$?
 set -e
 expect_rc 7 "herdr's non-zero status is propagated"
 expect_out "NOT-SETTLED agent alpha: herdr exited 7" "agent expiry"
 
 reset_fixtures
-for bad in 0 -5 1.5 abc 08 ''; do
+for bad in 0 -5 1.5 abc 08 '' 86401 99999999999999999999; do
     set +e
-    "$wait_sh" agent alpha --timeout-seconds "$bad" >/dev/null 2>&1
+    "$wait_sh" agent alpha --until idle --timeout-seconds "$bad" >/dev/null 2>&1
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "--timeout-seconds '$bad' accepted (exit $rc)"
 done
 set +e
-"$wait_sh" agent alpha >/dev/null 2>&1
+"$wait_sh" agent alpha --until idle >/dev/null 2>&1
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "missing --timeout-seconds accepted (exit $rc)"
+set +e
+"$wait_sh" agent alpha --timeout-seconds 5 >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "missing --until accepted (exit $rc): a blocked lane would read as settled"
 [ ! -s "$fix/herdr.calls" ] || fail "herdr was called on a usage error"
 
 # ── checks mode ───────────────────────────────────────────────────────
@@ -345,6 +350,20 @@ run_checks --timeout-seconds 5 --interval-seconds 1
 expect_rc 1 "parallel workflow_run runs are not collapsed"
 expect_out "FAILING 86" "parallel workflow_run runs"
 expect_out "superseded=0" "parallel workflow_run runs"
+
+# C3-1: a superseded pull_request run still in flight counts as pending (no
+# cancel-in-progress: an `edited` re-run whose jobs skip finishes first).
+reset_fixtures
+write_page 1 \
+    "$(run_json 11 in_progress null 1 "$sha_a" 5 pull_request 1 2026-09-27T00:00:00Z)" \
+    "$(run_json 12 completed success 1 "$sha_a" 5 pull_request 2 2026-09-27T00:01:00Z)"
+for id in 11 12; do
+    jq -c --argjson id "$id" '.workflow_runs[] | select(.id == $id)' \
+        "$fix/runs.1.json" >"$fix/run.$id.json"
+done
+run_checks --timeout-seconds 2 --interval-seconds 1
+expect_rc 4 "an in-flight superseded run is still pending"
+expect_out "PENDING 11" "in-flight superseded run"
 
 # C1-1: equal run_numbers break ties on created_at, then id.
 reset_fixtures
