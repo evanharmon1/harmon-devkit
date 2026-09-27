@@ -399,6 +399,17 @@ Three cases, mutually exclusive:
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   ```
 
+  **Any non-zero `reserve` means post no trigger.** Keep each call's exit
+  status visible, exactly as above: never pipe `reserve` into `jq` or anything
+  else, because a pipeline reports its last command's status and a refused
+  reservation then reads as success — the trigger goes out, `attach` fails,
+  and it is orphaned (harmon-devkit#1189). `reserve` already waits a bounded
+  time for GitHub to report a just-pushed head. **Exit 18** means GitHub still
+  reports a predecessor of `<head>` after that wait and nothing was reserved:
+  re-run the same `reserve` once, and report a blocker if it refuses again.
+  **Exit 2** naming a changed head means the PR moved past `<head>` — a newer
+  push: re-capture the head and start this case over, never retry the old one.
+
   This is the one piece of finding-independent, brief-independent text you
   are always allowed to post: the literal `@codex review` string the broker
   itself hardcodes, and only as part of this exact reserve→attach sequence.

@@ -228,6 +228,17 @@ any verdict — so a
 finding landing there after the carry still blocks, and `settle` still answers
 it on that same state. The carry removes the second review, never the second
 look.
+
+**A non-zero `reserve` means no trigger is posted** (harmon-devkit#1189). The
+sequence is `reserve` → post `@codex review` → `attach`, each call's exit
+status checked on its own — never `reserve … | jq`, whose status is the pipe's
+last command, so a refused reservation reads as success and the trigger is
+orphaned when `attach` fails. `reserve` itself waits a bounded time
+(`CODEX_RESERVE_HEAD_WAIT_SEC`, default 30s) for GitHub to report a
+just-pushed head. Exit `18` means GitHub still reports a predecessor of the
+requested head after that wait and nothing was reserved: re-run `reserve`.
+Exit `2` naming a changed head means a newer push: re-capture the head. The
+integrator agent's §4 carries the recipe.
 A carried head spends neither ceiling and advances no cycle ordinal, and the
 ledger names it as such — `cycle 3/4 (+1 exempt, +2 carried)`, the carried
 count read from `.carry.generation` — because a head
