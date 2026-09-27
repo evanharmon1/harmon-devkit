@@ -1322,8 +1322,29 @@ rm -rf "$c/.claude/skills/review/assets"
 mkdir -p "$c/sealed-dir/.claude/skills"
 printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
     >"$c/sealed-dir/.claude/skills/.SKILLS_PROVENANCE"
+# A mode-000 directory stops `find` only for a non-root user: UID 0 reads
+# straight through it, the traversal never fails, and the sealed stamp is then
+# found instead — exit 2 for the stale-stamp reason, proving nothing about
+# traversal. So the failure is also forced through PATH, the way the BSD-sort
+# case above forces its own: this `find` emits whatever the real one can reach
+# and then reports an unreadable directory, as find(1) does on a partial walk,
+# whoever runs the suite. It is built before the chmod so a failure here cannot
+# strand a mode-000 directory the EXIT trap cannot remove.
+partial_find_dir="$TMPROOT/partial-find-bin"
+mkdir -p "$partial_find_dir"
+real_find="$(type -P find)"
+cat >"$partial_find_dir/find" <<PARTIALFIND
+#!/bin/sh
+"$real_find" "\$@"
+echo "find: a directory could not be read: Permission denied" >&2
+exit 1
+PARTIALFIND
+chmod +x "$partial_find_dir/find"
 chmod 000 "$c/sealed-dir"
-run_audit "$c"
+set +e
+out="$(PATH="$partial_find_dir:$PATH" "$AUDIT" --repo-root "$c" 2>&1)"
+status=$?
+set -e
 chmod 700 "$c/sealed-dir"
 expect_status "#905: find traversal failure exits 2 (indeterminate)" 2
 expect_says "#905: it names the traversal failure" "traversal failed"
