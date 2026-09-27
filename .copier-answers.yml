@@ -3,7 +3,7 @@ _commit: v4.45.0
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
-claude_authorized_members: evanharmon1
+claude_authorized_members: evanharmon1,evanharmon1-bot,admiralfraggle,admiralfraggle-bot
 code_owner: evanharmon1
 codeql_languages: []
 decisions_seed_date: '2026-06-28'
@@ -28,6 +28,7 @@ release_content_paths: ai/skills ai/agents templates scripts
 run_task_install: false
 skill_categories:
 - universal
+- matt-pocock
 - repo
 snyk_scan_schedule: weekly
 use_alternative_claude_providers: true

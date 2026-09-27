@@ -23,6 +23,9 @@ jobs:
        github.event_name == 'pull_request_review_comment' ||
        github.event_name == 'pull_request_review') &&
       (github.event.sender.login == 'evanharmon1' ||
+       github.event.sender.login == 'evanharmon1-bot' ||
+       github.event.sender.login == 'admiralfraggle' ||
+       github.event.sender.login == 'admiralfraggle-bot' ||
        github.event.sender.login == 'renovate[bot]' ||
        github.event.sender.login == 'dependabot[bot]') &&
       (contains(github.event.comment.body, '@claude review') ||
@@ -67,6 +70,9 @@ jobs:
         run: |
           case "$(printf '%s' "$SENDER" | tr '[:upper:]' '[:lower:]')" in
             "evanharmon1") echo "$SENDER is authorized"; exit 0 ;;
+            "evanharmon1-bot") echo "$SENDER is authorized"; exit 0 ;;
+            "admiralfraggle") echo "$SENDER is authorized"; exit 0 ;;
+            "admiralfraggle-bot") echo "$SENDER is authorized"; exit 0 ;;
             "renovate[bot]") echo "$SENDER is authorized"; exit 0 ;;
             "dependabot[bot]") echo "$SENDER is authorized"; exit 0 ;;
           esac
