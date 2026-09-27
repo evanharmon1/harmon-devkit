@@ -14,7 +14,8 @@
 #   attempt 3 as a success while it was still queued, another exited on a
 #   previous attempt's failure. `checks` mode never calls them; it reads each
 #   run's own `.status` and `.conclusion` from the REST run endpoint on every
-#   poll, for the PR's exact head.
+#   poll, for the exact head the caller pushed, and only the newest run of
+#   each workflow, so a superseded cancelled or failed run cannot pin it red.
 #
 # Portable to bash 3.2 (macOS): no arrays of arrays, no mapfile, no GNU-only
 # date or sleep flags. GNU `timeout` (or Homebrew `gtimeout`) bounds every
@@ -31,7 +32,7 @@ usage() {
     cat <<'EOF'
 Usage:
   settle-wait.sh agent LANE --timeout-seconds N [--until STATE]
-  settle-wait.sh checks --repo OWNER/REPO --pr N --timeout-seconds N
+  settle-wait.sh checks --repo OWNER/REPO --pr N --head SHA --timeout-seconds N
                         [--interval-seconds N] [--call-timeout-seconds N]
                         [--per-page N]
 
@@ -39,28 +40,45 @@ Every duration is in SECONDS.
 
 agent   Wait for a herdr lane agent to settle. Runs
         `herdr agent wait LANE [--until STATE] --timeout <N*1000>` (herdr's
-        flag is milliseconds; the conversion happens here) and exits with
-        herdr's own status, unmodified. A GNU timeout backstop of N+30s kills
-        a herdr that overruns its own timeout; that exits 124.
+        flag is milliseconds; the conversion happens here). A GNU timeout
+        backstop of N+30s kills a herdr that overruns its own timeout.
+        Confirm a prompt was delivered first (`herdr agent prompt LANE "..."
+        --wait --until working --timeout <ms>`), or this can settle on the
+        idle state the lane was in before the prompt landed.
 
-checks  Wait for every GitHub Actions run on the PR's current head to settle.
-        Each poll resolves the head SHA, lists the runs for exactly that SHA
-        (paged explicitly until a short page), and reads each run's own
-        `.status`, `.conclusion`, and `.run_attempt`. Settled means every run
-        is `completed`; `skipped` runs are completed and never counted as
-        pending. Covers Actions workflow runs only, not external status checks.
+checks  Wait for the GitHub Actions runs on the head you pushed to settle.
+        --head is REQUIRED: the full 40-hex SHA you pushed. While the PR
+        still reports another head (GitHub lags after a push) the poll is
+        not settled. Each poll lists the runs for exactly --head (paged
+        explicitly until a short page), keeps only the NEWEST run of each
+        (workflow, event) pair -- highest run_number, then created_at, then
+        id -- so a cancelled or failed run superseded by a re-run of the
+        same workflow no longer counts, and reads that run's own `.status`,
+        `.conclusion`, and `.run_attempt`. The PR head is re-read after the
+        run reads; a settle is reported only if it still equals --head.
+        Settled means every newest run is `completed`; `skipped` runs are
+        completed and never counted as pending. Covers Actions workflow runs
+        only, not external status checks, and cannot see a run GitHub has
+        not created yet.
         --interval-seconds  poll interval (default 30)
-        --call-timeout-seconds  bound on each gh call (default 30)
+        --call-timeout-seconds  bound on each gh call (default 30); a poll
+                            may overrun the deadline by at most one such call
         --per-page  runs listed per page (default 100; tests)
 
-Exit status:
-  0    settled (checks: every run completed with success, neutral or skipped)
-  1    checks: settled, but at least one run failed (FAILING lines name them)
+Exit status, agent mode:
+  herdr's own status, unmodified: 0 settled, anything else NOT settled
+  (herdr uses 1 for a server error and 2 for a usage error, which overlap
+  the checks codes below and mean something different), and 124 when the
+  backstop killed a herdr that overran its own timeout. 2 is also this
+  script's own usage error.
+
+Exit status, checks mode:
+  0    settled: every newest run completed with success, neutral or skipped
+  1    settled, but at least one newest run failed (FAILING lines name them)
   2    usage error, or a required tool is missing
-  3    indeterminate: the head moved, or at expiry the last poll could not be
-       read or listed no runs; never a settle
-  4    expired: the timeout passed with runs still pending
-  agent mode exits with herdr's status instead (non-zero on herdr's expiry).
+  3    indeterminate at expiry: the PR never reported --head, or the last
+       poll could not be read or listed no runs; never a settle
+  4    expired: the timeout passed with runs on --head still pending
 
 Never follow a wait with `; echo`, `|| true`, or anything else that discards
 this status.
@@ -157,16 +175,18 @@ esac
 
 repo=
 pr=
+want_head=
 interval_seconds=30
 call_timeout_seconds=30
 per_page=100
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --timeout-seconds | --interval-seconds | --call-timeout-seconds | --per-page)
+    --repo | --pr | --head | --timeout-seconds | --interval-seconds | --call-timeout-seconds | --per-page)
         [ "$#" -ge 2 ] || die_usage "$1 needs a value"
         case "$1" in
         --repo) repo=$2 ;;
         --pr) pr=$2 ;;
+        --head) want_head=$2 ;;
         --timeout-seconds) timeout_seconds=$2 ;;
         --interval-seconds) interval_seconds=$2 ;;
         --call-timeout-seconds) call_timeout_seconds=$2 ;;
@@ -187,6 +207,10 @@ case "$repo" in
 *) die_usage "--repo must be OWNER/REPO" ;;
 esac
 positive_int "$pr" || die_usage "--pr must be a positive integer"
+case "$want_head" in
+'' | *[!0-9a-f]*) die_usage "--head must be the full 40-hex SHA you pushed" ;;
+esac
+[ "${#want_head}" -eq 40 ] || die_usage "--head must be the full 40-hex SHA you pushed"
 positive_int "$timeout_seconds" ||
     die_usage "--timeout-seconds must be a positive integer of seconds"
 positive_int "$interval_seconds" ||
@@ -202,15 +226,14 @@ command -v jq >/dev/null 2>&1 || die_usage "jq is not on PATH"
 
 max_pages=50
 deadline=$(($(now) + timeout_seconds))
+short=${want_head:0:8}
 
-# One bounded REST read. Never outlives the overall deadline by more than the
-# kill grace, so a hung gh cannot hold the wait open past its expiry.
+# One bounded REST read, always given the full --call-timeout-seconds: a call
+# is never clamped to the time left before the deadline, so the final poll can
+# still classify what it reads (a poll may overrun the deadline by at most one
+# bounded call) instead of timing out into an indeterminate verdict.
 api() {
-    bound=$call_timeout_seconds
-    remaining=$((deadline - $(now)))
-    [ "$remaining" -ge 1 ] || remaining=1
-    [ "$bound" -le "$remaining" ] || bound=$remaining
-    "$timeout_bin" --kill-after=2 "$bound" gh api "$1" </dev/null 2>/dev/null
+    "$timeout_bin" --kill-after=2 "$call_timeout_seconds" gh api "$1" </dev/null 2>/dev/null
 }
 
 head_sha() {
@@ -223,119 +246,142 @@ head_sha() {
     printf '%s\n' "$sha"
 }
 
-# Every run id for exactly this head, one per line, de-duplicated. Paged by an
-# explicit &page=K until a short page; never gh's own --paginate.
-run_ids() {
+# The id of the NEWEST run of each (workflow_id, event) pair for exactly this
+# head, one per line, followed by a final "superseded=N" line. A run
+# superseded by a later run of the same workflow and event (a cancelled
+# `pull_request` run replaced by its `edited` re-run, a failed guard that
+# passed after a body edit) is dropped here, so it is never read or counted.
+# Paged by an explicit &page=K until a short page; never gh's own --paginate.
+newest_run_ids() {
     page=1
-    ids=
+    rows=
     while :; do
         [ "$page" -le "$max_pages" ] || return 1
         body="$(api "repos/$repo/actions/runs?head_sha=$1&per_page=$per_page&page=$page")" ||
             return 1
-        page_ids="$(printf '%s' "$body" | jq -r --arg sha "$1" '
+        page_rows="$(printf '%s' "$body" | jq -c --arg sha "$1" '
             if (.workflow_runs | type) != "array" then error("no workflow_runs")
             else .workflow_runs[]
-              | if (.id | type) == "number" and .head_sha == $sha then .id
+              | if (.id | type) == "number" and .head_sha == $sha
+                   and (.workflow_id | type) == "number"
+                   and (.event | type) == "string"
+                   and (.run_number | type) == "number"
+                then {w: .workflow_id, e: .event, n: .run_number,
+                      c: (.created_at // ""), id: .id}
                 else error("foreign or malformed run") end
             end' 2>/dev/null)" || return 1
         count="$(printf '%s' "$body" | jq -r '.workflow_runs | length')" || return 1
-        [ -z "$page_ids" ] || ids="$ids$page_ids
+        [ -z "$page_rows" ] || rows="$rows$page_rows
 "
         [ "$count" -ge "$per_page" ] || break
         page=$((page + 1))
     done
-    printf '%s' "$ids" | sort -u
+    printf '%s' "$rows" | jq -rs '
+        (unique_by(.id)) as $all
+        | ($all | group_by([.w, .e]) | map(max_by([.n, .c, .id]))) as $newest
+        | ($newest[] | .id), "superseded=\(($all | length) - ($newest | length))"'
 }
 
 last=indeterminate
 detail="not polled"
 poll=0
-first_sha=
 while :; do
     poll=$((poll + 1))
     verdict=
     if ! sha="$(head_sha)"; then
         last=indeterminate
         detail="could not read the PR head"
-    elif [ -n "$first_sha" ] && [ "$sha" != "$first_sha" ]; then
-        echo "INDETERMINATE head moved: ${first_sha:0:8} -> ${sha:0:8}"
-        exit "$EXIT_INDETERMINATE"
-    elif ! ids="$(run_ids "$sha")"; then
-        [ -n "$first_sha" ] || first_sha=$sha
+    elif [ "$sha" != "$want_head" ]; then
+        last=head-mismatch
+        detail="PR head ${sha:0:8} is not the pushed head $short"
+    elif ! listed="$(newest_run_ids "$want_head")"; then
         last=indeterminate
-        detail="could not list the runs for head ${sha:0:8}"
-    elif [ -z "$ids" ]; then
-        [ -n "$first_sha" ] || first_sha=$sha
-        last=indeterminate
-        detail="no runs listed for head ${sha:0:8}"
+        detail="could not list the runs for head $short"
     else
-        [ -n "$first_sha" ] || first_sha=$sha
-        total=0
-        pending=0
-        failing=0
-        skipped=0
-        lines=
-        read_failed=
-        for id in $ids; do
-            body="$(api "repos/$repo/actions/runs/$id")" || {
-                read_failed=$id
-                break
-            }
-            row="$(printf '%s' "$body" | jq -r --arg sha "$sha" '
-                if (.status | type) == "string" and .head_sha == $sha
-                then [.status, (.conclusion // "none"), (.run_attempt // 0 | tostring),
-                      ((.name // "unnamed") | gsub("[\t\n]"; " "))] | @tsv
-                else error("malformed run") end' 2>/dev/null)" || {
-                read_failed=$id
-                break
-            }
-            IFS='	' read -r status conclusion attempt name <<EOF
+        superseded="${listed##*superseded=}"
+        ids="$(printf '%s\n' "$listed" | grep -v '^superseded=' || true)"
+        if [ -z "$ids" ]; then
+            last=indeterminate
+            detail="no runs listed for head $short"
+        else
+            total=0
+            pending=0
+            failing=0
+            skipped=0
+            lines=
+            read_failed=
+            for id in $ids; do
+                body="$(api "repos/$repo/actions/runs/$id")" || {
+                    read_failed=$id
+                    break
+                }
+                row="$(printf '%s' "$body" | jq -r --arg sha "$want_head" '
+                    if (.status | type) == "string" and .head_sha == $sha
+                    then [.status, (.conclusion // "none"), (.run_attempt // 0 | tostring),
+                          ((.name // "unnamed") | gsub("[\t\n]"; " "))] | @tsv
+                    else error("malformed run") end' 2>/dev/null)" || {
+                    read_failed=$id
+                    break
+                }
+                IFS='	' read -r status conclusion attempt name <<EOF
 $row
 EOF
-            total=$((total + 1))
-            if [ "$status" != completed ]; then
-                pending=$((pending + 1))
-                lines="${lines}PENDING $id $name attempt=$attempt status=$status
+                total=$((total + 1))
+                if [ "$status" != completed ]; then
+                    pending=$((pending + 1))
+                    lines="${lines}PENDING $id $name attempt=$attempt status=$status
 "
-            else
-                case "$conclusion" in
-                success | neutral) ;;
-                skipped) skipped=$((skipped + 1)) ;;
-                *)
-                    failing=$((failing + 1))
-                    lines="${lines}FAILING $id $name attempt=$attempt conclusion=$conclusion
+                else
+                    case "$conclusion" in
+                    success | neutral) ;;
+                    skipped) skipped=$((skipped + 1)) ;;
+                    *)
+                        failing=$((failing + 1))
+                        lines="${lines}FAILING $id $name attempt=$attempt conclusion=$conclusion
 "
-                    ;;
-                esac
-            fi
-        done
-        if [ -n "$read_failed" ]; then
-            last=indeterminate
-            detail="could not read run $read_failed"
-        else
-            echo "POLL $poll head=${sha:0:8} runs=$total pending=$pending failing=$failing skipped=$skipped"
-            printf '%s' "$lines"
-            if [ "$pending" -eq 0 ] && [ "$failing" -eq 0 ]; then
-                verdict=success
-            elif [ "$pending" -eq 0 ]; then
-                verdict=failure
+                        ;;
+                    esac
+                fi
+            done
+            if [ -n "$read_failed" ]; then
+                last=indeterminate
+                detail="could not read run $read_failed"
             else
-                last=pending
-                detail="$pending of $total runs pending on head ${sha:0:8}"
+                echo "POLL $poll head=$short runs=$total pending=$pending failing=$failing skipped=$skipped superseded=$superseded"
+                printf '%s' "$lines"
+                if [ "$pending" -eq 0 ]; then
+                    # Bind the verdict to the pushed head: re-read the PR
+                    # head after the run reads and settle only if it is
+                    # still --head.
+                    if ! sha="$(head_sha)"; then
+                        last=indeterminate
+                        detail="could not re-read the PR head after the run reads"
+                    elif [ "$sha" != "$want_head" ]; then
+                        last=head-mismatch
+                        detail="PR head moved to ${sha:0:8} during the poll; not the pushed head $short"
+                    elif [ "$failing" -eq 0 ]; then
+                        verdict=success
+                    else
+                        verdict=failure
+                    fi
+                else
+                    last=pending
+                    detail="$pending of $total runs pending on head $short"
+                fi
             fi
         fi
     fi
     case "$verdict" in
     success)
-        echo "SETTLED success head=${sha:0:8} runs=$total"
+        echo "SETTLED success head=$short runs=$total"
         exit "$EXIT_SETTLED"
         ;;
     failure)
-        echo "SETTLED failure head=${sha:0:8} runs=$total failing=$failing"
+        echo "SETTLED failure head=$short runs=$total failing=$failing"
         exit "$EXIT_FAILING"
         ;;
     esac
-    [ "$last" = pending ] || echo "POLL $poll indeterminate: $detail"
+    [ "$last" = pending ] || echo "POLL $poll $last: $detail"
     remaining=$((deadline - $(now)))
     if [ "$remaining" -le 0 ]; then
         if [ "$last" = pending ]; then

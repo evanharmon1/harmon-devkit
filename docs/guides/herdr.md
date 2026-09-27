@@ -189,9 +189,11 @@ belongs in a separate user, container, or VM, not a sibling pane.
 1. **Lay out** — a fresh tab for the fan-out, one pane per unit, each with
    its cwd (a worktree for work that edits the repo; the checkout itself for
    pane jobs): `tab create --workspace … --label … --no-focus`, then
-   `pane split … --cwd … --no-focus`, each with `--env GIT_MERGE_AUTOEDIT=no`
-   so a merge can never open an editor nobody in a headless pane will answer;
-   `--env` too for any authorized gate variables.
+   `pane split --pane <id> --direction <right|down> --cwd <dir> --no-focus`,
+   each with `--env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true` so a merge,
+   or the commit that finishes a conflicted one, can never open an editor
+   nobody in a headless pane will answer; `--env` too for any authorized gate
+   variables.
 2. **Start** — `agent start <name> --kind <kind> --pane <id> -- <native args>`
    with a distinctive name per unit (`triage-omator`, `prune-site`).
 3. **Prompt** — one self-contained brief per worker, ending with a
@@ -200,8 +202,11 @@ belongs in a separate user, container, or VM, not a sibling pane.
    as `TRIAGE-DONE omator 7f3a` in the sentinel and the report filename —
    because `pane wait-output` matches the existing snapshot immediately, so
    a reused pane's previous sentinel satisfies the next wait and hands you
-   the old report. Then
-   `agent prompt … --wait --until working --timeout 30000`. If it returns
+   the old report. Then confirm delivery with
+   `agent prompt <name> "<brief>" --wait --until working --timeout 30000`
+   (milliseconds: 30 seconds), and only then wait for the settle in step 4 —
+   a settle taken without that confirmation can return on the idle state the
+   worker was in before the prompt landed. If it returns
    with the worker still `idle`, delivery may have silently missed — Herdr
    before 0.8.2 could report `agent start` ready before the pane's first-run
    prompts have settled (fixed in 0.8.2, which the devcontainer image now
@@ -245,8 +250,10 @@ belongs in a separate user, container, or VM, not a sibling pane.
    the orchestrator forever. On timeout, `agent get` / `agent read` /
    `agent explain` it and decide — nudge, take over, or retire — rather than
    waiting again blind. `--timeout` is milliseconds; an orchestrated run
-   uses the orchestrate skill's `assets/settle-wait.sh`, which takes seconds,
-   converts, and reports expiry as a non-zero exit. For multi-lane Dev Loop runs, invoke the orchestrate skill's
+   settles with the orchestrate skill's
+   `assets/settle-wait.sh agent <name> --until <state> --timeout-seconds <s>`,
+   which takes seconds, converts, and reports expiry as a non-zero exit — never
+   followed by `; echo` or `|| true`. For multi-lane Dev Loop runs, invoke the orchestrate skill's
    `assets/lane-watch.sh` as a Bash script in the persistent monitor primitive;
    its state file deduplicates report-first sentinels across re-arms and it
    continues watching review activity briefly after promotion. Never paste the

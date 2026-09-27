@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Prose guards for how the orchestrator launches, merges in, and waits on
 # lanes:
-# - #1190: every herdr lane launch carries GIT_MERGE_AUTOEDIT=no, no lane
-#   guidance spells a merge without --no-edit, and a lane stuck in an editor
-#   is escalated rather than recovered by terminating a process.
+# - #1190: every herdr lane launch carries GIT_MERGE_AUTOEDIT=no and
+#   GIT_EDITOR=true, no lane guidance spells a merge (or a merging pull)
+#   without --no-edit, a conflicted merge is finished with
+#   `git commit --no-edit`, and a lane stuck in an editor is escalated rather
+#   than recovered by terminating a process.
 # - #1192: the herdr skill states the millisecond unit beside its first
 #   --timeout example, and the orchestrate skill names settle-wait.sh as the
-#   required wait primitive and forbids discarding a wait's exit status.
+#   required wait primitive (delivery confirmed first, --head bound for CI)
+#   and forbids discarding a wait's exit status.
 # The settle-wait.sh behaviour itself is tested by its co-located
 # test-settle-wait.sh.
 set -euo pipefail
@@ -38,20 +41,59 @@ contains() {
     fail "$1 no longer says: $2"
 }
 
-# Print every `git merge <args>` in the given files that could open an editor:
-# one with arguments but without --no-edit (a lone --abort cannot).
-# `git merge-base` and a bare mention of `git merge` carry no arguments.
+# Print, as FILE:LINE:MATCH, every git command in the given files that could
+# open an editor on a merge message:
+# - `git merge <args>` (also `git -C <dir> merge`, `git -c k=v merge`) without
+#   --no-edit, except --continue/--abort/--quit, which take no merge message
+#   from the command line (the lane's GIT_EDITOR=true covers --continue);
+# - `git pull <args>` without --rebase, --ff-only, or --no-edit.
+# Backslash-continued lines are joined first, so a multi-line
+# `git merge \` whose continuation carries --no-edit is one command, reported
+# at its first line. `git merge-base` and a bare mention of `git merge` (no
+# arguments) are not commands that merge.
 bare_merges() {
-    { grep -HonE 'git merge( [^`]*)?' "$@" 2>/dev/null || true; } |
-        while IFS= read -r hit; do
-            rest="${hit#*git merge}"
-            rest="${rest# }"
-            rest="${rest%% }"
-            case "$rest" in
-            '' | --abort | *--no-edit*) ;;
-            *) printf '%s\n' "$hit" ;;
-            esac
-        done
+    for file in "$@"; do
+        awk -v file="$file" '
+            function check(text, lineno,    s, m, verb, args) {
+                s = text
+                while (match(s, /git( -[Cc] [^ `]+)* (merge|pull)([ ][^`;&|]*)?/)) {
+                    m = substr(s, RSTART, RLENGTH)
+                    s = substr(s, RSTART + RLENGTH)
+                    if (substr(s, 1, 1) == "-") continue
+                    args = m
+                    sub(/^git( -[Cc] [^ `]+)* /, "", args)
+                    verb = args
+                    sub(/ .*/, "", verb)
+                    sub(/^(merge|pull)/, "", args)
+                    sub(/[ ]+$/, "", args)
+                    sub(/^[ ]+/, "", args)
+                    if (verb == "merge") {
+                        if (args == "") continue
+                        if (args ~ /^--(continue|abort|quit)$/) continue
+                        if (args ~ /(^| )--no-edit( |$)/) continue
+                    } else {
+                        if (args ~ /(^| )(--rebase(=[a-z]+)?|--ff-only|--no-edit)( |$)/) continue
+                    }
+                    sub(/[ ]+$/, "", m)
+                    print file ":" lineno ":" m
+                }
+            }
+            {
+                line = $0
+                if (buf == "") start = NR
+                if (line ~ /\\$/) {
+                    sub(/\\$/, "", line)
+                    buf = buf line " "
+                    next
+                }
+                text = buf line
+                buf = ""
+                gsub(/[ \t]+/, " ", text)
+                check(text, start)
+            }
+            END { if (buf != "") { gsub(/[ \t]+/, " ", buf); check(buf, start) } }
+        ' "$file"
+    done
 }
 
 # The detector must catch what it exists to catch, and nothing else.
@@ -59,10 +101,29 @@ cat >"$test_tmp/probe.md" <<'EOF'
 Run `git merge origin/main` to catch up.
 Or `git merge --no-edit origin/main`.
 Compare with `git merge-base HEAD origin/main`, or `git merge --abort`.
+Finish with `git merge --continue`; a bare `git merge` mention is not a command.
+Run `git -C ../lane merge origin/main` from outside.
+Then `git -C ../lane merge --no-edit origin/main` is fine.
+Run `git pull` or `git pull origin main`.
+Fine: `git pull --rebase`, `git pull --ff-only origin main`, `git pull --no-edit origin main`.
+    git merge \
+        --no-edit \
+        origin/main
+    git merge \
+        origin/main
 EOF
 probe="$(bare_merges "$test_tmp/probe.md")"
-[ "$probe" = "$test_tmp/probe.md:1:git merge origin/main" ] ||
-    fail "bare-merge detector is wrong on its probe: '$probe'"
+expected="$test_tmp/probe.md:1:git merge origin/main
+$test_tmp/probe.md:5:git -C ../lane merge origin/main
+$test_tmp/probe.md:7:git pull
+$test_tmp/probe.md:7:git pull origin main
+$test_tmp/probe.md:12:git merge origin/main"
+[ "$probe" = "$expected" ] ||
+    fail "bare-merge detector is wrong on its probe:
+got:
+$probe
+expected:
+$expected"
 
 # ── #1190: no bare merge in any lane-facing guidance ──────────────────
 lane_docs=()
@@ -78,17 +139,31 @@ $violations"
 contains "$skill" '`git merge --no-edit origin/<default-branch>`'
 contains "$brief" '`git merge --no-edit origin/{{default-branch}}`'
 
-# ── #1190: every herdr lane launch sets GIT_MERGE_AUTOEDIT=no ─────────
+# ── #1190: every herdr lane launch sets GIT_MERGE_AUTOEDIT=no and ─────
+# GIT_EDITOR=true (the latter covers finishing a conflicted merge).
 for doc in "$skill" "$brief" "$guide"; do
-    grep -Fq 'GIT_MERGE_AUTOEDIT=no' "$doc" ||
-        fail "$doc does not carry GIT_MERGE_AUTOEDIT=no"
+    for var in GIT_MERGE_AUTOEDIT=no GIT_EDITOR=true; do
+        grep -Fq "$var" "$doc" || fail "$doc does not carry $var"
+    done
 done
 launches="$(grep -nE 'herdr (tab create|pane split)' "$skill" || true)"
 [ -n "$launches" ] || fail "$skill has no herdr lane-launch recipe"
-if printf '%s\n' "$launches" | grep -Fv -- '--env GIT_MERGE_AUTOEDIT=no'; then
-    fail "a herdr lane launch in $skill lacks --env GIT_MERGE_AUTOEDIT=no"
+for var in GIT_MERGE_AUTOEDIT=no GIT_EDITOR=true; do
+    if printf '%s\n' "$launches" | grep -Fv -- "--env $var"; then
+        fail "a herdr lane launch in $skill lacks --env $var"
+    fi
+done
+if printf '%s\n' "$launches" | grep -F '…'; then
+    fail "a herdr lane launch in $skill uses a literal ellipsis, not placeholders"
 fi
-contains "$guide" '`pane split … --cwd … --no-focus`, each with `--env GIT_MERGE_AUTOEDIT=no`'
+contains "$guide" 'each with `--env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true`'
+
+# A conflicted merge is finished without an editor, or backed out.
+for doc in "$skill" "$brief"; do
+    contains "$doc" '`git add`'
+    contains "$doc" '`git commit --no-edit`'
+    contains "$doc" '`git merge --abort`'
+done
 
 # ── #1190: a stuck lane is escalated, never killed ────────────────────
 contains "$skill" 'is escalated to the orchestrator and the maintainer; it is never recovered by the lane, or the orchestrator, terminating a process'
@@ -108,7 +183,34 @@ fi
 [ -x ai/skills/universal/orchestrate/assets/settle-wait.sh ] ||
     fail "settle-wait.sh is missing or not executable"
 contains "$skill" '`assets/settle-wait.sh` is the required primitive for every bounded lane settle and CI settle'
-contains "$skill" 'Never follow a wait with `; echo`'
+contains "$skill" 'Never follow a wait, or the delivery check, with `; echo`'
 contains "$skill" 'never settle CI with `gh run watch --exit-status` or `gh pr checks --watch`'
+contains "$skill" 'checks --repo <owner/repo> --pr <n> --head <pushed-sha>'
+
+# Delivery is confirmed with the one sanctioned raw-millisecond form, then
+# the settle goes through the asset. The skill and the guide agree on both.
+delivery='agent prompt <lane> "<text>" --wait --until working --timeout 30000'
+contains "$skill" "herdr $delivery"
+contains "$skill" 'settle-wait.sh agent <lane> --until <settled-state> --timeout-seconds'
+contains "$guide" '`agent prompt <name> "<brief>" --wait --until working --timeout 30000`'
+contains "$guide" '`assets/settle-wait.sh agent <name> --until <state> --timeout-seconds <s>`'
+# Every raw herdr --timeout in the skill is the delivery check, and none is
+# followed by something that discards its status.
+raw="$(grep -nE 'herdr agent (wait|prompt).*--timeout [0-9]' "$skill" || true)"
+[ -n "$raw" ] || fail "$skill lost its delivery check"
+if printf '%s\n' "$raw" | grep -Fv -- "$delivery"; then
+    fail "$skill passes a raw --timeout outside the delivery check"
+fi
+if grep -nE -- '--timeout [0-9]+ *(;|\|\|)' "$skill" "$guide"; then
+    fail "a herdr wait's status is discarded"
+fi
+
+# Agent-mode exit codes are herdr's own; the 1-4 table is checks mode's.
+contains "$skill" 'In `agent` mode the status is herdr'
+help="$(bash ai/skills/universal/orchestrate/assets/settle-wait.sh --help)"
+case "$help" in
+*"Exit status, agent mode:"*"124"*"Exit status, checks mode:"*) ;;
+*) fail "settle-wait.sh --help does not separate agent-mode and checks-mode exits" ;;
+esac
 
 echo "lane launch and waits: ok"
