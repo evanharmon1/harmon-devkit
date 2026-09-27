@@ -1323,20 +1323,30 @@ mkdir -p "$c/sealed-dir/.claude/skills"
 printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
     >"$c/sealed-dir/.claude/skills/.SKILLS_PROVENANCE"
 chmod 000 "$c/sealed-dir"
-run_audit "$c"
+# A mode-000 directory stops `find` only for a non-root user: UID 0 reads
+# straight through it, the traversal never fails, and the sealed stamp is then
+# found instead — exit 2 for the stale-stamp reason, proving nothing about
+# traversal. So the failure is also forced through PATH, the way the BSD-sort
+# case above forces its own: this `find` emits whatever the real one can reach
+# and then reports an unreadable directory, as find(1) does on a partial walk,
+# whoever runs the suite.
+partial_find_dir="$TMPROOT/partial-find-bin"
+mkdir -p "$partial_find_dir"
+real_find="$(command -v find)"
+cat >"$partial_find_dir/find" <<PARTIALFIND
+#!/bin/sh
+"$real_find" "\$@"
+echo "find: '$c/sealed-dir': Permission denied" >&2
+exit 1
+PARTIALFIND
+chmod +x "$partial_find_dir/find"
+set +e
+out="$(PATH="$partial_find_dir:$PATH" "$AUDIT" --repo-root "$c" 2>&1)"
+status=$?
+set -e
 chmod 700 "$c/sealed-dir"
 expect_status "#905: find traversal failure exits 2 (indeterminate)" 2
-# Root is the exception and has to be named rather than tripped over: UID 0
-# reads through a mode-000 directory, so `find` never fails and the premise
-# cannot hold. The audit still refuses — it then finds the sealed stamp, which
-# is indeterminate for its own reason — so the exit assertion above keeps its
-# meaning and only the traversal message is unobservable. Record that instead
-# of failing the suite for a container that happens to run as root.
-if [ "$(id -u)" -eq 0 ]; then
-    ok "#905: the traversal-failure message is unobservable as root"
-else
-    expect_says "#905: it names the traversal failure" "traversal failed"
-fi
+expect_says "#905: it names the traversal failure" "traversal failed"
 
 echo
 echo "== consumer-pin-audit: #859 — resolve guards every detected-v2 policy =="
