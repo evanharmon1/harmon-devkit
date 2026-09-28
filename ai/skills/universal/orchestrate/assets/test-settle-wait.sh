@@ -38,6 +38,7 @@ STUB
 cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SW_FIX/gh.calls"
+printf '%s\n' "$*" >>"$SW_FIX.all-calls"
 [ "${1:-}" = api ] || exit 97
 case "${3:-}" in
 '') ;;
@@ -45,7 +46,7 @@ case "${3:-}" in
 esac
 endpoint=$2
 case "$endpoint" in
-repos/o/r/pulls/7)
+repos/o/r/pulls/7 | repos/o/r/pulls/100001)
     n="$(cat "$SW_FIX/pull.count" 2>/dev/null || echo 0)"
     n=$((n + 1))
     echo "$n" >"$SW_FIX/pull.count"
@@ -168,6 +169,16 @@ set -e
 [ ! -s "$fix/herdr.calls" ] || fail "herdr was called on a usage error"
 
 # ── checks mode ───────────────────────────────────────────────────────
+# A PR number is an identifier, not a duration: it has no one-day cap.
+reset_fixtures
+write_page 1 "$(run_json 1 completed success 1)"
+run_json 1 completed success 1 >"$fix/run.1.json"
+set +e
+"$wait_sh" checks --repo o/r --pr 100001 --head "$sha_a" --timeout-seconds 5 --interval-seconds 1 >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "a PR number above 86400 was refused (exit $rc)"
+
 # All completed: success, neutral, and skipped all settle green.
 reset_fixtures
 write_page 1 "$(run_json 11 completed success 1)" \
@@ -393,8 +404,9 @@ expect_rc 4 "final poll's call is not clamped to the time left"
 expect_out "PENDING 95" "unclamped final poll"
 expect_out "EXPIRED after 1s: 1 of 1 runs pending on head aaaaaaaa" "unclamped final poll"
 
-# The stub logs every gh invocation; none may be a watch verb.
-if grep -Ev '^api ' "$fix/gh.calls"; then
+# The stub logs every gh invocation across every scenario (a log the
+# per-scenario reset does not clear); none may be a watch verb.
+if grep -Ev '^api ' "$fix.all-calls"; then
     fail "settle-wait called gh outside 'gh api'"
 fi
 

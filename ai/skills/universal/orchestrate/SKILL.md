@@ -410,9 +410,11 @@ raw `--timeout` to `herdr agent wait`, and never use `agent prompt --wait`
 for the long settle. `checks` takes the full SHA you pushed as `--head`
 (required): while the PR still reports another head it is not settled, and it
 reports a settle only when the PR head, re-read after the run reads, is still
-that SHA. It keeps only the newest run of each workflow and event, so a
-cancelled or failed run superseded by a re-run no longer counts, and reads
-that run's own `.status` and `.conclusion`; never settle CI with
+that SHA. For `pull_request` runs it keeps the newest run of each workflow,
+so a completed cancelled or failed run superseded by a re-run no longer counts
+(the list's status decides that a superseded run completed; one still in
+flight stays pending), counts every run of any other event, and reads each
+counted run's own `.status` and `.conclusion`; never settle CI with
 `gh run watch --exit-status` or `gh pr checks --watch`, which report stale or
 partial conclusions across re-run attempts. It covers Actions workflow runs
 GitHub has already created, not external status checks; the readiness gate
@@ -423,8 +425,8 @@ The exit status is the verdict, and it means different things per mode. In
 indeterminate (the PR head was not `--head` at the last poll, or that poll
 could not be read or listed no runs), 4 expired with runs pending. In `agent` mode the status is herdr's
 own: 0 settled and anything else not settled — herdr's 1 (server error) and
-2 (usage) are not the `checks` codes — with 124 when the backstop killed an
-overrunning herdr. Never follow a wait, or the delivery check, with `; echo`,
+2 (usage) are not the `checks` codes — with 124 when the backstop stopped an
+overrunning herdr (137 if it had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 `|| true`, or anything else that discards that status: an expired wait must
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.

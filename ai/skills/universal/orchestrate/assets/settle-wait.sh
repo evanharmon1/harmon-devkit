@@ -57,19 +57,24 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         `.conclusion`, and `.run_attempt`. The PR head is re-read after the
         run reads; a settle is reported only if it still equals --head.
         Settled means every newest run is `completed`; `skipped` runs are
-        completed and never counted as pending. Covers Actions workflow runs
+        completed and never counted as pending. A superseded run is dropped
+        on the status the run list reports for it, without reading it
+        again. Covers Actions workflow runs
         only, not external status checks, and cannot see a run GitHub has
         not created yet.
         --interval-seconds  poll interval (default 30)
         --call-timeout-seconds  bound on each gh call (default 30); the last
-                            poll may overrun the deadline, by at most one poll
+                            poll may overrun the deadline by up to one call
+                            timeout per call it makes (2 head reads, the list
+                            pages, and one read per counted run)
         --per-page  runs listed per page (default 100; tests)
 
 Exit status, agent mode:
   herdr's own status, unmodified: 0 settled, anything else NOT settled
   (herdr uses 1 for a server error and 2 for a usage error, which overlap
   the checks codes below and mean something different), and 124 when the
-  backstop killed a herdr that overran its own timeout. 2 is also this
+  backstop stopped a herdr that overran its own timeout (137 if it had to
+  be killed). 2 is also this
   script's own usage error.
 
 Exit status, checks mode:
@@ -90,13 +95,18 @@ die_usage() {
     exit "$EXIT_USAGE"
 }
 
-# A positive integer no larger than one day, so no later arithmetic (the
-# seconds-to-milliseconds conversion) can overflow.
 positive_int() {
     case "$1" in
     '' | *[!0-9]* | 0*) return 1 ;;
     esac
-    [ "${#1}" -le 5 ] && [ "$1" -le 86400 ]
+    return 0
+}
+
+# A duration in seconds: a positive integer no larger than one day, so no
+# later arithmetic (the seconds-to-milliseconds conversion) can overflow.
+# Identifiers such as --pr use positive_int, which has no such cap.
+seconds_value() {
+    positive_int "$1" && [ "${#1}" -le 5 ] && [ "$1" -le 86400 ]
 }
 
 now() {
@@ -148,7 +158,7 @@ agent)
         esac
     done
     [ -n "$lane" ] || die_usage "agent mode needs a LANE"
-    positive_int "$timeout_seconds" ||
+    seconds_value "$timeout_seconds" ||
         die_usage "--timeout-seconds must be a positive integer of seconds"
     # --until is required: herdr's default settled set includes `blocked`, so
     # a lane stopped at an approval prompt would otherwise read as settled.
@@ -212,11 +222,11 @@ case "$want_head" in
 '' | *[!0-9a-f]*) die_usage "--head must be the full 40-hex SHA you pushed" ;;
 esac
 [ "${#want_head}" -eq 40 ] || die_usage "--head must be the full 40-hex SHA you pushed"
-positive_int "$timeout_seconds" ||
+seconds_value "$timeout_seconds" ||
     die_usage "--timeout-seconds must be a positive integer of seconds"
-positive_int "$interval_seconds" ||
+seconds_value "$interval_seconds" ||
     die_usage "--interval-seconds must be a positive integer of seconds"
-positive_int "$call_timeout_seconds" ||
+seconds_value "$call_timeout_seconds" ||
     die_usage "--call-timeout-seconds must be a positive integer of seconds"
 if ! positive_int "$per_page" || [ "$per_page" -gt 100 ]; then
     die_usage "--per-page must be an integer from 1 to 100"
