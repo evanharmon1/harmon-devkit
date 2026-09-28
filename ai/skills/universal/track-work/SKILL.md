@@ -705,9 +705,10 @@ scope, for the scope's lifetime.
      --limit 1000 --json number,title,state,milestone,body
    ```
 
-   Reopen a closed match and append to it. Two open matches for one scope
-   are a duplicate: keep the older, move the newer's items into it, and close
-   the newer as a duplicate of it (§4).
+   Prefer an open match; otherwise reopen the most recent closed match that
+   was closed as completed — never one closed as a duplicate — and append to
+   it. Two open matches for one scope are a duplicate: keep the older, move
+   the newer's items into it, and close the newer as a duplicate of it (§4).
 2. **File it lazily**, when the first human task for its scope appears. It is
    an ordinary issue under this section's contract: `## Problem` names the
    scope, `## Provenance` carries one stable scope line —
