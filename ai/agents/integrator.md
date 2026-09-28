@@ -401,9 +401,19 @@ Three cases, mutually exclusive:
   Reserve, re-read the PR, trigger, and attach in sequence:
 
   ```bash
-  "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
+  reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
-      --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" || exit
+      --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>")
+  reserve_exit=0
+  "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
+  if [ "$reserve_exit" -eq 18 ]; then
+      # Lagging head, nothing reserved: exactly one re-run.
+      reserve_exit=0
+      "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
+  fi
+  # A second 18 is a blocker; any other non-zero is a refusal. Either way:
+  # post no trigger, codex_cycle null, report it (below).
+  [ "$reserve_exit" -eq 0 ] || exit "$reserve_exit"
   pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
   # Any mismatch: post no trigger, codex_cycle null, report it (above).
   jq -e --arg head "<head>" \
@@ -414,7 +424,9 @@ Three cases, mutually exclusive:
   ```
 
   **Any non-zero `reserve` means post no trigger.** Keep each call's exit
-  status visible, exactly as above: never pipe `reserve` into `jq` or anything
+  status visible, exactly as above — captured in `reserve_exit`, never ended
+  with a bare `|| exit` that would abort before the one retry 18 is owed —
+  and never pipe `reserve` into `jq` or anything
   else, because a pipeline reports its last command's status and a refused
   reservation then reads as success — the trigger goes out, `attach` fails,
   and it is orphaned (harmon-devkit#1189). `reserve` already waits a bounded
@@ -504,7 +516,7 @@ and only moves off it when *this* call actually fails.
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
 PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
 **12 (retry)**, repeat the
-reserve/trigger/attach/check sequence once more with `--attempt 2` against
+reserve/read/trigger/attach/check sequence once more with `--attempt 2` against
 the **same** state and head — this is the one bounded retry your brief
 expects; do not retry a second time. On **13 (escalate)**, **14**, **15**, or
 **2**,
@@ -687,12 +699,35 @@ Use the same checker with `--finder SLUG` — it resolves the finder's actor id,
 surfaces, and verdict mode from the trusted registry rather than needing
 explicit `--actor-id`:
 
-```sh
+```bash
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
-"$helper" reserve --state "$state_finder" --repo "$repo" --pr <n> \
+reserve_args=(--state "$state_finder" --repo "$repo" --pr <n> \
     --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
-    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" || exit
+    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>")
+reserve_exit=0
+"$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
+if [ "$reserve_exit" -eq 18 ]; then
+    reserve_exit=0
+    "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
+fi
+[ "$reserve_exit" -eq 0 ] || exit "$reserve_exit"
+pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
+jq -e --arg head "<head>" \
+    '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
+    <<<"$pr_now" >/dev/null || exit
 ```
+
+**Every finder trigger runs the §4 order: reservation held → the
+`state,isDraft,headRefOid` read → trigger → attach.** That holds for the
+fresh cycle above, for its attempt-2 retry on exit 12 (re-run the same
+sequence with `--attempt 2`), and for a finder's zero-candidate reconcile
+path, whose reservation already exists and so enters at the read. The
+`reserve` exit codes mean what they mean for codex-cloud — 18 is re-run once
+and a second 18 is a blocker, any other non-zero posts no trigger — and any
+mismatch on the read posts no trigger either: leave that finder out of
+`finder_cycles` (it holds only finders actually driven — the per-finder
+counterpart of `codex_cycle: null`), report the mismatch (§5), and leave the
+reservation for the next dispatch to reconcile.
 
 The trigger mechanism varies by finder — the trusted registry determines which:
 

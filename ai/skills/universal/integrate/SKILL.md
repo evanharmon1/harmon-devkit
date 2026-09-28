@@ -242,7 +242,9 @@ The zero-candidate reconcile path, whose reservation already exists, enters
 that same sequence at the read. `reserve` makes no GitHub write, so the read
 after it is the last thing before the post, exactly as §2 requires; it must
 show `OPEN`, a draft, and the dispatched head, and any mismatch there means no
-trigger (the reservation is left for the next dispatch to reconcile).
+trigger (the reservation is left for the next dispatch to reconcile). The
+same order binds every per-finder trigger (#804) — its fresh cycle, its
+attempt-2 retry, and its reconcile path alike.
 `reserve` itself waits a bounded time (`CODEX_RESERVE_HEAD_WAIT_SEC`, default
 30s, at most 120s, never sleeping past it) for GitHub to report a just-pushed
 head, which is why the read comes after it rather than before. Exit

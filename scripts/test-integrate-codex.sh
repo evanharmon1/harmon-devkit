@@ -89,7 +89,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         [ "$pr_calls" -le "$(cat "$GH_FIXTURES/fail-pr-after-$pr_number")" ] ||
             exit 94
     fi
-    [ ! -f "$GH_FIXTURES/slow-pr" ] || sleep 5
+    # `slow-sec` overrides the 5-second sleep of both slow fixtures.
+    [ ! -f "$GH_FIXTURES/slow-pr" ] ||
+        sleep "$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
@@ -143,7 +145,7 @@ if [ -f "$GH_FIXTURES/fail-endpoint-exact" ] &&
 fi
 if [ -f "$GH_FIXTURES/slow-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/slow-endpoint")" <<<"$endpoint"; then
-    sleep 5
+    sleep "$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
 fi
 
 case "$endpoint" in
@@ -336,7 +338,7 @@ write_defaults() {
     rm -f "${fixtures}"/fail-pr-after-* "${fixtures}"/pr-call-count-*
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
-    rm -f "${fixtures}/slow-pr"
+    rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
     rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
@@ -7688,7 +7690,7 @@ printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
 printf '%s\n' '{"status":"ahead","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
 poll_started=$(date -u '+%s')
 set +e
-reserve_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=2 CODEX_RESERVE_HEAD_POLL_SEC=100000 \
+reserve_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=2 CODEX_RESERVE_HEAD_POLL_SEC=999 \
     "$watchdog_bin" -k 5 30 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 2>&1)"
@@ -7776,6 +7778,81 @@ grep -Fq 'at most 120' <<<"$long_wait_out" ||
     fail "the over-cap refusal must name the cap: $long_wait_out"
 [ ! -f "$state" ] || fail "an over-cap wait bound must reserve nothing"
 [ ! -d "${state}.lock" ] || fail "an over-cap wait bound must take no lock"
+
+# Codex thread 4117865230: the wait holds the state lock, so a slow GitHub
+# read must not overrun it by run_gh's flat 60s budget. Each read inside the
+# wait, and the ancestry read after it, is capped at the wait left (floor 5s).
+# The slow fixtures sleep 60s here, so without the clamp the 30s watchdog
+# fires; with it reserve fails closed within the wait plus one short read.
+run_slow_reserve() {
+    slow_started=$(date -u '+%s')
+    set +e
+    reserve_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=2 CODEX_RESERVE_HEAD_POLL_SEC=0 \
+        "$watchdog_bin" -k 5 30 "$helper" reserve \
+        --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 2>&1)"
+    reserve_rc=$?
+    set -e
+    slow_elapsed=$(($(date -u '+%s') - slow_started))
+    if [ "$reserve_rc" -eq 124 ] || [ "$reserve_rc" -eq 137 ]; then
+        rm -rf "${state}.lock"
+        fail "$1: a slow read must be bounded by the wait (watchdog killed reserve after ${slow_elapsed}s)"
+    fi
+    [ "$slow_elapsed" -le 12 ] ||
+        fail "$1: reserve must return within the wait plus one short read, took ${slow_elapsed}s"
+    [ "$reserve_rc" -eq 2 ] ||
+        fail "$1: a read killed at the wait bound must fail closed: rc=$reserve_rc $reserve_out"
+    [ ! -f "$state" ] || fail "$1: a bounded-out read must reserve nothing"
+    [ ! -d "${state}.lock" ] || fail "$1: a bounded-out read must release the state lock"
+}
+
+echo "==> a head read slower than the wait is cut at the wait bound"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+: >"${fixtures}/slow-pr"
+printf '%s\n' 60 >"${fixtures}/slow-sec"
+run_slow_reserve "slow head read"
+grep -Fq 'cannot confirm the open PR head' <<<"$reserve_out" ||
+    fail "a timed-out head read must say the head is unconfirmed: $reserve_out"
+
+echo "==> an ancestry read slower than the wait is cut, and is not a retry"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+printf '%s\n' '{"status":"ahead","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
+printf '%s\n' '/compare/' >"${fixtures}/slow-endpoint"
+printf '%s\n' 60 >"${fixtures}/slow-sec"
+run_slow_reserve "slow ancestry read"
+grep -Fq 'ancestry to' <<<"$reserve_out" ||
+    fail "a timed-out ancestry read must be the unproven-lag refusal: $reserve_out"
+
+# Codex thread 4117865234: a value past bash's integer range must be refused
+# by its digit count before any numeric test, before the lock is taken. The
+# head matches here, so a regression that let the value through reserves
+# (rc 0 with state) instead of exiting 2.
+for huge_var in CODEX_RESERVE_HEAD_WAIT_SEC CODEX_RESERVE_HEAD_POLL_SEC; do
+    echo "==> an out-of-range $huge_var is a usage error, and takes no lock"
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+    set +e
+    huge_out="$(env "$huge_var=999999999999999999999999999999" \
+        "$watchdog_bin" -k 5 30 "$helper" reserve \
+        --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 2>&1)"
+    huge_rc=$?
+    set -e
+    [ "$huge_rc" -eq 2 ] ||
+        fail "$huge_var out of range must exit 2: rc=$huge_rc $huge_out"
+    grep -Fq "$huge_var must be a non-negative integer of at most three digits" <<<"$huge_out" ||
+        fail "$huge_var out of range must name the digit bound: $huge_out"
+    ! grep -Fq 'integer expression expected' <<<"$huge_out" ||
+        fail "$huge_var must be refused before any numeric test: $huge_out"
+    [ ! -f "$state" ] || fail "$huge_var out of range must reserve nothing"
+    [ ! -d "${state}.lock" ] || fail "$huge_var out of range must take no lock"
+done
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

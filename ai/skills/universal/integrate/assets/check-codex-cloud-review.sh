@@ -174,7 +174,11 @@ exit 2 with a reason naming the reported state.
 120 — a larger value is exit 2) for the PR head GitHub reports to reach --head,
 because GitHub lags a push by a few seconds; it re-reads every
 CODEX_RESERVE_HEAD_POLL_SEC seconds (default 2; 0 is accepted for tests only
-and busy-polls; a poll never sleeps past the remaining wait). Still behind after that — GitHub reports a predecessor of
+and busy-polls; a poll never sleeps past the remaining wait; both values are
+at most three digits, a longer one is exit 2 before any lock). Each GitHub read
+during the wait, and the ancestry read after it, is bounded by the remaining
+wait (at least 5 seconds), so the lock is held for about the wait plus one
+short read. Still behind after that — GitHub reports a predecessor of
 --head — is exit 18: nothing was reserved; re-run reserve once, and if it
 exits 18 again, report a blocker. Any other difference (the head rewritten or
 superseded, or unreadable ancestry) is exit 2: never retry it against the same
@@ -225,6 +229,8 @@ actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
 timeout_min_set=0
 timeout_min_adopted=0
+# Per-call cap on run_gh, set only inside `reserve`'s head wait.
+gh_call_timeout_cap=
 now=
 surface=
 target_id=
@@ -580,7 +586,22 @@ run_gh() {
             call_timeout=$remaining
         fi
     fi
+    # `reserve`'s head wait holds the state lock, so its reads are bounded by
+    # the wait rather than the flat per-call budget (harmon-devkit#1212,
+    # Codex thread 4117865230): an unset cap leaves every other call as is.
+    if [ -n "${gh_call_timeout_cap:-}" ] &&
+        [ "$gh_call_timeout_cap" -lt "$call_timeout" ]; then
+        call_timeout=$gh_call_timeout_cap
+    fi
     "$timeout_bin" -k 1 "$call_timeout" gh "$@"
+}
+
+# Sets the per-call cap for the next `reserve` head-wait read: the wait left,
+# never below RESERVE_HEAD_READ_FLOOR_SEC.
+reserve_clamp_read() {
+    gh_call_timeout_cap=$((head_wait_sec - ($(date -u '+%s') - head_wait_started)))
+    [ "$gh_call_timeout_cap" -ge "$RESERVE_HEAD_READ_FLOOR_SEC" ] ||
+        gh_call_timeout_cap=$RESERVE_HEAD_READ_FLOOR_SEC
 }
 
 # harmon-init#752 — the change identity a carried verdict rests on.
@@ -2007,20 +2028,27 @@ reserve)
     # fast; the wait holds the state lock deliberately, since nothing else may
     # reserve this PR while its head is still being confirmed.
     RESERVE_HEAD_WAIT_MAX_SEC=120
+    # The shortest budget a read inside the wait gets, so a read started with
+    # a second of wait left can still complete rather than always timing out.
+    RESERVE_HEAD_READ_FLOOR_SEC=5
     head_wait_sec=${CODEX_RESERVE_HEAD_WAIT_SEC:-30}
     head_poll_sec=${CODEX_RESERVE_HEAD_POLL_SEC:-2}
-    valid_uint_or_zero "$head_wait_sec" ||
-        die "CODEX_RESERVE_HEAD_WAIT_SEC must be a non-negative integer"
+    # Bounded by digit count BEFORE any numeric test (Codex thread
+    # 4117865234): a value past bash's integer range makes `[ -gt ]` error
+    # instead of compare, and the poll value then reached `sleep` unchecked.
+    grep -Eq '^(0|[1-9][0-9]{0,2})$' <<<"$head_wait_sec" ||
+        die "CODEX_RESERVE_HEAD_WAIT_SEC must be a non-negative integer of at most three digits"
     # The wait holds the state lock, so its bound is capped: an operator
     # override may shorten or lengthen it, never make it unbounded.
     [ "$head_wait_sec" -le "$RESERVE_HEAD_WAIT_MAX_SEC" ] ||
         die "CODEX_RESERVE_HEAD_WAIT_SEC must be at most $RESERVE_HEAD_WAIT_MAX_SEC"
-    valid_uint_or_zero "$head_poll_sec" ||
-        die "CODEX_RESERVE_HEAD_POLL_SEC must be a non-negative integer"
+    grep -Eq '^(0|[1-9][0-9]{0,2})$' <<<"$head_poll_sec" ||
+        die "CODEX_RESERVE_HEAD_POLL_SEC must be a non-negative integer of at most three digits"
     acquire_state_lock
 
     head_wait_started=$(date -u '+%s')
     while :; do
+        reserve_clamp_read
         provider_status=0
         live_head=$(provider_head "$pr" "$repo") || provider_status=$?
         if [ "$provider_status" -eq 3 ]; then
@@ -2047,6 +2075,7 @@ reserve)
         # unreadable one is the non-retryable refusal, because re-running
         # `reserve` against a head that was superseded can never succeed.
         head_lag_status=
+        reserve_clamp_read
         if valid_sha "$live_head"; then
             head_lag_status=$(run_gh api "repos/$repo/compare/${live_head}...${head}" 2>/dev/null |
                 jq -r '.status // empty' 2>/dev/null) || head_lag_status=
@@ -2060,6 +2089,7 @@ reserve)
         fi
         die "PR head changed before reservation: GitHub reports ${live_head}, and its ancestry to $head could not be read, so a lag is not proven — do not post the trigger, and do not retry reserve for this head"
     fi
+    gh_call_timeout_cap=
 
     replaced_trigger_comment_id=
     carried_first_trigger_comment_id=
