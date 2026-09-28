@@ -407,7 +407,9 @@ step 1 read, including `closedByPullRequestsReferences`. Implementation takes
 time, and a claim is a signal, not a lock (`claim` §5): another session on
 the same account converges on identical markers and is invisible in all of
 them. If someone took ownership or opened a linked PR while you worked, a
-second PR is the expensive way to find out.
+second PR is the expensive way to find out. The `human` label is a blocker
+here too: if it arrived while you worked, stop and report instead of
+publishing.
 
 - **Commit the work first.** On the clean path — both review stages passing
   first time — nothing upstream of here has necessarily committed anything, so

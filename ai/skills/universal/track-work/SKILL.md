@@ -693,7 +693,10 @@ write only criteria the agent can verify, and route every human step to a
 The **scope** is the source issue's milestone; failing that, its `epic`
 parent; failing both, the repository itself — one collector pair with no
 milestone serves all ungrouped work. There is one collector of each kind per
-scope, for the scope's lifetime.
+scope, for the scope's lifetime. An epic's collectors live in the epic's
+repository, and a source in another repository cites them as `owner/repo#N`.
+An item stays on the collector it was filed to even if its source later
+changes scope.
 
 1. **Find it before filing it.** List every collector — both states, since a
    closed one is reopened rather than duplicated — and pick the one whose
@@ -702,13 +705,14 @@ scope, for the scope's lifetime.
 
    ```sh
    gh issue list --repo <owner/repo> --state all --label human --label umbrella \
-     --limit 1000 --json number,title,state,milestone,body
+     --limit 1000 --json number,title,state,stateReason,closedAt,milestone,body
    ```
 
    Prefer an open match; otherwise reopen the most recent closed match that
    was closed as completed — never one closed as a duplicate — and append to
    it. Two open matches for one scope are a duplicate: keep the older, move
-   the newer's items into it, and close the newer as a duplicate of it (§4).
+   the newer's items into it, repoint each moved item's source line at the
+   older, and close the newer as a duplicate of it (§4).
 2. **File it lazily**, when the first human task for its scope appears. It is
    an ordinary issue under this section's contract: `## Problem` names the
    scope, `## Provenance` carries one stable scope line —
