@@ -295,8 +295,9 @@ Two further obligations that are easy to defer and expensive to defer:
   setting to flip, a hands-on check — do not stop to wait for it and do not add
   a `[HUMAN]` criterion here: append it to its `(HUMAN):` or `(QA):`
   collector (`track-work` §5, under the go-ahead that write needs) and name it
-  in the PR body. Only a step the change cannot be verified without is a
-  blocker.
+  in the PR body. Hands-on verification of the finished change is a `(QA):`
+  item, never a reason to wait. Only a precondition — a human step your own
+  work cannot proceed without — is a blocker.
 
 ## 5. Definition-of-done gate
 

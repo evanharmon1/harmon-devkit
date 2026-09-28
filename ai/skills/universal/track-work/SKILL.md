@@ -352,7 +352,10 @@ The failure this prevents, in full, is in
 
 Work discovered mid-task and belonging to another repo is filed **in that repo,
 immediately**. Not batched into a tracking issue, not appended to a doc, not
-left for the end of the session.
+left for the end of the session. Human-only work is the one deliberate
+exception to "not batched": it goes, immediately, onto the collector in the
+repo that owns it (§5, *Human tasks go to a collector*), which is where that
+work lives.
 
 Both alternatives have already failed here, in opposite directions — a follow-up
 doc that was durable but invisible and rotted for months, and a tracking issue

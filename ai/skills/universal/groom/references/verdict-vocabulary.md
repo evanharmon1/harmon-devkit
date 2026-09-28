@@ -31,6 +31,8 @@ below are exactly what it checks.
   `question` asking whether to move the named items to its `(HUMAN):`/`(QA):`
   collector (track-work §5) and close, and a `recommendation` to do so. On an
   issue labelled `human` those criteria are the work itself, not follow-ups.
+  The repository's standing `(QA):` issue is never `CLOSE-done`: it is the QA
+  queue and stays open even with every item ticked (track-work §5).
 - `CLOSE-obsolete` — the need it described no longer exists.
 - `CLOSE-dup-of-#N` — a literal duplicate of open issue `#N` in the same
   repository. Evidence should still name what makes it a duplicate.

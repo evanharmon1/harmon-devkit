@@ -379,8 +379,9 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   only a human can do — a secret, a setting, a hands-on check — and the change
   can still be verified without it, keep going: list each one in
   `{{report-path}}` under a `Human follow-ups:` line for the orchestrator to
-  record on its `(HUMAN):` or `(QA):` collector. Stop BLOCKED only
-  when the change cannot be verified until the step happens.
+  record on its `(HUMAN):` or `(QA):` collector; hands-on verification of
+  the finished change is always one of these. Stop BLOCKED only when your
+  own work cannot proceed until the step happens.
 - Keep each report filename and terminal signal unique per attempt. Why:
   milestone entry 2 observed a sentinel in the pane but not in the report file,
   allowing stale output to masquerade as completion. The orchestrator must

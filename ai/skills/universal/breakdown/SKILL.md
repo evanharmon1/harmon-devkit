@@ -285,7 +285,9 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   sub-issues, flat issues;
 - the dependency graph — every edge, plus the resulting ready set and waves;
 - the `(HUMAN):` collector and the repository's `(QA):` issue (§3), each
-  marked new or reused, with every item and the chunk it comes from, plus any standalone `human` precondition
+  marked new or reused, with every item and the chunk it comes from, the
+  reference to the `(QA):` issue that the milestone description or epic body
+  gains, plus any standalone `human` precondition
   issues and the chunks they block;
 - labels and fields per issue, from §7's vocabulary read;
 - **the source issue's disposition, when the input was a live issue** — a big
@@ -349,7 +351,9 @@ this section. All writes follow the approved proposal, in dependency-safe
 order: milestones first (create or reuse — an issue can only join a milestone
 that already exists), then issues — parents before sub-issues, blockers before
 blocked, and collectors (§3) after the chunks their items cite, so each item's
-`(from #N)` reference resolves at creation and cross-links the chunk. Each
+`(from #N)` reference resolves at creation and cross-links the chunk; the
+milestone-description or epic-body edit that references the `(QA):` issue
+comes last. Each
 issue's relationships are written immediately after its create
 returns
 (creating blockers first is what makes that possible: every edge's far end
