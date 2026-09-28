@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.48.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.47.0...v0.48.0) (2026-09-28)
+
+
+### Features
+
+* **skills:** allow agents to invoke claim skill without confirmation ([#1221](https://github.com/evanharmon1/harmon-devkit/issues/1221)) ([94421dd](https://github.com/evanharmon1/harmon-devkit/commit/94421dd88ec3a5f70c699585e01705f297dcc540))
+
+
+### Bug Fixes
+
+* **integrate:** wait out a lagging PR head at reserve; fail closed on a base retarget ([#1212](https://github.com/evanharmon1/harmon-devkit/issues/1212)) ([6883553](https://github.com/evanharmon1/harmon-devkit/commit/68835536071e42aa2df792cee037533179dff875))
+* **orchestrate:** unit-safe lane and CI waits; non-interactive lane merges ([#1209](https://github.com/evanharmon1/harmon-devkit/issues/1209)) ([91d73ab](https://github.com/evanharmon1/harmon-devkit/commit/91d73aba4779f54e9c88a25d64f59f1209c397cd))
+* **skills:** make two skill test suites hermetic for root and env-injected git config ([#1198](https://github.com/evanharmon1/harmon-devkit/issues/1198)) ([4a3700b](https://github.com/evanharmon1/harmon-devkit/commit/4a3700b8fea6e28d5ff63335401a8a6568705dcd))
+* **skills:** retire OpenSpec from the integrate and groom skills ([#1204](https://github.com/evanharmon1/harmon-devkit/issues/1204)) ([81480b5](https://github.com/evanharmon1/harmon-devkit/commit/81480b50f843fbcfd118ad7ed378a8f4999dd0a7))
+
 ## [0.47.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.46.0...v0.47.0) (2026-09-24)
 
 
