@@ -38,11 +38,13 @@ follow `AGENTS.md` — it is the policy, this skill is the procedure. Read what
 that file actually says rather than assuming the shape below; a repo with no
 second-model review or no `task ci` is not a repo that is doing it wrong.
 
-**Two things this skill never does.** It never **claims** — `/claim` owns
+**Two things this skill never does.** It never **claims directly** — `/claim` owns
 the claim, and its claim comment is the single record `/wrap` reads to undo
-exactly what was added. A second writer would make that record a guess. And it
-never **merges**: the PR is the deliverable, merging is the maintainer's
-decision.
+exactly what was added (if an issue is unclaimed, invoke `/claim` — or where
+the harness does not expose the Skill tool, read and follow `/claim`'s `SKILL.md`
+directly — rather than writing claim markers directly). A second writer would make
+that record a guess. And it never **merges**: the PR is the deliverable,
+merging is the maintainer's decision.
 
 Writes — commits, pushes, `gh pr create`, gate runs — always go through the
 normal permission prompt.
@@ -134,7 +136,7 @@ issue, and two agents start implementing.
      failed fetch read as "no matching comment" instead of *unknown*.)
 
      A failed identity lookup is *unknown*, never *mine* — fall through to
-     outcome 4 and offer `/claim` rather than proceeding on an unverified
+     outcome 4 to invoke `/claim` rather than proceeding on an unverified
      comment.
    - **Corroborating** — a `claim:*` (or legacy `agent:*`) label for this agent. It names the agent
      but not the session, and a repo with no such label family cannot have one
@@ -157,7 +159,12 @@ issue, and two agents start implementing.
    the **session name** as the identity, and fall back to asking the user when
    only the branch differs. A claim comment naming a different *session* is
    outcome 1; one naming a different branch is not.
-4. **Unclaimed** — stop and offer `/claim`. It is not ceremony: `/claim`
+4. **Unclaimed** — invoke `/claim` (agents can invoke `/claim` when
+   appropriate without asking for confirmation; where the harness does not
+   expose the Skill tool, read and follow `/claim`'s `SKILL.md` directly).
+   Preserve target provenance: if the target issue was inferred rather than
+   explicitly named by the user, confirm the inferred target with the user before
+   invoking claim writes, as required by `/claim` §1. It is not ceremony: `/claim`
    verifies the issue's assertions against the live tree, and its findings are
    corrections to fold into the work. Implementing an issue nobody sanity-checked
    is how a fix lands against a file that moved three releases ago.
