@@ -467,7 +467,7 @@ echo "==> join: carries themes and process_findings into dataset"
 cat >"$proposals" <<'JSON'
 {"parents":[{"parent":1,"title":"Parser work","children":[3,4]}],
  "milestones":[{"action":"rename","title":"v1","new_title":"v1.1","issues":[3,4]}],
- "themes":[{"title":"Parser modernization","issues":[1,3],"reason":"Shared parser refactor","recommended_vehicle":"openspec"}],
+ "themes":[{"title":"Parser modernization","issues":[1,3],"reason":"Shared parser refactor","recommended_vehicle":"bmad"}],
  "process_findings":[{"finding":"Missing triage labels","recommended_action":"Run triage skill"}]}
 JSON
 [ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$proposals_disp" \
@@ -491,6 +491,15 @@ for bad_theme_json in \
         --proposals "$tmp/bad-theme.json" "$good")" = 1 ] ||
         fail "join must refuse malformed theme: $bad_theme_json"
 done
+
+echo "==> join: refuses the retired openspec vehicle, naming the ones that remain"
+printf '%s\n' '{"themes":[{"title":"t","issues":[1],"reason":"r","recommended_vehicle":"openspec"}]}' \
+    >"$tmp/retired-vehicle.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/retired-vehicle-out.json" \
+    --proposals "$tmp/retired-vehicle.json" "$good")" = 1 ] ||
+    fail "join must refuse a theme recommending the retired openspec vehicle"
+grep -q "must be bmad or adr" "$tmp/out" "$tmp/err" ||
+    fail "the retired-vehicle refusal must name the remaining vehicles: $(cat "$tmp/out" "$tmp/err")"
 
 echo "==> join: refuses malformed process_findings in proposals"
 for bad_pf_json in \
@@ -1047,7 +1056,7 @@ cat >"$dec_proposals" <<'JSON'
     {"action":"close","title":"v1","issues":[5],"reason":"Milestone done"}
   ],
   "themes": [
-    {"title":"Architecture overhaul","issues":[1,2,3],"reason":"Shared domain redesign","recommended_vehicle":"openspec"}
+    {"title":"Architecture overhaul","issues":[1,2,3],"reason":"Shared domain redesign","recommended_vehicle":"adr"}
   ],
   "process_findings": [
     {"finding":"Stale issues lacking area labels","recommended_action":"Run triage audit and add area labels"}
@@ -1087,7 +1096,7 @@ grep -q "health: open: 5, closed: 10, oldest open issue: #1 — Decision issue 1
 # Spec-worthy themes:
 grep -q "## Spec-worthy themes" "$dec_md" || fail "Spec-worthy themes section must be present"
 grep -q "Architecture overhaul" "$dec_md" || fail "Theme title must appear"
-grep -q "Recommended vehicle: openspec" "$dec_md" || fail "Theme recommended vehicle must appear"
+grep -q "Recommended vehicle: adr" "$dec_md" || fail "Theme recommended vehicle must appear"
 grep -q "#1 — Decision issue 1" "$dec_md" || fail "Theme candidate issues must include titles"
 
 # Process findings table:

@@ -42,7 +42,7 @@
 #    "milestones":[{"action":"close|rename|widen|create","title":"...",
 #                    "new_title":"...","issues":[N,...],"reason":"..."}],
 #    "themes":[{"title":"...","issues":[N,...],"reason":"...",
-#              "recommended_vehicle":"openspec|bmad|adr"}],
+#              "recommended_vehicle":"bmad|adr"}],
 #    "process_findings":[{"finding":"...","recommended_action":"..."}]}
 # carried into the dataset for groom-report.sh to render.
 #
@@ -409,7 +409,7 @@ cmd_join() {
              elif (.title == null or (.title | type != "string") or ((.title | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
              elif (.issues == null or (.issues | type != "array") or (.issues | length == 0) or ([.issues[] | . as $iss | select((type != "number") or (. <= 0) or ($open_numbers | index($iss) | not))] | length > 0)) then "theme requires issues array of positive integers from scanned backlog"
              elif (.reason == null or (.reason | type != "string") or ((.reason | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty reason"
-             elif (.recommended_vehicle == null or (.recommended_vehicle | type != "string") or ((.recommended_vehicle | tostring) | ascii_downcase | IN("openspec", "bmad", "adr") | not)) then "theme recommended_vehicle must be openspec, bmad, or adr"
+             elif (.recommended_vehicle == null or (.recommended_vehicle | type != "string") or ((.recommended_vehicle | tostring) | ascii_downcase | IN("bmad", "adr") | not)) then "theme recommended_vehicle must be bmad or adr"
              else empty end
           ] | first // "")
         end

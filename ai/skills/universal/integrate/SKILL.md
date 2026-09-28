@@ -50,16 +50,15 @@ category as a unit rather than resolving a runtime path some other way.
 
 **Version 2 only.** This skill and its readiness gate
 (`assets/readiness-gate.sh`) operate under a `schema_version = 2`
-`.devflow.toml` and under nothing else (`openspec/changes/dev-flow-v2` task
-5.1; harmon-devkit#604). The gate requires a real dev-flow-v2 record
-directory — `run.json` plus `adjudications/*.json` — as `--record`; `/review`
-(harmon-devkit#638) writes it, so that half of the transition is done. What
-can still be missing is the policy shape, and the answer to a policy that has
-not migrated is a **refusal, not a fallback**: the reader stops with one
-actionable message — run `copier update` against the harmon-init release that
-ships the version-2 template, and keep `.skills-sync.yaml` pinned to the last
-pre-v2 skills release until it has. No compatibility mode is added here and
-none is coming, per the delta spec.
+`.devflow.toml` and under nothing else (harmon-devkit#604). The gate requires
+a real dev-flow-v2 record directory — `run.json` plus `adjudications/*.json` —
+as `--record`; `/review` (harmon-devkit#638) writes it, so that half of the
+transition is done. What can still be missing is the policy shape, and the
+answer to a policy that has not migrated is a **refusal, not a fallback**: the
+reader stops with one actionable message — run `copier update` against the
+harmon-init release that ships the version-2 template, and keep
+`.skills-sync.yaml` pinned to the last pre-v2 skills release until it has. No
+compatibility mode is added here and none is coming (harmon-devkit#604).
 
 **Report the migration blocker and terminate the stage.** Do not continue by
 another route: the contract is that a consumer exits non-zero on an older
