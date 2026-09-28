@@ -89,7 +89,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         [ "$pr_calls" -le "$(cat "$GH_FIXTURES/fail-pr-after-$pr_number")" ] ||
             exit 94
     fi
-    [ ! -f "$GH_FIXTURES/slow-pr" ] || sleep 5
+    # `slow-sec` overrides the 5-second sleep of both slow fixtures.
+    [ ! -f "$GH_FIXTURES/slow-pr" ] ||
+        sleep "$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
@@ -98,7 +100,22 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         cat "$GH_FIXTURES/base-head"
         exit 0
     fi
-    jq -cn --arg head "$(cat "$GH_FIXTURES/head")" --arg state "$pr_state" \
+    # harmon-devkit#1189: `head-stale-calls` holds a call count. Up to and
+    # including it the PR reports `head-stale` — GitHub still lagging a push —
+    # and every later call reports `head`, so a case can put the catch-up
+    # inside `reserve`'s bounded wait. `head-stale-calls` of a large number
+    # keeps it lagging for the whole bound.
+    reported_head="$(cat "$GH_FIXTURES/head")"
+    if [ -f "$GH_FIXTURES/head-stale-calls" ]; then
+        stale_calls=0
+        [ ! -f "$GH_FIXTURES/head-stale-count" ] ||
+            stale_calls="$(cat "$GH_FIXTURES/head-stale-count")"
+        stale_calls=$((stale_calls + 1))
+        printf '%s' "$stale_calls" >"$GH_FIXTURES/head-stale-count"
+        [ "$stale_calls" -gt "$(cat "$GH_FIXTURES/head-stale-calls")" ] ||
+            reported_head="$(cat "$GH_FIXTURES/head-stale")"
+    fi
+    jq -cn --arg head "$reported_head" --arg state "$pr_state" \
         '{headRefOid:$head,state:$state}'
     exit 0
 fi
@@ -128,7 +145,7 @@ if [ -f "$GH_FIXTURES/fail-endpoint-exact" ] &&
 fi
 if [ -f "$GH_FIXTURES/slow-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/slow-endpoint")" <<<"$endpoint"; then
-    sleep 5
+    sleep "$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
 fi
 
 case "$endpoint" in
@@ -150,6 +167,18 @@ repos/*/issues/comments/*)
     [ -f "$GH_FIXTURES/$file" ] || file=trigger.json
     ;;
 repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
+# harmon-devkit#1173: the base events recorded between the reviewed-base
+# samples. Empty by default, so a corroborated base is recorded as before.
+repos/*/issues/*/timeline?per_page=100)
+    file=timeline.pages.json
+    # A retarget that lands right after the timeline is read: the next PR
+    # read reports this base instead.
+    if [ -f "$GH_FIXTURES/base-after-timeline" ]; then
+        jq --arg b "$(cat "$GH_FIXTURES/base-after-timeline")" '.base.sha = $b' \
+            "$GH_FIXTURES/pr.json" >"$GH_FIXTURES/pr.json.tmp" &&
+            mv "$GH_FIXTURES/pr.json.tmp" "$GH_FIXTURES/pr.json"
+    fi
+    ;;
 repos/*/pulls/*/reviews?per_page=100) file=reviews.pages.json ;;
 repos/*/pulls/*/reviews/*)
     file="review-${endpoint##*/}.json"
@@ -243,6 +272,10 @@ fi
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
+# harmon-devkit#1189: `reserve` waits up to 30s for a lagging PR head. No case
+# here waits unless it asks to — a case that does sets these around its call.
+export CODEX_RESERVE_HEAD_WAIT_SEC=0
+export CODEX_RESERVE_HEAD_POLL_SEC=0
 # Where a recorded-budget assertion writes/reads if it opts in below by
 # exporting TIMEOUT_ARGS_LOG=$timeout_args_log around its one run_check/
 # run_reap call. Unexported and unset otherwise, so the shims above are a
@@ -300,18 +333,21 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+    printf '%s\n' '[[]]' >"${fixtures}/timeline.pages.json"
+    rm -f "${fixtures}/head-stale" "${fixtures}/head-stale-calls" \
+        "${fixtures}/head-stale-count"
     jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
           base:{ref:"main",sha:"3333333333333333333333333333333333333333"}}' \
         >"${fixtures}/pr.json"
-    rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" \
+    rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" "${fixtures}/base-after-timeline" \
         "${fixtures}/pr-late.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/fail-endpoint-exact"
     rm -f "${fixtures}"/fail-pr-after-* "${fixtures}"/pr-call-count-*
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
-    rm -f "${fixtures}/slow-pr"
+    rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
     rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
@@ -339,6 +375,23 @@ run_check() {
     check_rc=$?
     set -e
     check_watchdog "$check_rc" run_check "$check_out"
+}
+
+# Same as run_check but keeps stderr apart in $check_err, so a case can assert
+# on a diagnostic line while $check_out stays the parseable JSON result
+# (harmon-devkit#1173: an unset base proof names its reason on stderr).
+run_check_split() {
+    check_err_file="$(mktemp "${test_tmp}/check-err.XXXXXX")"
+    set +e
+    check_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
+        --state "$state" --actor-id "$actor_id" \
+        --actor-login "$actor_login" --timeout-min 15 \
+        --now "$1" 2>"$check_err_file")"
+    check_rc=$?
+    set -e
+    check_err="$(cat "$check_err_file")"
+    rm -f "$check_err_file"
+    check_watchdog "$check_rc" run_check_split "$check_out $check_err"
 }
 
 # Same as run_check but omits --timeout-min entirely, for cases that need to
@@ -5242,6 +5295,143 @@ assert_status 0 clean
 [ "$(jq -r '.last_reviewed_base_sha // "unset"' "$state")" = "3333333333333333333333333333333333333333" ] ||
     fail "an unmoved base must be recorded as the reviewed base, got $(jq -r '.last_reviewed_base_sha // "unset"' "$state")"
 
+# harmon-devkit#1173: equal samples at both ends of the window cannot see a
+# retarget that went out and came back inside it. The timeline can, and any
+# base event at or after the trigger leaves the proof unset.
+assert_base_proof() {
+    expected=$1
+    label=$2
+    actual="$(jq -r '.last_reviewed_base_sha // "unset"' "$state")"
+    [ "$actual" = "$expected" ] ||
+        fail "$label: expected last_reviewed_base_sha $expected, got $actual"
+}
+
+base_event_verdict_with() {
+    base_event_verdict_timeline=$1
+    new_cycle
+    cp "$base_event_verdict_timeline" "${fixtures}/timeline.pages.json"
+    jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+        '[[{id:9103,user:{id:$id,login:$login,type:"User"},
+            content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+        >"${fixtures}/reactions.pages.json"
+    run_check_split '2026-07-31T08:01:00Z'
+    assert_status 0 clean
+}
+
+echo "==> a base retarget A→B→A inside the review window records no proof"
+printf '%s\n' '[[
+  {"event":"commented","created_at":"2026-07-31T08:00:05Z"},
+  {"event":"base_ref_changed","created_at":"2026-07-31T08:00:10Z"},
+  {"event":"base_ref_changed","created_at":"2026-07-31T08:00:20Z"}
+]]' >"${test_tmp}/retarget-timeline.json"
+base_event_verdict_with "${test_tmp}/retarget-timeline.json"
+# Both samples still read the same base, so only the timeline can tell.
+[ "$(jq -r '.base_sha' "$state")" = "3333333333333333333333333333333333333333" ] ||
+    fail "fixture: the reserved base must equal the verdict-time base"
+grep -Fq 'issues/493/timeline' "$log" ||
+    fail "recording a verdict must read the PR timeline: $(cat "$log")"
+assert_base_proof unset "A→B→A retarget"
+[ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = "$head_sha" ] ||
+    fail "a retarget must not suppress the reviewed-head marker"
+
+echo "==> a retarget after the timeline read, before the proof is saved, records no proof"
+new_cycle
+# Created after new_cycle, whose defaults reset would otherwise remove it.
+printf '%s\n' 4444444444444444444444444444444444444444 >"${fixtures}/base-after-timeline"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9104,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 0 clean
+rm -f "${fixtures}/base-after-timeline"
+assert_base_proof unset "retarget after the timeline read"
+grep -Fq 'after the timeline read' <<<"$check_err" ||
+    fail "the unset proof must name the late retarget: $check_err"
+
+echo "==> a base force-push inside the review window records no proof"
+printf '%s\n' '[[{"event":"base_ref_force_pushed","created_at":"2026-07-31T08:00:00Z"}]]' \
+    >"${test_tmp}/force-push-timeline.json"
+base_event_verdict_with "${test_tmp}/force-push-timeline.json"
+assert_base_proof unset "base force-push at the trigger instant"
+
+echo "==> a base event with no readable time records no proof"
+printf '%s\n' '[[{"event":"base_ref_changed"}]]' >"${test_tmp}/untimed-timeline.json"
+base_event_verdict_with "${test_tmp}/untimed-timeline.json"
+assert_base_proof unset "untimed base event"
+
+echo "==> a retarget settled before the trigger still records the base"
+# What the reviewer read is the base after that change, and both samples
+# corroborate it — the positive half that keeps the cases above honest. It
+# sits outside the clock-skew margin (BASE_EVENT_SKEW_SEC, 300s) too.
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:54:59Z"}]]' \
+    >"${test_tmp}/early-timeline.json"
+base_event_verdict_with "${test_tmp}/early-timeline.json"
+assert_base_proof 3333333333333333333333333333333333333333 "retarget before the trigger"
+
+echo "==> a retarget just before the trigger, inside the skew margin, records no proof"
+# `requested_at` may be the local host's clock, so an event GitHub stamped a
+# little before it can still be inside the review window on GitHub's clock.
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:57:00Z"}]]' \
+    >"${test_tmp}/margin-timeline.json"
+base_event_verdict_with "${test_tmp}/margin-timeline.json"
+assert_base_proof unset "retarget inside the skew margin"
+grep -Fq 'reviewed base left unset' <<<"$check_err" ||
+    fail "an unset base proof must say why on stderr: $check_err"
+
+echo "==> the window opens at the earlier of requested_at and reserved_at"
+new_cycle
+jq '.reserved_at = "2026-07-31T07:50:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31T07:46:00Z"}]]' \
+    >"${fixtures}/timeline.pages.json"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9105,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_base_proof unset "event inside the margin before an earlier reservation"
+
+echo "==> a base event with a non-canonical time records no proof"
+# Only the canonical form compares correctly as a string: this one is later
+# than the trigger yet sorts before it.
+printf '%s\n' '[[{"event":"base_ref_changed","created_at":"2026-07-31 08:00:10Z"}]]' \
+    >"${test_tmp}/noncanonical-timeline.json"
+base_event_verdict_with "${test_tmp}/noncanonical-timeline.json"
+assert_base_proof unset "non-canonical base event time"
+
+echo "==> an automatic base change inside the review window records no proof"
+printf '%s\n' '[[{"event":"automatic_base_change_succeeded","created_at":"2026-07-31T08:00:10Z"}]]' \
+    >"${test_tmp}/automatic-timeline.json"
+base_event_verdict_with "${test_tmp}/automatic-timeline.json"
+assert_base_proof unset "automatic base change"
+
+echo "==> an unrecognised base_ref_ event inside the review window records no proof"
+printf '%s\n' '[[{"event":"base_ref_deleted","created_at":"2026-07-31T08:00:10Z"}]]' \
+    >"${test_tmp}/prefixed-timeline.json"
+base_event_verdict_with "${test_tmp}/prefixed-timeline.json"
+assert_base_proof unset "base_ref_ prefixed event"
+
+echo "==> a failed timeline read records no proof"
+new_cycle
+printf '%s\n' '/timeline' >"${fixtures}/fail-endpoint"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9104,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_base_proof unset "failed timeline read"
+grep -Fq 'reviewed base left unset (the next cycle charges): the PR timeline could not be read' <<<"$check_err" ||
+    fail "a failed timeline read must name itself on stderr: $check_err"
+
+echo "==> a truncated timeline read records no proof"
+printf '%s\n' '[[{"event":"commented","created_at":"2026-07-31T08:00:05Z"}],{"message":"truncated"}]' \
+    >"${test_tmp}/truncated-timeline.json"
+base_event_verdict_with "${test_tmp}/truncated-timeline.json"
+assert_base_proof unset "truncated timeline"
+
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
     '{"status":"ahead","files":[{"filename":"src/a.js"}]}' \
@@ -7466,5 +7656,227 @@ run_check '2026-07-31T08:16:00Z'
 assert_status 16 transient-read
 grep -Fq 'resolve a reviewed commit prefix' <<<"$check_out" ||
     fail "site :3189 (commit resolve) must name itself: $check_out"
+# ── reserve waits out a lagging PR head (harmon-devkit#1189) ─────────────────
+#
+# GitHub reports the previous head for a few seconds after a push. A reserve
+# taken inside that window must wait for the push to show up rather than refuse
+# a benign race, and must still tell "GitHub is behind" (exit 18, retry
+# reserve once) apart from "the PR moved past this head" (exit 2: post no
+# trigger and never retry this head).
+lag_prev_head="$(git rev-parse HEAD~1)"
+lag_pair="$(printf '%s' "${lag_prev_head}...${head_sha}" | tr './' '__')"
+
+run_reserve() {
+    set +e
+    reserve_out="$("$helper" reserve \
+        --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 2>&1)"
+    reserve_rc=$?
+    set -e
+}
+
+echo "==> reserve waits for a lagging PR head to catch up"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 2 >"${fixtures}/head-stale-calls"
+CODEX_RESERVE_HEAD_WAIT_SEC=30 run_reserve
+[ "$reserve_rc" -eq 0 ] ||
+    fail "a head GitHub reports within the bound must reserve: rc=$reserve_rc $reserve_out"
+[ "$(jq -r '.head' "$state")" = "$head_sha" ] ||
+    fail "the reservation must name the requested head"
+[ "$(grep -c '^pr view 493' "$log")" -ge 3 ] ||
+    fail "reserve must have polled past the two stale reads: $(cat "$log")"
+
+echo "==> a head still lagging after the bound is exit 18, not a head change"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+printf '%s\n' '{"status":"ahead","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
+run_reserve
+[ "$reserve_rc" -eq 18 ] ||
+    fail "GitHub still reporting a predecessor must exit 18: rc=$reserve_rc $reserve_out"
+grep -Fq 'PR head lagging' <<<"$reserve_out" ||
+    fail "the lagging refusal must say so: $reserve_out"
+[ ! -f "$state" ] || fail "a lagging refusal must reserve nothing"
+[ ! -d "${state}.lock" ] || fail "a lagging refusal must release the state lock"
+
+# The poll interval is uncapped, so the wait bound is what bounds the lock
+# hold: a poll longer than the wait must sleep only the remaining wait. The
+# watchdog turns a regression (sleeping the full poll) into a failure here
+# rather than a hung suite.
+echo "==> a poll interval longer than the wait still returns within the wait"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+printf '%s\n' '{"status":"ahead","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
+poll_started=$(date -u '+%s')
+set +e
+reserve_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=2 CODEX_RESERVE_HEAD_POLL_SEC=999 \
+    "$watchdog_bin" -k 5 30 "$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+reserve_rc=$?
+set -e
+poll_elapsed=$(($(date -u '+%s') - poll_started))
+if [ "$reserve_rc" -eq 124 ] || [ "$reserve_rc" -eq 137 ]; then
+    rm -rf "${state}.lock"
+    fail "a poll longer than the wait must not sleep past the wait bound (watchdog killed reserve after ${poll_elapsed}s)"
+fi
+[ "$reserve_rc" -eq 18 ] ||
+    fail "a lag outlasting a short wait with a long poll must exit 18: rc=$reserve_rc $reserve_out"
+[ "$poll_elapsed" -le 10 ] ||
+    fail "reserve must return within about the wait bound, took ${poll_elapsed}s"
+[ ! -f "$state" ] || fail "a lagging refusal must reserve nothing"
+[ ! -d "${state}.lock" ] || fail "a lagging refusal must release the state lock"
+
+echo "==> a newer push after the bound is exit 2, head changed"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+# GitHub's head is AHEAD of the requested one: the requested head is behind.
+printf '%s\n' '{"status":"behind","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
+run_reserve
+[ "$reserve_rc" -eq 2 ] ||
+    fail "a head that is not a predecessor must exit 2: rc=$reserve_rc $reserve_out"
+grep -Fq 'PR head changed before reservation' <<<"$reserve_out" ||
+    fail "the newer-push refusal must name a head change: $reserve_out"
+grep -Fq 'head rewritten or superseded' <<<"$reserve_out" ||
+    fail "the newer-push refusal must cover a rewrite and a newer push: $reserve_out"
+[ ! -f "$state" ] || fail "a head-change refusal must reserve nothing"
+
+echo "==> unreadable ancestry after the bound is a head change, never a retry"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+run_reserve
+[ "$reserve_rc" -eq 2 ] ||
+    fail "unreadable ancestry must fail closed to exit 2: rc=$reserve_rc $reserve_out"
+grep -Fq 'ancestry to' <<<"$reserve_out" ||
+    fail "an unreadable-ancestry refusal must say the lag is unproven, not that the head was superseded: $reserve_out"
+
+echo "==> attach keeps its own strict head check"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+run_reserve
+[ "$reserve_rc" -eq 0 ] || fail "fixture: reserve must succeed: $reserve_out"
+printf '%040d\n' 0 >"${fixtures}/head"
+set +e
+attach_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=30 "$helper" attach \
+    --state "$state" --trigger-id "$trigger_id" 2>&1)"
+attach_rc=$?
+set -e
+[ "$attach_rc" -eq 2 ] ||
+    fail "attach must refuse a moved head: rc=$attach_rc $attach_out"
+grep -Fq 'PR head changed before trigger attachment' <<<"$attach_out" ||
+    fail "attach must name the head change: $attach_out"
+
+echo "==> a malformed wait bound is a usage error"
+write_defaults
+rm -f "$state"
+set +e
+bad_wait_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=soon "$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+bad_wait_rc=$?
+set -e
+[ "$bad_wait_rc" -eq 2 ] ||
+    fail "a malformed wait bound must exit 2: rc=$bad_wait_rc $bad_wait_out"
+
+echo "==> a wait bound above the cap is a usage error, and takes no lock"
+write_defaults
+rm -f "$state"
+set +e
+long_wait_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=121 "$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+long_wait_rc=$?
+set -e
+[ "$long_wait_rc" -eq 2 ] ||
+    fail "a wait bound above 120s must exit 2: rc=$long_wait_rc $long_wait_out"
+grep -Fq 'at most 120' <<<"$long_wait_out" ||
+    fail "the over-cap refusal must name the cap: $long_wait_out"
+[ ! -f "$state" ] || fail "an over-cap wait bound must reserve nothing"
+[ ! -d "${state}.lock" ] || fail "an over-cap wait bound must take no lock"
+
+# Codex thread 4117865230: the wait holds the state lock, so a slow GitHub
+# read must not overrun it by run_gh's flat 60s budget. Each read inside the
+# wait, and the ancestry read after it, is capped at the wait left (floor 5s).
+# The slow fixtures sleep 60s here, so without the clamp the 30s watchdog
+# fires; with it reserve fails closed within the wait plus one short read.
+run_slow_reserve() {
+    slow_started=$(date -u '+%s')
+    set +e
+    reserve_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=2 CODEX_RESERVE_HEAD_POLL_SEC=0 \
+        "$watchdog_bin" -k 5 30 "$helper" reserve \
+        --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 2>&1)"
+    reserve_rc=$?
+    set -e
+    slow_elapsed=$(($(date -u '+%s') - slow_started))
+    if [ "$reserve_rc" -eq 124 ] || [ "$reserve_rc" -eq 137 ]; then
+        rm -rf "${state}.lock"
+        fail "$1: a slow read must be bounded by the wait (watchdog killed reserve after ${slow_elapsed}s)"
+    fi
+    [ "$slow_elapsed" -le 12 ] ||
+        fail "$1: reserve must return within the wait plus one short read, took ${slow_elapsed}s"
+    [ "$reserve_rc" -eq 2 ] ||
+        fail "$1: a read killed at the wait bound must fail closed: rc=$reserve_rc $reserve_out"
+    [ ! -f "$state" ] || fail "$1: a bounded-out read must reserve nothing"
+    [ ! -d "${state}.lock" ] || fail "$1: a bounded-out read must release the state lock"
+}
+
+echo "==> a head read slower than the wait is cut at the wait bound"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+: >"${fixtures}/slow-pr"
+printf '%s\n' 60 >"${fixtures}/slow-sec"
+run_slow_reserve "slow head read"
+grep -Fq 'cannot confirm the open PR head' <<<"$reserve_out" ||
+    fail "a timed-out head read must say the head is unconfirmed: $reserve_out"
+
+echo "==> an ancestry read slower than the wait is cut, and is not a retry"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+printf '%s\n' '{"status":"ahead","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
+printf '%s\n' '/compare/' >"${fixtures}/slow-endpoint"
+printf '%s\n' 60 >"${fixtures}/slow-sec"
+run_slow_reserve "slow ancestry read"
+grep -Fq 'ancestry to' <<<"$reserve_out" ||
+    fail "a timed-out ancestry read must be the unproven-lag refusal: $reserve_out"
+
+# Codex thread 4117865234: a value past bash's integer range must be refused
+# by its digit count before any numeric test, before the lock is taken. The
+# head matches here, so a regression that let the value through reserves
+# (rc 0 with state) instead of exiting 2.
+for huge_var in CODEX_RESERVE_HEAD_WAIT_SEC CODEX_RESERVE_HEAD_POLL_SEC; do
+    echo "==> an out-of-range $huge_var is a usage error, and takes no lock"
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+    set +e
+    huge_out="$(env "$huge_var=999999999999999999999999999999" \
+        "$watchdog_bin" -k 5 30 "$helper" reserve \
+        --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 2>&1)"
+    huge_rc=$?
+    set -e
+    [ "$huge_rc" -eq 2 ] ||
+        fail "$huge_var out of range must exit 2: rc=$huge_rc $huge_out"
+    grep -Fq "$huge_var must be a non-negative integer of at most three digits" <<<"$huge_out" ||
+        fail "$huge_var out of range must name the digit bound: $huge_out"
+    ! grep -Fq 'integer expression expected' <<<"$huge_out" ||
+        fail "$huge_var must be refused before any numeric test: $huge_out"
+    [ ! -f "$state" ] || fail "$huge_var out of range must reserve nothing"
+    [ ! -d "${state}.lock" ] || fail "$huge_var out of range must take no lock"
+done
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

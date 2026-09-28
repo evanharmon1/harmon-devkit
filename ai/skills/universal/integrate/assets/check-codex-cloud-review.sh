@@ -38,7 +38,20 @@
 #
 # 15, 16 and 17 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so
 # a caller pinned to the older contract still reads every code it knew — and 17
-# is reachable only from a subcommand that contract has never called.
+# is reachable only from a subcommand that contract has never called. 18 below
+# is different: `reserve`, which that contract does call, can now return it
+# where a lag used to be exit 2, which is safe for any caller that treats a
+# non-zero `reserve` as "post no trigger" (every documented recipe does).
+#
+# `reserve` adds one code of its own (harmon-devkit#1189):
+#   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
+#      at most 120, polling every CODEX_RESERVE_HEAD_POLL_SEC, default 2)
+#      GitHub still reports a PREDECESSOR of the requested head. Nothing was
+#      reserved and no trigger may be posted: re-run `reserve` once, and if it
+#      exits 18 again, report a blocker. A head that differs any other way —
+#      rewritten or superseded, or ancestry that cannot be read — stays exit
+#      2, "PR head changed before reservation: … head rewritten or
+#      superseded": never retry it against the same head.
 #
 # `settle` records the disposition of a finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because
@@ -157,6 +170,21 @@ A safe recovery route is carried in #1115.
 `reserve` and `attach` refuse a non-open PR outright,
 exit 2 with a reason naming the reported state.
 
+`reserve` waits up to CODEX_RESERVE_HEAD_WAIT_SEC seconds (default 30, at most
+120 — a larger value is exit 2) for the PR head GitHub reports to reach --head,
+because GitHub lags a push by a few seconds; it re-reads every
+CODEX_RESERVE_HEAD_POLL_SEC seconds (default 2; 0 is accepted for tests only
+and busy-polls; a poll never sleeps past the remaining wait; both values are
+at most three digits, a longer one is exit 2 before any lock). Each GitHub read
+during the wait, and the ancestry read after it, is bounded by the remaining
+wait (at least 5 seconds), so the lock is held for about the wait plus one
+short read. Still behind after that — GitHub reports a predecessor of
+--head — is exit 18: nothing was reserved; re-run reserve once, and if it
+exits 18 again, report a blocker. Any other difference (the head rewritten or
+superseded, or unreadable ancestry) is exit 2: never retry it against the same
+head. On ANY non-zero exit from reserve, do not post the trigger. `attach`
+re-checks the head strictly and never waits.
+
 State locks are never reclaimed automatically. On lock-held, inspect the
 reported PID and age; removing a lock directory is an explicit human recovery
 action performed outside this helper.
@@ -201,6 +229,8 @@ actor_login='chatgpt-codex-connector[bot]'
 timeout_min=15
 timeout_min_set=0
 timeout_min_adopted=0
+# Per-call cap on run_gh, set only inside `reserve`'s head wait.
+gh_call_timeout_cap=
 now=
 surface=
 target_id=
@@ -556,7 +586,22 @@ run_gh() {
             call_timeout=$remaining
         fi
     fi
+    # `reserve`'s head wait holds the state lock, so its reads are bounded by
+    # the wait rather than the flat per-call budget (harmon-devkit#1212,
+    # Codex thread 4117865230): an unset cap leaves every other call as is.
+    if [ -n "${gh_call_timeout_cap:-}" ] &&
+        [ "$gh_call_timeout_cap" -lt "$call_timeout" ]; then
+        call_timeout=$gh_call_timeout_cap
+    fi
     "$timeout_bin" -k 1 "$call_timeout" gh "$@"
+}
+
+# Sets the per-call cap for the next `reserve` head-wait read: the wait left,
+# never below RESERVE_HEAD_READ_FLOOR_SEC.
+reserve_clamp_read() {
+    gh_call_timeout_cap=$((head_wait_sec - (SECONDS - head_wait_started)))
+    [ "$gh_call_timeout_cap" -ge "$RESERVE_HEAD_READ_FLOOR_SEC" ] ||
+        gh_call_timeout_cap=$RESERVE_HEAD_READ_FLOOR_SEC
 }
 
 # harmon-init#752 — the change identity a carried verdict rests on.
@@ -927,6 +972,28 @@ reap_record() {
         }' >>"$reap_entries"
 }
 
+# harmon-devkit#1173: how far before the trigger the base-event window opens.
+# `requested_at` can be the local host's clock rather than GitHub's (see
+# mark_terminally_reviewed), so the window is widened by this margin: a host
+# clock up to five minutes fast still sees every base event GitHub stamped
+# inside the review window, and a wider window can only fail closed.
+BASE_EVENT_SKEW_SEC=300
+
+# Print the canonical start of the base-event window for the cycle recorded in
+# the state file: the earlier of `requested_at` and `reserved_at` (whichever
+# are canonical times; `requested_at` is required), minus BASE_EVENT_SKEW_SEC.
+# Non-zero, printing nothing, when there is no usable anchor.
+base_events_window_start() {
+    local requested reserved
+    requested=$(jq -r '.requested_at // empty' "$1" 2>/dev/null) || return 1
+    valid_time "$requested" || return 1
+    reserved=$(jq -r '.reserved_at // empty' "$1" 2>/dev/null) || reserved=
+    valid_time "$reserved" || reserved=
+    jq -nr --arg r "$requested" --arg s "$reserved" --argjson skew "$BASE_EVENT_SKEW_SEC" '
+        [$r, ($s | select(. != ""))] | map(fromdateiso8601) | min
+        | . - $skew | todate' 2>/dev/null
+}
+
 # `$5`, when given, is a JSON OBJECT of extra fields merged into the result —
 # additive only, so every existing key keeps its shape and a caller pinned to
 # the older output reads exactly what it did before. harmon-devkit#737 uses it
@@ -995,6 +1062,81 @@ mark_terminally_reviewed() {
         reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
         [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
             reviewed_base_sha=
+        # harmon-devkit#1173: two equal samples only prove the base was the
+        # same at both ENDS of the window. A retarget A→B→A inside it — or a
+        # base force-pushed away and back — reads the same SHA twice while the
+        # reviewer read a different diff, and that SHA would become the proof
+        # carry (harmon-init#752) and the exemption (harmon-init#1326) trust.
+        # The issue timeline is the one record of what happened BETWEEN the
+        # samples, so any base event at or after the window's start leaves the
+        # proof unset. A change that settled well before the trigger is what
+        # the reviewer read, and the samples already cover it.
+        #
+        # The anchor MIXES CLOCKS and is built to be conservative about it:
+        # `requested_at` is GitHub's time for a comment trigger but the local
+        # host's for a requested-reviewer finder (the broker stamps it with
+        # `date -u`), and `reserved_at` is always the local host's. So the
+        # window opens at the EARLIER of the two, minus BASE_EVENT_SKEW_SEC —
+        # a fast host clock then only widens it, and a wider window counts
+        # more events, which can only leave the proof unset (fail closed).
+        #
+        # Every base event must carry a canonical `YYYY-MM-DDTHH:MM:SSZ`
+        # `created_at`: only that form compares correctly as a string, so any
+        # other shape proves nothing and leaves the proof unset. Base events
+        # are the two `base_ref_*` kinds GitHub documents, any other event it
+        # may add under that prefix, and the automatic base changes it makes
+        # when a base branch is merged away. A timeline read that fails, a
+        # page that is not an array, or a missing anchor proves nothing either
+        # way — unset, per the governing invariant. Only these timeline-stage
+        # refusals print the one stderr line naming why, and only after the
+        # two samples agreed; a failed PR read or two disagreeing samples
+        # (above) leave the proof unset without a line.
+        base_proof_unset_reason=
+        if [ -n "$reviewed_base_sha" ]; then
+            base_events_anchor=$(base_events_window_start "$state_file") ||
+                base_events_anchor=
+            valid_time "$base_events_anchor" ||
+                base_proof_unset_reason="no readable trigger or reservation time to anchor the base-event window"
+        fi
+        if [ -n "$reviewed_base_sha" ] && [ -z "$base_proof_unset_reason" ]; then
+            base_events_tmp=$(mktemp -d -t codex-base-events-XXXXXX) || base_events_tmp=
+            if [ -z "$base_events_tmp" ]; then
+                base_proof_unset_reason="could not create a scratch directory for the timeline read"
+            elif ! fetch_pages "repos/${state_repo:-}/issues/${state_pr:-}/timeline?per_page=100" \
+                "$base_events_tmp/timeline.json" 2>/dev/null; then
+                base_proof_unset_reason="the PR timeline could not be read"
+            elif ! jq -e --arg since "$base_events_anchor" '
+                    all(.[];
+                      (type == "object") and
+                      (((.event | type) == "string"
+                        and (.event | startswith("base_ref_")
+                             or . == "automatic_base_change_succeeded"
+                             or . == "automatic_base_change_failed")
+                       | not)
+                       or ((.created_at | type) == "string"
+                           and (.created_at
+                                | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                           and .created_at < $since)))
+                  ' "$base_events_tmp/timeline.json" >/dev/null 2>&1; then
+                base_proof_unset_reason="the PR timeline shows a base change at or after $base_events_anchor, carries one without a canonical time, or is not a readable page"
+            fi
+            [ -z "$base_events_tmp" ] || rm -rf "$base_events_tmp"
+        fi
+        # Codex integration cycle 2 on #1212: a retarget landing after the
+        # timeline snapshot but before the proof is persisted is in neither the
+        # timeline nor the earlier sample. Re-read the live base now and keep
+        # the proof only if it still corroborates.
+        if [ -n "$reviewed_base_sha" ] && [ -z "$base_proof_unset_reason" ]; then
+            base_resample=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
+                jq -r '.base.sha // empty' 2>/dev/null) || base_resample=
+            [ "$base_resample" = "$reviewed_base_sha" ] ||
+                base_proof_unset_reason="the PR base moved, or could not be re-read, after the timeline read"
+        fi
+        if [ -n "$reviewed_base_sha" ] && [ -n "$base_proof_unset_reason" ]; then
+            printf 'codex-cloud-review: %s\n' \
+                "reviewed base left unset (the next cycle charges): $base_proof_unset_reason" >&2
+            reviewed_base_sha=
+        fi
     fi
     jq --arg h "$state_head" --arg b "$reviewed_base_sha" \
         --arg v "$reviewed_verdict" --arg carrying "$carry_present" \
@@ -1888,16 +2030,76 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
+    # harmon-devkit#1189: right after a push GitHub routinely reports the
+    # previous head for a few seconds, so a reservation taken immediately
+    # refused a benign race — and a caller that masked that refusal posted the
+    # trigger anyway and stranded it when `attach` failed. Waiting a bounded
+    # time turns the race into a pass. The bound is overridable so tests run
+    # fast; the wait holds the state lock deliberately, since nothing else may
+    # reserve this PR while its head is still being confirmed.
+    RESERVE_HEAD_WAIT_MAX_SEC=120
+    # The shortest budget a read inside the wait gets, so a read started with
+    # a second of wait left can still complete rather than always timing out.
+    RESERVE_HEAD_READ_FLOOR_SEC=5
+    head_wait_sec=${CODEX_RESERVE_HEAD_WAIT_SEC:-30}
+    head_poll_sec=${CODEX_RESERVE_HEAD_POLL_SEC:-2}
+    # Bounded by digit count BEFORE any numeric test (Codex thread
+    # 4117865234): a value past bash's integer range makes `[ -gt ]` error
+    # instead of compare, and the poll value then reached `sleep` unchecked.
+    grep -Eq '^(0|[1-9][0-9]{0,2})$' <<<"$head_wait_sec" ||
+        die "CODEX_RESERVE_HEAD_WAIT_SEC must be a non-negative integer of at most three digits"
+    # The wait holds the state lock, so its bound is capped: an operator
+    # override may shorten or lengthen it, never make it unbounded.
+    [ "$head_wait_sec" -le "$RESERVE_HEAD_WAIT_MAX_SEC" ] ||
+        die "CODEX_RESERVE_HEAD_WAIT_SEC must be at most $RESERVE_HEAD_WAIT_MAX_SEC"
+    grep -Eq '^(0|[1-9][0-9]{0,2})$' <<<"$head_poll_sec" ||
+        die "CODEX_RESERVE_HEAD_POLL_SEC must be a non-negative integer of at most three digits"
     acquire_state_lock
 
-    provider_status=0
-    live_head=$(provider_head "$pr" "$repo") || provider_status=$?
-    if [ "$provider_status" -eq 3 ]; then
-        die "PR is ${live_head:-not open} — a closed or merged PR has no review cycle to reserve"
-    elif [ "$provider_status" -ne 0 ]; then
-        die "cannot confirm the open PR head"
+    head_wait_started=$SECONDS
+    while :; do
+        reserve_clamp_read
+        provider_status=0
+        live_head=$(provider_head "$pr" "$repo") || provider_status=$?
+        if [ "$provider_status" -eq 3 ]; then
+            die "PR is ${live_head:-not open} — a closed or merged PR has no review cycle to reserve"
+        elif [ "$provider_status" -ne 0 ]; then
+            die "cannot confirm the open PR head"
+        fi
+        [ "$live_head" != "$head" ] || break
+        head_wait_elapsed=$((SECONDS - head_wait_started))
+        [ "$head_wait_elapsed" -lt "$head_wait_sec" ] || break
+        # The poll interval is uncapped, so never sleep past the remaining
+        # wait: the wait bound is what bounds how long the lock is held.
+        head_wait_sleep=$((head_wait_sec - head_wait_elapsed))
+        [ "$head_poll_sec" -ge "$head_wait_sleep" ] || head_wait_sleep=$head_poll_sec
+        sleep "$head_wait_sleep"
+    done
+    if [ "$live_head" != "$head" ]; then
+        # Still different after the bound, which is one of two answers that
+        # need opposite responses: GitHub is still behind (the head it reports
+        # is a predecessor of the requested one — re-run `reserve`), or the PR
+        # moved past the requested head (rewritten or superseded — no retry
+        # against this head can succeed).
+        # Only a positive ancestry answer earns the retryable exit 18; an
+        # unreadable one is the non-retryable refusal, because re-running
+        # `reserve` against a head that was superseded can never succeed.
+        head_lag_status=
+        reserve_clamp_read
+        if valid_sha "$live_head"; then
+            head_lag_status=$(run_gh api "repos/$repo/compare/${live_head}...${head}" 2>/dev/null |
+                jq -r '.status // empty' 2>/dev/null) || head_lag_status=
+        fi
+        if [ "$head_lag_status" = ahead ]; then
+            printf 'codex-cloud-review: %s\n' "PR head lagging: after ${head_wait_sec}s GitHub still reports $live_head, a predecessor of $head; nothing was reserved and no trigger may be posted — re-run reserve once, and if it exits 18 again, report a blocker" >&2
+            exit 18
+        fi
+        if [ -n "$head_lag_status" ]; then
+            die "PR head changed before reservation: GitHub reports ${live_head}, which is not a predecessor of $head — head rewritten or superseded; do not post the trigger, and do not retry reserve for this head"
+        fi
+        die "PR head changed before reservation: GitHub reports ${live_head}, and its ancestry to $head could not be read, so a lag is not proven — do not post the trigger, and do not retry reserve for this head"
     fi
-    [ "$live_head" = "$head" ] || die "PR head changed before reservation"
+    gh_call_timeout_cap=
 
     replaced_trigger_comment_id=
     carried_first_trigger_comment_id=
