@@ -84,9 +84,11 @@ Build and publish the plan in this order:
    issues from dispatch waves without erasing their verified verdict. An
    issue labelled `human` — a `(HUMAN):`/`(QA):` collector or other
    human-only work — is never dispatched, so drop it from the slate before
-   re-verifying: it never enters `plan.issues`, a wave, or a lane (the plan
-   schema has no verdict for it), and the run's human-work summary names it
-   instead.
+   re-verifying, together with every slate issue it blocks: none of them
+   enters `plan.issues`, a wave, or a lane (the plan schema has no verdict
+   for them, and a dependent kept without its blocker would either dangle or
+   dispatch early). The dependents re-enter a later plan once a human closes
+   the precondition, and the run's human-work summary names all of them.
 3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
    the complete shared-path intersection for each overlapping pair, choose
    `serialize` or `split`, and record the resulting merge dependency. A split
@@ -572,7 +574,9 @@ own `human` issue blocking the lane's issue. A lane report is not
 authorization for an issue write: present the whole batch — the collector
 items, any precondition issues and their blocked-by edges, and each source
 issue's `## Out of scope` follow-up line — for the operator's go-ahead, then
-make those writes yourself as the run's only collector writer. The run's handoff ends
+make those writes yourself as the run's only collector writer — a source
+issue's edit only after its lane has reported back, so the lane's criterion
+ticks and your follow-up line never race on one body. The run's handoff ends
 with a human-work summary — every open `(HUMAN):` collector the run
 appended to or whose scope covers the slate, the `(QA):` issue's items that
 came from the slate, each with its unticked items, plus any `human`
