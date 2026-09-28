@@ -475,11 +475,14 @@ overlap, dependencies, stage, and re-verification cost. Recommend
 oldest-terminal/highest-cost first and disclose externalities. Product, scope,
 consent, and safety decisions stop for a human; re-scoping requires two traces.
 A human *task* is not such a decision: when a lane reports a step only a human
-can do, record it on the `(HUMAN):` or `(QA):` collector for that issue's
-scope — milestone, else epic, else repository (`track-work` §5); the
-orchestrator is the only collector writer in the run. Keep the lane moving
-unless the step is a genuine precondition, which becomes its own `human`
-issue blocking the lane's issue. The run's handoff ends with a human-work
-summary — every open collector the run appended to or whose scope covers
-the slate, with its unticked items, plus any `human` precondition issues —
-so the maintainer circles back once, not once per lane.
+can do, queue it for the `(HUMAN):` or `(QA):` collector of that issue's
+scope — milestone, else epic, else repository (`track-work` §5) — and keep
+the lane moving unless the step is a genuine precondition, which needs its
+own `human` issue blocking the lane's issue. A lane report is not
+authorization for an issue write: present the queued collector items and
+precondition issues together for the operator's go-ahead, then make those
+writes yourself as the run's only collector writer. The run's handoff ends
+with a human-work summary — every open collector the run appended to or
+whose scope covers the slate, with its unticked items, plus any `human`
+precondition issues — so the maintainer circles back once, not once per
+lane.

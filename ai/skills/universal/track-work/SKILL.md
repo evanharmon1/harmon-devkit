@@ -697,11 +697,12 @@ scope, for the scope's lifetime.
 
 1. **Find it before filing it.** List every collector — both states, since a
    closed one is reopened rather than duplicated — and pick the one whose
-   title starts with the kind's prefix and names the same scope:
+   title starts with the kind's prefix (`(HUMAN):` or `(QA):`) and whose
+   scope line matches (step 2):
 
    ```sh
    gh issue list --repo <owner/repo> --state all --label human --label umbrella \
-     --limit 1000 --json number,title,state,milestone
+     --limit 1000 --json number,title,state,milestone,body
    ```
 
    Reopen a closed match and append to it. Two open matches for one scope
@@ -709,7 +710,10 @@ scope, for the scope's lifetime.
    the newer as a duplicate of it (§4).
 2. **File it lazily**, when the first human task for its scope appears. It is
    an ordinary issue under this section's contract: `## Problem` names the
-   scope, `## Acceptance criteria` holds the items, and its metadata is
+   scope, `## Provenance` carries one stable scope line —
+   `Collector scope: milestone <number>`, `Collector scope: <owner/repo>#<epic>`,
+   or `Collector scope: repository` — that lookups match on instead of the
+   title, `## Acceptance criteria` holds the items, and its metadata is
    `human` + `umbrella`, the owner-appropriate `Task` classification (native
    Issue Type on an organization, the `task` label on a personal account),
    the usual axes, and `ai-generated` when an agent files it. Give it the
@@ -730,7 +734,10 @@ scope, for the scope's lifetime.
 4. **Mention it on the source issue without blocking**: a plain line under
    `## Out of scope`, such as
    `Human follow-up (tracked in #1420): add FLY_API_TOKEN`, never a `[HUMAN]`
-   checkbox.
+   checkbox. Moving an existing `[HUMAN]` criterion is one source edit made
+   after the collector append is confirmed: delete the task item from
+   `## Acceptance criteria` and add the `## Out of scope` line together, then
+   re-read the source to confirm no unticked human item remains.
 5. **A precondition is a dependency, not a follow-up.** When the agent cannot
    do its own work until the human step happens, the step is not a collector
    item: file it as its own issue labelled `human` (no `umbrella`), and give
