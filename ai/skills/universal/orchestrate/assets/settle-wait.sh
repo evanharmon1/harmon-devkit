@@ -91,9 +91,10 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         not created yet.
         --interval-seconds  poll interval (default 30)
         --call-timeout-seconds  bound on each gh call (default 30); the last
-                            poll may overrun the deadline by up to one call
-                            timeout per call it makes (2 head reads, the list
-                            pages, and one read per counted or superseded run)
+                            poll may overrun the deadline by at most about two
+                            call timeouts: no new read starts once the deadline
+                            plus one call timeout has passed, and that poll is
+                            then indeterminate
         --per-page  runs listed per page (default 100; tests)
 
 Exit status, agent mode:
@@ -288,7 +289,16 @@ command -v jq >/dev/null 2>&1 || die_usage "jq is not on PATH"
 # page size, plus the short (possibly empty) page that ends the listing.
 max_pages=$(((1000 + per_page - 1) / per_page + 1))
 deadline=$(($(now) + timeout_seconds))
+# The hard ceiling on any one poll: the last poll may still classify what it
+# reads past the deadline, but never for longer than one more call timeout, so
+# a head with many runs on a slow API cannot stretch the wait by hours. A poll
+# that reaches it stops reading and is indeterminate.
+hard_deadline=$((deadline + call_timeout_seconds))
 short=${want_head:0:8}
+
+past_hard_deadline() {
+    [ "$(now)" -ge "$hard_deadline" ]
+}
 
 # One bounded REST read, always given the full --call-timeout-seconds: a call
 # is never clamped to the time left before the deadline, so the final poll can
@@ -325,6 +335,7 @@ newest_run_ids() {
     rows=
     while :; do
         [ "$page" -le "$max_pages" ] || return 1
+        ! past_hard_deadline || return 1
         body="$(api "repos/$repo/actions/runs?head_sha=$1&per_page=$per_page&page=$page")" ||
             return 1
         listed_total="$(printf '%s' "$body" | jq -r '.total_count | if type == "number" then . else error("no total_count") end' 2>/dev/null)" ||
@@ -426,6 +437,10 @@ while :; do
                     keep=${id#*:}
                     id=${id%%:*}
                 fi
+                if past_hard_deadline; then
+                    read_failed=deadline
+                    break
+                fi
                 body="$(api "repos/$repo/actions/runs/$id")" || {
                     read_failed=$id
                     break
@@ -487,7 +502,11 @@ EOF
             done
             if [ -n "$read_failed" ]; then
                 last=indeterminate
-                detail="could not read run $read_failed"
+                if [ "$read_failed" = deadline ]; then
+                    detail="the overall deadline passed mid-poll"
+                else
+                    detail="could not read run $read_failed"
+                fi
             else
                 echo "POLL $poll head=$short runs=$total pending=$pending failing=$failing skipped=$skipped superseded=$superseded other_pr=$other_pr"
                 printf '%s' "$lines"

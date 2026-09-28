@@ -571,6 +571,28 @@ expect_rc 4 "final poll's call is not clamped to the time left"
 expect_out "PENDING 95" "unclamped final poll"
 expect_out "EXPIRED after 1s: 1 of 1 runs pending on head aaaaaaaa" "unclamped final poll"
 
+# Codex 4118042216: many runs on a slow API cannot stretch the wait past the
+# deadline plus about one call timeout. Eight pending runs at 2s a read would
+# take 16s; the poll stops once the hard ceiling (1s + 3s) passes and is
+# indeterminate.
+reset_fixtures
+set --
+for id in 61 62 63 64 65 66 67 68; do
+    set -- "$@" "$(run_json "$id" in_progress null 1)"
+    run_json "$id" in_progress null 1 >"$fix/run.$id.json"
+done
+write_page 1 "$@"
+hard_start=$(date +%s)
+set +e
+out="$(SW_RUN_DELAY=2 "$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 1 --interval-seconds 1 --call-timeout-seconds 3 2>&1)"
+rc=$?
+set -e
+hard_took=$(($(date +%s) - hard_start))
+expect_rc 3 "a slow many-run poll stops at the hard ceiling"
+expect_out "the overall deadline passed mid-poll" "hard ceiling"
+[ "$hard_took" -le 10 ] || fail "the poll ran ${hard_took}s, past the hard ceiling"
+
 # The stub logs every gh invocation across every scenario (a log the
 # per-scenario reset does not clear); none may be a watch verb.
 if grep -Ev '^api ' "$fix.all-calls"; then
