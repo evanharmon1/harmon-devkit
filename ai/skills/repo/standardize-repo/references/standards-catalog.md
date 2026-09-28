@@ -957,8 +957,9 @@ verify the owner-wide associations and fleet state, leave the field in place.
 one `(HUMAN):` (actions) and one `(QA):` (verification) collector issue per
 milestone, epic, or (for ungrouped work) repository, labelled `human` + `umbrella` and typed `Task`, instead of
 as blocking `[HUMAN]` criteria on agent-dispatchable issues. The labels come
-from the target's `label-registry.json`; the convention is in its
-`docs/project-management.md` (Hierarchy) and `track-work` §5. When auditing,
+from the target's `label-registry.json`; the convention is in the target's
+own `docs/project-management.md` (Hierarchy), as rendered by the harmon-init
+release that ships it, and in `track-work` §5. When auditing,
 a repo whose registry predates the `human` label is template-version lag, not
 drift.
 

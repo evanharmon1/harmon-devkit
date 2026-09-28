@@ -1730,6 +1730,53 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
 grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
     fail "fallback label read must be repo-bound and bounded"
 
+echo "==> metadata: a manifest granting the collector labels lets an agent file a collector"
+metadata_collector="$tmp/metadata-collector"
+mkdir -p "$metadata_collector"
+git -C "$metadata_collector" init -q
+git -C "$metadata_collector" remote add origin https://github.com/testowner/testrepo.git
+# The harmon-init families that carry the collector pair: initiative (epic,
+# umbrella; exclusive) and human-work (human), both writable by agents.
+jq '.families += [
+      {"family":"initiative","prefix":null,"purpose":"Parent issue horizon.",
+       "axis":"meta","source":"inline","writers":["human","agent"],
+       "readers":"humans","lifecycle":"durable","exclusive":true,"provision":true,
+       "color":"8250DF","values":[
+         {"value":"epic","description":"Time-bound parent"},
+         {"value":"umbrella","description":"Open-ended parent or collector"}]},
+      {"family":"human-work","prefix":null,"purpose":"Human-only work.",
+       "axis":"meta","source":"inline","writers":["human","agent"],
+       "readers":"humans","lifecycle":"durable","exclusive":false,"provision":true,
+       "color":"FBCA04","values":[
+         {"value":"human","description":"Human-only work"}]}
+    ]' "$metadata_repo/label-registry.json" >"$metadata_collector/label-registry.json"
+collector_body="$tmp/metadata-collector.md"
+cat >"$collector_body" <<'BODY'
+## Problem
+
+Collect the human verification owed for the fixture release.
+
+## Acceptance criteria
+
+- [ ] [HUMAN] Try the fixture release by hand (from #12)
+
+## Provenance
+
+Collector scope: repository
+BODY
+collector_run() {
+    METADATA_RAW_TITLE=1 run_metadata --repo testowner/testrepo \
+        --repo-root "$metadata_collector" --owner-type personal \
+        --title '(QA): Verify the fixture release end to end' \
+        --body-file "$collector_body" --agent-authored --label task \
+        --label area:fixture --inapplicable layer --label domain:fixture \
+        --label ai-generated "$@"
+}
+[ "$(collector_run --label human --label umbrella)" = 0 ] ||
+    fail "a manifest-backed agent collector should pass: $(cat "$tmp/metadata.out")"
+[ "$(collector_run --label human --label umbrella --label epic)" = 1 ] ||
+    fail "umbrella and epic share the exclusive initiative family and must not combine"
+
 echo "==> metadata: the fallback keeps the collector labels human-only"
 _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' task area:fixture domain:fixture \
