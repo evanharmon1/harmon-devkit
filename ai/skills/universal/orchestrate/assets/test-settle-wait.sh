@@ -442,6 +442,61 @@ expect_rc 3 "a capped run list is indeterminate"
 expect_out "reports 1000 or more runs" "capped run list"
 case "$out" in *SETTLED*) fail "settled on a capped run list: $out" ;; esac
 
+# 4117906308: run 10 (id 201) was superseded by run 11 (id 202, success),
+# then manually re-run: its attempt 2 started after run 11 did and failed.
+# That attempt is fresher evidence, so it counts and the head fails.
+reset_fixtures
+write_page 1 \
+    "$(run_json 201 completed failure 2 "$sha_a" 900 pull_request 10 2026-09-27T00:00:00Z)" \
+    "$(run_json 202 completed success 1 "$sha_a" 900 pull_request 11 2026-09-27T00:01:00Z)"
+run_files 201 202
+jq -c '.run_started_at = "2026-09-27T00:01:00Z"' "$fix/run.202.json" >"$fix/run.tmp" &&
+    mv "$fix/run.tmp" "$fix/run.202.json"
+jq -c '.run_started_at = "2026-09-27T00:05:00Z"' "$fix/run.201.json" >"$fix/run.tmp" &&
+    mv "$fix/run.tmp" "$fix/run.201.json"
+run_checks --timeout-seconds 5 --interval-seconds 1
+expect_rc 1 "a superseded run re-run after the newest run started counts"
+expect_out "FAILING 201 wf-201 attempt=2 conclusion=failure" "re-run superseded run"
+expect_out "runs=2 pending=0 failing=1 skipped=0 superseded=0" "re-run superseded run"
+
+# 4117906308: the same pair, but run 10's latest attempt started before run 11
+# (fractional seconds parse too): superseded and dropped, the head settles.
+jq -c '.run_started_at = "2026-09-27T00:00:30.123Z"' "$fix/run.201.json" >"$fix/run.tmp" &&
+    mv "$fix/run.tmp" "$fix/run.201.json"
+rm -f "$fix/pull.count"
+run_checks --timeout-seconds 5 --interval-seconds 1
+expect_rc 0 "a superseded run whose latest attempt predates the newest run is dropped"
+expect_out "runs=1 pending=0 failing=0 skipped=0 superseded=1" "earlier superseded attempt"
+
+# 4117906308: fail closed when a start time is missing or unparseable on
+# either read: the superseded run counts on its own conclusion.
+for bad in 201 202; do
+    jq -c '.run_started_at = "not-a-time" | .created_at = null' "$fix/run.$bad.json" \
+        >"$fix/run.tmp" && cp "$fix/run.tmp" "$fix/run.$bad.bad"
+done
+for bad in 201 202; do
+    run_files 201 202
+    jq -c '.run_started_at = "2026-09-27T00:00:30Z"' "$fix/run.201.json" >"$fix/run.tmp" &&
+        mv "$fix/run.tmp" "$fix/run.201.json"
+    cp "$fix/run.$bad.bad" "$fix/run.$bad.json"
+    rm -f "$fix/pull.count"
+    run_checks --timeout-seconds 5 --interval-seconds 1
+    expect_rc 1 "an unreadable start time on run $bad keeps the superseded run counted"
+    expect_out "FAILING 201" "unreadable start time on run $bad"
+done
+
+# 4117906313: --per-page 1 over 60 runs pages past the old fixed 50-page
+# guard: every result under the 1000 cap is traversable, so it settles.
+reset_fixtures
+for id in $(seq 301 360); do
+    run_json "$id" completed success 1 >"$fix/run.$id.json"
+    jq -c '{total_count: 60, workflow_runs: [.]}' "$fix/run.$id.json" \
+        >"$fix/runs.$((id - 300)).json"
+done
+run_checks --timeout-seconds 5 --interval-seconds 1 --per-page 1
+expect_rc 0 "a small --per-page traverses every page under the cap"
+expect_out "SETTLED success head=aaaaaaaa runs=60" "small --per-page"
+
 # C1-1: the newest run of the workflow is the failing one: exit 1. The same
 # workflow under another event is its own group and is evaluated separately.
 reset_fixtures

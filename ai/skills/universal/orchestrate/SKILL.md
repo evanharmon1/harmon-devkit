@@ -417,11 +417,15 @@ that SHA. A `pull_request` run is scoped to `--pr` by its `pull_requests[]`:
 one naming only other PRs is ignored, and one with an empty or unprovable
 association (fork PRs list none) is counted on its own, never collapsed or
 used to supersede. Of this PR's runs it keeps the newest run of each workflow,
-so a cancelled or failed run superseded by a re-run no longer counts (the
-superseded run's own read decides that it completed; one whose read is not
-completed stays pending); it counts every run of any other event, reads each
-counted run's own `.status` and `.conclusion`, and is indeterminate when the
-run list reports GitHub's 1000-run search cap. As in GitHub's own check
+so a cancelled or failed run superseded by a re-run no longer counts. The
+superseded run's own read decides: it is dropped only when that read says
+completed and its latest attempt started (`run_started_at`, else
+`created_at`) before the newest run's did; one whose read is not completed
+stays pending, and one manually re-run after the newest run started, or whose
+start time either read lacks, counts on its own conclusion. It counts every
+run of any other event, reads each counted run's own `.status` and
+`.conclusion`, pages as far as GitHub's 1000-run search cap at any page size,
+and is indeterminate when the run list reports that cap. As in GitHub's own check
 rollup, the newest `pull_request` run is the verdict even if its jobs were
 skipped, so a workflow that skips its tests on an `edited` re-run can hide an
 earlier failure; never settle CI with

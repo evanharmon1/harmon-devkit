@@ -16,9 +16,11 @@
 #   run's own `.status` and `.conclusion` from the REST run endpoint on every
 #   poll, for the exact head the caller pushed. A `pull_request` run of this
 #   PR superseded by a newer run of the same workflow is dropped once its own
-#   read says completed, so a cancelled or failed run a re-run replaced cannot
-#   pin it red; a sibling PR's run on the same head is ignored, and every run
-#   of any other event counts.
+#   read says completed and its latest attempt started before the newest run
+#   did, so a cancelled or failed run a re-run replaced cannot pin it red, while
+#   an older run manually re-run after the newest one started still counts; a
+#   sibling PR's run on the same head is ignored, and every run of any other
+#   event counts.
 #
 # Portable to bash 3.2 (macOS): no arrays of arrays, no mapfile, no GNU-only
 # date or sleep flags. GNU `timeout` (or Homebrew `gtimeout`) bounds every
@@ -60,8 +62,9 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         --head is REQUIRED: the full 40-hex SHA you pushed. While the PR
         still reports another head (GitHub lags after a push) the poll is
         not settled. Each poll lists the runs for exactly --head (paged
-        explicitly until a short page; a list reporting 1000 or more runs,
-        GitHub's search cap, is indeterminate). A `pull_request` or
+        explicitly until a short page, up to enough pages to cover GitHub's
+        1000-run search cap at --per-page; a list reporting 1000 or more
+        runs is indeterminate). A `pull_request` or
         `pull_request_target` run is scoped to --pr by its pull_requests[]:
         one naming only other PRs is ignored; one naming exactly --pr joins
         its workflow's group; one with an empty or unprovable association
@@ -69,9 +72,12 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         is counted on its own and never collapsed or used to supersede. In
         each group it keeps the NEWEST run -- highest run_number, then
         created_at, then id -- and reads each older run on its own, dropping
-        it only when that read says completed, so a cancelled or failed run
-        a re-run replaced no longer counts; one whose read is not completed
-        stays pending. Every run of any other event counts.
+        it only when that read says completed AND its latest attempt started
+        (run_started_at, else created_at) before the newest run's did, so a
+        cancelled or failed run a re-run replaced no longer counts. One whose
+        read is not completed stays pending; one re-run after the newest run
+        started, or whose start time either read lacks, counts normally and
+        its conclusion decides. Every run of any other event counts.
         It reads each counted run's own `.status`, `.conclusion`, and
         `.run_attempt`. The PR head is re-read after the run reads; a
         settle is reported only if it still equals --head. Settled means
@@ -278,7 +284,9 @@ fi
 command -v gh >/dev/null 2>&1 || die_usage "gh is not on PATH"
 command -v jq >/dev/null 2>&1 || die_usage "jq is not on PATH"
 
-max_pages=50
+# Enough pages to traverse every result under GitHub's 1000-run cap at this
+# page size, plus the short (possibly empty) page that ends the listing.
+max_pages=$(((1000 + per_page - 1) / per_page + 1))
 deadline=$(($(now) + timeout_seconds))
 short=${want_head:0:8}
 
@@ -291,6 +299,7 @@ api() {
 }
 
 head_sha() {
+    local body sha
     body="$(api "repos/$repo/pulls/$pr")" || return 1
     sha="$(printf '%s' "$body" | jq -r '.head.sha // empty' 2>/dev/null)" || return 1
     case "$sha" in
@@ -300,16 +309,18 @@ head_sha() {
     printf '%s\n' "$sha"
 }
 
-# Every run to consider for exactly this head, one "KIND:ID" token per line,
-# then a final "other_pr=N" line. KIND C is a run to count. KIND S is a
-# pull_request run superseded by a newer run of the same workflow and event
-# for this PR (a cancelled `pull_request` run replaced by its `edited` re-run,
-# a failed guard that passed after a body edit): the caller reads it on its
-# own and drops it only if that read says completed, since the list can lag
-# a re-run of it. Paged by an explicit &page=K until a short page; never gh's
+# Every run to consider for exactly this head, one token per line, then a
+# final "other_pr=N" line. "C:ID" is a run to count. "S:ID:NEWEST" is a
+# pull_request run superseded by the newer run NEWEST of the same workflow and
+# event for this PR (a cancelled `pull_request` run replaced by its `edited`
+# re-run, a failed guard that passed after a body edit): the caller reads it
+# on its own and drops it only if that read says completed and its latest
+# attempt started before NEWEST did, since the list can lag a re-run of it.
+# Every C line precedes every S line, so NEWEST has been read by then. Paged by an explicit &page=K until a short page; never gh's
 # own --paginate. Returns 2 when the list reports GitHub's 1000-run search
 # cap, which it cannot page past, and 1 on any other failure.
 newest_run_ids() {
+    local page rows body listed_total page_rows count
     page=1
     rows=
     while :; do
@@ -364,7 +375,7 @@ newest_run_ids() {
         | (($groups | map("C:\(.keep)")),
            ($prs | map(select(.k == "unproven") | "C:\(.id)")),
            ($all | map(select(is_pr | not) | "C:\(.id)")),
-           ($groups | map(.sup[] | "S:\(.)"))
+           ($groups | map(.keep as $k | .sup[] | "S:\(.):\($k)"))
            | .[]),
           "other_pr=\($prs | map(select(.k == "other")) | length)"'
 }
@@ -406,9 +417,15 @@ while :; do
             superseded=0
             lines=
             read_failed=
+            starts=
             for entry in $ids; do
                 kind=${entry%%:*}
                 id=${entry#*:}
+                keep=
+                if [ "$kind" = S ]; then
+                    keep=${id#*:}
+                    id=${id%%:*}
+                fi
                 body="$(api "repos/$repo/actions/runs/$id")" || {
                     read_failed=$id
                     break
@@ -416,19 +433,40 @@ while :; do
                 row="$(printf '%s' "$body" | jq -r --arg sha "$want_head" '
                     if (.status | type) == "string" and .head_sha == $sha
                     then [.status, (.conclusion // "none"), (.run_attempt // 0 | tostring),
+                          # The start of the current attempt as epoch seconds, or
+                          # "none" when absent or unparseable.
+                          ((.run_started_at // .created_at)
+                           | if type == "string"
+                             then (try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | tostring)
+                                   catch "none")
+                             else "none" end),
                           ((.name // "unnamed") | gsub("[\t\n]"; " "))] | @tsv
                     else error("malformed run") end' 2>/dev/null)" || {
                     read_failed=$id
                     break
                 }
-                IFS='	' read -r status conclusion attempt name <<EOF
+                IFS=$'\t' read -r status conclusion attempt started name <<EOF
 $row
 EOF
-                # A superseded run is dropped only on its own completed read;
-                # one a re-run put back in flight still counts as pending.
+                [ "$kind" = S ] || starts="$starts $id=$started "
+                # A superseded run is dropped only on its own completed read
+                # whose latest attempt started before the newest run's did.
+                # One a re-run put back in flight still counts as pending, and
+                # one re-run after the newest run started (or with a start
+                # time either read lacks) counts on its own conclusion.
                 if [ "$kind" = S ] && [ "$status" = completed ]; then
-                    superseded=$((superseded + 1))
-                    continue
+                    keep_started=none
+                    case "$starts" in
+                    *" $keep="*)
+                        keep_started=${starts#*" $keep="}
+                        keep_started=${keep_started%% *}
+                        ;;
+                    esac
+                    if positive_int "$started" && positive_int "$keep_started" &&
+                        [ "$started" -lt "$keep_started" ]; then
+                        superseded=$((superseded + 1))
+                        continue
+                    fi
                 fi
                 total=$((total + 1))
                 if [ "$status" != completed ]; then
