@@ -281,6 +281,14 @@ Two further obligations that are easy to defer and expensive to defer:
   `track-work` §2 *Tick as you go*, and its `assets/tick-criteria.sh` does the
   edit safely. Ticking at the end means ticking from memory, and a criterion you
   never actually checked ticks just as easily as one you did.
+- **Human steps go to a collector, not onto this issue's critical path.** When
+  the work turns up something only a human can do — a secret to set, a
+  setting to flip, a hands-on check — do not stop to wait for it and do not add
+  a `[HUMAN]` criterion here: append it to the milestone's `(HUMAN):` or
+  `(QA):` collector (`track-work` §5, under the go-ahead that write needs) and
+  name it in the PR body. Only a step the change cannot be verified without is
+  a blocker. An issue labelled `human` is never implemented; it was a `/claim`
+  blocker.
 
 ## 5. Definition-of-done gate
 
@@ -425,6 +433,8 @@ second PR is the expensive way to find out.
   `Closes` hands GitHub permission to delete the issue from the backlog at
   merge — correct only when this PR finishes *every* acceptance criterion.
   Anything partial is `Refs`, and an umbrella issue is almost always `Refs`.
+  A `[HUMAN]` follow-up moved to its collector no longer holds the issue
+  open.
 - Body says **what, why, and how it was verified** — name the gates you
   actually ran.
 - Move the deferred findings from step 6 into the body under a

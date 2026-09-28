@@ -149,7 +149,26 @@ and not hierarchy by default either:
 An umbrella issue (a rollup that `Refs` its children) is a legitimate
 alternative to a milestone where the repo already tracks that way — follow the
 repo's existing practice, and remember an umbrella is almost always `Refs`,
-never a closing keyword, in any PR (`track-work` §2).
+never a closing keyword, in any PR (`track-work` §2). The *unit* and
+*umbrella* shapes name a parent's tracking role, not a label: where the
+target's vocabulary offers the `epic`/`umbrella` initiative labels, a parent
+for a finite deliverable is `epic`, and only a perennial one is `umbrella`.
+
+**Human work goes to collectors, not chunks.** When the lump contains steps
+only a human can do — secrets, settings, accounts, approvals, a hands-on
+acceptance pass — do not size them as chunks, and do not bury them as
+`[HUMAN]` criteria on the chunks that surfaced them: each one would park its
+chunk until the maintainer circles back. Propose, per milestone (or per `epic`
+parent when there is no milestone), a `(HUMAN):` collector for human actions
+and a `(QA):` collector for human verification, labelled `human` + `umbrella`
+and classified `Task`, each holding one `[HUMAN]` criterion per step that names
+its source chunk (`track-work` §5, *Human tasks go to a collector*). Propose
+only a collector that has items, and reuse an open one for the same milestone
+or epic rather than filing a second. A collector is never claimed or
+dispatched, so it takes no edge in the §4 graph; a chunk that genuinely cannot
+start until a human step happens is `blocked` on that step (§4's label-plus-note
+form, naming the collector item), never given a blocked-by edge to the whole
+collector.
 
 ## 4. Order and record dependencies
 
@@ -229,7 +248,10 @@ judgment. The bar, concretely:
   criteria on a foreman target or imposes them on a repo whose tooling
   never reads them. The contract itself: the heading `## Acceptance
   Criteria`, `[CI]` items mapping to named automated tests, and `[HUMAN]`
-  items for what agents must never attempt.
+  items only for a human step that genuinely gates the chunk's own
+  completion. A human follow-up is not a chunk criterion on any target: it
+  goes on its collector (§3), and the chunk mentions it under `## Out of
+  scope` by the collector's title.
 - **Perishable claims** follow `track-work` §5: invariant / observed violation
   (dated) / `Verify` block with the command that re-checks it. A breakdown is
   written well before its last chunk is implemented — by then, every
@@ -259,6 +281,8 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
 - the structure — milestone(s), parents (unit or umbrella, per §3) and their
   sub-issues, flat issues;
 - the dependency graph — every edge, plus the resulting ready set and waves;
+- the human-task and QA collectors (§3), each marked new or reused, with every
+  item and the chunk it comes from;
 - labels and fields per issue, from §7's vocabulary read;
 - **the source issue's disposition, when the input was a live issue** — a big
   issue left open and unmarked after its chunks are filed is a second,
@@ -320,7 +344,9 @@ Only an interactive session holding the human-turn approval from §6 enters
 this section. All writes follow the approved proposal, in dependency-safe
 order: milestones first (create or reuse — an issue can only join a milestone
 that already exists), then issues — parents before sub-issues, blockers before
-blocked, each issue's relationships written immediately after its create
+blocked, and collectors (§3) after the chunks their items cite, so each item's
+`(from #N)` reference resolves at creation and cross-links the chunk. Each
+issue's relationships are written immediately after its create
 returns
 (creating blockers first is what makes that possible: every edge's far end
 already exists when its near end is created). Between an issue's create and

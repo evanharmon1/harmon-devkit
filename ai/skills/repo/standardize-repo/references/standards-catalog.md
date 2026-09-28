@@ -953,6 +953,15 @@ it because the setup scripts are deliberately additive-only. Live field removal
 belongs to harmon-init's migration units, not this catalog; until those units
 verify the owner-wide associations and fleet state, leave the field in place.
 
+**Human work is collected, not scattered.** Steps only a human can do live on
+one `(HUMAN):` (actions) and one `(QA):` (verification) collector issue per
+milestone or epic, labelled `human` + `umbrella` and typed `Task`, instead of
+as blocking `[HUMAN]` criteria on agent-dispatchable issues. The labels come
+from the target's `label-registry.json`; the convention is in its
+`docs/project-management.md` (Hierarchy) and `track-work` §5. When auditing,
+a repo whose registry predates the `human` label is template-version lag, not
+drift.
+
 **Setup tasks** (idempotent + non-destructive; **[copier]** generates them, **[manual]** to run):
 
 | Task | Needs | Rendered when | Does |

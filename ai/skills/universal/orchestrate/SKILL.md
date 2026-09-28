@@ -81,7 +81,10 @@ Build and publish the plan in this order:
 2. **Re-verify.** Check every ready issue read-only against the live target
    tree. Record `valid`, `partial`, or `done` and a complete candidate-file
    list; issue-body line numbers are hints, never evidence. Remove `done`
-   issues from dispatch waves without erasing their verified verdict.
+   issues from dispatch waves without erasing their verified verdict. An
+   issue labelled `human` — a `(HUMAN):`/`(QA):` collector or other
+   human-only work — is never dispatched: leave it out of the waves and name
+   it in the run's human-work summary instead.
 3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
    the complete shared-path intersection for each overlapping pair, choose
    `serialize` or `split`, and record the resulting merge dependency. A split
@@ -471,3 +474,9 @@ by host capacity. Maintain a merge queue from complete file lists, pairwise
 overlap, dependencies, stage, and re-verification cost. Recommend
 oldest-terminal/highest-cost first and disclose externalities. Product, scope,
 consent, and safety decisions stop for a human; re-scoping requires two traces.
+A human *task* is not such a decision: when a lane reports a step only a human
+can do, record it on the milestone's `(HUMAN):` or `(QA):` collector
+(`track-work` §5) and keep the lane moving unless the step is a genuine
+precondition. The run's handoff ends with a human-work summary — each open
+collector for the slate's milestones with its unticked items — so the
+maintainer circles back once, not once per lane.

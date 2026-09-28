@@ -142,9 +142,10 @@ inferred it from, and get a yes before step 5.
 ## 3. Sanity analysis
 
 Verify claims against the code — do not speculate. First, the issue's own
-state: if it is **closed**, **assigned to someone else**, or has an open
-linked PR already implementing it, that is a `blocker` — do not claim without
-explicit confirmation from the user. This is the first of the three
+state: if it is **closed**, **assigned to someone else**, has an open
+linked PR already implementing it, or is labelled **`human`** (a `(HUMAN):` or
+`(QA):` collector, or other work only a human can do), that is a `blocker` —
+do not claim without explicit confirmation from the user. This is the first of the three
 escalations the preamble exempts from approval-by-invocation: invoking
 `/claim` approves *claiming* the issue, not overriding somebody else's
 ownership of it or reopening settled work. Then look for:
@@ -256,7 +257,10 @@ All four checks run for **every** issue.
   so, say how the work is sequenced so CI and applies stay green around it —
   typically a phase gate (a bool variable defaulting off, gating the dependent
   resources, flipped in a follow-up PR) rather than one apply that partially
-  fails.
+  fails. Each such step belongs on the milestone's `(HUMAN):` or `(QA):`
+  collector, not as a `[HUMAN]` criterion on this issue (`track-work` §5); a
+  step the work cannot start without is a `blocker`, and one that can follow
+  the merge is a collector item that does not hold this issue open.
 - **Plan-vs-apply blind spots** — where can the dry-run gate (`terraform
   plan`, a `--dry-run` script, a lint pass) structurally not see the failure?
   Create-time authorization and eventual verification both pass plan and fail
