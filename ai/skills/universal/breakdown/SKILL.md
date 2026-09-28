@@ -158,14 +158,17 @@ for a finite deliverable is `epic`, and only a perennial one is `umbrella`.
 only a human can do — secrets, settings, accounts, approvals, a hands-on
 acceptance pass — do not size them as chunks, and do not bury them as
 `[HUMAN]` criteria on the chunks that surfaced them: each one would park its
-chunk until the maintainer circles back. Propose, per collector scope
-(milestone, else `epic` parent, else the repository — `track-work` §5, *Human
-tasks go to a collector*), a `(HUMAN):` collector for human actions and a
-`(QA):` collector for human verification, labelled `human` + `umbrella` and
-classified `Task`, each holding one `[HUMAN]` criterion per step that names its
-source chunk. Propose only a collector that has items, and reuse (reopening if
-closed) the existing one for the same scope rather than filing a second. A
-collector is never claimed or dispatched and takes no edge in the §4 graph.
+chunk until the maintainer circles back. Route them to collectors
+(`track-work` §5, *Human tasks go to a collector*), labelled `human` +
+`umbrella` and classified `Task`, each holding one `[HUMAN]` criterion per
+step that names its source chunk. Human **actions** go to the `(HUMAN):`
+collector for the breakdown's milestone (else its `epic` parent, else the
+repository), proposed with that milestone and, under an epic, as the epic's
+sub-issue. Human **verification** goes to the repository's single standing
+`(QA):` issue — the QA role — which the milestone or epic references but never
+contains: no milestone, no parent. Propose only a collector that has items,
+and reuse (reopening if closed) the existing one rather than filing a second.
+A collector is never claimed or dispatched and takes no edge in the §4 graph.
 The one exception is a **precondition** — a human step a chunk cannot start
 without: propose it as its own standalone `human` issue and give the chunk an
 ordinary §4 blocked-by edge on it, so the graph keeps the chunk out of the
@@ -281,8 +284,8 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
 - the structure — milestone(s), parents (unit or umbrella, per §3) and their
   sub-issues, flat issues;
 - the dependency graph — every edge, plus the resulting ready set and waves;
-- the human-task and QA collectors (§3), each marked new or reused, with every
-  item and the chunk it comes from, plus any standalone `human` precondition
+- the `(HUMAN):` collector and the repository's `(QA):` issue (§3), each
+  marked new or reused, with every item and the chunk it comes from, plus any standalone `human` precondition
   issues and the chunks they block;
 - labels and fields per issue, from §7's vocabulary read;
 - **the source issue's disposition, when the input was a live issue** — a big
