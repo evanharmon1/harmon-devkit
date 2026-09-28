@@ -725,8 +725,9 @@ scope, for the scope's lifetime.
 3. **One criterion per task, naming its source**:
    `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`. Filing
    the collector or appending an item is a write and needs the go-ahead any
-   write does. Read the body immediately before appending and skip an item
-   whose `(from #N)` task is already there. Ticking belongs to a human; an
+   write does. Read the body immediately before appending and skip only an
+   item already there for the same task from the same source — one source
+   issue can contribute several distinct items. Ticking belongs to a human; an
    agent ticks a collector item only on explicit human authorization, like
    any `[HUMAN]` criterion.
 4. **Mention it on the source issue without blocking**: a plain line under
