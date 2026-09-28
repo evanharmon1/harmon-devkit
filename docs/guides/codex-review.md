@@ -651,7 +651,17 @@ checkout; nothing below overrides it.
 
 **Where the pinned checker is vendored**
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`), its exit codes
-are the contract:
+are the contract. `reserve` comes first, and **any non-zero `reserve` means
+post no trigger** — check its status on its own, never through a pipe
+(harmon-devkit#1189):
+
+| `reserve` exit | What it means, and what the caller does |
+|---|---|
+| `0` | Reserved. Re-read the PR's `state,isDraft,headRefOid` (`reserve` makes no GitHub write, so that read is the last thing before the post), then post `@codex review` and `attach` it. |
+| `18` | Lagging head: after its bounded wait (`CODEX_RESERVE_HEAD_WAIT_SEC`, default 30s, at most 120s) GitHub still reports a predecessor of the requested head, and nothing was reserved. Re-run `reserve` once; if it exits `18` again, report a blocker. |
+| `2` | Refused — among other reasons, the head was rewritten or superseded (GitHub reports a head that is not a predecessor of the requested one). Never retry against the same head; the next cycle runs on the head a new dispatch names. |
+
+After the trigger is attached, `check`'s exit codes are the contract:
 
 | Exit | Status | What it means, and what the caller does |
 |---|---|---|

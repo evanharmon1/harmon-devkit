@@ -7675,6 +7675,36 @@ grep -Fq 'PR head lagging' <<<"$reserve_out" ||
 [ ! -f "$state" ] || fail "a lagging refusal must reserve nothing"
 [ ! -d "${state}.lock" ] || fail "a lagging refusal must release the state lock"
 
+# The poll interval is uncapped, so the wait bound is what bounds the lock
+# hold: a poll longer than the wait must sleep only the remaining wait. The
+# watchdog turns a regression (sleeping the full poll) into a failure here
+# rather than a hung suite.
+echo "==> a poll interval longer than the wait still returns within the wait"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json
+printf '%s\n' "$lag_prev_head" >"${fixtures}/head-stale"
+printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
+printf '%s\n' '{"status":"ahead","files":[]}' >"${fixtures}/compare-${lag_pair}.json"
+poll_started=$(date -u '+%s')
+set +e
+reserve_out="$(CODEX_RESERVE_HEAD_WAIT_SEC=2 CODEX_RESERVE_HEAD_POLL_SEC=100000 \
+    "$watchdog_bin" -k 5 30 "$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+reserve_rc=$?
+set -e
+poll_elapsed=$(($(date -u '+%s') - poll_started))
+if [ "$reserve_rc" -eq 124 ] || [ "$reserve_rc" -eq 137 ]; then
+    rm -rf "${state}.lock"
+    fail "a poll longer than the wait must not sleep past the wait bound (watchdog killed reserve after ${poll_elapsed}s)"
+fi
+[ "$reserve_rc" -eq 18 ] ||
+    fail "a lag outlasting a short wait with a long poll must exit 18: rc=$reserve_rc $reserve_out"
+[ "$poll_elapsed" -le 10 ] ||
+    fail "reserve must return within about the wait bound, took ${poll_elapsed}s"
+[ ! -f "$state" ] || fail "a lagging refusal must reserve nothing"
+[ ! -d "${state}.lock" ] || fail "a lagging refusal must release the state lock"
+
 echo "==> a newer push after the bound is exit 2, head changed"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/compare*.json

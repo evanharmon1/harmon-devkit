@@ -235,13 +235,18 @@ attested without a reviewer reading it is exactly the thing a human reader must
 be able to see.
 
 **A non-zero `reserve` means no trigger is posted** (harmon-devkit#1189). The
-sequence is `reserve` → post `@codex review` → `attach`, each call's exit
-status checked on its own — never `reserve … | jq`, whose status is the pipe's
-last command, so a refused reservation reads as success and the trigger is
-orphaned when `attach` fails. `reserve` itself waits a bounded time
-(`CODEX_RESERVE_HEAD_WAIT_SEC`, default 30s, at most 120s) for GitHub to
-report a just-pushed head, so a PR-head read that disagrees with the
-dispatched head just before `reserve` is left for that wait to decide. Exit
+sequence is `reserve` → the §2 `state,isDraft,headRefOid` read → post
+`@codex review` → `attach`, each call's exit status checked on its own — never
+`reserve … | jq`, whose status is the pipe's last command, so a refused
+reservation reads as success and the trigger is orphaned when `attach` fails.
+The zero-candidate reconcile path, whose reservation already exists, enters
+that same sequence at the read. `reserve` makes no GitHub write, so the read
+after it is the last thing before the post, exactly as §2 requires; it must
+show `OPEN`, a draft, and the dispatched head, and any mismatch there means no
+trigger (the reservation is left for the next dispatch to reconcile).
+`reserve` itself waits a bounded time (`CODEX_RESERVE_HEAD_WAIT_SEC`, default
+30s, at most 120s, never sleeping past it) for GitHub to report a just-pushed
+head, which is why the read comes after it rather than before. Exit
 `18` means GitHub still reports a predecessor of the requested head after the
 wait and nothing was reserved: re-run `reserve` once, and if it exits `18`
 again, report a blocker. Exit `2` naming a changed head means the PR head was

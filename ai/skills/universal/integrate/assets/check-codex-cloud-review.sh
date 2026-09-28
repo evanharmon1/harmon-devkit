@@ -171,7 +171,7 @@ exit 2 with a reason naming the reported state.
 120 — a larger value is exit 2) for the PR head GitHub reports to reach --head,
 because GitHub lags a push by a few seconds; it re-reads every
 CODEX_RESERVE_HEAD_POLL_SEC seconds (default 2; 0 is accepted for tests only
-and busy-polls). Still behind after that — GitHub reports a predecessor of
+and busy-polls; a poll never sleeps past the remaining wait). Still behind after that — GitHub reports a predecessor of
 --head — is exit 18: nothing was reserved; re-run reserve once, and if it
 exits 18 again, report a blocker. Any other difference (the head rewritten or
 superseded, or unreadable ancestry) is exit 2: never retry it against the same
@@ -1061,9 +1061,12 @@ mark_terminally_reviewed() {
         # other shape proves nothing and leaves the proof unset. Base events
         # are the two `base_ref_*` kinds GitHub documents, any other event it
         # may add under that prefix, and the automatic base changes it makes
-        # when a base branch is merged away. A read that fails, a page that is
-        # not an array, or a missing anchor proves nothing either way —
-        # unset, per the governing invariant, with one stderr line naming why.
+        # when a base branch is merged away. A timeline read that fails, a
+        # page that is not an array, or a missing anchor proves nothing either
+        # way — unset, per the governing invariant. Only these timeline-stage
+        # refusals print the one stderr line naming why, and only after the
+        # two samples agreed; a failed PR read or two disagreeing samples
+        # (above) leave the proof unset without a line.
         base_proof_unset_reason=
         if [ -n "$reviewed_base_sha" ]; then
             base_events_anchor=$(base_events_window_start "$state_file") ||
@@ -2023,8 +2026,13 @@ reserve)
             die "cannot confirm the open PR head"
         fi
         [ "$live_head" != "$head" ] || break
-        [ "$(($(date -u '+%s') - head_wait_started))" -lt "$head_wait_sec" ] || break
-        sleep "$head_poll_sec"
+        head_wait_elapsed=$(($(date -u '+%s') - head_wait_started))
+        [ "$head_wait_elapsed" -lt "$head_wait_sec" ] || break
+        # The poll interval is uncapped, so never sleep past the remaining
+        # wait: the wait bound is what bounds how long the lock is held.
+        head_wait_sleep=$((head_wait_sec - head_wait_elapsed))
+        [ "$head_poll_sec" -ge "$head_wait_sleep" ] || head_wait_sleep=$head_poll_sec
+        sleep "$head_wait_sleep"
     done
     if [ "$live_head" != "$head" ]; then
         # Still different after the bound, which is one of two answers that
