@@ -25,7 +25,14 @@ below are exactly what it checks.
 ## The verdicts
 
 - `CLOSE-done` — the work shipped. Evidence: a merged PR, a file that now
-  exists, or a removed feature.
+  exists, or a removed feature. A shipped issue still holding unticked
+  `[HUMAN]` follow-ups cannot be closed `completed` yet, and groom has no
+  write path that moves criteria: verdict it `NEEDS-DECISION`, with a
+  `question` asking whether to move the named items to its `(HUMAN):`/`(QA):`
+  collector (track-work §5) and close, and a `recommendation` to do so. On an
+  issue labelled `human` those criteria are the work itself, not follow-ups.
+  The repository's standing `(QA):` issue is never `CLOSE-done`: it is the QA
+  queue and stays open even with every item ticked (track-work §5).
 - `CLOSE-obsolete` — the need it described no longer exists.
 - `CLOSE-dup-of-#N` — a literal duplicate of open issue `#N` in the same
   repository. Evidence should still name what makes it a duplicate.

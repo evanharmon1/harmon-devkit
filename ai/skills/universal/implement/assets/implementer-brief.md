@@ -531,6 +531,13 @@ wait. So does a scope question: if settling a finding would take you outside
 - Write the plan to `{{report-path}}` before implementation, and keep the file
   current. Append the repository's stage-ledger table at every stage transition
   and round boundary, plus a per-round adjudication table. Never delete history.
+- **Human steps are reported, not waited on.** When the work needs something
+  only a human can do — a secret, a setting, a hands-on check — and the change
+  can still be verified without it, keep going: list each one in
+  `{{report-path}}` under a `Human follow-ups:` line for the orchestrator to
+  record on its `(HUMAN):` or `(QA):` collector; hands-on verification of
+  the finished change is always one of these. Stop BLOCKED only when your
+  own work cannot proceed until the step happens.
 - Keep the report filename and the terminal signal unique **per attempt**, not
   merely per worker. A pane-output matcher matches the existing snapshot
   immediately, so a reused pane's previous sentinel satisfies the next wait and

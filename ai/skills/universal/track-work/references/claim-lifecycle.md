@@ -78,8 +78,9 @@ in the claim record, never in the label.
   Immediately before publication the routine producer re-reads the
   markers and trusted comment lineage; a newer trusted claim/release or marker
   drift stops the stale append and leaves the visible state for recovery. The
-  transaction itself rejects a closed issue, an assignee not proven by the
-  predecessor chain, and any ownership marker outside the exact approved plan;
+  transaction itself rejects a closed issue, an issue labelled `human`, an
+  assignee not proven by the predecessor chain, and any ownership marker
+  outside the exact approved plan;
   caller-side resolver checks are not authorization it inherits by assumption.
 - **A failed comment response is not evidence of absence.** The producer
   re-reads all comments and searches for a new comment by the authenticated

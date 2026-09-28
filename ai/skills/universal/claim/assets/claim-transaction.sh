@@ -624,6 +624,9 @@ claim_blockers_absent() {
             [ "$live_label" = "$claim_label" ] || [ "$live_label" = "$model_label" ] || return 1
             ;;
         esac
+        # Human-only work (a (HUMAN)/(QA) collector or precondition) is never
+        # claimable; GitHub label names compare case-insensitively.
+        [ "$(printf '%s' "$live_label" | tr '[:upper:]' '[:lower:]')" != human ] || return 1
     done < <(jq -r '.labels[]?.name' "$snapshot")
 }
 

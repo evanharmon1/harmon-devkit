@@ -147,7 +147,11 @@ linked PR already implementing it, that is a `blocker` — do not claim without
 explicit confirmation from the user. This is the first of the three
 escalations the preamble exempts from approval-by-invocation: invoking
 `/claim` approves *claiming* the issue, not overriding somebody else's
-ownership of it or reopening settled work. Then look for:
+ownership of it or reopening settled work. An issue labelled **`human`** — a
+`(HUMAN):`/`(QA):` collector or other work only a human can do — is not
+claimable at all: stop and report it, with no confirmation path, because no
+agent stage downstream of a claim may act on it (`track-work` §5). Then look
+for:
 
 - **Stale references** — files, APIs, or docs the issue mentions that no
   longer match the live tree.
@@ -256,7 +260,11 @@ All four checks run for **every** issue.
   so, say how the work is sequenced so CI and applies stay green around it —
   typically a phase gate (a bool variable defaulting off, gating the dependent
   resources, flipped in a follow-up PR) rather than one apply that partially
-  fails.
+  fails. Such a step is never a `[HUMAN]` criterion on this issue
+  (`track-work` §5): one that can follow the merge is an item on its
+  `(HUMAN):` or `(QA):` collector and does not hold this issue open; one the
+  work cannot start without is a `blocker` until it exists as its own `human`
+  issue this one is blocked by.
 - **Plan-vs-apply blind spots** — where can the dry-run gate (`terraform
   plan`, a `--dry-run` script, a lint pass) structurally not see the failure?
   Create-time authorization and eventual verification both pass plan and fail

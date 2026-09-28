@@ -70,7 +70,11 @@ must stay in this position when present.
 criterion is a rendered task-list item whose text starts with `[CI]` or
 `[HUMAN]`, case-insensitively. A prose bullet is not a criterion, and a task
 item without one of those tags is incomplete. This shape is also the shape
-Foreman consumes.
+Foreman consumes. On an issue an agent will implement, a human-only step is
+not a criterion: it goes to its `(HUMAN):` or `(QA):` collector and is
+mentioned under `## Out of scope`, or, when the work cannot start without it,
+becomes its own `human` issue that blocks this one (SKILL.md §5, *Human tasks
+go to a collector*).
 
 The body stays inside the mechanized authoring profile the checker can decide:
 prose, ATX headings, fenced code blocks opened at column 0, `- [ ] text` task

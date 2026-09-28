@@ -288,6 +288,10 @@ scenario '{"assignees":[],"labels":[{"name":"claim:claude"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "an unapproved competing ownership label must be rejected"
 [ ! -s "$log" ] || fail "a competing marker must trigger zero writes"
+scenario '{"assignees":[],"labels":[{"name":"Human"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a human-labelled issue must be rejected"
+[ ! -s "$log" ] || fail "a human-labelled issue must trigger zero writes"
 
 echo "==> trusted family rejects mismatched family and model-shaped claim labels"
 for mismatched_label in claim:gpt claim:gpt:terra; do
