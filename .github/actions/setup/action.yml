@@ -30,7 +30,7 @@ runs:
         python-version: "3.14"
     # uv provides uvx for pinned Semgrep CE and the pinned
     # foreman CLI (see taskfiles/foreman.yml).
-    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
     - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
@@ -164,6 +164,6 @@ runs:
       run: |
         if ! command -v snyk >/dev/null 2>&1; then
           # renovate: datasource=npm depName=snyk
-          SNYK_VERSION=1.1307.3
+          SNYK_VERSION=1.1307.4
           npm install --global "snyk@${SNYK_VERSION}"
         fi
