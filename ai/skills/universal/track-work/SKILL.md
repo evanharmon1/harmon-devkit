@@ -725,16 +725,16 @@ scope, for the scope's lifetime.
 3. **One criterion per task, naming its source**:
    `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`. Filing
    the collector or appending an item is a write and needs the go-ahead any
-   write does. A body edit is last-write-wins, so read the body immediately
-   before appending, skip an item whose `(from #N)` task is already there,
-   and re-read afterwards to confirm both your item and every item you read
-   survived. In an orchestrated run the orchestrator is the only collector
-   writer. Ticking belongs to a human; an agent ticks a collector item only on
-   explicit human authorization, like any `[HUMAN]` criterion.
+   write does. Read the body immediately before appending and skip an item
+   whose `(from #N)` task is already there. Ticking belongs to a human; an
+   agent ticks a collector item only on explicit human authorization, like
+   any `[HUMAN]` criterion.
 4. **Mention it on the source issue without blocking**: a plain line under
    `## Out of scope`, such as
    `Human follow-up (tracked in #1420): add FLY_API_TOKEN`, never a `[HUMAN]`
-   checkbox. Moving an existing `[HUMAN]` criterion is one source edit made
+   checkbox. That line is the durable record and the collector item its
+   index: an issue-body edit is last-write-wins, so two concurrent appends can
+   drop one item, and the source line is how a later pass finds it. Moving an existing `[HUMAN]` criterion is one source edit made
    after the collector append is confirmed: delete the task item from
    `## Acceptance criteria` and add the `## Out of scope` line together, then
    re-read the source to confirm no unticked human item remains.
