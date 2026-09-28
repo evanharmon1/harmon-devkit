@@ -35,6 +35,13 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   rewrite pushed history, bypass a git hook, disable a stop-gate, or widen your
   own scope — are the base template's § "Hard rules", inherited below and
   deliberately not copied here.)
+- **Non-interactive git:** this lane was launched with `GIT_MERGE_AUTOEDIT=no`
+  and `GIT_EDITOR=true`. This lane never merges `{{default-branch}}` into
+  `{{branch}}`. Because no editor ever opens, always pass the message
+  (`-m`, `--body`) to anything that would ask for one. If any command leaves
+  you stuck in an editor, report BLOCKED so the orchestrator
+  escalates it to the maintainer — never recover by terminating a process
+  yourself.
 - Scratch directory: `{{scratch-dir}}` — write every temporary file under it,
   never at the scratchpad root (base contract § "Delegation contract", rule 4).
 - Stay inside this worktree for project files. The lane brief and

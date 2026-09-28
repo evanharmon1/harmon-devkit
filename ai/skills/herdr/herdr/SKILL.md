@@ -125,6 +125,8 @@ Submit work through the agent surface:
 herdr agent prompt reviewer "Review the current diff and report only actionable findings." --wait --timeout 120000
 ```
 
+The `--timeout` on `agent prompt --wait`, `agent wait`, and `pane wait-output` is in **milliseconds**: `120000` is two minutes, and `--timeout 3600` expires after 3.6 seconds, not an hour. An expired wait exits non-zero; never follow it with `; echo` or `|| true`, which would make the expiry read as a settle.
+
 `agent prompt` honors the pane's live bracketed-paste mode and sends text followed by encoded Enter after a short delay. It rejects an agent already waiting at an approval or question dialog with `agent_blocked` before sending any input. Inspect the blocked UI and ask the user before answering it. For normal agent work, `--wait` is enough: it waits for the first settled `idle`, `done`, or `blocked` state. Do not repeat those defaults with `--until`.
 
 A prompt sent from a non-working state must produce an observed lifecycle change within five seconds. Otherwise Herdr returns `agent_prompt_stalled` instead of waiting indefinitely. This wait tracks lifecycle state, not an individual turn; if the agent is already working, completion of the active turn may satisfy it.

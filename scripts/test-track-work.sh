@@ -3199,6 +3199,17 @@ if grep -Fq 'Post a new `Claiming —` comment' "$implement_skill"; then
     fail "/implement must not retain a manual claim-comment refresh path"
 fi
 
+echo "==> implement delegates claiming safely when an issue is unclaimed"
+for required in \
+    'invoke `/claim`' \
+    'where the harness does not' \
+    'expose the Skill tool, read and follow `/claim`'"'"'s `SKILL.md` directly' \
+    'Preserve target provenance: if the target issue was inferred' \
+    'confirm the inferred target with the user before'; do
+    grep -Fq "$required" "$implement_skill" ||
+        fail "/implement unclaimed handoff contract is missing: $required"
+done
+
 echo "==> claim lifecycle consumers preserve chain-owned cleanup targets"
 retro_skill="./ai/skills/universal/retro/SKILL.md"
 grep -Fq 'deduplicated assignee-login set' "$claim_lifecycle" ||

@@ -147,9 +147,11 @@ local diff. Work in PR-sized units; a PR handed to a human is the deliverable.
 **The loop is the stage skills; this section is the policy they run under.**
 `/orchestrate` is the session's standing operating mode; it dispatches
 `/implement` (claimed issue → gates → draft PR), `/review` (both confidence
-stages), and `/integrate` (draft → ready for review). `/claim` comes first but
-is **user-invoked** — the user typing it authorizes its issue writes — and
-`/implement` never claims. There is **no `dev-loop` skill** — those stages *are*
+stages), and `/integrate` (draft → ready for review). `/claim` comes first —
+agents can invoke `/claim` when appropriate without asking for
+confirmation (or it can be user-invoked) to ensure the issue is verified and
+claimed before implementation begins; `/claim` owns the claim writes, and
+`/implement` never claims directly. There is **no `dev-loop` skill** — those stages *are*
 the loop; retired names map on (`gauntlet` → `review`, `shepherd` →
 `integrate`), and a pin still shipping a predecessor runs it under this policy.
 The skills carry the procedure — round mechanics, adjudication records, review
@@ -160,7 +162,7 @@ this section is the whole contract and its invariants are owed anyway; where a
 **vendored** skill states a different cap, floor, or exit condition, **this file wins**.
 
 ```text
-/claim (user) → /implement [ code → task verify → challenge → review → task security → DRAFT PR ]
+/claim → /implement [ code → task verify → challenge → review → task security → DRAFT PR ]
   → /integrate [ CI → deferred findings → reviewers → readiness gate ]
   → ready for review → human review → human merge
 ```
