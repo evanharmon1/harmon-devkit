@@ -169,7 +169,16 @@ repos/*/issues/comments/*)
 repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
 # harmon-devkit#1173: the base events recorded between the reviewed-base
 # samples. Empty by default, so a corroborated base is recorded as before.
-repos/*/issues/*/timeline?per_page=100) file=timeline.pages.json ;;
+repos/*/issues/*/timeline?per_page=100)
+    file=timeline.pages.json
+    # A retarget that lands right after the timeline is read: the next PR
+    # read reports this base instead.
+    if [ -f "$GH_FIXTURES/base-after-timeline" ]; then
+        jq --arg b "$(cat "$GH_FIXTURES/base-after-timeline")" '.base.sha = $b' \
+            "$GH_FIXTURES/pr.json" >"$GH_FIXTURES/pr.json.tmp" &&
+            mv "$GH_FIXTURES/pr.json.tmp" "$GH_FIXTURES/pr.json"
+    fi
+    ;;
 repos/*/pulls/*/reviews?per_page=100) file=reviews.pages.json ;;
 repos/*/pulls/*/reviews/*)
     file="review-${endpoint##*/}.json"
@@ -331,7 +340,7 @@ write_defaults() {
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head},
           base:{ref:"main",sha:"3333333333333333333333333333333333333333"}}' \
         >"${fixtures}/pr.json"
-    rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" \
+    rm -f "${fixtures}/pr-json-after" "${fixtures}/pulls-call-count" "${fixtures}/base-after-timeline" \
         "${fixtures}/pr-late.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/fail-endpoint-exact"
@@ -5324,6 +5333,21 @@ grep -Fq 'issues/493/timeline' "$log" ||
 assert_base_proof unset "A→B→A retarget"
 [ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = "$head_sha" ] ||
     fail "a retarget must not suppress the reviewed-head marker"
+
+echo "==> a retarget after the timeline read, before the proof is saved, records no proof"
+new_cycle
+# Created after new_cycle, whose defaults reset would otherwise remove it.
+printf '%s\n' 4444444444444444444444444444444444444444 >"${fixtures}/base-after-timeline"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9104,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 0 clean
+rm -f "${fixtures}/base-after-timeline"
+assert_base_proof unset "retarget after the timeline read"
+grep -Fq 'after the timeline read' <<<"$check_err" ||
+    fail "the unset proof must name the late retarget: $check_err"
 
 echo "==> a base force-push inside the review window records no proof"
 printf '%s\n' '[[{"event":"base_ref_force_pushed","created_at":"2026-07-31T08:00:00Z"}]]' \

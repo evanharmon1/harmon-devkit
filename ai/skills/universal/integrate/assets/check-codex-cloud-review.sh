@@ -599,7 +599,7 @@ run_gh() {
 # Sets the per-call cap for the next `reserve` head-wait read: the wait left,
 # never below RESERVE_HEAD_READ_FLOOR_SEC.
 reserve_clamp_read() {
-    gh_call_timeout_cap=$((head_wait_sec - ($(date -u '+%s') - head_wait_started)))
+    gh_call_timeout_cap=$((head_wait_sec - (SECONDS - head_wait_started)))
     [ "$gh_call_timeout_cap" -ge "$RESERVE_HEAD_READ_FLOOR_SEC" ] ||
         gh_call_timeout_cap=$RESERVE_HEAD_READ_FLOOR_SEC
 }
@@ -1121,6 +1121,16 @@ mark_terminally_reviewed() {
                 base_proof_unset_reason="the PR timeline shows a base change at or after $base_events_anchor, carries one without a canonical time, or is not a readable page"
             fi
             [ -z "$base_events_tmp" ] || rm -rf "$base_events_tmp"
+        fi
+        # Codex integration cycle 2 on #1212: a retarget landing after the
+        # timeline snapshot but before the proof is persisted is in neither the
+        # timeline nor the earlier sample. Re-read the live base now and keep
+        # the proof only if it still corroborates.
+        if [ -n "$reviewed_base_sha" ] && [ -z "$base_proof_unset_reason" ]; then
+            base_resample=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
+                jq -r '.base.sha // empty' 2>/dev/null) || base_resample=
+            [ "$base_resample" = "$reviewed_base_sha" ] ||
+                base_proof_unset_reason="the PR base moved, or could not be re-read, after the timeline read"
         fi
         if [ -n "$reviewed_base_sha" ] && [ -n "$base_proof_unset_reason" ]; then
             printf 'codex-cloud-review: %s\n' \
@@ -2046,7 +2056,7 @@ reserve)
         die "CODEX_RESERVE_HEAD_POLL_SEC must be a non-negative integer of at most three digits"
     acquire_state_lock
 
-    head_wait_started=$(date -u '+%s')
+    head_wait_started=$SECONDS
     while :; do
         reserve_clamp_read
         provider_status=0
@@ -2057,7 +2067,7 @@ reserve)
             die "cannot confirm the open PR head"
         fi
         [ "$live_head" != "$head" ] || break
-        head_wait_elapsed=$(($(date -u '+%s') - head_wait_started))
+        head_wait_elapsed=$((SECONDS - head_wait_started))
         [ "$head_wait_elapsed" -lt "$head_wait_sec" ] || break
         # The poll interval is uncapped, so never sleep past the remaining
         # wait: the wait bound is what bounds how long the lock is held.
