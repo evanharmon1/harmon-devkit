@@ -6,8 +6,8 @@ description: >-
   or "Refs #" in a PR description; file an issue or a follow-up discovered while
   doing something else; report whether tracked work is done; describe what an
   issue says; tick or add acceptance criteria; verify an acceptance criterion
-  while implementing an issue; route a human-only step or manual QA to its
-  milestone's (HUMAN)/(QA) collector issue; mark an issue as being worked on
+  while implementing an issue; route a human-only action to its (HUMAN)
+  collector or manual QA to the repository's standing (QA) issue; mark an issue as being worked on
   by an agent (claim it — label, assignee, project card); or close an issue and pick a
   close reason. Covers `gh issue create/edit/close/comment`,
   `gh project`/Projects V2 field writes, and PR bodies alike,
@@ -694,9 +694,12 @@ write only criteria the agent can verify, and route every human step to a
 | `(QA):` | human verification: hands-on, exploratory, or acceptance testing | **one per repository**, standing for the QA role or team; no milestone, no parent, stays open as the running queue | `(QA): Verify shipped work by hand` |
 
 A `(HUMAN):` collector's **scope** is the source issue's milestone; failing
-that, its `epic` parent; failing both, the repository itself. An epic's
+that, its `epic` parent; failing both, the repository itself. Read these live
+(`gh issue view <n> --json milestone,parent`, and the parent's labels to
+confirm it is an `epic`) rather than from session context. An epic's
 `(HUMAN):` collector lives in the epic's repository, and a source in another
-repository cites it as `owner/repo#N`. An item stays on the collector it was
+repository cites it as `owner/repo#N` (a full issue URL across hosts). An
+item stays on the collector it was
 filed to even if its source later changes scope. The `(QA):` issue has no
 scope ladder: every QA item goes to the source repository's one `(QA):`
 issue, whatever milestone or epic the source belongs to; milestones and epics
@@ -736,7 +739,8 @@ reference it rather than contain it.
    without them.
 3. **One criterion per task, naming its source**:
    `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`, with
-   the source written `owner/repo#N` when it lives in another repository. A
+   the source written `owner/repo#N` when it lives in another repository (a
+   full issue URL across hosts). A
    `(QA):` item may also name the milestone or epic it verifies:
    `- [ ] [HUMAN] Verify remote environments end to end (from #1412, v1.2)`. Filing
    the collector or appending an item is a write and needs the go-ahead any

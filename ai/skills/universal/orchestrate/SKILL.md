@@ -83,8 +83,10 @@ Build and publish the plan in this order:
    list; issue-body line numbers are hints, never evidence. Remove `done`
    issues from dispatch waves without erasing their verified verdict. An
    issue labelled `human` — a `(HUMAN):`/`(QA):` collector or other
-   human-only work — is never dispatched: leave it out of the waves and name
-   it in the run's human-work summary instead.
+   human-only work — is never dispatched, so drop it from the slate before
+   re-verifying: it never enters `plan.issues`, a wave, or a lane (the plan
+   schema has no verdict for it), and the run's human-work summary names it
+   instead.
 3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
    the complete shared-path intersection for each overlapping pair, choose
    `serialize` or `split`, and record the resulting merge dependency. A split
@@ -567,9 +569,10 @@ can do, queue it for its collector (`track-work` §5): an action for the
 a verification for the repository's standing `(QA):` issue — and keep
 the lane moving unless the step is a genuine precondition, which needs its
 own `human` issue blocking the lane's issue. A lane report is not
-authorization for an issue write: present the queued collector items and
-precondition issues together for the operator's go-ahead, then make those
-writes yourself as the run's only collector writer. The run's handoff ends
+authorization for an issue write: present the whole batch — the collector
+items, any precondition issues and their blocked-by edges, and each source
+issue's `## Out of scope` follow-up line — for the operator's go-ahead, then
+make those writes yourself as the run's only collector writer. The run's handoff ends
 with a human-work summary — every open `(HUMAN):` collector the run
 appended to or whose scope covers the slate, the `(QA):` issue's items that
 came from the slate, each with its unticked items, plus any `human`
