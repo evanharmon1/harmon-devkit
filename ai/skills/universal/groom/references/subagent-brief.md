@@ -42,8 +42,8 @@ For each issue:
 7. If you see a natural parent/child relationship among issues IN YOUR
    CLUSTER, or a milestone proposal in any of the 4 actions (`create`,
    `rename`, `widen`, `close`) with the issues and a one-line reason, or a
-   spec-worthy theme (a thread that has grown to warrant an OpenSpec, BMAD, or
-   ADR spec rather than piecemeal issues) with candidate issues and reason,
+   spec-worthy theme (a thread that has grown to warrant a BMAD or ADR spec
+   rather than piecemeal issues) with candidate issues and reason,
    note them in your summary (not in the JSONL row) — the consolidation step
    collects these separately.
 8. If you notice a defect in the tracker or tooling itself while verifying
