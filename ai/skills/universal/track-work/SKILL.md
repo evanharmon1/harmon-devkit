@@ -728,7 +728,8 @@ changes scope.
    `label-registry.json`, or one that predates them), return the draft to the
    operator instead of filing it without them.
 3. **One criterion per task, naming its source**:
-   `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`. Filing
+   `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`, with
+   the source written `owner/repo#N` when it lives in another repository. Filing
    the collector or appending an item is a write and needs the go-ahead any
    write does. Read the body immediately before appending and skip only an
    item already there for the same task from the same source — one source
