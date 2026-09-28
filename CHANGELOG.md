@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.49.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.48.0...v0.49.0) (2026-09-28)
+
+
+### Features
+
+* **skills:** route human-only work to (HUMAN)/(QA) collector issues ([#1230](https://github.com/evanharmon1/harmon-devkit/issues/1230)) ([849d293](https://github.com/evanharmon1/harmon-devkit/commit/849d293a65d7fd14e153f1b5bf4ce71d715d785d))
+
 ## [0.48.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.47.0...v0.48.0) (2026-09-28)
 
 
