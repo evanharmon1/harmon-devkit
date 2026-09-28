@@ -25,11 +25,12 @@ below are exactly what it checks.
 ## The verdicts
 
 - `CLOSE-done` — the work shipped. Evidence: a merged PR, a file that now
-  exists, or a removed feature. Unticked `[HUMAN]` follow-ups do not turn a
-  shipped issue into `KEEP`: say in `reason` which items move to the
-  milestone's `(HUMAN):`/`(QA):` collector (track-work §5) before the close is
-  applied. An issue labelled `human` is the exception — its `[HUMAN]`
-  criteria are the work itself, so it is done only when they are ticked.
+  exists, or a removed feature. A shipped issue still holding unticked
+  `[HUMAN]` follow-ups cannot be closed `completed` yet: verdict it `KEEP`
+  with a `reason` naming the items to move to its `(HUMAN):`/`(QA):`
+  collector (track-work §5). Once that move is made, the next run closes it.
+  On an issue labelled `human` those criteria are the work itself, not
+  follow-ups.
 - `CLOSE-obsolete` — the need it described no longer exists.
 - `CLOSE-dup-of-#N` — a literal duplicate of open issue `#N` in the same
   repository. Evidence should still name what makes it a duplicate.

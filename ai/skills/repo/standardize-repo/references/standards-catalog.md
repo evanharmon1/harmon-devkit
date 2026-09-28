@@ -955,7 +955,7 @@ verify the owner-wide associations and fleet state, leave the field in place.
 
 **Human work is collected, not scattered.** Steps only a human can do live on
 one `(HUMAN):` (actions) and one `(QA):` (verification) collector issue per
-milestone or epic, labelled `human` + `umbrella` and typed `Task`, instead of
+milestone, epic, or (for ungrouped work) repository, labelled `human` + `umbrella` and typed `Task`, instead of
 as blocking `[HUMAN]` criteria on agent-dispatchable issues. The labels come
 from the target's `label-registry.json`; the convention is in its
 `docs/project-management.md` (Hierarchy) and `track-work` §5. When auditing,

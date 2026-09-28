@@ -71,9 +71,10 @@ criterion is a rendered task-list item whose text starts with `[CI]` or
 `[HUMAN]`, case-insensitively. A prose bullet is not a criterion, and a task
 item without one of those tags is incomplete. This shape is also the shape
 Foreman consumes. On an issue an agent will implement, a human-only step is
-not a criterion: it goes to the milestone's `(HUMAN):` or `(QA):` collector
-and is mentioned under `## Out of scope` (SKILL.md §5, *Human tasks go to a
-collector*).
+not a criterion: it goes to its `(HUMAN):` or `(QA):` collector and is
+mentioned under `## Out of scope`, or, when the work cannot start without it,
+becomes its own `human` issue that blocks this one (SKILL.md §5, *Human tasks
+go to a collector*).
 
 The body stays inside the mechanized authoring profile the checker can decide:
 prose, ATX headings, fenced code blocks opened at column 0, `- [ ] text` task
@@ -189,8 +190,8 @@ invalid or unreadable present manifest fails closed. When it is absent, the
 checker performs one bounded `gh label list --limit 1000` read against the
 target repository. Without a manifest there is no repository-declared writer
 policy to infer, so agent proposals are limited to the canonical axes, the
-explicitly named work type, `ai-generated`, `needs-triage`, and the
-`human`/`umbrella` collector pair; other live labels remain human-only. The checkout must have a GitHub remote matching
+explicitly named work type, `ai-generated`, and `needs-triage`; other live
+labels remain human-only. The checkout must have a GitHub remote matching
 `--repo`. The checker never applies labels or creates an issue.
 
 An `open_values` family is the manifest-backed case that needs a bounded live

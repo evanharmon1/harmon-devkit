@@ -1730,27 +1730,18 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
 grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
     fail "fallback label read must be repo-bound and bounded"
 
-echo "==> metadata: the fallback lets an agent file a (HUMAN)/(QA) collector"
+echo "==> metadata: the fallback keeps the collector labels human-only"
 _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' task area:fixture domain:fixture \
-    ai-generated human umbrella epic)" \
+    ai-generated human umbrella)" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(QA): Verify the fixture release end to end' \
     --body-file "$valid_body" --agent-authored --work-type-label task \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label ai-generated --label human --label umbrella >"$tmp/metadata.out" 2>&1 || _rc=$?
-[ "$_rc" = 0 ] || fail "an agent-filed collector should pass the fallback: $(cat "$tmp/metadata.out")"
-_rc=0
-METADATA_GH_LABELS="$(printf '%s\n' task area:fixture domain:fixture \
-    ai-generated human umbrella epic)" \
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title '(tests): Keep epic human-only in the fallback' \
-    --body-file "$valid_body" --agent-authored --work-type-label task \
-    --label area:fixture --inapplicable layer --label domain:fixture \
-    --label ai-generated --label epic >"$tmp/metadata.out" 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "the fallback must keep epic human-only (got $_rc)"
-grep -q "label 'epic' is not writable by an agent" "$tmp/metadata.out" ||
-    fail "the epic rejection should come from the fallback writer record"
+[ "$_rc" = 1 ] || fail "without a manifest, human/umbrella have no declared semantics and stay human-only (got $_rc)"
+grep -q "label 'human' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "the rejection should name the human label: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: forbidden fallback families are case-insensitive"
 _rc=0

@@ -158,17 +158,18 @@ for a finite deliverable is `epic`, and only a perennial one is `umbrella`.
 only a human can do — secrets, settings, accounts, approvals, a hands-on
 acceptance pass — do not size them as chunks, and do not bury them as
 `[HUMAN]` criteria on the chunks that surfaced them: each one would park its
-chunk until the maintainer circles back. Propose, per milestone (or per `epic`
-parent when there is no milestone), a `(HUMAN):` collector for human actions
-and a `(QA):` collector for human verification, labelled `human` + `umbrella`
-and classified `Task`, each holding one `[HUMAN]` criterion per step that names
-its source chunk (`track-work` §5, *Human tasks go to a collector*). Propose
-only a collector that has items, and reuse an open one for the same milestone
-or epic rather than filing a second. A collector is never claimed or
-dispatched, so it takes no edge in the §4 graph; a chunk that genuinely cannot
-start until a human step happens is `blocked` on that step (§4's label-plus-note
-form, naming the collector item), never given a blocked-by edge to the whole
-collector.
+chunk until the maintainer circles back. Propose, per collector scope
+(milestone, else `epic` parent, else the repository — `track-work` §5, *Human
+tasks go to a collector*), a `(HUMAN):` collector for human actions and a
+`(QA):` collector for human verification, labelled `human` + `umbrella` and
+classified `Task`, each holding one `[HUMAN]` criterion per step that names its
+source chunk. Propose only a collector that has items, and reuse (reopening if
+closed) the existing one for the same scope rather than filing a second. A
+collector is never claimed or dispatched and takes no edge in the §4 graph.
+The one exception is a **precondition** — a human step a chunk cannot start
+without: propose it as its own standalone `human` issue and give the chunk an
+ordinary §4 blocked-by edge on it, so the graph keeps the chunk out of the
+ready set until a human closes that issue.
 
 ## 4. Order and record dependencies
 
@@ -247,11 +248,10 @@ judgment. The bar, concretely:
   run in the wrong directory either omits the required `[CI]`/`[HUMAN]`
   criteria on a foreman target or imposes them on a repo whose tooling
   never reads them. The contract itself: the heading `## Acceptance
-  Criteria`, `[CI]` items mapping to named automated tests, and `[HUMAN]`
-  items only for a human step that genuinely gates the chunk's own
-  completion. A human follow-up is not a chunk criterion on any target: it
-  goes on its collector (§3), and the chunk mentions it under `## Out of
-  scope` by the collector's title.
+  Criteria` and `[CI]` items mapping to named automated tests. A human step
+  is not a chunk criterion on any target: a follow-up goes on its collector
+  (§3) and the chunk mentions it under `## Out of scope` by the collector's
+  title; a precondition is its own `human` issue the chunk is blocked by.
 - **Perishable claims** follow `track-work` §5: invariant / observed violation
   (dated) / `Verify` block with the command that re-checks it. A breakdown is
   written well before its last chunk is implemented — by then, every
@@ -282,7 +282,8 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   sub-issues, flat issues;
 - the dependency graph — every edge, plus the resulting ready set and waves;
 - the human-task and QA collectors (§3), each marked new or reused, with every
-  item and the chunk it comes from;
+  item and the chunk it comes from, plus any standalone `human` precondition
+  issues and the chunks they block;
 - labels and fields per issue, from §7's vocabulary read;
 - **the source issue's disposition, when the input was a live issue** — a big
   issue left open and unmarked after its chunks are filed is a second,

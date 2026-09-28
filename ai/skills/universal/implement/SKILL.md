@@ -284,11 +284,11 @@ Two further obligations that are easy to defer and expensive to defer:
 - **Human steps go to a collector, not onto this issue's critical path.** When
   the work turns up something only a human can do — a secret to set, a
   setting to flip, a hands-on check — do not stop to wait for it and do not add
-  a `[HUMAN]` criterion here: append it to the milestone's `(HUMAN):` or
-  `(QA):` collector (`track-work` §5, under the go-ahead that write needs) and
-  name it in the PR body. Only a step the change cannot be verified without is
-  a blocker. An issue labelled `human` is never implemented; it was a `/claim`
-  blocker.
+  a `[HUMAN]` criterion here: append it to its `(HUMAN):` or `(QA):`
+  collector (`track-work` §5, under the go-ahead that write needs) and name it
+  in the PR body. Only a step the change cannot be verified without is a
+  blocker. An issue labelled `human` is never implemented; `/claim` refuses
+  it.
 
 ## 5. Definition-of-done gate
 

@@ -392,9 +392,6 @@ else
         domain:*) printf '%s|domain|classification|human,agent|true\n' "$label" ;;
         ai-generated) printf '%s|provenance|provenance|human,agent|false\n' "$label" ;;
         needs-triage) printf '%s|workflow|workflow|human,agent|false\n' "$label" ;;
-        # The (HUMAN)/(QA) collector pair (SKILL.md section 5) is agent-filed.
-        human) printf '%s|human-work|meta|human,agent|false\n' "$label" ;;
-        umbrella) printf '%s|initiative|meta|human,agent|true\n' "$label" ;;
         *)
             if [ -n "$work_type_label" ] && [ "$label_key" = "$(printf '%s' "$work_type_label" | tr '[:upper:]' '[:lower:]')" ]; then
                 printf '%s|work-type|work-type|human,agent|false\n' "$label"

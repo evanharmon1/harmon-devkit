@@ -535,7 +535,7 @@ wait. So does a scope question: if settling a finding would take you outside
   only a human can do — a secret, a setting, a hands-on check — and the change
   can still be verified without it, keep going: list each one in
   `{{report-path}}` under a `Human follow-ups:` line for the orchestrator to
-  record on the milestone's `(HUMAN):` or `(QA):` collector. Stop BLOCKED only
+  record on its `(HUMAN):` or `(QA):` collector. Stop BLOCKED only
   when the change cannot be verified until the step happens.
 - Keep the report filename and the terminal signal unique **per attempt**, not
   merely per worker. A pane-output matcher matches the existing snapshot
