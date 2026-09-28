@@ -414,7 +414,10 @@ that SHA. For `pull_request` runs it keeps the newest run of each workflow,
 so a completed cancelled or failed run superseded by a re-run no longer counts
 (the list's status decides that a superseded run completed; one still in
 flight stays pending), counts every run of any other event, and reads each
-counted run's own `.status` and `.conclusion`; never settle CI with
+counted run's own `.status` and `.conclusion`. As in GitHub's own check
+rollup, the newest `pull_request` run is the verdict even if its jobs were
+skipped, so a workflow that skips its tests on an `edited` re-run can hide an
+earlier failure; never settle CI with
 `gh run watch --exit-status` or `gh pr checks --watch`, which report stale or
 partial conclusions across re-run attempts. It covers Actions workflow runs
 GitHub has already created, not external status checks; the readiness gate

@@ -14,8 +14,10 @@
 #   attempt 3 as a success while it was still queued, another exited on a
 #   previous attempt's failure. `checks` mode never calls them; it reads each
 #   run's own `.status` and `.conclusion` from the REST run endpoint on every
-#   poll, for the exact head the caller pushed, and only the newest run of
-#   each workflow, so a superseded cancelled or failed run cannot pin it red.
+#   poll, for the exact head the caller pushed. A completed `pull_request`
+#   run superseded by a newer run of the same workflow is dropped, so a
+#   cancelled or failed run a re-run replaced cannot pin it red; every run of
+#   any other event counts.
 #
 # Portable to bash 3.2 (macOS): no arrays of arrays, no mapfile, no GNU-only
 # date or sleep flags. GNU `timeout` (or Homebrew `gtimeout`) bounds every
@@ -50,16 +52,21 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         --head is REQUIRED: the full 40-hex SHA you pushed. While the PR
         still reports another head (GitHub lags after a push) the poll is
         not settled. Each poll lists the runs for exactly --head (paged
-        explicitly until a short page), keeps only the NEWEST run of each
-        (workflow, event) pair -- highest run_number, then created_at, then
-        id -- so a cancelled or failed run superseded by a re-run of the
-        same workflow no longer counts, and reads that run's own `.status`,
-        `.conclusion`, and `.run_attempt`. The PR head is re-read after the
-        run reads; a settle is reported only if it still equals --head.
-        Settled means every newest run is `completed`; `skipped` runs are
-        completed and never counted as pending. A superseded run is dropped
-        on the status the run list reports for it, without reading it
-        again. Covers Actions workflow runs
+        explicitly until a short page). For `pull_request` and
+        `pull_request_target` runs it keeps the NEWEST run of each workflow
+        -- highest run_number, then created_at, then id -- and drops an
+        older run once the run list reports it completed, so a cancelled
+        or failed run a re-run replaced no longer counts; an older run
+        still in flight stays pending. Every run of any other event counts.
+        It reads each counted run's own `.status`, `.conclusion`, and
+        `.run_attempt`. The PR head is re-read after the run reads; a
+        settle is reported only if it still equals --head. Settled means
+        every counted run is `completed`; `skipped` runs are completed and
+        never counted as pending. Like GitHub's own check rollup, the newest
+        pull_request run is the verdict even when its jobs were skipped, so
+        a workflow that skips its tests on an `edited` re-run can hide an
+        earlier failure: the readiness gate owns the final verdict.
+        Covers Actions workflow runs
         only, not external status checks, and cannot see a run GitHub has
         not created yet.
         --interval-seconds  poll interval (default 30)
@@ -257,9 +264,9 @@ head_sha() {
     printf '%s\n' "$sha"
 }
 
-# The id of the NEWEST run of each (workflow_id, event) pair for exactly this
-# head, one per line, followed by a final "superseded=N" line. A run
-# superseded by a later run of the same workflow and event (a cancelled
+# The id of every run to count for exactly this head, one per line, followed
+# by a final "superseded=N" line. A completed pull_request run superseded by a
+# later run of the same workflow and event (a cancelled
 # `pull_request` run replaced by its `edited` re-run, a failed guard that
 # passed after a body edit) is dropped here, so it is never read or counted.
 # Paged by an explicit &page=K until a short page; never gh's own --paginate.
