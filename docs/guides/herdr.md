@@ -251,9 +251,12 @@ belongs in a separate user, container, or VM, not a sibling pane.
    `agent explain` it and decide — nudge, take over, or retire — rather than
    waiting again blind. `--timeout` is milliseconds; an orchestrated run
    settles with the orchestrate skill's
-   `assets/settle-wait.sh agent <name> --until <state> --timeout-seconds <s>`,
-   which takes seconds, converts, and reports expiry as a non-zero exit — never
-   followed by `; echo` or `|| true`. For multi-lane Dev Loop runs, invoke the orchestrate skill's
+   `assets/settle-wait.sh agent <name> --timeout-seconds <s>`, which takes
+   seconds, converts, waits on herdr's default settled set, then reads the
+   state with `agent get` and exits 0 only for `idle` or `done` — `blocked`,
+   `unknown`, or an unreadable state exits 5, and expiry is herdr's own
+   non-zero exit — never followed by `; echo` or `|| true` (`--until <state>`
+   is for a state-specific wait). For multi-lane Dev Loop runs, invoke the orchestrate skill's
    `assets/lane-watch.sh` as a Bash script in the persistent monitor primitive;
    its state file deduplicates report-first sentinels across re-arms and it
    continues watching review activity briefly after promotion. Never paste the

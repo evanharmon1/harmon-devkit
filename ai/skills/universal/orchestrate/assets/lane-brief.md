@@ -36,13 +36,8 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   own scope — are the base template's § "Hard rules", inherited below and
   deliberately not copied here.)
 - **Non-interactive git:** this lane was launched with `GIT_MERGE_AUTOEDIT=no`
-  and `GIT_EDITOR=true`. This brief does not authorize merging
-  `{{default-branch}}` into `{{branch}}`; if and where a relay from the
-  orchestrator does, the only form is
-  `git merge --no-edit origin/{{default-branch}}`. If that merge stops on a
-  conflict, resolve the files, `git add` each one, then finish with
-  `git commit --no-edit --cleanup=strip`; to back out instead,
-  `git merge --abort`. Because no editor ever opens, always pass the message
+  and `GIT_EDITOR=true`. This lane never merges `{{default-branch}}` into
+  `{{branch}}`. Because no editor ever opens, always pass the message
   (`-m`, `--body`) to anything that would ask for one. If any command leaves
   you stuck in an editor, report BLOCKED so the orchestrator
   escalates it to the maintainer — never recover by terminating a process

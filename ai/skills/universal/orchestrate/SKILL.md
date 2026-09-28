@@ -397,7 +397,7 @@ confirm the prompt was delivered, then settle:
 
 ```bash
 herdr agent prompt <lane> "<text>" --wait --until working --timeout 30000
-bash <skill-dir>/assets/settle-wait.sh agent <lane> --until <settled-state> --timeout-seconds 3600
+bash <skill-dir>/assets/settle-wait.sh agent <lane> --timeout-seconds 3600
 bash <skill-dir>/assets/settle-wait.sh checks --repo <owner/repo> --pr <n> --head <pushed-sha> --timeout-seconds 1800 [--interval-seconds 30]
 ```
 
@@ -407,14 +407,21 @@ settling straight after a prompt without it can return on the idle state the
 lane was in before the prompt arrived. Every longer wait goes through the
 asset, which converts seconds to herdr's milliseconds itself; never pass a
 raw `--timeout` to `herdr agent wait`, and never use `agent prompt --wait`
-for the long settle. `checks` takes the full SHA you pushed as `--head`
-(required): while the PR still reports another head it is not settled, and it
+for the long settle. Without `--until`, `agent` waits on herdr's default
+settled set (`idle`, `done`, `blocked`), then reads the lane with
+`herdr agent get` and settles only on `idle` (tab seen) or `done` (the same
+state, unseen); `--until <state>` is for a state-specific wait. `checks`
+takes the full SHA you pushed as `--head` (required): while the PR still reports another head it is not settled, and it
 reports a settle only when the PR head, re-read after the run reads, is still
-that SHA. For `pull_request` runs it keeps the newest run of each workflow,
-so a completed cancelled or failed run superseded by a re-run no longer counts
-(the list's status decides that a superseded run completed; one still in
-flight stays pending), counts every run of any other event, and reads each
-counted run's own `.status` and `.conclusion`. As in GitHub's own check
+that SHA. A `pull_request` run is scoped to `--pr` by its `pull_requests[]`:
+one naming only other PRs is ignored, and one with an empty or unprovable
+association (fork PRs list none) is counted on its own, never collapsed or
+used to supersede. Of this PR's runs it keeps the newest run of each workflow,
+so a cancelled or failed run superseded by a re-run no longer counts (the
+superseded run's own read decides that it completed; one whose read is not
+completed stays pending); it counts every run of any other event, reads each
+counted run's own `.status` and `.conclusion`, and is indeterminate when the
+run list reports GitHub's 1000-run search cap. As in GitHub's own check
 rollup, the newest `pull_request` run is the verdict even if its jobs were
 skipped, so a workflow that skips its tests on an `edited` re-run can hide an
 earlier failure; never settle CI with
@@ -426,10 +433,13 @@ still owns the full check verdict.
 The exit status is the verdict, and it means different things per mode. In
 `checks` mode: 0 settled green, 1 settled with a failing run, 2 usage, 3
 indeterminate (the PR head was not `--head` at the last poll, or that poll
-could not be read or listed no runs), 4 expired with runs pending. In `agent` mode the status is herdr's
-own: 0 settled and anything else not settled — herdr's 1 (server error) and
-2 (usage) are not the `checks` codes — with 124 when the backstop stopped an
-overrunning herdr (137 if it had to be killed). Never follow a wait, or the delivery check, with `; echo`,
+could not be read, listed no runs, or hit the 1000-run cap), 4 expired with
+runs pending. In `agent` mode the status is herdr's own except for 0 and 5:
+0 settled (`idle` or `done`), 5 the lane is blocked at an approval or
+question, `unknown`, or unreadable, and any other status is herdr's own and
+not settled — herdr's 1 (server error) and 2 (usage) are not the `checks`
+codes — with 124 when the backstop stopped an overrunning herdr (137 if it
+had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 `|| true`, or anything else that discards that status: an expired wait must
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.

@@ -4,12 +4,14 @@
 # - #1190: every herdr lane launch carries GIT_MERGE_AUTOEDIT=no and
 #   GIT_EDITOR=true, no lane guidance spells a merge (or a merging pull)
 #   without --no-edit, a conflicted merge is finished with
-#   `git commit --no-edit --cleanup=strip`, and a lane stuck in an editor is escalated rather
-#   than recovered by terminating a process.
+#   `git commit --no-edit --cleanup=strip`, the lane brief grants no merge of
+#   the default branch at all, and a lane stuck in an editor is escalated
+#   rather than recovered by terminating a process.
 # - #1192: the herdr skill states the millisecond unit beside its first
 #   --timeout example, and the orchestrate skill names settle-wait.sh as the
-#   required wait primitive (delivery confirmed first, --head bound for CI)
-#   and forbids discarding a wait's exit status.
+#   required wait primitive (delivery confirmed first, an ordinary lane
+#   settle without --until so only idle or done settles, --head bound for
+#   CI) and forbids discarding a wait's exit status.
 # The settle-wait.sh behaviour itself is tested by its co-located
 # test-settle-wait.sh.
 set -euo pipefail
@@ -135,9 +137,15 @@ violations="$(bare_merges "${lane_docs[@]}")"
 [ -z "$violations" ] || fail "a merge without --no-edit in lane guidance:
 $violations"
 
-# Where a lane may merge the default branch, the command is spelled out.
+# Where a consumer's brief lets a lane merge the default branch, the skill
+# spells the command out. This skill's own lane brief grants no merge at all,
+# not even on a relay: a delegate never merges.
 contains "$skill" '`git merge --no-edit origin/<default-branch>`'
-contains "$brief" '`git merge --no-edit origin/{{default-branch}}`'
+contains "$brief" 'This lane never merges `{{default-branch}}` into `{{branch}}`.'
+if grep -nE 'git merge|relay from the orchestrator' "$brief"; then
+    fail "$brief spells a merge or a relay that could authorize one"
+fi
+contains "$brief" 'always pass the message (`-m`, `--body`) to anything that would ask for one'
 
 # ── #1190: every herdr lane launch sets GIT_MERGE_AUTOEDIT=no and ─────
 # GIT_EDITOR=true (the latter covers finishing a conflicted merge).
@@ -159,11 +167,9 @@ fi
 contains "$guide" 'each with `--env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true`'
 
 # A conflicted merge is finished without an editor, or backed out.
-for doc in "$skill" "$brief"; do
-    contains "$doc" '`git add`'
-    contains "$doc" '`git commit --no-edit --cleanup=strip`'
-    contains "$doc" '`git merge --abort`'
-done
+contains "$skill" '`git add`'
+contains "$skill" '`git commit --no-edit --cleanup=strip`'
+contains "$skill" '`git merge --abort`'
 
 # ── #1190: a stuck lane is escalated, never killed ────────────────────
 contains "$skill" 'is escalated to the orchestrator and the maintainer; it is never recovered by the lane, or the orchestrator, terminating a process'
@@ -191,9 +197,15 @@ contains "$skill" 'checks --repo <owner/repo> --pr <n> --head <pushed-sha>'
 # the settle goes through the asset. The skill and the guide agree on both.
 delivery='agent prompt <lane> "<text>" --wait --until working --timeout 30000'
 contains "$skill" "herdr $delivery"
-contains "$skill" 'settle-wait.sh agent <lane> --until <settled-state> --timeout-seconds'
+# An ordinary lane settle omits --until: herdr's success is `done` for an
+# unseen tab and `idle` once seen, so no single state can express it; the
+# asset reads the state and settles only on those two.
+contains "$skill" 'settle-wait.sh agent <lane> --timeout-seconds 3600'
 contains "$guide" '`agent prompt <name> "<brief>" --wait --until working --timeout 30000`'
-contains "$guide" '`assets/settle-wait.sh agent <name> --until <state> --timeout-seconds <s>`'
+contains "$guide" '`assets/settle-wait.sh agent <name> --timeout-seconds <s>`'
+if grep -nE 'settle-wait\.sh agent <[a-z]+> --until' "$skill" "$guide"; then
+    fail "an ordinary lane settle recipe passes --until"
+fi
 # Every raw herdr --timeout in the skill is the delivery check, and none is
 # followed by something that discards its status.
 raw="$(grep -nE 'herdr agent (wait|prompt).*--timeout [0-9]' "$skill" || true)"
@@ -207,9 +219,10 @@ fi
 
 # Agent-mode exit codes are herdr's own; the 1-4 table is checks mode's.
 contains "$skill" 'In `agent` mode the status is herdr'
+contains "$skill" '5 the lane is blocked at an approval or question'
 help="$(bash ai/skills/universal/orchestrate/assets/settle-wait.sh --help)"
 case "$help" in
-*"Exit status, agent mode:"*"124"*"Exit status, checks mode:"*) ;;
+*"Exit status, agent mode:"*"5    herdr's wait returned, but the lane is blocked"*"124"*"Exit status, checks mode:"*) ;;
 *) fail "settle-wait.sh --help does not separate agent-mode and checks-mode exits" ;;
 esac
 

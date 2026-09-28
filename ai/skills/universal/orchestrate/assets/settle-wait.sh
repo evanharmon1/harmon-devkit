@@ -14,10 +14,11 @@
 #   attempt 3 as a success while it was still queued, another exited on a
 #   previous attempt's failure. `checks` mode never calls them; it reads each
 #   run's own `.status` and `.conclusion` from the REST run endpoint on every
-#   poll, for the exact head the caller pushed. A completed `pull_request`
-#   run superseded by a newer run of the same workflow is dropped, so a
-#   cancelled or failed run a re-run replaced cannot pin it red; every run of
-#   any other event counts.
+#   poll, for the exact head the caller pushed. A `pull_request` run of this
+#   PR superseded by a newer run of the same workflow is dropped once its own
+#   read says completed, so a cancelled or failed run a re-run replaced cannot
+#   pin it red; a sibling PR's run on the same head is ignored, and every run
+#   of any other event counts.
 #
 # Portable to bash 3.2 (macOS): no arrays of arrays, no mapfile, no GNU-only
 # date or sleep flags. GNU `timeout` (or Homebrew `gtimeout`) bounds every
@@ -29,11 +30,12 @@ readonly EXIT_FAILING=1
 readonly EXIT_USAGE=2
 readonly EXIT_INDETERMINATE=3
 readonly EXIT_EXPIRED=4
+readonly EXIT_AGENT_UNSETTLED=5
 
 usage() {
     cat <<'EOF'
 Usage:
-  settle-wait.sh agent LANE --until STATE --timeout-seconds N
+  settle-wait.sh agent LANE --timeout-seconds N [--until STATE]
   settle-wait.sh checks --repo OWNER/REPO --pr N --head SHA --timeout-seconds N
                         [--interval-seconds N] [--call-timeout-seconds N]
                         [--per-page N]
@@ -41,9 +43,15 @@ Usage:
 Every duration is in SECONDS.
 
 agent   Wait for a herdr lane agent to settle. Runs
-        `herdr agent wait LANE --until STATE --timeout <N*1000>` (herdr's
-        flag is milliseconds; the conversion happens here). A GNU timeout
-        backstop of N+30s kills a herdr that overruns its own timeout.
+        `herdr agent wait LANE --timeout <N*1000>` (herdr's flag is
+        milliseconds; the conversion happens here), which returns on herdr's
+        default settled set: idle, done, or blocked. It then reads the
+        lane's state with `herdr agent get LANE` and settles only on `idle`
+        (tab seen) or `done` (the same state, unseen); `blocked`, `unknown`,
+        or a state it cannot read is not settled. With --until STATE it
+        waits for that one state instead and settles when herdr does. A GNU
+        timeout backstop of N+30s kills a herdr that overruns its own
+        timeout.
         Confirm a prompt was delivered first (`herdr agent prompt LANE "..."
         --wait --until working --timeout <ms>`), or this can settle on the
         idle state the lane was in before the prompt landed.
@@ -52,12 +60,18 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         --head is REQUIRED: the full 40-hex SHA you pushed. While the PR
         still reports another head (GitHub lags after a push) the poll is
         not settled. Each poll lists the runs for exactly --head (paged
-        explicitly until a short page). For `pull_request` and
-        `pull_request_target` runs it keeps the NEWEST run of each workflow
-        -- highest run_number, then created_at, then id -- and drops an
-        older run once the run list reports it completed, so a cancelled
-        or failed run a re-run replaced no longer counts; an older run
-        still in flight stays pending. Every run of any other event counts.
+        explicitly until a short page; a list reporting 1000 or more runs,
+        GitHub's search cap, is indeterminate). A `pull_request` or
+        `pull_request_target` run is scoped to --pr by its pull_requests[]:
+        one naming only other PRs is ignored; one naming exactly --pr joins
+        its workflow's group; one with an empty or unprovable association
+        (fork PRs list none, a shared head can list this PR beside another)
+        is counted on its own and never collapsed or used to supersede. In
+        each group it keeps the NEWEST run -- highest run_number, then
+        created_at, then id -- and reads each older run on its own, dropping
+        it only when that read says completed, so a cancelled or failed run
+        a re-run replaced no longer counts; one whose read is not completed
+        stays pending. Every run of any other event counts.
         It reads each counted run's own `.status`, `.conclusion`, and
         `.run_attempt`. The PR head is re-read after the run reads; a
         settle is reported only if it still equals --head. Settled means
@@ -73,23 +87,26 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         --call-timeout-seconds  bound on each gh call (default 30); the last
                             poll may overrun the deadline by up to one call
                             timeout per call it makes (2 head reads, the list
-                            pages, and one read per counted run)
+                            pages, and one read per counted or superseded run)
         --per-page  runs listed per page (default 100; tests)
 
 Exit status, agent mode:
-  herdr's own status, unmodified: 0 settled, anything else NOT settled
+  0    settled: the lane is idle or done (with --until: herdr reached STATE)
+  5    herdr's wait returned, but the lane is blocked at an approval or
+       question, unknown, or its state could not be read: NOT settled
+  any other non-zero status is herdr's own, unmodified, and NOT settled
   (herdr uses 1 for a server error and 2 for a usage error, which overlap
   the checks codes below and mean something different), and 124 when the
   backstop stopped a herdr that overran its own timeout (137 if it had to
-  be killed). 2 is also this
-  script's own usage error.
+  be killed). 2 is also this script's own usage error.
 
 Exit status, checks mode:
   0    settled: every newest run completed with success, neutral or skipped
   1    settled, but at least one newest run failed (FAILING lines name them)
   2    usage error, or a required tool is missing
   3    indeterminate at expiry: the PR head was not --head at the last poll,
-       or that poll could not be read or listed no runs; never a settle
+       or that poll could not be read, listed no runs, or hit GitHub's
+       1000-run search cap; never a settle
   4    expired: the timeout passed with runs on --head still pending
 
 Never follow a wait with `; echo`, `|| true`, or anything else that discards
@@ -148,7 +165,7 @@ agent)
             shift 2
             ;;
         --until)
-            [ "$#" -ge 2 ] || die_usage "--until needs a value"
+            [ "$#" -ge 2 ] && [ -n "$2" ] || die_usage "--until needs a value"
             until_state=$2
             shift 2
             ;;
@@ -167,25 +184,44 @@ agent)
     [ -n "$lane" ] || die_usage "agent mode needs a LANE"
     seconds_value "$timeout_seconds" ||
         die_usage "--timeout-seconds must be a positive integer of seconds"
-    # --until is required: herdr's default settled set includes `blocked`, so
-    # a lane stopped at an approval prompt would otherwise read as settled.
-    [ -n "$until_state" ] || die_usage "agent mode needs --until STATE"
     case "$until_state" in
     *[!a-z_]*) die_usage "invalid --until state: $until_state" ;;
     esac
     [ -n "$timeout_bin" ] || die_usage "GNU timeout (timeout or gtimeout) is required"
     command -v herdr >/dev/null 2>&1 || die_usage "herdr is not on PATH"
+    command -v jq >/dev/null 2>&1 || die_usage "jq is not on PATH"
 
     timeout_ms=$((timeout_seconds * 1000))
-    set -- herdr agent wait "$lane" --until "$until_state" --timeout "$timeout_ms"
+    if [ -n "$until_state" ]; then
+        set -- herdr agent wait "$lane" --until "$until_state" --timeout "$timeout_ms"
+    else
+        set -- herdr agent wait "$lane" --timeout "$timeout_ms"
+    fi
     "$timeout_bin" --kill-after=5 "$((timeout_seconds + 30))" "$@"
     status=$?
-    if [ "$status" -eq 0 ]; then
-        echo "SETTLED agent $lane"
-    else
+    if [ "$status" -ne 0 ]; then
         echo "NOT-SETTLED agent $lane: herdr exited $status"
+        exit "$status"
     fi
-    exit "$status"
+    if [ -n "$until_state" ]; then
+        echo "SETTLED agent $lane"
+        exit 0
+    fi
+    # herdr's default settled set is idle, done and blocked, so its 0 does
+    # not say which: read the state and settle only on idle (tab seen) or
+    # done (the same state, unseen). Anything else -- blocked at an approval
+    # or question, unknown, or a state that cannot be read -- is not settled.
+    state="$("$timeout_bin" --kill-after=2 30 herdr agent get "$lane" </dev/null 2>/dev/null |
+        jq -r '[.result.agent.agent_status?, .result.agent_status?, .agent_status?]
+               | map(select(type == "string")) | first // empty' 2>/dev/null)" || state=
+    case "$state" in
+    idle | done)
+        echo "SETTLED agent $lane state=$state"
+        exit 0
+        ;;
+    esac
+    echo "NOT-SETTLED agent $lane: state=${state:-unreadable} (not idle or done)"
+    exit "$EXIT_AGENT_UNSETTLED"
     ;;
 checks) ;;
 *) die_usage "unknown mode: $mode (expected agent or checks)" ;;
@@ -264,12 +300,15 @@ head_sha() {
     printf '%s\n' "$sha"
 }
 
-# The id of every run to count for exactly this head, one per line, followed
-# by a final "superseded=N" line. A completed pull_request run superseded by a
-# later run of the same workflow and event (a cancelled
-# `pull_request` run replaced by its `edited` re-run, a failed guard that
-# passed after a body edit) is dropped here, so it is never read or counted.
-# Paged by an explicit &page=K until a short page; never gh's own --paginate.
+# Every run to consider for exactly this head, one "KIND:ID" token per line,
+# then a final "other_pr=N" line. KIND C is a run to count. KIND S is a
+# pull_request run superseded by a newer run of the same workflow and event
+# for this PR (a cancelled `pull_request` run replaced by its `edited` re-run,
+# a failed guard that passed after a body edit): the caller reads it on its
+# own and drops it only if that read says completed, since the list can lag
+# a re-run of it. Paged by an explicit &page=K until a short page; never gh's
+# own --paginate. Returns 2 when the list reports GitHub's 1000-run search
+# cap, which it cannot page past, and 1 on any other failure.
 newest_run_ids() {
     page=1
     rows=
@@ -277,6 +316,9 @@ newest_run_ids() {
         [ "$page" -le "$max_pages" ] || return 1
         body="$(api "repos/$repo/actions/runs?head_sha=$1&per_page=$per_page&page=$page")" ||
             return 1
+        listed_total="$(printf '%s' "$body" | jq -r '.total_count | if type == "number" then . else error("no total_count") end' 2>/dev/null)" ||
+            return 1
+        [ "$listed_total" -lt 1000 ] || return 2
         page_rows="$(printf '%s' "$body" | jq -c --arg sha "$1" '
             if (.workflow_runs | type) != "array" then error("no workflow_runs")
             else .workflow_runs[]
@@ -285,7 +327,9 @@ newest_run_ids() {
                    and (.event | type) == "string"
                    and (.run_number | type) == "number"
                 then {w: .workflow_id, e: .event, n: .run_number,
-                      c: (.created_at // ""), id: .id, s: (.status // "")}
+                      c: (.created_at // ""), id: .id,
+                      p: (if (.pull_requests | type) == "array"
+                          then [.pull_requests[] | .number?] else null end)}
                 else error("foreign or malformed run") end
             end' 2>/dev/null)" || return 1
         count="$(printf '%s' "$body" | jq -r '.workflow_runs | length')" || return 1
@@ -294,22 +338,35 @@ newest_run_ids() {
         [ "$count" -ge "$per_page" ] || break
         page=$((page + 1))
     done
-    printf '%s' "$rows" | jq -rs '
-        # Only a pull_request / pull_request_target run is replaced by a newer
-        # run of the same workflow (a push or an edit re-runs it), and only
-        # once it has completed: a superseded run still in flight counts, since
-        # without cancel-in-progress it can still fail. For any other event two
-        # runs of one workflow on one head run side by side (workflow_run
-        # fan-in, a branch and a tag push, repeated dispatches), so every such
-        # run counts.
+    printf '%s' "$rows" | jq -rs --argjson pr "$pr" '
+        # A pull_request / pull_request_target run belongs to this PR only
+        # when its pull_requests[] names exactly --pr. The same head can back
+        # a sibling PR: a run naming only other PRs is ignored, and a run with
+        # an empty or unprovable association (fork PRs list none; a run
+        # naming this PR beside another is shared) is counted on its own and
+        # never collapsed or used to supersede. Only the runs of this PR are
+        # replaced by a newer run of the same workflow (a push or an edit
+        # re-runs it). For any other event two runs of one workflow on one
+        # head run side by side (workflow_run fan-in, a branch and a tag push,
+        # repeated dispatches), so every such run counts.
+        def is_pr: .e == "pull_request" or .e == "pull_request_target";
+        def scope:
+            if (.p | type) != "array" or (.p | length) == 0
+               or any(.p[]; type != "number") then "unproven"
+            elif (.p | unique) == [$pr] then "ours"
+            elif any(.p[]; . == $pr) then "unproven"
+            else "other" end;
         (unique_by(.id)) as $all
-        | ($all | map(select(.e == "pull_request" or .e == "pull_request_target"))
-            | group_by([.w, .e])
+        | ($all | map(select(is_pr) | . + {k: scope})) as $prs
+        | ($prs | map(select(.k == "ours")) | group_by([.w, .e])
             | map(max_by([.n, .c, .id]) as $m
-                  | [$m] + map(select(.id != $m.id and .s != "completed")))
-            | add // []) as $pr_newest
-        | ($pr_newest + ($all | map(select(.e != "pull_request" and .e != "pull_request_target")))) as $newest
-        | ($newest[] | .id), "superseded=\(($all | length) - ($newest | length))"'
+                  | {keep: $m.id, sup: map(select(.id != $m.id) | .id)})) as $groups
+        | (($groups | map("C:\(.keep)")),
+           ($prs | map(select(.k == "unproven") | "C:\(.id)")),
+           ($all | map(select(is_pr | not) | "C:\(.id)")),
+           ($groups | map(.sup[] | "S:\(.)"))
+           | .[]),
+          "other_pr=\($prs | map(select(.k == "other")) | length)"'
 }
 
 last=indeterminate
@@ -324,12 +381,20 @@ while :; do
     elif [ "$sha" != "$want_head" ]; then
         last=head-mismatch
         detail="PR head ${sha:0:8} is not the pushed head $short"
-    elif ! listed="$(newest_run_ids "$want_head")"; then
+    elif
+        listed="$(newest_run_ids "$want_head")"
+        list_rc=$?
+        [ "$list_rc" -ne 0 ]
+    then
         last=indeterminate
-        detail="could not list the runs for head $short"
+        if [ "$list_rc" -eq 2 ]; then
+            detail="the run list for head $short reports 1000 or more runs (GitHub's search cap)"
+        else
+            detail="could not list the runs for head $short"
+        fi
     else
-        superseded="${listed##*superseded=}"
-        ids="$(printf '%s\n' "$listed" | grep -v '^superseded=' || true)"
+        other_pr="${listed##*other_pr=}"
+        ids="$(printf '%s\n' "$listed" | grep -v '^other_pr=' || true)"
         if [ -z "$ids" ]; then
             last=indeterminate
             detail="no runs listed for head $short"
@@ -338,9 +403,12 @@ while :; do
             pending=0
             failing=0
             skipped=0
+            superseded=0
             lines=
             read_failed=
-            for id in $ids; do
+            for entry in $ids; do
+                kind=${entry%%:*}
+                id=${entry#*:}
                 body="$(api "repos/$repo/actions/runs/$id")" || {
                     read_failed=$id
                     break
@@ -356,6 +424,12 @@ while :; do
                 IFS='	' read -r status conclusion attempt name <<EOF
 $row
 EOF
+                # A superseded run is dropped only on its own completed read;
+                # one a re-run put back in flight still counts as pending.
+                if [ "$kind" = S ] && [ "$status" = completed ]; then
+                    superseded=$((superseded + 1))
+                    continue
+                fi
                 total=$((total + 1))
                 if [ "$status" != completed ]; then
                     pending=$((pending + 1))
@@ -377,7 +451,7 @@ EOF
                 last=indeterminate
                 detail="could not read run $read_failed"
             else
-                echo "POLL $poll head=$short runs=$total pending=$pending failing=$failing skipped=$skipped superseded=$superseded"
+                echo "POLL $poll head=$short runs=$total pending=$pending failing=$failing skipped=$skipped superseded=$superseded other_pr=$other_pr"
                 printf '%s' "$lines"
                 if [ "$pending" -eq 0 ]; then
                     # Bind the verdict to the pushed head: re-read the PR

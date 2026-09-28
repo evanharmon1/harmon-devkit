@@ -27,9 +27,20 @@ fail() {
 sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 sha_b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
+# herdr stub: `agent wait` exits SW_HERDR_RC; `agent get` prints the lane in
+# state SW_HERDR_STATE (herdr's JSON shape), or SW_HERDR_GET verbatim.
 cat >"$bin_dir/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SW_FIX/herdr.calls"
+if [ "${1:-} ${2:-}" = "agent get" ]; then
+    if [ -n "${SW_HERDR_GET+x}" ]; then
+        printf '%s\n' "$SW_HERDR_GET"
+    else
+        printf '{"result":{"agent":{"name":"%s","agent_status":"%s"}}}\n' \
+            "$3" "${SW_HERDR_STATE:-idle}"
+    fi
+    exit 0
+fi
 exit "${SW_HERDR_RC:-0}"
 STUB
 
@@ -80,15 +91,26 @@ reset_fixtures() {
     printf '{"head":{"sha":"%s"}}\n' "$sha_a" >"$fix/pull.json"
 }
 
-# run_json ID STATUS CONCLUSION ATTEMPT [SHA [WORKFLOW_ID EVENT RUN_NUMBER CREATED_AT]]
-# By default every run is its own workflow, so nothing supersedes anything.
+# run_json ID STATUS CONCLUSION ATTEMPT [SHA [WORKFLOW_ID EVENT RUN_NUMBER CREATED_AT [PR_NUMBERS]]]
+# By default every run is its own workflow, so nothing supersedes anything,
+# and every run is associated with PR 7 alone (PR_NUMBERS is a JSON array).
 run_json() {
     jq -cn --argjson id "$1" --arg s "$2" --arg c "$3" --argjson a "$4" \
         --arg sha "${5:-$sha_a}" --argjson w "${6:-$1}" --arg e "${7:-pull_request}" \
         --argjson n "${8:-1}" --arg t "${9:-2026-09-27T00:00:00Z}" \
+        --argjson prs "${10:-[7]}" \
         '{id: $id, name: ("wf-" + ($id|tostring)), head_sha: $sha, status: $s,
           conclusion: (if $c == "null" then null else $c end), run_attempt: $a,
-          workflow_id: $w, event: $e, run_number: $n, created_at: $t}'
+          workflow_id: $w, event: $e, run_number: $n, created_at: $t,
+          pull_requests: ($prs | map({number: .}))}'
+}
+
+# run_files ID...: each listed run's own read is its list entry.
+run_files() {
+    for id in "$@"; do
+        jq -c --argjson id "$id" '.workflow_runs[] | select(.id == $id)' \
+            "$fix/runs.1.json" >"$fix/run.$id.json"
+    done
 }
 
 # write_page PAGE RUN_JSON...
@@ -125,54 +147,89 @@ $out" ;;
 }
 
 # ── agent mode ────────────────────────────────────────────────────────
-reset_fixtures
-set +e
-out="$("$wait_sh" agent alpha --until idle --timeout-seconds 3600 2>&1)"
-rc=$?
-set -e
-expect_rc 0 "agent settle"
-[ "$(cat "$fix/herdr.calls")" = "agent wait alpha --until idle --timeout 3600000" ] ||
-    fail "herdr did not receive milliseconds: $(cat "$fix/herdr.calls")"
-expect_out "SETTLED agent alpha" "agent settle"
+run_agent() {
+    set +e
+    out="$("$wait_sh" agent "$@" 2>&1)"
+    rc=$?
+    set -e
+}
 
+# No --until: herdr's default settled set, then the state decides. idle and
+# done (the unseen form of idle) settle.
+for state in idle done; do
+    reset_fixtures
+    SW_HERDR_STATE=$state run_agent alpha --timeout-seconds 3600
+    expect_rc 0 "agent settle on $state"
+    [ "$(cat "$fix/herdr.calls")" = "agent wait alpha --timeout 3600000
+agent get alpha" ] ||
+        fail "herdr did not receive milliseconds, or the state was not read: $(cat "$fix/herdr.calls")"
+    expect_out "SETTLED agent alpha state=$state" "agent settle on $state"
+done
+
+# blocked (an approval or question), unknown, and an unreadable state all
+# return from herdr's default wait with 0, and none of them is a settle.
 reset_fixtures
-"$wait_sh" agent beta --until blocked --timeout-seconds 5 >/dev/null
+SW_HERDR_STATE=blocked run_agent alpha --timeout-seconds 5
+expect_rc 5 "a blocked lane is not settled"
+expect_out "NOT-SETTLED agent alpha: state=blocked" "blocked lane"
+reset_fixtures
+SW_HERDR_STATE=unknown run_agent alpha --timeout-seconds 5
+expect_rc 5 "an unknown lane is not settled"
+for get in '' 'not json' '{"result":{"agent":{"name":"alpha"}}}'; do
+    reset_fixtures
+    SW_HERDR_GET=$get run_agent alpha --timeout-seconds 5
+    expect_rc 5 "an unreadable state ('$get') is not settled"
+    expect_out "state=unreadable" "unreadable state"
+done
+
+# --until STATE: the state-specific wait passes through, no state read.
+reset_fixtures
+SW_HERDR_STATE=idle run_agent beta --until blocked --timeout-seconds 5
+expect_rc 0 "--until settles when herdr does"
 [ "$(cat "$fix/herdr.calls")" = "agent wait beta --until blocked --timeout 5000" ] ||
     fail "--until not forwarded before --timeout: $(cat "$fix/herdr.calls")"
 
-reset_fixtures
-set +e
-out="$(SW_HERDR_RC=7 "$wait_sh" agent alpha --until idle --timeout-seconds 2 2>&1)"
-rc=$?
-set -e
-expect_rc 7 "herdr's non-zero status is propagated"
-expect_out "NOT-SETTLED agent alpha: herdr exited 7" "agent expiry"
+# herdr's own non-zero status is propagated, with or without --until, and
+# the state is never read over it.
+for until in '' '--until idle'; do
+    reset_fixtures
+    # shellcheck disable=SC2086 # $until is deliberately split
+    SW_HERDR_RC=7 run_agent alpha $until --timeout-seconds 2
+    expect_rc 7 "herdr's non-zero status is propagated ($until)"
+    expect_out "NOT-SETTLED agent alpha: herdr exited 7" "agent expiry"
+    if grep -q '^agent get' "$fix/herdr.calls"; then
+        fail "the state was read over herdr's non-zero status"
+    fi
+done
 
 reset_fixtures
 for bad in 0 -5 1.5 abc 08 '' 86401 99999999999999999999; do
     set +e
-    "$wait_sh" agent alpha --until idle --timeout-seconds "$bad" >/dev/null 2>&1
+    "$wait_sh" agent alpha --timeout-seconds "$bad" >/dev/null 2>&1
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "--timeout-seconds '$bad' accepted (exit $rc)"
 done
+for args in 'alpha' 'alpha --timeout-seconds 5 --until' 'alpha --timeout-seconds 5 --until Idle'; do
+    set +e
+    # shellcheck disable=SC2086 # $args is deliberately split
+    "$wait_sh" agent $args >/dev/null 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "agent $args accepted (exit $rc)"
+done
 set +e
-"$wait_sh" agent alpha --until idle >/dev/null 2>&1
+"$wait_sh" agent alpha --timeout-seconds 5 --until '' >/dev/null 2>&1
 rc=$?
 set -e
-[ "$rc" -eq 2 ] || fail "missing --timeout-seconds accepted (exit $rc)"
-set +e
-"$wait_sh" agent alpha --timeout-seconds 5 >/dev/null 2>&1
-rc=$?
-set -e
-[ "$rc" -eq 2 ] || fail "missing --until accepted (exit $rc): a blocked lane would read as settled"
+[ "$rc" -eq 2 ] || fail "an empty --until accepted (exit $rc)"
 [ ! -s "$fix/herdr.calls" ] || fail "herdr was called on a usage error"
 
 # ── checks mode ───────────────────────────────────────────────────────
 # A PR number is an identifier, not a duration: it has no one-day cap.
 reset_fixtures
-write_page 1 "$(run_json 1 completed success 1)"
-run_json 1 completed success 1 >"$fix/run.1.json"
+write_page 1 "$(run_json 1 completed success 1 "$sha_a" 1 pull_request 1 2026-09-27T00:00:00Z '[100001]')"
+run_files 1
 set +e
 "$wait_sh" checks --repo o/r --pr 100001 --head "$sha_a" --timeout-seconds 5 --interval-seconds 1 >/dev/null 2>&1
 rc=$?
@@ -308,8 +365,8 @@ set -e
 
 # C1-1: one workflow (id 900) and one event, three runs on one head: a
 # cancelled run superseded by a failed re-run superseded by a passing one.
-# Only the newest counts, so the head settles green, and the superseded runs
-# are never read one by one.
+# Only the newest counts, so the head settles green; each superseded run is
+# read on its own and dropped because that read says completed.
 reset_fixtures
 write_page 1 \
     "$(run_json 71 completed cancelled 1 "$sha_a" 900 pull_request 10 2026-09-27T00:00:00Z)" \
@@ -325,10 +382,65 @@ expect_rc 0 "superseded cancelled and failed runs"
 expect_out "runs=2 pending=0 failing=0 skipped=0 superseded=2" "superseded runs"
 expect_out "SETTLED success head=aaaaaaaa runs=2" "superseded runs"
 for id in 71 72; do
-    if grep -Fxq "api repos/o/r/actions/runs/$id" "$fix/gh.calls"; then
-        fail "superseded run $id was read individually (REST budget)"
-    fi
+    grep -Fxq "api repos/o/r/actions/runs/$id" "$fix/gh.calls" ||
+        fail "superseded run $id was dropped without its own read"
 done
+
+# 4117760555: the list still says a superseded run completed, but its own
+# read says a re-run queued it. It counts as pending, never settled.
+reset_fixtures
+write_page 1 \
+    "$(run_json 76 completed failure 1 "$sha_a" 900 pull_request 10 2026-09-27T00:00:00Z)" \
+    "$(run_json 77 completed success 1 "$sha_a" 900 pull_request 11 2026-09-27T00:01:00Z)"
+run_files 77
+run_json 76 queued null 2 "$sha_a" 900 pull_request 10 2026-09-27T00:00:00Z >"$fix/run.76.json"
+run_checks --timeout-seconds 1 --interval-seconds 1
+expect_rc 4 "a superseded run re-queued by a re-run is pending"
+expect_out "PENDING 76 wf-76 attempt=2 status=queued" "re-queued superseded run"
+case "$out" in *SETTLED*) fail "settled over a re-queued superseded run: $out" ;; esac
+
+# 4117760546: two PRs share the head. The sibling PR 8's newer green run of
+# the same workflow must not supersede this PR's failing run; it is ignored.
+reset_fixtures
+write_page 1 \
+    "$(run_json 78 completed failure 1 "$sha_a" 900 pull_request 10 2026-09-27T00:00:00Z '[7]')" \
+    "$(run_json 79 completed success 1 "$sha_a" 900 pull_request 11 2026-09-27T00:01:00Z '[8]')"
+run_files 78 79
+run_checks --timeout-seconds 5 --interval-seconds 1
+expect_rc 1 "a sibling PR's run does not supersede ours"
+expect_out "FAILING 78" "sibling PR run"
+expect_out "runs=1 pending=0 failing=1 skipped=0 superseded=0 other_pr=1" "sibling PR run"
+if grep -Fxq "api repos/o/r/actions/runs/79" "$fix/gh.calls"; then
+    fail "the sibling PR's run 79 was read"
+fi
+
+# 4117760546: an empty association (a fork PR) or one naming this PR beside
+# another is unprovable: counted on its own, never collapsed, and never
+# superseding this PR's older failing run nor superseded by a newer run.
+reset_fixtures
+write_page 1 \
+    "$(run_json 81 completed failure 1 "$sha_a" 900 pull_request 10 2026-09-27T00:00:00Z '[7]')" \
+    "$(run_json 82 completed success 1 "$sha_a" 900 pull_request 11 2026-09-27T00:01:00Z '[]')" \
+    "$(run_json 83 completed failure 1 "$sha_a" 900 pull_request 9 2026-09-27T00:00:00Z '[7,8]')" \
+    "$(run_json 84 completed success 1 "$sha_a" 900 pull_request 12 2026-09-27T00:02:00Z '[]')"
+run_files 81 82 83 84
+run_checks --timeout-seconds 5 --interval-seconds 1
+expect_rc 1 "unprovable associations are counted individually"
+expect_out "runs=4 pending=0 failing=2 skipped=0 superseded=0 other_pr=0" "unprovable associations"
+expect_out "FAILING 81" "unprovable associations"
+expect_out "FAILING 83" "unprovable associations"
+
+# 4117760549: a run list at GitHub's 1000-run search cap cannot be paged
+# past, so the poll is indeterminate even when every listed run is green.
+reset_fixtures
+write_page 1 "$(run_json 85 completed success 1)"
+run_files 85
+jq -c '.total_count = 1000' "$fix/runs.1.json" >"$fix/runs.capped" &&
+    mv "$fix/runs.capped" "$fix/runs.1.json"
+run_checks --timeout-seconds 1 --interval-seconds 1
+expect_rc 3 "a capped run list is indeterminate"
+expect_out "reports 1000 or more runs" "capped run list"
+case "$out" in *SETTLED*) fail "settled on a capped run list: $out" ;; esac
 
 # C1-1: the newest run of the workflow is the failing one: exit 1. The same
 # workflow under another event is its own group and is evaluated separately.
