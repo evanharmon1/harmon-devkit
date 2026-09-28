@@ -7730,6 +7730,8 @@ printf '%s\n' 1000000 >"${fixtures}/head-stale-calls"
 run_reserve
 [ "$reserve_rc" -eq 2 ] ||
     fail "unreadable ancestry must fail closed to exit 2: rc=$reserve_rc $reserve_out"
+grep -Fq 'ancestry to' <<<"$reserve_out" ||
+    fail "an unreadable-ancestry refusal must say the lag is unproven, not that the head was superseded: $reserve_out"
 
 echo "==> attach keeps its own strict head check"
 write_defaults

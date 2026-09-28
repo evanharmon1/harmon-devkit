@@ -659,7 +659,7 @@ post no trigger** — check its status on its own, never through a pipe
 |---|---|
 | `0` | Reserved. Re-read the PR's `state,isDraft,headRefOid` (`reserve` makes no GitHub write, so that read is the last thing before the post), then post `@codex review` and `attach` it. |
 | `18` | Lagging head: after its bounded wait (`CODEX_RESERVE_HEAD_WAIT_SEC`, default 30s, at most 120s) GitHub still reports a predecessor of the requested head, and nothing was reserved. Re-run `reserve` once; if it exits `18` again, report a blocker. |
-| `2` | Refused — among other reasons, the head was rewritten or superseded (GitHub reports a head that is not a predecessor of the requested one). Never retry against the same head; the next cycle runs on the head a new dispatch names. |
+| `2` | Refused. When the message names a head change (GitHub reports a head that is not a predecessor of the requested one, or one whose ancestry could not be read), never retry against the same head; the next cycle runs on the head a new dispatch names. Any other exit-2 refusal (a usage error, a closed PR, an unreadable PR) is handled on its own terms. |
 
 After the trigger is attached, `check`'s exit codes are the contract:
 

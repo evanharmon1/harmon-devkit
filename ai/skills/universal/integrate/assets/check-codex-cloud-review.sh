@@ -38,7 +38,10 @@
 #
 # 15, 16 and 17 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so
 # a caller pinned to the older contract still reads every code it knew — and 17
-# is reachable only from a subcommand that contract has never called.
+# is reachable only from a subcommand that contract has never called. 18 below
+# is different: `reserve`, which that contract does call, can now return it
+# where a lag used to be exit 2, which is safe for any caller that treats a
+# non-zero `reserve` as "post no trigger" (every documented recipe does).
 #
 # `reserve` adds one code of its own (harmon-devkit#1189):
 #   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
@@ -2052,7 +2055,10 @@ reserve)
             printf 'codex-cloud-review: %s\n' "PR head lagging: after ${head_wait_sec}s GitHub still reports $live_head, a predecessor of $head; nothing was reserved and no trigger may be posted — re-run reserve once, and if it exits 18 again, report a blocker" >&2
             exit 18
         fi
-        die "PR head changed before reservation: GitHub reports ${live_head}, which is not a predecessor of $head — head rewritten or superseded; do not post the trigger, and do not retry reserve for this head"
+        if [ -n "$head_lag_status" ]; then
+            die "PR head changed before reservation: GitHub reports ${live_head}, which is not a predecessor of $head — head rewritten or superseded; do not post the trigger, and do not retry reserve for this head"
+        fi
+        die "PR head changed before reservation: GitHub reports ${live_head}, and its ancestry to $head could not be read, so a lag is not proven — do not post the trigger, and do not retry reserve for this head"
     fi
 
     replaced_trigger_comment_id=
