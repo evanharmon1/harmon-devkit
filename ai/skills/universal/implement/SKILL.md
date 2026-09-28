@@ -136,7 +136,7 @@ issue, and two agents start implementing.
      failed fetch read as "no matching comment" instead of *unknown*.)
 
      A failed identity lookup is *unknown*, never *mine* — fall through to
-     outcome 4 and offer `/claim` rather than proceeding on an unverified
+     outcome 4 to invoke `/claim` rather than proceeding on an unverified
      comment.
    - **Corroborating** — a `claim:*` (or legacy `agent:*`) label for this agent. It names the agent
      but not the session, and a repo with no such label family cannot have one
