@@ -39,7 +39,7 @@ default_globs=(
 )
 
 # renovate: datasource=npm depName=markdownlint-cli2
-MARKDOWNLINT_VERSION=0.23.2
+MARKDOWNLINT_VERSION=0.23.3
 
 # Prefer a repo-local install; otherwise fetch a PINNED version. Resolving
 # `latest` here meant a new upstream rule could turn every repo red with no
