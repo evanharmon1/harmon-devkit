@@ -403,6 +403,8 @@ tasks:
       - test:lane-fences
       - test:lint-shell-robustness
       - test:lane-watch
+      - test:settle-wait
+      - test:lane-launch-and-waits
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -443,6 +445,16 @@ tasks:
     desc: Fixture-driven regression tests for the orchestrator lane watcher
     cmds:
       - ./scripts/test-lane-watch.sh
+
+  test:settle-wait:
+    desc: Stubbed herdr/gh regression tests for the orchestrator's unit-safe lane and CI settle waits
+    cmds:
+      - ./ai/skills/universal/orchestrate/assets/test-settle-wait.sh
+
+  test:lane-launch-and-waits:
+    desc: Guard the orchestrator's lane-launch env, --no-edit merges, and wait-primitive prose
+    cmds:
+      - ./scripts/test-lane-launch-and-waits.sh
 
   test:render-dev-flow:
     desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher

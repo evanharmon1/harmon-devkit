@@ -361,6 +361,93 @@ and durably accounts every slot under the active-run lock. A crash after
 reservation spends the slot; an exact event re-arm adopts it without spending
 twice. A changed or exhausted budget blocks before dispatch.
 
+## Lane launch and waits
+
+A headless lane has nobody to answer an editor. Start every lane with
+`GIT_MERGE_AUTOEDIT=no` and `GIT_EDITOR=true` in its environment: the first
+keeps `git merge` from opening one, the second makes any command that still
+asks for a message (`git commit` while finishing a conflicted merge,
+`git merge --continue`) accept the prepared one instead of waiting. Under
+herdr, set both on the tab and on every pane that hosts a lane, and never
+start a lane in the root pane `herdr worktree open` or `worktree create`
+gives you (neither takes `--env`); open a tab or split a pane with the
+variables inside that workspace instead:
+
+```bash
+herdr tab create --workspace <workspace> --label <lane> --no-focus --env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true
+herdr pane split --pane <pane-id> --direction <right|down> --cwd <worktree> --no-focus --env GIT_MERGE_AUTOEDIT=no --env GIT_EDITOR=true
+```
+
+Under any other launcher, export both into the lane's environment before the
+harness starts. The variables are the backstop, not the instruction: if and
+where a lane is permitted to merge the default branch into its own (this
+skill's lane brief does not grant it; a consumer's may), every brief and every
+relay spells the command `git merge --no-edit origin/<default-branch>`. A
+merge that stops on a conflict is finished by resolving the files, `git add`
+on each, then `git commit --no-edit --cleanup=strip` (the cleanup drops the
+`# Conflicts:` comment block `--no-edit` would otherwise keep in the pushed
+message); `git merge --abort` backs it out
+instead. A lane stuck in an editor anyway reports BLOCKED and is escalated to
+the orchestrator and the maintainer; it is never recovered by the lane, or the
+orchestrator, terminating a process — that is the maintainer's decision.
+
+`assets/settle-wait.sh` is the required primitive for every bounded lane
+settle and CI settle. Both modes take **seconds**. A lane settle is two steps:
+confirm the prompt was delivered, then settle:
+
+```bash
+herdr agent prompt <lane> "<text>" --wait --until working --timeout 30000
+bash <skill-dir>/assets/settle-wait.sh agent <lane> --timeout-seconds 3600
+bash <skill-dir>/assets/settle-wait.sh checks --repo <owner/repo> --pr <n> --head <pushed-sha> --timeout-seconds 1800 [--interval-seconds 30]
+```
+
+The delivery check is the one sanctioned raw herdr `--timeout`, and its unit
+is **milliseconds** (`30000` is 30 seconds). It proves the prompt landed:
+settling straight after a prompt without it can return on the idle state the
+lane was in before the prompt arrived. Every longer wait goes through the
+asset, which converts seconds to herdr's milliseconds itself; never pass a
+raw `--timeout` to `herdr agent wait`, and never use `agent prompt --wait`
+for the long settle. Without `--until`, `agent` waits on herdr's default
+settled set (`idle`, `done`, `blocked`), then reads the lane with
+`herdr agent get` and settles only on `idle` (tab seen) or `done` (the same
+state, unseen); `--until <state>` is for a state-specific wait. `checks`
+takes the full SHA you pushed as `--head` (required): while the PR still reports another head it is not settled, and it
+reports a settle only when the PR head, re-read after the run reads, is still
+that SHA. A `pull_request` run is scoped to `--pr` by its `pull_requests[]`:
+one naming only other PRs is ignored, and one with an empty or unprovable
+association (fork PRs list none) is counted on its own, never collapsed or
+used to supersede. Of this PR's runs it keeps the newest run of each workflow,
+so a cancelled or failed run superseded by a re-run no longer counts. The
+superseded run's own read decides: it is dropped only when that read says
+completed and its latest attempt started (`run_started_at`, else
+`created_at`) before the newest run's did; one whose read is not completed
+stays pending, and one manually re-run after the newest run started, or whose
+start time either read lacks, counts on its own conclusion. It counts every
+run of any other event, reads each counted run's own `.status` and
+`.conclusion`, pages as far as GitHub's 1000-run search cap at any page size,
+and is indeterminate when the run list reports that cap. As in GitHub's own check
+rollup, the newest `pull_request` run is the verdict even if its jobs were
+skipped, so a workflow that skips its tests on an `edited` re-run can hide an
+earlier failure; never settle CI with
+`gh run watch --exit-status` or `gh pr checks --watch`, which report stale or
+partial conclusions across re-run attempts. It covers Actions workflow runs
+GitHub has already created, not external status checks; the readiness gate
+still owns the full check verdict.
+
+The exit status is the verdict, and it means different things per mode. In
+`checks` mode: 0 settled green, 1 settled with a failing run, 2 usage, 3
+indeterminate (the PR head was not `--head` at the last poll, or that poll
+could not be read, listed no runs, or hit the 1000-run cap), 4 expired with
+runs pending. In `agent` mode the status is herdr's own except for 0 and 5:
+0 settled (`idle` or `done`), 5 the lane is blocked at an approval or
+question, `unknown`, or unreadable, and any other status is herdr's own and
+not settled — herdr's 1 (server error) and 2 (usage) are not the `checks`
+codes — with 124 when the backstop stopped an overrunning herdr (137 if it
+had to be killed). Never follow a wait, or the delivery check, with `; echo`,
+`|| true`, or anything else that discards that status: an expired wait must
+never read as settled. `lane-watch.sh` below stays the persistent monitor;
+this asset is for a single bounded wait.
+
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step. Use the harness's
