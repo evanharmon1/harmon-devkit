@@ -148,7 +148,7 @@ local diff. Work in PR-sized units; a PR handed to a human is the deliverable.
 `/orchestrate` is the session's standing operating mode; it dispatches
 `/implement` (claimed issue → gates → draft PR), `/review` (both confidence
 stages), and `/integrate` (draft → ready for review). `/claim` comes first —
-agents can invoke the claim skill when appropriate without asking for
+agents can invoke `/claim` when appropriate without asking for
 confirmation (or it can be user-invoked) to ensure the issue is verified and
 claimed before implementation begins; `/claim` owns the claim writes, and
 `/implement` never claims directly. There is **no `dev-loop` skill** — those stages *are*

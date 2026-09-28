@@ -159,7 +159,7 @@ issue, and two agents start implementing.
    the **session name** as the identity, and fall back to asking the user when
    only the branch differs. A claim comment naming a different *session* is
    outcome 1; one naming a different branch is not.
-4. **Unclaimed** — invoke `/claim` (agents can invoke the claim skill when
+4. **Unclaimed** — invoke `/claim` (agents can invoke `/claim` when
    appropriate without asking for confirmation; where the harness does not
    expose the Skill tool, read and follow `/claim`'s `SKILL.md` directly).
    Preserve target provenance: if the target issue was inferred rather than
