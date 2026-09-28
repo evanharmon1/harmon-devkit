@@ -47,8 +47,8 @@
 #      reserved and no trigger may be posted: re-run `reserve` once, and if it
 #      exits 18 again, report a blocker. A head that differs any other way —
 #      rewritten or superseded, or ancestry that cannot be read — stays exit
-#      2, "PR head rewritten or superseded before reservation": never retry
-#      it against the same head.
+#      2, "PR head changed before reservation: … head rewritten or
+#      superseded": never retry it against the same head.
 #
 # `settle` records the disposition of a finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because

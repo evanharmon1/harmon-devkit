@@ -7635,7 +7635,8 @@ grep -Fq 'resolve a reviewed commit prefix' <<<"$check_out" ||
 # GitHub reports the previous head for a few seconds after a push. A reserve
 # taken inside that window must wait for the push to show up rather than refuse
 # a benign race, and must still tell "GitHub is behind" (exit 18, retry
-# reserve) apart from "the PR moved past this head" (exit 2, re-capture).
+# reserve once) apart from "the PR moved past this head" (exit 2: post no
+# trigger and never retry this head).
 lag_prev_head="$(git rev-parse HEAD~1)"
 lag_pair="$(printf '%s' "${lag_prev_head}...${head_sha}" | tr './' '__')"
 
