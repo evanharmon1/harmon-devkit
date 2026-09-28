@@ -38,10 +38,11 @@ follow `AGENTS.md` — it is the policy, this skill is the procedure. Read what
 that file actually says rather than assuming the shape below; a repo with no
 second-model review or no `task ci` is not a repo that is doing it wrong.
 
-**Two things this skill never does.** It never **claims** — `/claim` owns
+**Two things this skill never does.** It never **claims directly** — `/claim` owns
 the claim, and its claim comment is the single record `/wrap` reads to undo
-exactly what was added. A second writer would make that record a guess. And it
-never **merges**: the PR is the deliverable, merging is the maintainer's
+exactly what was added (if an issue is unclaimed, invoke `/claim` rather than
+writing claim markers directly). A second writer would make that record a guess.
+And it never **merges**: the PR is the deliverable, merging is the maintainer's
 decision.
 
 Writes — commits, pushes, `gh pr create`, gate runs — always go through the
@@ -157,7 +158,8 @@ issue, and two agents start implementing.
    the **session name** as the identity, and fall back to asking the user when
    only the branch differs. A claim comment naming a different *session* is
    outcome 1; one naming a different branch is not.
-4. **Unclaimed** — stop and offer `/claim`. It is not ceremony: `/claim`
+4. **Unclaimed** — invoke `/claim` (agents can invoke the claim skill when
+   appropriate without asking for confirmation). It is not ceremony: `/claim`
    verifies the issue's assertions against the live tree, and its findings are
    corrections to fold into the work. Implementing an issue nobody sanity-checked
    is how a fix lands against a file that moved three releases ago.
