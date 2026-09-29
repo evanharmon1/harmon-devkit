@@ -26,6 +26,7 @@ ai/skills/
 │   ├── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 │   └── label-registry-support/SKILL.md  # shared runtime, not a workflow
 ├── backend/     # server / data / Convex
+├── compound-engineering/ # attributed third-party skills from Every, Inc.
 ├── frontend/    # React / TanStack / shadcn / design
 ├── herdr/       # Herdr terminal multiplexer and agent coordination
 │   └── herdr/SKILL.md
@@ -139,6 +140,7 @@ nothing is linted or counted twice.
 | --- | --- |
 | `universal` | Skills every consumer repo should have |
 | `backend` | Server, data, and Convex work |
+| `compound-engineering` | Opt-in, attributed skills from Every, Inc. (Compound Engineering) |
 | `frontend` | React / TanStack / shadcn UI and design skills |
 | `herdr` | Herdr terminal multiplexer and agent coordination |
 | `infra` | Terraform, Cloudflare, CI/CD |
@@ -189,6 +191,14 @@ core backend capabilities (`convex-auth`, `convex-crons`, `convex-billing`,
 `convex-authz`, `convex-test`, `convex-optimize`, `convex-migrate`, `convex-verify`).
 Each skill preserves upstream attribution, `LICENSE.upstream`, and
 `UPSTREAM.md` provenance.
+
+The `compound-engineering` category vendors skills from
+[EveryInc/compound-engineering-plugin](https://github.com/EveryInc/compound-engineering-plugin)
+(MIT). It currently imports `ce-code-review`, a risk-selected, multi-persona
+code review skill that runs correctness, standards, and domain-specific
+reviewer personas in parallel and merges their findings into a structured
+report. It retains `LICENSE.upstream` and `UPSTREAM.md` provenance and ships its
+own supporting runtime scripts under `scripts/`.
 
 ## The unique-name rule
 
