@@ -62,7 +62,7 @@ api)
         if [ "$count" -eq "$CLAIM_MUTATE_COMMENTS_ON_READ" ]; then
             next="${CLAIM_COMMENTS_FILE}.next"
             jq --rawfile body "$CLAIM_CONCURRENT_RECORD" --arg login "${CLAIM_CONCURRENT_LOGIN:-collaborator}" \
-                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"COLLABORATOR", body:($body | sub("\\n+$"; ""))}]' \
+                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"COLLABORATOR", body:$body}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
         fi
@@ -126,7 +126,7 @@ issue)
             next="${CLAIM_COMMENTS_FILE}.next"
             jq --rawfile body "$body_file" --arg login "${CLAIM_LOGIN:-evanharmon1}" \
                 '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"OWNER",
-                       created_at:"2026-08-20T12:00:00Z", body:($body | sub("\\n+$"; ""))}]' \
+                       created_at:"2026-08-20T12:00:00Z", body:$body}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
             if [ "${CLAIM_CLOSE_AFTER_COMMENT:-false}" = true ]; then
@@ -625,5 +625,26 @@ scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"cl
 make_record yes no none yes 'alice,bob,carol,dave' claim:gpt none
 [ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 2 ] || fail "forged victim must fail before writes"
 if grep -q '^edit\|^comment$' "$log"; then fail "forged victim rejection must perform zero writes"; fi
+
+echo "==> heredoc record with trailing newline commits against verbatim stub storage (#1219)"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+python3 - "$record" <<'PY'
+import pathlib, sys
+b = pathlib.Path(sys.argv[1]).read_bytes()
+sys.exit(0 if b.endswith(b"\n") else 1)
+PY
+[ $? -eq 0 ] || fail "record must end with a newline for this regression"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "heredoc record must commit: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "exactly one comment must be written"
+python3 - "$comments_file" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())[0]["body"].encode()
+sys.exit(0 if body.endswith(b"\n") else 1)
+PY
+[ $? -eq 0 ] || fail "stub must store trailing newline verbatim"
+: >"$log"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "exact-record resume with trailing newline must succeed: $(cat "$err")"
+[ ! -s "$log" ] || fail "exact-record resume must perform zero writes"
 
 echo "PASS: claim transaction semantics"
