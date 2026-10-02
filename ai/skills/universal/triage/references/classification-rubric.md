@@ -16,8 +16,9 @@ This file defines what the values mean. Which skill writes them, and when, is th
 | Complexity | How hard is it to do and verify correctly? | xs, s, m, l, xl | AI or human | issue field on an organization repo; `complexity:<value>` label on a personal-account repo |
 | Tier | Which model stratum should work it? | local, economy, standard, frontier, apex | derived from Risk × Complexity; a human may pin it | `tier:<value>` label on every owner type |
 
-Impact, Risk, and Complexity are each required for an issue to count as triaged. The Tier is not: it is a cache that a
-reader recomputes when it is absent.
+Under the classification decision, Impact, Risk, and Complexity are each required for an issue to count as triaged;
+which skill enforces that, and when, is that skill's own contract. The Tier is not required: it is a cache that a reader
+recomputes when it is absent.
 
 **Rate each axis on its own.** These are four different questions, and the commonest error is letting the answer to one
 leak into another:
