@@ -394,6 +394,7 @@ tasks:
       - test:schema-parity
       - test:dev-flow-stats
       - test:dev-flow-exit
+      - test:devflow-conformance
       - test:dev-flow-monitor
       - test:render-dev-flow
       - test:retro-run-report
@@ -435,6 +436,11 @@ tasks:
     desc: Behavioral test for the Dev flow v2 policy reader and exit-computation engine against fixture policies
     cmds:
       - ./ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh
+
+  test:devflow-conformance:
+    desc: Run harmon-init's vendored .devflow.toml v2 conformance corpus against the vendored policy reader (blob-pinned inputs + a pin-mutation control)
+    cmds:
+      - ./scripts/test-devflow-conformance.sh
 
   test:dev-flow-monitor:
     desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
