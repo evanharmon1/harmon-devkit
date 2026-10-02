@@ -2019,8 +2019,8 @@ echo "==> wrapper: --execute without a terminal is refused"
 # ── references ───────────────────────────────────────────────────────────────
 echo "==> references: both rubrics exist and SKILL.md links them"
 for rubric in classification-rubric priority-rubric; do
-    [ -f "ai/skills/universal/triage/references/$rubric.md" ] ||
-        fail "references/$rubric.md must exist"
+    [ -s "ai/skills/universal/triage/references/$rubric.md" ] ||
+        fail "references/$rubric.md must exist and be non-empty"
     grep -qF "(references/$rubric.md)" ai/skills/universal/triage/SKILL.md ||
         fail "SKILL.md must link references/$rubric.md"
 done

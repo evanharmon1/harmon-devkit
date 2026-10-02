@@ -29,7 +29,7 @@ Priority (AI) from them, and the Tier does not read it.
 | --- | --- | --- | --- |
 | p0 | Blocks a merge or deploy: nothing should ship while it is open | The release cannot go out without it | A security exposure, data loss, or a crash on the main path |
 | p1 | A real defect or a must-do; work it next | Other committed work waits on it | A real defect users hit, with no safe workaround |
-| p2 | Worth doing, but it does not block anything | A useful addition with no deadline | A defect with a workaround, or one that only a few inputs reach |
+| p2 | Worth doing, but it does not block anything | A useful addition with no deadline | A defect with a workaround that causes no data loss or security exposure |
 | p3 | Cosmetic or informational | A nicer message or a tidier layout | A wrong label, a typo in output, a misleading but harmless log line |
 | p4 | Negligible: the agent judges it too small to matter | A nicety no one asked for and no one would miss | A glitch no one would notice |
 

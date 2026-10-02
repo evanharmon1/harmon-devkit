@@ -61,10 +61,10 @@ and it is not urgency.
 ## Risk
 
 Risk is how consequential a failure is if the change is implemented incorrectly. It scores the danger of *making the
-change*, judged on the worst plausible outcome of a wrong implementation rather than the likeliest one. Weigh three
-things and rate the worst of them: **reach** (how many users or how much data a mistake touches), **reversibility**
-(whether it can be undone, and how cheaply), and **detectability** (whether anyone would notice in time). Risk is not
-the harm the issue describes: for a bug fix, that harm is Impact.
+change*. Reach (how many users or how much data a mistake touches), reversibility (whether it can be undone, and how
+cheaply), and detectability (whether anyone would notice in time) are the considerations; place the issue on the anchor
+below whose description best fits what a mistake would do. Risk is not the harm the issue describes: for a bug fix,
+that harm is Impact.
 
 ### Risk anchors
 
@@ -161,9 +161,10 @@ Complexity and the column for Risk.
 Risk dominates: a tiny change with critical risk lands at `frontier`, while a large change with trivial risk lands
 at only `standard`.
 
-- **Written with its inputs.** Whoever writes Risk or Complexity writes the derived Tier in the same call. An agent
-  that writes the Tier writes the matrix's answer for the Risk and Complexity it just wrote, and nothing else. It never
-  chooses a Tier for its own run and never adds `tier:pinned`.
+- **Written with its inputs.** Whoever writes Risk or Complexity writes the derived Tier in the same call, unless the
+  issue carries `tier:pinned`, in which case it leaves the Tier label alone. An agent that writes the Tier writes the
+  matrix's answer for the Risk and Complexity it just wrote, and nothing else. It never chooses a Tier for its own run
+  and never adds `tier:pinned`.
 - **A cache.** A reconciler corrects drift, and a reader that finds no Tier recomputes it from Risk and Complexity.
 - **Pinnable by a human.** A human who disagrees with the derived Tier sets the `tier:<value>` label from the GitHub UI
   and adds `tier:pinned`. Nothing automated writes over a pinned Tier, even when Risk or Complexity later changes. The
