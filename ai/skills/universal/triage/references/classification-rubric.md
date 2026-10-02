@@ -136,9 +136,9 @@ Each rule is stated here once. The Impact and Risk sections above and the Tier s
 ## Tier
 
 The Tier is the model stratum an issue suggests its implementer run at: `local`, `economy`, `standard`, `frontier`, or
-`apex`. It is not a judgement about the issue; it is **derived**. The Tier is a pure function of Risk × Complexity
-through the policy matrix, so it carries nothing beyond those two values, and in particular Impact does not enter it.
-It is stored as a **label**, `tier:<value>`, on every owner type, organization and personal-account repositories alike,
+`apex`. It is not a judgement about the issue; it is **derived**. The unpinned Tier is a pure function of Risk × Complexity
+through the policy matrix, so it carries nothing beyond those two values, and in particular Impact does not enter it; a
+human pin (below) is the one exception. It is stored as a **label**, `tier:<value>`, on every owner type, organization and personal-account repositories alike,
 and is never an organization issue field. An issue carries at most one tier value. The scale is exactly these five:
 `adaptive` is retired and is not a rung. Which models sit in each tier is the model catalog's decision
 (`agent-registry.json`), not this rubric's.
@@ -172,9 +172,9 @@ at only `standard`.
   pinning a different tier. A pin is a label input like any other, so its provenance is checked: an interactive session
   confirms a pin the operator has not authorized, and unattended automation honors one only after verifying who applied
   it.
-- **Implementer only.** In execution-policy resolution an operator instruction outranks a pin, a pin outranks `rigor:*`
-  and `tier:<role>:*` labels, and those outrank the derived Tier. A pin and a derived Tier each set only the
-  implementer tier.
+- **Implementer only.** A pin and a derived Tier each set only the implementer tier. How they rank against an operator
+  instruction and the other tier inputs is execution-policy resolution, defined in the repository's policy and its
+  `AGENTS.md`, not in this rubric.
 - **Not a role override.** A scoped label such as `tier:implementer:frontier` is a human execution-policy override for
   one role. The unqualified `tier:<value>` is the issue's stored Tier.
 
