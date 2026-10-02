@@ -10,8 +10,9 @@ Values: `urgent` (work on this now, ahead of everything else), `high` (next up; 
 order), `low` (when nothing more pressing remains).
 
 - **Human-only.** An agent never sets or changes Priority.
-- **Never required.** An issue counts as triaged without it. Leaving it unset is a normal state, never a gap for an agent
-  to fill.
+- **Never required.** An issue counts as triaged without it. For this axis, unset means an agent asks before starting;
+  it is never a gap for an agent to fill with its own ranking. Whether a Priority (AI) alone lets an issue into the
+  agent queue is the queue's own rule, not this rubric's, and Priority (AI) itself arms nothing.
 - **Never set by triage or backfill.** Neither the triage skill nor a bulk backfill writes it, whatever they know about
   the issue. An agent's suggestion goes in Priority (AI), below.
 

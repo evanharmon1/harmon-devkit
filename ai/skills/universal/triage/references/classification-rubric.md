@@ -145,9 +145,9 @@ and is never an organization issue field. An issue carries at most one tier valu
 
 ### How the Tier is derived
 
-The matrix below is the starting policy matrix, reproduced so a classifier can work offline. The policy matrix is
-configured in the repository's execution policy (`.devflow.toml`) and implemented once in the vendored policy reader;
-**if this table and the policy ever disagree, the policy wins and this table is the one to fix.** Look up the row for
+The matrix below reproduces the policy matrix that harmon-init ships in `.devflow.toml` (`[tier.matrix]`), so a
+classifier can work offline. Where the repository's policy carries a matrix, **it wins on any disagreement and this
+table is the one to fix**; a repository whose policy has no matrix yet derives from this table. Look up the row for
 Complexity and the column for Risk.
 
 | Complexity \ Risk | trivial | low | medium | high | critical |
