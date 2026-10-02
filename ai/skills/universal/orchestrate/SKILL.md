@@ -57,6 +57,35 @@ record ownership, scope, dependencies, and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs.
 
+**Resolve each issue's Tier before you dispatch its lane, never by eye.**
+Follow `dev-flow-support`'s § "Resolving an issue's Tier":
+- Read the issue's `tier:<value>` label on every owner type, plus
+  `tier:pinned`, its `tier:<role>:*`/`rigor:*`/`strategy:*` labels, and its
+  Risk and Complexity.
+- Translate them with `dev-flow-support/assets/tier-inputs.mjs`, which
+  reconciles label conflicts *before* the reader runs. A `tier:pinned` with
+  more than one unqualified `tier:<value>` is an ambiguous pin: no
+  `pinnedTier` is passed, a warning names both values, and the issue
+  resolves through its derived Tier.
+- Pass the result to `devflow-policy.mjs resolve`. That is how the reader
+  receives the issue as `issueTier` (Risk × Complexity, plus the stored Tier
+  as a cache) and the pin as `pinnedTier`. When the Tier label is absent,
+  the reader computes the Tier from Risk and Complexity.
+
+Pin provenance is a label-authorization question; § "Nothing here arms
+anything" in `AGENTS.md` applies to it. Record the resolved implementer tier
+and its source in the run and in the lane brief's `{{role-tiers}}`. Put the
+`tier-inputs.mjs disclose` lines into the PR-body disclosure. They name:
+- the tier source (pinned, rigor, derived, default);
+- any pin-caused invariant break;
+- any overridden role label;
+- every warning.
+
+A classified issue in a repository whose `.devflow.toml` has no
+`[tier.matrix]` resolves indeterminate (exit 3) and keeps its profile tier.
+That includes harmon-devkit until its template update to the harmon-init
+release carrying #1475. Disclose it; never guess a Tier.
+
 ## Planning
 
 Before provisioning or dispatching a slate, turn its milestone or explicit
@@ -217,7 +246,7 @@ table before their intended sections.
 | `{{max-parallel-agents}}` | Selected breadth envelope |
 | `{{strategy}}` | Trusted policy resolution |
 | `{{strategy-source}}` | Policy resolver disclosure |
-| `{{role-tiers}}` | Resolved five-role tier projection |
+| `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
 | `{{ready-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |

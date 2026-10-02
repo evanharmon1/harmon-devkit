@@ -1,0 +1,412 @@
+#!/usr/bin/env node
+// tier-inputs.mjs — the CONSUMER half of tier resolution (harmon-devkit#1248).
+//
+// devflow-policy.mjs owns the resolution ORDER (operator > pinned Tier >
+// rigor:*/tier:<role>:* > derived Tier > default_rigor), the derive-on-read
+// rule, the pin's two-part provenance check, and disclosure. It deliberately
+// reads no labels and no issue fields: label parsing and label CONFLICTS are
+// the consumer's to settle before it calls the reader (ADR 2026-09-30; the
+// reference consumer is harmon-init's conformance runner, `v2_case_inputs`).
+// This helper is that consumer for /orchestrate and /implement, so both stage
+// skills translate an issue the same way and the translation is tested.
+//
+// Input (JSON, on stdin or from --input <file>):
+//   {
+//     "labels":   ["tier:standard", "tier:pinned", "risk:high", ...],
+//                 // every label on the issue; non-policy labels are ignored
+//     "fields":   { "risk": "high", "complexity": "m" },
+//                 // optional: org-repository issue fields. A present field is
+//                 // the storage of record and wins over a same-axis label.
+//     "operator": { "rigor": "deep", "strategy": "plan",
+//                   "tiers": { "implementer": "frontier" } },
+//                 // optional: attributable operator instructions only, never
+//                 // anything read from issue or PR text
+//     "pin_provenance": { "marker_trusted": true, "value_trusted": true }
+//                 // optional: whether the consumer verified who applied the
+//                 // tier:pinned marker and the pinned tier:<value> label
+//   }
+//
+// Output (JSON on stdout): { "args": [...reader flags], "warnings": [...],
+// "inputs": {...} } — append `args` to `devflow-policy.mjs resolve`, and carry
+// every warning into the PR-body disclosure alongside the reader's own
+// `warnings`/`disclosures`. Exit 0 on success, 2 on malformed input.
+//
+// `tier-inputs.mjs disclose --inputs <translation.json> --resolved <resolve.json>`
+// renders the PR-body tier disclosure from that translation plus the reader's
+// `resolve --json` output: the implementer's tier SOURCE (pinned, rigor,
+// derived, default — or operator), any pin-caused invariant break, any
+// overridden tier:<role>:* label, and every warning (disclosureLines()).
+//
+// What it decides, mirroring the runner and the issue's acceptance criteria:
+//   - An unqualified tier:<value> is the issue's STORED Tier (a cache), never
+//     a role override. Without tier:pinned it is passed as --stored-tier.
+//   - tier:pinned + exactly one unqualified value: --pinned-tier <value>,
+//     with --pin-marker-trusted/--pin-value-trusted only as verified.
+//   - tier:pinned + MORE than one unqualified value: the pin is AMBIGUOUS —
+//     no --pinned-tier, a warning naming the values, and the issue resolves
+//     through its derived Tier (Risk × Complexity).
+//   - tier:<role>:<value> labels: one per role; a conflict resolves to the
+//     strongest on tier_order (a conflict only ever buys more capability).
+//   - rigor:* label conflicts resolve to the strongest on rigor_order; two
+//     different strategy:* labels are ambiguous and pass none (the policy
+//     default applies, with a warning).
+//   - risk:<v>/complexity:<v> labels (personal repositories) or fields (org
+//     repositories) become --risk/--complexity; two different values for one
+//     axis pass neither, so the reader reports the Tier indeterminate.
+// Values are passed with the `--opt=value` spelling, so a label value can
+// never be read by the reader as a flag of its own.
+
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// The same ladders devflow-policy.mjs requires a v2 policy to declare
+// exactly (its CANONICAL_RIGOR_ORDER and BUILTIN_TIER_ORDER).
+export const RIGOR_ORDER = Object.freeze(["cursory", "light", "standard", "thorough", "deep", "forensic"]);
+export const TIER_ORDER = Object.freeze(["local", "economy", "standard", "frontier", "apex"]);
+export const ROLES = Object.freeze(["orchestrator", "implementer", "challenger", "reviewer", "integrator"]);
+// A label value is a slug. Anything else is reported and dropped rather than
+// handed to a CLI.
+const SLUG = /^[a-z0-9][a-z0-9_.-]*$/;
+
+export class TierInputError extends Error {}
+
+function warning(code, message) {
+  return { code, message };
+}
+
+function uniq(values) {
+  return [...new Set(values)];
+}
+
+function strongest(values, ladder) {
+  let best = null;
+  for (const value of values) {
+    if (ladder.indexOf(value) > ladder.indexOf(best ?? "")) best = value;
+  }
+  return best;
+}
+
+/**
+ * Translate an issue's labels, fields, and operator instructions into
+ * devflow-policy.mjs resolve flags. Pure: no I/O, no GitHub reads.
+ */
+export function tierInputs({ labels = [], fields = {}, operator = {}, pin_provenance: provenance = {} } = {}) {
+  if (!Array.isArray(labels) || labels.some((l) => typeof l !== "string")) {
+    throw new TierInputError("labels must be an array of strings");
+  }
+  for (const [name, value] of [
+    ["fields", fields],
+    ["operator", operator],
+    ["pin_provenance", provenance],
+  ]) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new TierInputError(`${name} must be an object`);
+    }
+  }
+  const warnings = [];
+  const args = [];
+  const inputs = {};
+
+  const rigorLabels = [];
+  const strategyLabels = [];
+  const storedTierLabels = [];
+  const roleLabels = new Map();
+  const axisLabels = { risk: [], complexity: [] };
+  let pinned = false;
+
+  for (const label of labels) {
+    const parts = label.split(":");
+    if (parts.some((p) => p === "")) continue;
+    if (parts.length === 2 && parts[0] === "rigor") rigorLabels.push(parts[1]);
+    else if (parts.length === 2 && parts[0] === "strategy") strategyLabels.push(parts[1]);
+    else if (parts.length === 2 && (parts[0] === "risk" || parts[0] === "complexity")) axisLabels[parts[0]].push(parts[1]);
+    else if (label === "tier:pinned") pinned = true;
+    else if (parts.length === 2 && parts[0] === "tier") storedTierLabels.push(parts[1]);
+    else if (parts.length === 3 && parts[0] === "tier" && ROLES.includes(parts[1])) {
+      if (!roleLabels.has(parts[1])) roleLabels.set(parts[1], []);
+      roleLabels.get(parts[1]).push(parts[2]);
+    }
+  }
+
+  const slugOrWarn = (value, what) => {
+    if (typeof value === "string" && SLUG.test(value)) return value;
+    warnings.push(warning("label-value-invalid", `${what} value ${JSON.stringify(value)} is not a slug and is ignored`));
+    return null;
+  };
+
+  // ── rigor ────────────────────────────────────────────────────────────────
+  if (operator.rigor !== undefined) {
+    const rigor = slugOrWarn(operator.rigor, "operator rigor");
+    if (rigor !== null) {
+      args.push(`--rigor`, rigor, `--rigor-source=operator`);
+      inputs.rigor = { value: rigor, source: "operator" };
+    }
+  } else {
+    const known = uniq(rigorLabels).filter((v) => RIGOR_ORDER.includes(v));
+    for (const v of uniq(rigorLabels).filter((v) => !RIGOR_ORDER.includes(v))) {
+      warnings.push(warning("rigor-label-unknown", `rigor:${v} names no rigor level and is ignored`));
+    }
+    if (known.length > 0) {
+      const rigor = strongest(known, RIGOR_ORDER);
+      if (known.length > 1) {
+        warnings.push(warning("rigor-label-conflict", `rigor labels ${known.map((v) => `rigor:${v}`).join(", ")} conflict; the strongest, ${rigor}, applies`));
+      }
+      args.push(`--rigor`, rigor, `--rigor-source=label`);
+      inputs.rigor = { value: rigor, source: "label" };
+    }
+  }
+
+  // ── strategy ─────────────────────────────────────────────────────────────
+  if (operator.strategy !== undefined) {
+    const strategy = slugOrWarn(operator.strategy, "operator strategy");
+    if (strategy !== null) {
+      args.push(`--strategy`, strategy);
+      inputs.strategy = { value: strategy, source: "operator" };
+    }
+  } else {
+    const values = uniq(strategyLabels).map((v) => slugOrWarn(v, "strategy label")).filter((v) => v !== null);
+    if (values.length === 1) {
+      args.push(`--strategy`, values[0]);
+      inputs.strategy = { value: values[0], source: "label" };
+    } else if (values.length > 1) {
+      warnings.push(
+        warning(
+          "strategy-label-ambiguous",
+          `strategy labels ${values.map((v) => `strategy:${v}`).join(", ")} are not orderable; none is passed and default_strategy applies — an interactive session asks the operator which one applies`,
+        ),
+      );
+    }
+  }
+
+  // ── operator tier instructions ───────────────────────────────────────────
+  if (operator.tiers !== undefined) {
+    if (operator.tiers === null || typeof operator.tiers !== "object" || Array.isArray(operator.tiers)) {
+      throw new TierInputError("operator.tiers must be a { role: tier } object");
+    }
+    const entries = [];
+    for (const [role, tier] of Object.entries(operator.tiers)) {
+      if (!ROLES.includes(role)) throw new TierInputError(`operator.tiers names unknown role ${JSON.stringify(role)}`);
+      if (typeof tier !== "string" || !SLUG.test(tier)) {
+        throw new TierInputError(`operator.tiers.${role} must be a tier slug, got ${JSON.stringify(tier)}`);
+      }
+      entries.push(`${role}=${tier}`);
+    }
+    if (entries.length > 0) {
+      args.push(`--tier-overrides=${entries.join(",")}`);
+      inputs.tier_overrides = Object.fromEntries(entries.map((e) => e.split("=")));
+    }
+  }
+
+  // ── role-scoped tier labels ──────────────────────────────────────────────
+  const roleEntries = [];
+  for (const role of ROLES) {
+    const values = uniq(roleLabels.get(role) ?? [])
+      .map((v) => slugOrWarn(v, `tier:${role}`))
+      .filter((v) => v !== null);
+    if (values.length === 0) continue;
+    // Off-ladder values (a leftover `adaptive`, a typo) are passed through
+    // only when nothing on the ladder competes, so the READER names them in
+    // its own warning; a conflict resolves among ladder values alone.
+    const onLadder = values.filter((v) => TIER_ORDER.includes(v));
+    const chosen = onLadder.length > 0 ? strongest(onLadder, TIER_ORDER) : values[0];
+    if (values.length > 1) {
+      warnings.push(
+        warning("tier-role-label-conflict", `tier labels ${values.map((v) => `tier:${role}:${v}`).join(", ")} conflict; ${chosen} applies (strongest on tier_order)`),
+      );
+    }
+    roleEntries.push(`${role}=${chosen}`);
+  }
+  if (roleEntries.length > 0) {
+    args.push(`--tier-labels=${roleEntries.join(",")}`);
+    inputs.tier_labels = Object.fromEntries(roleEntries.map((e) => e.split("=")));
+  }
+
+  // ── classification: Risk and Complexity ──────────────────────────────────
+  const classification = {};
+  for (const axis of ["risk", "complexity"]) {
+    const field = fields[axis];
+    const fromLabels = uniq(axisLabels[axis]);
+    let value = null;
+    if (field !== undefined && field !== null && field !== "") {
+      if (typeof field !== "string") throw new TierInputError(`fields.${axis} must be a string`);
+      value = field;
+      const disagreeing = fromLabels.filter((v) => v !== field);
+      if (disagreeing.length > 0) {
+        warnings.push(
+          warning(`${axis}-field-label-mismatch`, `the ${axis} field (${field}) disagrees with ${disagreeing.map((v) => `${axis}:${v}`).join(", ")}; the field is the storage of record and applies`),
+        );
+      }
+    } else if (fromLabels.length === 1) {
+      value = fromLabels[0];
+    } else if (fromLabels.length > 1) {
+      warnings.push(
+        warning(`${axis}-label-ambiguous`, `${axis} labels ${fromLabels.map((v) => `${axis}:${v}`).join(", ")} conflict; neither is passed, so the derived Tier is indeterminate`),
+      );
+    }
+    if (value !== null) {
+      value = slugOrWarn(value, axis);
+      if (value !== null) classification[axis] = value;
+    }
+  }
+  if (classification.risk !== undefined) args.push(`--risk=${classification.risk}`);
+  if (classification.complexity !== undefined) args.push(`--complexity=${classification.complexity}`);
+  inputs.classification = classification;
+
+  // ── the stored Tier and the pin ──────────────────────────────────────────
+  const stored = uniq(storedTierLabels)
+    .map((v) => slugOrWarn(v, "tier"))
+    .filter((v) => v !== null);
+  if (pinned) {
+    if (stored.length === 1) {
+      args.push(`--pinned-tier=${stored[0]}`);
+      if (provenance.marker_trusted === true) args.push("--pin-marker-trusted");
+      if (provenance.value_trusted === true) args.push("--pin-value-trusted");
+      inputs.pin = { tier: stored[0], marker_trusted: provenance.marker_trusted === true, value_trusted: provenance.value_trusted === true };
+    } else if (stored.length > 1) {
+      warnings.push(
+        warning(
+          "pin-ambiguous",
+          `tier:pinned is present with more than one Tier label (${stored.map((v) => `tier:${v}`).join(", ")}); the pin is ambiguous, no pinned Tier is passed, and the issue resolves through its derived Tier`,
+        ),
+      );
+      inputs.pin = { ambiguous: stored };
+    } else {
+      warnings.push(warning("pin-without-tier", "tier:pinned is present without a tier:<value> label; there is nothing to pin, and the issue resolves through its derived Tier"));
+      inputs.pin = { ambiguous: [] };
+    }
+  } else if (stored.length === 1) {
+    args.push(`--stored-tier=${stored[0]}`);
+    inputs.stored_tier = stored[0];
+  } else if (stored.length > 1) {
+    warnings.push(
+      warning(
+        "stored-tier-ambiguous",
+        `the issue carries more than one Tier label (${stored.map((v) => `tier:${v}`).join(", ")}); none is passed as the stored Tier, which is recomputed from Risk × Complexity`,
+      ),
+    );
+  }
+
+  return { args, warnings, inputs };
+}
+
+// The PR-body tier source vocabulary (harmon-devkit#1248 criterion 4), from
+// the reader's `roles.<role>.source`: which resolution rung set the tier.
+//   operator — an operator tier instruction (rung 1)
+//   pinned   — the honored pinned Tier (rung 2, implementer only)
+//   rigor    — a tier:<role>:* label, or the profile of a rigor the operator
+//              or a rigor:* label chose (rung 3)
+//   derived  — Risk × Complexity over [tier.matrix] (rung 4, implementer only)
+//   default  — default_rigor's profile, or the built-in fallback (rung 5)
+export function tierSource(roleEntry, resolved) {
+  switch (roleEntry.source) {
+    case "operator":
+    case "pinned":
+    case "derived":
+      return roleEntry.source;
+    case "label":
+      return "rigor";
+    default:
+      return resolved?.rigor?.chosen_by ? "rigor" : "default";
+  }
+}
+
+/**
+ * The PR-body tier disclosure for one resolution: the implementer's tier and
+ * its source, every reader disclosure (an off-profile role tier, and a
+ * companion left below the implementer — the invariant break a pin can
+ * cause, named as pin-caused when the pin set the implementer), every
+ * tier:<role>:* label a stronger rung overrode (disclosed, never silently
+ * dropped), and every warning from this helper and from the reader.
+ * `translation` is tierInputs()'s output; `resolved` is the reader's
+ * `resolve --json` output for the same run.
+ */
+export function disclosureLines(translation, resolved) {
+  const lines = [];
+  const implementer = resolved.roles.implementer;
+  const issue = resolved.issue_tier ?? { status: "absent" };
+  const pin = resolved.pin ?? { status: "absent" };
+  let line = `Implementer tier: ${implementer.tier} (source: ${tierSource(implementer, resolved)}; profile ${implementer.profile_tier ?? implementer.tier})`;
+  if (issue.status !== "absent") line += ` · issue Tier: ${issue.status}${issue.tier ? ` ${issue.tier}` : ""}`;
+  if (pin.status !== "absent") line += ` · pin: ${pin.status}${pin.reason ? ` (${pin.reason})` : ""}`;
+  lines.push(line);
+  for (const d of resolved.disclosures ?? []) {
+    if (d.code === "role-tier-floor") {
+      const cause = d.implementer_source === "pinned" ? "pin-caused invariant break" : "invariant break";
+      lines.push(`${cause}: ${d.role} tier ${d.tier} is below the implementer's ${d.implementer_tier} (implementer source: ${d.implementer_source})`);
+    } else if (d.code === "off-profile-tier") {
+      lines.push(`off-profile: ${d.role} tier ${d.tier} (profile ${d.profile_tier}; source: ${tierSource(resolved.roles[d.role] ?? { source: d.source }, resolved)})`);
+    }
+  }
+  for (const [role, value] of Object.entries(translation.inputs?.tier_labels ?? {})) {
+    const entry = resolved.roles[role];
+    if (entry && entry.source !== "label") {
+      lines.push(`overridden: tier:${role}:${value} was passed but ${role} resolved from ${tierSource(entry, resolved)} (${entry.tier})`);
+    }
+  }
+  for (const w of [...(translation.warnings ?? []), ...(resolved.warnings ?? [])]) {
+    lines.push(`warning [${w.code}]: ${w.message}`);
+  }
+  if ((resolved.cross_validation?.indeterminate ?? []).some((i) => i.includes("derived Tier"))) {
+    lines.push("indeterminate: the derived Tier could not be computed; the implementer keeps its profile tier (see the reader's indeterminate list)");
+  }
+  return lines;
+}
+
+function readJson(source) {
+  return JSON.parse(readFileSync(source ?? 0, "utf8"));
+}
+
+function main(argv) {
+  const usage =
+    "usage: tier-inputs.mjs [--input <file>]                      translate (JSON on stdin otherwise)\n" +
+    "       tier-inputs.mjs disclose --inputs <file> --resolved <file>  PR-body tier disclosure lines";
+  const disclose = argv[0] === "disclose";
+  const opts = {};
+  for (let i = disclose ? 1 : 0; i < argv.length; i++) {
+    const key = argv[i];
+    const allowed = disclose ? ["--inputs", "--resolved"] : ["--input"];
+    if (!allowed.includes(key) || argv[i + 1] === undefined || Object.hasOwn(opts, key)) {
+      console.error(usage);
+      return 2;
+    }
+    opts[key] = argv[++i];
+  }
+  if (disclose && (!opts["--inputs"] || !opts["--resolved"])) {
+    console.error(usage);
+    return 2;
+  }
+  let docs;
+  try {
+    docs = disclose ? [readJson(opts["--inputs"]), readJson(opts["--resolved"])] : [readJson(opts["--input"])];
+  } catch (err) {
+    console.error(`tier-inputs: could not read/parse the input JSON: ${err.message}`);
+    return 2;
+  }
+  try {
+    if (disclose) {
+      for (const l of disclosureLines(docs[0], docs[1])) console.log(`- ${l}`);
+    } else {
+      console.log(JSON.stringify(tierInputs(docs[0]), null, 2));
+    }
+  } catch (err) {
+    if (err instanceof TierInputError || err instanceof TypeError) {
+      console.error(`tier-inputs: ${err.message}`);
+      return 2;
+    }
+    throw err;
+  }
+  return 0;
+}
+
+const isMain =
+  process.argv[1] &&
+  (() => {
+    try {
+      return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+    } catch {
+      return fileURLToPath(import.meta.url) === process.argv[1];
+    }
+  })();
+if (isMain) {
+  process.exitCode = main(process.argv.slice(2));
+}

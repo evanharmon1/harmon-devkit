@@ -209,6 +209,30 @@ Map each criterion to how it will be **verified** — a test, a gate, a manual
 check. A criterion with no verification is either not a criterion or not done;
 say which.
 
+**Resolve the issue's Tier with the policy, not by eye**, whenever you resolve
+policy for the profile line (step 8). An orchestrated lane takes this from its
+brief instead, because the orchestrator already resolved it.
+- Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
+  its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
+  Complexity.
+- Translate them with `dev-flow-support/assets/tier-inputs.mjs`, then pass
+  the flags to `dev-flow-support/assets/devflow-policy.mjs resolve`. The
+  reader receives them as `issueTier` and `pinnedTier`; when the Tier label
+  is absent, it computes the Tier from Risk and Complexity.
+- Label conflicts are reconciled before the reader runs. `tier:pinned` with
+  more than one unqualified `tier:<value>` is an ambiguous pin: no
+  `pinnedTier` is passed, a warning names both values, and the issue
+  resolves through its derived Tier.
+- The `tier-inputs.mjs disclose` lines go into the PR body's profile line:
+  the tier source (pinned, rigor, derived, default) and any pin-caused
+  invariant break.
+
+The full procedure, including pin provenance, is `dev-flow-support` §
+"Resolving an issue's Tier". A classified issue under a `.devflow.toml`
+without `[tier.matrix]` resolves indeterminate (exit 3) and keeps its profile
+tier. That includes harmon-devkit until its template update to the
+harmon-init release carrying #1475. Disclose it; never guess a Tier.
+
 ## 3. Branch
 
 Feature branch off the default branch, never a commit on `main` directly.
@@ -589,7 +613,7 @@ meant to carry it, where it reads as instruction.
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
 | `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true` plus narrow rules for the commands Codex would otherwise prompt on. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{pr-title}}` | Release-title-guard-compliant proposal |
-| `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers; and every off-profile choice named as off-profile |
+| `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers, with the implementer's **tier source** (pinned, rigor, derived, default, or operator) and any **pin-caused invariant break** — the `dev-flow-support/assets/tier-inputs.mjs disclose` lines, verbatim (`dev-flow-support` § "Resolving an issue's Tier"); and every off-profile choice named as off-profile |
 | `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
 | `{{blocked-sentinel}}` | Dispatcher-generated blocked sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |

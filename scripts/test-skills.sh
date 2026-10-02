@@ -10695,6 +10695,15 @@ expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's read
 # review, integrate, orchestrate and retro skills invoke by name, and it makes
 # no claim about an asset it does not name.
 
+# harmon-devkit#1248: the consumer-side tier translation /orchestrate and
+# /implement run before the policy reader (label → resolver flags, the
+# ambiguous pin, PR-body tier disclosure). Its own suite carries the unit and
+# end-to-end cases; it is wired here rather than as a separate Taskfile target.
+echo ""
+echo "== dev-flow-support tier-inputs.mjs (harmon-devkit#1248) =="
+expect_ok "tier-inputs.mjs: translation, ambiguous pin, and disclosure cases pass" \
+    "$repo/ai/skills/universal/dev-flow-support/assets/test-tier-inputs.sh"
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
