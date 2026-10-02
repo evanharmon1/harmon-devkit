@@ -15,6 +15,8 @@
 #   - --execute is inert without the wrapper-owned TRIAGE_EXECUTE=1 env gate
 #   - the rolling report is idempotent, upserts only its marker-carrying
 #     issue, and the scan excludes it from triage (self-exclusion)
+#   - the classification and priority rubrics exist under references/ and
+#     SKILL.md links both
 #
 # Run via `task test:triage-skill`.
 set -euo pipefail
@@ -2013,5 +2015,14 @@ grep -q 'native Issue Types: <n> applied|would-apply' \
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||
     fail "non-interactive --execute must exit 2"
+
+# ── references ───────────────────────────────────────────────────────────────
+echo "==> references: both rubrics exist and SKILL.md links them"
+for rubric in classification-rubric priority-rubric; do
+    [ -f "ai/skills/universal/triage/references/$rubric.md" ] ||
+        fail "references/$rubric.md must exist"
+    grep -qF "(references/$rubric.md)" ai/skills/universal/triage/SKILL.md ||
+        fail "SKILL.md must link references/$rubric.md"
+done
 
 echo "All triage skill tests passed."
