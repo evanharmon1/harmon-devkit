@@ -224,7 +224,9 @@ const BUILTIN_STRATEGY_DEFAULT = Object.freeze({
  * Resolve the documented fallback used only when .devflow.toml is absent
  * (AGENTS.md: "use the reader's built-in fallback only when the policy file
  * is absent"). A present-but-unreadable or malformed file is never absent —
- * the CLI still refuses it. Tier inputs stay inert here (applyTierInputs).
+ * the CLI still refuses it. Here the DERIVED Tier is recorded but inert;
+ * a pin, a tier:<role>:* label, and an operator tier still apply
+ * (applyTierInputs; corpus case absent-policy-classified-issue-keeps-an-honored-pin).
  */
 export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy } = {}) {
   if (requestedRigor !== undefined && requestedRigor !== "standard") {
@@ -1988,7 +1990,14 @@ function parseArgs(argv) {
           throw new PolicyError(`option --${bareKey} may be supplied only once`);
         }
         if (TIER_BOOLEAN_OPTIONS.has(bareKey)) {
-          if (equalsAt !== -1) throw new PolicyError(`boolean option --${bareKey} does not take a value`);
+          // A value after a provenance flag is refused, never skipped:
+          // `--pin-marker-trusted false` must not read as TRUSTED with a
+          // stray positional, which would honor a pin whose provenance the
+          // caller meant to deny (challenge round 1, C1-1).
+          const following = argv[i + 1];
+          if (equalsAt !== -1 || (following !== undefined && !following.startsWith("--"))) {
+            throw new PolicyError(`boolean option --${bareKey} does not take a value`);
+          }
           args[bareKey] = true;
           continue;
         }

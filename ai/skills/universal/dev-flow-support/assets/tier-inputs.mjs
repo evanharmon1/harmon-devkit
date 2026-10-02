@@ -10,6 +10,12 @@
 // This helper is that consumer for /orchestrate and /implement, so both stage
 // skills translate an issue the same way and the translation is tested.
 //
+// `--policy <.devflow.toml>` is required: a rigor:/strategy: label naming no
+// [rigor.*]/[strategy.*] table there is dropped with a `*-label-unknown`
+// warning rather than forwarded (AGENTS.md: such a value "is ignored rather
+// than guessed at"); a policy file that does not exist means the built-in
+// fallback's standard rigor and plan strategy only.
+//
 // Input (JSON, on stdin or from --input <file>):
 //   {
 //     "labels":   ["tier:standard", "tier:pinned", "risk:high", ...],
@@ -57,6 +63,7 @@
 // never be read by the reader as a flag of its own.
 
 import { readFileSync, realpathSync } from "node:fs";
+import { parseToml } from "./lib/toml-lite.mjs";
 import { fileURLToPath } from "node:url";
 
 // The same ladders devflow-policy.mjs requires a v2 policy to declare
@@ -90,7 +97,7 @@ function strongest(values, ladder) {
  * Translate an issue's labels, fields, and operator instructions into
  * devflow-policy.mjs resolve flags. Pure: no I/O, no GitHub reads.
  */
-export function tierInputs({ labels = [], fields = {}, operator = {}, pin_provenance: provenance = {} } = {}) {
+export function tierInputs({ labels = [], fields = {}, operator = {}, pin_provenance: provenance = {}, policy = null } = {}) {
   if (!Array.isArray(labels) || labels.some((l) => typeof l !== "string")) {
     throw new TierInputError("labels must be an array of strings");
   }
@@ -103,9 +110,25 @@ export function tierInputs({ labels = [], fields = {}, operator = {}, pin_proven
       throw new TierInputError(`${name} must be an object`);
     }
   }
+  if (policy !== null) {
+    for (const key of ["rigors", "strategies"]) {
+      if (!Array.isArray(policy[key]) || policy[key].some((v) => typeof v !== "string")) {
+        throw new TierInputError(`policy.${key} must be an array of strings`);
+      }
+    }
+  }
   const warnings = [];
   const args = [];
   const inputs = {};
+  // A rigor:/strategy: label value that names nothing in the governing
+  // policy is IGNORED rather than guessed at (AGENTS.md "Rigor and
+  // Strategy") — forwarded, the reader would refuse the whole resolution
+  // over a stale label (challenge round 1, C1-2). Without a policy summary
+  // only the canonical rigor ladder can be checked. Operator values are
+  // never filtered: an operator typo should fail loudly in the reader.
+  const rigorNamed = (v) => RIGOR_ORDER.includes(v) && (policy === null || policy.rigors.includes(v));
+  const strategyNamed = (v) => policy === null || policy.strategies.includes(v);
+  const rigorOrder = policy?.rigor_order ?? RIGOR_ORDER;
 
   const rigorLabels = [];
   const strategyLabels = [];
@@ -142,12 +165,12 @@ export function tierInputs({ labels = [], fields = {}, operator = {}, pin_proven
       inputs.rigor = { value: rigor, source: "operator" };
     }
   } else {
-    const known = uniq(rigorLabels).filter((v) => RIGOR_ORDER.includes(v));
-    for (const v of uniq(rigorLabels).filter((v) => !RIGOR_ORDER.includes(v))) {
-      warnings.push(warning("rigor-label-unknown", `rigor:${v} names no rigor level and is ignored`));
+    const known = uniq(rigorLabels).filter(rigorNamed);
+    for (const v of uniq(rigorLabels).filter((v) => !rigorNamed(v))) {
+      warnings.push(warning("rigor-label-unknown", `rigor:${v} names no rigor level in the governing policy and is ignored`));
     }
     if (known.length > 0) {
-      const rigor = strongest(known, RIGOR_ORDER);
+      const rigor = strongest(known, rigorOrder);
       if (known.length > 1) {
         warnings.push(warning("rigor-label-conflict", `rigor labels ${known.map((v) => `rigor:${v}`).join(", ")} conflict; the strongest, ${rigor}, applies`));
       }
@@ -164,7 +187,13 @@ export function tierInputs({ labels = [], fields = {}, operator = {}, pin_proven
       inputs.strategy = { value: strategy, source: "operator" };
     }
   } else {
-    const values = uniq(strategyLabels).map((v) => slugOrWarn(v, "strategy label")).filter((v) => v !== null);
+    const slugs = uniq(strategyLabels).map((v) => slugOrWarn(v, "strategy label")).filter((v) => v !== null);
+    for (const v of slugs.filter((v) => !strategyNamed(v))) {
+      warnings.push(warning("strategy-label-unknown", `strategy:${v} names no [strategy.${v}] in the governing policy and is ignored`));
+    }
+    // Ignored labels do not count toward ambiguity: only labels that name a
+    // real strategy can conflict.
+    const values = slugs.filter(strategyNamed);
     if (values.length === 1) {
       args.push(`--strategy`, values[0]);
       inputs.strategy = { value: values[0], source: "label" };
@@ -356,24 +385,59 @@ function readJson(source) {
   return JSON.parse(readFileSync(source ?? 0, "utf8"));
 }
 
+/**
+ * The names a rigor:/strategy: label may select under the policy at `file`:
+ * its [rigor.*] and [strategy.*] tables. A file that does not exist is the
+ * built-in fallback, which supports only standard rigor and plan strategy
+ * (devflow-policy.mjs resolveAbsentPolicy). A present file that cannot be
+ * read or parsed throws — the caller reports it rather than guessing.
+ */
+export function policySummary(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return { rigors: ["standard"], strategies: ["plan"], rigor_order: ["standard"] };
+    throw err;
+  }
+  const doc = parseToml(text);
+  const tableNames = (t) => (t && typeof t === "object" && !Array.isArray(t) ? Object.keys(t) : []);
+  return {
+    rigors: tableNames(doc.rigor),
+    strategies: tableNames(doc.strategy),
+    rigor_order: Array.isArray(doc.rigor_order) ? doc.rigor_order.filter((v) => typeof v === "string") : RIGOR_ORDER,
+  };
+}
+
 function main(argv) {
   const usage =
-    "usage: tier-inputs.mjs [--input <file>]                      translate (JSON on stdin otherwise)\n" +
+    "usage: tier-inputs.mjs --policy <.devflow.toml> [--input <file>]  translate (JSON on stdin otherwise)\n" +
     "       tier-inputs.mjs disclose --inputs <file> --resolved <file>  PR-body tier disclosure lines";
   const disclose = argv[0] === "disclose";
   const opts = {};
   for (let i = disclose ? 1 : 0; i < argv.length; i++) {
     const key = argv[i];
-    const allowed = disclose ? ["--inputs", "--resolved"] : ["--input"];
+    const allowed = disclose ? ["--inputs", "--resolved"] : ["--input", "--policy"];
     if (!allowed.includes(key) || argv[i + 1] === undefined || Object.hasOwn(opts, key)) {
       console.error(usage);
       return 2;
     }
     opts[key] = argv[++i];
   }
-  if (disclose && (!opts["--inputs"] || !opts["--resolved"])) {
+  // --policy is required to translate: without it a label naming nothing in
+  // the policy would be forwarded and refuse the whole resolution (C1-2).
+  if (disclose ? !opts["--inputs"] || !opts["--resolved"] : !opts["--policy"]) {
     console.error(usage);
     return 2;
+  }
+  let policy = null;
+  if (!disclose) {
+    try {
+      policy = policySummary(opts["--policy"]);
+    } catch (err) {
+      console.error(`tier-inputs: could not read/parse --policy: ${err.message}`);
+      return 2;
+    }
   }
   let docs;
   try {
@@ -386,7 +450,7 @@ function main(argv) {
     if (disclose) {
       for (const l of disclosureLines(docs[0], docs[1])) console.log(`- ${l}`);
     } else {
-      console.log(JSON.stringify(tierInputs(docs[0]), null, 2));
+      console.log(JSON.stringify(tierInputs({ ...docs[0], policy }), null, 2));
     }
   } catch (err) {
     if (err instanceof TierInputError || err instanceof TypeError) {

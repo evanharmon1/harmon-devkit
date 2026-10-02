@@ -62,7 +62,8 @@ Follow `dev-flow-support`'s § "Resolving an issue's Tier":
 - Read the issue's `tier:<value>` label on every owner type, plus
   `tier:pinned`, its `tier:<role>:*`/`rigor:*`/`strategy:*` labels, and its
   Risk and Complexity.
-- Translate them with `dev-flow-support/assets/tier-inputs.mjs`, which
+- Translate them with `dev-flow-support/assets/tier-inputs.mjs --policy
+  .devflow.toml`, which
   reconciles label conflicts *before* the reader runs. A `tier:pinned` with
   more than one unqualified `tier:<value>` is an ambiguous pin: no
   `pinnedTier` is passed, a warning names both values, and the issue

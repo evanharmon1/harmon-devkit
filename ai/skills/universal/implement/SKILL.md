@@ -215,7 +215,8 @@ brief instead, because the orchestrator already resolved it.
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
   its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
   Complexity.
-- Translate them with `dev-flow-support/assets/tier-inputs.mjs`, then pass
+- Translate them with `dev-flow-support/assets/tier-inputs.mjs --policy
+  .devflow.toml`, then pass
   the flags to `dev-flow-support/assets/devflow-policy.mjs resolve`. The
   reader receives them as `issueTier` and `pinnedTier`; when the Tier label
   is absent, it computes the Tier from Risk and Complexity.

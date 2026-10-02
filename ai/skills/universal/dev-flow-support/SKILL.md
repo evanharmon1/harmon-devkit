@@ -68,7 +68,7 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
 3. **Translate**, then **resolve** with the translated flags appended:
 
    ```sh
-   node "$support_dir/tier-inputs.mjs" --input tier-input.json >tier-translation.json
+   node "$support_dir/tier-inputs.mjs" --policy .devflow.toml --input tier-input.json >tier-translation.json
    tier_args=()
    while IFS= read -r a; do tier_args+=("$a"); done \
        < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' tier-translation.json)
@@ -86,6 +86,9 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    - Two `tier:<role>:*` values for one role resolve to the stronger on
      `tier_order`, and two `rigor:*` labels to the stronger on `rigor_order`;
      either conflict is disclosed.
+   - A `rigor:*`/`strategy:*` label that names no `[rigor.*]`/`[strategy.*]`
+     table in the policy (`--policy`) is ignored with a `*-label-unknown`
+     warning, never forwarded for the reader to refuse.
    - Two `strategy:*` labels pass neither, so `default_strategy` applies with
      a warning.
    - When Risk or Complexity is absent, the reader computes the Tier from
@@ -109,7 +112,12 @@ harmon-devkit itself today**: its own `.devflow.toml` is the harmon-init
 here resolves that way until a `copier update` to the harmon-init release
 carrying harmon-init#1475. A pin, a `tier:<role>:*` label and an operator
 tier still apply. A repository with **no** `.devflow.toml` at all takes the
-built-in fallback, where tier inputs are recorded and stay inert.
+built-in fallback. There the **derived** Tier is recorded but not applied
+(`issue_tier.status` is `inert`), while a pin, a `tier:<role>:*` label and an
+operator tier still apply. That is the conformance corpus's
+`absent-policy-classified-issue-keeps-an-honored-pin`. Only standard rigor
+and plan strategy exist there, so any other `rigor:*`/`strategy:*` label is
+ignored with a warning.
 
 ## Calling it from another skill
 

@@ -37,9 +37,11 @@ ok() {
     return 0
 }
 
-# translate JSON → prints the helper's JSON output
+# translate JSON → prints the helper's JSON output. The policy defaults to
+# the corpus base policy; TRANSLATE_POLICY overrides it (an absent path is the
+# built-in fallback).
 translate() {
-    printf '%s' "$1" | node "$helper"
+    printf '%s' "$1" | node "$helper" --policy "${TRANSLATE_POLICY:-$base_policy}"
 }
 
 # expect_args NAME INPUT EXPECTED_ARGS_JSON — exact argument vector.
@@ -102,11 +104,48 @@ expect_args "a field wins over a disagreeing label" '{"labels":["risk:high"],"fi
 expect_warning "a field/label disagreement warns" '{"labels":["risk:high"],"fields":{"risk":"low"}}' risk-field-label-mismatch
 expect_args "conflicting risk labels pass neither" '{"labels":["risk:high","risk:low","complexity:s"]}' '["--complexity=s"]'
 expect_args "a non-slug value never reaches the reader" '{"labels":["tier:--json"]}' '[]'
-if printf '%s' '{"labels":"tier:standard"}' | node "$helper" >/dev/null 2>&1; then
+if printf '%s' '{"labels":"tier:standard"}' | node "$helper" --policy "$base_policy" >/dev/null 2>&1; then
     fail "malformed input must exit non-zero"
 else
     ok
 fi
+
+echo "==> tier-inputs.mjs: labels naming nothing in the policy are ignored (challenge round 1, C1-2)"
+expect_args "an unknown strategy label is dropped" '{"labels":["strategy:bogus"]}' '[]'
+expect_warning "an unknown strategy label warns" '{"labels":["strategy:bogus"]}' strategy-label-unknown "strategy:bogus"
+expect_args "an unknown strategy label does not make a known one ambiguous" \
+    '{"labels":["strategy:bogus","strategy:council"]}' '["--strategy","council"]'
+expect_args "an unknown rigor label is dropped" '{"labels":["rigor:extreme"]}' '[]'
+expect_warning "an unknown rigor label warns" '{"labels":["rigor:extreme"]}' rigor-label-unknown "rigor:extreme"
+expect_args "an operator strategy is never filtered" '{"operator":{"strategy":"bogus"}}' '["--strategy","bogus"]'
+TRANSLATE_POLICY="$scratch/absent/.devflow.toml"
+expect_args "absent policy: rigor:deep names nothing in the built-in fallback" '{"labels":["rigor:deep"]}' '[]'
+expect_args "absent policy: rigor:standard is the fallback's own level" \
+    '{"labels":["rigor:standard"]}' '["--rigor","standard","--rigor-source=label"]'
+expect_args "absent policy: strategy:council names nothing" '{"labels":["strategy:council"]}' '[]'
+expect_args "absent policy: strategy:plan is the fallback's own strategy" '{"labels":["strategy:plan"]}' '["--strategy","plan"]'
+unset TRANSLATE_POLICY
+if printf '%s' '{"labels":[]}' | node "$helper" >/dev/null 2>&1; then
+    fail "translating without --policy must be a usage error"
+else
+    ok
+fi
+printf 'schema_version = [\n' >"$scratch/broken.toml"
+if printf '%s' '{"labels":[]}' | node "$helper" --policy "$scratch/broken.toml" >/dev/null 2>&1; then
+    fail "an unparseable --policy must be refused, never treated as absent"
+else
+    ok
+fi
+
+echo "==> devflow-policy.mjs: a provenance flag never swallows a value (challenge round 1, C1-1)"
+rc=0
+node "$reader" resolve --policy "$base_policy" --json --pinned-tier apex --pin-marker-trusted false --pin-value-trusted \
+    >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then ok; else fail "--pin-marker-trusted false must be a usage error (exit 2), got $rc"; fi
+rc=0
+node "$reader" resolve --policy "$base_policy" --json --pinned-tier apex --pin-value-trusted true --pin-marker-trusted \
+    >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then ok; else fail "--pin-value-trusted true must be a usage error (exit 2), got $rc"; fi
 
 echo "==> tier-inputs.mjs + devflow-policy.mjs: end to end over the corpus base policy"
 # e2e NAME INPUT IMPL_TIER IMPL_SOURCE [DISCLOSURE_SUBSTRING...]
@@ -160,6 +199,8 @@ e2e "untrusted pin resolves unpinned and says so" \
 e2e "leftover tier:adaptive resolves as absent" '{"labels":["tier:adaptive"]}' standard rigor-profile \
     "source: default" "warning [tier-retired]"
 e2e "no classification resolves to the default profile" '{"labels":[]}' standard rigor-profile "source: default"
+e2e "a stale strategy label no longer blocks resolution" '{"labels":["strategy:bogus"]}' standard rigor-profile \
+    "warning [strategy-label-unknown]"
 
 echo "==> devflow-policy.mjs: no [tier.matrix] means indeterminate, never a guess"
 no_matrix="$scratch/no-matrix.toml"
