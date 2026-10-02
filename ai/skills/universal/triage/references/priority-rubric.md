@@ -26,13 +26,13 @@ Priority (AI) from them, and the Tier does not read it.
 
 ### Priority (AI) anchors
 
-| Value | Anchor | Feature example | Bug example |
-| --- | --- | --- | --- |
-| p0 | Blocks a merge or deploy: nothing should ship while it is open | The release cannot go out without it | A security exposure, data loss, or a crash on the main path |
-| p1 | A real defect or a must-do; work it next | Other committed work waits on it | A real defect users hit, with no safe workaround |
-| p2 | Worth doing, but it does not block anything | A useful addition with no deadline | A defect with a workaround that causes no data loss or security exposure |
-| p3 | Cosmetic or informational | A nicer message or a tidier layout | A wrong label, a typo in output, a misleading but harmless log line |
-| p4 | Negligible: the agent judges it too small to matter | A nicety no one asked for and no one would miss | A glitch no one would notice |
+| Value | Anchor |
+| --- | --- |
+| p0 | Blocks a merge or deploy: nothing should ship while it is open |
+| p1 | A real defect or a must-do; work it next |
+| p2 | Worth doing, but it does not block anything |
+| p3 | Cosmetic or informational |
+| p4 | Negligible: the agent judges it too small to matter |
 
 **For a bug, Priority (AI) reads as severity:** how bad the defect is, and how important it is to fix before merging or
 deploying. A defect that must not ship is `p0`; one to fix next is `p1`; one worth fixing that blocks nothing is `p2`.
@@ -58,9 +58,10 @@ spellings apart.
 ### Priority (AI) worked examples
 
 - **Feature: "Add a `--dry-run` flag to the deploy script, so next week's cutover can be rehearsed."** The cutover
-  depends on it, so it is a must-do, next: **`p1`**. It does not block a merge or deploy of anything that exists
-  today, which rules out `p0`. If the maintainer then sets Priority to `medium`, the effective priority is `medium`;
-  Priority (AI) stays `p1`, untouched, and no agent edits the human field.
+  itself does not need it, but the rehearsal planned for it does, so committed work waits on it: a must-do, next:
+  **`p1`**. Nothing is blocked from merging or deploying without it, which rules out `p0`. If the maintainer then sets
+  Priority to `medium`, the effective priority is `medium`; Priority (AI) stays `p1`, untouched, and no agent edits the
+  human field.
 - **Bug: "Session tokens are written to the log in plaintext by the debug middleware, and the middleware is enabled in
   production."** It is a security exposure that must not ship or stay deployed, so read it as severity: **`p0`**. The
   harm it prevents is also a high Impact and the fix is probably a low Risk, but those are separate scores and neither

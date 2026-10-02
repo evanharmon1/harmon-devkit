@@ -29,7 +29,7 @@ leak into another:
 | Rating Complexity by how long it will take | Complexity is difficulty, never a time estimate | Judge how hard it is to understand, design, implement, and verify |
 | Raising Impact because the change is risky or hard | Impact does not move with Risk or Complexity | Leave Impact on the outcome's value alone |
 | Choosing a Tier because the issue feels important | The Tier is derived from Risk × Complexity, and Impact does not enter it | Set Risk and Complexity; the Tier follows |
-| Reading Impact as urgency | Ordering is Priority, which is human-only | Leave ordering to the Priority rubric |
+| Reading Impact as urgency | Ordering belongs to Priority (set by a human) and Priority (AI) (an agent's suggestion), not to Impact | Leave ordering to the Priority rubric |
 
 ## Impact
 
