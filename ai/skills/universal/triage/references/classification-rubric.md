@@ -140,8 +140,9 @@ The Tier is the model stratum an issue suggests its implementer run at: `local`,
 `apex`. It is not a judgement about the issue; it is **derived**. The unpinned Tier is a pure function of Risk × Complexity
 through the policy matrix, so it carries nothing beyond those two values, and in particular Impact does not enter it; a
 human pin (below) is the one exception. It is stored as a **label**, `tier:<value>`, on every owner type, organization and personal-account repositories alike,
-and is never an organization issue field. An issue carries at most one tier value. The scale is exactly these five:
-`adaptive` is retired and is not a rung. Which models sit in each tier is the model catalog's decision
+and is never an organization issue field. A writer sets at most one tier value on an issue. The scale is exactly these
+five rungs: the derived Tier is never `adaptive`, and how an existing `adaptive` label is retired or migrated is the
+registry and policy work's concern, not this rubric's. Which models sit in each tier is the model catalog's decision
 (`agent-registry.json`), not this rubric's.
 
 ### How the Tier is derived
