@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.50.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.49.0...v0.50.0) (2026-10-03)
+
+
+### Features
+
+* **skills:** vendor ce-code-review skill from compound-engineering-plugin ([#1244](https://github.com/evanharmon1/harmon-devkit/issues/1244)) ([20d5eb5](https://github.com/evanharmon1/harmon-devkit/commit/20d5eb534d66aeeb4138ed8e708504294def1212)), closes [#1243](https://github.com/evanharmon1/harmon-devkit/issues/1243)
+* **triage:** add the long-form classification and priority rubrics ([#1259](https://github.com/evanharmon1/harmon-devkit/issues/1259)) ([31b81d5](https://github.com/evanharmon1/harmon-devkit/commit/31b81d50f7e789e2878e4e1f60540c89addbc5f2))
+
+
+### Bug Fixes
+
+* **claim:** normalise trailing newlines on claim record compare ([#1238](https://github.com/evanharmon1/harmon-devkit/issues/1238)) ([cef0b00](https://github.com/evanharmon1/harmon-devkit/commit/cef0b00b98be709e51beec239fd5efaaed613955))
+
 ## [0.49.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.48.0...v0.49.0) (2026-09-28)
 
 
