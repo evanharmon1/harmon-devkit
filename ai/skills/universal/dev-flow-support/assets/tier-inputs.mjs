@@ -20,6 +20,13 @@
 //   {
 //     "labels":   ["tier:standard", "tier:pinned", "risk:high", ...],
 //                 // every label on the issue; non-policy labels are ignored
+//     "authorized_labels": ["rigor:deep", "tier:implementer:frontier", ...],
+//                 // the execution-policy labels (rigor:*, strategy:*,
+//                 // tier:<role>:*) whose provenance the consumer verified.
+//                 // Fail-closed: one missing here is dropped with a
+//                 // policy-label-unauthorized warning. risk:*, complexity:*
+//                 // and the stored tier:<value> are never gated (ADR
+//                 // 2026-09-30 D3).
 //     "fields":   { "risk": "high", "complexity": "m" },
 //                 // optional: org-repository issue fields. A present field is
 //                 // the storage of record and wins over a same-axis label.
@@ -97,9 +104,19 @@ function strongest(values, ladder) {
  * Translate an issue's labels, fields, and operator instructions into
  * devflow-policy.mjs resolve flags. Pure: no I/O, no GitHub reads.
  */
-export function tierInputs({ labels = [], fields = {}, operator = {}, pin_provenance: provenance = {}, policy = null } = {}) {
+export function tierInputs({
+  labels = [],
+  authorized_labels: authorizedLabels = [],
+  fields = {},
+  operator = {},
+  pin_provenance: provenance = {},
+  policy = null,
+} = {}) {
   if (!Array.isArray(labels) || labels.some((l) => typeof l !== "string")) {
     throw new TierInputError("labels must be an array of strings");
+  }
+  if (!Array.isArray(authorizedLabels) || authorizedLabels.some((l) => typeof l !== "string")) {
+    throw new TierInputError("authorized_labels must be an array of strings");
   }
   for (const [name, value] of [
     ["fields", fields],
@@ -137,18 +154,52 @@ export function tierInputs({ labels = [], fields = {}, operator = {}, pin_proven
   const axisLabels = { risk: [], complexity: [] };
   let pinned = false;
 
+  // EXECUTION-POLICY labels (rigor:*, strategy:*, tier:<role>:*) are honored
+  // only when the consumer verified their provenance and listed them in
+  // `authorized_labels` — an interactive session from operator
+  // confirmation, unattended automation from its own trusted-actor check
+  // re-read immediately before acting (AGENTS.md "Nothing here arms
+  // anything"). Fail-closed: an unlisted one is dropped with a warning and
+  // the profile/default applies, so a label nobody vouched for can neither
+  // spend money nor skip oversight by omission (challenge round 2, C2-1).
+  // The CLASSIFICATION inputs — risk:*, complexity:*, and the unqualified
+  // tier:<value> stored Tier — are deliberately ungated: ADR 2026-09-30 D3
+  // lets an AI or a human set them with no safeguard, and the stored Tier is
+  // only a cache of Risk × Complexity. The pin keeps its own two-part check
+  // (`pin_provenance`).
+  const authorized = new Set(authorizedLabels);
+  const unauthorized = [];
+  const policyLabel = (label) => {
+    if (authorized.has(label)) return true;
+    unauthorized.push(label);
+    return false;
+  };
+
   for (const label of labels) {
     const parts = label.split(":");
     if (parts.some((p) => p === "")) continue;
-    if (parts.length === 2 && parts[0] === "rigor") rigorLabels.push(parts[1]);
-    else if (parts.length === 2 && parts[0] === "strategy") strategyLabels.push(parts[1]);
+    if (parts.length === 2 && parts[0] === "rigor") {
+      if (policyLabel(label)) rigorLabels.push(parts[1]);
+    } else if (parts.length === 2 && parts[0] === "strategy") {
+      if (policyLabel(label)) strategyLabels.push(parts[1]);
+    }
     else if (parts.length === 2 && (parts[0] === "risk" || parts[0] === "complexity")) axisLabels[parts[0]].push(parts[1]);
     else if (label === "tier:pinned") pinned = true;
     else if (parts.length === 2 && parts[0] === "tier") storedTierLabels.push(parts[1]);
     else if (parts.length === 3 && parts[0] === "tier" && ROLES.includes(parts[1])) {
+      if (!policyLabel(label)) continue;
       if (!roleLabels.has(parts[1])) roleLabels.set(parts[1], []);
       roleLabels.get(parts[1]).push(parts[2]);
     }
+  }
+  if (unauthorized.length > 0) {
+    warnings.push(
+      warning(
+        "policy-label-unauthorized",
+        `execution-policy label(s) ${unauthorized.join(", ")} carry no verified provenance and are ignored; the profile/default applies — an interactive session confirms them with the operator and passes them in authorized_labels`,
+      ),
+    );
+    inputs.unauthorized_labels = unauthorized;
   }
 
   const slugOrWarn = (value, what) => {

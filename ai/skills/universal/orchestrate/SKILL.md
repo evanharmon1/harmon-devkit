@@ -73,8 +73,12 @@ Follow `dev-flow-support`'s § "Resolving an issue's Tier":
   as a cache) and the pin as `pinnedTier`. When the Tier label is absent,
   the reader computes the Tier from Risk and Complexity.
 
-Pin provenance is a label-authorization question; § "Nothing here arms
-anything" in `AGENTS.md` applies to it. Record the resolved implementer tier
+Label provenance is checked before translation, under § "Nothing here arms
+anything" in `AGENTS.md`. Every `rigor:*`, `strategy:*` and `tier:<role>:*`
+label you honor goes into the helper's `authorized_labels`. An unlisted one
+is dropped with a warning (fail-closed). The pin's marker and value are
+verified separately. Risk, Complexity and the stored Tier are ungated (ADR
+2026-09-30 D3). Record the resolved implementer tier
 and its source in the run and in the lane brief's `{{role-tiers}}`. Put the
 `tier-inputs.mjs disclose` lines into the PR-body disclosure. They name:
 - the tier source (pinned, rigor, derived, default);

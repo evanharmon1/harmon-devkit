@@ -228,7 +228,11 @@ brief instead, because the orchestrator already resolved it.
   the tier source (pinned, rigor, derived, default) and any pin-caused
   invariant break.
 
-The full procedure, including pin provenance, is `dev-flow-support` §
+An execution-policy label (`rigor:*`, `strategy:*`, `tier:<role>:*`) counts
+only once its provenance is verified and it is listed in the helper's
+`authorized_labels`; an unlisted one is dropped with a warning
+(fail-closed). The full procedure, including label and pin provenance, is
+`dev-flow-support` §
 "Resolving an issue's Tier". A classified issue under a `.devflow.toml`
 without `[tier.matrix]` resolves indeterminate (exit 3) and keeps its profile
 tier. That includes harmon-devkit until its template update to the

@@ -86,17 +86,21 @@ expect_warning "a pin with no value is reported" '{"labels":["tier:pinned"]}' pi
 expect_args "two stored Tiers without a pin pass neither" '{"labels":["tier:local","tier:apex"]}' '[]'
 expect_warning "two stored Tiers without a pin warn" '{"labels":["tier:local","tier:apex"]}' stored-tier-ambiguous "tier:local" "tier:apex"
 expect_args "role-label conflict takes the strongest" \
-    '{"labels":["tier:implementer:economy","tier:implementer:frontier"]}' '["--tier-labels=implementer=frontier"]'
+    '{"labels":["tier:implementer:economy","tier:implementer:frontier"],"authorized_labels":["tier:implementer:economy","tier:implementer:frontier"]}' \
+    '["--tier-labels=implementer=frontier"]'
 expect_warning "role-label conflict is disclosed" \
-    '{"labels":["tier:implementer:economy","tier:implementer:frontier"]}' tier-role-label-conflict "frontier"
+    '{"labels":["tier:implementer:economy","tier:implementer:frontier"],"authorized_labels":["tier:implementer:economy","tier:implementer:frontier"]}' \
+    tier-role-label-conflict "frontier"
 expect_args "a leftover tier:<role>:adaptive reaches the reader to be named retired" \
-    '{"labels":["tier:reviewer:adaptive"]}' '["--tier-labels=reviewer=adaptive"]'
+    '{"labels":["tier:reviewer:adaptive"],"authorized_labels":["tier:reviewer:adaptive"]}' '["--tier-labels=reviewer=adaptive"]'
 expect_args "rigor-label conflict takes the strongest" \
-    '{"labels":["rigor:light","rigor:deep"]}' '["--rigor","deep","--rigor-source=label"]'
+    '{"labels":["rigor:light","rigor:deep"],"authorized_labels":["rigor:light","rigor:deep"]}' '["--rigor","deep","--rigor-source=label"]'
 expect_args "operator rigor outranks a rigor label" \
-    '{"labels":["rigor:deep"],"operator":{"rigor":"light"}}' '["--rigor","light","--rigor-source=operator"]'
-expect_args "two strategy labels pass none" '{"labels":["strategy:plan","strategy:council"]}' '[]'
-expect_warning "two strategy labels warn" '{"labels":["strategy:plan","strategy:council"]}' strategy-label-ambiguous
+    '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"],"operator":{"rigor":"light"}}' '["--rigor","light","--rigor-source=operator"]'
+expect_args "two strategy labels pass none" \
+    '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' '[]'
+expect_warning "two strategy labels warn" \
+    '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' strategy-label-ambiguous
 expect_args "operator tiers" '{"operator":{"tiers":{"implementer":"apex","reviewer":"frontier"}}}' \
     '["--tier-overrides=implementer=apex,reviewer=frontier"]'
 expect_args "org fields are the classification" '{"fields":{"risk":"low","complexity":"xl"}}' '["--risk=low","--complexity=xl"]'
@@ -111,20 +115,43 @@ else
 fi
 
 echo "==> tier-inputs.mjs: labels naming nothing in the policy are ignored (challenge round 1, C1-2)"
-expect_args "an unknown strategy label is dropped" '{"labels":["strategy:bogus"]}' '[]'
-expect_warning "an unknown strategy label warns" '{"labels":["strategy:bogus"]}' strategy-label-unknown "strategy:bogus"
+expect_args "an unknown strategy label is dropped" \
+    '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' '[]'
+expect_warning "an unknown strategy label warns" \
+    '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' strategy-label-unknown "strategy:bogus"
 expect_args "an unknown strategy label does not make a known one ambiguous" \
-    '{"labels":["strategy:bogus","strategy:council"]}' '["--strategy","council"]'
-expect_args "an unknown rigor label is dropped" '{"labels":["rigor:extreme"]}' '[]'
-expect_warning "an unknown rigor label warns" '{"labels":["rigor:extreme"]}' rigor-label-unknown "rigor:extreme"
+    '{"labels":["strategy:bogus","strategy:council"],"authorized_labels":["strategy:bogus","strategy:council"]}' '["--strategy","council"]'
+expect_args "an unknown rigor label is dropped" '{"labels":["rigor:extreme"],"authorized_labels":["rigor:extreme"]}' '[]'
+expect_warning "an unknown rigor label warns" \
+    '{"labels":["rigor:extreme"],"authorized_labels":["rigor:extreme"]}' rigor-label-unknown "rigor:extreme"
 expect_args "an operator strategy is never filtered" '{"operator":{"strategy":"bogus"}}' '["--strategy","bogus"]'
 TRANSLATE_POLICY="$scratch/absent/.devflow.toml"
-expect_args "absent policy: rigor:deep names nothing in the built-in fallback" '{"labels":["rigor:deep"]}' '[]'
+expect_args "absent policy: rigor:deep names nothing in the built-in fallback" \
+    '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"]}' '[]'
 expect_args "absent policy: rigor:standard is the fallback's own level" \
-    '{"labels":["rigor:standard"]}' '["--rigor","standard","--rigor-source=label"]'
-expect_args "absent policy: strategy:council names nothing" '{"labels":["strategy:council"]}' '[]'
-expect_args "absent policy: strategy:plan is the fallback's own strategy" '{"labels":["strategy:plan"]}' '["--strategy","plan"]'
+    '{"labels":["rigor:standard"],"authorized_labels":["rigor:standard"]}' '["--rigor","standard","--rigor-source=label"]'
+expect_args "absent policy: strategy:council names nothing" \
+    '{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}' '[]'
+expect_args "absent policy: strategy:plan is the fallback's own strategy" \
+    '{"labels":["strategy:plan"],"authorized_labels":["strategy:plan"]}' '["--strategy","plan"]'
 unset TRANSLATE_POLICY
+
+echo "==> tier-inputs.mjs: execution-policy labels need verified provenance (challenge round 2, C2-1)"
+expect_args "an unauthorized rigor label is dropped" '{"labels":["rigor:deep"]}' '[]'
+expect_warning "an unauthorized rigor label is named" '{"labels":["rigor:deep"]}' policy-label-unauthorized "rigor:deep"
+expect_args "an unauthorized strategy label is dropped" '{"labels":["strategy:council"]}' '[]'
+expect_args "an unauthorized role label is dropped" '{"labels":["tier:implementer:apex"]}' '[]'
+expect_warning "an unauthorized role label is named" '{"labels":["tier:implementer:apex"]}' policy-label-unauthorized "tier:implementer:apex"
+expect_args "authorization is per label" \
+    '{"labels":["rigor:deep","tier:implementer:apex"],"authorized_labels":["tier:implementer:apex"]}' '["--tier-labels=implementer=apex"]'
+expect_args "authorizing a label the issue does not carry adds nothing" '{"labels":[],"authorized_labels":["rigor:deep"]}' '[]'
+expect_args "classification and the stored Tier are never gated (ADR 2026-09-30 D3)" \
+    '{"labels":["risk:high","complexity:m","tier:frontier"]}' '["--risk=high","--complexity=m","--stored-tier=frontier"]'
+if printf '%s' '{"labels":[],"authorized_labels":"rigor:deep"}' | node "$helper" --policy "$base_policy" >/dev/null 2>&1; then
+    fail "a non-array authorized_labels must exit non-zero"
+else
+    ok
+fi
 if printf '%s' '{"labels":[]}' | node "$helper" >/dev/null 2>&1; then
     fail "translating without --policy must be a usage error"
 else
@@ -146,6 +173,23 @@ rc=0
 node "$reader" resolve --policy "$base_policy" --json --pinned-tier apex --pin-value-trusted true --pin-marker-trusted \
     >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then ok; else fail "--pin-value-trusted true must be a usage error (exit 2), got $rc"; fi
+
+echo "==> devflow-policy.mjs: an option a command does not name is refused (challenge round 2, C2-2)"
+# expect_usage_error NAME ARG... — `resolve --policy <base> --json ARG...` exits 2.
+expect_usage_error() {
+    local name="$1" rc=0
+    shift
+    node "$reader" resolve --policy "$base_policy" --json "$@" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 2 ]; then ok; else fail "$name: expected exit 2, got $rc"; fi
+}
+expect_usage_error "a misspelled tier option with =value" "--tier-lables=implementer=apex"
+expect_usage_error "a misspelled tier option with a separate value" --pinned-teir apex
+expect_usage_error "a stray positional" stray
+expect_usage_error "a value after --json" --json stray
+expect_usage_error "a tier option given twice" --risk high --risk low
+rc=0
+node "$reader" detect --policy "$base_policy" --risk high >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then ok; else fail "detect must refuse a resolve-only option (exit 2), got $rc"; fi
 
 echo "==> tier-inputs.mjs + devflow-policy.mjs: end to end over the corpus base policy"
 # e2e NAME INPUT IMPL_TIER IMPL_SOURCE [DISCLOSURE_SUBSTRING...]
@@ -182,14 +226,17 @@ trusted='"pin_provenance":{"marker_trusted":true,"value_trusted":true}'
 e2e "derived Tier sets the implementer" '{"labels":["risk:critical","complexity:xl"]}' apex derived \
     "source: derived" "issue Tier: derived apex"
 e2e "pin beats a scoped label, and the label is disclosed as overridden" \
-    "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],$trusted}" economy pinned \
+    "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" economy pinned \
     "source: pinned" "pin: honored" "overridden: tier:implementer:frontier"
 e2e "pin-caused invariant break is named" \
     "{\"labels\":[\"tier:pinned\",\"tier:apex\"],$trusted}" apex pinned \
     "pin-caused invariant break: challenger"
 e2e "without the pin, the scoped label beats the derived Tier" \
-    '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"]}' economy label \
+    '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"],"authorized_labels":["tier:implementer:economy"]}' economy label \
     "source: rigor" "issue Tier: derived apex"
+e2e "an unauthorized scoped label leaves the derived Tier in charge, and says so" \
+    '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"]}' apex derived \
+    "source: derived" "warning [policy-label-unauthorized]" "tier:implementer:economy"
 e2e "ambiguous pin resolves through the derived Tier" \
     "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"risk:low\",\"complexity:xs\"],$trusted}" local derived \
     "warning [pin-ambiguous]" "tier:apex" "tier:local" "source: derived"
@@ -199,7 +246,8 @@ e2e "untrusted pin resolves unpinned and says so" \
 e2e "leftover tier:adaptive resolves as absent" '{"labels":["tier:adaptive"]}' standard rigor-profile \
     "source: default" "warning [tier-retired]"
 e2e "no classification resolves to the default profile" '{"labels":[]}' standard rigor-profile "source: default"
-e2e "a stale strategy label no longer blocks resolution" '{"labels":["strategy:bogus"]}' standard rigor-profile \
+e2e "a stale strategy label no longer blocks resolution" \
+    '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
     "warning [strategy-label-unknown]"
 
 echo "==> devflow-policy.mjs: no [tier.matrix] means indeterminate, never a guess"

@@ -1966,54 +1966,52 @@ function extractRepeatable(argv, flag) {
   return { values, rest };
 }
 
-// The tier inputs (harmon-devkit#1248) — the same spellings harmon-init's
-// reader takes, so one consumer recipe drives either. Unlike this parser's
-// older options they are parsed STRICTLY: each may appear once, a valued
-// one requires its value (`--opt value` or `--opt=value`), and the two
-// provenance flags are pure booleans that never swallow the next word. A
-// tier input silently lost to a typo'd spelling or a stray positional would
-// resolve a pinned issue as unpinned with exit 0 — the outcome these inputs
-// exist to prevent.
+// Every option a command accepts is named exactly once, here; an option a
+// command does not name, and a stray positional argument, is a usage error
+// (exit 2). That is the one invariant that keeps an input from being
+// silently lost: before it, a misspelled `--tier-lables=…` fell through to
+// a lenient catch-all and resolved the default tier with exit 0 (challenge
+// round 2, C2-2) — the same shape harmon-init's reader enforces.
+// `--add-finder`/`--select-finder` are lifted out by extractRepeatable and
+// `--closure` is handled by tryDelegateToClosure before parsing, so neither
+// reaches this table.
+//
+// Two parsing rules live under that invariant:
+//   - The LEGACY valued options keep their original lenient semantics: one
+//     takes the next word unless it starts with `--`, and otherwise reads
+//     as `true` (the command then reports the missing value itself).
+//     `--json` is a pure boolean: it never took a meaningful value, and
+//     letting it take one would swallow a stray positional.
+//   - The tier inputs (harmon-devkit#1248) — the same spellings harmon-init's
+//     reader takes — are STRICT: each may appear once, a valued one requires
+//     its value (`--opt value` or `--opt=value`), and the two provenance
+//     flags are pure booleans that never take a value (challenge round 1,
+//     C1-1: `--pin-marker-trusted false` must not read as trusted).
+const LEGACY_OPTIONS = new Set(["policy", "registry", "merge-base-policy", "merge-base-registry", "task-targets", "taskfile-dir", "rigor", "strategy"]);
+const BOOLEAN_OPTIONS = new Set(["json", "pin-marker-trusted", "pin-value-trusted"]);
 const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labels", "risk", "complexity", "stored-tier", "pinned-tier"]);
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
+const COMMAND_OPTIONS = {
+  detect: new Set(["policy", "json"]),
+  resolve: new Set([...LEGACY_OPTIONS, "json", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+};
 
-function parseArgs(argv) {
-  const args = { _: [] };
+function parseArgs(argv, allowed) {
+  const args = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const equalsAt = key.indexOf("=");
-      const bareKey = equalsAt === -1 ? key : key.slice(0, equalsAt);
-      if (TIER_VALUE_OPTIONS.has(bareKey) || TIER_BOOLEAN_OPTIONS.has(bareKey)) {
-        if (Object.hasOwn(args, bareKey)) {
-          throw new PolicyError(`option --${bareKey} may be supplied only once`);
-        }
-        if (TIER_BOOLEAN_OPTIONS.has(bareKey)) {
-          // A value after a provenance flag is refused, never skipped:
-          // `--pin-marker-trusted false` must not read as TRUSTED with a
-          // stray positional, which would honor a pin whose provenance the
-          // caller meant to deny (challenge round 1, C1-1).
-          const following = argv[i + 1];
-          if (equalsAt !== -1 || (following !== undefined && !following.startsWith("--"))) {
-            throw new PolicyError(`boolean option --${bareKey} does not take a value`);
-          }
-          args[bareKey] = true;
-          continue;
-        }
-        if (equalsAt !== -1) {
-          const inline = key.slice(equalsAt + 1);
-          if (inline === "") throw new PolicyError(`option --${bareKey} requires a value`);
-          args[bareKey] = inline;
-          continue;
-        }
-        const value = argv[i + 1];
-        if (value === undefined || value.startsWith("--")) {
-          throw new PolicyError(`option --${bareKey} requires a value`);
-        }
-        args[bareKey] = value;
-        i++;
-        continue;
+    if (!a.startsWith("--")) {
+      throw new PolicyError(`unexpected positional argument ${JSON.stringify(a)}`);
+    }
+    const key = a.slice(2);
+    const equalsAt = key.indexOf("=");
+    const bareKey = equalsAt === -1 ? key : key.slice(0, equalsAt);
+    if (!allowed.has(bareKey)) {
+      throw new PolicyError(`unsupported option ${JSON.stringify(a)}`);
+    }
+    if (LEGACY_OPTIONS.has(bareKey)) {
+      if (equalsAt !== -1) {
+        throw new PolicyError(`option --${bareKey} takes its value as a separate word, not --${bareKey}=…`);
       }
       const next = argv[i + 1];
       if (next === undefined || next.startsWith("--")) {
@@ -2022,9 +2020,31 @@ function parseArgs(argv) {
         args[key] = next;
         i++;
       }
-    } else {
-      args._.push(a);
+      continue;
     }
+    if (BOOLEAN_OPTIONS.has(bareKey)) {
+      const following = argv[i + 1];
+      if (equalsAt !== -1 || (following !== undefined && !following.startsWith("--"))) {
+        throw new PolicyError(`boolean option --${bareKey} does not take a value`);
+      }
+      args[bareKey] = true;
+      continue;
+    }
+    if (Object.hasOwn(args, bareKey)) {
+      throw new PolicyError(`option --${bareKey} may be supplied only once`);
+    }
+    if (equalsAt !== -1) {
+      const inline = key.slice(equalsAt + 1);
+      if (inline === "") throw new PolicyError(`option --${bareKey} requires a value`);
+      args[bareKey] = inline;
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new PolicyError(`option --${bareKey} requires a value`);
+    }
+    args[bareKey] = value;
+    i++;
   }
   return args;
 }
@@ -2596,11 +2616,24 @@ function main() {
   // what lets a run name several finders without silently dropping all but
   // the last — a dropped finder is reduced coverage, which is the one thing
   // per-run selection may never cause.
+  const usage =
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level> [--rigor-source operator|label]]\n" +
+    "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
+    "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
+    "       [--risk <risk>] [--complexity <complexity>] [--stored-tier <tier>]\n" +
+    "       [--pinned-tier <tier> [--pin-marker-trusted] [--pin-value-trusted]] [--json]";
+  if (!Object.hasOwn(COMMAND_OPTIONS, cmd ?? "")) {
+    console.error(usage);
+    return 2;
+  }
   const addFinders = extractRepeatable(argv.slice(1), "--add-finder");
   const selectFinders = extractRepeatable(addFinders.rest, "--select-finder");
   let args;
   try {
-    args = parseArgs(selectFinders.rest);
+    if (cmd !== "resolve" && (addFinders.values.length > 0 || selectFinders.values.length > 0)) {
+      throw new PolicyError(`--add-finder/--select-finder apply to resolve, not ${cmd}`);
+    }
+    args = parseArgs(selectFinders.rest, COMMAND_OPTIONS[cmd]);
     // Validate the tier inputs' own syntax up front, so a malformed one is a
     // usage error (exit 2) rather than a policy refusal (exit 1).
     if (cmd === "resolve") tierInputsFromArgs(args);
@@ -2613,16 +2646,7 @@ function main() {
   }
   args.addFinders = addFinders.values;
   args.selectFinders = selectFinders.values;
-  if (cmd === "detect") return cliDetect(args);
-  if (cmd === "resolve") return cliResolve(args);
-  console.error(
-    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level> [--rigor-source operator|label]]\n" +
-      "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
-      "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
-      "       [--risk <risk>] [--complexity <complexity>] [--stored-tier <tier>]\n" +
-      "       [--pinned-tier <tier> [--pin-marker-trusted] [--pin-value-trusted]] [--json]",
-  );
-  return 2;
+  return cmd === "detect" ? cliDetect(args) : cliResolve(args);
 }
 
 const isMain =
