@@ -643,6 +643,6 @@ CLAIM_MUTATE_COMMENTS_ON_READ=0 \
     jq '. + [{id: 99, user:{login:"evanharmon1"}, author_association:"OWNER", created_at:"2026-08-20T11:00:00Z", body:null}]' \
     "$comments_file" >"${comments_file}.tmp" && mv "${comments_file}.tmp" "$comments_file"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "null body comment must not break claim: $(cat "$err")"
+[ "$(CLAIM_COMMENT_MODE=commit_fail run_claim --claim-label claim:gpt)" = 0 ] || fail "null body comment must not break claim reconciliation: $(cat "$err")"
 
 echo "PASS: claim transaction semantics"
