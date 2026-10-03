@@ -187,6 +187,11 @@ expect_usage_error "a misspelled tier option with a separate value" --pinned-tei
 expect_usage_error "a stray positional" stray
 expect_usage_error "a value after --json" --json stray
 expect_usage_error "a tier option given twice" --risk high --risk low
+expect_usage_error "a provenance flag given twice (challenge round 3, C3-1)" \
+    --pinned-tier apex --pin-marker-trusted --pin-marker-trusted --pin-value-trusted
+rc=0
+node "$reader" resolve --policy "$base_policy" --json --json >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then ok; else fail "--json stays repeatable (expected 0 or 3), got $rc"; fi
 rc=0
 node "$reader" detect --policy "$base_policy" --risk high >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then ok; else fail "detect must refuse a resolve-only option (exit 2), got $rc"; fi

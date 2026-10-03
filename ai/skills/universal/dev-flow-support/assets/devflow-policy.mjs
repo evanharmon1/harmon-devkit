@@ -2022,6 +2022,12 @@ function parseArgs(argv, allowed) {
       }
       continue;
     }
+    // Every tier option — valued or boolean — is once-only; `--json` stays
+    // repeatable as it always was. The check precedes the boolean branch so
+    // a duplicated provenance flag is refused too (challenge round 3, C3-1).
+    if (bareKey !== "json" && Object.hasOwn(args, bareKey)) {
+      throw new PolicyError(`option --${bareKey} may be supplied only once`);
+    }
     if (BOOLEAN_OPTIONS.has(bareKey)) {
       const following = argv[i + 1];
       if (equalsAt !== -1 || (following !== undefined && !following.startsWith("--"))) {
@@ -2029,9 +2035,6 @@ function parseArgs(argv, allowed) {
       }
       args[bareKey] = true;
       continue;
-    }
-    if (Object.hasOwn(args, bareKey)) {
-      throw new PolicyError(`option --${bareKey} may be supplied only once`);
     }
     if (equalsAt !== -1) {
       const inline = key.slice(equalsAt + 1);
