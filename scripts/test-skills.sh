@@ -10681,6 +10681,21 @@ expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's read
     "policy" \
     sh -c "cd '$AC5_CON' && bash .claude/skills/orchestrate/assets/consumer-pin-audit.sh --repo-root . 2>&1 | head -40"
 
+# harmon-devkit#1248 review round 1, R1-3: the consumer-side tier translator
+# is a runtime entrypoint both /orchestrate and /implement invoke. Run the
+# VENDORED copy (its ./lib/toml-lite.mjs import and the flattened path must
+# both survive the sync) on an ambiguous pin, with stdin supplied — the
+# helper reads its input from stdin, which run_vendored's no-argument call
+# cannot provide.
+printf '%s' '{"labels":["tier:pinned","tier:apex","tier:local"]}' >"$TMPROOT/ac5-tier-input.json"
+expect_ok_contains "AC5: the vendored tier-inputs.mjs translates an issue in the consumer" \
+    "pin-ambiguous" \
+    sh -c "cd '$AC5_CON' && node .claude/skills/dev-flow-support/assets/tier-inputs.mjs --policy .devflow.toml --input '$TMPROOT/ac5-tier-input.json'"
+for ac5_skill in orchestrate implement; do
+    expect_ok "AC5: the vendored $ac5_skill skill wires in tier-inputs.mjs" \
+        grep -qF "tier-inputs.mjs" "$AC5_SKILLS/$ac5_skill/SKILL.md"
+done
+
 # AC 4 of #974 — a mechanical `task verify` check that fails when a vendored
 # asset invokes a repository-root `scripts/` path — is deliberately NOT
 # enforced here. Three adversarial rounds defeated three successive mechanisms
@@ -10703,6 +10718,17 @@ echo ""
 echo "== dev-flow-support tier-inputs.mjs (harmon-devkit#1248) =="
 expect_ok "tier-inputs.mjs: translation, ambiguous pin, and disclosure cases pass" \
     "$repo/ai/skills/universal/dev-flow-support/assets/test-tier-inputs.sh"
+# Review round 1, R1-2: the tier procedure holds the self-modification
+# boundary before it runs any branch copy, and both stage skills point at it.
+DFS_MD="$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+expect_ok "dev-flow-support: tier procedure step 0 runs the merge-base helper and reader" \
+    grep -qF "Hold the self-modification boundary first" "$DFS_MD"
+expect_ok "dev-flow-support: first adoption (merge base predates tier-inputs.mjs) is indeterminate" \
+    grep -qF "predates \`tier-inputs.mjs\`" "$DFS_MD"
+for tier_skill in orchestrate implement; do
+    expect_ok "$tier_skill: points at the tier procedure's merge-base step 0" \
+        grep -qF "(the procedure's step 0)" "$repo/ai/skills/universal/$tier_skill/SKILL.md"
+done
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

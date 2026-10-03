@@ -65,7 +65,9 @@
 //     default applies, with a warning).
 //   - risk:<v>/complexity:<v> labels (personal repositories) or fields (org
 //     repositories) become --risk/--complexity; two different values for one
-//     axis pass neither, so the reader reports the Tier indeterminate.
+//     axis (or a non-slug value) pass the off-scale `conflict` sentinel, so
+//     the READER reports the derived Tier indeterminate — never "absent",
+//     which would silently resolve the default tier.
 // Values are passed with the `--opt=value` spelling, so a label value can
 // never be read by the reader as a flag of its own.
 
@@ -81,6 +83,10 @@ export const ROLES = Object.freeze(["orchestrator", "implementer", "challenger",
 // A label value is a slug. Anything else is reported and dropped rather than
 // handed to a CLI.
 const SLUG = /^[a-z0-9][a-z0-9_.-]*$/;
+// Off both classification scales (RISK_SCALE, COMPLEXITY_SCALE in
+// devflow-policy.mjs), so the reader reports any axis carrying it as an
+// indeterminate derived Tier rather than as an unclassified issue.
+export const CLASSIFICATION_CONFLICT = "conflict";
 
 export class TierInputError extends Error {}
 
@@ -319,13 +325,24 @@ export function tierInputs({
     } else if (fromLabels.length === 1) {
       value = fromLabels[0];
     } else if (fromLabels.length > 1) {
+      // A conflicting axis must reach the reader as UNKNOWABLE, not as
+      // absent: passing nothing would let the reader see an unclassified
+      // issue and resolve the default tier with exit 0 (review round 1,
+      // R1-1). The off-scale sentinel goes through the reader's own tested
+      // indeterminate path (corpus case off-scale-risk-is-indeterminate), so
+      // the reader stays the single source of that verdict.
+      value = CLASSIFICATION_CONFLICT;
       warnings.push(
-        warning(`${axis}-label-ambiguous`, `${axis} labels ${fromLabels.map((v) => `${axis}:${v}`).join(", ")} conflict; neither is passed, so the derived Tier is indeterminate`),
+        warning(
+          `${axis}-label-ambiguous`,
+          `${axis} labels ${fromLabels.map((v) => `${axis}:${v}`).join(", ")} conflict; the reader receives --${axis}=${CLASSIFICATION_CONFLICT} and reports the derived Tier indeterminate`,
+        ),
       );
     }
     if (value !== null) {
-      value = slugOrWarn(value, axis);
-      if (value !== null) classification[axis] = value;
+      // A value that is not even a slug is unknowable the same way: send the
+      // sentinel rather than dropping the axis, for the reason above.
+      classification[axis] = slugOrWarn(value, axis) ?? CLASSIFICATION_CONFLICT;
     }
   }
   if (classification.risk !== undefined) args.push(`--risk=${classification.risk}`);

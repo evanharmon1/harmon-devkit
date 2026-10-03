@@ -73,6 +73,11 @@ Follow `dev-flow-support`'s § "Resolving an issue's Tier":
   as a cache) and the pin as `pinnedTier`. When the Tier label is absent,
   the reader computes the Tier from Risk and Complexity.
 
+When the change under review edits `.devflow.toml`, `agent-registry.json`,
+or the reader, `toml-lite`, or `tier-inputs.mjs` assets, run the
+**merge-base** helper and reader instead of the branch's
+(the procedure's step 0). A merge base that predates `tier-inputs.mjs` leaves
+the Tier indeterminate, never resolved by the branch copy.
 Label provenance is checked before translation, under § "Nothing here arms
 anything" in `AGENTS.md`. Every `rigor:*`, `strategy:*` and `tier:<role>:*`
 label you honor goes into the helper's `authorized_labels`. An unlisted one

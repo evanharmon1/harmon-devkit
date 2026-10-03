@@ -106,7 +106,9 @@ expect_args "operator tiers" '{"operator":{"tiers":{"implementer":"apex","review
 expect_args "org fields are the classification" '{"fields":{"risk":"low","complexity":"xl"}}' '["--risk=low","--complexity=xl"]'
 expect_args "a field wins over a disagreeing label" '{"labels":["risk:high"],"fields":{"risk":"low"}}' '["--risk=low"]'
 expect_warning "a field/label disagreement warns" '{"labels":["risk:high"],"fields":{"risk":"low"}}' risk-field-label-mismatch
-expect_args "conflicting risk labels pass neither" '{"labels":["risk:high","risk:low","complexity:s"]}' '["--complexity=s"]'
+expect_args "conflicting risk labels pass the off-scale sentinel (review round 1, R1-1)" \
+    '{"labels":["risk:high","risk:low","complexity:s"]}' '["--risk=conflict","--complexity=s"]'
+expect_args "a non-slug classification value passes the sentinel, never nothing" '{"labels":["risk:HIGH"]}' '["--risk=conflict"]'
 expect_args "a non-slug value never reaches the reader" '{"labels":["tier:--json"]}' '[]'
 if printf '%s' '{"labels":"tier:standard"}' | node "$helper" --policy "$base_policy" >/dev/null 2>&1; then
     fail "malformed input must exit non-zero"
@@ -254,6 +256,42 @@ e2e "no classification resolves to the default profile" '{"labels":[]}' standard
 e2e "a stale strategy label no longer blocks resolution" \
     '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
     "warning [strategy-label-unknown]"
+
+echo "==> tier-inputs.mjs + devflow-policy.mjs: an ambiguous classification is indeterminate, never absent (review round 1, R1-1)"
+# Resolved WITH the fixture registry and task-target list, so cross-validation
+# is determinate and exit 3 can only come from the derived Tier.
+fixture_dir="$repo_root/ai/schemas/fixtures/devflow-conformance"
+# expect_indeterminate NAME INPUT — exit 3, issue_tier indeterminate, and the
+# reader's own indeterminate names the derived Tier.
+expect_indeterminate() {
+    local name="$1" input="$2" tr="$scratch/$RANDOM-ind-tr.json" res="$scratch/$RANDOM-ind-res.json" rc=0
+    translate "$input" >"$tr"
+    local -a args=()
+    while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
+    node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \
+        --task-targets "$fixture_dir/task-targets.json" --json ${args[@]+"${args[@]}"} >"$res" 2>/dev/null || rc=$?
+    if [ "$rc" -ne 3 ]; then
+        fail "$name: expected exit 3, got $rc"
+        return 0
+    fi
+    if ! node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const ok = r.issue_tier.status === "indeterminate" && r.cross_validation.indeterminate.some((i) => i.includes("derived Tier"));
+process.exit(ok ? 0 : 1);
+' "$res"; then
+        fail "$name: issue_tier is not indeterminate on the derived Tier: $(head -c 400 "$res")"
+        return 0
+    fi
+    ok
+}
+expect_indeterminate "both axes conflicting" '{"labels":["risk:high","risk:low","complexity:s","complexity:xl"]}'
+expect_indeterminate "risk conflicting, complexity absent" '{"labels":["risk:high","risk:low"]}'
+expect_indeterminate "risk conflicting, complexity clean" '{"labels":["risk:high","risk:low","complexity:m"]}'
+# Control: a clean classification under the same inputs resolves determinately.
+rc=0
+node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \
+    --task-targets "$fixture_dir/task-targets.json" --json --risk=high --complexity=m >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then ok; else fail "control: a clean classification must exit 0 with the fixture registry and targets, got $rc"; fi
 
 echo "==> devflow-policy.mjs: no [tier.matrix] means indeterminate, never a guess"
 no_matrix="$scratch/no-matrix.toml"

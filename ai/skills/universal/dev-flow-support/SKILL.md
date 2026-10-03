@@ -53,6 +53,22 @@ unqualified `tier:<value>` label is not a role override: it is the issue's
 stored Tier, a cache of the derived Tier, or the pinned Tier when
 `tier:pinned` is also present. The Tier is a label on every owner type.
 
+0. **Hold the self-modification boundary first** (`AGENTS.md`: a branch may
+   not choose the values or code that govern its own review).
+   - **When it applies:** the change under review edits `.devflow.toml`,
+     `agent-registry.json`, `assets/devflow-policy.mjs`,
+     `assets/lib/toml-lite.mjs` or `assets/tier-inputs.mjs`.
+   - **What to do:** before running any branch copy, materialize the
+     **merge-base** copy of all five *outside the worktree*
+     (`git show <merge-base>:<path>` into a scratch closure that keeps the
+     helper beside its `lib/`). Run *that* `tier-inputs.mjs` and *that*
+     `devflow-policy.mjs`, both with the merge-base `.devflow.toml` as
+     `--policy` and the merge-base registry, never the branch's.
+   - **First adoption:** when the merge base predates `tier-inputs.mjs`, there
+     is no trusted helper to run. Tier resolution is then **indeterminate**:
+     stop and report it. Never fall back to the branch copy.
+   - **Every other change** uses the checkout's own copies, as the steps
+     below show.
 1. **Read the issue's inputs.** Its labels; on an organization repository,
    also its Risk and Complexity issue fields where the session can read them
    (they win over a same-axis `risk:*`/`complexity:*` label). Nothing read

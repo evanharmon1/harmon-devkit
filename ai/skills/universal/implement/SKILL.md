@@ -228,6 +228,10 @@ brief instead, because the orchestrator already resolved it.
   the tier source (pinned, rigor, derived, default) and any pin-caused
   invariant break.
 
+At step 8 the branch may have edited the policy, the registry or the
+reader-side assets. In that case run the **merge-base** helper and reader,
+never the branch's (the procedure's step 0); a merge base predating
+`tier-inputs.mjs` leaves the Tier indeterminate.
 An execution-policy label (`rigor:*`, `strategy:*`, `tier:<role>:*`) counts
 only once its provenance is verified and it is listed in the helper's
 `authorized_labels`; an unlisted one is dropped with a warning
