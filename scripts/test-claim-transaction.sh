@@ -62,7 +62,7 @@ api)
         if [ "$count" -eq "$CLAIM_MUTATE_COMMENTS_ON_READ" ]; then
             next="${CLAIM_COMMENTS_FILE}.next"
             jq --rawfile body "$CLAIM_CONCURRENT_RECORD" --arg login "${CLAIM_CONCURRENT_LOGIN:-collaborator}" \
-                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"COLLABORATOR", body:($body | sub("\\n+$"; ""))}]' \
+                '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"COLLABORATOR", body:$body}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
         fi
@@ -126,7 +126,7 @@ issue)
             next="${CLAIM_COMMENTS_FILE}.next"
             jq --rawfile body "$body_file" --arg login "${CLAIM_LOGIN:-evanharmon1}" \
                 '. + [{id: ((map(.id) | max // 0) + 1), user:{login:$login}, author_association:"OWNER",
-                       created_at:"2026-08-20T12:00:00Z", body:($body | sub("\\n+$"; ""))}]' \
+                       created_at:"2026-08-20T12:00:00Z", body:$body}]' \
                 "$CLAIM_COMMENTS_FILE" >"$next"
             mv "$next" "$CLAIM_COMMENTS_FILE"
             if [ "${CLAIM_CLOSE_AFTER_COMMENT:-false}" = true ]; then
@@ -625,5 +625,24 @@ scenario '{"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"cl
 make_record yes no none yes 'alice,bob,carol,dave' claim:gpt none
 [ "$(RUN_LOGIN=carol run_claim --claim-label claim:gpt)" = 2 ] || fail "forged victim must fail before writes"
 if grep -q '^edit\|^comment$' "$log"; then fail "forged victim rejection must perform zero writes"; fi
+
+echo "==> heredoc record with trailing newline commits against verbatim stub storage (#1219)"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+jq -ne --rawfile r "$record" '$r | endswith("\n")' >/dev/null || fail "record must end with a newline for this regression"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "heredoc record must commit: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "exactly one comment must be written"
+jq -e '.[0].body | endswith("\n")' "$comments_file" >/dev/null || fail "stub must store trailing newline verbatim"
+: >"$log"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "exact-record resume with trailing newline must succeed: $(cat "$err")"
+[ ! -s "$log" ] || fail "exact-record resume must perform zero writes"
+
+echo "==> claimant comment with null body does not interrupt reconciliation (#1238)"
+scenario "$empty_issue"
+CLAIM_MUTATE_COMMENTS_ON_READ=0 \
+    jq '. + [{id: 99, user:{login:"evanharmon1"}, author_association:"OWNER", created_at:"2026-08-20T11:00:00Z", body:null}]' \
+    "$comments_file" >"${comments_file}.tmp" && mv "${comments_file}.tmp" "$comments_file"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(CLAIM_COMMENT_MODE=commit_fail run_claim --claim-label claim:gpt)" = 0 ] || fail "null body comment must not break claim reconciliation: $(cat "$err")"
 
 echo "PASS: claim transaction semantics"

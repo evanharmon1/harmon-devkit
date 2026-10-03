@@ -549,7 +549,9 @@ Never approve or run a silently inferred or substituted target.
   never re-evaluated by the shell (a branch name can contain `$(…)`). Use a
   delimiter that cannot occur in the body — quoting disables expansion, not
   termination, so a body containing a literal `EOF` line would end a
-  fixed-`EOF` heredoc early:
+  fixed-`EOF` heredoc early. A heredoc's trailing newline is fine: the
+  claim helper normalizes trailing newlines when comparing the record to the
+  live GitHub comment body.
 
   ```sh
   # 1. prepare the exact record; the helper publishes it after marker writes
