@@ -550,7 +550,7 @@ Never approve or run a silently inferred or substituted target.
   delimiter that cannot occur in the body — quoting disables expansion, not
   termination, so a body containing a literal `EOF` line would end a
   fixed-`EOF` heredoc early. A heredoc's trailing newline is fine: the
-  claim helper normalises trailing newlines when comparing the record to the
+  claim helper normalizes trailing newlines when comparing the record to the
   live GitHub comment body.
 
   ```sh

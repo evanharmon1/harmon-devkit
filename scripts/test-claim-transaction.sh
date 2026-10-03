@@ -629,22 +629,20 @@ if grep -q '^edit\|^comment$' "$log"; then fail "forged victim rejection must pe
 echo "==> heredoc record with trailing newline commits against verbatim stub storage (#1219)"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-python3 - "$record" <<'PY'
-import pathlib, sys
-b = pathlib.Path(sys.argv[1]).read_bytes()
-sys.exit(0 if b.endswith(b"\n") else 1)
-PY
-[ $? -eq 0 ] || fail "record must end with a newline for this regression"
+jq -ne --rawfile r "$record" '$r | endswith("\n")' >/dev/null || fail "record must end with a newline for this regression"
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "heredoc record must commit: $(cat "$err")"
 [ "$(jq 'length' "$comments_file")" -eq 1 ] || fail "exactly one comment must be written"
-python3 - "$comments_file" <<'PY'
-import json, pathlib, sys
-body = json.loads(pathlib.Path(sys.argv[1]).read_text())[0]["body"].encode()
-sys.exit(0 if body.endswith(b"\n") else 1)
-PY
-[ $? -eq 0 ] || fail "stub must store trailing newline verbatim"
+jq -e '.[0].body | endswith("\n")' "$comments_file" >/dev/null || fail "stub must store trailing newline verbatim"
 : >"$log"
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "exact-record resume with trailing newline must succeed: $(cat "$err")"
 [ ! -s "$log" ] || fail "exact-record resume must perform zero writes"
+
+echo "==> claimant comment with null body does not interrupt reconciliation (#1238)"
+scenario "$empty_issue"
+CLAIM_MUTATE_COMMENTS_ON_READ=0 \
+    jq '. + [{id: 99, user:{login:"evanharmon1"}, author_association:"OWNER", created_at:"2026-08-20T11:00:00Z", body:null}]' \
+    "$comments_file" >"${comments_file}.tmp" && mv "${comments_file}.tmp" "$comments_file"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "null body comment must not break claim: $(cat "$err")"
 
 echo "PASS: claim transaction semantics"
