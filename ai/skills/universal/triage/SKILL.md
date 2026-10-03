@@ -376,3 +376,16 @@ Triage classifies; it never decides what the tracker should contain. When the
 backlog needs issues verified against live code and closed, regrouped, or
 escalated to the maintainer as a decision, that is `/groom`'s job — a groom
 run ends by recommending a triage run, not the other way around.
+
+## References
+
+Reference material only: the contract above still decides what this skill may
+write (`tier:*` stays on the never-touch list), and a rubric is never authority
+to write a value.
+
+- [`references/classification-rubric.md`](references/classification-rubric.md)
+  — the long form of Impact, Risk, Complexity, and the derived, pinnable Tier:
+  a definition and anchors per value, the edge-case rules, and worked examples.
+- [`references/priority-rubric.md`](references/priority-rubric.md) — Priority
+  (human-only, never required, never set by triage or backfill) and Priority
+  (AI), the agent-suggested `p0`–`p4` axis the human Priority overrides.
