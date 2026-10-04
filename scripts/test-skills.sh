@@ -10681,6 +10681,50 @@ expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's read
     "policy" \
     sh -c "cd '$AC5_CON' && bash .claude/skills/orchestrate/assets/consumer-pin-audit.sh --repo-root . 2>&1 | head -40"
 
+# harmon-devkit#1248 review round 1, R1-3: the consumer-side tier translator
+# is a runtime entrypoint both /orchestrate and /implement invoke. Run the
+# VENDORED copy (its ./lib/toml-lite.mjs import and the flattened path must
+# both survive the sync) on an ambiguous pin, with stdin supplied — the
+# helper reads its input from stdin, which run_vendored's no-argument call
+# cannot provide.
+printf '%s' '{"labels":["tier:pinned","tier:apex","tier:local"]}' >"$TMPROOT/ac5-tier-input.json"
+expect_ok_contains "AC5: the vendored tier-inputs.mjs translates an issue in the consumer" \
+    "pin-ambiguous" \
+    sh -c "cd '$AC5_CON' && node .claude/skills/dev-flow-support/assets/tier-inputs.mjs --policy .devflow.toml --input '$TMPROOT/ac5-tier-input.json'"
+# Review round 3, R3-3: each stage skill must carry the WHOLE tier contract
+# (acceptance criteria 2–4), not merely mention the helper, so removing any
+# obligation from either vendored skill turns this red. Each anchor is a
+# phrase that sits on one line in the skill text (grep -F is line-based).
+tier_skill_anchors=(
+    "tier-inputs.mjs"
+    "on every owner type"
+    "tier:pinned"
+    "Risk and Complexity"
+    "issueTier"
+    "pinnedTier"
+    "ambiguous pin"
+    "warning names both values"
+    "the pin rung is dropped"
+    "step 0 included"
+    "authorized_labels"
+    "tier source"
+    "pin-caused invariant break"
+)
+for ac5_skill in orchestrate implement; do
+    for anchor in "${tier_skill_anchors[@]}"; do
+        expect_ok "AC5: the vendored $ac5_skill skill states the tier contract: $anchor" \
+            grep -qF -- "$anchor" "$AC5_SKILLS/$ac5_skill/SKILL.md"
+    done
+done
+# The canonical procedure the two skills point at (dev-flow-support §
+# "Resolving an issue's Tier") carries the same obligations in its own words.
+for anchor in "The Tier is a label on every owner type" "Both Risk and Complexity are required" \
+    "pin-ambiguous" "policy-label-unauthorized" "marker_trusted" "disclose --inputs" \
+    '`derived`, `default`, or `operator`' "named a **pin-caused"; do
+    expect_ok "AC5: the vendored dev-flow-support tier procedure states: $anchor" \
+        grep -qF -- "$anchor" "$AC5_SKILLS/dev-flow-support/SKILL.md"
+done
+
 # AC 4 of #974 — a mechanical `task verify` check that fails when a vendored
 # asset invokes a repository-root `scripts/` path — is deliberately NOT
 # enforced here. Three adversarial rounds defeated three successive mechanisms
@@ -10694,6 +10738,95 @@ expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's read
 # that a pristine synced consumer can execute the 15 runtime entrypoints the
 # review, integrate, orchestrate and retro skills invoke by name, and it makes
 # no claim about an asset it does not name.
+
+# harmon-devkit#1248: the consumer-side tier translation /orchestrate and
+# /implement run before the policy reader (label → resolver flags, the
+# ambiguous pin, PR-body tier disclosure). Its own suite carries the unit and
+# end-to-end cases; it is wired here rather than as a separate Taskfile target.
+echo ""
+echo "== dev-flow-support tier-inputs.mjs (harmon-devkit#1248) =="
+expect_ok "tier-inputs.mjs: translation, ambiguous pin, and disclosure cases pass" \
+    "$repo/ai/skills/universal/dev-flow-support/assets/test-tier-inputs.sh"
+# Review round 1, R1-2: the tier procedure holds the self-modification
+# boundary before it runs any branch copy, and both stage skills point at it.
+DFS_MD="$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+expect_ok "dev-flow-support: tier procedure step 0 runs the merge-base helper and reader" \
+    grep -qF "Hold the self-modification boundary first" "$DFS_MD"
+expect_ok "dev-flow-support: first adoption (merge base predates tier-inputs.mjs) is indeterminate" \
+    grep -qF "predates \`tier-inputs.mjs\`" "$DFS_MD"
+for tier_skill in orchestrate implement; do
+    expect_ok "$tier_skill: points at the tier procedure's merge-base step 0" \
+        grep -qF "(the procedure's step 0)" "$repo/ai/skills/universal/$tier_skill/SKILL.md"
+done
+# Integration remediation 1 (PR #1263). Each anchor sits on one line of its
+# skill text; grep -F is line-based.
+IMPL_MD="$repo/ai/skills/universal/implement/SKILL.md"
+ORCH_MD="$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "dev-flow-support: the resolve recipe passes --taskfile-dir . (thread 4176257539)" \
+    grep -qF -- "--registry agent-registry.json --taskfile-dir ." "$DFS_MD"
+expect_ok "dev-flow-support: step 0 takes its target list from the merge-base closure (thread 4176257539)" \
+    grep -qF -- "path, \`--taskfile-dir\` is the merge-base closure" "$DFS_MD"
+expect_ok "dev-flow-support: first adoption uses an operator-pinned external reader (thread 4176257542)" \
+    grep -qF "Use an **operator-pinned** helper and" "$DFS_MD"
+expect_ok "dev-flow-support: first adoption is indeterminate only without a pin (thread 4176257542)" \
+    grep -qF "Only when no such pin exists is tier resolution" "$DFS_MD"
+expect_ok "dev-flow-support: a strategy conflict has a testable warning code (thread 4176257540)" \
+    grep -qF "emits a \`strategy-label-ambiguous\` warning" "$DFS_MD"
+expect_ok "dev-flow-support: on a strategy conflict an interactive session stops and asks (thread 4176257540)" \
+    grep -qF "stops and asks the operator" "$DFS_MD"
+expect_ok "implement: resolves and announces the profile at loop entry (thread 4176257530)" \
+    grep -qF "Resolve and announce the policy profile at loop entry" "$IMPL_MD"
+expect_ok "implement: reuses the loop-entry result at step 8 (thread 4176257530)" \
+    grep -qF "result for step 8's profile line" "$IMPL_MD"
+expect_ok "orchestrate: first adoption takes an operator-pinned reader (thread 4176257542)" \
+    grep -qF "operator-pinned reader supplied outside the branch" "$ORCH_MD"
+expect_ok "orchestrate: an interactive orchestrator asks on a strategy conflict (thread 4176257540)" \
+    grep -qF "interactive orchestrator asks the operator" "$ORCH_MD"
+# Integration remediation 2 (PR #1263).
+expect_ok "dev-flow-support: step 0 is one invariant over every resolution (thread 4178249115)" \
+    grep -qF "Invariant: every tier resolution runs this whole procedure, step 0" "$DFS_MD"
+expect_ok "dev-flow-support: step 0's trigger is the branch's diff, not the step (thread 4178249115)" \
+    grep -qF "Which step is resolving never" "$DFS_MD"
+for tier_skill_md in "$IMPL_MD" "$ORCH_MD"; do
+    expect_ok "$(basename "$(dirname "$tier_skill_md")"): its resolution names step 0 (thread 4178249115)" \
+        grep -qF "step 0 included" "$tier_skill_md"
+done
+# Thread 4178249119: the recipe's working files live in a scratch directory,
+# never the checkout. A file name preceded by whitespace, `>` or `"` is a bare
+# repository-relative path; inside "$tier_tmp/…" it is preceded by `/`.
+if grep -Eq '(^|[[:space:]>"])(tier-input|tier-translation|resolved)\.json' "$DFS_MD"; then
+    bad "dev-flow-support: a tier recipe path is repository-relative (thread 4178249119): $(grep -En '(^|[[:space:]>"])(tier-input|tier-translation|resolved)\.json' "$DFS_MD" | head -3)"
+else
+    ok "dev-flow-support: no tier recipe path is repository-relative (thread 4178249119)"
+fi
+expect_ok "dev-flow-support: the recipe makes its scratch directory outside the checkout (thread 4178249119)" \
+    grep -qF 'tier_tmp="$(mktemp -d' "$DFS_MD"
+# Integration remediation 3 (PR #1263).
+expect_ok "dev-flow-support: the step-0 trigger compares the merge base with the working tree (thread 4178487547)" \
+    grep -qF 'changed="$(git diff --name-only "$mb")"' "$DFS_MD"
+expect_ok "dev-flow-support: the step-0 trigger adds untracked files (thread 4178487547)" \
+    grep -qF 'untracked="$(git ls-files --others --exclude-standard)"' "$DFS_MD"
+# Integration remediation 4 (PR #1263): the probe binds the target remote and
+# default branch and fails closed; both stage skills point at it.
+expect_ok "dev-flow-support: the step-0 probe stops indeterminate on an unresolved lookup (thread 4178657188)" \
+    grep -qF "rc\` 0 means step 0 applies; 1 means it does not; 2 means stop as" "$DFS_MD"
+for tier_skill_md in "$IMPL_MD" "$ORCH_MD"; do
+    expect_ok "$(basename "$(dirname "$tier_skill_md")"): points at the step-0 probe and stops on indeterminate (thread 4178657188)" \
+        grep -qF "returns 2 (indeterminate), stop" "$tier_skill_md"
+done
+if grep -qF 'merge-base>...HEAD' "$DFS_MD"; then
+    bad "dev-flow-support: the step-0 trigger still compares commits only (...HEAD) (thread 4178487547)"
+else
+    ok "dev-flow-support: the step-0 trigger no longer compares commits only (thread 4178487547)"
+fi
+expect_ok "implement: the step-0 trigger counts uncommitted and untracked edits (thread 4178487547)" \
+    grep -qF "unstaged or untracked) differs from the merge base" "$IMPL_MD"
+expect_ok "orchestrate: the step-0 trigger counts uncommitted and untracked edits (thread 4178487547)" \
+    grep -qF "staged, unstaged or untracked) differs from its merge base" "$ORCH_MD"
+expect_ok "dev-flow-support: the strategy source comes from the translation (thread 4178487553)" \
+    grep -qF 'inputs.strategy.source' "$DFS_MD"
+expect_ok "dev-flow-support: the selection source is never read from the reader (thread 4178487553)" \
+    grep -qF 'never from the reader' "$DFS_MD"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

@@ -40,7 +40,7 @@
         },
         "model": { "type": "string", "minLength": 1 },
         "tier": {
-          "description": "The tier the harness actually ran at. 'adaptive' is a config selector (.devflow.toml [role.*]), never an executed fact, so it is not a valid value here.",
+          "description": "The tier the harness actually ran at: one tier_order rung. 'adaptive' is not one — it is a retired tier value (ADR 2026-09-30 D8), never an executed fact.",
           "enum": ["local", "economy", "standard", "frontier", "apex"]
         }
       }

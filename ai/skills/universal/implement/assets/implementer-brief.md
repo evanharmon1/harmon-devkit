@@ -511,8 +511,11 @@ wait. So does a scope question: if settling a finding would take you outside
   source; the rounds policy's challenge, review, integration and remediation
   caps (the ledger denominators) **plus its `min_rounds` floor and wall-clock
   ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`);
-  the strategy and its source; all five role tiers; and every off-profile
-  choice — model family, tier, or effort — named as off-profile. That is the
+  the strategy and its source; all five role tiers, with the implementer's
+  tier source (pinned, rigor, derived, default, or operator), any pin-caused
+  invariant break, any overridden `tier:<role>:*` label, any rejected one
+  (with the reader's reason), and every tier warning; and every off-profile choice — model family, tier, or effort —
+  named as off-profile. That is the
   repository policy's own announce set; a shorter line is an under-disclosure,
   not a style choice. A Codex dispatch launched outside the sandbox
   is disclosed here too: it weakens an enforcement boundary, and a reviewer

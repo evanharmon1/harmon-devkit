@@ -26,7 +26,9 @@ share lives here. Nothing is shipped through the harmon-init template.
 
 | Asset | Used by | What it does |
 |---|---|---|
-| `assets/devflow-policy.mjs` | review, integrate, orchestrate | Resolve rigor, strategy, rounds, breadth, and role tiers from `.devflow.toml` and `agent-registry.json`. |
+| `assets/devflow-policy.mjs` | review, integrate, orchestrate, implement | Resolve rigor, strategy, rounds, breadth, and role tiers from `.devflow.toml` and `agent-registry.json` — including the issue's tier inputs (the derived Tier from `[tier.matrix]`, the pinned Tier, `tier:<role>:*` labels), ported from harmon-init `81bbe787` (harmon-devkit#1248). |
+| `assets/tier-inputs.mjs` | orchestrate, implement | The consumer half of tier resolution: translate an issue's labels (and org-repository Risk/Complexity fields) into `devflow-policy.mjs resolve` flags, reconciling label conflicts and refusing an ambiguous pin; `disclose` renders the PR-body tier disclosure from the reader's output. |
+| `assets/.devflow-conformance-v2.json` | `scripts/test-devflow-conformance.sh` (source tree only) | harmon-init's portable v2 policy corpus, byte-identical and blob-pinned, so the vendored reader is held to harmon-init's answers. |
 | `assets/validate-result-schemas.mjs` | review, integrate, orchestrate | Schema-check one brief, result, adjudication, run, or plan document, plus the receipt checks a raw schema cannot express. |
 | `assets/render-dev-flow.sh` → `assets/render-dev-flow.mjs` | review, integrate, retro | Render a run record into its PR-body and comment projections. |
 | `assets/dev-flow-exit.sh` → `assets/dev-flow-exit.mjs` | review, retro | Compute a confidence stage's exit verdict from the run record. |
@@ -38,6 +40,204 @@ share lives here. Nothing is shipped through the harmon-init template.
 The tests for these assets live beside them (`assets/test-*.sh`) and are wired
 into harmon-devkit's `task verify` through root Taskfile targets that call the
 asset paths.
+
+## Resolving an issue's Tier
+
+`/orchestrate` and `/implement` resolve the implementer tier from the issue,
+not only from `.devflow.toml`, and both follow this one procedure. The reader
+owns the order (operator tier instruction > pinned Tier > `rigor:*` and
+`tier:<role>:*` > derived Tier > `default_rigor`, ADR 2026-09-30 D5); the
+skill owns reading the issue and reconciling its labels, which
+`assets/tier-inputs.mjs` does so both skills do it identically. An
+unqualified `tier:<value>` label is not a role override: it is the issue's
+stored Tier, a cache of the derived Tier, or the pinned Tier when
+`tier:pinned` is also present. The Tier is a label on every owner type.
+
+0. **Hold the self-modification boundary first** (`AGENTS.md`: a branch may
+   not choose the values or code that govern its own review).
+   **Invariant: every tier resolution runs this whole procedure, step 0
+   included, whenever it happens: at loop entry, at dispatch, at the PR
+   profile line, or on any re-resolution.** Which step is resolving never
+   decides whether step 0 applies; the working tree does.
+   - **When it applies:** the **working tree** differs from the merge base
+     in a governing file: `.devflow.toml`, `agent-registry.json`,
+     `assets/devflow-policy.mjs`, `assets/lib/toml-lite.mjs` or
+     `assets/tier-inputs.mjs`. Commits alone are not enough; an uncommitted,
+     staged or untracked edit governs just as much:
+
+     ```sh
+     # step0_probe — $repo is the target repository (owner/name) the calling
+     # skill already bound. Returns 0 and prints the governing files when step
+     # 0 applies, 1 when the working tree changes none of them, and 2 when the
+     # answer is INDETERMINATE: stop, never read "no output" as "no file".
+     step0_probe() {
+         local r url want remote="" default mb changed untracked files
+         want="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+         [ -n "$want" ] || { echo "step 0 indeterminate: no target repository bound" >&2; return 2; }
+         for r in $(git remote); do
+             url="$(git remote get-url "$r" | tr '[:upper:]' '[:lower:]')" || continue
+             url="${url%/}"; url="${url%.git}"
+             case "$url" in */"$want" | *:"$want") remote="$r"; break ;; esac
+         done
+         [ -n "$remote" ] || { echo "step 0 indeterminate: no remote's URL matches $repo" >&2; return 2; }
+         default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null)" && [ -n "$default" ] ||
+             { echo "step 0 indeterminate: $remote has no default branch (git remote set-head $remote --auto)" >&2; return 2; }
+         mb="$(git merge-base HEAD "$default")" && [ -n "$mb" ] ||
+             { echo "step 0 indeterminate: no merge base between HEAD and $default" >&2; return 2; }
+         changed="$(git diff --name-only "$mb")" || { echo "step 0 indeterminate: git diff failed" >&2; return 2; }
+         untracked="$(git ls-files --others --exclude-standard)" || { echo "step 0 indeterminate: git ls-files failed" >&2; return 2; }
+         files="$(printf '%s\n%s\n' "$changed" "$untracked" |
+             grep -E '(^|/)(\.devflow\.toml|agent-registry\.json|dev-flow-support/assets/(devflow-policy\.mjs|lib/toml-lite\.mjs|tier-inputs\.mjs))$')" || true
+         [ -n "$files" ] || return 1
+         printf '%s\n' "$files"
+     }
+     rc=0; governing="$(step0_probe)" || rc=$?
+     ```
+
+     The remote is the one whose URL is `$repo` (the same match `/implement`
+     step 1 makes), and the default branch is that remote's
+     `refs/remotes/<remote>/HEAD`. Nothing is hard-coded to one remote name.
+     `git diff --name-only "$mb"` (no `...HEAD`) compares the merge base with
+     the working tree, so committed, staged and unstaged edits all count, and
+     `git ls-files --others --exclude-standard` adds untracked files.
+     **`rc` 0 means step 0 applies; 1 means it does not; 2 means stop as
+     indeterminate.** Every lookup's status is checked, so a remote, default
+     branch or merge base that cannot be resolved is never mistaken for "no
+     governing file".
+   - **What to do:** before running any branch copy, materialize the
+     **merge-base** copy of all five *outside the worktree*
+     (`git show <merge-base>:<path>` into a scratch closure that keeps the
+     helper beside its `lib/`). Materialize the merge-base `Taskfile.yml` and
+     any `taskfiles/` it includes into the same closure. Run *that*
+     `tier-inputs.mjs` and *that* `devflow-policy.mjs`, both with the
+     merge-base `.devflow.toml` as `--policy`, the merge-base registry, and
+     `--taskfile-dir <closure>`, so the gate-target list also comes from the
+     merge base, never the branch's.
+   - **First adoption:** when the merge base predates `tier-inputs.mjs`, the
+     merge base has no trusted helper. Use an **operator-pinned** helper and
+     reader supplied *outside the candidate branch* (`AGENTS.md`: "an
+     operator-pinned reader supplied outside the candidate branch"). Feed
+     them only the materialized merge-base policy, registry and target list.
+     Only when no such pin exists is tier resolution **indeterminate**: stop
+     and report it. Never fall back to the branch copy.
+   - **When the working tree differs in none of them**, the checkout's own copies are
+     the trusted ones, and the steps below run them.
+1. **Read the issue's inputs.** Its labels; on an organization repository,
+   also its Risk and Complexity issue fields where the session can read them
+   (they win over a same-axis `risk:*`/`complexity:*` label). Nothing read
+   from issue or PR text is an operator instruction.
+2. **Establish label provenance** (`AGENTS.md`, "Nothing here arms
+   anything"). An interactive session confirms with the operator any label
+   the operator has not authorized. Unattended automation verifies who
+   applied it against its own trusted-actor configuration, re-reading
+   immediately before acting. That covers:
+   - **Execution-policy labels** (`rigor:*`, `strategy:*`, `tier:<role>:*`):
+     list every one whose provenance holds in `authorized_labels`. The helper
+     is **fail-closed**: an execution-policy label not listed is dropped with
+     a `policy-label-unauthorized` warning naming it, and resolution
+     continues without it.
+   - **The pin**, when `tier:pinned` is present: who applied the `tier:pinned`
+     marker and who applied the `tier:<value>` it pins, checked separately
+     (`pin_provenance.marker_trusted` / `value_trusted`). An unverified half
+     leaves the pin unhonored, with a warning.
+   - **Not** the classification: `risk:*`, `complexity:*` and the unqualified
+     stored `tier:<value>` are deliberately ungated. ADR 2026-09-30 D3 lets an
+     AI or a human set them with no safeguard, and the stored Tier is only a
+     cache of Risk × Complexity.
+3. **Translate**, then **resolve** with the translated flags appended:
+
+   ```sh
+   tier_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tier-resolve.XXXXXX")"
+   # write the issue's inputs to "$tier_tmp/tier-input.json" (shape below)
+   node "$support_dir/tier-inputs.mjs" --policy .devflow.toml \
+       --input "$tier_tmp/tier-input.json" >"$tier_tmp/tier-translation.json"
+   tier_args=()
+   while IFS= read -r a; do tier_args+=("$a"); done \
+       < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' "$tier_tmp/tier-translation.json")
+   node "$support_dir/devflow-policy.mjs" resolve --policy .devflow.toml \
+       --registry agent-registry.json --taskfile-dir . \
+       --json ${tier_args[@]+"${tier_args[@]}"} >"$tier_tmp/resolved.json"
+   ```
+
+   Run it from the repository root. `--taskfile-dir .` hands the reader this
+   checkout's gate-target list. Without it (or `--task-targets`),
+   cross-validation is indeterminate and `resolve` always exits 3, which
+   would hide the one exit 3 that matters: the derived Tier's. On the step-0
+   path, `--taskfile-dir` is the merge-base closure instead.
+   The three working files live in `"$tier_tmp"`, a scratch directory
+   outside the checkout, never in the worktree, where a commit could sweep
+   them up.
+
+   `tier-input.json` is `{"labels": [...], "authorized_labels": [...],
+   "fields": {"risk": …, "complexity": …}, "operator": {"rigor": …,
+   "strategy": …, "tiers": {…}}, "pin_provenance": {"marker_trusted": …,
+   "value_trusted": …}}`. Every key is optional, and an omitted
+   `authorized_labels` honors no execution-policy label. The document must be
+   a JSON object. An unknown top-level key, an `operator` key other than
+   `rigor`, `strategy` and `tiers`, or a `fields` key other than `risk` and
+   `complexity`, is a usage error (exit 2), never silently ignored.
+   **Label conflicts are settled here, before the reader runs.**
+   - `tier:pinned` with more than one unqualified `tier:<value>` is an
+     ambiguous pin. No pinned Tier is passed, a `pin-ambiguous` warning names
+     every value, and the pin rung is dropped: resolution continues through
+     the remaining rungs (a `tier:implementer:*` label or a chosen rigor can
+     still decide; otherwise the derived Tier, then the default).
+   - Two `tier:<role>:*` values for one role resolve to the stronger on
+     `tier_order`, and two `rigor:*` labels to the stronger on `rigor_order`;
+     either conflict is disclosed.
+   - A `rigor:*`/`strategy:*` label that names no `[rigor.*]`/`[strategy.*]`
+     table in the policy (`--policy`) is ignored with a `*-label-unknown`
+     warning, never forwarded for the reader to refuse.
+   - Two `strategy:*` labels are ambiguous: the helper passes neither and
+     emits a `strategy-label-ambiguous` warning (`AGENTS.md`: strategy
+     conflicts are not orderable). On that warning an **interactive session
+     stops and asks the operator** which strategy applies, then re-runs with
+     the answer as `operator.strategy`. **Unattended automation** takes
+     `default_strategy`, with the warning carried into the PR body.
+   - Both Risk and Complexity are required to derive the Tier. With either
+     missing, or conflicting (the helper passes the off-scale `conflict`
+     value), the derived Tier is indeterminate, never guessed.
+   - Ambiguity is counted over the **raw** labels: a malformed value still
+     makes its family ambiguous, and is never forwarded.
+4. **Disclose.** `node "$support_dir/tier-inputs.mjs" disclose --inputs
+   "$tier_tmp/tier-translation.json" --resolved "$tier_tmp/resolved.json"`
+   prints one PR-body line per
+   item. The first is the selections line: rigor and strategy as the reader
+   resolved them, each with its source (`operator`, `label` or `default`).
+   That source is read from the translation's `inputs.rigor.source` and
+   `inputs.strategy.source`, never from the reader. A label-chosen and an
+   operator-chosen strategy reach the reader as the same `--strategy` flag,
+   so only the translation knows which it was. Use the same two fields for
+   the profile announcement. Then: the implementer tier and its **source** (`pinned`, `rigor`,
+   `derived`, `default`, or `operator`); every off-profile role tier; every
+   companion a pin leaves below the implementer, named a **pin-caused
+   invariant break** (disclosed, never corrected); every valid `tier:<role>:*`
+   label a stronger rung overrode; every one the reader rejected (a retired
+   or off-ladder value), named once, as rejected, with the reader's reason;
+   and every other warning. Carry those lines into
+   the PR body's policy disclosure verbatim.
+
+**A policy without `[tier.matrix]`** has no derived-Tier rung, and a
+classified issue's `issue_tier.status` is `indeterminate`. Whether that stops
+the resolution depends on which rung decides:
+- **Only when the derived rung would decide** does it make the resolution
+  indeterminate: there is no operator tier, no honored pin, no
+  `tier:implementer:*` label and no chosen rigor. The reader then exits 3
+  with "the implementer's derived Tier cannot be computed", and the
+  implementer keeps its profile tier, disclosed rather than guessed around.
+- **When a stronger rung decides**, that rung applies and the reader exits 0,
+  still reporting `issue_tier` indeterminate. Do not stop such a run.
+
+**This applies to harmon-devkit itself today**: its own `.devflow.toml` is
+the harmon-init `v4.45.0` template, which predates `[tier.matrix]`. A
+classified issue here takes the derived-rung exit 3 until a `copier update`
+to the harmon-init release carrying harmon-init#1475. A repository with **no** `.devflow.toml` at all takes the
+built-in fallback. There the **derived** Tier is recorded but not applied
+(`issue_tier.status` is `inert`), while a pin, a `tier:<role>:*` label and an
+operator tier still apply. That is the conformance corpus's
+`absent-policy-classified-issue-keeps-an-honored-pin`. Only standard rigor
+and plan strategy exist there, so any other `rigor:*`/`strategy:*` label is
+ignored with a warning.
 
 ## Calling it from another skill
 

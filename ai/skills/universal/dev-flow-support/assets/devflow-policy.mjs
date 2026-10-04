@@ -36,8 +36,18 @@
 //     0  resolved, with no cross-validation errors
 //     1  refused: a non-v2 operating shape, an undecodable merge base, an
 //        invalid v2 policy, or a hard cross-validation error
-//     2  usage error, or a file could not be read or parsed
-//     3  resolved, but cross-validation was indeterminate
+//     2  usage error (including a malformed tier input), or a file could not
+//        be read or parsed. A --policy file that does not EXIST is not an
+//        error: it resolves the documented built-in fallback.
+//     3  resolved, but cross-validation was indeterminate, or the issue's
+//        derived Tier could not be computed where it decides the implementer
+//
+//   The tier inputs (--rigor-source, --tier-overrides, --tier-labels, --risk,
+//   --complexity, --stored-tier, --pinned-tier, --pin-marker-trusted,
+//   --pin-value-trusted) and the `tier_matrix`/`issue_tier`/`pin`/
+//   `disclosures`/`warnings` output are harmon-init's (#1475), ported here by
+//   harmon-devkit#1248 and held to the same answers by the vendored
+//   conformance corpus `.devflow-conformance-v2.json` beside this file.
 
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -111,6 +121,45 @@ const BUILTIN_BREADTH_DEFAULT = Object.freeze({ policy: "builtin-default", max_a
 // only definition of one-rung escalation"), not a per-repo choice — using it
 // here is citing the spec, not inventing a default.
 const BUILTIN_TIER_ORDER = Object.freeze(["local", "economy", "standard", "frontier", "apex"]);
+// The issue-classification scales the [tier.matrix] is keyed by
+// (ADR 2026-09-30 D2): rows are Complexity, columns Risk. Like tier_order they
+// are vocabulary, not a per-repo choice; only the cells are retunable.
+export const RISK_SCALE = Object.freeze(["trivial", "low", "medium", "high", "critical"]);
+export const COMPLEXITY_SCALE = Object.freeze(["xs", "s", "m", "l", "xl"]);
+// `adaptive` was a tier value until ADR 2026-09-30 D8 retired it. It is named
+// here only so the reader can say "retired" rather than "unknown" about it.
+const RETIRED_TIER = "adaptive";
+// The no-policy fallback is the stable, deliberately small vocabulary promised
+// by AGENTS.md: standard rigor plus plan strategy. Keep these values independent
+// of the branch policy so deleting or weakening .devflow.toml cannot rewrite the
+// fallback that a trusted copy of this reader applies. Vendored from
+// harmon-init 81bbe787 (harmon-devkit#1248) — the same values its reader
+// applies, so the shared conformance corpus resolves identically here.
+const BUILTIN_ABSENT_ROUNDS = Object.freeze({
+  policy: "builtin:standard",
+  challenge: 3,
+  review: 3,
+  integration: 4,
+  // Derived, never authored — see resolveRounds's integration_exempt comment.
+  integration_exempt: 4,
+  remediation: 4,
+  min_rounds: 1,
+  wall_clock_min: 720,
+  shared_budget: false,
+});
+const BUILTIN_ABSENT_BREADTH = Object.freeze({
+  policy: "builtin:standard",
+  max_agent_runs: 6,
+  max_parallel_agents: 3,
+});
+const BUILTIN_ABSENT_STRATEGY = Object.freeze({
+  name: "plan",
+  topology: "single-agent",
+  planning: "explicit",
+  delegation: "optional",
+  human_gates: [],
+  description: "Built-in plan strategy",
+});
 // The v0 predicate catalog exactly as specs/dev-flow-v2.md § "Convergence
 // model v0" ships it as its own worked example — legacy/v1 have no
 // [convergence] table at all, so this is the built-in default rather than
@@ -170,6 +219,56 @@ const BUILTIN_STRATEGY_DEFAULT = Object.freeze({
   planning: "inline",
   delegation: "none",
 });
+
+/**
+ * Resolve the documented fallback used only when .devflow.toml is absent
+ * (AGENTS.md: "use the reader's built-in fallback only when the policy file
+ * is absent"). A present-but-unreadable or malformed file is never absent —
+ * the CLI still refuses it. Here the DERIVED Tier is recorded but inert;
+ * a pin, a tier:<role>:* label, and an operator tier still apply
+ * (applyTierInputs; corpus case absent-policy-classified-issue-keeps-an-honored-pin).
+ */
+export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy } = {}) {
+  if (requestedRigor !== undefined && requestedRigor !== "standard") {
+    throw new PolicyError(
+      `requested rigor ${JSON.stringify(requestedRigor)} is unavailable without .devflow.toml; the built-in fallback supports only "standard"`,
+    );
+  }
+  if (requestedStrategy !== undefined && requestedStrategy !== "plan") {
+    throw new PolicyError(
+      `requested strategy ${JSON.stringify(requestedStrategy)} is unavailable without .devflow.toml; the built-in fallback supports only "plan"`,
+    );
+  }
+
+  const roles = builtinRolesDefault();
+  roles.orchestrator.tier = "frontier";
+  roles.implementer.tier = "standard";
+  roles.challenger.tier = "frontier";
+  roles.reviewer.tier = "standard";
+  roles.integrator.tier = "economy";
+
+  return {
+    source: "built-in-fallback",
+    rigor: { level: "standard", order: ["standard"], tier_escalation: false },
+    rounds: { ...BUILTIN_ABSENT_ROUNDS },
+    breadth: { ...BUILTIN_ABSENT_BREADTH },
+    spend: { policy: null, max_tokens: null, max_usd: null, status: "UNENFORCED" },
+    gates: { ...BUILTIN_GATE_DEFAULTS, source: "builtin-default" },
+    convergence: {
+      converged: { ...BUILTIN_CONVERGENCE_DEFAULT.converged },
+      diverging: { ...BUILTIN_CONVERGENCE_DEFAULT.diverging },
+      overridden: false,
+    },
+    tier_order: [...BUILTIN_TIER_ORDER],
+    roles,
+    stages: builtinStagesDefault(),
+    strategy: { ...BUILTIN_ABSENT_STRATEGY, human_gates: [] },
+    // Empty role/stage preferences are intentional when no policy exists;
+    // crossValidate uses this marker to distinguish them from a malformed v2
+    // policy that silently omitted all executable actors.
+    decodedFrom: "absent",
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Shape detection
@@ -279,7 +378,10 @@ const V2_SHAPE_TABLES = "[rounds.*], [breadth.*], [gates], [convergence], [role.
 // commit that already happened would be nonsense, so it only names the shape.
 const OPERATING_MIGRATION_DIRECTION =
   `run \`copier update\` against ${V2_TEMPLATE_RELEASE} or later, the release carrying the ` +
-  `schema_version = 2 template, to migrate it to ${V2_SHAPE_TABLES}; until it has migrated, keep ` +
+  // "migrate to schema_version" is also the phrase the shared conformance
+  // runner (scripts/test-devflow-conformance.py, vendored from harmon-init)
+  // reads as the `migration_required` diagnostic — keep it verbatim.
+  `schema_version = 2 template, to migrate to schema_version = 2 (${V2_SHAPE_TABLES}); until it has migrated, keep ` +
   "`.skills-sync.yaml` pinned to the last pre-v2 skills release rather than advancing it";
 const HISTORICAL_MIGRATION_DIRECTION = `it must be schema_version = 2 with ${V2_SHAPE_TABLES}`;
 
@@ -730,7 +832,15 @@ function resolveRoles(doc, profile, levelName, tierOrder) {
         `role "${role}" has no resolvable tier: [rigor.${levelName}].${profileKey} and [role.${role}].tier are both absent`,
       );
     }
-    if (tier !== "adaptive" && Array.isArray(tierOrder) && !tierOrder.includes(tier)) {
+    // `adaptive` is no longer a configurable tier (ADR 2026-09-30 D8): it is
+    // refused like any other off-ladder value, and named as retired so the
+    // author knows why a once-valid policy stopped resolving.
+    if (tier === RETIRED_TIER) {
+      throw new PolicyError(
+        `role "${role}" tier "${RETIRED_TIER}" is retired (ADR 2026-09-30 D8); name one of [${(tierOrder || BUILTIN_TIER_ORDER).join(", ")}]`,
+      );
+    }
+    if (Array.isArray(tierOrder) && !tierOrder.includes(tier)) {
       throw new PolicyError(`role "${role}" tier "${tier}" is not in tier_order (${tierOrder.join(", ")})`);
     }
     result[role] = {
@@ -836,6 +946,16 @@ function resolveStrategy(doc, requestedStrategy) {
  * which is itself reported by the CLI as reduced-confidence, never silent).
  * `taskTargets` is a Set<string> of bare target names, or null.
  */
+// The tier a role's AUTHORED configuration resolves to, before any issue,
+// pin, operator, or label tier input (applyTierInputs keeps it as
+// `profile_tier`). Every capability check in crossValidate reads this one
+// helper: those checks ask whether the POLICY can serve its own roles, while an
+// input-driven tier no family can serve is tierAchievabilityWarnings()'s
+// advisory — so a classified issue can never turn a sound policy invalid.
+function authoredTierOf(roleEntry) {
+  return roleEntry?.profile_tier ?? roleEntry?.tier;
+}
+
 export function crossValidate(resolved, registryDoc, taskTargets) {
   const errors = [];
 
@@ -1026,12 +1146,17 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
       // evidence either way and is unrestricted, not an error. Only once at
       // least one declared family DOES carry model-tier data does an
       // unachievable tier become checkable — and, having that data, refused.
-      if (r.tier !== "adaptive" && r.families.length > 0) {
+      //
+      // This asks whether the POLICY can serve its own roles, so it reads the
+      // AUTHORED tier (authoredTierOf); an input-driven tier no family can
+      // serve is tierAchievabilityWarnings()'s advisory instead.
+      const authoredTier = authoredTierOf(r);
+      if (r.families.length > 0) {
         const tierAwareFamilies = r.families.filter((famSlug) => Array.isArray(familyBySlug.get(famSlug)?.models));
         if (tierAwareFamilies.length > 0) {
-          const achievable = tierAwareFamilies.some((famSlug) => familyBySlug.get(famSlug).models.some((m) => m.tier === r.tier));
+          const achievable = tierAwareFamilies.some((famSlug) => familyBySlug.get(famSlug).models.some((m) => m.tier === authoredTier));
           if (!achievable) {
-            errors.push(`[role.${role}] tier "${r.tier}" is not achievable by any model in its declared families (${r.families.join(", ")})`);
+            errors.push(`[role.${role}] tier "${authoredTier}" is not achievable by any model in its declared families (${r.families.join(", ")})`);
           }
         }
       }
@@ -1163,6 +1288,7 @@ export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrat
   if (Object.hasOwn(profile, "tier_escalation") && typeof profile.tier_escalation !== "boolean") {
     throw new PolicyError(`[rigor.${level}].tier_escalation must be a boolean, got ${JSON.stringify(profile.tier_escalation)}`);
   }
+  const tierMatrix = resolveTierMatrix(doc, tierOrder);
   return {
     source: "operating",
     rigor: { level, order, tier_escalation: profile.tier_escalation === true },
@@ -1172,10 +1298,81 @@ export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrat
     gates,
     convergence,
     tier_order: tierOrder,
+    tier_matrix: tierMatrix,
     roles,
     stages,
     strategy,
   };
+}
+
+// A TOML table with exactly `keys` — no more, no fewer. [tier.matrix] is a
+// closed grid, so a missing row/column and a misspelled one are both refused
+// (a misspelling would otherwise leave a cell silently underivable).
+function requireExactTable(table, keys, errorPath) {
+  if (table === null || typeof table !== "object" || Array.isArray(table)) {
+    throw new PolicyError(`${errorPath} must be a table`);
+  }
+  const missing = keys.filter((key) => !Object.hasOwn(table, key));
+  const extra = Object.keys(table).filter((key) => !keys.includes(key));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new PolicyError(
+      `${errorPath} must have exactly [${keys.join(", ")}]` +
+        `${missing.length > 0 ? `; missing: ${missing.join(", ")}` : ""}` +
+        `${extra.length > 0 ? `; unsupported: ${extra.join(", ")}` : ""}`,
+    );
+  }
+}
+
+// [tier.matrix] is optional: a policy without it simply has no derived-Tier
+// rung, and an issue that carries a classification then resolves that rung
+// as indeterminate (applyTierInputs) rather than guessing. When present it is
+// validated whole — every Complexity row and every Risk column, every cell a
+// tier_order rung — whether or not this invocation classifies an issue, so a
+// malformed matrix fails at authoring time, not on the first issue that hits
+// the bad cell. Ported from harmon-init 81bbe787 (harmon-devkit#1248).
+function resolveTierMatrix(doc, tierOrder) {
+  if (!Object.hasOwn(doc, "tier")) return null;
+  requireExactTable(doc.tier, ["matrix"], "[tier]");
+  const matrix = doc.tier.matrix;
+  requireExactTable(matrix, COMPLEXITY_SCALE, "[tier.matrix]");
+  const result = {};
+  for (const complexity of COMPLEXITY_SCALE) {
+    const errorPath = `[tier.matrix].${complexity}`;
+    requireExactTable(matrix[complexity], RISK_SCALE, errorPath);
+    result[complexity] = {};
+    for (const risk of RISK_SCALE) {
+      const cell = matrix[complexity][risk];
+      if (cell === RETIRED_TIER) {
+        throw new PolicyError(
+          `${errorPath}.${risk} is "${RETIRED_TIER}", which is retired (ADR 2026-09-30 D8); every cell must be one of [${tierOrder.join(", ")}]`,
+        );
+      }
+      if (!tierOrder.includes(cell)) {
+        throw new PolicyError(`${errorPath}.${risk} must be one of [${tierOrder.join(", ")}], got ${JSON.stringify(cell)}`);
+      }
+      result[complexity][risk] = cell;
+    }
+  }
+  return result;
+}
+
+/**
+ * Derive an issue's Tier from its Risk and Complexity over a validated
+ * [tier.matrix] (the resolved policy's `tier_matrix`). Throws PolicyError when
+ * there is no matrix or either input is off its scale — the caller decides
+ * what an underivable Tier means; this never guesses one.
+ */
+export function deriveTier(matrix, { risk, complexity } = {}) {
+  if (matrix === null || typeof matrix !== "object") {
+    throw new PolicyError("no [tier.matrix] is configured, so no Tier can be derived");
+  }
+  if (!RISK_SCALE.includes(risk)) {
+    throw new PolicyError(`risk must be one of [${RISK_SCALE.join(", ")}], got ${JSON.stringify(risk)}`);
+  }
+  if (!COMPLEXITY_SCALE.includes(complexity)) {
+    throw new PolicyError(`complexity must be one of [${COMPLEXITY_SCALE.join(", ")}], got ${JSON.stringify(complexity)}`);
+  }
+  return matrix[complexity][risk];
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,13 +1498,353 @@ export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor }
 }
 
 // ---------------------------------------------------------------------------
+// Tier inputs: overrides, the pinned Tier, and the derived Tier
+// ---------------------------------------------------------------------------
+//
+// Ported from harmon-init 81bbe787 (harmon-init#1475) by harmon-devkit#1248;
+// the shared conformance corpus (assets/.devflow-conformance-v2.json) is what
+// holds the two readers to the same answers.
+//
+// ADR 2026-09-30 D5 adds two implementer-only rungs to resolution. Every
+// input here arrives ALREADY authorized by the consumer — this reader still
+// reads no labels, issue fields, or GitHub actors. Label parsing and label
+// conflict reconciliation are the consumer's (assets/tier-inputs.mjs for the
+// stage skills). What this reader owns is the ORDER, the derive-on-read
+// rule, the pin's two-part provenance requirement, and disclosure.
+//
+// Implementer tier, strongest first:
+//   1. operator tier instruction            (tierOverrides.implementer)
+//   2. pinned Tier, both halves trusted     (pinnedTier)
+//   3. tier:implementer:* label             (tierLabels.implementer)
+//      or the profile of a rigor the operator or a rigor:* label chose
+//   4. derived Tier                         (issueTier risk × [tier.matrix])
+//   5. default_rigor's profile tier
+// A tier input refines whatever profile resolved (ADR 2026-08-24 D5), so an
+// operator RIGOR instruction selects the profile and a pin still refines its
+// implementer tier; an operator who means to displace a pin gives a tier
+// instruction. Every other role: operator tier > label tier > profile.
+//
+// Nothing here corrects a result. A role tier that differs from its profile,
+// or a companion left below the implementer, is DISCLOSED (`disclosures`) for
+// the PR body.
+
+const TIER_INPUT_ROLES = new Set(ROLES);
+const FLOOR_ROLES = ["orchestrator", "challenger", "reviewer"];
+
+function tierWarning(code, subject, message) {
+  return { code, subject, message };
+}
+
+function normalizeTierMap(input, source, ladder, warnings) {
+  if (input === undefined || input === null) return {};
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw new PolicyError(`${source} tier inputs must be a { role: tier } map`);
+  }
+  const result = {};
+  for (const [role, tier] of Object.entries(input)) {
+    if (!TIER_INPUT_ROLES.has(role)) {
+      throw new PolicyError(`${source} tier input names unknown role ${JSON.stringify(role)}; roles are ${ROLES.join(", ")}`);
+    }
+    if (tier === RETIRED_TIER) {
+      if (source === "operator") {
+        throw new PolicyError(
+          `operator tier instruction for ${role} names "${RETIRED_TIER}", which is retired (ADR 2026-09-30 D8); name one of [${ladder.join(", ")}]`,
+        );
+      }
+      warnings.push(
+        tierWarning("tier-retired", `tier:${role}`, `a tier:${RETIRED_TIER} label for ${role} is retired (ADR 2026-09-30 D8) and resolves as if absent`),
+      );
+      continue;
+    }
+    if (!ladder.includes(tier)) {
+      if (source === "operator") {
+        throw new PolicyError(`operator tier instruction for ${role} must be one of [${ladder.join(", ")}], got ${JSON.stringify(tier)}`);
+      }
+      warnings.push(tierWarning("tier-unknown", `tier:${role}`, `tier label value ${JSON.stringify(tier)} for ${role} names no rung and is ignored`));
+      continue;
+    }
+    result[role] = tier;
+  }
+  return result;
+}
+
+function resolvePinInput(input, ladder, warnings) {
+  if (input === undefined || input === null) return { status: "absent" };
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw new PolicyError("pinnedTier must be { tier, markerTrusted, valueTrusted }");
+  }
+  for (const key of ["markerTrusted", "valueTrusted"]) {
+    if (Object.hasOwn(input, key) && typeof input[key] !== "boolean") {
+      throw new PolicyError(`pinnedTier.${key} must be a boolean`);
+    }
+  }
+  const { tier } = input;
+  if (tier === RETIRED_TIER) {
+    warnings.push(
+      tierWarning("tier-retired", "pin", `the pinned value "${RETIRED_TIER}" is retired (ADR 2026-09-30 D8); the issue resolves as unpinned`),
+    );
+    return { status: "ignored", tier, reason: "retired" };
+  }
+  if (!ladder.includes(tier)) {
+    warnings.push(
+      tierWarning("pin-invalid", "pin", `tier:pinned names no Tier value on the ladder (${JSON.stringify(tier)}); the issue resolves as unpinned`),
+    );
+    return { status: "ignored", tier: tier ?? null, reason: "invalid" };
+  }
+  // A pin is two independently mutable values: the tier:pinned marker and
+  // the Tier it pins. Trusting the marker alone would let an untrusted actor
+  // change the value under a still-trusted marker, so BOTH must be verified.
+  const untrusted = [];
+  if (input.markerTrusted !== true) untrusted.push("marker");
+  if (input.valueTrusted !== true) untrusted.push("value");
+  if (untrusted.length > 0) {
+    warnings.push(
+      tierWarning("pin-untrusted", "pin", `the pin's ${untrusted.join(" and ")} provenance is not verified; the issue resolves as unpinned`),
+    );
+    return { status: "ignored", tier, reason: "untrusted", untrusted };
+  }
+  return { status: "honored", tier };
+}
+
+// Derive-on-read: an unpinned issue's Tier is recomputed from Risk ×
+// Complexity every time, so a partial write that updated an input but not
+// the stored Tier can never be read as current. The stored Tier is a cache
+// to compare against, never an input — not even when the inputs are absent.
+function resolveIssueTierInput(input, matrix, pin, warnings) {
+  // An honored pin is the issue's Tier whatever the classification says, so
+  // its cache state is `pinned` on every path — classified or not.
+  const pinned = pin.status === "honored";
+  if (input === undefined || input === null) {
+    return { status: "absent", cache: pinned ? "pinned" : "absent" };
+  }
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw new PolicyError("issueTier must be { risk, complexity, tier }");
+  }
+  for (const key of ["risk", "complexity", "tier"]) {
+    if (input[key] !== undefined && input[key] !== null && typeof input[key] !== "string") {
+      throw new PolicyError(`issueTier.${key} must be a string`);
+    }
+  }
+  const risk = input.risk ?? null;
+  const complexity = input.complexity ?? null;
+  let storedTier = input.tier ?? null;
+  // A leftover tier:adaptive label is a stored-Tier value that no longer
+  // names a rung (ADR 2026-09-30 D8): it resolves as if absent.
+  if (storedTier === RETIRED_TIER) {
+    warnings.push(
+      tierWarning(
+        "tier-retired",
+        "issue.tier",
+        `the stored Tier "${RETIRED_TIER}" (a leftover tier:${RETIRED_TIER} label) is retired (ADR 2026-09-30 D8) and resolves as if absent`,
+      ),
+    );
+    storedTier = null;
+  }
+  const base = { risk, complexity, stored_tier: storedTier };
+  if (risk === null && complexity === null) {
+    if (storedTier !== null && !pinned) {
+      warnings.push(
+        tierWarning(
+          "tier-cache-unverifiable",
+          "issue.tier",
+          `the issue stores Tier ${JSON.stringify(storedTier)} without Risk and Complexity; a stored Tier is a cache, never an input, so it is not used`,
+        ),
+      );
+    }
+    let cache = "unverifiable";
+    if (pinned) cache = "pinned";
+    else if (storedTier === null) cache = "absent";
+    return { status: "absent", ...base, cache };
+  }
+  let reason = null;
+  if (risk === null || complexity === null) {
+    reason = `the issue has ${risk === null ? "Complexity" : "Risk"} but no ${risk === null ? "Risk" : "Complexity"}`;
+  } else if (!RISK_SCALE.includes(risk)) {
+    reason = `Risk ${JSON.stringify(risk)} is not one of [${RISK_SCALE.join(", ")}]`;
+  } else if (!COMPLEXITY_SCALE.includes(complexity)) {
+    reason = `Complexity ${JSON.stringify(complexity)} is not one of [${COMPLEXITY_SCALE.join(", ")}]`;
+  } else if (matrix === null) {
+    reason = "the governing policy has no [tier.matrix]";
+  }
+  if (reason !== null) return { status: "indeterminate", ...base, reason };
+  const tier = deriveTier(matrix, { risk, complexity });
+  let cache = "absent";
+  if (pinned) {
+    cache = "pinned";
+  } else if (storedTier !== null) {
+    cache = storedTier === tier ? "match" : "stale";
+    if (cache === "stale") {
+      warnings.push(
+        tierWarning(
+          "tier-cache-stale",
+          "issue.tier",
+          `the stored Tier ${JSON.stringify(storedTier)} disagrees with Risk ${risk} × Complexity ${complexity} = ${tier}; the derived Tier is used`,
+        ),
+      );
+    }
+  }
+  return { status: "derived", ...base, tier, cache };
+}
+
+function applyTierInputs(resolved, opts = {}) {
+  const { rigor: requestedRigor, rigorSource, tierOverrides, tierLabels, issueTier, pinnedTier } = opts;
+  if (rigorSource !== undefined) {
+    if (rigorSource !== "operator" && rigorSource !== "label") {
+      throw new PolicyError(`rigorSource must be "operator" or "label", got ${JSON.stringify(rigorSource)}`);
+    }
+    if (requestedRigor === undefined) {
+      throw new PolicyError("rigorSource was given without a rigor selection");
+    }
+  }
+  const ladder = resolved.tier_order;
+  const matrix = resolved.tier_matrix ?? null;
+  const warnings = [];
+  const indeterminate = [];
+  const operator = normalizeTierMap(tierOverrides, "operator", ladder, warnings);
+  const labels = normalizeTierMap(tierLabels, "label", ladder, warnings);
+  const pin = resolvePinInput(pinnedTier, ladder, warnings);
+  let issue = resolveIssueTierInput(issueTier, matrix, pin, warnings);
+  // No .devflow.toml at all: the built-in fallback keeps tiers inert
+  // (ADR 2026-08-16 D5), so a classified issue is recorded, never applied —
+  // and never indeterminate, which would stop a policy-less repository from
+  // running the loop. A PRESENT policy without [tier.matrix] stays
+  // indeterminate: its author could have written the table.
+  if (resolved.decodedFrom === "absent" && issue.status === "indeterminate") {
+    const reason =
+      "no .devflow.toml: the built-in fallback derives no Tier (ADR 2026-08-16 D5); the classification is recorded, not applied";
+    let cache = "unverifiable";
+    if (pin.status === "honored") cache = "pinned";
+    else if (issue.stored_tier === null) cache = "absent";
+    issue = {
+      status: "inert",
+      risk: issue.risk,
+      complexity: issue.complexity,
+      stored_tier: issue.stored_tier,
+      tier: null,
+      cache,
+      reason,
+    };
+    warnings.push(tierWarning("tier-inert-absent-policy", "issue_tier", reason));
+  }
+  const rigorChosen = requestedRigor !== undefined;
+
+  const roles = {};
+  for (const [role, entry] of Object.entries(resolved.roles)) {
+    const profileTier = entry.tier;
+    let tier = profileTier;
+    let source = entry.source;
+    if (Object.hasOwn(operator, role)) {
+      tier = operator[role];
+      source = "operator";
+    } else if (role === "implementer" && pin.status === "honored") {
+      tier = pin.tier;
+      source = "pinned";
+    } else if (Object.hasOwn(labels, role)) {
+      tier = labels[role];
+      source = "label";
+    } else if (role === "implementer" && !rigorChosen) {
+      if (issue.status === "derived") {
+        tier = issue.tier;
+        source = "derived";
+      } else if (issue.status === "indeterminate") {
+        // Only indeterminate when the derived rung is the one that decides.
+        indeterminate.push(`indeterminate: the implementer's derived Tier cannot be computed — ${issue.reason}`);
+      }
+    }
+    roles[role] = { ...entry, tier, source, profile_tier: profileTier };
+  }
+
+  const disclosures = [];
+  for (const [role, r] of Object.entries(roles)) {
+    if (r.tier !== r.profile_tier) {
+      disclosures.push({ code: "off-profile-tier", role, tier: r.tier, profile_tier: r.profile_tier, source: r.source });
+    }
+  }
+  const implementerRank = ladder.indexOf(roles.implementer.tier);
+  for (const role of FLOOR_ROLES) {
+    if (ladder.indexOf(roles[role].tier) < implementerRank) {
+      disclosures.push({
+        code: "role-tier-floor",
+        role,
+        tier: roles[role].tier,
+        implementer_tier: roles.implementer.tier,
+        implementer_source: roles.implementer.source,
+      });
+    }
+  }
+
+  return {
+    ...resolved,
+    // Who chose the rigor: the operator, an authorized rigor:* label, or
+    // nobody (null) when the default resolved. It decides whether the derived
+    // Tier may refine the implementer, so consumers can see which applied.
+    rigor: { ...resolved.rigor, chosen_by: requestedRigor === undefined ? null : (rigorSource ?? "operator") },
+    tier_matrix: matrix,
+    roles,
+    issue_tier: issue,
+    pin,
+    disclosures,
+    warnings,
+    tier_indeterminate: indeterminate,
+  };
+}
+
+/**
+ * Report an input-driven role tier that none of the role's declared families
+ * has a model for. Advisory, not a cross-validation error: the AUTHORED
+ * profile is still validated hard by crossValidate; an issue whose derived
+ * tier (say `local`) this repository cannot serve is a dispatch-time fact,
+ * escalated on failure where tier_escalation allows or stopped with a report.
+ */
+export function tierAchievabilityWarnings(resolved, registryDoc) {
+  if (!registryDoc) return [];
+  const familyBySlug = new Map((registryDoc.families || []).map((f) => [f.slug, f]));
+  const warnings = [];
+  for (const [role, r] of Object.entries(resolved.roles)) {
+    if (r.profile_tier === undefined || r.tier === r.profile_tier) continue;
+    const families = r.families.map((slug) => familyBySlug.get(slug)).filter(Boolean);
+    if (!families.some((family) => Array.isArray(family.models))) continue;
+    const achievable = families.some((family) => Array.isArray(family.models) && family.models.some((m) => m.tier === r.tier));
+    if (!achievable) {
+      warnings.push(
+        tierWarning(
+          "tier-unachievable",
+          role,
+          `${role} tier "${r.tier}" (${r.source}) has no model in its declared families (${r.families.join(", ")})`,
+        ),
+      );
+    }
+  }
+  return warnings;
+}
+
+// ---------------------------------------------------------------------------
 // Top-level resolve(): operating-path shape gate + optional merge-base rule
 // ---------------------------------------------------------------------------
 
 /**
- * doc: the parsed operating (branch/working-tree) policy — MUST be v2.
+ * doc: the parsed operating (branch/working-tree) policy — MUST be v2, or
+ *   null when the policy file is ABSENT (the built-in fallback; a merge-base
+ *   policy, when given, still governs).
  * opts:
  *   - rigor, strategy: requested overrides (else default_rigor/default_strategy)
+ *   - rigorSource: "operator" | "label" — who chose `rigor` (default
+ *     operator). Pass `rigor` ONLY when one of them chose it: a rigor the
+ *     operator or a rigor:* label chose outranks the derived Tier, the
+ *     default does not.
+ *   - tierOverrides / tierLabels: { role: tier } from an operator tier
+ *     instruction (an unqualified one targets the implementer) / from
+ *     authorized role-scoped tier:<role>:* labels — the only label overrides.
+ *     An unqualified tier:<value> label is NOT a role override: it is the
+ *     issue's stored Tier (ADR 2026-09-30) — a cache of the derived Tier,
+ *     passed as issueTier.tier, or, with tier:pinned also present, the pinned
+ *     Tier, passed as pinnedTier. One value per role: label conflicts are the
+ *     consumer's to reconcile first.
+ *   - pinnedTier: { tier, markerTrusted, valueTrusted } — the tier:pinned
+ *     marker's value and whether each half's provenance was verified.
+ *   - issueTier: { risk, complexity, tier } — the issue's classification and
+ *     its stored Tier (a cache to compare against, never an input).
+ *   See applyTierInputs() for the order these resolve in.
  *   - mergeBaseDoc: parsed merge-base policy, when the diff under review
  *     touches .devflow.toml or agent-registry.json. When given, resolution
  *     uses ITS content instead of `doc`'s — v2-shaped merge-base content
@@ -1317,6 +1854,17 @@ export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor }
  *     rule also applies).
  */
 export function resolvePolicy(doc, opts = {}) {
+  return applyTierInputs(resolveGoverningPolicy(doc, opts), opts);
+}
+
+function resolveGoverningPolicy(doc, opts) {
+  if (doc === null || doc === undefined) {
+    if (!opts.mergeBaseDoc) return resolveAbsentPolicy(opts);
+    // The branch deleted .devflow.toml while the merge base still has one:
+    // the merge-base rule governs exactly as it does for an edited file.
+    return resolveMergeBase(opts);
+  }
+
   requireOperatingV2(doc);
 
   if (!opts.mergeBaseDoc) {
@@ -1338,6 +1886,10 @@ export function resolvePolicy(doc, opts = {}) {
   // decoder exists for) skipped it entirely.
   resolveV2(doc, opts);
 
+  return resolveMergeBase(opts);
+}
+
+function resolveMergeBase(opts) {
   const mbDetection = detectShape(opts.mergeBaseDoc);
   if (mbDetection.shape === "v2") {
     return { ...resolveV2(opts.mergeBaseDoc, opts), source: "merge-base" };
@@ -1414,12 +1966,53 @@ function extractRepeatable(argv, flag) {
   return { values, rest };
 }
 
-function parseArgs(argv) {
-  const args = { _: [] };
+// Every option a command accepts is named exactly once, here; an option a
+// command does not name, and a stray positional argument, is a usage error
+// (exit 2). That is the one invariant that keeps an input from being
+// silently lost: before it, a misspelled `--tier-lables=…` fell through to
+// a lenient catch-all and resolved the default tier with exit 0 (challenge
+// round 2, C2-2) — the same shape harmon-init's reader enforces.
+// `--add-finder`/`--select-finder` are lifted out by extractRepeatable and
+// `--closure` is handled by tryDelegateToClosure before parsing, so neither
+// reaches this table.
+//
+// Two parsing rules live under that invariant:
+//   - The LEGACY valued options keep their original lenient semantics: one
+//     takes the next word unless it starts with `--`, and otherwise reads
+//     as `true` (the command then reports the missing value itself).
+//     `--json` is a pure boolean: it never took a meaningful value, and
+//     letting it take one would swallow a stray positional.
+//   - The tier inputs (harmon-devkit#1248) — the same spellings harmon-init's
+//     reader takes — are STRICT: each may appear once, a valued one requires
+//     its value (`--opt value` or `--opt=value`), and the two provenance
+//     flags are pure booleans that never take a value (challenge round 1,
+//     C1-1: `--pin-marker-trusted false` must not read as trusted).
+const LEGACY_OPTIONS = new Set(["policy", "registry", "merge-base-policy", "merge-base-registry", "task-targets", "taskfile-dir", "rigor", "strategy"]);
+const BOOLEAN_OPTIONS = new Set(["json", "pin-marker-trusted", "pin-value-trusted"]);
+const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labels", "risk", "complexity", "stored-tier", "pinned-tier"]);
+const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
+const COMMAND_OPTIONS = {
+  detect: new Set(["policy", "json"]),
+  resolve: new Set([...LEGACY_OPTIONS, "json", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+};
+
+function parseArgs(argv, allowed) {
+  const args = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
+    if (!a.startsWith("--")) {
+      throw new PolicyError(`unexpected positional argument ${JSON.stringify(a)}`);
+    }
+    const key = a.slice(2);
+    const equalsAt = key.indexOf("=");
+    const bareKey = equalsAt === -1 ? key : key.slice(0, equalsAt);
+    if (!allowed.has(bareKey)) {
+      throw new PolicyError(`unsupported option ${JSON.stringify(a)}`);
+    }
+    if (LEGACY_OPTIONS.has(bareKey)) {
+      if (equalsAt !== -1) {
+        throw new PolicyError(`option --${bareKey} takes its value as a separate word, not --${bareKey}=…`);
+      }
       const next = argv[i + 1];
       if (next === undefined || next.startsWith("--")) {
         args[key] = true;
@@ -1427,11 +2020,86 @@ function parseArgs(argv) {
         args[key] = next;
         i++;
       }
-    } else {
-      args._.push(a);
+      continue;
     }
+    // Every tier option — valued or boolean — is once-only; `--json` stays
+    // repeatable as it always was. The check precedes the boolean branch so
+    // a duplicated provenance flag is refused too (challenge round 3, C3-1).
+    if (bareKey !== "json" && Object.hasOwn(args, bareKey)) {
+      throw new PolicyError(`option --${bareKey} may be supplied only once`);
+    }
+    if (BOOLEAN_OPTIONS.has(bareKey)) {
+      const following = argv[i + 1];
+      if (equalsAt !== -1 || (following !== undefined && !following.startsWith("--"))) {
+        throw new PolicyError(`boolean option --${bareKey} does not take a value`);
+      }
+      args[bareKey] = true;
+      continue;
+    }
+    if (equalsAt !== -1) {
+      const inline = key.slice(equalsAt + 1);
+      if (inline === "") throw new PolicyError(`option --${bareKey} requires a value`);
+      args[bareKey] = inline;
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new PolicyError(`option --${bareKey} requires a value`);
+    }
+    args[bareKey] = value;
+    i++;
   }
   return args;
+}
+
+// `--tier-overrides implementer=frontier,reviewer=apex` → { implementer:
+// "frontier", reviewer: "apex" }. Values are validated by applyTierInputs;
+// only the map's own syntax is checked here.
+function parseTierMapOption(value, option) {
+  const result = {};
+  for (const entry of value.split(",")) {
+    const equalsAt = entry.indexOf("=");
+    const role = equalsAt === -1 ? "" : entry.slice(0, equalsAt);
+    const tier = equalsAt === -1 ? "" : entry.slice(equalsAt + 1);
+    if (!role || !tier) {
+      throw new PolicyError(`--${option} entries must be role=tier, got ${JSON.stringify(entry)}`);
+    }
+    // Checked here, not only in applyTierInputs: assigning a key such as
+    // `__proto__` to a plain object is silently dropped, so an unknown role
+    // must be refused before it is ever stored.
+    if (!ROLES.includes(role)) {
+      throw new PolicyError(`--${option} names unknown role ${JSON.stringify(role)}`);
+    }
+    if (Object.hasOwn(result, role)) {
+      throw new PolicyError(`--${option} names ${role} more than once`);
+    }
+    result[role] = tier;
+  }
+  return result;
+}
+
+function tierInputsFromArgs(args) {
+  const inputs = {};
+  if (args["rigor-source"] !== undefined) inputs.rigorSource = args["rigor-source"];
+  if (args["tier-overrides"] !== undefined) {
+    inputs.tierOverrides = parseTierMapOption(args["tier-overrides"], "tier-overrides");
+  }
+  if (args["tier-labels"] !== undefined) {
+    inputs.tierLabels = parseTierMapOption(args["tier-labels"], "tier-labels");
+  }
+  if (["risk", "complexity", "stored-tier"].some((key) => args[key] !== undefined)) {
+    inputs.issueTier = { risk: args.risk, complexity: args.complexity, tier: args["stored-tier"] };
+  }
+  if (args["pinned-tier"] !== undefined) {
+    inputs.pinnedTier = {
+      tier: args["pinned-tier"],
+      markerTrusted: args["pin-marker-trusted"] === true,
+      valueTrusted: args["pin-value-trusted"] === true,
+    };
+  } else if (args["pin-marker-trusted"] || args["pin-value-trusted"]) {
+    throw new PolicyError("--pin-marker-trusted/--pin-value-trusted require --pinned-tier");
+  }
+  return inputs;
 }
 
 // Union the configured finders for a stage with the ones this run asked for.
@@ -1622,8 +2290,16 @@ function cliResolve(args) {
   try {
     doc = loadTomlFile(args.policy);
   } catch (err) {
-    console.error(`devflow-policy: could not read/parse --policy: ${err.message}`);
-    return 2;
+    // An ABSENT policy file takes the documented built-in fallback
+    // (resolveAbsentPolicy; harmon-devkit#1248, matching harmon-init). Only
+    // ENOENT counts as absent: an unreadable or malformed file is still a
+    // refusal, never quietly replaced by defaults.
+    if (err?.code === "ENOENT") {
+      doc = null;
+    } else {
+      console.error(`devflow-policy: could not read/parse --policy: ${err.message}`);
+      return 2;
+    }
   }
 
   let mergeBaseDoc = null;
@@ -1642,6 +2318,7 @@ function cliResolve(args) {
       rigor: args.rigor,
       strategy: args.strategy,
       mergeBaseDoc,
+      ...tierInputsFromArgs(args),
     });
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
@@ -1704,8 +2381,11 @@ function cliResolve(args) {
   // is exactly as unrunnable as a configured one.
   crossErrors.push(...validateSelectedFinders(resolved, registryDoc, selectionResult.disclosures ?? []));
 
-  const indeterminate = crossErrors.filter((e) => e.startsWith("indeterminate:"));
+  // A derived Tier the governing policy cannot compute is indeterminate, not
+  // an error and never a guess (applyTierInputs): it folds into exit 3.
+  const indeterminate = [...crossErrors.filter((e) => e.startsWith("indeterminate:")), ...resolved.tier_indeterminate];
   const hardErrors = crossErrors.filter((e) => !e.startsWith("indeterminate:"));
+  const warnings = [...resolved.warnings, ...tierAchievabilityWarnings(resolved, registryDoc)];
 
   // `resolved` above is always the MERGE-BASE's own resolution when one is
   // in play (resolvePolicy's own contract) — cross_validation therefore
@@ -1727,7 +2407,7 @@ function cliResolve(args) {
   // fixtures exist to prove safe. A caller that wants this to gate CI can
   // check branch_cross_validation.errors itself.
   let branchCrossValidation = null;
-  if (mergeBaseDoc && args.registry) {
+  if (mergeBaseDoc && doc && args.registry) {
     let branchRegistryDoc;
     try {
       branchRegistryDoc = JSON.parse(readFileSync(args.registry, "utf8"));
@@ -1743,7 +2423,8 @@ function cliResolve(args) {
     };
   }
 
-  const output = { ...resolved, cross_validation: { errors: hardErrors, indeterminate }, branch_cross_validation: branchCrossValidation };
+  const { tier_indeterminate: _tierIndeterminate, ...reported } = resolved;
+  const output = { ...reported, warnings, cross_validation: { errors: hardErrors, indeterminate }, branch_cross_validation: branchCrossValidation };
 
   if (args.json) {
     console.log(JSON.stringify(output, null, 2));
@@ -1769,6 +2450,26 @@ function cliResolve(args) {
       );
     }
     console.log(`gates[${resolved.gates.source}]: round_code=${resolved.gates.round_code} round_docs=${resolved.gates.round_docs} secret_scan=${resolved.gates.secret_scan} pre_pr=${resolved.gates.pre_pr}`);
+    const implementer = resolved.roles.implementer;
+    console.log(
+      `implementer tier: ${implementer.tier} (source: ${implementer.source}; profile: ${implementer.profile_tier})` +
+        `${resolved.issue_tier.status !== "absent" ? ` · issue tier: ${resolved.issue_tier.status}${resolved.issue_tier.tier ? ` ${resolved.issue_tier.tier}` : ""}` : ""}` +
+        `${resolved.pin.status !== "absent" ? ` · pin: ${resolved.pin.status}` : ""}`,
+    );
+    if (resolved.disclosures.length > 0) {
+      console.log("disclosures (for the PR body):");
+      for (const d of resolved.disclosures) {
+        console.log(
+          d.code === "role-tier-floor"
+            ? `  - ${d.role} tier ${d.tier} is below the implementer's ${d.implementer_tier} (${d.implementer_source})`
+            : `  - ${d.role} tier ${d.tier} is off-profile (profile ${d.profile_tier}; source ${d.source})`,
+        );
+      }
+    }
+    if (warnings.length > 0) {
+      console.log("warnings:");
+      for (const w of warnings) console.log(`  - [${w.code}] ${w.message}`);
+    }
     if (hardErrors.length > 0) {
       console.log("cross-validation errors:");
       for (const e of hardErrors) console.log(`  - ${e}`);
@@ -1878,6 +2579,27 @@ function tryDelegateToClosure(argv) {
       return 1;
     }
   }
+  // The same hazard for the tier inputs (harmon-devkit#1248): a merge-base
+  // reader written before them ignores --pinned-tier/--risk/... and would
+  // resolve a pinned or classified issue as unclassified, exit 0, with no
+  // disclosure. Refuse rather than drop them.
+  const tierFlags = [...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS];
+  const wantsTierInputs = passthrough.some((a) => tierFlags.some((flag) => a === `--${flag}` || a.startsWith(`--${flag}=`)));
+  if (wantsTierInputs) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`devflow-policy: could not read the --closure reader to check its flag support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("pinned-tier") || !trustedSource.includes("tier-labels")) {
+      console.error(
+        `devflow-policy: the --closure reader (${trustedScript}) predates the tier inputs (--pinned-tier, --tier-labels, --risk/--complexity, ...) and would silently drop them — refusing rather than resolving the issue as unclassified with no disclosure`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`devflow-policy: could not exec the --closure reader: ${result.error.message}`);
@@ -1897,18 +2619,37 @@ function main() {
   // what lets a run name several finders without silently dropping all but
   // the last — a dropped finder is reduced coverage, which is the one thing
   // per-run selection may never cause.
+  const usage =
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level> [--rigor-source operator|label]]\n" +
+    "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
+    "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
+    "       [--risk <risk>] [--complexity <complexity>] [--stored-tier <tier>]\n" +
+    "       [--pinned-tier <tier> [--pin-marker-trusted] [--pin-value-trusted]] [--json]";
+  if (!Object.hasOwn(COMMAND_OPTIONS, cmd ?? "")) {
+    console.error(usage);
+    return 2;
+  }
   const addFinders = extractRepeatable(argv.slice(1), "--add-finder");
   const selectFinders = extractRepeatable(addFinders.rest, "--select-finder");
-  const args = parseArgs(selectFinders.rest);
+  let args;
+  try {
+    if (cmd !== "resolve" && (addFinders.values.length > 0 || selectFinders.values.length > 0)) {
+      throw new PolicyError(`--add-finder/--select-finder apply to resolve, not ${cmd}`);
+    }
+    args = parseArgs(selectFinders.rest, COMMAND_OPTIONS[cmd]);
+    // Validate the tier inputs' own syntax up front, so a malformed one is a
+    // usage error (exit 2) rather than a policy refusal (exit 1).
+    if (cmd === "resolve") tierInputsFromArgs(args);
+  } catch (err) {
+    if (err instanceof PolicyError) {
+      console.error(`devflow-policy: ${err.message}`);
+      return 2;
+    }
+    throw err;
+  }
   args.addFinders = addFinders.values;
   args.selectFinders = selectFinders.values;
-  if (cmd === "detect") return cliDetect(args);
-  if (cmd === "resolve") return cliResolve(args);
-  console.error(
-    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level>]\n" +
-      "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]... [--json]",
-  );
-  return 2;
+  return cmd === "detect" ? cliDetect(args) : cliResolve(args);
 }
 
 const isMain =

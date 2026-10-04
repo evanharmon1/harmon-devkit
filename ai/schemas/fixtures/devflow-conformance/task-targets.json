@@ -1,0 +1,8 @@
+[
+  "check",
+  "verify",
+  "security",
+  "security:secrets",
+  "challenge:codex",
+  "review:codex"
+]

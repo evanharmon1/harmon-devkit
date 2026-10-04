@@ -352,6 +352,12 @@ for dir in "$fixtures_dir"/*/; do
     # kind, so ai/skills/universal/review/assets/test-finder-normalization.sh (task
     # test:finder-normalization) owns it and it is not iterated here.
     [ "$base" = "finder-normalization" ] && continue
+    # devflow-conformance/ holds the base policy and registry for harmon-init's
+    # vendored .devflow.toml v2 conformance corpus (harmon-devkit#1248;
+    # ai/schemas/README.md "Tier inputs and the shared conformance corpus") —
+    # policy inputs, not documents of any schema kind. scripts/
+    # test-devflow-conformance.sh (task test:devflow-conformance) owns it.
+    [ "$base" = "devflow-conformance" ] && continue
     # brief.envelope is the rendered-Markdown corpus exercised above.
     [ "$base" = "brief.envelope" ] && continue
     kind="$(kind_for_dir "$base")"

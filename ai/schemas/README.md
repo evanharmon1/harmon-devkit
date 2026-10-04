@@ -954,8 +954,9 @@ decisions):
   chosen over a per-schema keyword because every schema in this family uses
   the identical timestamp shape, so a per-schema version would just be the
   same check copied six times.
-- **`producer.tier`** excludes `adaptive`: that value is a `.devflow.toml`
-  resolution *input*, never a fact about a run that already executed.
+- **`producer.tier`** excludes `adaptive`: that value is retired as a tier
+  (ADR 2026-09-30 D8) and was only ever a resolution *input*, never a fact
+  about a run that already executed.
 - **`checks[].required` is a required boolean, not an inferred one.**
   `gh pr checks --required` already distinguishes required from advisory
   checks, and a clean verdict treats them differently (see
@@ -1203,6 +1204,7 @@ ai/schemas/fixtures/
   run.schema/{valid,invalid}/*.json
   registry-trust/<case>/scenario.json
   finder-normalization/<finder-slug>/{args.json,raw.json,expected.json}
+  devflow-conformance/{policy.toml,agent-registry.json,task-targets.json}
 ```
 
 `finder-normalization/` is one directory per **`github-review-json` finder**
@@ -1844,6 +1846,31 @@ command's own exit code (`dev-flow-exit.mjs`'s verdict-carrying `20`/`21`/
 `22` were observed to arrive at the shell as a different `task`-assigned
 code) — read the verdict from the JSON body, not from `task`'s own exit
 status, or call the bare script when the precise exit code matters.
+
+**Tier inputs and the shared conformance corpus (harmon-devkit#1248).**
+`devflow-policy.mjs resolve` also takes the issue's tier inputs —
+`--risk`/`--complexity` and the stored `--stored-tier`, `--pinned-tier` with
+`--pin-marker-trusted`/`--pin-value-trusted`, `--tier-labels`,
+`--tier-overrides`, and `--rigor-source` — and resolves the implementer tier
+operator > pinned Tier > `rigor:*`/`tier:<role>:*` > derived Tier
+(`[tier.matrix]`, Risk × Complexity) > `default_rigor` (ADR 2026-09-30 D5).
+It reports `tier_matrix`, `issue_tier`, `pin`, `disclosures`, `warnings`,
+`rigor.chosen_by`, and each role's `profile_tier`. Under a policy with no
+`[tier.matrix]`, a classified issue's `issue_tier` is indeterminate, never
+guessed. That makes the resolution exit 3 only when the derived rung would
+decide; an operator tier, an honored pin, a `tier:implementer:*` label or a
+chosen rigor still applies with exit 0. A missing `--policy` file takes the
+built-in fallback. This is the tier
+resolution of harmon-init#1475, ported rather than copied (the two readers are
+sibling forks; convergence is harmon-init#1484), so the contract is
+harmon-init's own corpus, vendored byte-identical with its runner:
+`ai/skills/universal/dev-flow-support/assets/.devflow-conformance-v2.json`,
+`scripts/test-devflow-conformance.py`, and the base policy and registry
+under `ai/schemas/fixtures/devflow-conformance/`, all blob-pinned to
+harmon-init `81bbe787` and run by `scripts/test-devflow-conformance.sh`
+(`task test:devflow-conformance`, wired into `task verify`). Label parsing
+and label conflicts stay out of the reader: the stage skills translate an
+issue's labels with `dev-flow-support/assets/tier-inputs.mjs`.
 
 **Shape detection and refusal.** `devflow-policy.mjs` detects `.devflow.toml`'s
 shape from controlling markers only (`schema_version = 2` for v2; `rigor_order`

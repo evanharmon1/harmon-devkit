@@ -209,6 +209,55 @@ Map each criterion to how it will be **verified** — a test, a gate, a manual
 check. A criterion with no verification is either not a criterion or not done;
 say which.
 
+**Resolve and announce the policy profile at loop entry**, the issue's Tier
+included, before any work starts (`AGENTS.md`: "Announce the resolved profile
+on entering the loop"). Do it **now**, at the end of this step, so the caps,
+the floor and the role tiers govern every stage that follows. Reuse that
+result for step 8's profile line rather than resolving for the first time
+there. An orchestrated lane takes the resolved profile from its brief
+instead, because the orchestrator already resolved it. This loop-entry
+resolution runs the full `dev-flow-support` procedure, **step 0 included**,
+like every other resolution: if the working tree (committed, staged,
+unstaged or untracked) differs from the merge base in a governing file, the
+merge-base helper and reader resolve it, not the branch's. Decide that with
+the procedure's `step0_probe` and the `$repo` bound in step 1; when it
+returns 2 (indeterminate), stop rather than resolving. Resolve the Tier with
+the policy, not by eye:
+- Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
+  its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
+  Complexity.
+- Translate them with `dev-flow-support/assets/tier-inputs.mjs --policy
+  .devflow.toml`, then pass
+  the flags to `dev-flow-support/assets/devflow-policy.mjs resolve`. The
+  reader receives them as `issueTier` and `pinnedTier`; when the Tier label
+  is absent, it computes the Tier from Risk and Complexity.
+- Label conflicts are reconciled before the reader runs. `tier:pinned` with
+  more than one unqualified `tier:<value>` is an ambiguous pin: no
+  `pinnedTier` is passed, a warning names both values, and
+  the pin rung is dropped, so resolution continues through the remaining
+  rungs.
+- The `tier-inputs.mjs disclose` lines go into the PR body's profile line:
+  the tier source (pinned, rigor, derived, default) and any pin-caused
+  invariant break.
+
+The self-modification boundary is one invariant, not a per-step rule. Every
+resolution (this one, step 8's, or any re-resolution) runs
+(the procedure's step 0), whose trigger is the working tree, not the step. A merge
+base predating `tier-inputs.mjs` needs an operator-pinned reader supplied
+outside the branch, and without one the Tier is indeterminate.
+An execution-policy label (`rigor:*`, `strategy:*`, `tier:<role>:*`) counts
+only once its provenance is verified and it is listed in the helper's
+`authorized_labels`; an unlisted one is dropped with a warning
+(fail-closed). The full procedure, including label and pin provenance, is
+`dev-flow-support` §
+"Resolving an issue's Tier". Under a `.devflow.toml` without `[tier.matrix]`,
+a classified issue resolves indeterminate (exit 3) and keeps its profile tier
+only when the **derived rung would decide**. When an operator tier, an
+honored pin, a `tier:implementer:*` label or a chosen rigor decides instead,
+it applies with exit 0; do not stop that run. This includes harmon-devkit
+until its template update to the harmon-init release carrying #1475.
+Disclose it; never guess a Tier.
+
 ## 3. Branch
 
 Feature branch off the default branch, never a commit on `main` directly.
@@ -589,7 +638,7 @@ meant to carry it, where it reads as instruction.
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
 | `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true` plus narrow rules for the commands Codex would otherwise prompt on. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{pr-title}}` | Release-title-guard-compliant proposal |
-| `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers; and every off-profile choice named as off-profile |
+| `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers, with the implementer's **tier source** (pinned, rigor, derived, default, or operator) and any **pin-caused invariant break** — the `dev-flow-support/assets/tier-inputs.mjs disclose` lines, verbatim (`dev-flow-support` § "Resolving an issue's Tier"); and every off-profile choice named as off-profile |
 | `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
 | `{{blocked-sentinel}}` | Dispatcher-generated blocked sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
