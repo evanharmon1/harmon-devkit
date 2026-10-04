@@ -91,10 +91,13 @@ and its source in the run and in the lane brief's `{{role-tiers}}`. Put the
 - any overridden role label;
 - every warning.
 
-A classified issue in a repository whose `.devflow.toml` has no
-`[tier.matrix]` resolves indeterminate (exit 3) and keeps its profile tier.
-That includes harmon-devkit until its template update to the harmon-init
-release carrying #1475. Disclose it; never guess a Tier.
+In a repository whose `.devflow.toml` has no `[tier.matrix]`, a classified
+issue whose Tier the **derived rung would decide** resolves indeterminate
+(exit 3) and keeps its profile tier. That means no operator tier, no honored
+pin, no `tier:implementer:*` label and no chosen rigor. When one of those
+decides instead, it applies with exit 0; do not stop that run. This includes
+harmon-devkit until its template update to the release carrying
+harmon-init#1475. Disclose it; never guess a Tier.
 
 ## Planning
 

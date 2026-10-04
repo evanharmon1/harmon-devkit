@@ -119,9 +119,11 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      warning, never forwarded for the reader to refuse.
    - Two `strategy:*` labels pass neither, so `default_strategy` applies with
      a warning.
-   - When Risk or Complexity is absent, the reader computes the Tier from
-     whichever classification exists. A partial or conflicting
-     classification is reported as indeterminate, never guessed.
+   - Both Risk and Complexity are required to derive the Tier. With either
+     missing, or conflicting (the helper passes the off-scale `conflict`
+     value), the derived Tier is indeterminate, never guessed.
+   - Ambiguity is counted over the **raw** labels: a malformed value still
+     makes its family ambiguous, and is never forwarded.
 4. **Disclose.** `node "$support_dir/tier-inputs.mjs" disclose --inputs
    tier-translation.json --resolved resolved.json` prints one PR-body line per
    item: the implementer tier and its **source** (`pinned`, `rigor`,
@@ -131,15 +133,21 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    label a stronger rung overrode; and every warning. Carry those lines into
    the PR body's policy disclosure verbatim.
 
-**A policy without `[tier.matrix]`** has no derived-Tier rung. A classified
-issue then resolves **indeterminate** (exit 3, "the implementer's derived
-Tier cannot be computed"). The implementer keeps its profile tier, and the
-indeterminate is disclosed rather than guessed around. **This applies to
-harmon-devkit itself today**: its own `.devflow.toml` is the harmon-init
-`v4.45.0` template, which predates `[tier.matrix]`. Every classified issue
-here resolves that way until a `copier update` to the harmon-init release
-carrying harmon-init#1475. A pin, a `tier:<role>:*` label and an operator
-tier still apply. A repository with **no** `.devflow.toml` at all takes the
+**A policy without `[tier.matrix]`** has no derived-Tier rung, and a
+classified issue's `issue_tier.status` is `indeterminate`. Whether that stops
+the resolution depends on which rung decides:
+- **Only when the derived rung would decide** does it make the resolution
+  indeterminate: there is no operator tier, no honored pin, no
+  `tier:implementer:*` label and no chosen rigor. The reader then exits 3
+  with "the implementer's derived Tier cannot be computed", and the
+  implementer keeps its profile tier, disclosed rather than guessed around.
+- **When a stronger rung decides**, that rung applies and the reader exits 0,
+  still reporting `issue_tier` indeterminate. Do not stop such a run.
+
+**This applies to harmon-devkit itself today**: its own `.devflow.toml` is
+the harmon-init `v4.45.0` template, which predates `[tier.matrix]`. A
+classified issue here takes the derived-rung exit 3 until a `copier update`
+to the harmon-init release carrying harmon-init#1475. A repository with **no** `.devflow.toml` at all takes the
 built-in fallback. There the **derived** Tier is recorded but not applied
 (`issue_tier.status` is `inert`), while a pin, a `tier:<role>:*` label and an
 operator tier still apply. That is the conformance corpus's

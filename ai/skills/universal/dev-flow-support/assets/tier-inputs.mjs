@@ -181,9 +181,12 @@ export function tierInputs({
     return false;
   };
 
+  // No label is dropped here for being malformed: an empty value (`tier:`,
+  // `risk:`) is recorded RAW in its family, so it still counts toward that
+  // family's ambiguity and is refused only when a value is forwarded (the
+  // property review round 2, R2-1, established — see the stored Tier below).
   for (const label of labels) {
     const parts = label.split(":");
-    if (parts.some((p) => p === "")) continue;
     if (parts.length === 2 && parts[0] === "rigor") {
       if (policyLabel(label)) rigorLabels.push(parts[1]);
     } else if (parts.length === 2 && parts[0] === "strategy") {
@@ -215,12 +218,19 @@ export function tierInputs({
   };
 
   // ── rigor ────────────────────────────────────────────────────────────────
-  if (operator.rigor !== undefined) {
-    const rigor = slugOrWarn(operator.rigor, "operator rigor");
-    if (rigor !== null) {
-      args.push(`--rigor`, rigor, `--rigor-source=operator`);
-      inputs.rigor = { value: rigor, source: "operator" };
+  // An operator instruction is never filtered or dropped: a malformed one is
+  // a usage error, as operator.tiers already is, rather than a warning that
+  // silently leaves the default in force (review round 2 property audit).
+  const operatorSlug = (value, what) => {
+    if (typeof value !== "string" || !SLUG.test(value)) {
+      throw new TierInputError(`${what} must be a slug, got ${JSON.stringify(value)}`);
     }
+    return value;
+  };
+  if (operator.rigor !== undefined) {
+    const rigor = operatorSlug(operator.rigor, "operator.rigor");
+    args.push(`--rigor`, rigor, `--rigor-source=operator`);
+    inputs.rigor = { value: rigor, source: "operator" };
   } else {
     const known = uniq(rigorLabels).filter(rigorNamed);
     for (const v of uniq(rigorLabels).filter((v) => !rigorNamed(v))) {
@@ -238,11 +248,9 @@ export function tierInputs({
 
   // ── strategy ─────────────────────────────────────────────────────────────
   if (operator.strategy !== undefined) {
-    const strategy = slugOrWarn(operator.strategy, "operator strategy");
-    if (strategy !== null) {
-      args.push(`--strategy`, strategy);
-      inputs.strategy = { value: strategy, source: "operator" };
-    }
+    const strategy = operatorSlug(operator.strategy, "operator.strategy");
+    args.push(`--strategy`, strategy);
+    inputs.strategy = { value: strategy, source: "operator" };
   } else {
     const slugs = uniq(strategyLabels).map((v) => slugOrWarn(v, "strategy label")).filter((v) => v !== null);
     for (const v of slugs.filter((v) => !strategyNamed(v))) {
@@ -286,20 +294,28 @@ export function tierInputs({
   // ── role-scoped tier labels ──────────────────────────────────────────────
   const roleEntries = [];
   for (const role of ROLES) {
-    const values = uniq(roleLabels.get(role) ?? [])
-      .map((v) => slugOrWarn(v, `tier:${role}`))
-      .filter((v) => v !== null);
+    // The conflict is decided over the RAW distinct values; validation only
+    // gates what may be forwarded (the R2-1 property). Selection stays
+    // strongest-on-tier_order among valid ladder values, the reader's own
+    // rule for role labels.
+    const raw = uniq(roleLabels.get(role) ?? []);
+    const values = raw.map((v) => slugOrWarn(v, `tier:${role}`)).filter((v) => v !== null);
+    if (raw.length > 1) {
+      const onLadderRaw = values.filter((v) => TIER_ORDER.includes(v));
+      const pick = onLadderRaw.length > 0 ? strongest(onLadderRaw, TIER_ORDER) : null;
+      warnings.push(
+        warning(
+          "tier-role-label-conflict",
+          `tier labels ${raw.map((v) => `tier:${role}:${v}`).join(", ")} conflict; ${pick === null ? "none is on tier_order, so none applies" : `${pick} applies (strongest on tier_order)`}`,
+        ),
+      );
+    }
     if (values.length === 0) continue;
     // Off-ladder values (a leftover `adaptive`, a typo) are passed through
     // only when nothing on the ladder competes, so the READER names them in
     // its own warning; a conflict resolves among ladder values alone.
     const onLadder = values.filter((v) => TIER_ORDER.includes(v));
     const chosen = onLadder.length > 0 ? strongest(onLadder, TIER_ORDER) : values[0];
-    if (values.length > 1) {
-      warnings.push(
-        warning("tier-role-label-conflict", `tier labels ${values.map((v) => `tier:${role}:${v}`).join(", ")} conflict; ${chosen} applies (strongest on tier_order)`),
-      );
-    }
     roleEntries.push(`${role}=${chosen}`);
   }
   if (roleEntries.length > 0) {
@@ -350,35 +366,51 @@ export function tierInputs({
   inputs.classification = classification;
 
   // ── the stored Tier and the pin ──────────────────────────────────────────
-  const stored = uniq(storedTierLabels)
-    .map((v) => slugOrWarn(v, "tier"))
-    .filter((v) => v !== null);
+  // Ambiguity is decided over the RAW distinct unqualified tier:<value>
+  // labels — "more than one unqualified tier:<value> label" (acceptance
+  // criterion 3) — and only then is a value validated for forwarding.
+  // Filtering first let a malformed second label (`tier:APEX` beside
+  // `tier:apex`) vanish and an ambiguous pin be honored (review round 2,
+  // R2-1). A malformed value is never forwarded.
+  const rawStored = uniq(storedTierLabels);
+  const named = rawStored.map((v) => `tier:${v}`).join(", ");
   if (pinned) {
-    if (stored.length === 1) {
-      args.push(`--pinned-tier=${stored[0]}`);
-      if (provenance.marker_trusted === true) args.push("--pin-marker-trusted");
-      if (provenance.value_trusted === true) args.push("--pin-value-trusted");
-      inputs.pin = { tier: stored[0], marker_trusted: provenance.marker_trusted === true, value_trusted: provenance.value_trusted === true };
-    } else if (stored.length > 1) {
+    if (rawStored.length === 1) {
+      const value = slugOrWarn(rawStored[0], "tier");
+      if (value === null) {
+        warnings.push(warning("pin-value-invalid", `tier:pinned pins ${named}, which is not a Tier value; the issue resolves as unpinned, through its derived Tier`));
+        inputs.pin = { invalid: rawStored };
+      } else {
+        args.push(`--pinned-tier=${value}`);
+        if (provenance.marker_trusted === true) args.push("--pin-marker-trusted");
+        if (provenance.value_trusted === true) args.push("--pin-value-trusted");
+        inputs.pin = { tier: value, marker_trusted: provenance.marker_trusted === true, value_trusted: provenance.value_trusted === true };
+      }
+    } else if (rawStored.length > 1) {
       warnings.push(
         warning(
           "pin-ambiguous",
-          `tier:pinned is present with more than one Tier label (${stored.map((v) => `tier:${v}`).join(", ")}); the pin is ambiguous, no pinned Tier is passed, and the issue resolves through its derived Tier`,
+          `tier:pinned is present with more than one Tier label (${named}); the pin is ambiguous, no pinned Tier is passed, and the issue resolves through its derived Tier`,
         ),
       );
-      inputs.pin = { ambiguous: stored };
+      inputs.pin = { ambiguous: rawStored };
     } else {
       warnings.push(warning("pin-without-tier", "tier:pinned is present without a tier:<value> label; there is nothing to pin, and the issue resolves through its derived Tier"));
       inputs.pin = { ambiguous: [] };
     }
-  } else if (stored.length === 1) {
-    args.push(`--stored-tier=${stored[0]}`);
-    inputs.stored_tier = stored[0];
-  } else if (stored.length > 1) {
+  } else if (rawStored.length === 1) {
+    // A malformed lone stored Tier is a cache value that cannot be compared;
+    // it is dropped (with a warning) and the Tier is derived as usual.
+    const value = slugOrWarn(rawStored[0], "tier");
+    if (value !== null) {
+      args.push(`--stored-tier=${value}`);
+      inputs.stored_tier = value;
+    }
+  } else if (rawStored.length > 1) {
     warnings.push(
       warning(
         "stored-tier-ambiguous",
-        `the issue carries more than one Tier label (${stored.map((v) => `tier:${v}`).join(", ")}); none is passed as the stored Tier, which is recomputed from Risk × Complexity`,
+        `the issue carries more than one Tier label (${named}); none is passed as the stored Tier, which is recomputed from Risk × Complexity`,
       ),
     );
   }

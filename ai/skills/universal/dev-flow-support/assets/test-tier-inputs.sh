@@ -84,6 +84,35 @@ expect_warning "ambiguous pin names both values" \
     '{"labels":["tier:pinned","tier:frontier","tier:standard"]}' pin-ambiguous "tier:frontier" "tier:standard"
 expect_warning "a pin with no value is reported" '{"labels":["tier:pinned"]}' pin-without-tier
 expect_args "two stored Tiers without a pin pass neither" '{"labels":["tier:local","tier:apex"]}' '[]'
+
+echo "==> tier-inputs.mjs: ambiguity is counted over RAW values (review round 2, R2-1, and its property audit)"
+pin_trust='"pin_provenance":{"marker_trusted":true,"value_trusted":true}'
+expect_args "a malformed second Tier label makes a pin ambiguous" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\"],$pin_trust}" '[]'
+expect_warning "the mixed-validity ambiguous pin names both values" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\"],$pin_trust}" pin-ambiguous "tier:apex" "tier:APEX"
+expect_args "an empty Tier label still counts toward pin ambiguity" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:\"],$pin_trust}" '[]'
+expect_args "a lone malformed pinned value is never forwarded" "{\"labels\":[\"tier:pinned\",\"tier:APEX\"],$pin_trust}" '[]'
+expect_warning "a lone malformed pinned value is named" "{\"labels\":[\"tier:pinned\",\"tier:APEX\"],$pin_trust}" pin-value-invalid "tier:APEX"
+expect_args "a malformed second stored Tier makes the cache ambiguous" '{"labels":["tier:apex","tier:APEX"]}' '[]'
+expect_warning "the mixed-validity stored Tier is named" '{"labels":["tier:apex","tier:APEX"]}' stored-tier-ambiguous "tier:apex" "tier:APEX"
+expect_args "an empty classification label passes the sentinel, never nothing" '{"labels":["risk:"]}' '["--risk=conflict"]'
+expect_args "an empty classification label beside a valid one is a conflict" \
+    '{"labels":["risk:high","risk:"]}' '["--risk=conflict"]'
+expect_warning "a malformed role-label rival is named in the conflict" \
+    '{"labels":["tier:implementer:economy","tier:implementer:APEX"],"authorized_labels":["tier:implementer:economy","tier:implementer:APEX"]}' \
+    tier-role-label-conflict "tier:implementer:APEX" "economy applies"
+expect_args "the valid role label still applies beside a malformed rival" \
+    '{"labels":["tier:implementer:economy","tier:implementer:APEX"],"authorized_labels":["tier:implementer:economy","tier:implementer:APEX"]}' \
+    '["--tier-labels=implementer=economy"]'
+for bad_operator in '{"operator":{"rigor":"Deep"}}' '{"operator":{"strategy":"Plan"}}'; do
+    if printf '%s' "$bad_operator" | node "$helper" --policy "$base_policy" >/dev/null 2>&1; then
+        fail "a malformed operator value must be a usage error, never dropped: $bad_operator"
+    else
+        ok
+    fi
+done
 expect_warning "two stored Tiers without a pin warn" '{"labels":["tier:local","tier:apex"]}' stored-tier-ambiguous "tier:local" "tier:apex"
 expect_args "role-label conflict takes the strongest" \
     '{"labels":["tier:implementer:economy","tier:implementer:frontier"],"authorized_labels":["tier:implementer:economy","tier:implementer:frontier"]}' \
@@ -287,6 +316,34 @@ process.exit(ok ? 0 : 1);
 expect_indeterminate "both axes conflicting" '{"labels":["risk:high","risk:low","complexity:s","complexity:xl"]}'
 expect_indeterminate "risk conflicting, complexity absent" '{"labels":["risk:high","risk:low"]}'
 expect_indeterminate "risk conflicting, complexity clean" '{"labels":["risk:high","risk:low","complexity:m"]}'
+expect_indeterminate "a mixed-validity ambiguous pin resolves through the (indeterminate) derived Tier" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\",\"risk:high\",\"risk:low\"],$pin_trust}"
+
+echo "==> devflow-policy.mjs: with no [tier.matrix], exit 3 only when the derived rung decides (review round 2, R2-2)"
+no_matrix_policy="$scratch/no-matrix-r22.toml"
+awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' "$base_policy" >"$no_matrix_policy"
+# nm_resolve EXPECTED_RC EXPECTED_SOURCE NAME ARG... — resolve a classified
+# issue with no matrix and check the exit code and the implementer's source.
+nm_resolve() {
+    local want_rc="$1" want_source="$2" name="$3" rc=0
+    shift 3
+    node "$reader" resolve --policy "$no_matrix_policy" --registry "$fixture_dir/agent-registry.json" \
+        --task-targets "$fixture_dir/task-targets.json" --json --risk=high --complexity=m "$@" \
+        >"$scratch/nm-r22.json" 2>/dev/null || rc=$?
+    if [ "$rc" -ne "$want_rc" ]; then
+        fail "$name: expected exit $want_rc, got $rc"
+        return 0
+    fi
+    if node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.exit(r.issue_tier.status === "indeterminate" && r.roles.implementer.source === process.argv[2] ? 0 : 1);
+' "$scratch/nm-r22.json" "$want_source"; then ok; else fail "$name: expected issue_tier indeterminate and implementer source $want_source"; fi
+}
+nm_resolve 3 rigor-profile "the derived rung decides: indeterminate, exit 3"
+nm_resolve 0 pinned "an honored pin decides: exit 0, issue_tier still indeterminate" \
+    --pinned-tier frontier --pin-marker-trusted --pin-value-trusted
+nm_resolve 0 label "a scoped implementer label decides: exit 0" --tier-labels implementer=economy
+nm_resolve 0 rigor-profile "a chosen rigor decides: exit 0" --rigor deep --rigor-source label
 # Control: a clean classification under the same inputs resolves determinately.
 rc=0
 node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \

@@ -237,10 +237,13 @@ only once its provenance is verified and it is listed in the helper's
 `authorized_labels`; an unlisted one is dropped with a warning
 (fail-closed). The full procedure, including label and pin provenance, is
 `dev-flow-support` §
-"Resolving an issue's Tier". A classified issue under a `.devflow.toml`
-without `[tier.matrix]` resolves indeterminate (exit 3) and keeps its profile
-tier. That includes harmon-devkit until its template update to the
-harmon-init release carrying #1475. Disclose it; never guess a Tier.
+"Resolving an issue's Tier". Under a `.devflow.toml` without `[tier.matrix]`,
+a classified issue resolves indeterminate (exit 3) and keeps its profile tier
+only when the **derived rung would decide**. When an operator tier, an
+honored pin, a `tier:implementer:*` label or a chosen rigor decides instead,
+it applies with exit 0; do not stop that run. This includes harmon-devkit
+until its template update to the harmon-init release carrying #1475.
+Disclose it; never guess a Tier.
 
 ## 3. Branch
 
