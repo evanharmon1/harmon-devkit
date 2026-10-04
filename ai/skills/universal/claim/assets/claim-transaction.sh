@@ -470,7 +470,7 @@ fi
 resume_exact=0
 if jq -e --arg login "$login" --rawfile body "$record_file" '
     ($body | sub("\\n+$"; "")) as $expected
-    | .found == true and .author == $login and .body == $expected
+    | .found == true and .author == $login and (((.body // "") | sub("\\n+$"; "")) == $expected)
 ' "$tmp/predecessor.json" >/dev/null; then
     resume_exact=1
 fi
@@ -777,7 +777,7 @@ current_record_is_live() {
         select_predecessor "$issue_output" "$comments_output" "$predecessor_output" &&
         jq -e --arg login "$login" --rawfile body "$record_file" '
             ($body | sub("\\n+$"; "")) as $expected
-            | .found == true and .author == $login and .body == $expected
+            | .found == true and .author == $login and (((.body // "") | sub("\\n+$"; "")) == $expected)
         ' "$predecessor_output" >/dev/null &&
         claim_is_live "$issue_output"
 }
@@ -935,7 +935,7 @@ else
         | ($before[0] | map(.id)) as $known
         | any(.[];
             .user.login == $login
-            and .body == $expected
+            and (((.body // "") | sub("\\n+$"; "")) == $expected)
             and (.id as $id | ($known | index($id)) == null))
     ' "$tmp/comments-after.json" >/dev/null; then
         exact_record_found=1
