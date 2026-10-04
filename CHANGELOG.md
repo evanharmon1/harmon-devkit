@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.51.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.50.0...v0.51.0) (2026-10-04)
+
+
+### Features
+
+* **dev-flow-support:** vendor the derived tier, pin and adaptive retirement into the reader ([#1263](https://github.com/evanharmon1/harmon-devkit/issues/1263)) ([ec32da8](https://github.com/evanharmon1/harmon-devkit/commit/ec32da8ef0829851a9f01a1d7ca041d9f6f6df43))
+
 ## [0.50.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.49.0...v0.50.0) (2026-10-03)
 
 
