@@ -219,7 +219,10 @@ instead, because the orchestrator already resolved it. This loop-entry
 resolution runs the full `dev-flow-support` procedure, **step 0 included**,
 like every other resolution: if the working tree (committed, staged,
 unstaged or untracked) differs from the merge base in a governing file, the
-merge-base helper and reader resolve it, not the branch's. Resolve the Tier with the policy, not by eye:
+merge-base helper and reader resolve it, not the branch's. Decide that with
+the procedure's `step0_probe` and the `$repo` bound in step 1; when it
+returns 2 (indeterminate), stop rather than resolving. Resolve the Tier with
+the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
   its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
   Complexity.

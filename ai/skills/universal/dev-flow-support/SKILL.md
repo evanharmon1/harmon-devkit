@@ -66,15 +66,44 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      staged or untracked edit governs just as much:
 
      ```sh
-     mb="$(git merge-base HEAD "origin/$default_branch")"
-     { git diff --name-only "$mb"; git ls-files --others --exclude-standard; } |
-         grep -E '(^|/)(\.devflow\.toml|agent-registry\.json|dev-flow-support/assets/(devflow-policy\.mjs|lib/toml-lite\.mjs|tier-inputs\.mjs))$'
+     # step0_probe — $repo is the target repository (owner/name) the calling
+     # skill already bound. Returns 0 and prints the governing files when step
+     # 0 applies, 1 when the working tree changes none of them, and 2 when the
+     # answer is INDETERMINATE: stop, never read "no output" as "no file".
+     step0_probe() {
+         local r url want remote="" default mb changed untracked files
+         want="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+         [ -n "$want" ] || { echo "step 0 indeterminate: no target repository bound" >&2; return 2; }
+         for r in $(git remote); do
+             url="$(git remote get-url "$r" | tr '[:upper:]' '[:lower:]')" || continue
+             url="${url%/}"; url="${url%.git}"
+             case "$url" in */"$want" | *:"$want") remote="$r"; break ;; esac
+         done
+         [ -n "$remote" ] || { echo "step 0 indeterminate: no remote's URL matches $repo" >&2; return 2; }
+         default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null)" && [ -n "$default" ] ||
+             { echo "step 0 indeterminate: $remote has no default branch (git remote set-head $remote --auto)" >&2; return 2; }
+         mb="$(git merge-base HEAD "$default")" && [ -n "$mb" ] ||
+             { echo "step 0 indeterminate: no merge base between HEAD and $default" >&2; return 2; }
+         changed="$(git diff --name-only "$mb")" || { echo "step 0 indeterminate: git diff failed" >&2; return 2; }
+         untracked="$(git ls-files --others --exclude-standard)" || { echo "step 0 indeterminate: git ls-files failed" >&2; return 2; }
+         files="$(printf '%s\n%s\n' "$changed" "$untracked" |
+             grep -E '(^|/)(\.devflow\.toml|agent-registry\.json|dev-flow-support/assets/(devflow-policy\.mjs|lib/toml-lite\.mjs|tier-inputs\.mjs))$')" || true
+         [ -n "$files" ] || return 1
+         printf '%s\n' "$files"
+     }
+     rc=0; governing="$(step0_probe)" || rc=$?
      ```
 
+     The remote is the one whose URL is `$repo` (the same match `/implement`
+     step 1 makes), and the default branch is that remote's
+     `refs/remotes/<remote>/HEAD`. Nothing is hard-coded to one remote name.
      `git diff --name-only "$mb"` (no `...HEAD`) compares the merge base with
-     the working tree, so committed, staged and unstaged edits all count.
-     `git ls-files --others --exclude-standard` adds untracked files. Any
-     output means step 0 applies.
+     the working tree, so committed, staged and unstaged edits all count, and
+     `git ls-files --others --exclude-standard` adds untracked files.
+     **`rc` 0 means step 0 applies; 1 means it does not; 2 means stop as
+     indeterminate.** Every lookup's status is checked, so a remote, default
+     branch or merge base that cannot be resolved is never mistaken for "no
+     governing file".
    - **What to do:** before running any branch copy, materialize the
      **merge-base** copy of all five *outside the worktree*
      (`git show <merge-base>:<path>` into a scratch closure that keeps the

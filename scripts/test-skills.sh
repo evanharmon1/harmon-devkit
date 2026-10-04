@@ -10803,7 +10803,17 @@ expect_ok "dev-flow-support: the recipe makes its scratch directory outside the 
     grep -qF 'tier_tmp="$(mktemp -d' "$DFS_MD"
 # Integration remediation 3 (PR #1263).
 expect_ok "dev-flow-support: the step-0 trigger compares the merge base with the working tree (thread 4178487547)" \
-    grep -qF 'git diff --name-only "$mb"; git ls-files --others --exclude-standard' "$DFS_MD"
+    grep -qF 'changed="$(git diff --name-only "$mb")"' "$DFS_MD"
+expect_ok "dev-flow-support: the step-0 trigger adds untracked files (thread 4178487547)" \
+    grep -qF 'untracked="$(git ls-files --others --exclude-standard)"' "$DFS_MD"
+# Integration remediation 4 (PR #1263): the probe binds the target remote and
+# default branch and fails closed; both stage skills point at it.
+expect_ok "dev-flow-support: the step-0 probe stops indeterminate on an unresolved lookup (thread 4178657188)" \
+    grep -qF "rc\` 0 means step 0 applies; 1 means it does not; 2 means stop as" "$DFS_MD"
+for tier_skill_md in "$IMPL_MD" "$ORCH_MD"; do
+    expect_ok "$(basename "$(dirname "$tier_skill_md")"): points at the step-0 probe and stops on indeterminate (thread 4178657188)" \
+        grep -qF "returns 2 (indeterminate), stop" "$tier_skill_md"
+done
 if grep -qF 'merge-base>...HEAD' "$DFS_MD"; then
     bad "dev-flow-support: the step-0 trigger still compares commits only (...HEAD) (thread 4178487547)"
 else

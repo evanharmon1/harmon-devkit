@@ -80,7 +80,9 @@ staged, unstaged or untracked) differs from its merge base in
 `.devflow.toml`, `agent-registry.json`, or the reader,
 `toml-lite` or `tier-inputs.mjs` assets, the **merge-base** helper and reader
 resolve it instead of the branch's
-(the procedure's step 0). A merge base that predates `tier-inputs.mjs` needs
+(the procedure's step 0). Decide that with the procedure's `step0_probe`
+for the lane's target repository; when it returns 2 (indeterminate), stop
+rather than dispatching. A merge base that predates `tier-inputs.mjs` needs
 an operator-pinned reader supplied outside the branch; without one the Tier
 is indeterminate, never resolved by the branch copy. On a `strategy:*`
 conflict an interactive orchestrator asks the operator, and unattended

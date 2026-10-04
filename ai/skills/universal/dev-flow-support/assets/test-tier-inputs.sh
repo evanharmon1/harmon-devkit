@@ -415,36 +415,72 @@ else
     git init -q -b main "$trig"
     git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m base
     mkdir -p "$trig/ai/skills/universal/dev-flow-support/assets/lib"
+    # The target repository is bound the way /implement step 1 binds it; the
+    # probe finds the remote by URL and reads that remote's default branch.
+    git -C "$trig" remote add origin https://github.com/Acme/Widget.git
     git -C "$trig" update-ref refs/remotes/origin/main HEAD
+    git -C "$trig" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     git -C "$trig" checkout -q -b topic
-    # run_trigger — the extracted command in $trig; prints its output.
+    trig_repo="acme/widget"
+    # run_trigger — defines the extracted step0_probe in $trig, runs the
+    # documented call, and prints "rc=<n> <governing files>".
     run_trigger() {
-        (cd "$trig" && default_branch=main && eval "$trigger_cmd") 2>/dev/null || true
+        (cd "$trig" && repo="$trig_repo" && eval "$trigger_cmd" && printf 'rc=%s %s' "$rc" "$(printf '%s' "$governing" | tr '\n' ' ')") 2>/dev/null
     }
+    # expect_trigger NAME applies|none|indeterminate [FILE] — the probe's rc is
+    # 0, 1 or 2; for "applies", FILE must be among the governing files.
     expect_trigger() {
-        local name="$1" want="$2" out
+        local name="$1" want="$2" file="${3:-}" out want_rc
+        case "$want" in applies) want_rc=0 ;; none) want_rc=1 ;; *) want_rc=2 ;; esac
         out="$(run_trigger)"
-        if [ "$want" = "fires" ] && [ -n "$out" ]; then
+        if [ "${out%% *}" != "rc=$want_rc" ]; then
+            fail "step-0 probe ($name): expected $want (rc=$want_rc), got: ${out:-<nothing>}"
+        elif [ -n "$file" ] && ! grep -qF -- "$file" <<<"$out"; then
+            fail "step-0 probe ($name): expected it to report $file, got: $out"
+        else
             ok
-        elif [ "$want" = "silent" ] && [ -z "$out" ]; then
-            ok
-        else fail "step-0 trigger ($name): expected it to be $want, got: ${out:-<nothing>}"; fi
+        fi
     }
     printf 'x\n' >"$trig/README.md"
-    expect_trigger "an untracked non-governing file" silent
+    expect_trigger "an untracked non-governing file" none
     printf 'schema_version = 2\n' >"$trig/.devflow.toml"
-    expect_trigger "an untracked .devflow.toml" fires
+    expect_trigger "an untracked .devflow.toml" applies .devflow.toml
     git -C "$trig" add .devflow.toml
-    expect_trigger "a staged-only .devflow.toml" fires
+    expect_trigger "a staged-only .devflow.toml" applies .devflow.toml
     git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit -q -m policy
-    expect_trigger "a committed .devflow.toml" fires
-    git -C "$trig" update-ref refs/remotes/origin/main HEAD
-    expect_trigger "the policy already on the merge base" silent
+    # Remediation 4 case 1: a branch editing a governing file, remote named origin.
+    expect_trigger "a committed .devflow.toml, remote named origin (thread 4178657188, case 1)" applies .devflow.toml
+    # Case 2: the same branch with the remote renamed — still reported.
+    git -C "$trig" remote rename origin upstream
+    expect_trigger "the same edit with the remote renamed (thread 4178657188, case 2)" applies .devflow.toml
+    # Case 3: no resolvable merge base — the remote's default branch is an
+    # unrelated history — stops indeterminate instead of reporting nothing.
+    orphan="$(git -C "$trig" commit-tree -m unrelated "$(git -C "$trig" mktree </dev/null)")"
+    upstream_tip="$(git -C "$trig" rev-parse refs/remotes/upstream/main)"
+    git -C "$trig" update-ref refs/remotes/upstream/main "$orphan"
+    expect_trigger "no resolvable merge base (thread 4178657188, case 3)" indeterminate
+    git -C "$trig" update-ref refs/remotes/upstream/main "$upstream_tip"
+    # Every other lookup fails closed the same way.
+    trig_repo="other/repo"
+    expect_trigger "no remote whose URL matches the target repository" indeterminate
+    trig_repo="acme/widget"
+    git -C "$trig" symbolic-ref --delete refs/remotes/upstream/HEAD
+    expect_trigger "a remote with no default branch" indeterminate
+    git -C "$trig" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/main
+    # The remaining working-tree cases, under the renamed remote.
+    git -C "$trig" update-ref refs/remotes/upstream/main HEAD
+    expect_trigger "the policy already on the merge base" none
     printf 'schema_version = 3\n' >"$trig/.devflow.toml"
-    expect_trigger "an unstaged edit to a tracked .devflow.toml" fires
+    expect_trigger "an unstaged edit to a tracked .devflow.toml" applies .devflow.toml
     git -C "$trig" checkout -q -- .devflow.toml
     printf '// helper\n' >"$trig/ai/skills/universal/dev-flow-support/assets/tier-inputs.mjs"
-    expect_trigger "an untracked tier-inputs.mjs" fires
+    expect_trigger "an untracked tier-inputs.mjs" applies tier-inputs.mjs
+fi
+# Thread 4178657188: the documented probe names no literal remote.
+if grep -qw 'origin' <<<"$trigger_cmd"; then
+    fail "the step-0 probe hard-codes a remote name (origin)"
+else
+    ok
 fi
 
 echo "==> the documented resolve recipe exits 0 (integration remediation 1, thread 4176257539)"
