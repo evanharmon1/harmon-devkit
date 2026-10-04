@@ -58,11 +58,23 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    **Invariant: every tier resolution runs this whole procedure, step 0
    included, whenever it happens: at loop entry, at dispatch, at the PR
    profile line, or on any re-resolution.** Which step is resolving never
-   decides whether step 0 applies; the diff does.
-   - **When it applies:** the branch's diff against its merge base
-     (`git diff --name-only <merge-base>...HEAD`) touches a governing file:
-     `.devflow.toml`, `agent-registry.json`, `assets/devflow-policy.mjs`,
-     `assets/lib/toml-lite.mjs` or `assets/tier-inputs.mjs`.
+   decides whether step 0 applies; the working tree does.
+   - **When it applies:** the **working tree** differs from the merge base
+     in a governing file: `.devflow.toml`, `agent-registry.json`,
+     `assets/devflow-policy.mjs`, `assets/lib/toml-lite.mjs` or
+     `assets/tier-inputs.mjs`. Commits alone are not enough; an uncommitted,
+     staged or untracked edit governs just as much:
+
+     ```sh
+     mb="$(git merge-base HEAD "origin/$default_branch")"
+     { git diff --name-only "$mb"; git ls-files --others --exclude-standard; } |
+         grep -E '(^|/)(\.devflow\.toml|agent-registry\.json|dev-flow-support/assets/(devflow-policy\.mjs|lib/toml-lite\.mjs|tier-inputs\.mjs))$'
+     ```
+
+     `git diff --name-only "$mb"` (no `...HEAD`) compares the merge base with
+     the working tree, so committed, staged and unstaged edits all count.
+     `git ls-files --others --exclude-standard` adds untracked files. Any
+     output means step 0 applies.
    - **What to do:** before running any branch copy, materialize the
      **merge-base** copy of all five *outside the worktree*
      (`git show <merge-base>:<path>` into a scratch closure that keeps the
@@ -79,7 +91,7 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      them only the materialized merge-base policy, registry and target list.
      Only when no such pin exists is tier resolution **indeterminate**: stop
      and report it. Never fall back to the branch copy.
-   - **When the diff touches none of them**, the checkout's own copies are
+   - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels; on an organization repository,
    also its Risk and Complexity issue fields where the session can read them
@@ -161,7 +173,13 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
 4. **Disclose.** `node "$support_dir/tier-inputs.mjs" disclose --inputs
    "$tier_tmp/tier-translation.json" --resolved "$tier_tmp/resolved.json"`
    prints one PR-body line per
-   item: the implementer tier and its **source** (`pinned`, `rigor`,
+   item. The first is the selections line: rigor and strategy as the reader
+   resolved them, each with its source (`operator`, `label` or `default`).
+   That source is read from the translation's `inputs.rigor.source` and
+   `inputs.strategy.source`, never from the reader. A label-chosen and an
+   operator-chosen strategy reach the reader as the same `--strategy` flag,
+   so only the translation knows which it was. Use the same two fields for
+   the profile announcement. Then: the implementer tier and its **source** (`pinned`, `rigor`,
    `derived`, `default`, or `operator`); every off-profile role tier; every
    companion a pin leaves below the implementer, named a **pin-caused
    invariant break** (disclosed, never corrected); every valid `tier:<role>:*`

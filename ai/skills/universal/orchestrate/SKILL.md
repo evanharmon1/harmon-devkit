@@ -75,8 +75,9 @@ Follow `dev-flow-support`'s § "Resolving an issue's Tier":
   the reader computes the Tier from Risk and Complexity.
 
 Every resolution, at dispatch or any later re-resolution, runs the full
-procedure, step 0 included. When the lane branch's diff against its merge
-base touches `.devflow.toml`, `agent-registry.json`, or the reader,
+procedure, step 0 included. When the lane's working tree (committed,
+staged, unstaged or untracked) differs from its merge base in
+`.devflow.toml`, `agent-registry.json`, or the reader,
 `toml-lite` or `tier-inputs.mjs` assets, the **merge-base** helper and reader
 resolve it instead of the branch's
 (the procedure's step 0). A merge base that predates `tier-inputs.mjs` needs

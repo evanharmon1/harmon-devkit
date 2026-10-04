@@ -133,6 +133,28 @@ expect_args "the two known fields keys still apply" '{"fields":{"risk":"critical
 expect_warning "a non-slug classification value says it becomes the sentinel, not 'ignored'" \
     '{"labels":["risk:HIGH"]}' label-value-invalid "--risk=conflict"
 
+echo "==> tier-inputs.mjs: pin_provenance keys and types (integration remediation 3, thread 4178487551)"
+expect_usage_error_input "an unknown pin_provenance key" '{"pin_provenance":{"markerTrusted":true}}'
+expect_usage_error_input "a non-boolean pin_provenance value" '{"pin_provenance":{"marker_trusted":"yes"}}'
+expect_usage_error_input "a null pin_provenance value" '{"pin_provenance":{"value_trusted":null}}'
+
+echo "==> tier-inputs.mjs: every path records the rigor and strategy source (thread 4178487553)"
+# expect_source NAME INPUT AXIS SOURCE — translation inputs.<AXIS>.source.
+expect_source() {
+    local name="$1" input="$2" axis="$3" want="$4" got
+    got="$(translate "$input" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const i=JSON.parse(s).inputs[process.argv[1]];console.log(i?i.source:"MISSING")})' "$axis")"
+    if [ "$got" = "$want" ]; then ok; else fail "$name: inputs.$axis.source is $got, expected $want"; fi
+}
+expect_source "no strategy label: default" '{"labels":[]}' strategy default
+expect_source "an authorized strategy label: label" '{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}' strategy label
+expect_source "an operator strategy: operator" '{"operator":{"strategy":"council"}}' strategy operator
+expect_source "two strategy labels: default (ambiguous)" \
+    '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' strategy default
+expect_source "an unknown strategy label: default" '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' strategy default
+expect_source "no rigor label: default" '{"labels":[]}' rigor default
+expect_source "an authorized rigor label: label" '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"]}' rigor label
+expect_source "an operator rigor: operator" '{"operator":{"rigor":"light"}}' rigor operator
+
 echo "==> tier-inputs.mjs: extra-colon labels are counted, never dropped (integration remediation 1, thread 4176257550)"
 expect_args "an extra-colon Risk label is the off-scale sentinel" '{"labels":["risk:high:typo"]}' '["--risk=conflict"]'
 expect_args "an extra-colon Complexity label is the off-scale sentinel" \
@@ -364,6 +386,65 @@ if grep -qF "resolves through its derived Tier" <<<"$ambiguous_lines"; then
     fail "the ambiguous-pin disclosure must not claim the derived Tier decided:"$'\n'"$ambiguous_lines"
 else
     ok
+fi
+
+echo "==> disclose names the selection sources from the translation (thread 4178487553)"
+for case_def in \
+    'label|{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}|Strategy: council (source: label)' \
+    'operator|{"operator":{"strategy":"council"}}|Strategy: council (source: operator)' \
+    'default|{"labels":[]}|Strategy: plan (source: default)' \
+    'ambiguous|{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}|ambiguous between plan, council'; do
+    case_name="${case_def%%|*}"
+    rest="${case_def#*|}"
+    case_input="${rest%|*}"
+    case_want="${rest##*|}"
+    case_lines="$(disclose_lines "$case_input")"
+    if grep -qF -- "$case_want" <<<"$case_lines"; then ok; else fail "disclose ($case_name) lacks \"$case_want\":"$'\n'"$case_lines"; fi
+done
+
+echo "==> the documented step-0 trigger sees committed, staged, unstaged and untracked edits (thread 4178487547)"
+# The trigger command block is EXTRACTED from dev-flow-support/SKILL.md (the
+# first ```sh block after "When it applies"), so this tests the documented
+# text itself, not a copy that could drift from it.
+dfs_md="$repo_root/ai/skills/universal/dev-flow-support/SKILL.md"
+trigger_cmd="$(awk '/When it applies:/{seen=1} seen && /```sh/{grab=1; next} grab && /```/{exit} grab{sub(/^[[:space:]]+/, ""); print}' "$dfs_md")"
+if [ -z "$trigger_cmd" ]; then
+    fail "could not extract the step-0 trigger command from dev-flow-support/SKILL.md"
+else
+    trig="$scratch/trigger-repo"
+    git init -q -b main "$trig"
+    git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m base
+    mkdir -p "$trig/ai/skills/universal/dev-flow-support/assets/lib"
+    git -C "$trig" update-ref refs/remotes/origin/main HEAD
+    git -C "$trig" checkout -q -b topic
+    # run_trigger — the extracted command in $trig; prints its output.
+    run_trigger() {
+        (cd "$trig" && default_branch=main && eval "$trigger_cmd") 2>/dev/null || true
+    }
+    expect_trigger() {
+        local name="$1" want="$2" out
+        out="$(run_trigger)"
+        if [ "$want" = "fires" ] && [ -n "$out" ]; then
+            ok
+        elif [ "$want" = "silent" ] && [ -z "$out" ]; then
+            ok
+        else fail "step-0 trigger ($name): expected it to be $want, got: ${out:-<nothing>}"; fi
+    }
+    printf 'x\n' >"$trig/README.md"
+    expect_trigger "an untracked non-governing file" silent
+    printf 'schema_version = 2\n' >"$trig/.devflow.toml"
+    expect_trigger "an untracked .devflow.toml" fires
+    git -C "$trig" add .devflow.toml
+    expect_trigger "a staged-only .devflow.toml" fires
+    git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit -q -m policy
+    expect_trigger "a committed .devflow.toml" fires
+    git -C "$trig" update-ref refs/remotes/origin/main HEAD
+    expect_trigger "the policy already on the merge base" silent
+    printf 'schema_version = 3\n' >"$trig/.devflow.toml"
+    expect_trigger "an unstaged edit to a tracked .devflow.toml" fires
+    git -C "$trig" checkout -q -- .devflow.toml
+    printf '// helper\n' >"$trig/ai/skills/universal/dev-flow-support/assets/tier-inputs.mjs"
+    expect_trigger "an untracked tier-inputs.mjs" fires
 fi
 
 echo "==> the documented resolve recipe exits 0 (integration remediation 1, thread 4176257539)"

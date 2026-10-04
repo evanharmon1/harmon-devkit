@@ -51,7 +51,8 @@ RUNNER_BLOB="9b8e67ed984cc7517ac1ffa16f97b2555c8e531a"
 POLICY_BLOB="7e36129a43e0ae73c8a8c878e6055fdab8a1e6ab"
 REGISTRY_BLOB="27844622efb4a7f8508729e6b413170b67bd7b3f"
 
-repo_root="$(git rev-parse --show-toplevel)"
+# Resolved from this script's own location, not the caller's directory.
+repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 support="$repo_root/ai/skills/universal/dev-flow-support/assets"
 fixtures="$repo_root/ai/schemas/fixtures/devflow-conformance"
 corpus="$support/.devflow-conformance-v2.json"

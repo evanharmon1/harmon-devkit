@@ -125,6 +125,10 @@ export const OPERATOR_KEYS = Object.freeze(["rigor", "strategy", "tiers"]);
 // The classification issue fields; a misspelled `rsk` would otherwise read
 // as an unclassified issue (integration remediation 2, thread 4178249112).
 export const FIELD_KEYS = Object.freeze(["risk", "complexity"]);
+// The pin's two provenance halves. A typo (`markerTrusted`) or a non-boolean
+// (`"yes"`) used to read silently as untrusted: safe, but malformed input
+// reported as valid (integration remediation 3, thread 4178487551).
+export const PIN_PROVENANCE_KEYS = Object.freeze(["marker_trusted", "value_trusted"]);
 
 export function tierInputs(input = {}) {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
@@ -164,6 +168,15 @@ export function tierInputs(input = {}) {
   const unknownFields = Object.keys(fields).filter((k) => !FIELD_KEYS.includes(k));
   if (unknownFields.length > 0) {
     throw new TierInputError(`unknown fields key(s) ${unknownFields.join(", ")}; the keys are ${FIELD_KEYS.join(", ")}`);
+  }
+  const unknownProvenance = Object.keys(provenance).filter((k) => !PIN_PROVENANCE_KEYS.includes(k));
+  if (unknownProvenance.length > 0) {
+    throw new TierInputError(`unknown pin_provenance key(s) ${unknownProvenance.join(", ")}; the keys are ${PIN_PROVENANCE_KEYS.join(", ")}`);
+  }
+  for (const [key, value] of Object.entries(provenance)) {
+    if (typeof value !== "boolean") {
+      throw new TierInputError(`pin_provenance.${key} must be a boolean, got ${JSON.stringify(value)}`);
+    }
   }
   if (policy !== null) {
     for (const key of ["rigors", "strategies"]) {
@@ -294,6 +307,10 @@ export function tierInputs(input = {}) {
       inputs.rigor = { value: rigor, source: "label" };
     }
   }
+  // Every path records a source, so the announcement and PR profile can name
+  // it from this artifact (integration remediation 3, thread 4178487553). With
+  // no rigor passed, the policy's default_rigor resolves.
+  if (inputs.rigor === undefined) inputs.rigor = { value: null, source: "default" };
 
   // ── strategy ─────────────────────────────────────────────────────────────
   if (operator.strategy !== undefined) {
@@ -318,8 +335,13 @@ export function tierInputs(input = {}) {
           `strategy labels ${values.map((v) => `strategy:${v}`).join(", ")} are not orderable; none is passed and default_strategy applies — an interactive session asks the operator which one applies`,
         ),
       );
+      inputs.strategy = { value: null, source: "default", ambiguous: values };
     }
   }
+  // The reader receives a label-chosen and an operator-chosen strategy the
+  // same way (`--strategy`), so THIS is where the source is known; every path
+  // records one (thread 4178487553).
+  if (inputs.strategy === undefined) inputs.strategy = { value: null, source: "default" };
 
   // ── operator tier instructions ───────────────────────────────────────────
   if (operator.tiers !== undefined) {
@@ -514,6 +536,17 @@ export function disclosureLines(translation, resolved) {
   const implementer = resolved.roles.implementer;
   const issue = resolved.issue_tier ?? { status: "absent" };
   const pin = resolved.pin ?? { status: "absent" };
+  // The selections and their sources come from the translation artifact,
+  // which is the only place a label- and an operator-chosen strategy differ;
+  // the values themselves are what the reader resolved (thread 4178487553).
+  const rigorSource = translation.inputs?.rigor?.source ?? "default";
+  const strategyInput = translation.inputs?.strategy ?? { source: "default" };
+  const ambiguity = Array.isArray(strategyInput.ambiguous) && strategyInput.ambiguous.length > 0
+    ? `; ambiguous between ${strategyInput.ambiguous.join(", ")}`
+    : "";
+  lines.push(
+    `Rigor: ${resolved.rigor?.level} (source: ${rigorSource}) · Strategy: ${resolved.strategy?.name} (source: ${strategyInput.source ?? "default"}${ambiguity})`,
+  );
   let line = `Implementer tier: ${implementer.tier} (source: ${tierSource(implementer, resolved)}; profile ${implementer.profile_tier ?? implementer.tier})`;
   if (issue.status !== "absent") line += ` · issue Tier: ${issue.status}${issue.tier ? ` ${issue.tier}` : ""}`;
   if (pin.status !== "absent") line += ` · pin: ${pin.status}${pin.reason ? ` (${pin.reason})` : ""}`;

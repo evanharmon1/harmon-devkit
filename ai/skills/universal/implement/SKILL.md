@@ -217,9 +217,9 @@ result for step 8's profile line rather than resolving for the first time
 there. An orchestrated lane takes the resolved profile from its brief
 instead, because the orchestrator already resolved it. This loop-entry
 resolution runs the full `dev-flow-support` procedure, **step 0 included**,
-like every other resolution: if the branch's diff against its merge base
-touches a governing file, the merge-base helper and reader resolve it, not
-the branch's. Resolve the Tier with the policy, not by eye:
+like every other resolution: if the working tree (committed, staged,
+unstaged or untracked) differs from the merge base in a governing file, the
+merge-base helper and reader resolve it, not the branch's. Resolve the Tier with the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
   its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
   Complexity.
@@ -239,7 +239,7 @@ the branch's. Resolve the Tier with the policy, not by eye:
 
 The self-modification boundary is one invariant, not a per-step rule. Every
 resolution (this one, step 8's, or any re-resolution) runs
-(the procedure's step 0), whose trigger is the diff, not the step. A merge
+(the procedure's step 0), whose trigger is the working tree, not the step. A merge
 base predating `tier-inputs.mjs` needs an operator-pinned reader supplied
 outside the branch, and without one the Tier is indeterminate.
 An execution-policy label (`rigor:*`, `strategy:*`, `tier:<role>:*`) counts

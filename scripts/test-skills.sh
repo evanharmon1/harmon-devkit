@@ -10801,6 +10801,22 @@ else
 fi
 expect_ok "dev-flow-support: the recipe makes its scratch directory outside the checkout (thread 4178249119)" \
     grep -qF 'tier_tmp="$(mktemp -d' "$DFS_MD"
+# Integration remediation 3 (PR #1263).
+expect_ok "dev-flow-support: the step-0 trigger compares the merge base with the working tree (thread 4178487547)" \
+    grep -qF 'git diff --name-only "$mb"; git ls-files --others --exclude-standard' "$DFS_MD"
+if grep -qF 'merge-base>...HEAD' "$DFS_MD"; then
+    bad "dev-flow-support: the step-0 trigger still compares commits only (...HEAD) (thread 4178487547)"
+else
+    ok "dev-flow-support: the step-0 trigger no longer compares commits only (thread 4178487547)"
+fi
+expect_ok "implement: the step-0 trigger counts uncommitted and untracked edits (thread 4178487547)" \
+    grep -qF "unstaged or untracked) differs from the merge base" "$IMPL_MD"
+expect_ok "orchestrate: the step-0 trigger counts uncommitted and untracked edits (thread 4178487547)" \
+    grep -qF "staged, unstaged or untracked) differs from its merge base" "$ORCH_MD"
+expect_ok "dev-flow-support: the strategy source comes from the translation (thread 4178487553)" \
+    grep -qF 'inputs.strategy.source' "$DFS_MD"
+expect_ok "dev-flow-support: the selection source is never read from the reader (thread 4178487553)" \
+    grep -qF 'never from the reader' "$DFS_MD"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
