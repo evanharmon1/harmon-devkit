@@ -455,7 +455,7 @@ else
     expect_trigger "the same edit with the remote renamed (thread 4178657188, case 2)" applies .devflow.toml
     # Case 3: no resolvable merge base — the remote's default branch is an
     # unrelated history — stops indeterminate instead of reporting nothing.
-    orphan="$(git -C "$trig" commit-tree -m unrelated "$(git -C "$trig" mktree </dev/null)")"
+    orphan="$(git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit-tree -m unrelated "$(git -C "$trig" mktree </dev/null)")"
     upstream_tip="$(git -C "$trig" rev-parse refs/remotes/upstream/main)"
     git -C "$trig" update-ref refs/remotes/upstream/main "$orphan"
     expect_trigger "no resolvable merge base (thread 4178657188, case 3)" indeterminate
