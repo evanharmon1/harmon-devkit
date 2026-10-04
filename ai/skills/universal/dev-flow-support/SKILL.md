@@ -55,8 +55,13 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
 
 0. **Hold the self-modification boundary first** (`AGENTS.md`: a branch may
    not choose the values or code that govern its own review).
-   - **When it applies:** the change under review edits `.devflow.toml`,
-     `agent-registry.json`, `assets/devflow-policy.mjs`,
+   **Invariant: every tier resolution runs this whole procedure, step 0
+   included, whenever it happens: at loop entry, at dispatch, at the PR
+   profile line, or on any re-resolution.** Which step is resolving never
+   decides whether step 0 applies; the diff does.
+   - **When it applies:** the branch's diff against its merge base
+     (`git diff --name-only <merge-base>...HEAD`) touches a governing file:
+     `.devflow.toml`, `agent-registry.json`, `assets/devflow-policy.mjs`,
      `assets/lib/toml-lite.mjs` or `assets/tier-inputs.mjs`.
    - **What to do:** before running any branch copy, materialize the
      **merge-base** copy of all five *outside the worktree*
@@ -74,8 +79,8 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      them only the materialized merge-base policy, registry and target list.
      Only when no such pin exists is tier resolution **indeterminate**: stop
      and report it. Never fall back to the branch copy.
-   - **Every other change** uses the checkout's own copies, as the steps
-     below show.
+   - **When the diff touches none of them**, the checkout's own copies are
+     the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels; on an organization repository,
    also its Risk and Complexity issue fields where the session can read them
    (they win over a same-axis `risk:*`/`complexity:*` label). Nothing read
@@ -88,8 +93,8 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    - **Execution-policy labels** (`rigor:*`, `strategy:*`, `tier:<role>:*`):
      list every one whose provenance holds in `authorized_labels`. The helper
      is **fail-closed**: an execution-policy label not listed is dropped with
-     a `policy-label-unauthorized` warning naming it, and the profile or
-     default applies.
+     a `policy-label-unauthorized` warning naming it, and resolution
+     continues without it.
    - **The pin**, when `tier:pinned` is present: who applied the `tier:pinned`
      marker and who applied the `tier:<value>` it pins, checked separately
      (`pin_provenance.marker_trusted` / `value_trusted`). An unverified half
@@ -101,13 +106,16 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
 3. **Translate**, then **resolve** with the translated flags appended:
 
    ```sh
-   node "$support_dir/tier-inputs.mjs" --policy .devflow.toml --input tier-input.json >tier-translation.json
+   tier_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tier-resolve.XXXXXX")"
+   # write the issue's inputs to "$tier_tmp/tier-input.json" (shape below)
+   node "$support_dir/tier-inputs.mjs" --policy .devflow.toml \
+       --input "$tier_tmp/tier-input.json" >"$tier_tmp/tier-translation.json"
    tier_args=()
    while IFS= read -r a; do tier_args+=("$a"); done \
-       < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' tier-translation.json)
+       < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' "$tier_tmp/tier-translation.json")
    node "$support_dir/devflow-policy.mjs" resolve --policy .devflow.toml \
        --registry agent-registry.json --taskfile-dir . \
-       --json ${tier_args[@]+"${tier_args[@]}"} >resolved.json
+       --json ${tier_args[@]+"${tier_args[@]}"} >"$tier_tmp/resolved.json"
    ```
 
    Run it from the repository root. `--taskfile-dir .` hands the reader this
@@ -115,19 +123,24 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    cross-validation is indeterminate and `resolve` always exits 3, which
    would hide the one exit 3 that matters: the derived Tier's. On the step-0
    path, `--taskfile-dir` is the merge-base closure instead.
+   The three working files live in `"$tier_tmp"`, a scratch directory
+   outside the checkout, never in the worktree, where a commit could sweep
+   them up.
 
    `tier-input.json` is `{"labels": [...], "authorized_labels": [...],
    "fields": {"risk": …, "complexity": …}, "operator": {"rigor": …,
    "strategy": …, "tiers": {…}}, "pin_provenance": {"marker_trusted": …,
    "value_trusted": …}}`. Every key is optional, and an omitted
    `authorized_labels` honors no execution-policy label. The document must be
-   a JSON object. An unknown top-level key, or an `operator` key other than
-   `rigor`, `strategy` and `tiers`, is a usage error (exit 2), never silently
-   ignored.
+   a JSON object. An unknown top-level key, an `operator` key other than
+   `rigor`, `strategy` and `tiers`, or a `fields` key other than `risk` and
+   `complexity`, is a usage error (exit 2), never silently ignored.
    **Label conflicts are settled here, before the reader runs.**
    - `tier:pinned` with more than one unqualified `tier:<value>` is an
      ambiguous pin. No pinned Tier is passed, a `pin-ambiguous` warning names
-     every value, and the issue resolves through its derived Tier.
+     every value, and the pin rung is dropped: resolution continues through
+     the remaining rungs (a `tier:implementer:*` label or a chosen rigor can
+     still decide; otherwise the derived Tier, then the default).
    - Two `tier:<role>:*` values for one role resolve to the stronger on
      `tier_order`, and two `rigor:*` labels to the stronger on `rigor_order`;
      either conflict is disclosed.
@@ -146,12 +159,15 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    - Ambiguity is counted over the **raw** labels: a malformed value still
      makes its family ambiguous, and is never forwarded.
 4. **Disclose.** `node "$support_dir/tier-inputs.mjs" disclose --inputs
-   tier-translation.json --resolved resolved.json` prints one PR-body line per
+   "$tier_tmp/tier-translation.json" --resolved "$tier_tmp/resolved.json"`
+   prints one PR-body line per
    item: the implementer tier and its **source** (`pinned`, `rigor`,
    `derived`, `default`, or `operator`); every off-profile role tier; every
    companion a pin leaves below the implementer, named a **pin-caused
-   invariant break** (disclosed, never corrected); every `tier:<role>:*`
-   label a stronger rung overrode; and every warning. Carry those lines into
+   invariant break** (disclosed, never corrected); every valid `tier:<role>:*`
+   label a stronger rung overrode; every one the reader rejected (a retired
+   or off-ladder value), named once, as rejected, with the reader's reason;
+   and every other warning. Carry those lines into
    the PR body's policy disclosure verbatim.
 
 **A policy without `[tier.matrix]`** has no derived-Tier rung, and a

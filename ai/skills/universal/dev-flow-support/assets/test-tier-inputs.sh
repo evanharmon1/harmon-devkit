@@ -103,7 +103,7 @@ expect_args "an empty classification label beside a valid one is a conflict" \
     '{"labels":["risk:high","risk:"]}' '["--risk=conflict"]'
 expect_warning "a malformed role-label rival is named in the conflict" \
     '{"labels":["tier:implementer:economy","tier:implementer:APEX"],"authorized_labels":["tier:implementer:economy","tier:implementer:APEX"]}' \
-    tier-role-label-conflict "tier:implementer:APEX" "economy applies"
+    tier-role-label-conflict "tier:implementer:APEX" "economy is the one passed"
 expect_args "the valid role label still applies beside a malformed rival" \
     '{"labels":["tier:implementer:economy","tier:implementer:APEX"],"authorized_labels":["tier:implementer:economy","tier:implementer:APEX"]}' \
     '["--tier-labels=implementer=economy"]'
@@ -128,6 +128,10 @@ expect_usage_error_input "a string document (thread 4176257533)" '"oops"'
 expect_usage_error_input "an unknown operator key (thread 4176257545)" '{"operator":{"rigour":"deep"}}'
 expect_usage_error_input "an unknown top-level key (thread 4176257545)" '{"labelz":["tier:apex"]}'
 expect_usage_error_input "a policy key inside the document" '{"policy":{"rigors":[],"strategies":[]}}'
+expect_usage_error_input "an unknown fields key (integration remediation 2, thread 4178249112)" '{"fields":{"rsk":"critical"}}'
+expect_args "the two known fields keys still apply" '{"fields":{"risk":"critical","complexity":"xl"}}' '["--risk=critical","--complexity=xl"]'
+expect_warning "a non-slug classification value says it becomes the sentinel, not 'ignored'" \
+    '{"labels":["risk:HIGH"]}' label-value-invalid "--risk=conflict"
 
 echo "==> tier-inputs.mjs: extra-colon labels are counted, never dropped (integration remediation 1, thread 4176257550)"
 expect_args "an extra-colon Risk label is the off-scale sentinel" '{"labels":["risk:high:typo"]}' '["--risk=conflict"]'
@@ -142,7 +146,7 @@ expect_args "an unknown-role tier label still counts toward pin ambiguity" \
     "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:foo:bar\"],$pin_trust}" '[]'
 expect_warning "an extra-colon role label is a named rival, never forwarded" \
     '{"labels":["tier:implementer:apex:x","tier:implementer:economy"],"authorized_labels":["tier:implementer:apex:x","tier:implementer:economy"]}' \
-    tier-role-label-conflict "tier:implementer:apex:x" "economy applies"
+    tier-role-label-conflict "tier:implementer:apex:x" "economy is the one passed"
 expect_args "an extra-colon role label is never forwarded" \
     '{"labels":["tier:implementer:apex:x","tier:implementer:economy"],"authorized_labels":["tier:implementer:apex:x","tier:implementer:economy"]}' \
     '["--tier-labels=implementer=economy"]'
@@ -323,6 +327,44 @@ e2e "no classification resolves to the default profile" '{"labels":[]}' standard
 e2e "a stale strategy label no longer blocks resolution" \
     '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
     "warning [strategy-label-unknown]"
+
+echo "==> disclosure lines match what the reader resolved (integration remediation 2)"
+# disclose_lines INPUT — prints the PR-body disclosure lines for INPUT,
+# resolved over the corpus base policy.
+disclose_lines() {
+    local tr="$scratch/$RANDOM-dl-tr.json" res="$scratch/$RANDOM-dl-res.json"
+    translate "$1" >"$tr"
+    local -a args=()
+    while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
+    node "$reader" resolve --policy "$base_policy" --json ${args[@]+"${args[@]}"} >"$res" 2>/dev/null || true
+    node "$helper" disclose --inputs "$tr" --resolved "$res"
+}
+# Thread 4178249117: a REJECTED role label is disclosed once, as rejected,
+# with the reader's reason — never also as "overridden" or as a second warning.
+rejected_lines="$(disclose_lines '{"labels":["tier:reviewer:adaptive"],"authorized_labels":["tier:reviewer:adaptive"]}')"
+if grep -qF "rejected: tier:reviewer:adaptive" <<<"$rejected_lines" &&
+    grep -qF "retired" <<<"$rejected_lines" &&
+    ! grep -qF "overridden:" <<<"$rejected_lines" &&
+    ! grep -qF "warning [tier-retired]" <<<"$rejected_lines"; then
+    ok
+else
+    fail "a rejected role label must be disclosed once, as rejected, with the reason:"$'\n'"$rejected_lines"
+fi
+# A VALID label that lost to a stronger rung is still "overridden".
+e2e "a valid scoped label beaten by a pin is still disclosed as overridden" \
+    "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" \
+    economy pinned "overridden: tier:implementer:frontier"
+# Thread 4178249123: an ambiguous pin drops the pin rung only — an authorized
+# scoped label still decides, and no line claims the derived Tier decided.
+e2e "an ambiguous pin plus an authorized scoped label resolves the label" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\",\"risk:critical\",\"complexity:xl\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}" \
+    economy label "warning [pin-ambiguous]" "the pin rung is dropped" "source: rigor"
+ambiguous_lines="$(disclose_lines "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}")"
+if grep -qF "resolves through its derived Tier" <<<"$ambiguous_lines"; then
+    fail "the ambiguous-pin disclosure must not claim the derived Tier decided:"$'\n'"$ambiguous_lines"
+else
+    ok
+fi
 
 echo "==> the documented resolve recipe exits 0 (integration remediation 1, thread 4176257539)"
 # The exact command shape dev-flow-support § "Resolving an issue's Tier" step 3

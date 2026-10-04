@@ -215,8 +215,11 @@ on entering the loop"). Do it **now**, at the end of this step, so the caps,
 the floor and the role tiers govern every stage that follows. Reuse that
 result for step 8's profile line rather than resolving for the first time
 there. An orchestrated lane takes the resolved profile from its brief
-instead, because the orchestrator already resolved it. Resolve the Tier with
-the policy, not by eye:
+instead, because the orchestrator already resolved it. This loop-entry
+resolution runs the full `dev-flow-support` procedure, **step 0 included**,
+like every other resolution: if the branch's diff against its merge base
+touches a governing file, the merge-base helper and reader resolve it, not
+the branch's. Resolve the Tier with the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
   its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
   Complexity.
@@ -227,18 +230,18 @@ the policy, not by eye:
   is absent, it computes the Tier from Risk and Complexity.
 - Label conflicts are reconciled before the reader runs. `tier:pinned` with
   more than one unqualified `tier:<value>` is an ambiguous pin: no
-  `pinnedTier` is passed, a warning names both values, and the issue
-  resolves through its derived Tier.
+  `pinnedTier` is passed, a warning names both values, and
+  the pin rung is dropped, so resolution continues through the remaining
+  rungs.
 - The `tier-inputs.mjs disclose` lines go into the PR body's profile line:
   the tier source (pinned, rigor, derived, default) and any pin-caused
   invariant break.
 
-If anything makes you re-resolve later (at step 8, say), the branch may by
-then have edited the policy, the registry or the reader-side assets. In that
-case run the **merge-base** helper and reader, never the branch's
-(the procedure's step 0). A merge base predating `tier-inputs.mjs` needs an
-operator-pinned reader supplied outside the branch, and without one the Tier
-is indeterminate.
+The self-modification boundary is one invariant, not a per-step rule. Every
+resolution (this one, step 8's, or any re-resolution) runs
+(the procedure's step 0), whose trigger is the diff, not the step. A merge
+base predating `tier-inputs.mjs` needs an operator-pinned reader supplied
+outside the branch, and without one the Tier is indeterminate.
 An execution-policy label (`rigor:*`, `strategy:*`, `tier:<role>:*`) counts
 only once its provenance is verified and it is listed in the helper's
 `authorized_labels`; an unlisted one is dropped with a warning

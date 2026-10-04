@@ -56,8 +56,8 @@
 //   - tier:pinned + exactly one unqualified value: --pinned-tier <value>,
 //     with --pin-marker-trusted/--pin-value-trusted only as verified.
 //   - tier:pinned + MORE than one unqualified value: the pin is AMBIGUOUS —
-//     no --pinned-tier, a warning naming the values, and the issue resolves
-//     through its derived Tier (Risk × Complexity).
+//     no --pinned-tier, a warning naming the values, and the pin rung is
+//     dropped: resolution continues through the remaining rungs.
 //   - tier:<role>:<value> labels: one per role; a conflict resolves to the
 //     strongest on tier_order (a conflict only ever buys more capability).
 //   - rigor:* label conflicts resolve to the strongest on rigor_order; two
@@ -87,6 +87,11 @@ const SLUG = /^[a-z0-9][a-z0-9_.-]*$/;
 // devflow-policy.mjs), so the reader reports any axis carrying it as an
 // indeterminate derived Tier rather than as an unclassified issue.
 export const CLASSIFICATION_CONFLICT = "conflict";
+// What a dropped pin means, stated once for every pin warning. It claims no
+// particular outcome: an operator tier, a tier:implementer:* label or a chosen
+// rigor can still decide, and only without them does the derived Tier
+// (integration remediation 2, thread 4178249123).
+const PIN_DROPPED = "the pin rung is dropped and resolution continues through the remaining rungs (operator tier, tier:implementer:* label or chosen rigor, then the derived Tier, then the default)";
 
 export class TierInputError extends Error {}
 
@@ -117,6 +122,9 @@ function strongest(values, ladder) {
 // `policy` is the CLI-injected summary (from --policy), not an input key.
 export const INPUT_KEYS = Object.freeze(["labels", "authorized_labels", "fields", "operator", "pin_provenance"]);
 export const OPERATOR_KEYS = Object.freeze(["rigor", "strategy", "tiers"]);
+// The classification issue fields; a misspelled `rsk` would otherwise read
+// as an unclassified issue (integration remediation 2, thread 4178249112).
+export const FIELD_KEYS = Object.freeze(["risk", "complexity"]);
 
 export function tierInputs(input = {}) {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
@@ -153,6 +161,10 @@ export function tierInputs(input = {}) {
   if (unknownOperator.length > 0) {
     throw new TierInputError(`unknown operator key(s) ${unknownOperator.join(", ")}; the keys are ${OPERATOR_KEYS.join(", ")}`);
   }
+  const unknownFields = Object.keys(fields).filter((k) => !FIELD_KEYS.includes(k));
+  if (unknownFields.length > 0) {
+    throw new TierInputError(`unknown fields key(s) ${unknownFields.join(", ")}; the keys are ${FIELD_KEYS.join(", ")}`);
+  }
   if (policy !== null) {
     for (const key of ["rigors", "strategies"]) {
       if (!Array.isArray(policy[key]) || policy[key].some((v) => typeof v !== "string")) {
@@ -186,7 +198,7 @@ export function tierInputs(input = {}) {
   // confirmation, unattended automation from its own trusted-actor check
   // re-read immediately before acting (AGENTS.md "Nothing here arms
   // anything"). Fail-closed: an unlisted one is dropped with a warning and
-  // the profile/default applies, so a label nobody vouched for can neither
+  // resolution continues without it, so a label nobody vouched for can neither
   // spend money nor skip oversight by omission (challenge round 2, C2-1).
   // The CLASSIFICATION inputs — risk:*, complexity:*, and the unqualified
   // tier:<value> stored Tier — are deliberately ungated: ADR 2026-09-30 D3
@@ -242,7 +254,7 @@ export function tierInputs(input = {}) {
     warnings.push(
       warning(
         "policy-label-unauthorized",
-        `execution-policy label(s) ${unauthorized.join(", ")} carry no verified provenance and are ignored; the profile/default applies — an interactive session confirms them with the operator and passes them in authorized_labels`,
+        `execution-policy label(s) ${unauthorized.join(", ")} carry no verified provenance and are not passed; resolution continues without them — an interactive session confirms them with the operator and passes them in authorized_labels`,
       ),
     );
     inputs.unauthorized_labels = unauthorized;
@@ -343,7 +355,7 @@ export function tierInputs(input = {}) {
       warnings.push(
         warning(
           "tier-role-label-conflict",
-          `tier labels ${raw.map((v) => `tier:${role}:${v}`).join(", ")} conflict; ${pick === null ? "none is on tier_order, so none applies" : `${pick} applies (strongest on tier_order)`}`,
+          `tier labels ${raw.map((v) => `tier:${role}:${v}`).join(", ")} conflict; ${pick === null ? "none is on tier_order, so the reader rejects the one passed by name" : `${pick} is the one passed (strongest on tier_order; a stronger rung can still override it)`}`,
         ),
       );
     }
@@ -372,7 +384,7 @@ export function tierInputs(input = {}) {
       const disagreeing = fromLabels.filter((v) => v !== field);
       if (disagreeing.length > 0) {
         warnings.push(
-          warning(`${axis}-field-label-mismatch`, `the ${axis} field (${field}) disagrees with ${disagreeing.map((v) => `${axis}:${v}`).join(", ")}; the field is the storage of record and applies`),
+          warning(`${axis}-field-label-mismatch`, `the ${axis} field (${field}) disagrees with ${disagreeing.map((v) => `${axis}:${v}`).join(", ")}; the field is the storage of record and is the value passed`),
         );
       }
     } else if (fromLabels.length === 1) {
@@ -394,8 +406,19 @@ export function tierInputs(input = {}) {
     }
     if (value !== null) {
       // A value that is not even a slug is unknowable the same way: send the
-      // sentinel rather than dropping the axis, for the reason above.
-      classification[axis] = slugOrWarn(value, axis) ?? CLASSIFICATION_CONFLICT;
+      // sentinel rather than dropping the axis, for the reason above — and
+      // say so, rather than slugOrWarn's "ignored", which would misstate it.
+      if (typeof value === "string" && SLUG.test(value)) {
+        classification[axis] = value;
+      } else {
+        classification[axis] = CLASSIFICATION_CONFLICT;
+        warnings.push(
+          warning(
+            "label-value-invalid",
+            `${axis} value ${JSON.stringify(value)} is not a slug; the reader receives --${axis}=${CLASSIFICATION_CONFLICT} and reports the derived Tier indeterminate`,
+          ),
+        );
+      }
     }
   }
   if (classification.risk !== undefined) args.push(`--risk=${classification.risk}`);
@@ -415,7 +438,7 @@ export function tierInputs(input = {}) {
     if (rawStored.length === 1) {
       const value = slugOrWarn(rawStored[0], "tier");
       if (value === null) {
-        warnings.push(warning("pin-value-invalid", `tier:pinned pins ${named}, which is not a Tier value; the issue resolves as unpinned, through its derived Tier`));
+        warnings.push(warning("pin-value-invalid", `tier:pinned pins ${named}, which is not a Tier value; ${PIN_DROPPED}`));
         inputs.pin = { invalid: rawStored };
       } else {
         args.push(`--pinned-tier=${value}`);
@@ -427,12 +450,12 @@ export function tierInputs(input = {}) {
       warnings.push(
         warning(
           "pin-ambiguous",
-          `tier:pinned is present with more than one Tier label (${named}); the pin is ambiguous, no pinned Tier is passed, and the issue resolves through its derived Tier`,
+          `tier:pinned is present with more than one Tier label (${named}); the pin is ambiguous and no pinned Tier is passed — ${PIN_DROPPED}`,
         ),
       );
       inputs.pin = { ambiguous: rawStored };
     } else {
-      warnings.push(warning("pin-without-tier", "tier:pinned is present without a tier:<value> label; there is nothing to pin, and the issue resolves through its derived Tier"));
+      warnings.push(warning("pin-without-tier", `tier:pinned is present without a tier:<value> label; there is nothing to pin — ${PIN_DROPPED}`));
       inputs.pin = { ambiguous: [] };
     }
   } else if (rawStored.length === 1) {
@@ -447,7 +470,7 @@ export function tierInputs(input = {}) {
     warnings.push(
       warning(
         "stored-tier-ambiguous",
-        `the issue carries more than one Tier label (${named}); none is passed as the stored Tier, which is recomputed from Risk × Complexity`,
+        `the issue carries more than one Tier label (${named}); none is passed as the stored Tier (only a cache; where Risk and Complexity exist, the Tier is derived from them)`,
       ),
     );
   }
@@ -503,13 +526,27 @@ export function disclosureLines(translation, resolved) {
       lines.push(`off-profile: ${d.role} tier ${d.tier} (profile ${d.profile_tier}; source: ${tierSource(resolved.roles[d.role] ?? { source: d.source }, resolved)})`);
     }
   }
+  // A passed role label is disclosed exactly once (integration remediation 2,
+  // thread 4178249117): "overridden" only for a VALID ladder value that lost
+  // to a stronger rung; a value the reader REJECTED (a retired `adaptive`, an
+  // off-ladder typo) is disclosed as rejected with the reader's own reason,
+  // and that reader warning is not repeated below.
+  const consumed = new Set();
   for (const [role, value] of Object.entries(translation.inputs?.tier_labels ?? {})) {
     const entry = resolved.roles[role];
-    if (entry && entry.source !== "label") {
+    if (!entry) continue;
+    if (!TIER_ORDER.includes(value)) {
+      const reason = (resolved.warnings ?? []).find((w) => w.subject === `tier:${role}` && (w.code === "tier-retired" || w.code === "tier-unknown"));
+      if (reason) consumed.add(reason);
+      lines.push(
+        `rejected: tier:${role}:${value} — ${reason ? reason.message : `it names no tier_order rung and is ignored`}; ${role} keeps its ${tierSource(entry, resolved)} tier (${entry.tier})`,
+      );
+    } else if (entry.source !== "label") {
       lines.push(`overridden: tier:${role}:${value} was passed but ${role} resolved from ${tierSource(entry, resolved)} (${entry.tier})`);
     }
   }
   for (const w of [...(translation.warnings ?? []), ...(resolved.warnings ?? [])]) {
+    if (consumed.has(w)) continue;
     lines.push(`warning [${w.code}]: ${w.message}`);
   }
   if ((resolved.cross_validation?.indeterminate ?? []).some((i) => i.includes("derived Tier"))) {

@@ -66,16 +66,19 @@ Follow `dev-flow-support`'s § "Resolving an issue's Tier":
   .devflow.toml`, which
   reconciles label conflicts *before* the reader runs. A `tier:pinned` with
   more than one unqualified `tier:<value>` is an ambiguous pin: no
-  `pinnedTier` is passed, a warning names both values, and the issue
-  resolves through its derived Tier.
+  `pinnedTier` is passed, a warning names both values, and
+  the pin rung is dropped, so resolution continues through the remaining
+  rungs.
 - Pass the result to `devflow-policy.mjs resolve`. That is how the reader
   receives the issue as `issueTier` (Risk × Complexity, plus the stored Tier
   as a cache) and the pin as `pinnedTier`. When the Tier label is absent,
   the reader computes the Tier from Risk and Complexity.
 
-When the change under review edits `.devflow.toml`, `agent-registry.json`,
-or the reader, `toml-lite`, or `tier-inputs.mjs` assets, run the
-**merge-base** helper and reader instead of the branch's
+Every resolution, at dispatch or any later re-resolution, runs the full
+procedure, step 0 included. When the lane branch's diff against its merge
+base touches `.devflow.toml`, `agent-registry.json`, or the reader,
+`toml-lite` or `tier-inputs.mjs` assets, the **merge-base** helper and reader
+resolve it instead of the branch's
 (the procedure's step 0). A merge base that predates `tier-inputs.mjs` needs
 an operator-pinned reader supplied outside the branch; without one the Tier
 is indeterminate, never resolved by the branch copy. On a `strategy:*`
@@ -262,7 +265,7 @@ table before their intended sections.
 | `{{max-parallel-agents}}` | Selected breadth envelope |
 | `{{strategy}}` | Trusted policy resolution |
 | `{{strategy-source}}` | Policy resolver disclosure |
-| `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a tier warning, or a derived Tier left indeterminate |
+| `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
 | `{{ready-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |

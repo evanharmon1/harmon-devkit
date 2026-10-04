@@ -10704,7 +10704,8 @@ tier_skill_anchors=(
     "pinnedTier"
     "ambiguous pin"
     "warning names both values"
-    "resolves through its derived Tier"
+    "the pin rung is dropped"
+    "step 0 included"
     "authorized_labels"
     "tier source"
     "pin-caused invariant break"
@@ -10781,6 +10782,25 @@ expect_ok "orchestrate: first adoption takes an operator-pinned reader (thread 4
     grep -qF "operator-pinned reader supplied outside the branch" "$ORCH_MD"
 expect_ok "orchestrate: an interactive orchestrator asks on a strategy conflict (thread 4176257540)" \
     grep -qF "interactive orchestrator asks the operator" "$ORCH_MD"
+# Integration remediation 2 (PR #1263).
+expect_ok "dev-flow-support: step 0 is one invariant over every resolution (thread 4178249115)" \
+    grep -qF "Invariant: every tier resolution runs this whole procedure, step 0" "$DFS_MD"
+expect_ok "dev-flow-support: step 0's trigger is the branch's diff, not the step (thread 4178249115)" \
+    grep -qF "Which step is resolving never" "$DFS_MD"
+for tier_skill_md in "$IMPL_MD" "$ORCH_MD"; do
+    expect_ok "$(basename "$(dirname "$tier_skill_md")"): its resolution names step 0 (thread 4178249115)" \
+        grep -qF "step 0 included" "$tier_skill_md"
+done
+# Thread 4178249119: the recipe's working files live in a scratch directory,
+# never the checkout. A file name preceded by whitespace, `>` or `"` is a bare
+# repository-relative path; inside "$tier_tmp/…" it is preceded by `/`.
+if grep -Eq '(^|[[:space:]>"])(tier-input|tier-translation|resolved)\.json' "$DFS_MD"; then
+    bad "dev-flow-support: a tier recipe path is repository-relative (thread 4178249119): $(grep -En '(^|[[:space:]>"])(tier-input|tier-translation|resolved)\.json' "$DFS_MD" | head -3)"
+else
+    ok "dev-flow-support: no tier recipe path is repository-relative (thread 4178249119)"
+fi
+expect_ok "dev-flow-support: the recipe makes its scratch directory outside the checkout (thread 4178249119)" \
+    grep -qF 'tier_tmp="$(mktemp -d' "$DFS_MD"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

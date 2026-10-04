@@ -122,11 +122,18 @@ fi
 
 echo "==> mutation control: a reader that ignores an honored pin must fail the corpus"
 mutant="$scratch/mutant-devflow-policy.mjs"
-# The one statement that applies an honored pin to the implementer.
-if ! grep -q '^      tier = pin.tier;$' "$support/devflow-policy.mjs"; then
+# The one statement that applies an honored pin to the implementer. Any
+# leading indentation is accepted and kept (the replacement reuses the
+# captured whitespace), so a reformat of the reader does not silently
+# disarm the control; an absent anchor, or a sed that changed nothing,
+# still fails loudly.
+anchor_re='^[[:space:]]*tier = pin\.tier;$'
+if ! grep -Eq "$anchor_re" "$support/devflow-policy.mjs"; then
     err "mutation anchor 'tier = pin.tier;' not found — update the control alongside the reader"
+elif ! sed -E 's/^([[:space:]]*)tier = pin\.tier;$/\1tier = profileTier;/' "$support/devflow-policy.mjs" >"$mutant" ||
+    cmp -s "$support/devflow-policy.mjs" "$mutant"; then
+    err "the mutation did not change the reader — the anchor matched but the substitution did not apply"
 else
-    sed 's/^      tier = pin\.tier;$/      tier = profileTier;/' "$support/devflow-policy.mjs" >"$mutant"
     make_repo "$scratch/mutant" "$mutant"
     if (cd "$scratch/mutant" && python3 "$runner" --repo "$scratch/mutant" --fixture "$corpus" --config "$scratch/mutant/.devflow.toml") >"$scratch/mutant.log" 2>&1; then
         err "the corpus PASSED a reader that ignores pins — the runner is not exercising the tier rungs"

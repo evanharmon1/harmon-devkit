@@ -513,8 +513,8 @@ wait. So does a scope question: if settling a finding would take you outside
   ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`);
   the strategy and its source; all five role tiers, with the implementer's
   tier source (pinned, rigor, derived, default, or operator), any pin-caused
-  invariant break, any overridden `tier:<role>:*` label, and every tier
-  warning; and every off-profile choice — model family, tier, or effort —
+  invariant break, any overridden `tier:<role>:*` label, any rejected one
+  (with the reader's reason), and every tier warning; and every off-profile choice — model family, tier, or effort —
   named as off-profile. That is the
   repository policy's own announce set; a shorter line is an under-disclosure,
   not a style choice. A Codex dispatch launched outside the sandbox
