@@ -1855,9 +1855,12 @@ status, or call the bare script when the precise exit code matters.
 operator > pinned Tier > `rigor:*`/`tier:<role>:*` > derived Tier
 (`[tier.matrix]`, Risk × Complexity) > `default_rigor` (ADR 2026-09-30 D5).
 It reports `tier_matrix`, `issue_tier`, `pin`, `disclosures`, `warnings`,
-`rigor.chosen_by`, and each role's `profile_tier`; a classified issue under a
-policy with no `[tier.matrix]` is indeterminate (exit 3), never guessed; a
-missing `--policy` file takes the built-in fallback. This is the tier
+`rigor.chosen_by`, and each role's `profile_tier`. Under a policy with no
+`[tier.matrix]`, a classified issue's `issue_tier` is indeterminate, never
+guessed. That makes the resolution exit 3 only when the derived rung would
+decide; an operator tier, an honored pin, a `tier:implementer:*` label or a
+chosen rigor still applies with exit 0. A missing `--policy` file takes the
+built-in fallback. This is the tier
 resolution of harmon-init#1475, ported rather than copied (the two readers are
 sibling forks; convergence is harmon-init#1484), so the contract is
 harmon-init's own corpus, vendored byte-identical with its runner:

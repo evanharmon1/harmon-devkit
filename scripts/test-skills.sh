@@ -10691,9 +10691,37 @@ printf '%s' '{"labels":["tier:pinned","tier:apex","tier:local"]}' >"$TMPROOT/ac5
 expect_ok_contains "AC5: the vendored tier-inputs.mjs translates an issue in the consumer" \
     "pin-ambiguous" \
     sh -c "cd '$AC5_CON' && node .claude/skills/dev-flow-support/assets/tier-inputs.mjs --policy .devflow.toml --input '$TMPROOT/ac5-tier-input.json'"
+# Review round 3, R3-3: each stage skill must carry the WHOLE tier contract
+# (acceptance criteria 2–4), not merely mention the helper, so removing any
+# obligation from either vendored skill turns this red. Each anchor is a
+# phrase that sits on one line in the skill text (grep -F is line-based).
+tier_skill_anchors=(
+    "tier-inputs.mjs"
+    "on every owner type"
+    "tier:pinned"
+    "Risk and Complexity"
+    "issueTier"
+    "pinnedTier"
+    "ambiguous pin"
+    "warning names both values"
+    "resolves through its derived Tier"
+    "authorized_labels"
+    "tier source"
+    "pin-caused invariant break"
+)
 for ac5_skill in orchestrate implement; do
-    expect_ok "AC5: the vendored $ac5_skill skill wires in tier-inputs.mjs" \
-        grep -qF "tier-inputs.mjs" "$AC5_SKILLS/$ac5_skill/SKILL.md"
+    for anchor in "${tier_skill_anchors[@]}"; do
+        expect_ok "AC5: the vendored $ac5_skill skill states the tier contract: $anchor" \
+            grep -qF -- "$anchor" "$AC5_SKILLS/$ac5_skill/SKILL.md"
+    done
+done
+# The canonical procedure the two skills point at (dev-flow-support §
+# "Resolving an issue's Tier") carries the same obligations in its own words.
+for anchor in "The Tier is a label on every owner type" "Both Risk and Complexity are required" \
+    "pin-ambiguous" "policy-label-unauthorized" "marker_trusted" "disclose --inputs" \
+    '`derived`, `default`, or `operator`' "named a **pin-caused"; do
+    expect_ok "AC5: the vendored dev-flow-support tier procedure states: $anchor" \
+        grep -qF -- "$anchor" "$AC5_SKILLS/dev-flow-support/SKILL.md"
 done
 
 # AC 4 of #974 — a mechanical `task verify` check that fails when a vendored
