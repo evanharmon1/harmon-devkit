@@ -10757,6 +10757,30 @@ for tier_skill in orchestrate implement; do
     expect_ok "$tier_skill: points at the tier procedure's merge-base step 0" \
         grep -qF "(the procedure's step 0)" "$repo/ai/skills/universal/$tier_skill/SKILL.md"
 done
+# Integration remediation 1 (PR #1263). Each anchor sits on one line of its
+# skill text; grep -F is line-based.
+IMPL_MD="$repo/ai/skills/universal/implement/SKILL.md"
+ORCH_MD="$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "dev-flow-support: the resolve recipe passes --taskfile-dir . (thread 4176257539)" \
+    grep -qF -- "--registry agent-registry.json --taskfile-dir ." "$DFS_MD"
+expect_ok "dev-flow-support: step 0 takes its target list from the merge-base closure (thread 4176257539)" \
+    grep -qF -- "path, \`--taskfile-dir\` is the merge-base closure" "$DFS_MD"
+expect_ok "dev-flow-support: first adoption uses an operator-pinned external reader (thread 4176257542)" \
+    grep -qF "Use an **operator-pinned** helper and" "$DFS_MD"
+expect_ok "dev-flow-support: first adoption is indeterminate only without a pin (thread 4176257542)" \
+    grep -qF "Only when no such pin exists is tier resolution" "$DFS_MD"
+expect_ok "dev-flow-support: a strategy conflict has a testable warning code (thread 4176257540)" \
+    grep -qF "emits a \`strategy-label-ambiguous\` warning" "$DFS_MD"
+expect_ok "dev-flow-support: on a strategy conflict an interactive session stops and asks (thread 4176257540)" \
+    grep -qF "stops and asks the operator" "$DFS_MD"
+expect_ok "implement: resolves and announces the profile at loop entry (thread 4176257530)" \
+    grep -qF "Resolve and announce the policy profile at loop entry" "$IMPL_MD"
+expect_ok "implement: reuses the loop-entry result at step 8 (thread 4176257530)" \
+    grep -qF "result for step 8's profile line" "$IMPL_MD"
+expect_ok "orchestrate: first adoption takes an operator-pinned reader (thread 4176257542)" \
+    grep -qF "operator-pinned reader supplied outside the branch" "$ORCH_MD"
+expect_ok "orchestrate: an interactive orchestrator asks on a strategy conflict (thread 4176257540)" \
+    grep -qF "interactive orchestrator asks the operator" "$ORCH_MD"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

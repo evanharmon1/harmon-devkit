@@ -209,9 +209,14 @@ Map each criterion to how it will be **verified** — a test, a gate, a manual
 check. A criterion with no verification is either not a criterion or not done;
 say which.
 
-**Resolve the issue's Tier with the policy, not by eye**, whenever you resolve
-policy for the profile line (step 8). An orchestrated lane takes this from its
-brief instead, because the orchestrator already resolved it.
+**Resolve and announce the policy profile at loop entry**, the issue's Tier
+included, before any work starts (`AGENTS.md`: "Announce the resolved profile
+on entering the loop"). Do it **now**, at the end of this step, so the caps,
+the floor and the role tiers govern every stage that follows. Reuse that
+result for step 8's profile line rather than resolving for the first time
+there. An orchestrated lane takes the resolved profile from its brief
+instead, because the orchestrator already resolved it. Resolve the Tier with
+the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
   its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
   Complexity.
@@ -228,10 +233,12 @@ brief instead, because the orchestrator already resolved it.
   the tier source (pinned, rigor, derived, default) and any pin-caused
   invariant break.
 
-At step 8 the branch may have edited the policy, the registry or the
-reader-side assets. In that case run the **merge-base** helper and reader,
-never the branch's (the procedure's step 0); a merge base predating
-`tier-inputs.mjs` leaves the Tier indeterminate.
+If anything makes you re-resolve later (at step 8, say), the branch may by
+then have edited the policy, the registry or the reader-side assets. In that
+case run the **merge-base** helper and reader, never the branch's
+(the procedure's step 0). A merge base predating `tier-inputs.mjs` needs an
+operator-pinned reader supplied outside the branch, and without one the Tier
+is indeterminate.
 An execution-policy label (`rigor:*`, `strategy:*`, `tier:<role>:*`) counts
 only once its provenance is verified and it is listed in the helper's
 `authorized_labels`; an unlisted one is dropped with a warning

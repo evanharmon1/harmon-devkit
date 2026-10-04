@@ -76,8 +76,11 @@ Follow `dev-flow-support`'s § "Resolving an issue's Tier":
 When the change under review edits `.devflow.toml`, `agent-registry.json`,
 or the reader, `toml-lite`, or `tier-inputs.mjs` assets, run the
 **merge-base** helper and reader instead of the branch's
-(the procedure's step 0). A merge base that predates `tier-inputs.mjs` leaves
-the Tier indeterminate, never resolved by the branch copy.
+(the procedure's step 0). A merge base that predates `tier-inputs.mjs` needs
+an operator-pinned reader supplied outside the branch; without one the Tier
+is indeterminate, never resolved by the branch copy. On a `strategy:*`
+conflict an interactive orchestrator asks the operator, and unattended
+dispatch takes `default_strategy` with the warning.
 Label provenance is checked before translation, under § "Nothing here arms
 anything" in `AGENTS.md`. Every `rigor:*`, `strategy:*` and `tier:<role>:*`
 label you honor goes into the helper's `authorized_labels`. An unlisted one

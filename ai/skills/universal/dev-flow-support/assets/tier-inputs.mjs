@@ -110,14 +110,30 @@ function strongest(values, ladder) {
  * Translate an issue's labels, fields, and operator instructions into
  * devflow-policy.mjs resolve flags. Pure: no I/O, no GitHub reads.
  */
-export function tierInputs({
-  labels = [],
-  authorized_labels: authorizedLabels = [],
-  fields = {},
-  operator = {},
-  pin_provenance: provenance = {},
-  policy = null,
-} = {}) {
+// The keys an input document may carry. An unknown key is refused, never
+// ignored: a misspelled `operater` or `authorised_labels` would otherwise
+// resolve the default with exit 0 — the silent-loss shape the reader's own
+// option allowlist closes (integration remediation 1, thread 4176257545).
+// `policy` is the CLI-injected summary (from --policy), not an input key.
+export const INPUT_KEYS = Object.freeze(["labels", "authorized_labels", "fields", "operator", "pin_provenance"]);
+export const OPERATOR_KEYS = Object.freeze(["rigor", "strategy", "tiers"]);
+
+export function tierInputs(input = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new TierInputError("the input must be a JSON object");
+  }
+  const unknownKeys = Object.keys(input).filter((k) => !INPUT_KEYS.includes(k) && k !== "policy");
+  if (unknownKeys.length > 0) {
+    throw new TierInputError(`unknown input key(s) ${unknownKeys.join(", ")}; the keys are ${INPUT_KEYS.join(", ")}`);
+  }
+  const {
+    labels = [],
+    authorized_labels: authorizedLabels = [],
+    fields = {},
+    operator = {},
+    pin_provenance: provenance = {},
+    policy = null,
+  } = input;
   if (!Array.isArray(labels) || labels.some((l) => typeof l !== "string")) {
     throw new TierInputError("labels must be an array of strings");
   }
@@ -132,6 +148,10 @@ export function tierInputs({
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new TierInputError(`${name} must be an object`);
     }
+  }
+  const unknownOperator = Object.keys(operator).filter((k) => !OPERATOR_KEYS.includes(k));
+  if (unknownOperator.length > 0) {
+    throw new TierInputError(`unknown operator key(s) ${unknownOperator.join(", ")}; the keys are ${OPERATOR_KEYS.join(", ")}`);
   }
   if (policy !== null) {
     for (const key of ["rigors", "strategies"]) {
@@ -185,20 +205,37 @@ export function tierInputs({
   // `risk:`) is recorded RAW in its family, so it still counts toward that
   // family's ambiguity and is refused only when a value is forwarded (the
   // property review round 2, R2-1, established — see the stored Tier below).
+  // A family is recognized by its PREFIX and the whole remainder is kept raw,
+  // extra colons included: `risk:high:typo` or `tier:apex:old` used to match
+  // no exact-arity branch and vanish, which is the filter-before-count shape
+  // again (integration remediation 1, thread 4176257550). The remainder is
+  // validated only where a value is forwarded.
+  const remainder = (label, prefix) => (label.startsWith(prefix) ? label.slice(prefix.length) : null);
   for (const label of labels) {
-    const parts = label.split(":");
-    if (parts.length === 2 && parts[0] === "rigor") {
-      if (policyLabel(label)) rigorLabels.push(parts[1]);
-    } else if (parts.length === 2 && parts[0] === "strategy") {
-      if (policyLabel(label)) strategyLabels.push(parts[1]);
-    }
-    else if (parts.length === 2 && (parts[0] === "risk" || parts[0] === "complexity")) axisLabels[parts[0]].push(parts[1]);
-    else if (label === "tier:pinned") pinned = true;
-    else if (parts.length === 2 && parts[0] === "tier") storedTierLabels.push(parts[1]);
-    else if (parts.length === 3 && parts[0] === "tier" && ROLES.includes(parts[1])) {
-      if (!policyLabel(label)) continue;
-      if (!roleLabels.has(parts[1])) roleLabels.set(parts[1], []);
-      roleLabels.get(parts[1]).push(parts[2]);
+    let rest;
+    if ((rest = remainder(label, "rigor:")) !== null) {
+      if (policyLabel(label)) rigorLabels.push(rest);
+    } else if ((rest = remainder(label, "strategy:")) !== null) {
+      if (policyLabel(label)) strategyLabels.push(rest);
+    } else if ((rest = remainder(label, "risk:")) !== null) {
+      axisLabels.risk.push(rest);
+    } else if ((rest = remainder(label, "complexity:")) !== null) {
+      axisLabels.complexity.push(rest);
+    } else if (label === "tier:pinned") {
+      pinned = true;
+    } else if ((rest = remainder(label, "tier:")) !== null) {
+      // `tier:<role>:<value>` when the first segment names a role; anything
+      // else (`tier:apex`, `tier:apex:old`, `tier:foo:bar`) is an
+      // unqualified stored-Tier value, counted raw.
+      const sep = rest.indexOf(":");
+      const head = sep === -1 ? null : rest.slice(0, sep);
+      if (head !== null && ROLES.includes(head)) {
+        if (!policyLabel(label)) continue;
+        if (!roleLabels.has(head)) roleLabels.set(head, []);
+        roleLabels.get(head).push(rest.slice(sep + 1));
+      } else {
+        storedTierLabels.push(rest);
+      }
     }
   }
   if (unauthorized.length > 0) {
@@ -550,7 +587,18 @@ function main(argv) {
     if (disclose) {
       for (const l of disclosureLines(docs[0], docs[1])) console.log(`- ${l}`);
     } else {
-      console.log(JSON.stringify(tierInputs({ ...docs[0], policy }), null, 2));
+      // The parsed document must itself be an object — `null`, `[]` and a
+      // bare string used to spread into an empty input and exit 0 with no
+      // flags (integration remediation 1, thread 4176257533). A `policy` key
+      // inside the document is refused too: only --policy supplies it.
+      const doc = docs[0];
+      if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+        throw new TierInputError("the input must be a JSON object");
+      }
+      if (Object.hasOwn(doc, "policy")) {
+        throw new TierInputError(`unknown input key(s) policy; the keys are ${INPUT_KEYS.join(", ")} (the policy comes from --policy)`);
+      }
+      console.log(JSON.stringify(tierInputs({ ...doc, policy }), null, 2));
     }
   } catch (err) {
     if (err instanceof TierInputError || err instanceof TypeError) {

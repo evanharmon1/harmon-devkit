@@ -61,12 +61,19 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    - **What to do:** before running any branch copy, materialize the
      **merge-base** copy of all five *outside the worktree*
      (`git show <merge-base>:<path>` into a scratch closure that keeps the
-     helper beside its `lib/`). Run *that* `tier-inputs.mjs` and *that*
-     `devflow-policy.mjs`, both with the merge-base `.devflow.toml` as
-     `--policy` and the merge-base registry, never the branch's.
-   - **First adoption:** when the merge base predates `tier-inputs.mjs`, there
-     is no trusted helper to run. Tier resolution is then **indeterminate**:
-     stop and report it. Never fall back to the branch copy.
+     helper beside its `lib/`). Materialize the merge-base `Taskfile.yml` and
+     any `taskfiles/` it includes into the same closure. Run *that*
+     `tier-inputs.mjs` and *that* `devflow-policy.mjs`, both with the
+     merge-base `.devflow.toml` as `--policy`, the merge-base registry, and
+     `--taskfile-dir <closure>`, so the gate-target list also comes from the
+     merge base, never the branch's.
+   - **First adoption:** when the merge base predates `tier-inputs.mjs`, the
+     merge base has no trusted helper. Use an **operator-pinned** helper and
+     reader supplied *outside the candidate branch* (`AGENTS.md`: "an
+     operator-pinned reader supplied outside the candidate branch"). Feed
+     them only the materialized merge-base policy, registry and target list.
+     Only when no such pin exists is tier resolution **indeterminate**: stop
+     and report it. Never fall back to the branch copy.
    - **Every other change** uses the checkout's own copies, as the steps
      below show.
 1. **Read the issue's inputs.** Its labels; on an organization repository,
@@ -99,14 +106,24 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    while IFS= read -r a; do tier_args+=("$a"); done \
        < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' tier-translation.json)
    node "$support_dir/devflow-policy.mjs" resolve --policy .devflow.toml \
-       --registry agent-registry.json --json ${tier_args[@]+"${tier_args[@]}"} >resolved.json
+       --registry agent-registry.json --taskfile-dir . \
+       --json ${tier_args[@]+"${tier_args[@]}"} >resolved.json
    ```
+
+   Run it from the repository root. `--taskfile-dir .` hands the reader this
+   checkout's gate-target list. Without it (or `--task-targets`),
+   cross-validation is indeterminate and `resolve` always exits 3, which
+   would hide the one exit 3 that matters: the derived Tier's. On the step-0
+   path, `--taskfile-dir` is the merge-base closure instead.
 
    `tier-input.json` is `{"labels": [...], "authorized_labels": [...],
    "fields": {"risk": …, "complexity": …}, "operator": {"rigor": …,
    "strategy": …, "tiers": {…}}, "pin_provenance": {"marker_trusted": …,
-   "value_trusted": …}}`; every key is optional, and an omitted
-   `authorized_labels` honors no execution-policy label.
+   "value_trusted": …}}`. Every key is optional, and an omitted
+   `authorized_labels` honors no execution-policy label. The document must be
+   a JSON object. An unknown top-level key, or an `operator` key other than
+   `rigor`, `strategy` and `tiers`, is a usage error (exit 2), never silently
+   ignored.
    **Label conflicts are settled here, before the reader runs.**
    - `tier:pinned` with more than one unqualified `tier:<value>` is an
      ambiguous pin. No pinned Tier is passed, a `pin-ambiguous` warning names
@@ -117,8 +134,12 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    - A `rigor:*`/`strategy:*` label that names no `[rigor.*]`/`[strategy.*]`
      table in the policy (`--policy`) is ignored with a `*-label-unknown`
      warning, never forwarded for the reader to refuse.
-   - Two `strategy:*` labels pass neither, so `default_strategy` applies with
-     a warning.
+   - Two `strategy:*` labels are ambiguous: the helper passes neither and
+     emits a `strategy-label-ambiguous` warning (`AGENTS.md`: strategy
+     conflicts are not orderable). On that warning an **interactive session
+     stops and asks the operator** which strategy applies, then re-runs with
+     the answer as `operator.strategy`. **Unattended automation** takes
+     `default_strategy`, with the warning carried into the PR body.
    - Both Risk and Complexity are required to derive the Tier. With either
      missing, or conflicting (the helper passes the off-scale `conflict`
      value), the derived Tier is indeterminate, never guessed.

@@ -21,6 +21,7 @@ helper="$asset_dir/tier-inputs.mjs"
 reader="$asset_dir/devflow-policy.mjs"
 repo_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
 base_policy="$repo_root/ai/schemas/fixtures/devflow-conformance/policy.toml"
+fixture_dir_recipe="$repo_root/ai/schemas/fixtures/devflow-conformance"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/tier-inputs.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
@@ -113,6 +114,43 @@ for bad_operator in '{"operator":{"rigor":"Deep"}}' '{"operator":{"strategy":"Pl
         ok
     fi
 done
+
+echo "==> tier-inputs.mjs: the input document's shape and keys are validated (integration remediation 1)"
+# expect_usage_error_input NAME INPUT — the helper exits 2 on INPUT.
+expect_usage_error_input() {
+    local name="$1" input="$2" rc=0
+    printf '%s' "$input" | node "$helper" --policy "$base_policy" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 2 ]; then ok; else fail "$name: expected exit 2, got $rc"; fi
+}
+expect_usage_error_input "a null document (thread 4176257533)" 'null'
+expect_usage_error_input "an array document (thread 4176257533)" '[]'
+expect_usage_error_input "a string document (thread 4176257533)" '"oops"'
+expect_usage_error_input "an unknown operator key (thread 4176257545)" '{"operator":{"rigour":"deep"}}'
+expect_usage_error_input "an unknown top-level key (thread 4176257545)" '{"labelz":["tier:apex"]}'
+expect_usage_error_input "a policy key inside the document" '{"policy":{"rigors":[],"strategies":[]}}'
+
+echo "==> tier-inputs.mjs: extra-colon labels are counted, never dropped (integration remediation 1, thread 4176257550)"
+expect_args "an extra-colon Risk label is the off-scale sentinel" '{"labels":["risk:high:typo"]}' '["--risk=conflict"]'
+expect_args "an extra-colon Complexity label is the off-scale sentinel" \
+    '{"labels":["risk:high","complexity:m:typo"]}' '["--risk=high","--complexity=conflict"]'
+expect_args "an extra-colon Tier label makes a pin ambiguous" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:apex:old\"],$pin_trust}" '[]'
+expect_warning "the extra-colon ambiguous pin names both values" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:apex:old\"],$pin_trust}" pin-ambiguous "tier:apex" "tier:apex:old"
+expect_args "an extra-colon Tier label makes the stored Tier ambiguous" '{"labels":["tier:apex","tier:apex:old"]}' '[]'
+expect_args "an unknown-role tier label still counts toward pin ambiguity" \
+    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:foo:bar\"],$pin_trust}" '[]'
+expect_warning "an extra-colon role label is a named rival, never forwarded" \
+    '{"labels":["tier:implementer:apex:x","tier:implementer:economy"],"authorized_labels":["tier:implementer:apex:x","tier:implementer:economy"]}' \
+    tier-role-label-conflict "tier:implementer:apex:x" "economy applies"
+expect_args "an extra-colon role label is never forwarded" \
+    '{"labels":["tier:implementer:apex:x","tier:implementer:economy"],"authorized_labels":["tier:implementer:apex:x","tier:implementer:economy"]}' \
+    '["--tier-labels=implementer=economy"]'
+expect_args "an extra-colon rigor label names nothing and is ignored" \
+    '{"labels":["rigor:deep:x"],"authorized_labels":["rigor:deep:x"]}' '[]'
+expect_args "an extra-colon strategy label names nothing and is ignored" \
+    '{"labels":["strategy:plan:x"],"authorized_labels":["strategy:plan:x"]}' '[]'
+expect_args "an unauthorized extra-colon role label is still gated" '{"labels":["tier:implementer:apex:x"]}' '[]'
 expect_warning "two stored Tiers without a pin warn" '{"labels":["tier:local","tier:apex"]}' stored-tier-ambiguous "tier:local" "tier:apex"
 expect_args "role-label conflict takes the strongest" \
     '{"labels":["tier:implementer:economy","tier:implementer:frontier"],"authorized_labels":["tier:implementer:economy","tier:implementer:frontier"]}' \
@@ -285,6 +323,33 @@ e2e "no classification resolves to the default profile" '{"labels":[]}' standard
 e2e "a stale strategy label no longer blocks resolution" \
     '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
     "warning [strategy-label-unknown]"
+
+echo "==> the documented resolve recipe exits 0 (integration remediation 1, thread 4176257539)"
+# The exact command shape dev-flow-support § "Resolving an issue's Tier" step 3
+# documents — helper, the while-read argument loop, then `resolve` with
+# --taskfile-dir . run from the repository root — over the fixture policy
+# (whose gate and finder targets this repository's Taskfile defines). Without
+# --taskfile-dir the gate-target check is indeterminate and resolve exits 3
+# whatever the issue says; the control below proves the flag is what clears it.
+recipe_dir="$scratch/recipe"
+mkdir -p "$recipe_dir"
+printf '%s' '{"labels":["risk:high","complexity:m"]}' >"$recipe_dir/tier-input.json"
+recipe_rc=0
+(
+    cd "$repo_root" || exit 99
+    node "$helper" --policy "$base_policy" --input "$recipe_dir/tier-input.json" >"$recipe_dir/tier-translation.json" || exit 98
+    tier_args=()
+    while IFS= read -r a; do tier_args+=("$a"); done \
+        < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' "$recipe_dir/tier-translation.json")
+    node "$reader" resolve --policy "$base_policy" \
+        --registry "$fixture_dir_recipe/agent-registry.json" --taskfile-dir . \
+        --json ${tier_args[@]+"${tier_args[@]}"} >"$recipe_dir/resolved.json" 2>"$recipe_dir/resolve.err"
+) || recipe_rc=$?
+if [ "$recipe_rc" -eq 0 ]; then ok; else fail "the documented recipe must exit 0, got $recipe_rc: $(head -3 "$recipe_dir/resolve.err" 2>/dev/null)"; fi
+control_rc=0
+node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir_recipe/agent-registry.json" --json \
+    --risk=high --complexity=m >/dev/null 2>&1 || control_rc=$?
+if [ "$control_rc" -eq 3 ]; then ok; else fail "control: without --taskfile-dir resolve must exit 3 (indeterminate targets), got $control_rc"; fi
 
 echo "==> tier-inputs.mjs + devflow-policy.mjs: an ambiguous classification is indeterminate, never absent (review round 1, R1-1)"
 # Resolved WITH the fixture registry and task-target list, so cross-validation
