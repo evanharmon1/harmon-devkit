@@ -151,7 +151,8 @@ nothing):
 ```sh
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> \
   [--add <label>]... [--native-type <Type>] \
-  [--impact <v>] [--risk <v>] [--complexity <v>] [--priority-ai <v>]
+  [--impact <v>] [--risk <v>] [--complexity <v>] [--priority-ai <v>] \
+  [--reconcile]
 ```
 
 In EXECUTE mode append `--execute`. Record every line the script prints —
@@ -257,12 +258,27 @@ You never add or remove `needs-triage`. Every apply call derives it from the
 When anything is missing the script adds `needs-triage` (if absent) and says
 what is missing; when nothing is, it removes `needs-triage` (if present). It
 leaves the label alone where the repo's manifest does not grant it to agents,
-or where it cannot read the native Type. The scan's `required_missing` and
-its `missing-needs-triage` / `partially-classified` /
-`needs-triage-removable` flags are the same derivation before your writes —
-an issue flagged `needs-triage-removable` that needs no other write is
-settled by any apply call that changes nothing else, so leave it for the next
-run rather than inventing a write.
+and never removes it while it cannot read the native Type. The scan's
+`required_missing` and its `missing-needs-triage` / `partially-classified` /
+`needs-triage-removable` flags are the same derivation before your writes.
+
+**Settle the marker even when nothing else is written.** For every issue the
+scan flags `missing-needs-triage` or `needs-triage-removable` and that got no
+other apply call in 2a–2c, make one reconcile call:
+
+```sh
+"$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> --reconcile
+```
+
+It writes nothing but the derived `needs-triage` and, where Risk and
+Complexity are both set and the issue carries no `tier:pinned`, a missing or
+stale derived Tier. (Every other apply call makes the same derived writes
+alongside its own.)
+
+**When `fields_mode` is not `bulk` on an organization** (the field read
+failed or was truncated), say so in the report's `## Scan truncation`
+section, and treat no issue flagged `classification-unreadable` as
+classified: its Impact, Risk and Complexity were not read.
 
 An issue whose only gap is a work type the organization cannot express (no
 enabled Type clearly applies), or an axis you could not rate with confidence,
@@ -292,6 +308,8 @@ a finding):
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
+| `needs-triage-removable`             | the output of its reconcile call (2d)                | only when that call did not remove `needs-triage` — say why (the manifest withholds it, or the native Type could not be read) |
+| `classification-unreadable`          | nothing — the flag is the finding                    | always; its Impact/Risk/Complexity fields were not read this run, so it is not known to be classified |
 | `classification-conflict:*`         | nothing — the flag is the finding                    | always; name the conflicting values from the issue's `classification` (a human must keep one) |
 | `classification-unknown-value:*`     | nothing — the flag is the finding                    | always; name the value — off the rubric scale or not provisioned (a human must correct it) |
 | `missing-work-type` on an org repo   | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
@@ -360,9 +378,10 @@ the entries file, no entry keys):
   budget did not reach this run. Required whenever the budget ran out: an
   unverified candidate left off the report vanishes as though resolved.
 - `## Scan truncation` — required whenever the scan set `truncated_open` or
-  `truncated_closed`: one line saying which window was truncated, so a
-  finding missing from this report may simply be outside it rather than
-  resolved.
+  `truncated_closed`, or `fields_mode` is `unknown`: one line saying which
+  window was truncated (or that the organization's issue fields were not
+  read), so a finding missing from this report may simply be outside it
+  rather than resolved.
 - `## Tier/strategy proposals` — only if, while reading an issue, you are
   confident a scoped `tier:<role>:*` override (e.g.
   `tier:implementer:<value>`), a human pin of a different Tier (`tier:<value>`

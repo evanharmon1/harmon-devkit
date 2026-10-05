@@ -91,6 +91,7 @@ case "${1:-} ${2:-}" in
         else
             echo '{}'
         fi
+        return 0
     }
     if grep -q -- '--input' <<<"$*"; then
         [ "${GH_STUB_FIELD_WRITE_FAIL:-0}" = 0 ] || {
@@ -139,6 +140,19 @@ case "${1:-} ${2:-}" in
     elif grep -q 'issueFieldValues(first:' <<<"$*"; then
         [ ! -f "$GH_STUB_DIR/fields-unreadable" ] || exit 1
         [ "${GH_STUB_ISSUE_FIELD_VALUES:-}" != "ERROR" ] || exit 1
+        # GH_STUB_FIELDS_CHANGE_ON_READ=K merges GH_STUB_FIELDS_CHANGE_JSON
+        # into the issue's values on its K-th read: a person editing a field
+        # between triage's first read and its pre-write re-read.
+        if [ -n "${GH_STUB_FIELDS_CHANGE_ON_READ:-}" ]; then
+            reads="$(cat "$GH_STUB_DIR/.field-reads-$n" 2>/dev/null || echo 0)"
+            reads=$((reads + 1))
+            echo "$reads" >"$GH_STUB_DIR/.field-reads-$n"
+            if [ "$reads" -eq "$GH_STUB_FIELDS_CHANGE_ON_READ" ]; then
+                jq -n --argjson cur "$(field_values "$n")" \
+                    --argjson chg "${GH_STUB_FIELDS_CHANGE_JSON:?}" '$cur + $chg' \
+                    >"$GH_STUB_DIR/issue-fields-$n.json"
+            fi
+        fi
         jq -n --arg n "${n:?}" --argjson v "$(field_values "$n")" '
           {data: {repository: {issue: {id: "I_\($n)", issueFieldValues: {
             pageInfo: {hasNextPage: false},
@@ -2152,7 +2166,7 @@ issue_fixture 62 $classified impact:low complexity:m tier:local
 # shellcheck disable=SC2086
 issue_fixture 63 bug
 # shellcheck disable=SC2086
-issue_fixture 64 $classified impact:low risk:low complexity:s
+issue_fixture 64 $classified impact:low risk:low complexity:s tier:economy
 # shellcheck disable=SC2086
 issue_fixture 65 $classified impact:low risk:low complexity:s priority-ai:p2
 # shellcheck disable=SC2086
@@ -2345,6 +2359,48 @@ grep -q "risk (unset)" "$tmp/out" || fail "the refusal must name the axis"
     --manifest "$manifest")" = 0 ] ||
     fail "a removal on a complete issue must pass: $(cat "$tmp/out")"
 
+echo "==> label: --reconcile writes only the derived needs-triage and Tier"
+[ "$(run "$apply" label --repo "$repo" --issue 63 \
+    --manifest "$manifest")" = 2 ] ||
+    fail "a call with no request and no --reconcile must still exit 2"
+[ "$(run "$apply" label --repo "$repo" --issue 63 --reconcile \
+    --manifest "$manifest")" = 0 ] || fail "reconcile add failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'needs-triage' to $repo#63" "$tmp/out" ||
+    fail "an incomplete, unmarked issue must get needs-triage from --reconcile"
+[ "$(grep -c "DRY-RUN" "$tmp/out")" = 1 ] ||
+    fail "--reconcile must write nothing else here: $(cat "$tmp/out")"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 69 \
+    --reconcile --execute --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "reconcile removal failed: $(cat "$tmp/out")"
+grep -qx "issue edit 69 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "a complete, marked issue must lose needs-triage through --reconcile"
+grep -qx "issue edit 69 --repo $repo --add-label tier:economy" "$GH_STUB_LOG" ||
+    fail "--reconcile must also write the missing derived Tier: $(cat "$GH_STUB_LOG")"
+
+echo "==> label: a missing or stale Tier is derived when Risk and Complexity are set"
+# shellcheck disable=SC2086
+issue_fixture 74 $classified impact:low risk:high complexity:m tier:local
+[ "$(run "$apply" label --repo "$repo" --issue 74 --reconcile \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "stale-tier reconcile failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'tier:frontier' to $repo#74" "$tmp/out" &&
+    grep -q "DRY-RUN would remove 'tier:local' from $repo#74" "$tmp/out" ||
+    fail "a stale Tier must be repaired without writing an axis: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 74 --add priority-ai:p2 \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "stale-tier beside another write failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'tier:frontier'" "$tmp/out" ||
+    fail "any call that leaves Risk and Complexity set repairs the Tier"
+# shellcheck disable=SC2086
+issue_fixture 75 $classified impact:low risk:high complexity:m tier:local tier:pinned
+[ "$(run "$apply" label --repo "$repo" --issue 75 --reconcile \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "pinned reconcile failed: $(cat "$tmp/out")"
+grep -q "would add 'tier:\|would remove 'tier:" "$tmp/out" &&
+    fail "--reconcile must never touch a pinned Tier"
+grep -q "carries tier:pinned" "$tmp/out" || fail "the pin must be reported"
+
 echo "==> label: Priority (AI) — set with the axes, kept, replaced, never human"
 [ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
     --complexity m --priority-ai p1 --manifest "$manifest" \
@@ -2486,6 +2542,47 @@ jq -e '.["Priority (AI)"] == "p2" and .Priority == "High"' \
     "$stub_dir/issue-fields-73.json" >/dev/null ||
     fail "Priority (AI) set, human Priority untouched"
 
+echo "==> label: an unreadable org Type still adds needs-triage when something is missing"
+issue_fixture 76 area:ci
+[ "$(run env GH_STUB_NATIVE_TYPE=ERROR "$apply" label --repo "$repo" \
+    --issue 76 --reconcile --manifest "$manifest")" = 0 ] ||
+    fail "indeterminate-Type reconcile failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'needs-triage' to $repo#76" "$tmp/out" ||
+    fail "a known gap must add needs-triage even when the Type is unreadable"
+[ "$(run env GH_STUB_NATIVE_TYPE=ERROR "$apply" label --repo "$repo" \
+    --issue 76 --remove needs-triage --manifest "$manifest")" = 6 ] ||
+    fail "a removal still needs the Type proven"
+
+echo "==> label: an org field changed before the mutation refuses (fill-only)"
+rm -f "$stub_dir/issue-fields-70.json" "$stub_dir"/.field-reads-*
+: >"$GH_STUB_LOG"
+rm -f "$stub_dir/field-mutations.log"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELDS_CHANGE_ON_READ=2 \
+    GH_STUB_FIELDS_CHANGE_JSON='{"Risk": "low"}' "$apply" label \
+    --repo "$repo" --issue 70 --impact high --risk high --complexity m \
+    --execute --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a field set between the reads must refuse: $(cat "$tmp/out")"
+grep -q "issue field 'Risk' changed while triage was preparing its write" \
+    "$tmp/out" || fail "the refusal must name the field"
+[ ! -e "$stub_dir/field-mutations.log" ] ||
+    fail "no mutation may follow a changed field"
+grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
+    fail "no label may follow a changed field"
+issue_fixture 77 area:ci layer:ui domain:auth
+echo '{"Impact": "low", "Complexity": "s", "Priority (AI)": "p2"}' \
+    >"$stub_dir/issue-fields-77.json"
+rm -f "$stub_dir"/.field-reads-* "$stub_dir/field-mutations.log"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELDS_CHANGE_ON_READ=2 \
+    GH_STUB_FIELDS_CHANGE_JSON='{"Priority": "High"}' "$apply" label \
+    --repo "$repo" --issue 77 --risk high --priority-ai p1 --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a human Priority set before a PAI replacement must refuse: $(cat "$tmp/out")"
+grep -q "human Priority was set on $repo#77" "$tmp/out" ||
+    fail "the refusal must name the human Priority"
+[ ! -e "$stub_dir/field-mutations.log" ] ||
+    fail "no mutation may follow the human Priority appearing"
+rm -f "$stub_dir"/.field-reads-* "$stub_dir/issue-fields-77.json"
+
 echo "==> label: an org field write failure or unverifiable write stops the labels"
 rm -f "$stub_dir/issue-fields-70.json"
 : >"$GH_STUB_LOG"
@@ -2584,7 +2681,9 @@ jq 'map(.issueType = {name: "Bug"})' "$stub_dir/issues-open.json" \
     >"$stub_dir/issues-open-types.json"
 echo '{"Impact": "High", "Risk": "high", "Complexity": "m", "Priority": "Low"}' \
     >"$stub_dir/issue-fields-80.json"
-rm -f "$stub_dir"/issue-fields-8[123].json
+rm -f "$stub_dir"/issue-fields-8[23].json
+echo '{"Impact": "huge", "Risk": "low", "Complexity": "s"}' \
+    >"$stub_dir/issue-fields-81.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
     fail "org classification scan failed: $(cat "$tmp/out")"
 jq -e '.classification_axes.storage == "field" and .fields_mode == "bulk"' \
@@ -2604,11 +2703,22 @@ jq -e '.open[] | select(.number == 83)
 jq -e '.open[] | select(.number == 81)
        | .classification.tier_pinned and .classification.tier == ["apex"]' \
     "$tmp/out" >/dev/null || fail "the Tier and pin are labels on an org too"
+jq -e '.open[] | select(.number == 81)
+       | .classification.impact == {state: "unknown", value: "huge"}
+         and .required_missing == ["impact"]
+         and (.flags | index("classification-unknown-value:impact") != null)
+         and (.flags | index("needs-triage-removable") == null)' \
+    "$tmp/out" >/dev/null ||
+    fail "an off-scale field value read must count as missing, as apply does"
 
 echo "==> scan: an unreadable org field pass is unknown, never unset"
 [ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
-    --manifest "$manifest" --all)" = 0 ] ||
+    --manifest "$manifest")" = 0 ] ||
     fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
+jq -e '([.open[].number] | sort) == [80, 81, 82, 83]
+       and ([.open[] | .flags | index("classification-unreadable") != null]
+            | all)' "$tmp/out" >/dev/null ||
+    fail "every issue whose fields were not read must stay in open[], flagged"
 jq -e '.fields_mode == "unknown"
        and ([.open[] | .classification.risk.state] | unique) == ["unknown"]
        and ([.open[] | .flags[] | select(. == "needs-triage-removable"
@@ -2629,6 +2739,11 @@ grep -q 'Read `references/priority-rubric.md`' \
     fail "SKILL.md must tell the model to read the priority rubric first"
 grep -q 'apply its explicit `none` value' ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must tell the model to apply none rather than omit an axis"
+grep -q -- '--issue <n> --reconcile' ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must issue the reconcile call for needs-triage-only issues"
+grep -q 'treat no issue flagged `classification-unreadable`' \
+    ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must say an unread field set is not classified"
 
 echo "==> references: both rubrics exist and SKILL.md links them"
 for rubric in classification-rubric priority-rubric; do

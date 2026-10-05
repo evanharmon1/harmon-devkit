@@ -714,12 +714,17 @@ apply_label() {
     done < <(jq -r '.remove // [] | .[]' <<<"$row")
 
     if [ "$execute" -eq 0 ]; then
-        # Print the PLAN line only — validate_label (pass 1) already invoked
-        # this exact triage-apply.sh dry run to validate this row, so calling
-        # it again here would be a second, redundant subprocess/API round
-        # trip for identical validation with no functional difference
-        # (challenge round 3 finding 6).
+        # The PLAN line alone hides what the row really writes: triage-apply.sh
+        # derives writes the row never names (issue fields on an organization,
+        # the Tier label, the needs-triage change). Show its own dry run under
+        # the PLAN line, so the approved plan is the whole write
+        # (harmon-devkit#1250, challenge round 1 finding 2).
+        local dry
+        dry="$("$triage_apply" "${args[@]}" 2>&1)" ||
+            die 4 "refused: #$issue label op failed triage-apply.sh's own" \
+                "dry run: $dry"
         print_plan "$triage_apply" "${args[@]}"
+        printf '%s\n' "$dry" | sed 's/^/  /'
         return 0
     fi
     log_write "$log" "$triage_apply" "${args[@]}" "--execute"

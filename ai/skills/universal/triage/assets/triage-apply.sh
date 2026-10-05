@@ -66,7 +66,8 @@
 #                   [--add LABEL]... [--native-type TYPE]
 #                   [--impact V] [--risk V] [--complexity V]
 #                   [--priority-ai V] [--remove needs-triage]
-#                   [--manifest PATH] [--policy PATH] [--execute]
+#                   [--reconcile] [--manifest PATH] [--policy PATH]
+#                   [--execute]
 #
 # `native-type` is a read: it prints JSON with an explicit `state` (`set` or
 # `unset`) and the exact Type `name` when set. It exists so the classifying
@@ -97,6 +98,12 @@
 # changed the classification. Priority (AI) is written only alongside a
 # complete Impact, Risk and Complexity. A human Priority is reported, never
 # written.
+#
+# --reconcile asks for nothing but the derived writes: needs-triage from the
+# required set, and the Tier wherever Risk and Complexity are both set. It is
+# how a run settles an issue that needs no other write (the scan's
+# `missing-needs-triage` / `needs-triage-removable`); every other call derives
+# the same writes alongside its own.
 #
 # --policy PATH (default ./.devflow.toml) is the policy the Tier is derived
 # under. Without a [tier.matrix] there (or without the file, the reader, or
@@ -158,7 +165,7 @@ usage() {
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--native-type TYPE] [--impact V] [--risk V]" >&2
     echo "           [--complexity V] [--priority-ai V]" >&2
-    echo "           [--remove needs-triage] [--manifest PATH]" >&2
+    echo "           [--remove needs-triage] [--reconcile] [--manifest PATH]" >&2
     echo "           [--policy PATH] [--execute]" >&2
     exit 2
 }
@@ -780,6 +787,7 @@ cmd_label() {
     local native_type="" native_type_seen=0
     local adds=() removes=()
     local req_impact="" req_risk="" req_complexity="" req_priority_ai=""
+    local reconcile=0
     # set_axis_request AXIS VALUE — one value per axis per call, whether it
     # came from --<axis> or from --add <axis>:<value>.
     set_axis_request() {
@@ -841,6 +849,7 @@ cmd_label() {
             policy="$2"
             shift 2
             ;;
+        --reconcile) reconcile=1 && shift ;;
         --execute) execute=1 && shift ;;
         *) usage ;;
         esac
@@ -886,8 +895,10 @@ cmd_label() {
 
     [ "${#adds[@]}" -gt 0 ] || [ "${#removes[@]}" -gt 0 ] ||
         [ -n "$native_type" ] || [ -n "$req_impact$req_risk$req_complexity$req_priority_ai" ] ||
+        [ "$reconcile" -eq 1 ] ||
         die 2 "nothing requested — pass --add, --native-type, an axis" \
-            "(--impact/--risk/--complexity/--priority-ai), and/or --remove"
+            "(--impact/--risk/--complexity/--priority-ai), --remove, or" \
+            "--reconcile"
 
     # Validate the registry here, in this shell: a refusal inside the command
     # substitutions below would only end that subshell (no inherit_errexit)
@@ -1082,6 +1093,7 @@ cmd_label() {
 
     local notes=() field_writes=() axis_label_adds=() replace_removes=()
     local post_impact="" post_risk="" post_complexity="" class_changed=0 cur
+    local pai_replace=0
     for axis in $FIELD_AXES; do
         cur="$(axis_current "$axis")"
         var="req_${axis//-/_}"
@@ -1135,6 +1147,7 @@ cmd_label() {
         *)
             if [ -z "$human" ] && [ "$class_changed" -eq 1 ]; then
                 field_writes+=("priority-ai=$req_priority_ai")
+                pai_replace=1
                 if [ "$owner_type" != "Organization" ]; then
                     while IFS= read -r l; do
                         [ -n "$l" ] && replace_removes+=("$l")
@@ -1154,30 +1167,38 @@ cmd_label() {
         done
     fi
 
-    # ── Tier: derived in the same call that writes Risk or Complexity ───────
-    local tier_add="" tier_removes=() writes_rc=0
+    # ── Tier: derived wherever Risk and Complexity are both set ─────────────
+    # Written in the call that writes Risk or Complexity, and repaired by any
+    # later call (a missing or stale label) — never over tier:pinned. Why it
+    # was NOT written is said only when this call wrote an input or asked to
+    # reconcile; an unrelated label call stays quiet about it.
+    local tier_add="" tier_removes=() writes_rc=0 tier_quiet=1
     for l in "${field_writes[@]+"${field_writes[@]}"}"; do
         case "${l%%=*}" in risk | complexity) writes_rc=1 ;; esac
     done
-    if [ "$writes_rc" -eq 1 ]; then
-        if in_list "tier:pinned" "$current"; then
-            notes+=("tier: $repo#$issue carries tier:pinned — the Tier label is left as it is")
-        elif [ -z "$post_risk" ] || [ -z "$post_complexity" ]; then
-            notes+=("tier: not derived — Risk and Complexity are both needed")
+    [ "$writes_rc" -eq 0 ] && [ "$reconcile" -eq 0 ] || tier_quiet=0
+    tier_note() {
+        [ "$tier_quiet" -eq 1 ] || notes+=("$1")
+    }
+    if in_list "tier:pinned" "$current"; then
+        tier_note "tier: $repo#$issue carries tier:pinned — the Tier label is left as it is"
+    elif [ -z "$post_risk" ] || [ -z "$post_complexity" ]; then
+        tier_note "tier: not derived — Risk and Complexity are both needed"
+    else
+        local derived
+        derived="$(derive_tier "$post_risk" "$post_complexity" "$policy")"
+        if [ "${derived#!}" != "$derived" ]; then
+            tier_note "tier: not written — ${derived#!}"
+        elif ! jq -e --arg t "$derived" '.tier_values | index($t) != null' \
+            <<<"$class_json" >/dev/null; then
+            tier_note "tier: not written — $repo has no 'tier:$derived' label"
         else
-            local derived
-            derived="$(derive_tier "$post_risk" "$post_complexity" "$policy")"
-            if [ "${derived#!}" != "$derived" ]; then
-                notes+=("tier: not written — ${derived#!}")
-            elif ! jq -e --arg t "$derived" '.tier_values | index($t) != null' \
-                <<<"$class_json" >/dev/null; then
-                notes+=("tier: not written — $repo has no 'tier:$derived' label")
-            else
-                in_list "tier:$derived" "$current" || tier_add="tier:$derived"
-                for value in $TIER_RUNGS; do
-                    [ "$value" != "$derived" ] || continue
-                    in_list "tier:$value" "$current" && tier_removes+=("tier:$value")
-                done
+            in_list "tier:$derived" "$current" || tier_add="tier:$derived"
+            for value in $TIER_RUNGS; do
+                [ "$value" != "$derived" ] || continue
+                in_list "tier:$value" "$current" && tier_removes+=("tier:$value")
+            done
+            if [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; then
                 notes+=("tier: derived '$derived' from Risk $post_risk × Complexity $post_complexity")
             fi
         fi
@@ -1259,11 +1280,17 @@ cmd_label() {
     missing_text="$(printf '%s; ' "${missing[@]+"${missing[@]}"}")"
     missing_text="${missing_text%; }"
     if [ -n "$indeterminate" ]; then
+        # Only a REMOVAL needs the whole required set proven; anything already
+        # known missing is enough to add the marker.
         [ "$nt_explicit_remove" -eq 0 ] ||
             die 6 "refused: $indeterminate — needs-triage stays"
-        [ "$nt_explicit_add" -eq 0 ] || [ "$nt_present" -eq 1 ] || nt_add=1
-        [ "$nt_add" -eq 1 ] ||
+        if [ "$nt_present" -eq 0 ] && [ "$nt_granted" -eq 1 ] &&
+            { [ "${#missing[@]}" -gt 0 ] || [ "$nt_explicit_add" -eq 1 ]; }; then
+            nt_add=1
+            notes+=("needs-triage: derived — missing: ${missing_text:-unverified work type} ($indeterminate)")
+        else
             notes+=("needs-triage: left as it is — $indeterminate")
+        fi
     elif [ "${#missing[@]}" -gt 0 ]; then
         [ "$nt_explicit_remove" -eq 0 ] ||
             die 6 "refused: needs-triage stays — classification is incomplete:" \
@@ -1418,6 +1445,26 @@ cmd_label() {
             fields_input="$(jq -c --argjson o "$opt" '. + [$o]' <<<"$fields_input")"
         done
         [ -n "$issue_id" ] || die 2 "could not resolve the node id of $repo#$issue"
+        # A person may have set a value since the first read. Re-read right
+        # before the non-conditional mutation, as the native Type path does:
+        # triage fills, so any field it is about to write must still hold
+        # what it held then, and a Priority (AI) replacement needs the human
+        # Priority still unset.
+        local fresh_fields
+        fresh_fields="$(org_issue_field_values "$repo" "$issue")" ||
+            die 2 "could not re-read the issue field values of $repo#$issue"
+        for w in "${org_field_writes[@]}"; do
+            name="$(axis_field_name "${w%%=*}")"
+            [ "$(jq -r --arg n "$name" '.fields[$n] // ""' <<<"$fresh_fields")" = \
+                "$(jq -r --arg n "$name" '.fields[$n] // ""' <<<"$issue_fields_json")" ] ||
+                die 4 "refused: $repo#$issue issue field '$name' changed while" \
+                    "triage was preparing its write — triage only fills"
+        done
+        if [ "$pai_replace" -eq 1 ] &&
+            [ -n "$(jq -r '.fields["Priority"] // empty' <<<"$fresh_fields")" ]; then
+            die 4 "refused: a human Priority was set on $repo#$issue while" \
+                "triage was preparing to replace Priority (AI)"
+        fi
         org_set_issue_fields "$issue_id" "$fields_input" </dev/null ||
             die 1 "write failed: setIssueFieldValue on $repo#$issue"
         local attempts=0 verified=""

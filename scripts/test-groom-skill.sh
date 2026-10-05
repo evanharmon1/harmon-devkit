@@ -101,7 +101,21 @@ case "${1:-} ${2:-}" in
         echo '{"labels":[],"author":{"login":"someone","type":"User","is_bot":false}}'
     fi
     ;;
-"label list") cat "${GH_STUB_DIR:?}/labels.json" ;;
+"label list")
+    # Honor -q when given (triage-apply.sh reads names this way); a call
+    # without it still gets the fixture verbatim.
+    q=""
+    prev=""
+    for a in "$@"; do
+        [ "$prev" != "-q" ] || q="$a"
+        prev="$a"
+    done
+    if [ -n "$q" ]; then
+        jq -r "$q" "${GH_STUB_DIR:?}/labels.json"
+    else
+        cat "${GH_STUB_DIR:?}/labels.json"
+    fi
+    ;;
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
 "project list") exit 1 ;;
 "issue list") cat "${GH_STUB_DIR:?}/open-issues.json" ;;
@@ -2103,6 +2117,32 @@ label_never_log="$tmp/label-never.log"
 grep -qE "^issue close" "$GH_STUB_LOG" &&
     fail "a pass-1-refused label op must prevent the earlier valid close from writing too"
 grep -q "^WRITE " "$label_never_log" && fail "no WRITE lines should be logged when pass 1 refuses"
+
+echo "==> apply-plan: a label row's dry-run plan shows triage-apply.sh's derived writes (harmon-devkit#1250)"
+cp "$stub_dir/labels.json" "$tmp/labels-before-axes.json"
+cat >"$stub_dir/labels.json" <<'JSON'
+[{"name":"needs-triage","description":""},
+ {"name":"risk:high","description":""},
+ {"name":"complexity:m","description":""}]
+JSON
+axis_plan="$tmp/label-axis-plan.jsonl"
+cat >"$axis_plan" <<'JSONL'
+{"op":"label","issue":31,"add":["risk:high","complexity:m"],"bot_owned":false}
+JSONL
+: >"$GH_STUB_LOG"
+axis_log="$tmp/label-axis.log"
+: >"$axis_log"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$axis_plan" \
+    --log "$axis_log")" = 0 ] ||
+    fail "a classification-axis label row must dry-run: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^PLAN .*triage-apply.sh label .*--add risk:high --add complexity:m" "$tmp/out" ||
+    fail "the PLAN line must still name the row: $(cat "$tmp/out")"
+grep -q "^  DRY-RUN would add 'risk:high' to $repo#31" "$tmp/out" ||
+    fail "the plan must show the axis write triage-apply.sh would make: $(cat "$tmp/out")"
+grep -q "^  tier: not written" "$tmp/out" ||
+    fail "the plan must show the derived Tier outcome: $(cat "$tmp/out")"
+grep -q "^issue edit" "$GH_STUB_LOG" && fail "a dry-run plan must not edit"
+cp "$tmp/labels-before-axes.json" "$stub_dir/labels.json"
 
 echo "==> apply-plan: an unwritable --outcomes sink is refused in pass 1, before any write (finding 8)"
 : >"$GH_STUB_LOG"

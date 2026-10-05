@@ -673,8 +673,12 @@ jq -n -L "$title_module_dir" \
       ($axes[] | . as $a
        | select($conf.axis_state[$a] != "ok"
                 or (axis_unknown($ls; $a; $known) | length) > 0)),
+      # Unreadable (state unknown, no value read) is undecided, never
+      # missing; a value that WAS read but is off the scale or not
+      # provisioned does not set the axis — as in triage-apply.sh.
       ($class.required[] | select($cls[.].state != "set"
-                                  and $cls[.].state != "unknown")) ];
+                                  and ($cls[.].state != "unknown"
+                                       or $cls[.].value != null))) ];
 
   {
     repo: $repo,
@@ -711,8 +715,12 @@ jq -n -L "$title_module_dir" \
             "complexity": class_axis($ls; $num; "complexity"),
             "priority-ai": class_axis($ls; $num; "priority-ai")}) as $cls
         | required_missing($ls; $conf; $nts; $cls) as $missing
+        | ([$class.axes | to_entries[] | select(.value.provisioned) | .key
+            | select($cls[.].state == "unknown" and $cls[.].value == null)]
+           | length > 0) as $unreadable
         | (($nts == "unknown")
-           or ([$class.required[] | select($cls[.].state == "unknown")]
+           or ([$class.required[] | select($cls[.].state == "unknown"
+                                           and $cls[.].value == null)]
                | length > 0)) as $undecided
         | (($ls | index("needs-triage")) != null) as $has_nt
         | ([$conf.flags[]
@@ -732,7 +740,11 @@ jq -n -L "$title_module_dir" \
               elif ($missing | length) > 0 then ["partially-classified"]
               elif $has_nt and ($undecided | not)
               then ["needs-triage-removable"]
-              else [] end)) as $flags
+              else [] end)
+           # The org field pass failed or was truncated for this issue: it
+           # stays in open[] so the report can say it was not read.
+           + (if $unreadable then ["classification-unreadable"] else [] end))
+          as $flags
         | {number, title, updatedAt,
            days_since_update: $days,
            labels: $ls,
