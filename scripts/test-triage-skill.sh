@@ -68,7 +68,84 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "${GH_STUB_VIEWER:-testowner}"
     ;;
 "api graphql")
-    if grep -q 'issueTypes(first:' <<<"$*"; then
+    # Organization issue fields (triage-apply.sh / triage-scan.sh). Fixtures
+    # are kept simple and the GraphQL shapes are built here:
+    #   issue-fields.json      [{id, name, options: [{id, name}]}] — the
+    #                          repository's issue fields (absent: none)
+    #   issue-fields-<n>.json  {"<Field name>": "<value>"} — one issue's
+    #                          values (absent: none)
+    # setIssueFieldValue arrives on stdin (--input -); it is logged to
+    # field-mutations.log and applied to issue-fields-<n>.json.
+    n=""
+    prev=""
+    for a in "$@"; do
+        [ "$prev" != "-F" ] || case "$a" in n=*) n="${a#n=}" ;; esac
+        prev="$a"
+    done
+    catalogue="[]"
+    [ ! -f "${GH_STUB_DIR:?}/issue-fields.json" ] ||
+        catalogue="$(cat "$GH_STUB_DIR/issue-fields.json")"
+    field_values() {
+        if [ -f "$GH_STUB_DIR/issue-fields-$1.json" ]; then
+            cat "$GH_STUB_DIR/issue-fields-$1.json"
+        else
+            echo '{}'
+        fi
+    }
+    if grep -q -- '--input' <<<"$*"; then
+        [ "${GH_STUB_FIELD_WRITE_FAIL:-0}" = 0 ] || {
+            cat >/dev/null
+            exit 1
+        }
+        body="$(cat)"
+        printf '%s\n' "$body" >>"$GH_STUB_DIR/field-mutations.log"
+        grep -q 'setIssueFieldValue' <<<"$body" || exit 98
+        target="$(jq -r '.variables.issue | ltrimstr("I_")' <<<"$body")"
+        jq -n --argjson cur "$(field_values "$target")" \
+            --argjson cat "$catalogue" --argjson body "$body" '
+          reduce $body.variables.fields[] as $w ($cur;
+            ([$cat[] | select(.id == $w.fieldId)] | first) as $f
+            | . + {($f.name): ([$f.options[]
+                                | select(.id == $w.singleSelectOptionId)]
+                               | first | .name)})' \
+            >"$GH_STUB_DIR/issue-fields-$target.json.next"
+        mv "$GH_STUB_DIR/issue-fields-$target.json.next" \
+            "$GH_STUB_DIR/issue-fields-$target.json"
+        [ "${GH_STUB_FIELDS_UNREADABLE_AFTER_WRITE:-0}" = 0 ] ||
+            : >"$GH_STUB_DIR/fields-unreadable"
+        echo '{"data":{"setIssueFieldValue":{"clientMutationId":null}}}'
+    elif grep -q 'issueFields(first:' <<<"$*"; then
+        [ "${GH_STUB_ISSUE_FIELDS:-}" != "ERROR" ] || exit 1
+        jq -n --argjson c "$catalogue" '{data: {repository: {issueFields: {
+            pageInfo: {hasNextPage: false}, nodes: $c}}}}' >"$GH_STUB_DIR/.gql"
+        emit "$GH_STUB_DIR/.gql"
+    elif grep -q 'issues(first:' <<<"$*" && grep -q 'issueFieldValues' <<<"$*"; then
+        [ "${GH_STUB_OPEN_FIELDS:-}" != "ERROR" ] || exit 1
+        # Every open issue is in the pass; its values come from
+        # issue-fields-<n>.json (absent: none set).
+        nodes="[]"
+        for num in $(jq -r '.[].number' "$GH_STUB_DIR/issues-open.json"); do
+            nodes="$(jq -c --argjson num "$num" \
+                --argjson v "$(field_values "$num")" '
+              . + [{number: $num, issueFieldValues: {
+                pageInfo: {hasNextPage: false},
+                nodes: [$v | to_entries[]
+                        | {name: .value, field: {name: .key}}]}}]' \
+                <<<"$nodes")"
+        done
+        jq -n --argjson nodes "$nodes" '{data: {repository: {issues: {
+            pageInfo: {hasNextPage: false, endCursor: null},
+            nodes: $nodes}}}}'
+    elif grep -q 'issueFieldValues(first:' <<<"$*"; then
+        [ ! -f "$GH_STUB_DIR/fields-unreadable" ] || exit 1
+        [ "${GH_STUB_ISSUE_FIELD_VALUES:-}" != "ERROR" ] || exit 1
+        jq -n --arg n "${n:?}" --argjson v "$(field_values "$n")" '
+          {data: {repository: {issue: {id: "I_\($n)", issueFieldValues: {
+            pageInfo: {hasNextPage: false},
+            nodes: [$v | to_entries[] | {name: .value, field: {name: .key}}]}}}}}' \
+            >"$GH_STUB_DIR/.gql"
+        emit "$GH_STUB_DIR/.gql"
+    elif grep -q 'issueTypes(first:' <<<"$*"; then
         [ "${GH_STUB_ENABLED_NATIVE_TYPES:-}" = "ERROR" ] && exit 1
         if [ -n "${GH_STUB_ENABLED_NATIVE_TYPES_JSON:-}" ]; then
             printf '%s\n' "$GH_STUB_ENABLED_NATIVE_TYPES_JSON" |
@@ -238,19 +315,19 @@ cat >"$manifest" <<'JSON'
      "source": "inline", "writers": ["human", "agent"],
      "readers": "fixture", "lifecycle": "durable", "exclusive": true,
      "provision": false,
-     "values": [{"value": "ci"}, {"value": "tasks"}]},
+     "values": [{"value": "ci"}, {"value": "tasks"}, {"value": "none"}]},
     {"family": "layer", "prefix": "layer",
      "purpose": "Fixture layers", "axis": "classification",
      "source": "inline", "writers": ["human", "agent"],
      "readers": "fixture", "lifecycle": "durable", "exclusive": true,
      "provision": false,
-     "values": [{"value": "ui"}, {"value": "api"}]},
+     "values": [{"value": "ui"}, {"value": "api"}, {"value": "none"}]},
     {"family": "domain", "prefix": "domain",
      "purpose": "Fixture domains", "axis": "classification",
      "source": "inline", "writers": ["human", "agent"],
      "readers": "fixture", "lifecycle": "durable", "exclusive": true,
      "provision": false,
-     "values": [{"value": "delivery"}, {"value": "auth"}]},
+     "values": [{"value": "delivery"}, {"value": "auth"}, {"value": "none"}]},
     {"family": "rigor", "prefix": "rigor",
      "purpose": "Fixture rigor", "axis": "strategy", "source": "inline",
      "writers": ["human"], "readers": "fixture", "lifecycle": "durable",
@@ -277,8 +354,9 @@ echo "==> allowlist: manifest mode computes agent-writable v1 scope"
 [ "$(run "$apply" allowlist --manifest "$manifest")" = 0 ] ||
     fail "allowlist should succeed: $(cat "$tmp/out")"
 sort "$tmp/out" >"$tmp/got"
-printf '%s\n' area:ci area:tasks bug domain:auth domain:delivery feature \
-    layer:api layer:ui needs-triage | sort >"$tmp/want"
+printf '%s\n' area:ci area:none area:tasks bug domain:auth domain:delivery \
+    domain:none feature layer:api layer:none layer:ui needs-triage |
+    sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "allowlist mismatch"
 
 echo "==> allowlist: triage works from a standalone vendored support bundle"
@@ -420,8 +498,8 @@ jq '.families |= map(if .family == "area"
 [ "$(run "$apply" axis-values --manifest "$tmp/retired-value.json")" = 0 ] ||
     fail "axis-values failed"
 sort "$tmp/out" >"$tmp/got"
-printf '%s\n' area:ci area:tasks domain:auth domain:delivery layer:api layer:ui |
-    sort >"$tmp/want"
+printf '%s\n' area:ci area:none area:tasks domain:auth domain:delivery \
+    domain:none layer:api layer:none layer:ui | sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "axis-values mismatch"
 
 echo "==> axes: an invalid registry is refused, never derived around"
@@ -431,7 +509,7 @@ jq '.families |= map(if .family == "area"
     fail "a mistyped axis must exit 2, not silently drop the family"
 grep -q "cannot govern" "$tmp/out" || fail "refusal must say why"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$tmp/typo.json")" = 2 ] ||
     fail "removal under an invalid registry must exit 2"
 
@@ -505,7 +583,8 @@ echo "==> label: never-list refuses even what a hostile manifest grants"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --add rigor:deep \
     --manifest "$evil")" = 4 ] || fail "rigor:deep must exit 4"
 for l in foreman:approved tier:apex tier:implementer:frontier strategy:plan \
-    method:plan claim:claude suggest:claude agent:claude-code; do
+    method:plan claim:claude agent:claude-code tier:pinned \
+    tier:reviewer:apex priority:high effort:3; do
     [ "$(run "$apply" label --repo "$repo" --issue 10 --add "$l" \
         --manifest "$manifest")" = 4 ] || fail "$l must exit 4"
 done
@@ -636,7 +715,7 @@ grep -qx "bug" "$tmp/out" || fail "human-only bug must still be recognized"
 
 echo "==> label: removal accepts a human-applied work-type as classification"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$tmp/human-wt.json")" = 0 ] ||
     fail "human-applied bug must satisfy the removal gate: $(cat "$tmp/out")"
 
@@ -659,7 +738,7 @@ jq '.families |= map(if .family == "workflow"
                         then .writers = ["human"] else . end)
     else . end)' "$manifest" >"$tmp/human-only.json"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$tmp/human-only.json")" = 4 ] ||
     fail "human-only needs-triage removal must exit 4"
 
@@ -669,28 +748,34 @@ echo "==> label: --remove accepts only needs-triage"
 
 echo "==> label: needs-triage removal is refused on a conflicted axis"
 [ "$(run "$apply" label --repo "$repo" --issue 12 --remove needs-triage \
-    --inapplicable area --inapplicable layer \
+    --add area:none --add layer:none \
     --manifest "$manifest")" = 6 ] || fail "conflicted axis must exit 6"
 
 echo "==> label: needs-triage removal is refused without a work type"
 [ "$(run "$apply" label --repo "$repo" --issue 10 --remove needs-triage \
-    --inapplicable area --inapplicable layer --inapplicable domain \
+    --add area:none --add layer:none --add domain:none \
     --manifest "$manifest")" = 6 ] || fail "missing work type must exit 6"
 
 echo "==> label: needs-triage removal passes when classification is complete"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$manifest")" = 0 ] || fail "complete removal: $(cat "$tmp/out")"
 grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
     fail "missing WOULD remove"
-grep -q "attested inapplicable: layer" "$tmp/out" || fail "missing attestation"
+grep -q "DRY-RUN would add 'layer:none'" "$tmp/out" ||
+    fail "the explicit none value must be applied, not attested"
 
-echo "==> label: area and domain clear needs-triage without a layer"
+echo "==> label: layer is required (ADR D6) — an absent layer keeps needs-triage"
 [ "$(run "$apply" label --repo "$repo" --issue 15 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] ||
+    fail "area+domain without layer must keep needs-triage: $(cat "$tmp/out")"
+grep -q "layer (no layer:\* label" "$tmp/out" ||
+    fail "the refusal must name the missing layer: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 15 --add layer:none \
     --manifest "$manifest")" = 0 ] ||
-    fail "area+domain without layer must pass: $(cat "$tmp/out")"
+    fail "layer:none must complete the classification: $(cat "$tmp/out")"
 grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
-    fail "missing no-layer removal"
+    fail "completing the required set must derive the needs-triage removal"
 
 echo "==> label: missing domain or area still blocks removal"
 [ "$(run "$apply" label --repo "$repo" --issue 16 --remove needs-triage \
@@ -712,38 +797,44 @@ cat >"$stub_dir/issue-14.json" <<'JSON'
             {"name": "area:legacy"}], "body": "plain"}
 JSON
 [ "$(run "$apply" label --repo "$repo" --issue 14 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$manifest")" = 6 ] || fail "unknown area value must exit 6"
 grep -q "not in the active area taxonomy" "$tmp/out" ||
     fail "refusal must name the unknown value: $(cat "$tmp/out")"
 
 echo "==> label: an unprovisioned axis is never demanded (derived axes)"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$tmp/no-area.json")" = 0 ] ||
     fail "no-area manifest must not demand an area attestation: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 13 --add area:none \
+    --manifest "$tmp/no-area.json")" = 4 ] ||
+    fail "a none value of an inactive axis is not writable"
+
+echo "==> label: --inapplicable is retired in favour of the explicit none value"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable area --inapplicable layer --inapplicable domain \
-    --manifest "$tmp/no-area.json")" = 2 ] ||
-    fail "--inapplicable for an inactive axis must exit 2"
+    --inapplicable layer --manifest "$manifest")" = 2 ] ||
+    fail "--inapplicable must exit 2"
+grep -q "apply the axis's explicit" "$tmp/out" ||
+    fail "the refusal must point at the none value: $(cat "$tmp/out")"
 
 echo "==> label: org removal needs a native Type; unreadable Type refuses"
 GH_STUB_OWNER_TYPE="Organization"
 export GH_STUB_NATIVE_TYPE=""
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$manifest")" = 6 ] || fail "org without Type must exit 6"
 export GH_STUB_NATIVE_TYPE="ERROR"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$manifest")" = 6 ] || fail "unreadable Type must exit 6"
 export GH_STUB_NATIVE_TYPE="Bug"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$manifest")" = 0 ] || fail "org with Type should pass"
 export GH_STUB_NATIVE_TYPE="none"
 [ "$(run "$apply" label --repo "$repo" --issue 13 --remove needs-triage \
-    --inapplicable layer --inapplicable domain \
+    --add layer:none --add domain:none \
     --manifest "$manifest")" = 0 ] ||
     fail "org with a custom Type named none should pass"
 unset GH_STUB_NATIVE_TYPE
@@ -784,15 +875,15 @@ native_type_file="$tmp/native-type"
 : >"$native_type_file"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
     "$apply" label --repo "$repo" --issue 13 \
-    --native-type Bug --remove needs-triage --inapplicable layer \
-    --inapplicable domain --execute --manifest "$manifest")" = 0 ] ||
+    --native-type Bug --remove needs-triage --add layer:none \
+    --add domain:none --execute --manifest "$manifest")" = 0 ] ||
     fail "combined native Type/removal failed: $(cat "$tmp/out")"
 grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
     fail "combined mutation must report the Type"
 grep -q "APPLIED remove 'needs-triage'" "$tmp/out" ||
     fail "combined mutation must report removal"
-[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 3 ] ||
-    fail "combined mutation must check support then issue separate Type/removal edits"
+[ "$(grep -c '^issue edit ' "$GH_STUB_LOG")" = 4 ] ||
+    fail "combined mutation must check support then issue separate Type/add/removal edits"
 grep -n -- "--type Bug" "$GH_STUB_LOG" | cut -d: -f1 >"$tmp/type-line"
 grep -n -- "--remove-label needs-triage" "$GH_STUB_LOG" | cut -d: -f1 >"$tmp/remove-line"
 [ "$(cat "$tmp/type-line")" -lt "$(cat "$tmp/remove-line")" ] ||
@@ -802,7 +893,7 @@ echo "==> label: a native Type mutation failure cannot remove needs-triage"
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL=1 "$apply" \
     label --repo "$repo" --issue 13 --native-type Bug --remove needs-triage \
-    --inapplicable layer --inapplicable domain --execute \
+    --add layer:none --add domain:none --execute \
     --manifest "$manifest")" = 1 ] || fail "native Type mutation failure must exit 1"
 grep -q "APPLIED native issue Type" "$tmp/out" &&
     fail "failed native Type mutation must not report success"
@@ -814,8 +905,8 @@ echo "==> label: a later label failure discloses the already-applied Type"
 : >"$native_type_file"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
     GH_STUB_EDIT_FAIL_ON_REMOVE=1 "$apply" label --repo "$repo" --issue 13 \
-    --native-type Bug --remove needs-triage --inapplicable layer \
-    --inapplicable domain --execute --manifest "$manifest")" = 1 ] ||
+    --native-type Bug --remove needs-triage --add layer:none \
+    --add domain:none --execute --manifest "$manifest")" = 1 ] ||
     fail "later label failure must exit 1"
 grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
     fail "later label failure must disclose the applied Type"
@@ -828,7 +919,7 @@ echo "==> label: a failed add preserves needs-triage after Type success"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
     GH_STUB_EDIT_FAIL_ON_ADD=1 "$apply" label --repo "$repo" --issue 13 \
     --native-type Bug --add domain:auth --remove needs-triage \
-    --inapplicable layer --execute --manifest "$manifest")" = 1 ] ||
+    --add layer:none --execute --manifest "$manifest")" = 1 ] ||
     fail "failed add after Type success must exit 1"
 grep -q "APPLIED native issue Type 'Bug'" "$tmp/out" ||
     fail "failed add must disclose the applied Type"
@@ -855,7 +946,7 @@ echo "==> label: an unreadable post-Type verification is indeterminate"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE_FILE="$native_type_file" \
     GH_STUB_NATIVE_TYPE_UNREADABLE_AFTER_TYPE_WRITE=1 "$apply" label --repo "$repo" \
     --issue 13 --native-type Bug --add domain:auth --remove needs-triage \
-    --inapplicable layer --execute --manifest "$manifest")" = 2 ] ||
+    --add layer:none --execute --manifest "$manifest")" = 2 ] ||
     fail "unreadable post-Type verification must be indeterminate"
 grep -q 'write indeterminate: native issue Type may have applied' "$tmp/out" ||
     fail "indeterminate Type write must be surfaced"
@@ -1315,14 +1406,14 @@ jq -e '.open[] | select(.number == 23) | .axis_state
        | keys | sort == ["area", "domain", "layer"]' "$scan_out" >/dev/null ||
     fail "axis_state must be keyed by the active axes"
 
-echo "==> scan: area and domain with no layer are removable"
+echo "==> scan: layer is required (ADR D6) — no layer keeps needs-triage"
 jq -e '.open[] | select(.number == 15)
        | (.axis_state.layer == "none")
-         and (.flags | index("needs-triage-removable") != null)
-         and (.flags | index("partially-classified") == null)
-         and (.flags | index("missing-needs-triage") == null)
-         and (.flags | index("axis-missing:layer") == null)' \
-    "$scan_out" >/dev/null || fail "no-layer classification must be removable"
+         and (.required_missing == ["layer"])
+         and (.flags | index("needs-triage-removable") == null)
+         and (.flags | index("partially-classified") != null)
+         and (.flags | index("axis-missing:layer") != null)' \
+    "$scan_out" >/dev/null || fail "a missing layer must keep the issue incomplete"
 
 echo "==> scan: missing area or domain remains incomplete"
 jq -e '.open[] | select(.number == 16)
@@ -1390,12 +1481,13 @@ jq -e '.open[] | select(.number == 25)
     "$scan_out" >/dev/null ||
     fail "a stray label blocks removal, so the scan must not badge removable"
 
-echo "==> scan: a bare missing axis does not re-add needs-triage"
+echo "==> scan: needs-triage is derived — a missing axis requeues it"
 jq -e '.open[] | select(.number == 23)
        | (.flags | index("axis-missing:area") != null)
-         and (.flags | index("missing-needs-triage") == null)' \
+         and (.required_missing == ["area"])
+         and (.flags | index("missing-needs-triage") != null)' \
     "$scan_out" >/dev/null ||
-    fail "typed issue missing one axis must not be needs-triage-worthy"
+    fail "an issue missing a required axis must be flagged missing-needs-triage"
 jq -e '.open[] | select(.number == 21) | .flags | index("missing-needs-triage")' \
     "$scan_out" >/dev/null || fail "a conflicted axis must still re-add"
 
@@ -2017,6 +2109,516 @@ echo "==> wrapper: --execute without a terminal is refused"
     fail "non-interactive --execute must exit 2"
 
 # ── references ───────────────────────────────────────────────────────────────
+# ── Impact / Risk / Complexity / Priority (AI) / Tier (harmon-devkit#1250) ────
+# The fixture vocabulary is built here: harmon-devkit's own registry does not
+# provision these families, and the target repository's live labels (personal
+# accounts) or issue fields (organizations) are what triage reads.
+cp "$stub_dir/labels.json" "$tmp/labels-before-classification.json"
+jq -n '[("needs-triage", "bug", "feature",
+         "area:ci", "area:tasks", "area:none", "layer:ui", "layer:api",
+         "layer:none", "domain:auth", "domain:delivery", "domain:none",
+         ("minimal", "low", "medium", "high", "massive" | "impact:\(.)"),
+         ("trivial", "low", "medium", "high", "critical" | "risk:\(.)"),
+         ("xs", "s", "m", "l", "xl" | "complexity:\(.)"),
+         ("p0", "p1", "p2", "p3", "p4" | "priority-ai:\(.)"),
+         ("urgent", "high", "medium", "low" | "priority:\(.)"),
+         ("local", "economy", "standard", "frontier", "apex" | "tier:\(.)"),
+         "tier:pinned")
+        | {name: ., description: ""}]' >"$stub_dir/labels.json"
+# A policy WITH [tier.matrix] (the conformance corpus base), one without it,
+# and one that does not exist (the built-in fallback derives no Tier).
+policy="ai/schemas/fixtures/devflow-conformance/policy.toml"
+[ -f "$policy" ] || fail "the conformance base policy fixture is missing"
+no_matrix_policy="$tmp/no-matrix.toml"
+awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' \
+    "$policy" >"$no_matrix_policy"
+grep -q '^\[tier\.matrix\]' "$no_matrix_policy" &&
+    fail "could not strip [tier.matrix] from the policy fixture"
+
+# issue_fixture N LABEL... — one issue's labels.
+issue_fixture() {
+    local n="$1"
+    shift
+    jq -n '{labels: [$ARGS.positional[] | {name: .}], body: "plain"}' \
+        --args "$@" >"$stub_dir/issue-$n.json"
+}
+classified="bug area:ci layer:ui domain:auth"
+# shellcheck disable=SC2086 # word-split on purpose: the label list
+issue_fixture 60 $classified needs-triage
+# shellcheck disable=SC2086
+issue_fixture 61 $classified needs-triage tier:pinned tier:local
+# shellcheck disable=SC2086
+issue_fixture 62 $classified impact:low complexity:m tier:local
+# shellcheck disable=SC2086
+issue_fixture 63 bug
+# shellcheck disable=SC2086
+issue_fixture 64 $classified impact:low risk:low complexity:s
+# shellcheck disable=SC2086
+issue_fixture 65 $classified impact:low risk:low complexity:s priority-ai:p2
+# shellcheck disable=SC2086
+issue_fixture 66 $classified impact:low complexity:s priority-ai:p2
+# shellcheck disable=SC2086
+issue_fixture 67 $classified impact:low complexity:s priority-ai:p2 priority:high
+# shellcheck disable=SC2086
+issue_fixture 68 $classified needs-triage priority:medium
+# shellcheck disable=SC2086
+issue_fixture 69 $classified impact:low risk:low complexity:s needs-triage
+
+echo "==> classification-axes: a personal repo provisions its axes as labels"
+[ "$(run "$apply" classification-axes --repo "$repo")" = 0 ] ||
+    fail "classification-axes failed: $(cat "$tmp/out")"
+jq -e '.storage == "label" and .required == ["impact", "risk", "complexity"]
+       and .axes.risk.values == ["trivial", "low", "medium", "high", "critical"]
+       and .axes["priority-ai"].provisioned
+       and .tier_values == ["local", "economy", "standard", "frontier", "apex"]' \
+    "$tmp/out" >/dev/null || fail "personal classification-axes: $(cat "$tmp/out")"
+
+echo "==> label: personal repo writes the axes as labels and derives the Tier"
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
+    --complexity m --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "personal axes dry-run failed: $(cat "$tmp/out")"
+for l in impact:high risk:high complexity:m tier:frontier; do
+    grep -q "DRY-RUN would add '$l' to $repo#60" "$tmp/out" ||
+        fail "personal dry-run must add $l: $(cat "$tmp/out")"
+done
+grep -q "tier: derived 'frontier' from Risk high × Complexity m" "$tmp/out" ||
+    fail "the derivation must be reported"
+grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
+    fail "a complete required set must derive the needs-triage removal"
+grep -q "issue field" "$tmp/out" && fail "a personal repo has no issue fields"
+grep -q "issue edit" "$GH_STUB_LOG" && fail "dry-run must not edit"
+: >"$GH_STUB_LOG"
+rm -f "$stub_dir/field-mutations.log"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 60 \
+    --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "personal axes execute failed: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --add-label impact:high,risk:high,complexity:m,tier:frontier" \
+    "$GH_STUB_LOG" || fail "one label edit must carry the axes and the Tier: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 60 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "the derived needs-triage removal must be its own, last edit"
+[ ! -e "$stub_dir/field-mutations.log" ] ||
+    fail "a personal repo must never call setIssueFieldValue"
+
+echo "==> label: --add <axis>:<value> takes the same owner-type path"
+[ "$(run "$apply" label --repo "$repo" --issue 60 --add impact:high \
+    --add risk:high --add complexity:m --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "--add axis form failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'tier:frontier'" "$tmp/out" ||
+    fail "the --add form must derive the Tier like the flag form"
+[ "$(run "$apply" label --repo "$repo" --issue 60 --add risk:high \
+    --risk low --manifest "$manifest")" = 2 ] ||
+    fail "two different values for one axis must exit 2"
+
+echo "==> label: tier:pinned — the Tier is never written, needs-triage still is"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 61 \
+    --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "pinned execute failed: $(cat "$tmp/out")"
+grep -q "carries tier:pinned — the Tier label is left as it is" "$tmp/out" ||
+    fail "the pinned skip must be reported"
+grep -q -- "tier:" "$GH_STUB_LOG" &&
+    fail "a pinned issue must never have a tier label written or removed: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 61 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "a pinned issue still has needs-triage derived"
+
+echo "==> label: a pin applied mid-call is re-checked before the Tier write"
+cat >"$tmp/bin/gh-pin-race" <<'STUB'
+#!/usr/bin/env bash
+# Second and later label reads of #60 see tier:pinned.
+if [ "$1 $2 $3" = "issue view 60" ]; then
+    c="$(cat "$GH_STUB_DIR/.pin-race" 2>/dev/null || echo 0)"
+    c=$((c + 1))
+    echo "$c" >"$GH_STUB_DIR/.pin-race"
+    if [ "$c" -ge 2 ]; then
+        printf '%s\n' bug area:ci layer:ui domain:auth needs-triage tier:pinned
+        exit 0
+    fi
+fi
+exec "$(dirname "$0")/gh" "$@"
+STUB
+chmod +x "$tmp/bin/gh-pin-race"
+mkdir -p "$tmp/pinbin"
+ln -sf "$tmp/bin/gh-pin-race" "$tmp/pinbin/gh"
+cp "$tmp/bin/gh" "$tmp/pinbin/gh-real"
+sed -i 's|exec "$(dirname "$0")/gh" "$@"|exec "$(dirname "$0")/gh-real" "$@"|' \
+    "$tmp/bin/gh-pin-race"
+rm -f "$stub_dir/.pin-race"
+: >"$GH_STUB_LOG"
+_rc=0
+PATH="$tmp/pinbin:$PATH" TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy" >"$tmp/out" 2>&1 || _rc=$?
+[ "$_rc" = 0 ] || fail "mid-call pin execute failed: $(cat "$tmp/out")"
+grep -q "was pinned while triage was preparing its write" "$tmp/out" ||
+    fail "a pin landing mid-call must be reported: $(cat "$tmp/out")"
+grep -q -- "tier:frontier" "$GH_STUB_LOG" &&
+    fail "a pin landing mid-call must stop the Tier write"
+grep -q -- "--add-label impact:high,risk:high,complexity:m" "$GH_STUB_LOG" ||
+    fail "the axes are still written when the Tier is skipped"
+
+echo "==> label: a stale derived Tier is replaced, never stacked"
+[ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "stale tier dry-run failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'tier:frontier'" "$tmp/out" ||
+    fail "the derived Tier must be added"
+grep -q "DRY-RUN would remove 'tier:local' from $repo#62" "$tmp/out" ||
+    fail "the stale Tier label must be removed in the same call"
+
+echo "==> label: an underivable Tier is reported and the axes are still written"
+[ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
+    --manifest "$manifest" --policy "$no_matrix_policy")" = 0 ] ||
+    fail "no-matrix dry-run failed: $(cat "$tmp/out")"
+grep -q "tier: not written — the governing policy has no \[tier.matrix\]" \
+    "$tmp/out" || fail "a missing matrix must be reported: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'risk:high'" "$tmp/out" ||
+    fail "the axis is still written without a Tier"
+grep -q "DRY-RUN would add 'tier:" "$tmp/out" &&
+    fail "no Tier may be written without a matrix"
+[ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
+    --manifest "$manifest" --policy "$tmp/absent.toml")" = 0 ] ||
+    fail "absent-policy dry-run failed: $(cat "$tmp/out")"
+grep -q "tier: not written — no .devflow.toml" "$tmp/out" ||
+    fail "an absent policy derives no Tier: $(cat "$tmp/out")"
+grep -q 'devflow-policy.mjs' "$apply" ||
+    fail "triage-apply.sh must derive the Tier by calling devflow-policy.mjs"
+grep -qE 'xs.*local.*local.*economy' "$apply" &&
+    fail "triage-apply.sh must not carry its own copy of the matrix"
+[ "$(run "$standalone_triage/triage/assets/triage-apply.sh" label \
+    --repo "$repo" --issue 62 --risk high --manifest "$manifest" \
+    --policy "$policy")" = 0 ] ||
+    fail "standalone triage without dev-flow-support must still apply: $(cat "$tmp/out")"
+grep -q "tier: not written — the dev-flow-support skill is not vendored" \
+    "$tmp/out" || fail "a missing resolver must be reported: $(cat "$tmp/out")"
+
+echo "==> label: the axes are filled, never re-rated, and stay on the scale"
+[ "$(run "$apply" label --repo "$repo" --issue 64 --risk high \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a different existing Risk must exit 4"
+grep -q "never re-rates" "$tmp/out" || fail "the refusal must say why"
+[ "$(run "$apply" label --repo "$repo" --issue 64 --risk low \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "the same value must be a no-op"
+grep -q "nothing to do" "$tmp/out" || fail "the same value writes nothing"
+[ "$(run "$apply" label --repo "$repo" --issue 63 --risk extreme \
+    --manifest "$manifest")" = 4 ] || fail "an off-scale value must exit 4"
+jq 'map(select(.name != "risk:critical"))' "$stub_dir/labels.json" \
+    >"$tmp/labels-full.json"
+cp "$stub_dir/labels.json" "$tmp/labels-keep.json"
+cp "$tmp/labels-full.json" "$stub_dir/labels.json"
+[ "$(run "$apply" label --repo "$repo" --issue 63 --risk critical \
+    --manifest "$manifest")" = 4 ] || fail "an unprovisioned value must exit 4"
+cp "$tmp/labels-keep.json" "$stub_dir/labels.json"
+[ "$(run "$apply" label --repo "$repo" --issue 63 --add tier:standard \
+    --manifest "$manifest")" = 4 ] || fail "a caller-chosen Tier must exit 4"
+grep -q "the Tier is derived" "$tmp/out" || fail "the refusal must say why"
+
+echo "==> label: needs-triage is derived from the required set"
+[ "$(run "$apply" label --repo "$repo" --issue 63 --add area:ci \
+    --manifest "$manifest")" = 0 ] || fail "derived add failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'needs-triage' to $repo#63" "$tmp/out" ||
+    fail "an incomplete issue without needs-triage must have it derived"
+grep -q "needs-triage: derived — missing: .*impact (unset)" "$tmp/out" ||
+    fail "the derivation must name what is missing: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 64 --add needs-triage \
+    --manifest "$manifest")" = 6 ] ||
+    fail "an explicit add on a complete issue must exit 6"
+[ "$(run "$apply" label --repo "$repo" --issue 60 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] ||
+    fail "a removal with Impact/Risk/Complexity unset must exit 6"
+grep -q "risk (unset)" "$tmp/out" || fail "the refusal must name the axis"
+[ "$(run "$apply" label --repo "$repo" --issue 69 --remove needs-triage \
+    --manifest "$manifest")" = 0 ] ||
+    fail "a removal on a complete issue must pass: $(cat "$tmp/out")"
+
+echo "==> label: Priority (AI) — set with the axes, kept, replaced, never human"
+[ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
+    --complexity m --priority-ai p1 --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "PAI dry-run failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'priority-ai:p1'" "$tmp/out" ||
+    fail "Priority (AI) must be set alongside the axes"
+[ "$(run "$apply" label --repo "$repo" --issue 63 --priority-ai p1 \
+    --manifest "$manifest")" = 6 ] ||
+    fail "Priority (AI) without complete classification must exit 6"
+[ "$(run "$apply" label --repo "$repo" --issue 65 --priority-ai p1 \
+    --manifest "$manifest")" = 0 ] || fail "PAI keep failed: $(cat "$tmp/out")"
+grep -q "Priority (AI) 'p2' kept on $repo#65 — this call did not change the classification" \
+    "$tmp/out" || fail "an unchanged classification keeps Priority (AI)"
+grep -q "would add 'priority-ai" "$tmp/out" && fail "a kept PAI is not written"
+[ "$(run "$apply" label --repo "$repo" --issue 66 --risk high \
+    --priority-ai p1 --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "PAI replace failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'priority-ai:p1'" "$tmp/out" &&
+    grep -q "DRY-RUN would remove 'priority-ai:p2'" "$tmp/out" ||
+    fail "a changed classification with no human Priority replaces PAI: $(cat "$tmp/out")"
+[ "$(run "$apply" label --repo "$repo" --issue 67 --risk high \
+    --priority-ai p1 --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "PAI human-present failed: $(cat "$tmp/out")"
+grep -q "human Priority 'high' is set on $repo#67 — reported, not changed" \
+    "$tmp/out" || fail "a human Priority must be reported"
+grep -q "Priority (AI) 'p2' kept on $repo#67 — a human Priority is set" \
+    "$tmp/out" || fail "a human Priority keeps Priority (AI)"
+grep -q "'priority:" "$tmp/out" && fail "the human Priority is never written"
+[ "$(run "$apply" label --repo "$repo" --issue 68 --impact high --risk high \
+    --complexity m --priority-ai p2 --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "PAI beside human failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'priority-ai:p2'" "$tmp/out" &&
+    grep -q "human Priority 'medium' is set on $repo#68" "$tmp/out" ||
+    fail "an unset PAI is set and the human Priority reported: $(cat "$tmp/out")"
+
+echo "==> never-list: suggest:* is gone from the vocabulary"
+grep -q 'suggest' "$apply" && fail "triage-apply.sh must not mention suggest:*"
+grep -q 'suggest:' ai/skills/universal/triage/SKILL.md &&
+    fail "SKILL.md must not mention suggest:*"
+
+# ── organization: issue fields, never the same-named labels ──────────────────
+GH_STUB_OWNER_TYPE="Organization"
+export GH_STUB_NATIVE_TYPE="Bug"
+field_opts() {
+    jq -n --arg p "$1" '[$ARGS.positional[] | {id: "\($p)_\(.)", name: .}]' \
+        --args "${@:2}"
+}
+jq -n --argjson impact "$(field_opts OI minimal low medium high massive)" \
+    --argjson risk "$(field_opts OR trivial low medium high critical)" \
+    --argjson complexity "$(field_opts OC xs s m l xl)" \
+    --argjson pai "$(field_opts OP p0 p1 p2 p3 p4)" \
+    --argjson human "$(field_opts OH Urgent High Medium Low)" '[
+      {id: "F_impact", name: "Impact", options: $impact},
+      {id: "F_risk", name: "Risk", options: $risk},
+      {id: "F_complexity", name: "Complexity", options: $complexity},
+      {id: "F_pai", name: "Priority (AI)", options: $pai},
+      {id: "F_priority", name: "Priority", options: $human}]' \
+    >"$stub_dir/issue-fields.json"
+# Stray same-named labels on an org: inert, never counted, never written.
+issue_fixture 70 area:ci layer:ui domain:auth needs-triage risk:high \
+    impact:high complexity:m
+issue_fixture 72 area:ci layer:ui domain:auth needs-triage tier:pinned \
+    tier:economy
+issue_fixture 73 area:ci layer:ui domain:auth needs-triage
+echo '{"Priority": "High"}' >"$stub_dir/issue-fields-73.json"
+rm -f "$stub_dir"/issue-fields-70.json "$stub_dir"/issue-fields-72.json
+
+echo "==> classification-axes: an organization provisions its axes as fields"
+[ "$(run "$apply" classification-axes --repo "$repo")" = 0 ] ||
+    fail "org classification-axes failed: $(cat "$tmp/out")"
+jq -e '.storage == "field" and .required == ["impact", "risk", "complexity"]
+       and .axes.impact.field == "Impact"
+       and .axes.complexity.values == ["xs", "s", "m", "l", "xl"]' \
+    "$tmp/out" >/dev/null || fail "org classification-axes: $(cat "$tmp/out")"
+
+echo "==> label: an org stray axis label never counts as the axis being set"
+[ "$(run "$apply" label --repo "$repo" --issue 70 --remove needs-triage \
+    --manifest "$manifest")" = 6 ] ||
+    fail "stray labels must not satisfy the required set on an org"
+grep -q "impact (unset)" "$tmp/out" || fail "the refusal must name the field"
+
+echo "==> label: an org writes the axes as issue fields, the Tier as a label"
+[ "$(run "$apply" label --repo "$repo" --issue 70 --impact high \
+    --add risk:high --complexity m --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "org dry-run failed: $(cat "$tmp/out")"
+for f in "Impact' to 'high" "Risk' to 'high" "Complexity' to 'm"; do
+    grep -q "DRY-RUN would set issue field '$f'" "$tmp/out" ||
+        fail "org dry-run must set the field $f: $(cat "$tmp/out")"
+done
+grep -qE "would add '(impact|risk|complexity):" "$tmp/out" &&
+    fail "an org must never write the inert axis labels"
+grep -q "DRY-RUN would add 'tier:frontier'" "$tmp/out" ||
+    fail "the Tier is a label on an org too"
+: >"$GH_STUB_LOG"
+rm -f "$stub_dir/field-mutations.log"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 70 \
+    --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "org execute failed: $(cat "$tmp/out")"
+[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+    fail "every org axis write must be ONE setIssueFieldValue mutation"
+jq -e '.variables.issue == "I_70"
+       and (.variables.fields | sort_by(.fieldId)) == [
+         {fieldId: "F_complexity", singleSelectOptionId: "OC_m"},
+         {fieldId: "F_impact", singleSelectOptionId: "OI_high"},
+         {fieldId: "F_risk", singleSelectOptionId: "OR_high"}]' \
+    "$stub_dir/field-mutations.log" >/dev/null ||
+    fail "the mutation must carry the three fields: $(cat "$stub_dir/field-mutations.log")"
+jq -e '. == {"Impact": "high", "Risk": "high", "Complexity": "m"}' \
+    "$stub_dir/issue-fields-70.json" >/dev/null || fail "the fields were not set"
+grep -q "APPLIED issue field 'Risk' = 'high' on $repo#70" "$tmp/out" ||
+    fail "the verified field write must be reported"
+grep -qx "issue edit 70 --repo $repo --add-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "the org label edit carries only the Tier: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 70 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "a complete org issue has needs-triage derived away"
+
+echo "==> label: an org pinned issue gets its fields, never a Tier label"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 72 \
+    --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "org pinned execute failed: $(cat "$tmp/out")"
+grep -q -- "tier:" "$GH_STUB_LOG" && fail "an org pin must hold the Tier"
+grep -q "APPLIED issue field 'Impact' = 'high' on $repo#72" "$tmp/out" ||
+    fail "a pinned org issue still gets its fields"
+
+echo "==> label: an org human Priority field is reported and never written"
+rm -f "$stub_dir/field-mutations.log"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 73 \
+    --impact low --risk low --complexity s --priority-ai p2 --execute \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "org PAI execute failed: $(cat "$tmp/out")"
+grep -q "human Priority 'High' is set on $repo#73 — reported, not changed" \
+    "$tmp/out" || fail "the org human Priority must be reported"
+grep -q '"F_priority"' "$stub_dir/field-mutations.log" &&
+    fail "the human Priority field must never be written"
+jq -e '.["Priority (AI)"] == "p2" and .Priority == "High"' \
+    "$stub_dir/issue-fields-73.json" >/dev/null ||
+    fail "Priority (AI) set, human Priority untouched"
+
+echo "==> label: an org field write failure or unverifiable write stops the labels"
+rm -f "$stub_dir/issue-fields-70.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELD_WRITE_FAIL=1 "$apply" label \
+    --repo "$repo" --issue 70 --impact high --risk high --complexity m \
+    --execute --manifest "$manifest" --policy "$policy")" = 1 ] ||
+    fail "a failed field write must exit 1"
+grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
+    fail "a failed field write must not edit labels"
+rm -f "$stub_dir/issue-fields-70.json" "$stub_dir/fields-unreadable"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELDS_UNREADABLE_AFTER_WRITE=1 \
+    "$apply" label --repo "$repo" --issue 70 --impact high --risk high \
+    --complexity m --execute --manifest "$manifest" --policy "$policy")" = 2 ] ||
+    fail "an unverifiable field write must be indeterminate"
+grep -q "write indeterminate: the issue fields may have applied" "$tmp/out" ||
+    fail "the indeterminate write must be surfaced"
+grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
+    fail "an unverifiable field write must not edit labels"
+rm -f "$stub_dir/fields-unreadable" "$stub_dir/issue-fields-70.json"
+
+# ── scan: Impact/Risk/Complexity/Tier facts on both owner types ──────────────
+cat >"$stub_dir/issues-open.json" <<'JSON'
+[{"number": 80, "title": "(classification): Fully classified",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}, {"name": "impact:high"},
+             {"name": "risk:high"}, {"name": "complexity:m"},
+             {"name": "tier:frontier"}, {"name": "priority-ai:p1"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 81, "title": "(classification): Missing risk, pinned",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:none"},
+             {"name": "domain:auth"}, {"name": "impact:low"},
+             {"name": "complexity:s"}, {"name": "tier:apex"},
+             {"name": "tier:pinned"}, {"name": "needs-triage"},
+             {"name": "priority:high"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 82, "title": "(classification): Conflicting risk labels",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}, {"name": "impact:low"},
+             {"name": "risk:low"}, {"name": "risk:high"},
+             {"name": "complexity:s"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 83, "title": "(classification): Complete but still queued",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}, {"name": "impact:low"},
+             {"name": "risk:low"}, {"name": "complexity:s"},
+             {"name": "needs-triage"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""}]
+JSON
+echo '[]' >"$stub_dir/issues-closed.json"
+GH_STUB_OWNER_TYPE="User"
+unset GH_STUB_NATIVE_TYPE
+
+echo "==> scan: a personal repo reads the axes, Tier and pin from labels"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
+    fail "classification scan failed: $(cat "$tmp/out")"
+cp "$tmp/out" "$tmp/class-scan.json"
+jq -e '.classification_axes.storage == "label" and .fields_mode == "n/a"' \
+    "$tmp/class-scan.json" >/dev/null || fail "personal storage must be label"
+jq -e '.open[] | select(.number == 80)
+       | .classification == {storage: "label",
+           impact: {state: "set", value: "high"},
+           risk: {state: "set", value: "high"},
+           complexity: {state: "set", value: "m"},
+           priority_ai: {state: "set", value: "p1"},
+           priority: null, tier: ["frontier"], tier_pinned: false}
+         and .required_missing == [] and .flags == []' \
+    "$tmp/class-scan.json" >/dev/null ||
+    fail "#80 classification facts: $(jq -c '.open[] | select(.number == 80)' "$tmp/class-scan.json")"
+jq -e '.open[] | select(.number == 81)
+       | .classification.risk.state == "unset"
+         and .classification.tier == ["apex"] and .classification.tier_pinned
+         and .classification.priority == "high"
+         and .required_missing == ["risk"]
+         and (.flags | index("classification-missing:risk") != null)
+         and (.flags | index("partially-classified") != null)' \
+    "$tmp/class-scan.json" >/dev/null ||
+    fail "#81 must report the missing Risk and the pin"
+jq -e '.open[] | select(.number == 82)
+       | .classification.risk.state == "conflict"
+         and (.flags | index("classification-conflict:risk") != null)
+         and (.flags | index("missing-needs-triage") != null)' \
+    "$tmp/class-scan.json" >/dev/null || fail "#82 risk conflict must be flagged"
+jq -e '.open[] | select(.number == 83)
+       | .required_missing == []
+         and (.flags | index("needs-triage-removable") != null)' \
+    "$tmp/class-scan.json" >/dev/null || fail "#83 must read removable"
+
+echo "==> scan: an organization reads the axes from issue fields only"
+GH_STUB_OWNER_TYPE="Organization"
+jq 'map(.issueType = {name: "Bug"})' "$stub_dir/issues-open.json" \
+    >"$stub_dir/issues-open-types.json"
+echo '{"Impact": "High", "Risk": "high", "Complexity": "m", "Priority": "Low"}' \
+    >"$stub_dir/issue-fields-80.json"
+rm -f "$stub_dir"/issue-fields-8[123].json
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
+    fail "org classification scan failed: $(cat "$tmp/out")"
+jq -e '.classification_axes.storage == "field" and .fields_mode == "bulk"' \
+    "$tmp/out" >/dev/null || fail "org storage must be field, read in bulk"
+jq -e '.open[] | select(.number == 80)
+       | .classification.impact == {state: "set", value: "high"}
+         and .classification.priority == "Low"
+         and .classification.priority_ai.state == "unset"
+         and .required_missing == []' "$tmp/out" >/dev/null ||
+    fail "#80 org facts must come from the fields: $(jq -c '.open[] | select(.number == 80)' "$tmp/out")"
+jq -e '.open[] | select(.number == 83)
+       | .required_missing == ["impact", "risk", "complexity"]
+         and (.flags | index("needs-triage-removable") == null)
+         and (.flags | index("partially-classified") != null)' \
+    "$tmp/out" >/dev/null ||
+    fail "#83: stray org labels must not count as the axes being set"
+jq -e '.open[] | select(.number == 81)
+       | .classification.tier_pinned and .classification.tier == ["apex"]' \
+    "$tmp/out" >/dev/null || fail "the Tier and pin are labels on an org too"
+
+echo "==> scan: an unreadable org field pass is unknown, never unset"
+[ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
+    --manifest "$manifest" --all)" = 0 ] ||
+    fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
+jq -e '.fields_mode == "unknown"
+       and ([.open[] | .classification.risk.state] | unique) == ["unknown"]
+       and ([.open[] | .flags[] | select(. == "needs-triage-removable"
+             or startswith("classification-missing:"))] | length == 0)' \
+    "$tmp/out" >/dev/null ||
+    fail "unread fields must not read as missing or removable"
+rm -f "$stub_dir/issues-open-types.json" "$stub_dir"/issue-fields-*.json
+unset GH_STUB_NATIVE_TYPE
+GH_STUB_OWNER_TYPE="User"
+cp "$tmp/labels-before-classification.json" "$stub_dir/labels.json"
+
+echo "==> SKILL.md: rubric first, and none applied explicitly"
+grep -q 'Read `references/classification-rubric.md`' \
+    ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must tell the model to read the classification rubric first"
+grep -q 'Read `references/priority-rubric.md`' \
+    ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must tell the model to read the priority rubric first"
+grep -q 'apply its explicit `none` value' ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must tell the model to apply none rather than omit an axis"
+
 echo "==> references: both rubrics exist and SKILL.md links them"
 for rubric in classification-rubric priority-rubric; do
     [ -s "ai/skills/universal/triage/references/$rubric.md" ] ||

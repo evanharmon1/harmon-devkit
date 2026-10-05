@@ -15,6 +15,15 @@
 #   - per open issue: work-type/axis state (none | ok | conflict), needs-*
 #     labels, claim markers, staleness, and candidate flags for the rolling
 #     report
+#   - per open issue: the `classification` block — Impact, Risk, Complexity,
+#     Priority (AI) and the human Priority in the owner type's ONE storage
+#     (labels on a personal account; issue fields on an organization, read in
+#     one paginated GraphQL pass, where the same-named labels are inert), the
+#     tier labels and `tier:pinned` (labels on every owner type), and
+#     `required_missing`: every required axis the issue still lacks. The
+#     needs-triage flags (`missing-needs-triage`, `partially-classified`,
+#     `needs-triage-removable`) are derived from that required set, the same
+#     set triage-apply.sh derives needs-triage from
 #   - per open issue: acceptance-criteria checkbox facts (`criteria` —
 #     total/unticked/unticked_ci/unticked_human/unticked_untagged, using the
 #     track-work [CI]/[HUMAN] tag grammar) and, from those, high-confidence
@@ -475,6 +484,12 @@ else
           ] | unique_by(.label)')"
 fi
 
+# Impact/Risk/Complexity/Priority (AI) provisioning, from triage-apply.sh
+# (one source, no drift): which axes the repository provisions, with which
+# values, and in which storage.
+class_json="$("$script_dir/triage-apply.sh" classification-axes --repo "$repo")" ||
+    die "could not compute the provisioned classification axes"
+
 report="$("$script_dir/triage-report.sh" find --repo "$repo")" ||
     die "could not locate the rolling report issue"
 report_json=null
@@ -505,6 +520,54 @@ if [ -z "$open_json" ]; then
         --json "$open_fields")" ||
         die "could not list open issues of $repo"
 fi
+# Organization issue fields: one paginated GraphQL pass over the open issues.
+# A failed or truncated read is `unknown` (per repository or per issue),
+# never "unset": an unread field must not look like a missing axis.
+fields_mode="n/a"
+fields_json="{}"
+if [ "$owner_type" = "Organization" ]; then
+    fields_mode="bulk"
+    if fields_raw="$(gh api graphql --paginate \
+        -H 'GraphQL-Features: issue_fields' \
+        -f query='query($o: String!, $r: String!, $endCursor: String) {
+            repository(owner: $o, name: $r) {
+              issues(first: 100, after: $endCursor, states: OPEN) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  number
+                  issueFieldValues(first: 50) {
+                    pageInfo { hasNextPage }
+                    nodes {
+                      ... on IssueFieldSingleSelectValue {
+                        name
+                        field { ... on IssueFieldSingleSelect { name } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }' \
+        -f o="${repo%%/*}" -f r="${repo#*/}" 2>/dev/null)" &&
+        fields_json="$(jq -cs '
+          [.[].data.repository.issues.nodes[]]
+          | map({key: (.number | tostring),
+                 value: (if (.issueFieldValues.pageInfo.hasNextPage // false)
+                         then null
+                         else ([(.issueFieldValues.nodes // [])[]
+                                | select((.field.name? // null) != null
+                                         and (.name? // null) != null)
+                                | {key: .field.name, value: .name}]
+                               | from_entries) end)})
+          | from_entries' <<<"$fields_raw" 2>/dev/null)" &&
+        [ -n "$fields_json" ]; then
+        :
+    else
+        fields_mode="unknown"
+        fields_json="{}"
+    fi
+fi
+
 closed_json="$(gh issue list --repo "$repo" --state closed \
     --limit "$closed_limit" \
     --json number,title,labels,stateReason,closedAt,body)" ||
@@ -560,14 +623,66 @@ jq -n -L "$title_module_dir" \
     --argjson axes "$axes_json" \
     --argjson known "$known_json" \
     --arg native_type_mode "$native_type_mode" \
+    --argjson class "$class_json" \
+    --arg fields_mode "$fields_mode" \
+    --argjson fields "$fields_json" \
     --argjson wt "$wt_json" "$conformance_jq"'
   ($open_arr[0]) as $open | ($closed_arr[0]) as $closed |
+
+  # One Impact/Risk/Complexity/Priority (AI) reading in the owner type'"'"'s
+  # storage: {state: unset|set|conflict|unknown, value}.
+  def class_axis($ls; $num; $a):
+    ($class.axes[$a]) as $spec
+    | if $class.storage == "field" then
+        (($num | tostring) as $k
+         | if $fields_mode != "bulk" or ($fields | has($k) | not)
+              or $fields[$k] == null
+           then {state: "unknown", value: null}
+           else ($fields[$k][$spec.field] // null) as $v
+                | if $v == null then {state: "unset", value: null}
+                  elif ($spec.values | index($v | ascii_downcase)) != null
+                  then {state: "set", value: ($v | ascii_downcase)}
+                  else {state: "unknown", value: $v} end
+           end)
+      else
+        [$ls[] | select(startswith($a + ":")) | ltrimstr($a + ":")] as $vs
+        | if ($vs | length) == 0 then {state: "unset", value: null}
+          elif ($vs | length) > 1 then {state: "conflict", value: $vs}
+          elif ($spec.values | index($vs[0])) != null
+          then {state: "set", value: $vs[0]}
+          else {state: "unknown", value: $vs[0]} end
+      end;
+  def human_priority($ls; $num):
+    if $class.storage == "field" then
+      (($num | tostring) as $k
+       | if $fields_mode == "bulk" and ($fields | has($k)) and $fields[$k] != null
+         then ($fields[$k]["Priority"] // null) else null end)
+    else ([$ls[] | select(startswith("priority:")) | ltrimstr("priority:")]
+          | if length == 0 then null else join(",") end) end;
+  # The required set (harmon-init ADR 2026-09-30 D6): a work type, one
+  # recognized label of every active label axis (layer included — its
+  # `none` value is the explicit "does not apply"), and every provisioned
+  # Impact/Risk/Complexity. Only what is KNOWN missing is listed.
+  def required_missing($ls; $conf; $nts; $cls):
+    [ (if ($class.owner_type == "Organization" and $nts == "unset")
+          or ($class.owner_type != "Organization"
+              and ($conf.work_type | length) == 0)
+       then "work-type" else empty end),
+      # A stray unrecognized label beside a recognized one still leaves the
+      # axis incomplete — triage-apply.sh counts every label of the axis.
+      ($axes[] | . as $a
+       | select($conf.axis_state[$a] != "ok"
+                or (axis_unknown($ls; $a; $known) | length) > 0)),
+      ($class.required[] | select($cls[.].state != "set"
+                                  and $cls[.].state != "unknown")) ];
 
   {
     repo: $repo,
     owner_type: $owner_type,
     mode: $mode,
     axes: $axes,
+    classification_axes: $class,
+    fields_mode: $fields_mode,
     native_type_mode: $native_type_mode,
     thresholds: {claim_stale_days: $claim_stale,
                  needs_stale_days: $needs_stale},
@@ -590,6 +705,34 @@ jq -n -L "$title_module_dir" \
            else "n/a" end) as $nts
         | (if $nts == "set" then .issueType.name else null end) as $nt
         | issue_conformance(.; $axes; $known; $wt; $owner_type; $nts; $claim_stale; $needs_stale) as $conf
+        | .number as $num
+        | ({"impact": class_axis($ls; $num; "impact"),
+            "risk": class_axis($ls; $num; "risk"),
+            "complexity": class_axis($ls; $num; "complexity"),
+            "priority-ai": class_axis($ls; $num; "priority-ai")}) as $cls
+        | required_missing($ls; $conf; $nts; $cls) as $missing
+        | (($nts == "unknown")
+           or ([$class.required[] | select($cls[.].state == "unknown")]
+               | length > 0)) as $undecided
+        | (($ls | index("needs-triage")) != null) as $has_nt
+        | ([$conf.flags[]
+            | select(. != "missing-needs-triage" and . != "partially-classified"
+                     and . != "needs-triage-removable")]
+           + (if $conf.axis_state.layer? == "none" then ["axis-missing:layer"]
+              else [] end)
+           + [$class.required[] as $a
+              | ($cls[$a].state) as $st
+              | if $st == "unset" then "classification-missing:\($a)"
+                elif $st == "conflict" then "classification-conflict:\($a)"
+                elif $st == "unknown" and $cls[$a].value != null
+                then "classification-unknown-value:\($a)"
+                else empty end]
+           + (if ($missing | length) > 0 and ($has_nt | not)
+              then ["missing-needs-triage"]
+              elif ($missing | length) > 0 then ["partially-classified"]
+              elif $has_nt and ($undecided | not)
+              then ["needs-triage-removable"]
+              else [] end)) as $flags
         | {number, title, updatedAt,
            days_since_update: $days,
            labels: $ls,
@@ -609,9 +752,23 @@ jq -n -L "$title_module_dir" \
                             | with_entries(select(.value | length > 0))),
            needs_labels: $conf.needs_labels,
            claim_labels: $conf.claim_labels,
+           # Impact/Risk/Complexity/Priority (AI) in the owner type'"'"'s
+           # storage, the human Priority (reported, never written), and the
+           # Tier — a label on every owner type, with its pin.
+           classification: {
+             storage: $class.storage,
+             impact: $cls.impact,
+             risk: $cls.risk,
+             complexity: $cls.complexity,
+             priority_ai: $cls["priority-ai"],
+             priority: human_priority($ls; $num),
+             tier: [$ls[] | select(test("^tier:[^:]+$"))
+                    | select(. != "tier:pinned") | ltrimstr("tier:")],
+             tier_pinned: (($ls | index("tier:pinned")) != null)},
+           required_missing: $missing,
            criteria: $conf.criteria,
            completion_reasons: $conf.completion_reasons,
-           flags: $conf.flags}
+           flags: $flags}
         | select(($all == 1) or ((.flags | length) > 0))
       ],
     closed_flagged:

@@ -3,8 +3,10 @@ name: triage
 description: >-
   Classify the GitHub issue backlog against the repo's label taxonomy: apply
   area/layer/domain, work-type (personal repos) or native Issue Type (org
-  repos), and needs-triage where the rules allow, and upsert everything else
-  into one rolling report issue. Use when asked to "triage the backlog",
+  repos), Impact/Risk/Complexity and Priority (AI) (issue fields on org repos,
+  labels on personal repos) with the Tier derived from them, and needs-triage
+  derived from the required set, and upsert everything else into one rolling
+  report issue. Use when asked to "triage the backlog",
   "classify issues", "label the backlog", or "update the triage report".
   Dry-run by default; writes go only through the skill's own scripts. Invoke
   as /triage.
@@ -29,18 +31,28 @@ it in the summary; never work around it).
   `gh issue comment`, `gh issue close`, `gh label`, or any other writing
   command yourself.
 - **You may write only:** classification-axis labels (the axes the scan
-  lists — `area:*` / `layer:*` / `domain:*` on a default taxonomy); a
-  work-type label (`bug`, `feature`, `task`, `research`, `documentation`,
-  `question`) on personal-account repos only; one enabled native Issue Type
-  on organization repos only; and `needs-triage`.
-- **You may remove only:** `needs-triage`, and only when classification is
-  complete. The script checks completeness; you supply the labels and, where
-  an axis truly does not apply, an `--inapplicable` attestation.
-- **Never touch** (the scripts refuse these too): `foreman:*`, `rigor:*`,
-  `tier:*` (including scoped `tier:<role>:*`), `strategy:*`, `method:*` (the
+  lists — `area:*` / `layer:*` / `domain:*` on a default taxonomy, each with
+  its explicit `none` value); a work-type label (`bug`, `feature`, `task`,
+  `research`, `documentation`, `question`) on personal-account repos only; one
+  enabled native Issue Type on organization repos only; and **Impact**,
+  **Risk**, **Complexity** and **Priority (AI)** through the apply script's
+  `--impact` / `--risk` / `--complexity` / `--priority-ai` flags. The script
+  stores those in the owner type's one place — the `Impact`, `Risk`,
+  `Complexity` and `Priority (AI)` issue fields on an organization, the
+  `impact:*`, `risk:*`, `complexity:*` and `priority-ai:*` labels on a
+  personal account — and never the other.
+- **The script writes, you never choose:** the **Tier** (`tier:<value>`, a
+  label on every owner type), derived from Risk × Complexity by the policy
+  reader in the same call that writes them, and never over an issue carrying
+  `tier:pinned`; and **`needs-triage`**, derived from the required set
+  (step 2d) — added while anything required is missing, removed once nothing
+  is. You never add or remove `needs-triage` by your own judgement.
+- **Never touch** (the scripts refuse these too): the human `Priority` and
+  `Effort` (field or label — a human Priority is reported, never written),
+  `tier:pinned`, a `tier:<value>` of your own choosing, scoped
+  `tier:<role>:*`, `foreman:*`, `rigor:*`, `strategy:*`, `method:*` (the
   retired prefix `strategy:*` replaces — still reserved), `claim:*`,
-  `suggest:*`, `agent:*`, milestones, close states, assignees, issue bodies or
-  titles.
+  `agent:*`, milestones, close states, assignees, issue bodies or titles.
 - **"Possible completion" is advisory only.** The scan's
   `completion-candidate:*` flags (step 3) exist to surface an open issue whose
   delivery looks finished — never to act on that finding. The skill never
@@ -82,9 +94,13 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
 
 - `owner_type` — `User` (work-type labels allowed) or `Organization`
   (work-type labels forbidden; native issue Type owns classification there).
-- `axes` — the repo's active classification axes (e.g. `area`, `layer`,
-  `domain`). This list is the only source of axis names: never assume an
-  axis the scan does not list.
+- `axes` — the repo's active classification label axes (e.g. `area`,
+  `layer`, `domain`). This list is the only source of axis names: never
+  assume an axis the scan does not list.
+- `classification_axes` — which of Impact, Risk, Complexity and Priority
+  (AI) the repo provisions, with their allowed `values`, its `storage`
+  (`label` or `field`), and `required` (the provisioned ones of Impact, Risk
+  and Complexity). Never pass a value that is not in `values`.
 - `allowlist` / `vocabulary` — every label you may apply, with descriptions.
 - `work_type_values` — the work-type vocabulary for this repo.
 - `open[]` — open issues that need attention, each with `axis_state` (one
@@ -92,7 +108,11 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   `"unset"` for a bulk-read organization Type, `"unknown"` when a per-issue
   read is required, `"n/a"` on personal repos), `native_type` (the exact Type
   name only when state is `"set"`, otherwise `null`), `needs_labels`,
-  `claim_labels`, `days_since_update`, `criteria` (acceptance-criteria
+  `claim_labels`, `days_since_update`, `classification` (Impact, Risk,
+  Complexity and `priority_ai`, each `{state, value}` with state `unset`,
+  `set`, `conflict`, or `unknown`; the human `priority`, reported only; the
+  `tier` labels and `tier_pinned`), `required_missing` (every required axis
+  the issue lacks), `criteria` (acceptance-criteria
   checkbox facts — `total`, `unticked`, `unticked_ci`, `unticked_human`,
   `unticked_untagged`, using the track-work `[CI]`/`[HUMAN]` tag grammar —
   an untagged box is not a criterion and is excluded from `total`, but an
@@ -130,11 +150,13 @@ nothing):
 
 ```sh
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> \
-  [--add <label>]... [--native-type <Type>] [--remove needs-triage] \
-  [--inapplicable <axis>]...
+  [--add <label>]... [--native-type <Type>] \
+  [--impact <v>] [--risk <v>] [--complexity <v>] [--priority-ai <v>]
 ```
 
-In EXECUTE mode append `--execute`. Record every line the script prints.
+In EXECUTE mode append `--execute`. Record every line the script prints —
+including its `tier:`, `needs-triage:`, `Priority (AI)` and `human Priority`
+lines, which say what it derived, kept, or skipped.
 
 ### 2a — Work classification
 
@@ -174,50 +196,77 @@ concurrent-writer risk is acceptable; otherwise leave the Type for a human.
 For each axis in `axes` whose `axis_state` is `none`: look through
 `vocabulary` for that axis's values. Apply one **only if** the issue's title
 or body explicitly names what that value describes (a file path, subsystem,
-or activity that matches the description). If you have to guess, or two
-values fit: **add nothing**.
+or activity that matches the description). When no value of the axis could
+ever describe this issue, apply its explicit `none` value (for example
+`layer:none`) rather than omitting the axis — an omitted axis keeps the issue
+in `needs-triage` forever. If you have to guess, or two values fit: **add
+nothing**.
 
 For each axis whose `axis_state` is `conflict` or `unknown`: **never add or
 remove anything** for that axis. It becomes a report entry in step 3
 (`unknown` means the issue carries an axis label whose value is not in the
 active taxonomy — a retired or misspelled label a human must resolve).
 
-### 2c — needs-triage
+### 2c — Impact, Risk, Complexity, and Priority (AI)
 
-- If `flags` contains `missing-needs-triage`: add `needs-triage` (include it
-  in the same apply call) — with one check first on `Organization` repos:
-  read the issue's `native_type_state` from the scan. State `"set"` means the
-  issue is classified by its exact `native_type` — do not add `needs-triage`
-  for a missing work-type label there. Only when state is `"unknown"` run
-  `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`
-  instead — that per-issue check costs one read from the budget and returns
-  JSON with `state` (`"set"` or `"unset"`) and `name` (exact when set, null
-  when unset). Branch only on `state`, never on the display spelling of a
-  Type name.
-- Do **not** re-add `needs-triage` for a merely missing axis the scan did not
-  flag: an earlier run may have removed the label on an
-  `--inapplicable` attestation, which no label records, and re-adding it
-  would churn that issue forever.
-- Remove `needs-triage` **only if**, after your adds from 2a/2b, all of this
-  holds — the script re-checks every point and refuses otherwise:
-  - a work type is present (personal: a work-type label; org: the native
-    Type — the scan's `native_type_state`, which must be `"set"`; only when it
-    is `"unknown"` check with
-    `"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>`,
-    whose JSON `state` must be `"set"`; a `--native-type <Type>` selected in
-    this same apply call also satisfies this requirement), and
-  - when active, `area` and `domain` each have exactly one recognized label,
-    **or** you attest `--inapplicable <axis>` only when no value of that axis
-    could ever describe this issue. They remain required classification axes
-    whenever the repository provisions them; never assume an axis absent from
-    `axes`.
-  - `layer`, when it is active, has exactly one recognized label **or is
-    absent**. Do not add a rote `--inapplicable layer` just to clear an absent
-    layer: the stack slice is optional when absent. A present layer conflict or
-    unknown value still blocks removal and is reported by the scan.
-  - Any other active axis still has exactly one recognized label, **or** you
-    attest `--inapplicable <axis>` for it. When in doubt, do not attest — leave
-    `needs-triage` in place.
+For each axis in `classification_axes.required` whose `classification`
+state is `unset`:
+
+1. Read `references/classification-rubric.md` before choosing a value — the
+   whole file the first time in a run. It defines each axis, gives an anchor
+   and an example per value, and lists the mix-ups to avoid (Impact is not
+   urgency; for a bug fix the harm prevented is Impact and the danger of the
+   fix is Risk; Complexity is difficulty, never hours).
+2. Rate each axis on its own, from the issue's title and body, and pass
+   `--impact <v>`, `--risk <v>`, `--complexity <v>` in the same apply call
+   as the issue's other adds. Use only values from that axis's `values`.
+   Every axis is rated: none of these three has a "does not apply".
+3. If you cannot place an axis on an anchor with confidence: **pass nothing
+   for it**. The issue keeps `needs-triage` and stays visible.
+
+Never pass a value for an axis whose state is `set`, `conflict`, or
+`unknown`: triage fills an unset axis and never re-rates one (the script
+refuses a different value). A `conflict` or an `unknown` value is a report
+entry (step 3).
+
+**Priority (AI).** When this same call sets the last of Impact, Risk and
+Complexity — or they are all already `set` — and `classification_axes`
+provisions `priority-ai`: Read `references/priority-rubric.md` before
+choosing, then pass `--priority-ai <p0..p4>` (for a bug it reads as
+severity). The script keeps an existing Priority (AI) unless the human
+Priority is unset and this call changed the classification, and reports a
+human Priority without ever writing it. Never pass the human `priority`.
+
+**The Tier is not yours to choose.** When the call writes Risk or
+Complexity, the script derives the Tier from them with the repository's
+policy and writes the `tier:<value>` label itself — or says why it did not
+(`tier:pinned`, no `[tier.matrix]` in the policy, no such label). Never pass
+a `tier:*` label.
+
+### 2d — needs-triage is derived
+
+You never add or remove `needs-triage`. Every apply call derives it from the
+**required set**, judged on the state the call leaves behind:
+
+- a work type — a work-type label on a personal repo; the native Issue Type
+  on an organization (a `--native-type` in the same call counts);
+- exactly one recognized label of every axis in `axes` — `layer` included;
+  an axis that does not apply carries its explicit `none` value (2b);
+- every axis in `classification_axes.required` set (2c).
+
+When anything is missing the script adds `needs-triage` (if absent) and says
+what is missing; when nothing is, it removes `needs-triage` (if present). It
+leaves the label alone where the repo's manifest does not grant it to agents,
+or where it cannot read the native Type. The scan's `required_missing` and
+its `missing-needs-triage` / `partially-classified` /
+`needs-triage-removable` flags are the same derivation before your writes —
+an issue flagged `needs-triage-removable` that needs no other write is
+settled by any apply call that changes nothing else, so leave it for the next
+run rather than inventing a write.
+
+An issue whose only gap is a work type the organization cannot express (no
+enabled Type clearly applies), or an axis you could not rate with confidence,
+keeps `needs-triage` and is listed in the report (step 3).
 
 ## Step 3 — Report entries
 
@@ -243,6 +292,8 @@ a finding):
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
+| `classification-conflict:*`         | nothing — the flag is the finding                    | always; name the conflicting values from the issue's `classification` (a human must keep one) |
+| `classification-unknown-value:*`     | nothing — the flag is the finding                    | always; name the value — off the rubric scale or not provisioned (a human must correct it) |
 | `missing-work-type` on an org repo   | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
 | `legacy-work-type-label` (org only)  | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state is `"unset"` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `completion-candidate:all-criteria-checked` | nothing — the flag is the finding | always, except on the repository's standing `(QA):` issue (labelled `human` + `umbrella`), which stays open as the QA queue when its checklist is empty (track-work §5) — never report it; category `possible completion`; evidence "all N criteria ticked, issue still open"; suggested action "confirm delivery; close as completed, or untick what is not actually done" |
@@ -287,10 +338,11 @@ Then these optional **aggregate** sections (plain `##` headings at the end of
 the entries file, no entry keys):
 
 - `## Partially classified` — one bullet `#<n> — missing: <what>` for every
-  issue flagged `partially-classified`. Deterministic — written from the
-  scan, no reads — with one adjustment: the flag is pre-write state, so
-  **drop any issue your own step-2 apply call completed this run** (its
-  classification finished, or its `needs-triage` was removed). This is the
+  issue flagged `partially-classified` or `missing-needs-triage`, naming its
+  `required_missing`. Deterministic — written from the scan, no reads — with
+  one adjustment: the flag is pre-write state, so **drop any issue your own
+  step-2 apply call completed this run** (its classification finished, or its
+  `needs-triage` was removed). This is the
   contract's "a partially classified issue keeps the label and appears in
   the report". The same pre-write adjustment applies to **every**
   deterministic entry: drop an `aging-needs-candidate` entry when the only
@@ -312,8 +364,11 @@ the entries file, no entry keys):
   finding missing from this report may simply be outside it rather than
   resolved.
 - `## Tier/strategy proposals` — only if, while reading an issue, you are
-  confident a `tier:*` (optionally scoped, e.g. `tier:implementer:<value>`)
-  or execution-topology value fits it far better than the default. **Which
+  confident a scoped `tier:<role>:*` override (e.g.
+  `tier:implementer:<value>`), a human pin of a different Tier (`tier:<value>`
+  plus `tier:pinned` — the derived Tier is the policy's answer, so this is a
+  suggestion for a human to pin), or an execution-topology value fits it far
+  better than the default. **Which
   prefix — and, for tier, whether scoped or bare — to propose is
   discovered, never assumed**: a repo may be mid-migration (harmon-init#1047
   `method:*` → `strategy:*`) and still carry only the retired family, and
@@ -365,8 +420,10 @@ End with exactly this shape:
 Triage run — <DRY-RUN | EXECUTE> over <repo>
 - issues scanned: <open_total> open (<n> processed, <n> skipped), <n> closed flagged
 - labels: <n> applied|would-apply (<list them: #issue +label ...>)
+- classification: <n> applied|would-apply (<list them: #issue impact=<v> risk=<v> complexity=<v> priority-ai=<v> ... | none>)
+- tier: <n> derived (<#issue tier:<v> ...>), <n> not written (<#issue reason ...> | none)
 - native Issue Types: <n> applied|would-apply (<list them: #issue Type ... | none>)
-- needs-triage: <n> added, <n> removed (attestations: <axis@#issue ... | none>)
+- needs-triage: <n> added, <n> removed (derived)
 - report: <n> entries → <created #N | updated #N | would create | would update #N>
 - refused by scripts: <list each refusal line, or "none">
 - skipped as unsure: <count> (they keep needs-triage)
@@ -379,9 +436,9 @@ run ends by recommending a triage run, not the other way around.
 
 ## References
 
-Reference material only: the contract above still decides what this skill may
-write (`tier:*` stays on the never-touch list), and a rubric is never authority
-to write a value.
+Read these before choosing a value (steps 2c). The contract above still
+decides what this skill may write, and a rubric is never authority to write
+anything the contract does not allow.
 
 - [`references/classification-rubric.md`](references/classification-rubric.md)
   — the long form of Impact, Risk, Complexity, and the derived, pinnable Tier:
