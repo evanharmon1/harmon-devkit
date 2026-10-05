@@ -1431,6 +1431,64 @@ cmd_label() {
     fi
     print_notes
 
+    # ── A fresh read before EVERY mutation ──────────────────────────────────
+    # The snapshot above is the read for the first mutation. Each later one
+    # (an organization can make up to five: the needs-triage marker, the
+    # native Type, the field mutation, the label edit, the needs-triage
+    # removal) is preceded by before_mutation: re-read, re-plan, and refuse
+    # (exit 4, no further write) unless the remaining writes are exactly the
+    # ones still planned and no tier:pinned or human Priority has appeared.
+    # Writes already made are recorded in `done_writes`, so the comparison
+    # covers only what is left.
+    local mutated=0 done_writes=""
+    plan_signature() {
+        local x
+        {
+            [ "$nt_add" -eq 0 ] || echo "nt-add"
+            [ -z "$effective_native_type" ] || echo "type:$effective_native_type"
+            for x in "${org_field_writes[@]+"${org_field_writes[@]}"}"; do
+                echo "field:$x"
+            done
+            for x in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
+                [ "$x" = needs-triage ] || echo "label+:$x"
+            done
+            for x in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
+                echo "label-:$x"
+            done
+            [ "$nt_remove" -eq 0 ] || echo "nt-remove"
+        } | while IFS= read -r x; do
+            in_list "$x" "$done_writes" || echo "$x"
+        done
+    }
+    before_mutation() {
+        if [ "$mutated" -eq 0 ]; then
+            mutated=1
+            return 0
+        fi
+        local planned was_pinned=0 had_human
+        planned="$(plan_signature)"
+        in_list "tier:pinned" "$current" && was_pinned=1
+        had_human="$(human_priority)"
+        read_state
+        plan_call
+        if [ "$was_pinned" -eq 0 ] && in_list "tier:pinned" "$current"; then
+            die 4 "refused: tier:pinned was added to $repo#$issue between" \
+                "triage's writes — no further write was made"
+        fi
+        if [ -z "$had_human" ] && [ -n "$(human_priority)" ]; then
+            die 4 "refused: a human Priority was set on $repo#$issue between" \
+                "triage's writes — no further write was made"
+        fi
+        [ "$(plan_signature)" = "$planned" ] ||
+            die 4 "refused: $repo#$issue changed between triage's writes —" \
+                "the remaining writes no longer match its plan; no further" \
+                "write was made (planned: $(printf '%s' "$planned" | paste -sd ' ' -);" \
+                "now: $(plan_signature | paste -sd ' ' -))"
+    }
+    record_done() {
+        done_writes="$(printf '%s\n%s' "$done_writes" "$1")"
+    }
+
     if [ "$execute" -eq 0 ]; then
         [ "$marker_first" -eq 0 ] ||
             echo "DRY-RUN would add 'needs-triage' to $repo#$issue"
@@ -1452,9 +1510,11 @@ cmd_label() {
     fi
 
     if [ "$marker_first" -eq 1 ]; then
+        before_mutation
         gh issue edit "$issue" --repo "$repo" --add-label needs-triage \
             >/dev/null </dev/null ||
             die 1 "write failed: gh issue edit $repo#$issue"
+        record_done "nt-add"
         echo "APPLIED add 'needs-triage' to $repo#$issue"
     fi
 
@@ -1462,9 +1522,10 @@ cmd_label() {
     # The only label intentionally established before Type is needs-triage
     # above, which keeps an otherwise untyped issue visible if its Type write
     # fails. All other labels wait for the verified Type.
-    # The snapshot already showed the Type unset (plan_call refuses a
-    # different one), so there is no second read before this write.
+    # The read just before this write (the snapshot, or before_mutation's)
+    # showed the Type unset — plan_call refuses a different one.
     if [ -n "$effective_native_type" ]; then
+        before_mutation
         local current_native_type
         gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
             >/dev/null </dev/null ||
@@ -1479,6 +1540,7 @@ cmd_label() {
         # This is deliberately before the independent label edit below:
         # if that later mutation fails, stdout still records the durable
         # Type change rather than falsely implying the apply was inert.
+        record_done "type:$effective_native_type"
         echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
     fi
 
@@ -1486,6 +1548,7 @@ cmd_label() {
     # re-read — a field write that cannot be confirmed stops the run before
     # the Tier label or a needs-triage removal could claim it landed.
     if [ "${#org_field_writes[@]}" -gt 0 ]; then
+        before_mutation
         local catalogue fields_input w name opt
         catalogue="$(org_issue_fields "$repo")" ||
             die 2 "could not re-read the issue fields of $repo"
@@ -1506,6 +1569,9 @@ cmd_label() {
         [ -n "$issue_id" ] || die 2 "could not resolve the node id of $repo#$issue"
         org_set_issue_fields "$issue_id" "$fields_input" </dev/null ||
             die 1 "write failed: setIssueFieldValue on $repo#$issue"
+        for w in "${org_field_writes[@]}"; do
+            record_done "field:$w"
+        done
         local attempts=0 verified=""
         while [ "$attempts" -lt 3 ]; do
             verified="$(org_issue_field_values "$repo" "$issue")" && break
@@ -1542,8 +1608,30 @@ cmd_label() {
         )")
     fi
     if [ "${#args[@]}" -gt 0 ]; then
+        before_mutation
+        # The re-plan may have settled the label lists afresh; rebuild the
+        # edit from them (they equal what was planned, or it refused).
+        args=()
+        [ "${#label_change_adds[@]}" -eq 0 ] || args+=(--add-label "$(
+            IFS=,
+            echo "${label_change_adds[*]}"
+        )")
+        [ "${#label_change_removes[@]}" -eq 0 ] || args+=(--remove-label "$(
+            IFS=,
+            echo "${label_change_removes[*]}"
+        )")
         gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
             die 1 "write failed: gh issue edit $repo#$issue"
+        for l in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
+            if [ "$l" = needs-triage ]; then
+                record_done "nt-add"
+            else
+                record_done "label+:$l"
+            fi
+        done
+        for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
+            record_done "label-:$l"
+        done
     fi
     for l in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
         echo "APPLIED add '$l' to $repo#$issue"
@@ -1552,6 +1640,7 @@ cmd_label() {
         echo "APPLIED remove '$l' from $repo#$issue"
     done
     if [ "$nt_remove" -eq 1 ]; then
+        before_mutation
         gh issue edit "$issue" --repo "$repo" --remove-label needs-triage \
             >/dev/null </dev/null ||
             die 1 "write failed: gh issue edit $repo#$issue"

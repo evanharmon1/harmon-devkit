@@ -187,6 +187,16 @@ case "${1:-} ${2:-}" in
         else
             native_type="${GH_STUB_NATIVE_TYPE:-}"
         fi
+        # GH_STUB_NATIVE_TYPE_CHANGE_ON_READ=K: from the K-th Type read on,
+        # the Type is GH_STUB_NATIVE_TYPE_CHANGE_TO (a person typing the
+        # issue between two of triage's writes).
+        if [ -n "${GH_STUB_NATIVE_TYPE_CHANGE_ON_READ:-}" ]; then
+            reads="$(cat "${GH_STUB_DIR:?}/.native-reads" 2>/dev/null || echo 0)"
+            reads=$((reads + 1))
+            echo "$reads" >"$GH_STUB_DIR/.native-reads"
+            [ "$reads" -lt "$GH_STUB_NATIVE_TYPE_CHANGE_ON_READ" ] ||
+                native_type="${GH_STUB_NATIVE_TYPE_CHANGE_TO:?}"
+        fi
         if [ -n "$native_type" ]; then
             printf 'set:%s\n' "$native_type"
         else
@@ -2643,6 +2653,55 @@ grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
 grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
     fail "a field cleared before the snapshot must keep needs-triage: $(cat "$GH_STUB_LOG")"
 rm -f "$stub_dir"/.field-reads-* "$stub_dir/issue-fields-71.json"
+
+echo "==> label: a fresh read before every org mutation catches a change between writes"
+# (1) tier:pinned set between the field mutation and the label edit.
+issue_fixture 85 area:ci layer:ui domain:auth needs-triage
+rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* \
+    "$stub_dir/field-mutations.log" "$stub_dir/issue-fields-85.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned" "$apply" label --repo "$repo" \
+    --issue 85 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin set between org writes must refuse: $(cat "$tmp/out")"
+grep -q "tier:pinned was added to $repo#85 between triage's writes" "$tmp/out" ||
+    fail "the refusal must name the pin: $(cat "$tmp/out")"
+[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+    fail "the field mutation before the pin was the one write made"
+grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
+    fail "no label write may follow the pin: $(cat "$GH_STUB_LOG")"
+# (2) a field value set between the needs-triage marker and the field write.
+issue_fixture 86 area:ci layer:ui
+rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* \
+    "$stub_dir/field-mutations.log" "$stub_dir/issue-fields-86.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELDS_CHANGE_ON_READ=3 \
+    GH_STUB_FIELDS_CHANGE_JSON='{"Risk": "low"}' "$apply" label --repo "$repo" \
+    --issue 86 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a field set between org writes must refuse: $(cat "$tmp/out")"
+grep -qx "issue edit 86 --repo $repo --add-label needs-triage" "$GH_STUB_LOG" ||
+    fail "the marker was the one write made before the change"
+[ ! -e "$stub_dir/field-mutations.log" ] ||
+    fail "no field mutation may follow the change"
+[ "$(grep -c '^issue edit 86' "$GH_STUB_LOG")" = 1 ] ||
+    fail "no later label write may follow the change: $(cat "$GH_STUB_LOG")"
+# (3) a native Type set between the needs-triage marker and the Type write.
+issue_fixture 87 area:ci
+rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* "$stub_dir/.native-reads"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_NATIVE_TYPE="" \
+    GH_STUB_NATIVE_TYPE_CHANGE_ON_READ=3 GH_STUB_NATIVE_TYPE_CHANGE_TO=Feature \
+    "$apply" label --repo "$repo" --issue 87 --native-type Bug --execute \
+    --manifest "$manifest")" = 4 ] ||
+    fail "a Type set between org writes must refuse: $(cat "$tmp/out")"
+grep -qx "issue edit 87 --repo $repo --add-label needs-triage" "$GH_STUB_LOG" ||
+    fail "the marker was the one write made before the Type change: $(cat "$GH_STUB_LOG")"
+grep -q -- "--type Bug" "$GH_STUB_LOG" &&
+    fail "no Type write may follow a Type set by someone else"
+rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* "$stub_dir/.native-reads" \
+    "$stub_dir/field-mutations.log" "$stub_dir"/issue-fields-8[56].json
 
 echo "==> label: an org field write failure or unverifiable write stops the labels"
 rm -f "$stub_dir/issue-fields-70.json"
