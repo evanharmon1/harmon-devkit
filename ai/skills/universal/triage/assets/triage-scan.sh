@@ -747,11 +747,23 @@ jq -n -L "$title_module_dir" \
            # Risk and Complexity set, no pin, and no Tier label at all: the
            # reconcile call writes it. No resolver call here — a stale but
            # present Tier is the reconcile call'"'"'s and the reconciler'"'"'s.
-           + (if $cls.risk.state == "set" and $cls.complexity.state == "set"
-                 and (($ls | index("tier:pinned")) == null)
-                 and ([$ls[] | select(test("^tier:[^:]+$"))
-                       | select(. != "tier:pinned")] | length) == 0
-              then ["tier-missing"] else [] end))
+           + ([$ls[] | select(test("^tier:[^:]+$"))
+               | select(. != "tier:pinned")] | length) as $tiers
+           | (($ls | index("tier:pinned")) != null) as $pinned
+           | (if $cls.risk.state == "set" and $cls.complexity.state == "set"
+                 and ($pinned | not) and $tiers == 0
+              then ["tier-missing"] else [] end)
+           # More than one Tier label on an unpinned issue: the reconcile
+           # call keeps the derived one and removes the rest.
+           + (if ($pinned | not) and $tiers > 1 then ["tier-conflict"]
+              else [] end)
+           # Classified, Priority (AI) provisioned but unset: the apply call
+           # that sets it (2c) settles it under the keep/replace rule.
+           + (if $cls.impact.state == "set" and $cls.risk.state == "set"
+                 and $cls.complexity.state == "set"
+                 and $class.axes["priority-ai"].provisioned
+                 and $cls["priority-ai"].state == "unset"
+              then ["priority-ai-missing"] else [] end))
           as $flags
         | {number, title, updatedAt,
            days_since_update: $days,

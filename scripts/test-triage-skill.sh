@@ -2754,6 +2754,14 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
              {"name": "risk:low"}, {"name": "complexity:s"},
              {"name": "needs-triage"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 84, "title": "(classification): Two tier labels",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}, {"name": "impact:low"},
+             {"name": "risk:low"}, {"name": "complexity:s"},
+             {"name": "priority-ai:p2"}, {"name": "tier:local"},
+             {"name": "tier:apex"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
 echo '[]' >"$stub_dir/issues-closed.json"
@@ -2794,6 +2802,19 @@ jq -e '.open[] | select(.number == 83)
        | .required_missing == []
          and (.flags | index("needs-triage-removable") != null)' \
     "$tmp/class-scan.json" >/dev/null || fail "#83 must read removable"
+jq -e '(.open[] | select(.number == 84)
+        | (.flags | index("tier-conflict") != null)
+          and (.flags | index("tier-missing") == null)
+          and (.flags | index("priority-ai-missing") == null))
+       and (.open[] | select(.number == 81)
+            | .flags | index("tier-conflict") == null)' \
+    "$tmp/class-scan.json" >/dev/null ||
+    fail "tier-conflict: more than one tier label on an unpinned issue only"
+jq -e '(.open[] | select(.number == 83) | .flags | index("priority-ai-missing") != null)
+       and (.open[] | select(.number == 80) | .flags | index("priority-ai-missing") == null)
+       and (.open[] | select(.number == 81) | .flags | index("priority-ai-missing") == null)' \
+    "$tmp/class-scan.json" >/dev/null ||
+    fail "priority-ai-missing: classified, Priority (AI) provisioned and unset only"
 jq -e '(.open[] | select(.number == 83) | .flags | index("tier-missing") != null)
        and (.open[] | select(.number == 80) | .flags | index("tier-missing") == null)
        and (.open[] | select(.number == 81) | .flags | index("tier-missing") == null)' \
@@ -2840,7 +2861,7 @@ echo "==> scan: an unreadable org field pass is unknown, never unset"
 [ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
     --manifest "$manifest")" = 0 ] ||
     fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
-jq -e '([.open[].number] | sort) == [80, 81, 82, 83]
+jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84]
        and ([.open[] | .flags | index("classification-unreadable") != null]
             | all)' "$tmp/out" >/dev/null ||
     fail "every issue whose fields were not read must stay in open[], flagged"
@@ -2864,8 +2885,10 @@ grep -q 'Read `references/priority-rubric.md`' \
     fail "SKILL.md must tell the model to read the priority rubric first"
 grep -q 'apply its explicit `none` value' ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must tell the model to apply none rather than omit an axis"
-grep -q 'flags `missing-needs-triage`, `needs-triage-removable`, or' \
-    ai/skills/universal/triage/SKILL.md ||
+grep -q 'flags `missing-needs-triage`, `needs-triage-removable`,' \
+    ai/skills/universal/triage/SKILL.md &&
+    grep -q '`tier-conflict` (more than one Tier label, not pinned)' \
+        ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must issue the reconcile call for tier-missing too"
 grep -q -- '--issue <n> --reconcile' ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must issue the reconcile call for needs-triage-only issues"
