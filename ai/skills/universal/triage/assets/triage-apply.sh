@@ -1181,9 +1181,14 @@ cmd_label() {
                 if [ -z "$human" ] && [ "$class_changed" -eq 1 ]; then
                     field_writes+=("priority-ai=$req_priority_ai")
                     pai_replace=1
+                    # Remove the OTHER values only: the requested one may
+                    # already be among conflicting labels, and removing it
+                    # beside its own add would race the two edits.
                     if [ "$owner_type" != "Organization" ]; then
                         while IFS= read -r l; do
-                            [ -n "$l" ] && replace_removes+=("$l")
+                            [ -n "$l" ] || continue
+                            [ "$l" != "priority-ai:$req_priority_ai" ] || continue
+                            replace_removes+=("$l")
                         done < <(printf '%s\n' "$current" | grep '^priority-ai:' || true)
                     fi
                 elif [ -n "$human" ]; then

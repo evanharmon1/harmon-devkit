@@ -316,7 +316,8 @@ api\ repos/*)
             jq --arg add "$add" --arg del "$del" '
               ($del | split(",")) as $d
               | .labels = ([.labels[] | select(.name as $n | $d | index($n) | not)]
-                           + [$add | split(",")[] | select(. != "") | {name: .}])' \
+                           + [$add | split(",")[] | select(. != "") | {name: .}]
+                           | unique_by(.name))' \
                 "$src" >"$overlay.next"
             mv "$overlay.next" "$overlay"
         fi
@@ -2503,6 +2504,27 @@ issue_fixture 93 $classified impact:low complexity:s "priority-ai:x,tier:pinned"
 grep -q "contains a comma — gh would split its removal" "$tmp/out" ||
     fail "the refusal must say why: $(cat "$tmp/out")"
 grep -q "issue edit" "$GH_STUB_LOG" && fail "no write may follow the refusal"
+
+echo "==> label: a conflicting Priority (AI) keeps the requested value, removes the rest"
+# shellcheck disable=SC2086
+issue_fixture 94 $classified impact:low complexity:s priority-ai:p1 \
+    priority-ai:p3 needs-triage
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 94 \
+    --risk high --priority-ai p1 --execute --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "PAI conflict replace failed: $(cat "$tmp/out")"
+pai_edit="$(grep '^issue edit 94 .*--remove-label' "$GH_STUB_LOG" |
+    grep -v -- '--remove-label needs-triage$' || true)"
+[ -n "$pai_edit" ] || fail "the replacement must remove a label: $(cat "$GH_STUB_LOG")"
+removed="${pai_edit##*--remove-label }"
+added="${pai_edit#*--add-label }"
+added="${added%% --remove-label*}"
+[ ",$removed," = ",priority-ai:p3," ] ||
+    fail "only the other value p3 may be removed, never p1: $pai_edit"
+grep -q ',priority-ai:p1,' <<<",$added," ||
+    fail "the requested p1 must be added or kept: $pai_edit"
+grep -qx "issue edit 94 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG" ||
+    fail "the call completes: the re-plan sees exactly one priority-ai label"
 
 echo "==> label: Priority (AI) — set with the axes, kept, replaced, never human"
 [ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \

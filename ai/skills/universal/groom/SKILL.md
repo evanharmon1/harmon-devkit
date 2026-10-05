@@ -35,9 +35,11 @@ recommending a `/triage` run.
   `--execute` and prints `PLAN <exact command>` lines only. Under a label
   row's `PLAN` line, the indented lines are `triage-apply.sh`'s own dry run:
   the derived writes that row would make (issue fields, the Tier label, the
-  needs-triage change). They are shown for review; at execute
-  `triage-apply.sh` derives them again from the issue's live state, and
-  refuses (exit 4) if they changed.
+  needs-triage change). At execute they are computed again from the live
+  issue, so they can differ from this dry run if the issue changed in
+  between; the call refuses (exit 4) only on a change during its own run. If
+  time has passed or the issue was edited, re-run the dry run before
+  executing.
 - **`--execute` is refused unless `GROOM_EXECUTE=1`** is in the environment —
   set only by the `task groom` wrapper for a supervised run. A model cannot
   promote itself to write mode by adding a flag.
@@ -298,10 +300,12 @@ confirmation, `GROOM_EXECUTE=1`, then `exec`); without the script's own
 `PLAN` lines and writes nothing. Review the `PLAN` lines against what the
 maintainer actually approved — for a label row, including the indented
 `triage-apply.sh` dry-run lines beneath it, which show the derived writes
-(issue fields, the Tier label, the needs-triage change) the row would make;
-at execute they are derived again from the live issue, and the call refuses
-if they changed — then re-run with the script's own `--execute` appended —
-only when your runner's mode is APPLY. Run these, in order:
+(issue fields, the Tier label, the needs-triage change) the row would make.
+At execute those are computed again from the live issue, so they can differ
+from the dry run if the issue changed in between; the call refuses only on a
+change during its own run, so re-run the dry run first if time has passed or
+the issue was edited — then re-run with the script's own `--execute`
+appended — only when your runner's mode is APPLY. Run these, in order:
 
 1. `task groom -- --execute groom-apply.sh apply-plan --repo "$REPO" \
    --plan-file "$SCRATCH/plan.jsonl" --log "$SCRATCH/apply.log" \
