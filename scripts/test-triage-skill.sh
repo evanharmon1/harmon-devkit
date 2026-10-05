@@ -2316,6 +2316,17 @@ cp "$tmp/labels-keep.json" "$stub_dir/labels.json"
     --manifest "$manifest")" = 4 ] || fail "a caller-chosen Tier must exit 4"
 grep -q "the Tier is derived" "$tmp/out" || fail "the refusal must say why"
 
+echo "==> label: a possibly-truncated live label list refuses, never derives"
+cp "$stub_dir/labels.json" "$tmp/labels-keep.json"
+jq -n '[range(1000)] | map({name: ("bulk-\(.)"), description: ""})' \
+    >"$stub_dir/labels.json"
+[ "$(run "$apply" label --repo "$repo" --issue 69 --add area:ci \
+    --manifest "$manifest")" = 2 ] ||
+    fail "a 1000-label page must refuse, not read the axes as unprovisioned"
+grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" &&
+    fail "a truncated vocabulary must never derive a needs-triage removal"
+cp "$tmp/labels-keep.json" "$stub_dir/labels.json"
+
 echo "==> label: needs-triage is derived from the required set"
 [ "$(run "$apply" label --repo "$repo" --issue 63 --add area:ci \
     --manifest "$manifest")" = 0 ] || fail "derived add failed: $(cat "$tmp/out")"

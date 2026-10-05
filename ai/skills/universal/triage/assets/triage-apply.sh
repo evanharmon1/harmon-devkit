@@ -215,7 +215,11 @@ guard_issue_number() {
     esac
 }
 
-# Fetch the complete live label set, one name per line. A page equal to the
+# Fetch the complete live label set, one name per line. Callers read it in
+# a command substitution, where its `die` ends only that subshell (no
+# inherit_errexit), so every caller re-raises the failure itself: an empty
+# vocabulary would read every axis as unprovisioned and let the derived
+# needs-triage removal fire. A page equal to the
 # fetch limit may be truncated, and a hidden axis label would silently weaken
 # the removal gate — refuse rather than derive from a partial vocabulary.
 live_labels() {
@@ -253,7 +257,8 @@ axes_active() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local live a
-        live="$(live_labels "$repo")"
+        live="$(live_labels "$repo")" ||
+            die 2 "could not list the live labels of $repo"
         for a in $FALLBACK_AXES; do
             grep -q "^$a:" <<<"$live" && printf '%s\n' "$a"
         done
@@ -287,7 +292,8 @@ axis_values_recognized() {
         # read every live axis label as unknown. Only grep's no-match status
         # is ignorable.
         local live
-        live="$(live_labels "$repo")"
+        live="$(live_labels "$repo")" ||
+            die 2 "could not list the live labels of $repo"
         printf '%s\n' "$live" | grep -E "^($re):" || true
     fi
 }
@@ -313,7 +319,8 @@ allowlist_compute() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local live wt
-        live="$(live_labels "$repo")"
+        live="$(live_labels "$repo")" ||
+            die 2 "could not list the live labels of $repo"
         axis_values_recognized "$repo" "$manifest"
         for wt in $FALLBACK_WORK_TYPES needs-triage; do
             grep -qx "$wt" <<<"$live" && printf '%s\n' "$wt"
@@ -339,7 +346,8 @@ work_types_recognized() {
         [ -n "$repo" ] ||
             die 2 "no manifest at '$manifest' and no --repo for the gh fallback"
         local live wt
-        live="$(live_labels "$repo")"
+        live="$(live_labels "$repo")" ||
+            die 2 "could not list the live labels of $repo"
         for wt in $FALLBACK_WORK_TYPES; do
             grep -qx "$wt" <<<"$live" && printf '%s\n' "$wt"
         done
@@ -664,7 +672,8 @@ org_set_issue_fields() {
 # always the rubric scale intersected with what is provisioned.
 classification_axes_json() {
     local repo="$1" owner_type="$2" live catalogue="[]" storage=label
-    live="$(live_labels "$repo")"
+    live="$(live_labels "$repo")" ||
+        die 2 "could not list the live labels of $repo"
     if [ "$owner_type" = "Organization" ]; then
         storage=field
         catalogue="$(org_issue_fields "$repo")" ||
