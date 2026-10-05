@@ -719,8 +719,14 @@ apply_label() {
         # the Tier label, the needs-triage change). Show its own dry run under
         # the PLAN line, so the approved plan is the whole write
         # (harmon-devkit#1250, challenge round 1 finding 2).
-        local dry
-        dry="$("$triage_apply" "${args[@]}" 2>&1)" ||
+        local dry rc=0
+        dry="$("$triage_apply" "${args[@]}" 2>&1)" || rc=$?
+        # Exit 2 is triage-apply.sh's usage/environment error (an unreadable
+        # issue-field catalogue, a failed read): not a refusal of the row.
+        [ "$rc" -ne 2 ] ||
+            die 2 "environment error: triage-apply.sh could not complete its" \
+                "dry run for #$issue: $dry"
+        [ "$rc" -eq 0 ] ||
             die 4 "refused: #$issue label op failed triage-apply.sh's own" \
                 "dry run: $dry"
         print_plan "$triage_apply" "${args[@]}"

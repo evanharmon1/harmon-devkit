@@ -723,6 +723,11 @@ jq -n -L "$title_module_dir" \
                                            and $cls[.].value == null)]
                | length > 0)) as $undecided
         | (($ls | index("needs-triage")) != null) as $has_nt
+        # Unqualified Tier labels (tier:pinned and tier:<role>:* aside),
+        # tier:adaptive and off-ladder values included.
+        | ([$ls[] | select(test("^tier:[^:]+$"))
+            | select(. != "tier:pinned")] | length) as $tiers
+        | (($ls | index("tier:pinned")) != null) as $pinned
         | ([$conf.flags[]
             | select(. != "missing-needs-triage" and . != "partially-classified"
                      and . != "needs-triage-removable")]
@@ -747,16 +752,24 @@ jq -n -L "$title_module_dir" \
            # Risk and Complexity set, no pin, and no Tier label at all: the
            # reconcile call writes it. No resolver call here — a stale but
            # present Tier is the reconcile call'"'"'s and the reconciler'"'"'s.
-           + ([$ls[] | select(test("^tier:[^:]+$"))
-               | select(. != "tier:pinned")] | length) as $tiers
-           | (($ls | index("tier:pinned")) != null) as $pinned
-           | (if $cls.risk.state == "set" and $cls.complexity.state == "set"
+           + (if $cls.risk.state == "set" and $cls.complexity.state == "set"
                  and ($pinned | not) and $tiers == 0
               then ["tier-missing"] else [] end)
            # More than one Tier label on an unpinned issue: the reconcile
-           # call keeps the derived one and removes the rest.
+           # call writes the derived Tier and removes every other unqualified
+           # tier label, tier:adaptive and off-ladder values included.
            + (if ($pinned | not) and $tiers > 1 then ["tier-conflict"]
               else [] end)
+           # A conflicting or off-scale Priority (AI). Never part of
+           # required_missing: Priority (AI) is never required.
+           + (if $class.axes["priority-ai"].provisioned
+                 and ($cls["priority-ai"].state == "conflict"
+                      or ($cls["priority-ai"].state == "unknown"
+                          and $cls["priority-ai"].value != null))
+              then ["priority-ai-invalid"] else [] end)
+           # Per-issue native Type mode: the Type was not read, so the issue
+           # stays in the scan until the native-type reader settles it.
+           + (if $nts == "unknown" then ["native-type-unknown"] else [] end)
            # Classified, Priority (AI) provisioned but unset: the apply call
            # that sets it (2c) settles it under the keep/replace rule.
            + (if $cls.impact.state == "set" and $cls.risk.state == "set"

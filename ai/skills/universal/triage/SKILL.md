@@ -159,14 +159,29 @@ In EXECUTE mode append `--execute`. Record every line the script prints —
 including its `tier:`, `needs-triage:`, `Priority (AI)` and `human Priority`
 lines, which say what it derived, kept, or skipped.
 
+### The native Type reader (organizations only)
+
+Where the scan could not bulk-read native Issue Types (`native_type_mode` is
+`per-issue`), every organization issue has `native_type_state` `"unknown"` and
+carries the `native-type-unknown` flag. Read one issue's Type with:
+
+```sh
+"$DIR/assets/triage-apply.sh" native-type --repo "$REPO" --issue <n>
+```
+
+It prints one JSON object, `{"state": "set", "name": "<exact Type name>"}` or
+`{"state": "unset", "name": null}`, and costs one read from the budget (step
+1). Branch only on `state`, never on the spelling of a Type name (an
+organization may name a Type `none` or `null`). A failed read exits 2: treat
+the Type as unknown and classify nothing that depends on it.
+
 ### 2a — Work classification
 
 When the personal repo's `work_type` is empty, or an organization repo's
 `native_type_state` is `"unset"`, read the title — and body if the title is
 not enough — then choose **at most one** classification using this decision
-table. When an organization scan reports `"unknown"`, first run the bounded
-per-issue `native-type` reader from step 2c; classify only when its JSON
-`state` is `"unset"`:
+table. When an organization scan reports `"unknown"`, first run the native
+Type reader (above); classify only when its JSON `state` is `"unset"`:
 
 | Pick            | When the issue clearly...                                |
 | --------------- | -------------------------------------------------------- |
@@ -239,6 +254,12 @@ severity). The script keeps an existing Priority (AI) unless the human
 Priority is unset and this call changed the classification, and reports a
 human Priority without ever writing it. Never pass the human `priority`.
 
+For an issue the scan flags `priority-ai-invalid` (conflicting `priority-ai:*`
+labels, or a value off the `p0`–`p4` scale), make the same apply call with
+`--priority-ai <value>` from the rubric. The script replaces the invalid value
+only under that same rule; otherwise it keeps it and says so, and the issue is
+a report entry (step 3).
+
 **The Tier is not yours to choose.** When the call writes Risk or
 Complexity, the script derives the Tier from them with the repository's
 policy and writes the `tier:<value>` label itself — or says why it did not
@@ -282,6 +303,11 @@ resolver, so it cannot see a stale one. A stale Tier is repaired by the
 reconcile call when it runs for another reason, or by the classification
 reconciler.
 
+**When the scan or an apply call exits 2 because the organization's issue
+fields cannot be read** (its message names the issue-fields preview and the
+token access it needs), stop: classify nothing on that organization this run,
+and report the error and the access it names.
+
 **When `fields_mode` is not `bulk` on an organization** (the field read
 failed or was truncated), say so in the report's `## Scan truncation`
 section, and treat no issue flagged `classification-unreadable` as
@@ -317,10 +343,11 @@ a finding):
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
 | `needs-triage-removable`             | the output of its reconcile call (2d)                | only when that call did not remove `needs-triage` — say why (the manifest withholds it, or the native Type could not be read) |
 | `classification-unreadable`          | nothing — the flag is the finding                    | always; its Impact/Risk/Complexity fields were not read this run, so it is not known to be classified |
+| `priority-ai-invalid`                | the output of its apply call (2c)                    | only when that call kept the invalid value — name it, and say why it was kept (a human Priority is set, or the classification did not change) |
 | `classification-conflict:*`         | nothing — the flag is the finding                    | always; name the conflicting values from the issue's `classification` (a human must keep one) |
 | `classification-unknown-value:*`     | nothing — the flag is the finding                    | always; name the value — off the rubric scale or not provisioned (a human must correct it) |
-| `missing-work-type` on an org repo   | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
-| `legacy-work-type-label` (org only)  | the scan's `native_type_state`; `native-type` (see 2c) only when it is `"unknown"` | state is `"unset"` — the label is legacy there and proves nothing; mention the label itself for cleanup |
+| `missing-work-type` on an org repo   | the scan's `native_type_state`; the native Type reader (step 2) only when it is `"unknown"` | state remains `"unset"` after 2a because no enabled Type is clearly applicable or its enabled-Type lookup was unavailable; state why it was not set |
+| `legacy-work-type-label` (org only)  | the scan's `native_type_state`; the native Type reader (step 2) only when it is `"unknown"` | state is `"unset"` — the label is legacy there and proves nothing; mention the label itself for cleanup |
 | `completion-candidate:all-criteria-checked` | nothing — the flag is the finding | always, except on the repository's standing `(QA):` issue (labelled `human` + `umbrella`), which stays open as the QA queue when its checklist is empty (track-work §5) — never report it; category `possible completion`; evidence "all N criteria ticked, issue still open"; suggested action "confirm delivery; close as completed, or untick what is not actually done" |
 | `completion-candidate:human-only-remaining` | `"$DIR/assets/triage-scan.sh" delivery --repo "$REPO" --issue <n>` (costs one read from the budget — internally it makes the issue read, one timeline page, and one bounded read per merged cross-referencing PR to confirm that PR's own title or body names the issue) | only when `delivery`'s `verdict` is `merged-delivery` — category `possible completion`; name the evidence PR(s) (`via` is always `cross-reference`; a merged closing-keyword PR appears under `closing_references` for context only and is never evidence — see below); suggested action "move the remaining `[HUMAN]` follow-ups to their `(HUMAN):`/`(QA):` collector (track-work §5), or verify them and, with explicit human authorization, tick them; then close as completed". Never report an issue labelled `human` here — a collector's or human-only issue's `[HUMAN]` criteria are its work, not leftovers. A `none` verdict is not reported; an `indeterminate` verdict, or a candidate the reading budget never reaches, goes to `## Unverified candidates` instead |
 | `closed_flagged` state `completed`   | nothing — `unticked_criteria` is the finding         | always; note the unticked count                                            |

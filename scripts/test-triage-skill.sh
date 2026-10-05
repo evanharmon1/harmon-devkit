@@ -236,6 +236,10 @@ api\ repos/*)
     fi
     ;;
 "issue view")
+    issue_src="${GH_STUB_DIR:?}/issue-${3:?}.json"
+    [ -z "${GH_STUB_RUN_ID:-}" ] ||
+        [ ! -f "$GH_STUB_DIR/.overlay-$GH_STUB_RUN_ID-$3.json" ] ||
+        issue_src="$GH_STUB_DIR/.overlay-$GH_STUB_RUN_ID-$3.json"
     # GH_STUB_LABELS_CHANGE_ON_READ=K adds the labels named in
     # GH_STUB_LABELS_CHANGE_ADD to the issue on its K-th read: a person
     # labelling it between triage's first read and its snapshot.
@@ -246,11 +250,11 @@ api\ repos/*)
         if [ "$reads" -eq "$GH_STUB_LABELS_CHANGE_ON_READ" ]; then
             jq --arg add "${GH_STUB_LABELS_CHANGE_ADD:?}" \
                 '.labels += [$add | split(" ")[] | {name: .}]' \
-                "$GH_STUB_DIR/issue-$3.json" >"$GH_STUB_DIR/issue-$3.json.next"
-            mv "$GH_STUB_DIR/issue-$3.json.next" "$GH_STUB_DIR/issue-$3.json"
+                "$issue_src" >"$issue_src.next"
+            mv "$issue_src.next" "$issue_src"
         fi
     fi
-    emit "${GH_STUB_DIR:?}/issue-${3:?}.json"
+    emit "$issue_src"
     ;;
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
 # Only the body-carrying writes read stdin (--body-file -): drain just there,
@@ -291,6 +295,32 @@ api\ repos/*)
             prev="$a"
         done
     fi
+    # Within one run (GH_STUB_RUN_ID, set by run()), a label edit lands in a
+    # per-run overlay of the issue, so a later read in the SAME call sees
+    # the call's own writes while the fixture stays as every test wrote it.
+    if [ -n "${GH_STUB_RUN_ID:-}" ]; then
+        overlay="$GH_STUB_DIR/.overlay-$GH_STUB_RUN_ID-$3.json"
+        src="$overlay"
+        [ -f "$src" ] || src="$GH_STUB_DIR/issue-$3.json"
+        add=""
+        del=""
+        prev=""
+        for a in "$@"; do
+            case "$prev" in
+            --add-label) add="$a" ;;
+            --remove-label) del="$a" ;;
+            esac
+            prev="$a"
+        done
+        if [ -n "$add$del" ] && [ -f "$src" ]; then
+            jq --arg add "$add" --arg del "$del" '
+              ($del | split(",")) as $d
+              | .labels = ([.labels[] | select(.name as $n | $d | index($n) | not)]
+                           + [$add | split(",")[] | select(. != "") | {name: .}])' \
+                "$src" >"$overlay.next"
+            mv "$overlay.next" "$overlay"
+        fi
+    fi
     ;;
 "issue create")
     [ -t 0 ] || cat >/dev/null
@@ -324,7 +354,10 @@ export GH_STUB_OWNER_TYPE="User"
 # run CMD... -> echoes the exit code; output lands in $tmp/out.
 run() {
     _rc=0
-    PATH="$tmp/bin:$PATH" "$@" >"$tmp/out" 2>&1 || _rc=$?
+    # run() is called inside $(...): $BASHPID differs per call, a counter
+    # would not survive the subshell.
+    GH_STUB_RUN_ID="r$BASHPID-$RANDOM" PATH="$tmp/bin:$PATH" "$@" >"$tmp/out" 2>&1 ||
+        _rc=$?
     echo "$_rc"
 }
 
@@ -2265,39 +2298,22 @@ grep -qx "issue edit 61 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG"
     fail "a pinned issue still has needs-triage derived"
 
 echo "==> label: a pin applied before the snapshot holds the Tier"
-cat >"$tmp/bin/gh-pin-race" <<'STUB'
-#!/usr/bin/env bash
-# Second and later label reads of #60 see tier:pinned.
-if [ "$1 $2 $3" = "issue view 60" ]; then
-    c="$(cat "$GH_STUB_DIR/.pin-race" 2>/dev/null || echo 0)"
-    c=$((c + 1))
-    echo "$c" >"$GH_STUB_DIR/.pin-race"
-    if [ "$c" -ge 2 ]; then
-        printf '%s\n' bug area:ci layer:ui domain:auth needs-triage tier:pinned
-        exit 0
-    fi
-fi
-exec "$(dirname "$0")/gh" "$@"
-STUB
-chmod +x "$tmp/bin/gh-pin-race"
-mkdir -p "$tmp/pinbin"
-ln -sf "$tmp/bin/gh-pin-race" "$tmp/pinbin/gh"
-cp "$tmp/bin/gh" "$tmp/pinbin/gh-real"
-sed -i 's|exec "$(dirname "$0")/gh" "$@"|exec "$(dirname "$0")/gh-real" "$@"|' \
-    "$tmp/bin/gh-pin-race"
-rm -f "$stub_dir/.pin-race"
+rm -f "$stub_dir"/.label-reads-*
 : >"$GH_STUB_LOG"
-_rc=0
-PATH="$tmp/pinbin:$PATH" TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" \
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=2 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned" "$apply" label --repo "$repo" \
     --issue 60 --impact high --risk high --complexity m --execute \
-    --manifest "$manifest" --policy "$policy" >"$tmp/out" 2>&1 || _rc=$?
-[ "$_rc" = 0 ] || fail "mid-call pin execute failed: $(cat "$tmp/out")"
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "mid-call pin execute failed: $(cat "$tmp/out")"
 grep -q "carries tier:pinned — the Tier label is left as it is" "$tmp/out" ||
     fail "the snapshot must see a pin set after the first read: $(cat "$tmp/out")"
 grep -q -- "tier:frontier" "$GH_STUB_LOG" &&
     fail "a pin landing mid-call must stop the Tier write"
 grep -q -- "--add-label impact:high,risk:high,complexity:m" "$GH_STUB_LOG" ||
     fail "the axes are still written when the Tier is skipped"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
 
 echo "==> label: a stale derived Tier is replaced, never stacked"
 [ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
@@ -2452,6 +2468,41 @@ grep -q "risk:\* labels changed while triage was preparing its write" "$tmp/out"
     fail "the refusal must name the axis: $(cat "$tmp/out")"
 grep -q "issue edit" "$GH_STUB_LOG" && fail "no write may follow the refusal"
 rm -f "$stub_dir"/.label-reads-*
+
+echo "==> label: the derived Tier write removes every other unqualified tier label"
+# shellcheck disable=SC2086
+issue_fixture 88 $classified impact:low risk:high complexity:m tier:adaptive
+[ "$(run "$apply" label --repo "$repo" --issue 88 --reconcile \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "lone tier:adaptive reconcile failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would add 'tier:frontier' to $repo#88" "$tmp/out" &&
+    grep -q "DRY-RUN would remove 'tier:adaptive' from $repo#88" "$tmp/out" ||
+    fail "a lone retired tier:adaptive must give way to the derived Tier: $(cat "$tmp/out")"
+# shellcheck disable=SC2086
+issue_fixture 89 $classified impact:low risk:high complexity:m tier:adaptive \
+    tier:local tier:reviewer:apex
+[ "$(run "$apply" label --repo "$repo" --issue 89 --reconcile \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "tier:adaptive beside a rung reconcile failed: $(cat "$tmp/out")"
+for l in tier:adaptive tier:local; do
+    grep -q "DRY-RUN would remove '$l' from $repo#89" "$tmp/out" ||
+        fail "$l must be removed beside the derived Tier: $(cat "$tmp/out")"
+done
+grep -q "DRY-RUN would add 'tier:frontier' to $repo#89" "$tmp/out" ||
+    fail "the derived Tier must be added"
+grep -q "tier:reviewer:apex" "$tmp/out" &&
+    fail "a scoped tier:<role>:* override is never touched"
+
+echo "==> label: a comma-bearing label read back into a removal is refused"
+# shellcheck disable=SC2086
+issue_fixture 93 $classified impact:low complexity:s "priority-ai:x,tier:pinned"
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" label --repo "$repo" --issue 93 --risk high \
+    --priority-ai p1 --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a comma-bearing removal must exit 4: $(cat "$tmp/out")"
+grep -q "contains a comma — gh would split its removal" "$tmp/out" ||
+    fail "the refusal must say why: $(cat "$tmp/out")"
+grep -q "issue edit" "$GH_STUB_LOG" && fail "no write may follow the refusal"
 
 echo "==> label: Priority (AI) — set with the axes, kept, replaced, never human"
 [ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
@@ -2703,6 +2754,34 @@ grep -q -- "--type Bug" "$GH_STUB_LOG" &&
 rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* "$stub_dir/.native-reads" \
     "$stub_dir/field-mutations.log" "$stub_dir"/issue-fields-8[56].json
 
+echo "==> label: a write reverted between org mutations refuses (no Tier, no removal)"
+issue_fixture 92 area:ci layer:ui domain:auth needs-triage
+rm -f "$stub_dir"/.field-reads-* "$stub_dir/field-mutations.log" \
+    "$stub_dir/issue-fields-92.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELDS_CHANGE_ON_READ=4 \
+    GH_STUB_FIELDS_CHANGE_JSON='{"Risk": null}' "$apply" label --repo "$repo" \
+    --issue 92 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a Risk cleared after the field mutation must refuse: $(cat "$tmp/out")"
+grep -q "a write it already made was reverted (field:risk=high)" "$tmp/out" ||
+    fail "the refusal must name the reverted write: $(cat "$tmp/out")"
+[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+    fail "the field mutation was the one write made"
+grep -q -- "tier:" "$GH_STUB_LOG" && fail "no Tier write may follow a reverted Risk"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "no needs-triage removal may follow a reverted Risk"
+rm -f "$stub_dir"/.field-reads-* "$stub_dir/field-mutations.log" \
+    "$stub_dir/issue-fields-92.json"
+
+echo "==> label: an unreadable org issue-field catalogue fails closed, actionably"
+[ "$(run env GH_STUB_ISSUE_FIELDS=ERROR "$apply" label --repo "$repo" \
+    --issue 73 --add area:ci --manifest "$manifest")" = 2 ] ||
+    fail "a plain org label call must exit 2 without the catalogue: $(cat "$tmp/out")"
+grep -q "GraphQL-Features: issue_fields" "$tmp/out" &&
+    grep -q "token needs" "$tmp/out" ||
+    fail "the error must name the preview and the access it needs: $(cat "$tmp/out")"
+
 echo "==> label: an org field write failure or unverifiable write stops the labels"
 rm -f "$stub_dir/issue-fields-70.json"
 : >"$GH_STUB_LOG"
@@ -2753,6 +2832,14 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
              {"name": "domain:auth"}, {"name": "impact:low"},
              {"name": "risk:low"}, {"name": "complexity:s"},
              {"name": "needs-triage"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
+ {"number": 90, "title": "(classification): Two Priority (AI) labels",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}, {"name": "impact:low"},
+             {"name": "risk:low"}, {"name": "complexity:s"},
+             {"name": "tier:economy"}, {"name": "priority-ai:p1"},
+             {"name": "priority-ai:p3"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
  {"number": 84, "title": "(classification): Two tier labels",
@@ -2810,6 +2897,15 @@ jq -e '(.open[] | select(.number == 84)
             | .flags | index("tier-conflict") == null)' \
     "$tmp/class-scan.json" >/dev/null ||
     fail "tier-conflict: more than one tier label on an unpinned issue only"
+jq -e '(.open[] | select(.number == 90)
+        | (.flags | index("priority-ai-invalid") != null)
+          and .required_missing == [])
+       and (.open[] | select(.number == 84)
+            | .flags | index("priority-ai-invalid") == null)
+       and ([.open[] | .flags[] | select(. == "native-type-unknown")]
+            | length == 0)' \
+    "$tmp/class-scan.json" >/dev/null ||
+    fail "priority-ai-invalid: a conflicting Priority (AI), never required"
 jq -e '(.open[] | select(.number == 83) | .flags | index("priority-ai-missing") != null)
        and (.open[] | select(.number == 80) | .flags | index("priority-ai-missing") == null)
        and (.open[] | select(.number == 81) | .flags | index("priority-ai-missing") == null)' \
@@ -2857,11 +2953,29 @@ jq -e '.open[] | select(.number == 81)
     "$tmp/out" >/dev/null ||
     fail "an off-scale field value read must count as missing, as apply does"
 
+echo "==> scan: per-issue native Type mode keeps every org issue in the scan"
+mv "$stub_dir/issues-open-types.json" "$tmp/issues-open-types.keep"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+    fail "per-issue org scan failed: $(cat "$tmp/out")"
+jq -e '.native_type_mode == "per-issue"
+       and ([.open[].number] | sort) == [80, 81, 82, 83, 84, 90]
+       and ([.open[] | .flags | index("native-type-unknown") != null] | all)' \
+    "$tmp/out" >/dev/null ||
+    fail "an undecided native Type must flag native-type-unknown on every issue"
+mv "$tmp/issues-open-types.keep" "$stub_dir/issues-open-types.json"
+
+echo "==> scan: an unreadable org issue-field catalogue fails closed, actionably"
+[ "$(run env GH_STUB_ISSUE_FIELDS=ERROR "$scan" --repo "$repo" \
+    --manifest "$manifest")" = 2 ] ||
+    fail "the scan must exit 2 without the catalogue: $(cat "$tmp/out")"
+grep -q "GraphQL-Features: issue_fields" "$tmp/out" ||
+    fail "the scan error must name the preview: $(cat "$tmp/out")"
+
 echo "==> scan: an unreadable org field pass is unknown, never unset"
 [ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
     --manifest "$manifest")" = 0 ] ||
     fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
-jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84]
+jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84, 90]
        and ([.open[] | .flags | index("classification-unreadable") != null]
             | all)' "$tmp/out" >/dev/null ||
     fail "every issue whose fields were not read must stay in open[], flagged"
@@ -2895,6 +3009,12 @@ grep -q -- '--issue <n> --reconcile' ai/skills/universal/triage/SKILL.md ||
 grep -q 'treat no issue flagged `classification-unreadable`' \
     ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must say an unread field set is not classified"
+
+grep -q '^### The native Type reader' ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must document the per-issue native Type reader"
+grep -q 'native-type` (see 2c)\|reader from step 2c' \
+    ai/skills/universal/triage/SKILL.md &&
+    fail "SKILL.md cross-references must point at the native Type reader"
 
 echo "==> references: both rubrics exist and SKILL.md links them"
 for rubric in classification-rubric priority-rubric; do

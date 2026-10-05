@@ -684,7 +684,13 @@ classification_axes_json() {
     if [ "$owner_type" = "Organization" ]; then
         storage=field
         catalogue="$(org_issue_fields "$repo")" ||
-            die 2 "could not read the issue fields of $repo"
+            die 2 "could not read the issue fields of $repo. Organization" \
+                "issue fields are a GitHub public-preview GraphQL feature" \
+                "(header 'GraphQL-Features: issue_fields'): the token needs" \
+                "read access to the organization's issue fields (and write" \
+                "access to set them), and the preview must be enabled for the" \
+                "organization. Triage does not classify $repo until this read" \
+                "works — report it."
     fi
     jq -cn --arg live "$live" --arg storage "$storage" \
         --arg owner_type "$owner_type" --argjson catalogue "$catalogue" \
@@ -1222,10 +1228,15 @@ cmd_label() {
                 tier_note "tier: not written — $repo has no 'tier:$derived' label"
             else
                 in_list "tier:$derived" "$current" || tier_add="tier:$derived"
-                for value in $TIER_RUNGS; do
-                    [ "$value" != "$derived" ] || continue
-                    in_list "tier:$value" "$current" && tier_removes+=("tier:$value")
-                done
+                # Every other unqualified Tier label goes: the other rungs, the
+                # retired tier:adaptive, any off-ladder value. Never tier:pinned (held
+                # above) and never a scoped tier:<role>:* override.
+                while IFS= read -r value; do
+                    [ -n "$value" ] || continue
+                    [ "$value" != "tier:pinned" ] && [ "$value" != "tier:$derived" ] ||
+                        continue
+                    tier_removes+=("$value")
+                done < <(printf '%s\n' "$current" | grep -E '^tier:[^:]+$' || true)
                 if [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; then
                     notes+=("tier: derived '$derived' from Risk $post_risk × Complexity $post_complexity")
                 fi
@@ -1353,6 +1364,15 @@ cmd_label() {
         [ -z "$tier_add" ] || label_change_adds+=("$tier_add")
         label_change_removes=("${replace_removes[@]+"${replace_removes[@]}"}"
             "${tier_removes[@]+"${tier_removes[@]}"}")
+        # Removals come from labels read off the issue, not from the caller:
+        # gh splits a comma-bearing name into two labels, so one such label
+        # could remove another (tier:pinned, say) that was never validated.
+        for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
+            case "$l" in
+            *,*) die 4 "refused: '$l' on $repo#$issue contains a comma — gh would" \
+                "split its removal into multiple labels; report it" ;;
+            esac
+        done
         org_field_writes=()
         [ "$owner_type" != "Organization" ] ||
             org_field_writes=("${field_writes[@]+"${field_writes[@]}"}")
@@ -1441,8 +1461,10 @@ cmd_label() {
     # Writes already made are recorded in `done_writes`, so the comparison
     # covers only what is left.
     local mutated=0 done_writes=""
+    # plan_signature [all] — the plan's writes, one per line; without
+    # `all`, minus the writes this call has already made.
     plan_signature() {
-        local x
+        local x scope="${1:-remaining}"
         {
             [ "$nt_add" -eq 0 ] || echo "nt-add"
             [ -z "$effective_native_type" ] || echo "type:$effective_native_type"
@@ -1457,7 +1479,8 @@ cmd_label() {
             done
             [ "$nt_remove" -eq 0 ] || echo "nt-remove"
         } | while IFS= read -r x; do
-            in_list "$x" "$done_writes" || echo "$x"
+            [ "$scope" = all ] || ! in_list "$x" "$done_writes" || continue
+            echo "$x"
         done
     }
     before_mutation() {
@@ -1479,6 +1502,16 @@ cmd_label() {
             die 4 "refused: a human Priority was set on $repo#$issue between" \
                 "triage's writes — no further write was made"
         fi
+        # A write this call already made that the fresh plan needs again was
+        # reverted by someone else: refuse rather than build on it.
+        local again
+        again="$(plan_signature all | while IFS= read -r x; do
+            if in_list "$x" "$done_writes"; then echo "$x"; fi
+        done)"
+        [ -z "$again" ] ||
+            die 4 "refused: $repo#$issue changed between triage's writes —" \
+                "a write it already made was reverted ($(printf '%s' "$again" |
+                    paste -sd ' ' -)); no further write was made"
         [ "$(plan_signature)" = "$planned" ] ||
             die 4 "refused: $repo#$issue changed between triage's writes —" \
                 "the remaining writes no longer match its plan; no further" \
