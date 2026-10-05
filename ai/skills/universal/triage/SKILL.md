@@ -262,9 +262,10 @@ and never removes it while it cannot read the native Type. The scan's
 `required_missing` and its `missing-needs-triage` / `partially-classified` /
 `needs-triage-removable` flags are the same derivation before your writes.
 
-**Settle the marker even when nothing else is written.** For every issue the
-scan flags `missing-needs-triage` or `needs-triage-removable` and that got no
-other apply call in 2a–2c, make one reconcile call:
+**Settle the marker and the Tier even when nothing else is written.** For
+every issue the scan flags `missing-needs-triage`, `needs-triage-removable`, or
+`tier-missing` (Risk and Complexity set, no Tier label, not pinned) and that
+got no other apply call in 2a–2c, make one reconcile call:
 
 ```sh
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> --reconcile

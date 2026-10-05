@@ -32,7 +32,10 @@ recommending a `/triage` run.
   comment`, `gh label`, or any other writing command yourself.
 - **`audit` mode (the default) writes nothing to GitHub.** Scan, fan out,
   consolidate, and report — every write-capable script runs without
-  `--execute` and prints `PLAN <exact command>` lines only.
+  `--execute` and prints `PLAN <exact command>` lines only. Under a label
+  row's `PLAN` line, the indented lines are `triage-apply.sh`'s own dry run:
+  the derived writes that row makes (issue fields, the Tier label, the
+  needs-triage change) and that approving it approves.
 - **`--execute` is refused unless `GROOM_EXECUTE=1`** is in the environment —
   set only by the `task groom` wrapper for a supervised run. A model cannot
   promote itself to write mode by adding a flag.
@@ -291,8 +294,11 @@ Dry-run each command first by omitting the SCRIPT's own trailing `--execute`
 confirmation, `GROOM_EXECUTE=1`, then `exec`); without the script's own
 `--execute` in the forwarded arguments, the script itself still only prints
 `PLAN` lines and writes nothing. Review the `PLAN` lines against what the
-maintainer actually approved, then re-run with the script's own `--execute`
-appended — only when your runner's mode is APPLY. Run these, in order:
+maintainer actually approved — for a label row, including the indented
+`triage-apply.sh` dry-run lines beneath it, which are the derived writes
+(issue fields, the Tier label, the needs-triage change) being approved, not
+just the command — then re-run with the script's own `--execute` appended —
+only when your runner's mode is APPLY. Run these, in order:
 
 1. `task groom -- --execute groom-apply.sh apply-plan --repo "$REPO" \
    --plan-file "$SCRATCH/plan.jsonl" --log "$SCRATCH/apply.log" \

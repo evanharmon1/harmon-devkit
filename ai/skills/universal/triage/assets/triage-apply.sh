@@ -971,393 +971,465 @@ cmd_label() {
     owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
         die 2 "could not read the owner type of $repo"
 
-    local current
-    current="$(gh issue view "$issue" --repo "$repo" --json labels \
-        -q '.labels[].name')" ||
-        die 2 "could not read labels of $repo#$issue"
-
     # RECOGNIZED work-types classify an issue whoever applied them; org repos
     # classify with native issue Type instead. (Adds are separately bound to
     # the agent-writable allowlist above.)
-    local work_types
+    local work_types class_json enabled_types=""
     work_types="$(work_types_recognized "$repo" "$manifest")"
-
-    local effective_adds=()
-    for l in "${adds[@]+"${adds[@]}"}"; do
-        in_list "$l" "$current" || effective_adds+=("$l")
-    done
-
-    local current_native_type="" effective_native_type="$native_type"
-    if [ -n "$native_type" ]; then
-        [ "$owner_type" = "Organization" ] ||
-            die 5 "refused: --native-type is available only on organization repos"
-        local enabled_types
-        enabled_types="$(enabled_native_types "$repo")" ||
-            die 2 "could not list enabled native issue Types of $repo"
-        in_list "$native_type" "$enabled_types" ||
-            die 4 "refused: native issue Type '$native_type' is not enabled on $repo"
-        current_native_type="$(native_type_state_read "$repo" "$issue")" ||
-            die 2 "could not read the current native issue Type of $repo#$issue"
-        if [ "$current_native_type" != "unset" ]; then
-            [ "$current_native_type" = "set:$native_type" ] ||
-                die 4 "refused: $repo#$issue already has native issue Type" \
-                    "'${current_native_type#set:}' — triage only fills an unset Type"
-            effective_native_type=""
-        fi
-    fi
-
-    local wt_count=0
-    for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
-        if in_list "$l" "$work_types"; then
-            [ "$owner_type" = "Organization" ] &&
-                die 5 "refused: '$l' — org repos use native issue Type;" \
-                    "report the missing Type instead"
-            # The registry marks the family non-exclusive, but triage only
-            # ever FILLS an empty slot — it never stacks a second work type.
-            wt_count=$((wt_count + 1))
-            [ "$wt_count" -le 1 ] ||
-                die 4 "refused: '$l' — one work-type label per apply call"
-            while IFS= read -r existing; do
-                [ -n "$existing" ] || continue
-                in_list "$existing" "$current" &&
-                    die 4 "refused: '$l' — the issue already carries" \
-                        "work-type '$existing'; triage only fills an empty slot"
-            done <<<"$work_types"
-        fi
-    done
-
-    # ── Impact / Risk / Complexity / Priority (AI) ──────────────────────────
-    # What the repository provisions, and what the issue currently holds, in
-    # the owner type's ONE storage: labels on a personal account, issue
+    # What the repository provisions for Impact/Risk/Complexity/Priority (AI)
+    # — in the owner type's ONE storage: labels on a personal account, issue
     # fields on an organization (where the same-named labels are inert and a
     # stray one never counts).
-    local class_json issue_fields_json='{"id":null,"fields":{}}' issue_id=""
     class_json="$(classification_axes_json "$repo" "$owner_type")"
-    if [ "$owner_type" = "Organization" ]; then
-        issue_fields_json="$(org_issue_field_values "$repo" "$issue")" ||
-            die 2 "could not read the issue field values of $repo#$issue"
-        issue_id="$(jq -r '.id // empty' <<<"$issue_fields_json")"
-    fi
-    # axis_current AXIS — unset | set:<value> | conflict | unknown:<value>
-    axis_current() {
-        local a="$1" n v
-        if [ "$owner_type" = "Organization" ]; then
-            v="$(jq -r --arg f "$(axis_field_name "$a")" \
-                '.fields[$f] // empty | ascii_downcase' <<<"$issue_fields_json")"
-            if [ -z "$v" ]; then
-                echo unset
-            elif on_scale "$v" "$(axis_scale "$a")"; then
-                echo "set:$v"
-            else
-                echo "unknown:$v"
-            fi
-            return 0
-        fi
-        n="$(printf '%s\n' "$current" | grep -c "^$a:" || true)"
-        if [ "$n" -eq 0 ]; then
-            echo unset
-        elif [ "$n" -gt 1 ]; then
-            echo conflict
-        else
-            v="$(printf '%s\n' "$current" | grep "^$a:")"
-            v="${v#*:}"
-            if on_scale "$v" "$(axis_scale "$a")"; then
-                echo "set:$v"
-            else
-                echo "unknown:$v"
-            fi
-        fi
-    }
-    axis_provisioned() {
-        [ "$(jq -r --arg a "$1" '.axes[$a].provisioned' <<<"$class_json")" = true ]
-    }
-    axis_value_provisioned() {
-        jq -e --arg a "$1" --arg v "$2" '.axes[$a].values | index($v) != null' \
-            <<<"$class_json" >/dev/null
-    }
-    human_priority() {
-        if [ "$owner_type" = "Organization" ]; then
-            jq -r '.fields["Priority"] // empty' <<<"$issue_fields_json"
-        else
-            printf '%s\n' "$current" | grep '^priority:' | sed 's/^priority://' |
-                paste -sd ',' - || true
-        fi
-    }
-    storage_name() {
-        if [ "$owner_type" = "Organization" ]; then
-            echo "issue field '$(axis_field_name "$1")'"
-        else
-            echo "$1:* labels"
-        fi
-    }
 
-    local notes=() field_writes=() axis_label_adds=() replace_removes=()
-    local post_impact="" post_risk="" post_complexity="" class_changed=0 cur
-    local pai_replace=0
-    for axis in $FIELD_AXES; do
-        cur="$(axis_current "$axis")"
-        var="req_${axis//-/_}"
-        value="${!var}"
-        [ "${cur%%:*}" != set ] || printf -v "post_$axis" '%s' "${cur#set:}"
-        [ -n "$value" ] || continue
-        axis_provisioned "$axis" ||
-            die 4 "refused: $repo provisions no $axis ($(storage_name "$axis"))"
-        axis_value_provisioned "$axis" "$value" ||
-            die 4 "refused: '$value' is not a provisioned $axis value on $repo" \
-                "($(storage_name "$axis"))"
-        case "$cur" in
-        unset)
-            field_writes+=("$axis=$value")
-            printf -v "post_$axis" '%s' "$value"
-            class_changed=1
-            ;;
-        "set:$value") ;;
-        conflict)
-            die 4 "refused: $repo#$issue carries more than one $axis:* label —" \
-                "a human must resolve the conflict; report it"
-            ;;
-        *)
-            die 4 "refused: $repo#$issue already has $axis '${cur#*:}' —" \
-                "triage fills an unset axis, it never re-rates one"
-            ;;
-        esac
-    done
+    # ── One snapshot drives every write ─────────────────────────────────────
+    # read_state reads the issue: its labels on every owner type and, on an
+    # organization, its field values and native Type. plan_call computes
+    # every write and every derived value (axis writes, the Tier add and
+    # removes, needs-triage) from that state alone. A dry run reads and plans
+    # once. An execute run plans from the first read, then — immediately
+    # before its first mutation — takes ONE fresh snapshot, refuses if a value
+    # it writes changed (triage only fills) or a human Priority appeared before
+    # a Priority (AI) replacement, and re-plans everything from the snapshot.
+    # No later re-read exists to disagree with it.
+    local current="" issue_fields_json='{"id":null,"fields":{}}' issue_id=""
+    local native_state=""
+    read_state() {
+        current="$(gh issue view "$issue" --repo "$repo" --json labels \
+            -q '.labels[].name')" ||
+            die 2 "could not read labels of $repo#$issue"
+        if [ "$owner_type" = "Organization" ]; then
+            issue_fields_json="$(org_issue_field_values "$repo" "$issue")" ||
+                die 2 "could not read the issue field values of $repo#$issue"
+            issue_id="$(jq -r '.id // empty' <<<"$issue_fields_json")"
+            native_state="$(native_type_state_read "$repo" "$issue")" ||
+                native_state=""
+        fi
+    }
+    # plan_call's results (it assigns these; they outlive each call).
+    local effective_adds=() effective_native_type="" notes=() field_writes=()
+    local pai_replace=0 tier_add="" tier_removes=() nt_add=0 nt_remove=0
+    local label_change_adds=() label_change_removes=() org_field_writes=()
+    local marker_first=0
+    plan_call() {
 
-    if [ -n "$req_priority_ai" ]; then
-        for axis in $FIELD_AXES; do
-            var="post_$axis"
-            [ -n "${!var}" ] ||
-                die 6 "refused: Priority (AI) is set only alongside a complete" \
-                    "Impact, Risk and Complexity — $axis is unset"
+        effective_adds=()
+        for l in "${adds[@]+"${adds[@]}"}"; do
+            in_list "$l" "$current" || effective_adds+=("$l")
         done
-        axis_provisioned priority-ai ||
-            die 4 "refused: $repo provisions no Priority (AI)" \
-                "($(storage_name priority-ai))"
-        axis_value_provisioned priority-ai "$req_priority_ai" ||
-            die 4 "refused: '$req_priority_ai' is not a provisioned Priority" \
-                "(AI) value on $repo ($(storage_name priority-ai))"
-        local human
-        human="$(human_priority)"
-        [ -z "$human" ] ||
-            notes+=("human Priority '$human' is set on $repo#$issue — reported, not changed; it overrides Priority (AI)")
-        cur="$(axis_current priority-ai)"
-        case "$cur" in
-        unset) field_writes+=("priority-ai=$req_priority_ai") ;;
-        "set:$req_priority_ai") ;;
-        *)
-            if [ -z "$human" ] && [ "$class_changed" -eq 1 ]; then
-                field_writes+=("priority-ai=$req_priority_ai")
-                pai_replace=1
-                if [ "$owner_type" != "Organization" ]; then
-                    while IFS= read -r l; do
-                        [ -n "$l" ] && replace_removes+=("$l")
-                    done < <(printf '%s\n' "$current" | grep '^priority-ai:' || true)
-                fi
-            elif [ -n "$human" ]; then
-                notes+=("Priority (AI) '${cur#*:}' kept on $repo#$issue — a human Priority is set")
-            else
-                notes+=("Priority (AI) '${cur#*:}' kept on $repo#$issue — this call did not change the classification")
-            fi
-            ;;
-        esac
-    fi
-    if [ "$owner_type" != "Organization" ]; then
-        for l in "${field_writes[@]+"${field_writes[@]}"}"; do
-            axis_label_adds+=("${l%%=*}:${l#*=}")
-        done
-    fi
 
-    # ── Tier: derived wherever Risk and Complexity are both set ─────────────
-    # Written in the call that writes Risk or Complexity, and repaired by any
-    # later call (a missing or stale label) — never over tier:pinned. Why it
-    # was NOT written is said only when this call wrote an input or asked to
-    # reconcile; an unrelated label call stays quiet about it.
-    local tier_add="" tier_removes=() writes_rc=0 tier_quiet=1
-    for l in "${field_writes[@]+"${field_writes[@]}"}"; do
-        case "${l%%=*}" in risk | complexity) writes_rc=1 ;; esac
-    done
-    [ "$writes_rc" -eq 0 ] && [ "$reconcile" -eq 0 ] || tier_quiet=0
-    tier_note() {
-        [ "$tier_quiet" -eq 1 ] || notes+=("$1")
-    }
-    if in_list "tier:pinned" "$current"; then
-        tier_note "tier: $repo#$issue carries tier:pinned — the Tier label is left as it is"
-    elif [ -z "$post_risk" ] || [ -z "$post_complexity" ]; then
-        tier_note "tier: not derived — Risk and Complexity are both needed"
-    else
-        local derived
-        derived="$(derive_tier "$post_risk" "$post_complexity" "$policy")"
-        if [ "${derived#!}" != "$derived" ]; then
-            tier_note "tier: not written — ${derived#!}"
-        elif ! jq -e --arg t "$derived" '.tier_values | index($t) != null' \
-            <<<"$class_json" >/dev/null; then
-            tier_note "tier: not written — $repo has no 'tier:$derived' label"
-        else
-            in_list "tier:$derived" "$current" || tier_add="tier:$derived"
-            for value in $TIER_RUNGS; do
-                [ "$value" != "$derived" ] || continue
-                in_list "tier:$value" "$current" && tier_removes+=("tier:$value")
-            done
-            if [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; then
-                notes+=("tier: derived '$derived' from Risk $post_risk × Complexity $post_complexity")
-            fi
-        fi
-    fi
-
-    # Exclusive label axes: adding to an axis must leave it with exactly one
-    # label.
-    local post count
-    post="$current"
-    for l in "${effective_adds[@]+"${effective_adds[@]}"}" \
-        "${axis_label_adds[@]+"${axis_label_adds[@]}"}" $tier_add; do
-        post="$(printf '%s\n%s' "$post" "$l")"
-    done
-    for l in "${replace_removes[@]+"${replace_removes[@]}"}" \
-        "${tier_removes[@]+"${tier_removes[@]}"}"; do
-        post="$(printf '%s\n' "$post" | grep -vxF -- "$l" || true)"
-    done
-    for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
-        axis="${l%%:*}"
-        if in_list "$axis" "$axes"; then
-            count="$(printf '%s\n' "$post" | grep -c "^$axis:" || true)"
-            [ "$count" -le 1 ] ||
-                die 4 "refused: adding '$l' would leave $count $axis:* labels;" \
-                    "conflicted axes go to the report"
-        fi
-    done
-
-    # ── needs-triage, derived from the required set ─────────────────────────
-    # Required (harmon-init ADR 2026-09-30 D6): a work type in the
-    # owner-appropriate form; exactly one recognized label of every active
-    # label axis (`none` is an ordinary recognized value — the explicit
-    # "does not apply"); and each of Impact, Risk and Complexity the
-    # repository provisions. Judged on the state this call leaves behind. A
-    # conflicted axis is never "present", and neither is a label whose value
-    # the active taxonomy does not recognize (retired, misspelled).
-    local missing=() indeterminate="" recognized
-    recognized="$(axis_values_recognized "$repo" "$manifest")"
-    if [ "$owner_type" = "Organization" ]; then
-        local native=""
+        local current_native_type=""
+        effective_native_type="$native_type"
         if [ -n "$native_type" ]; then
-            native="set:$native_type"
-        elif ! native="$(native_type_state_read "$repo" "$issue")"; then
-            indeterminate="could not verify the native issue Type"
-        fi
-        [ "$native" != "unset" ] || missing+=("work type (no native issue Type)")
-    else
-        local have_wt=1
-        while IFS= read -r l; do
-            [ -n "$l" ] || continue
-            if in_list "$l" "$post"; then
-                have_wt=0
-                break
+            [ "$owner_type" = "Organization" ] ||
+                die 5 "refused: --native-type is available only on organization repos"
+            [ -n "$enabled_types" ] ||
+                enabled_types="$(enabled_native_types "$repo")" ||
+                die 2 "could not list enabled native issue Types of $repo"
+            in_list "$native_type" "$enabled_types" ||
+                die 4 "refused: native issue Type '$native_type' is not enabled on $repo"
+            [ -n "$native_state" ] ||
+                die 2 "could not read the current native issue Type of $repo#$issue"
+            current_native_type="$native_state"
+            if [ "$current_native_type" != "unset" ]; then
+                [ "$current_native_type" = "set:$native_type" ] ||
+                    die 4 "refused: $repo#$issue already has native issue Type" \
+                        "'${current_native_type#set:}' — triage only fills an unset Type"
+                effective_native_type=""
             fi
-        done <<<"$work_types"
-        [ "$have_wt" -eq 0 ] || missing+=("work type (no work-type label)")
-    fi
-    for axis in $axes; do
-        count="$(printf '%s\n' "$post" | grep -c "^$axis:" || true)"
-        if [ "$count" -gt 1 ]; then
-            missing+=("$axis (conflicted: $count labels)")
-        elif [ "$count" -eq 0 ]; then
-            missing+=("$axis (no $axis:* label — apply its value, or $axis:none)")
-        else
-            l="$(printf '%s\n' "$post" | grep "^$axis:")"
-            in_list "$l" "$recognized" ||
-                missing+=("$axis ('$l' is not in the active $axis taxonomy)")
         fi
-    done
-    for axis in $FIELD_AXES; do
-        axis_provisioned "$axis" || continue
-        var="post_$axis"
-        [ -n "${!var}" ] || missing+=("$axis (unset)")
-    done
 
-    local nt_present=0 nt_granted=0 nt_add=0 nt_remove=0
-    in_list needs-triage "$current" && nt_present=1
-    in_list needs-triage "$allowlist" && nt_granted=1
-    local missing_text
-    missing_text="$(printf '%s; ' "${missing[@]+"${missing[@]}"}")"
-    missing_text="${missing_text%; }"
-    if [ -n "$indeterminate" ]; then
-        # Only a REMOVAL needs the whole required set proven; anything already
-        # known missing is enough to add the marker.
-        [ "$nt_explicit_remove" -eq 0 ] ||
-            die 6 "refused: $indeterminate — needs-triage stays"
-        if [ "$nt_present" -eq 0 ] && [ "$nt_granted" -eq 1 ] &&
-            { [ "${#missing[@]}" -gt 0 ] || [ "$nt_explicit_add" -eq 1 ]; }; then
-            nt_add=1
-            notes+=("needs-triage: derived — missing: ${missing_text:-unverified work type} ($indeterminate)")
-        else
-            notes+=("needs-triage: left as it is — $indeterminate")
+        local wt_count=0
+        for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+            if in_list "$l" "$work_types"; then
+                [ "$owner_type" = "Organization" ] &&
+                    die 5 "refused: '$l' — org repos use native issue Type;" \
+                        "report the missing Type instead"
+                # The registry marks the family non-exclusive, but triage only
+                # ever FILLS an empty slot — it never stacks a second work type.
+                wt_count=$((wt_count + 1))
+                [ "$wt_count" -le 1 ] ||
+                    die 4 "refused: '$l' — one work-type label per apply call"
+                while IFS= read -r existing; do
+                    [ -n "$existing" ] || continue
+                    in_list "$existing" "$current" &&
+                        die 4 "refused: '$l' — the issue already carries" \
+                            "work-type '$existing'; triage only fills an empty slot"
+                done <<<"$work_types"
+            fi
+        done
+
+        # ── Impact / Risk / Complexity / Priority (AI) ──────────────────────────
+        # What the repository provisions, and what the issue currently holds, in
+        # the owner type's ONE storage: labels on a personal account, issue
+        # fields on an organization (where the same-named labels are inert and a
+        # stray one never counts).
+        # axis_current AXIS — unset | set:<value> | conflict | unknown:<value>
+        axis_current() {
+            local a="$1" n v
+            if [ "$owner_type" = "Organization" ]; then
+                v="$(jq -r --arg f "$(axis_field_name "$a")" \
+                    '.fields[$f] // empty | ascii_downcase' <<<"$issue_fields_json")"
+                if [ -z "$v" ]; then
+                    echo unset
+                elif on_scale "$v" "$(axis_scale "$a")"; then
+                    echo "set:$v"
+                else
+                    echo "unknown:$v"
+                fi
+                return 0
+            fi
+            n="$(printf '%s\n' "$current" | grep -c "^$a:" || true)"
+            if [ "$n" -eq 0 ]; then
+                echo unset
+            elif [ "$n" -gt 1 ]; then
+                echo conflict
+            else
+                v="$(printf '%s\n' "$current" | grep "^$a:")"
+                v="${v#*:}"
+                if on_scale "$v" "$(axis_scale "$a")"; then
+                    echo "set:$v"
+                else
+                    echo "unknown:$v"
+                fi
+            fi
+        }
+        axis_provisioned() {
+            [ "$(jq -r --arg a "$1" '.axes[$a].provisioned' <<<"$class_json")" = true ]
+        }
+        axis_value_provisioned() {
+            jq -e --arg a "$1" --arg v "$2" '.axes[$a].values | index($v) != null' \
+                <<<"$class_json" >/dev/null
+        }
+        human_priority() {
+            if [ "$owner_type" = "Organization" ]; then
+                jq -r '.fields["Priority"] // empty' <<<"$issue_fields_json"
+            else
+                printf '%s\n' "$current" | grep '^priority:' | sed 's/^priority://' |
+                    paste -sd ',' - || true
+            fi
+        }
+        storage_name() {
+            if [ "$owner_type" = "Organization" ]; then
+                echo "issue field '$(axis_field_name "$1")'"
+            else
+                echo "$1:* labels"
+            fi
+        }
+
+        notes=() field_writes=()
+        local axis_label_adds=() replace_removes=()
+        local post_impact="" post_risk="" post_complexity="" class_changed=0 cur
+        pai_replace=0
+        for axis in $FIELD_AXES; do
+            cur="$(axis_current "$axis")"
+            var="req_${axis//-/_}"
+            value="${!var}"
+            [ "${cur%%:*}" != set ] || printf -v "post_$axis" '%s' "${cur#set:}"
+            [ -n "$value" ] || continue
+            axis_provisioned "$axis" ||
+                die 4 "refused: $repo provisions no $axis ($(storage_name "$axis"))"
+            axis_value_provisioned "$axis" "$value" ||
+                die 4 "refused: '$value' is not a provisioned $axis value on $repo" \
+                    "($(storage_name "$axis"))"
+            case "$cur" in
+            unset)
+                field_writes+=("$axis=$value")
+                printf -v "post_$axis" '%s' "$value"
+                class_changed=1
+                ;;
+            "set:$value") ;;
+            conflict)
+                die 4 "refused: $repo#$issue carries more than one $axis:* label —" \
+                    "a human must resolve the conflict; report it"
+                ;;
+            *)
+                die 4 "refused: $repo#$issue already has $axis '${cur#*:}' —" \
+                    "triage fills an unset axis, it never re-rates one"
+                ;;
+            esac
+        done
+
+        if [ -n "$req_priority_ai" ]; then
+            for axis in $FIELD_AXES; do
+                var="post_$axis"
+                [ -n "${!var}" ] ||
+                    die 6 "refused: Priority (AI) is set only alongside a complete" \
+                        "Impact, Risk and Complexity — $axis is unset"
+            done
+            axis_provisioned priority-ai ||
+                die 4 "refused: $repo provisions no Priority (AI)" \
+                    "($(storage_name priority-ai))"
+            axis_value_provisioned priority-ai "$req_priority_ai" ||
+                die 4 "refused: '$req_priority_ai' is not a provisioned Priority" \
+                    "(AI) value on $repo ($(storage_name priority-ai))"
+            local human
+            human="$(human_priority)"
+            [ -z "$human" ] ||
+                notes+=("human Priority '$human' is set on $repo#$issue — reported, not changed; it overrides Priority (AI)")
+            cur="$(axis_current priority-ai)"
+            case "$cur" in
+            unset) field_writes+=("priority-ai=$req_priority_ai") ;;
+            "set:$req_priority_ai") ;;
+            *)
+                if [ -z "$human" ] && [ "$class_changed" -eq 1 ]; then
+                    field_writes+=("priority-ai=$req_priority_ai")
+                    pai_replace=1
+                    if [ "$owner_type" != "Organization" ]; then
+                        while IFS= read -r l; do
+                            [ -n "$l" ] && replace_removes+=("$l")
+                        done < <(printf '%s\n' "$current" | grep '^priority-ai:' || true)
+                    fi
+                elif [ -n "$human" ]; then
+                    notes+=("Priority (AI) '${cur#*:}' kept on $repo#$issue — a human Priority is set")
+                else
+                    notes+=("Priority (AI) '${cur#*:}' kept on $repo#$issue — this call did not change the classification")
+                fi
+                ;;
+            esac
         fi
-    elif [ "${#missing[@]}" -gt 0 ]; then
-        [ "$nt_explicit_remove" -eq 0 ] ||
-            die 6 "refused: needs-triage stays — classification is incomplete:" \
-                "$missing_text"
-        if [ "$nt_present" -eq 0 ]; then
-            if [ "$nt_granted" -eq 1 ]; then
+        if [ "$owner_type" != "Organization" ]; then
+            for l in "${field_writes[@]+"${field_writes[@]}"}"; do
+                axis_label_adds+=("${l%%=*}:${l#*=}")
+            done
+        fi
+
+        # ── Tier: derived wherever Risk and Complexity are both set ─────────────
+        # Written in the call that writes Risk or Complexity, and repaired by any
+        # later call (a missing or stale label) — never over tier:pinned. Why it
+        # was NOT written is said only when this call wrote an input or asked to
+        # reconcile; an unrelated label call stays quiet about it.
+        tier_add="" tier_removes=()
+        local writes_rc=0 tier_quiet=1
+        for l in "${field_writes[@]+"${field_writes[@]}"}"; do
+            case "${l%%=*}" in risk | complexity) writes_rc=1 ;; esac
+        done
+        [ "$writes_rc" -eq 0 ] && [ "$reconcile" -eq 0 ] || tier_quiet=0
+        tier_note() {
+            [ "$tier_quiet" -eq 1 ] || notes+=("$1")
+        }
+        if in_list "tier:pinned" "$current"; then
+            tier_note "tier: $repo#$issue carries tier:pinned — the Tier label is left as it is"
+        elif [ -z "$post_risk" ] || [ -z "$post_complexity" ]; then
+            tier_note "tier: not derived — Risk and Complexity are both needed"
+        else
+            local derived
+            derived="$(derive_tier "$post_risk" "$post_complexity" "$policy")"
+            if [ "${derived#!}" != "$derived" ]; then
+                tier_note "tier: not written — ${derived#!}"
+            elif ! jq -e --arg t "$derived" '.tier_values | index($t) != null' \
+                <<<"$class_json" >/dev/null; then
+                tier_note "tier: not written — $repo has no 'tier:$derived' label"
+            else
+                in_list "tier:$derived" "$current" || tier_add="tier:$derived"
+                for value in $TIER_RUNGS; do
+                    [ "$value" != "$derived" ] || continue
+                    in_list "tier:$value" "$current" && tier_removes+=("tier:$value")
+                done
+                if [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; then
+                    notes+=("tier: derived '$derived' from Risk $post_risk × Complexity $post_complexity")
+                fi
+            fi
+        fi
+
+        # Exclusive label axes: adding to an axis must leave it with exactly one
+        # label.
+        local post count
+        post="$current"
+        for l in "${effective_adds[@]+"${effective_adds[@]}"}" \
+            "${axis_label_adds[@]+"${axis_label_adds[@]}"}" $tier_add; do
+            post="$(printf '%s\n%s' "$post" "$l")"
+        done
+        for l in "${replace_removes[@]+"${replace_removes[@]}"}" \
+            "${tier_removes[@]+"${tier_removes[@]}"}"; do
+            post="$(printf '%s\n' "$post" | grep -vxF -- "$l" || true)"
+        done
+        for l in "${effective_adds[@]+"${effective_adds[@]}"}"; do
+            axis="${l%%:*}"
+            if in_list "$axis" "$axes"; then
+                count="$(printf '%s\n' "$post" | grep -c "^$axis:" || true)"
+                [ "$count" -le 1 ] ||
+                    die 4 "refused: adding '$l' would leave $count $axis:* labels;" \
+                        "conflicted axes go to the report"
+            fi
+        done
+
+        # ── needs-triage, derived from the required set ─────────────────────────
+        # Required (harmon-init ADR 2026-09-30 D6): a work type in the
+        # owner-appropriate form; exactly one recognized label of every active
+        # label axis (`none` is an ordinary recognized value — the explicit
+        # "does not apply"); and each of Impact, Risk and Complexity the
+        # repository provisions. Judged on the state this call leaves behind. A
+        # conflicted axis is never "present", and neither is a label whose value
+        # the active taxonomy does not recognize (retired, misspelled).
+        local missing=() indeterminate="" recognized
+        recognized="$(axis_values_recognized "$repo" "$manifest")"
+        if [ "$owner_type" = "Organization" ]; then
+            local native=""
+            if [ -n "$native_type" ]; then
+                native="set:$native_type"
+            elif [ -n "$native_state" ]; then
+                native="$native_state"
+            else
+                indeterminate="could not verify the native issue Type"
+            fi
+            [ "$native" != "unset" ] || missing+=("work type (no native issue Type)")
+        else
+            local have_wt=1
+            while IFS= read -r l; do
+                [ -n "$l" ] || continue
+                if in_list "$l" "$post"; then
+                    have_wt=0
+                    break
+                fi
+            done <<<"$work_types"
+            [ "$have_wt" -eq 0 ] || missing+=("work type (no work-type label)")
+        fi
+        for axis in $axes; do
+            count="$(printf '%s\n' "$post" | grep -c "^$axis:" || true)"
+            if [ "$count" -gt 1 ]; then
+                missing+=("$axis (conflicted: $count labels)")
+            elif [ "$count" -eq 0 ]; then
+                missing+=("$axis (no $axis:* label — apply its value, or $axis:none)")
+            else
+                l="$(printf '%s\n' "$post" | grep "^$axis:")"
+                in_list "$l" "$recognized" ||
+                    missing+=("$axis ('$l' is not in the active $axis taxonomy)")
+            fi
+        done
+        for axis in $FIELD_AXES; do
+            axis_provisioned "$axis" || continue
+            var="post_$axis"
+            [ -n "${!var}" ] || missing+=("$axis (unset)")
+        done
+
+        local nt_present=0 nt_granted=0
+        nt_add=0 nt_remove=0
+        in_list needs-triage "$current" && nt_present=1
+        in_list needs-triage "$allowlist" && nt_granted=1
+        local missing_text
+        missing_text="$(printf '%s; ' "${missing[@]+"${missing[@]}"}")"
+        missing_text="${missing_text%; }"
+        if [ -n "$indeterminate" ]; then
+            # Only a REMOVAL needs the whole required set proven; anything already
+            # known missing is enough to add the marker.
+            [ "$nt_explicit_remove" -eq 0 ] ||
+                die 6 "refused: $indeterminate — needs-triage stays"
+            if [ "$nt_present" -eq 0 ] && [ "$nt_granted" -eq 1 ] &&
+                { [ "${#missing[@]}" -gt 0 ] || [ "$nt_explicit_add" -eq 1 ]; }; then
                 nt_add=1
-                notes+=("needs-triage: derived — missing: $missing_text")
+                notes+=("needs-triage: derived — missing: ${missing_text:-unverified work type} ($indeterminate)")
             else
-                notes+=("needs-triage: not granted to agents by this repo's manifest — left as it is (missing: $missing_text)")
+                notes+=("needs-triage: left as it is — $indeterminate")
+            fi
+        elif [ "${#missing[@]}" -gt 0 ]; then
+            [ "$nt_explicit_remove" -eq 0 ] ||
+                die 6 "refused: needs-triage stays — classification is incomplete:" \
+                    "$missing_text"
+            if [ "$nt_present" -eq 0 ]; then
+                if [ "$nt_granted" -eq 1 ]; then
+                    nt_add=1
+                    notes+=("needs-triage: derived — missing: $missing_text")
+                else
+                    notes+=("needs-triage: not granted to agents by this repo's manifest — left as it is (missing: $missing_text)")
+                fi
+            fi
+        else
+            [ "$nt_explicit_add" -eq 0 ] ||
+                die 6 "refused: needs-triage is derived — every required axis is" \
+                    "present, so it is not added"
+            if [ "$nt_present" -eq 1 ]; then
+                if [ "$nt_granted" -eq 1 ]; then
+                    nt_remove=1
+                    notes+=("needs-triage: derived — every required axis is present")
+                else
+                    notes+=("needs-triage: not granted to agents by this repo's manifest — left as it is (classification complete)")
+                fi
             fi
         fi
-    else
-        [ "$nt_explicit_add" -eq 0 ] ||
-            die 6 "refused: needs-triage is derived — every required axis is" \
-                "present, so it is not added"
-        if [ "$nt_present" -eq 1 ]; then
-            if [ "$nt_granted" -eq 1 ]; then
-                nt_remove=1
-                notes+=("needs-triage: derived — every required axis is present")
-            else
-                notes+=("needs-triage: not granted to agents by this repo's manifest — left as it is (classification complete)")
-            fi
+
+        label_change_adds=("${effective_adds[@]+"${effective_adds[@]}"}"
+            "${axis_label_adds[@]+"${axis_label_adds[@]}"}")
+        [ -z "$tier_add" ] || label_change_adds+=("$tier_add")
+        label_change_removes=("${replace_removes[@]+"${replace_removes[@]}"}"
+            "${tier_removes[@]+"${tier_removes[@]}"}")
+        org_field_writes=()
+        [ "$owner_type" != "Organization" ] ||
+            org_field_writes=("${field_writes[@]+"${field_writes[@]}"}")
+
+        # The visibility marker goes first whenever a non-label write (a native
+        # Type, an issue field) precedes the label edit: if that write lands and
+        # a later one fails, the issue must still be visible to triage.
+        marker_first=0
+        if [ "$nt_add" -eq 1 ] &&
+            { [ -n "$effective_native_type" ] || [ "${#org_field_writes[@]}" -gt 0 ]; }; then
+            marker_first=1
         fi
-    fi
+        [ "$nt_add" -eq 0 ] || [ "$marker_first" -eq 1 ] ||
+            label_change_adds+=("needs-triage")
+    }
+    print_notes() {
+        for l in "${notes[@]+"${notes[@]}"}"; do
+            echo "$l"
+        done
+    }
+    nothing_to_do() {
+        [ "${#label_change_adds[@]}" -eq 0 ] &&
+            [ "${#label_change_removes[@]}" -eq 0 ] &&
+            [ "${#org_field_writes[@]}" -eq 0 ] && [ -z "$effective_native_type" ] &&
+            [ "$nt_add" -eq 0 ] && [ "$nt_remove" -eq 0 ]
+    }
 
-    local label_change_adds=()
-    label_change_adds=("${effective_adds[@]+"${effective_adds[@]}"}"
-        "${axis_label_adds[@]+"${axis_label_adds[@]}"}")
-    [ -z "$tier_add" ] || label_change_adds+=("$tier_add")
-    local label_change_removes=()
-    label_change_removes=("${replace_removes[@]+"${replace_removes[@]}"}"
-        "${tier_removes[@]+"${tier_removes[@]}"}")
-    local org_field_writes=()
-    [ "$owner_type" != "Organization" ] ||
-        org_field_writes=("${field_writes[@]+"${field_writes[@]}"}")
-
-    for l in "${notes[@]+"${notes[@]}"}"; do
-        echo "$l"
-    done
-
-    if [ "${#label_change_adds[@]}" -eq 0 ] &&
-        [ "${#label_change_removes[@]}" -eq 0 ] &&
-        [ "${#org_field_writes[@]}" -eq 0 ] && [ -z "$effective_native_type" ] &&
-        [ "$nt_add" -eq 0 ] && [ "$nt_remove" -eq 0 ]; then
+    read_state
+    plan_call
+    if nothing_to_do; then
+        print_notes
         echo "triage-apply: nothing to do — requested labels already present"
         return 0
     fi
-
     # Dry-run promises the execute outcome it would attempt. Probe the CLI
     # capability before printing a native-Type mutation so an old gh cannot
     # make dry-run appear executable when --execute would refuse.
+    local probed=0
     if [ -n "$effective_native_type" ]; then
         gh_supports_native_type_write ||
             die 2 "gh issue edit --type requires GitHub CLI 2.98 or newer"
+        probed=1
     fi
 
-    # The visibility marker goes first whenever a non-label write (a native
-    # Type, an issue field) precedes the label edit: if that write lands and
-    # a later one fails, the issue must still be visible to triage.
-    local marker_first=0
-    if [ "$nt_add" -eq 1 ] &&
-        { [ -n "$effective_native_type" ] || [ "${#org_field_writes[@]}" -gt 0 ]; }; then
-        marker_first=1
+    if [ "$execute" -eq 1 ]; then
+        [ "${TRIAGE_EXECUTE:-0}" = "1" ] ||
+            die 2 "--execute requires TRIAGE_EXECUTE=1 in the environment" \
+                "(set by the task triage wrapper for supervised runs)"
+        # The snapshot, immediately before the first mutation.
+        local first_states="" first_pai_replace="$pai_replace" w
+        for w in "${field_writes[@]+"${field_writes[@]}"}"; do
+            first_states="$(printf '%s\n%s=%s' "$first_states" "${w%%=*}" \
+                "$(axis_current "${w%%=*}")")"
+        done
+        read_state
+        while IFS= read -r w; do
+            [ -n "$w" ] || continue
+            [ "$(axis_current "${w%%=*}")" = "${w#*=}" ] ||
+                die 4 "refused: $repo#$issue $(storage_name "${w%%=*}") changed" \
+                    "while triage was preparing its write — triage only fills"
+        done <<<"$first_states"
+        if [ "$first_pai_replace" -eq 1 ] && [ -n "$(human_priority)" ]; then
+            die 4 "refused: a human Priority was set on $repo#$issue while" \
+                "triage was preparing to replace Priority (AI)"
+        fi
+        plan_call
+        if nothing_to_do; then
+            print_notes
+            echo "triage-apply: nothing to do — requested labels already present"
+            return 0
+        fi
+        if [ -n "$effective_native_type" ] && [ "$probed" -eq 0 ]; then
+            gh_supports_native_type_write ||
+                die 2 "gh issue edit --type requires GitHub CLI 2.98 or newer"
+        fi
     fi
-    [ "$nt_add" -eq 0 ] || [ "$marker_first" -eq 1 ] ||
-        label_change_adds+=("needs-triage")
+    print_notes
 
     if [ "$execute" -eq 0 ]; then
         [ "$marker_first" -eq 0 ] ||
@@ -1379,10 +1451,6 @@ cmd_label() {
         return 0
     fi
 
-    [ "${TRIAGE_EXECUTE:-0}" = "1" ] ||
-        die 2 "--execute requires TRIAGE_EXECUTE=1 in the environment" \
-            "(set by the task triage wrapper for supervised runs)"
-
     if [ "$marker_first" -eq 1 ]; then
         gh issue edit "$issue" --repo "$repo" --add-label needs-triage \
             >/dev/null </dev/null ||
@@ -1394,33 +1462,24 @@ cmd_label() {
     # The only label intentionally established before Type is needs-triage
     # above, which keeps an otherwise untyped issue visible if its Type write
     # fails. All other labels wait for the verified Type.
+    # The snapshot already showed the Type unset (plan_call refuses a
+    # different one), so there is no second read before this write.
     if [ -n "$effective_native_type" ]; then
-        # A person may have classified the issue after the first preflight.
-        # Re-read immediately before the non-conditional GitHub write and
-        # refuse a conflicting human Type before touching any labels.
-        current_native_type="$(native_type_state_read "$repo" "$issue")" ||
-            die 2 "could not re-read the current native issue Type of $repo#$issue"
-        if [ "$current_native_type" != "unset" ]; then
-            [ "$current_native_type" = "set:$effective_native_type" ] ||
-                die 4 "refused: $repo#$issue was classified as native issue Type" \
-                    "'${current_native_type#set:}' while triage was preparing its write"
-            effective_native_type=""
-        else
-            gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
-                >/dev/null </dev/null ||
-                die 1 "write failed: gh issue edit --type $repo#$issue"
-            current_native_type="$(native_type_reconcile "$repo" "$issue")" ||
-                die 2 "write indeterminate: native issue Type may have applied to" \
-                    "$repo#$issue but could not be verified after 3 reads;" \
-                    "no remaining labels or needs-triage removal were attempted"
-            [ "$current_native_type" = "set:$effective_native_type" ] ||
-                die 1 "write failed: $repo#$issue native issue Type did not become" \
-                    "'$effective_native_type'"
-            # This is deliberately before the independent label edit below:
-            # if that later mutation fails, stdout still records the durable
-            # Type change rather than falsely implying the apply was inert.
-            echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
-        fi
+        local current_native_type
+        gh issue edit "$issue" --repo "$repo" --type "$effective_native_type" \
+            >/dev/null </dev/null ||
+            die 1 "write failed: gh issue edit --type $repo#$issue"
+        current_native_type="$(native_type_reconcile "$repo" "$issue")" ||
+            die 2 "write indeterminate: native issue Type may have applied to" \
+                "$repo#$issue but could not be verified after 3 reads;" \
+                "no remaining labels or needs-triage removal were attempted"
+        [ "$current_native_type" = "set:$effective_native_type" ] ||
+            die 1 "write failed: $repo#$issue native issue Type did not become" \
+                "'$effective_native_type'"
+        # This is deliberately before the independent label edit below:
+        # if that later mutation fails, stdout still records the durable
+        # Type change rather than falsely implying the apply was inert.
+        echo "APPLIED native issue Type '$effective_native_type' to $repo#$issue"
     fi
 
     # Organization axes: one setIssueFieldValue mutation, then a verified
@@ -1445,26 +1504,6 @@ cmd_label() {
             fields_input="$(jq -c --argjson o "$opt" '. + [$o]' <<<"$fields_input")"
         done
         [ -n "$issue_id" ] || die 2 "could not resolve the node id of $repo#$issue"
-        # A person may have set a value since the first read. Re-read right
-        # before the non-conditional mutation, as the native Type path does:
-        # triage fills, so any field it is about to write must still hold
-        # what it held then, and a Priority (AI) replacement needs the human
-        # Priority still unset.
-        local fresh_fields
-        fresh_fields="$(org_issue_field_values "$repo" "$issue")" ||
-            die 2 "could not re-read the issue field values of $repo#$issue"
-        for w in "${org_field_writes[@]}"; do
-            name="$(axis_field_name "${w%%=*}")"
-            [ "$(jq -r --arg n "$name" '.fields[$n] // ""' <<<"$fresh_fields")" = \
-                "$(jq -r --arg n "$name" '.fields[$n] // ""' <<<"$issue_fields_json")" ] ||
-                die 4 "refused: $repo#$issue issue field '$name' changed while" \
-                    "triage was preparing its write — triage only fills"
-        done
-        if [ "$pai_replace" -eq 1 ] &&
-            [ -n "$(jq -r '.fields["Priority"] // empty' <<<"$fresh_fields")" ]; then
-            die 4 "refused: a human Priority was set on $repo#$issue while" \
-                "triage was preparing to replace Priority (AI)"
-        fi
         org_set_issue_fields "$issue_id" "$fields_input" </dev/null ||
             die 1 "write failed: setIssueFieldValue on $repo#$issue"
         local attempts=0 verified=""
@@ -1485,28 +1524,6 @@ cmd_label() {
                     "become '${w#*=}'"
             echo "APPLIED issue field '$name' = '${w#*=}' on $repo#$issue"
         done
-    fi
-
-    # Nothing automated writes over a pinned Tier: re-read the labels right
-    # before the Tier write, after every earlier mutation of this call.
-    if [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; then
-        local fresh
-        fresh="$(gh issue view "$issue" --repo "$repo" --json labels \
-            -q '.labels[].name')" ||
-            die 2 "could not re-read labels of $repo#$issue before the Tier write"
-        if in_list "tier:pinned" "$fresh"; then
-            echo "tier: $repo#$issue was pinned while triage was preparing its write — the Tier label is left as it is"
-            local kept=()
-            for l in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
-                [ "$l" = "$tier_add" ] || kept+=("$l")
-            done
-            label_change_adds=("${kept[@]+"${kept[@]}"}")
-            kept=()
-            for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
-                case "$l" in tier:*) ;; *) kept+=("$l") ;; esac
-            done
-            label_change_removes=("${kept[@]+"${kept[@]}"}")
-        fi
     fi
 
     # One label edit for every add and every replaced value; the needs-triage

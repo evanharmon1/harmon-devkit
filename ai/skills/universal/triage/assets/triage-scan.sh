@@ -743,7 +743,15 @@ jq -n -L "$title_module_dir" \
               else [] end)
            # The org field pass failed or was truncated for this issue: it
            # stays in open[] so the report can say it was not read.
-           + (if $unreadable then ["classification-unreadable"] else [] end))
+           + (if $unreadable then ["classification-unreadable"] else [] end)
+           # Risk and Complexity set, no pin, and no Tier label at all: the
+           # reconcile call writes it. No resolver call here — a stale but
+           # present Tier is the reconcile call'"'"'s and the reconciler'"'"'s.
+           + (if $cls.risk.state == "set" and $cls.complexity.state == "set"
+                 and (($ls | index("tier:pinned")) == null)
+                 and ([$ls[] | select(test("^tier:[^:]+$"))
+                       | select(. != "tier:pinned")] | length) == 0
+              then ["tier-missing"] else [] end))
           as $flags
         | {number, title, updatedAt,
            days_since_update: $days,

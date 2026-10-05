@@ -225,7 +225,23 @@ api\ repos/*)
         emit "${GH_STUB_DIR:?}/issues-${state:?}.json"
     fi
     ;;
-"issue view") emit "${GH_STUB_DIR:?}/issue-${3:?}.json" ;;
+"issue view")
+    # GH_STUB_LABELS_CHANGE_ON_READ=K adds the labels named in
+    # GH_STUB_LABELS_CHANGE_ADD to the issue on its K-th read: a person
+    # labelling it between triage's first read and its snapshot.
+    if [ -n "${GH_STUB_LABELS_CHANGE_ON_READ:-}" ]; then
+        reads="$(cat "$GH_STUB_DIR/.label-reads-$3" 2>/dev/null || echo 0)"
+        reads=$((reads + 1))
+        echo "$reads" >"$GH_STUB_DIR/.label-reads-$3"
+        if [ "$reads" -eq "$GH_STUB_LABELS_CHANGE_ON_READ" ]; then
+            jq --arg add "${GH_STUB_LABELS_CHANGE_ADD:?}" \
+                '.labels += [$add | split(" ")[] | {name: .}]' \
+                "$GH_STUB_DIR/issue-$3.json" >"$GH_STUB_DIR/issue-$3.json.next"
+            mv "$GH_STUB_DIR/issue-$3.json.next" "$GH_STUB_DIR/issue-$3.json"
+        fi
+    fi
+    emit "${GH_STUB_DIR:?}/issue-${3:?}.json"
+    ;;
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
 # Only the body-carrying writes read stdin (--body-file -): drain just there,
 # so a stubbed read call inside a caller's while-read loop cannot eat the
@@ -2238,7 +2254,7 @@ grep -q -- "tier:" "$GH_STUB_LOG" &&
 grep -qx "issue edit 61 --repo $repo --remove-label needs-triage" "$GH_STUB_LOG" ||
     fail "a pinned issue still has needs-triage derived"
 
-echo "==> label: a pin applied mid-call is re-checked before the Tier write"
+echo "==> label: a pin applied before the snapshot holds the Tier"
 cat >"$tmp/bin/gh-pin-race" <<'STUB'
 #!/usr/bin/env bash
 # Second and later label reads of #60 see tier:pinned.
@@ -2266,8 +2282,8 @@ PATH="$tmp/pinbin:$PATH" TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" \
     --issue 60 --impact high --risk high --complexity m --execute \
     --manifest "$manifest" --policy "$policy" >"$tmp/out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "mid-call pin execute failed: $(cat "$tmp/out")"
-grep -q "was pinned while triage was preparing its write" "$tmp/out" ||
-    fail "a pin landing mid-call must be reported: $(cat "$tmp/out")"
+grep -q "carries tier:pinned — the Tier label is left as it is" "$tmp/out" ||
+    fail "the snapshot must see a pin set after the first read: $(cat "$tmp/out")"
 grep -q -- "tier:frontier" "$GH_STUB_LOG" &&
     fail "a pin landing mid-call must stop the Tier write"
 grep -q -- "--add-label impact:high,risk:high,complexity:m" "$GH_STUB_LOG" ||
@@ -2400,6 +2416,32 @@ issue_fixture 75 $classified impact:low risk:high complexity:m tier:local tier:p
 grep -q "would add 'tier:\|would remove 'tier:" "$tmp/out" &&
     fail "--reconcile must never touch a pinned Tier"
 grep -q "carries tier:pinned" "$tmp/out" || fail "the pin must be reported"
+
+echo "==> label: the snapshot sees a personal label set after the first read"
+# shellcheck disable=SC2086
+issue_fixture 78 $classified impact:low risk:high complexity:m
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=2 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:apex" "$apply" label --repo "$repo" \
+    --issue 78 --reconcile --execute --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "snapshot tier run failed: $(cat "$tmp/out")"
+grep -qx "issue edit 78 --repo $repo --add-label tier:frontier --remove-label tier:apex" \
+    "$GH_STUB_LOG" ||
+    fail "an unpinned tier label added before the snapshot must be replaced: $(cat "$GH_STUB_LOG")"
+# shellcheck disable=SC2086
+issue_fixture 79 $classified impact:low complexity:m needs-triage
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=2 \
+    GH_STUB_LABELS_CHANGE_ADD="risk:low" "$apply" label --repo "$repo" \
+    --issue 79 --risk high --execute --manifest "$manifest" \
+    --policy "$policy")" = 4 ] ||
+    fail "a written personal axis set before the snapshot must refuse: $(cat "$tmp/out")"
+grep -q "risk:\* labels changed while triage was preparing its write" "$tmp/out" ||
+    fail "the refusal must name the axis: $(cat "$tmp/out")"
+grep -q "issue edit" "$GH_STUB_LOG" && fail "no write may follow the refusal"
+rm -f "$stub_dir"/.label-reads-*
 
 echo "==> label: Priority (AI) — set with the axes, kept, replaced, never human"
 [ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
@@ -2583,6 +2625,25 @@ grep -q "human Priority was set on $repo#77" "$tmp/out" ||
     fail "no mutation may follow the human Priority appearing"
 rm -f "$stub_dir"/.field-reads-* "$stub_dir/issue-fields-77.json"
 
+echo "==> label: an unwritten org field cleared before the snapshot keeps needs-triage"
+issue_fixture 71 area:ci layer:ui domain:auth needs-triage tier:economy
+echo '{"Impact": "low", "Risk": "low", "Complexity": "s"}' \
+    >"$stub_dir/issue-fields-71.json"
+rm -f "$stub_dir"/.field-reads-*
+[ "$(run "$apply" label --repo "$repo" --issue 71 --reconcile \
+    --manifest "$manifest" --policy "$policy")" = 0 ] ||
+    fail "complete org reconcile dry-run failed: $(cat "$tmp/out")"
+grep -q "DRY-RUN would remove 'needs-triage'" "$tmp/out" ||
+    fail "the first read is complete, so a removal is planned"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_FIELDS_CHANGE_ON_READ=2 \
+    GH_STUB_FIELDS_CHANGE_JSON='{"Complexity": null}' "$apply" label \
+    --repo "$repo" --issue 71 --reconcile --execute --manifest "$manifest" \
+    --policy "$policy")" = 0 ] || fail "cleared-field reconcile failed: $(cat "$tmp/out")"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "a field cleared before the snapshot must keep needs-triage: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir"/.field-reads-* "$stub_dir/issue-fields-71.json"
+
 echo "==> label: an org field write failure or unverifiable write stops the labels"
 rm -f "$stub_dir/issue-fields-70.json"
 : >"$GH_STUB_LOG"
@@ -2674,6 +2735,11 @@ jq -e '.open[] | select(.number == 83)
        | .required_missing == []
          and (.flags | index("needs-triage-removable") != null)' \
     "$tmp/class-scan.json" >/dev/null || fail "#83 must read removable"
+jq -e '(.open[] | select(.number == 83) | .flags | index("tier-missing") != null)
+       and (.open[] | select(.number == 80) | .flags | index("tier-missing") == null)
+       and (.open[] | select(.number == 81) | .flags | index("tier-missing") == null)' \
+    "$tmp/class-scan.json" >/dev/null ||
+    fail "tier-missing: only Risk+Complexity set, unpinned, with no tier label"
 
 echo "==> scan: an organization reads the axes from issue fields only"
 GH_STUB_OWNER_TYPE="Organization"
@@ -2739,6 +2805,9 @@ grep -q 'Read `references/priority-rubric.md`' \
     fail "SKILL.md must tell the model to read the priority rubric first"
 grep -q 'apply its explicit `none` value' ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must tell the model to apply none rather than omit an axis"
+grep -q 'flags `missing-needs-triage`, `needs-triage-removable`, or' \
+    ai/skills/universal/triage/SKILL.md ||
+    fail "SKILL.md must issue the reconcile call for tier-missing too"
 grep -q -- '--issue <n> --reconcile' ai/skills/universal/triage/SKILL.md ||
     fail "SKILL.md must issue the reconcile call for needs-triage-only issues"
 grep -q 'treat no issue flagged `classification-unreadable`' \
