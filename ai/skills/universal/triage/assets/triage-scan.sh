@@ -737,8 +737,6 @@ jq -n -L "$title_module_dir" \
         | ([$conf.flags[]
             | select(. != "missing-needs-triage" and . != "partially-classified"
                      and . != "needs-triage-removable")]
-           + (if $conf.axis_state.layer? == "none" then ["axis-missing:layer"]
-              else [] end)
            + [$class.required[] as $a
               | ($cls[$a].state) as $st
               | if $st == "unset" then "classification-missing:\($a)"

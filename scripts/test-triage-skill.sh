@@ -1486,7 +1486,7 @@ jq -e '.open[] | select(.number == 15)
          and (.required_missing == ["layer"])
          and (.flags | index("needs-triage-removable") == null)
          and (.flags | index("partially-classified") != null)
-         and (.flags | index("axis-missing:layer") != null)' \
+         and ([.flags[] | select(. == "axis-missing:layer")] | length == 1)' \
     "$scan_out" >/dev/null || fail "a missing layer must keep the issue incomplete"
 
 echo "==> scan: missing area or domain remains incomplete"

@@ -77,7 +77,7 @@ fixture_issue='{
   "author": {"login": "alice", "type": "User"}
 }'
 axes_json='["area", "domain", "layer"]'
-known_json='["area:core", "domain:backend", "layer:backend"]'
+known_json='["area:core", "domain:backend", "layer:backend", "layer:none"]'
 wt_json='["bug", "feature", "task"]'
 title_module_dir="ai/skills/universal/issue-title-support/assets"
 
@@ -98,7 +98,29 @@ res=$(jq -n -L "$title_module_dir" \
 [ "$(jq -r '.criteria.unticked_human' <<<"$res")" = "1" ] || fail "unticked_human should be 1"
 [ "$(jq -r '.axis_state.area' <<<"$res")" = "ok" ] || fail "area should be ok"
 [ "$(jq -r '.axis_state.domain' <<<"$res")" = "ok" ] || fail "domain should be ok"
-[ "$(jq -r '.axis_state.layer' <<<"$res")" = "none" ] || fail "layer should be none"
+[ "$(jq -r '.axis_state.layer' <<<"$res")" = "none" ] || fail "absent Layer should have state none"
+
+jq -e '.flags | index("axis-missing:layer") != null' <<<"$res" >/dev/null ||
+    fail "absent Layer must be reported missing"
+jq -e '.flags | index("partially-classified") != null' <<<"$res" >/dev/null ||
+    fail "absent Layer must keep needs-triage partially classified"
+jq -e '.flags | index("needs-triage-removable") == null' <<<"$res" >/dev/null ||
+    fail "absent Layer must not make needs-triage removable"
+
+echo "==> testing explicit layer:none counts as decided"
+none_res=$(jq -n -L "$title_module_dir" \
+    --argjson issue "$fixture_issue" \
+    --argjson axes "$axes_json" \
+    --argjson known "$known_json" \
+    --argjson wt "$wt_json" "$conformance_jq"'
+  ($issue | .labels += [{"name": "layer:none"}]) as $decided
+  | issue_conformance($decided; $axes; $known; $wt; "User"; "n/a"; 14; 30)
+')
+jq -e '.axis_state.layer == "ok"
+       and (.flags | index("axis-missing:layer") == null)
+       and (.flags | index("partially-classified") == null)
+       and (.flags | index("needs-triage-removable") != null)' <<<"$none_res" >/dev/null ||
+    fail "recognized layer:none must complete classification"
 
 echo "==> testing validate-plan-row.sh rejects bot issues and malformed rows"
 bot_row='{"op": "close", "issue": 10, "reason": "completed", "bot_owned": true}'
