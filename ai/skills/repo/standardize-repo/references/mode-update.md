@@ -125,6 +125,8 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   This is informational and does not fail the helper's comparison. Separately
   report each remaining `NNNN-` ADR as naming drift and recommend `git mv` to
   `YYYY-MM-DD-<kebab-title>.md` using its own `Date:` line, updating links.
+  For missing or placeholder dates, follow the
+  [ADR date fallback](./standards-catalog.md#11-docs-folder-layout).
   Structural equivalence does not make numbered naming conformant. The seed
   is `<decisions_seed_date>-record-architecture-decisions.md`; migrate an older
   numbered seed through the selected template using the recorded
@@ -3654,12 +3656,16 @@ update can create, none of which any script closes:
   before the layer family became `ui`/`logic`/`data`/`integration` ends up with
   the new four *alongside* orphaned `layer:frontend`, `layer:backend`, and
   `layer:infra`. Re-map those issues, then delete the three by hand.
-- **Retired fields.** Old boards may still carry Domain/Layer/Agent fields;
-  setup no longer creates or reconciles them. Follow the selected template's
-  `docs/project-management.md` migration: provision replacement labels in every
-  affected repository, migrate Domain/Layer values to those labels, and re-point
-  every saved view before an operator removes the fields. Org issue-field
-  removal destroys values across the org; checking only this board is insufficient.
+- **Retired fields.** Old boards may still carry Domain/Layer/Agent fields,
+  `Size` (both owner types), and `Priority` (personal-account project field only;
+  the organization's built-in Priority issue field stays). Setup no longer
+  creates or reconciles them. Nothing reads their leftover values. Follow the
+  selected template's `docs/project-management.md` **Fields → Migrating a board
+  that still has one**, including its **Priority / Size** migration
+  (harmon-init#1451). For Domain/Layer, provision replacement labels in every
+  affected repository and migrate values to those labels. Re-point every saved
+  view before an operator removes the fields. Org issue-field removal destroys
+  values across the org; checking only this board is insufficient.
 
 A renamed label family (harmon-init#1047's `method:*` → `strategy:*`) is
 **not** one of these residues — it is a precondition 6b assumes you already
@@ -3677,8 +3683,8 @@ warnings above describe:
 gh label list --repo <owner>/<repo> --limit 1000
 
 # project fields — BOTH owner types. setup:github-project syncs Status; personal
-# accounts additionally carry Product. Current releases create no Priority or
-# Size project fields. Take <number> from the paginated
+# accounts additionally carry Product. Releases >= v5.0.1 (harmon-init#1451)
+# create no Priority or Size project fields. Take <number> from the paginated
 # identity query in 6a — `gh project list` would miss a closed board or one past
 # its default 30.
 gh project field-list <number> --owner <owner> -L 100 --format json

@@ -461,7 +461,9 @@ roots and an established ADR log (numbered or date-named records) are reported
 as benign `EQUIV` instead of false `MISSING` and do not affect the helper's exit
 status. Separately audit ADR naming: report each remaining `NNNN-` record as
 drift and recommend `git mv` to `YYYY-MM-DD-<kebab-title>.md` using its own
-`Date:` line, updating links. Structural equivalence never makes numbered
+`Date:` line, updating links. For missing or placeholder dates, follow the
+[ADR date fallback](./standards-catalog.md#11-docs-folder-layout).
+Structural equivalence never makes numbered
 names conformant. A numbered template seed migrates through the selected
 template using its recorded `decisions_seed_date` answer.
 

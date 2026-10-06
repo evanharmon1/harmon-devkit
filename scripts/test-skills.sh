@@ -2476,6 +2476,31 @@ for retired_fields_doc in standards-catalog post-generation-checklist mode-updat
         grep -Eq 'Priority/Product/Agent/Domain/Layer|Product/Agent/Domain/Layer|\*\*Product \+|six planning axes' \
         "$STANDARDIZE_REFS/$retired_fields_doc.md"
 done
+UPDATE_RETIRED_FIELDS="$TMPROOT/update-retired-fields.md"
+sed -n '/^- \*\*Retired fields\.\*\*/,/^$/p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$UPDATE_RETIRED_FIELDS"
+expect_ok "update lists retired Size and personal Priority with the template migration" \
+    sh -c 'grep -qF "\`Size\` (both owner types)" "$1" &&
+        grep -qF "\`Priority\` (personal-account project field only" "$1" &&
+        grep -qF "Nothing reads their leftover values" "$1" &&
+        grep -qF "\`docs/project-management.md\` **Fields → Migrating a board" "$1" &&
+        grep -qF "**Priority / Size** migration" "$1" &&
+        grep -qF "harmon-init#1451" "$1"' sh "$UPDATE_RETIRED_FIELDS"
+expect_ok "update field-list guidance pins the Priority/Size removal to v5.0.1" \
+    sh -c 'grep -qF "# accounts additionally carry Product. Releases >= v5.0.1 (harmon-init#1451)" "$1" &&
+        grep -qF "# create no Priority or Size project fields." "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+CHECKLIST_TRIAGE_NOTE="$TMPROOT/checklist-triage-note.md"
+sed -n '/^  > Create \*\*Triage\*\*/,/^$/p' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_TRIAGE_NOTE"
+expect_ok "checklist delegates Triage to Views and leaves personal accounts ungrouped" \
+    sh -c 'grep -qF "template'\''s **Views** section" "$1" &&
+        grep -qF "\`docs/project-management.md\`, the source of truth" "$1" &&
+        grep -qF "On a personal account, leave this view **ungrouped**" "$1"' sh \
+    "$CHECKLIST_TRIAGE_NOTE"
+expect_fail "checklist no longer copies the obsolete Triage recipe" \
+    grep -Eq 'Triage.*cannot be built|group by something you do have|missing a `Priority`' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "standards catalog describes grouped reads and exact literal grants" \
     sh -c 'grep -qF "\`gh\` reads:" "$1" &&
         grep -qF "\`git\` reads:" "$1" &&
@@ -2512,6 +2537,21 @@ for adr_doc in standards-catalog mode-audit mode-adopt-existing mode-update; do
     expect_fail "$adr_doc has no hardcoded numbered seed name" \
         grep -qF '0001-record-architecture-decisions.md' \
         "$STANDARDIZE_REFS/$adr_doc.md"
+done
+expect_ok "catalog states one missing/placeholder ADR-date fallback with provenance" \
+    sh -c 'test "$(grep -cF "**ADR date fallback:**" "$1")" -eq 1 &&
+        grep -qF "\`Date:\` line is missing or not a real date" "$1" &&
+        grep -qF "\`Date: TODO\`" "$1" &&
+        grep -qF "git log --diff-filter=A --follow --format=%as -- <file> | tail -1" "$1" &&
+        grep -qF "Report that fallback and its provenance; never guess" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
+    expect_ok "$adr_rename_guide points at the canonical ADR-date fallback" \
+        grep -qF '[ADR date fallback](./standards-catalog.md#11-docs-folder-layout)' \
+        "$STANDARDIZE_REFS/$adr_rename_guide.md"
+    expect_fail "$adr_rename_guide does not duplicate the ADR-date fallback command" \
+        grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
+        "$STANDARDIZE_REFS/$adr_rename_guide.md"
 done
 expect_ok "standards catalog documents model-centric suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \

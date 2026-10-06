@@ -460,7 +460,9 @@ after the copier run:
    `*-record-architecture-decisions.md` record can also establish equivalence.
    That is structural evidence, not naming conformance: report every remaining
    `NNNN-` record as drift and recommend `git mv` using its own `Date:` line,
-   updating links. A numbered template seed migrates through the selected
+   updating links. For missing or placeholder dates, follow the
+   [ADR date fallback](./standards-catalog.md#11-docs-folder-layout).
+   A numbered template seed migrates through the selected
    template using its recorded `decisions_seed_date` answer.
 
 3. **Leave YAML extensions alone.** Do not rename `.yaml`↔`.yml`. Each tool

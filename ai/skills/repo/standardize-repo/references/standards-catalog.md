@@ -71,7 +71,12 @@ Repo-root siblings of `docs/` (deliberately NOT under `docs/`):
   Decision, Consequences. New filenames use `YYYY-MM-DD-<kebab-title>.md`, with
   the filing date fixed at creation. Remaining `NNNN-` records are naming drift:
   recommend `git mv` to the date form using each record's own `Date:` line,
-  and update links. Do not infer the date from a sequence number. The seed's
+  and update links. Do not infer the date from a sequence number.
+  **ADR date fallback:** when the `Date:` line is missing or not a real date
+  (for example `Date: TODO`, seeded by harmon-init v3.1.0–v4.42.0), use the
+  file's first-commit date from
+  `git log --diff-filter=A --follow --format=%as -- <file> | tail -1`.
+  Report that fallback and its provenance; never guess. The seed's
   date comes from the recorded `decisions_seed_date` answer; migrate a numbered
   seed through the selected template's update mechanism. An existing log may
   structurally contain numbered or date-named records; recognizing it as an

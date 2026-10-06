@@ -313,14 +313,9 @@ Both owner types — the org-only follow-ups are in the next section.
       `docs/project-management.md`; keep the saved set small and slice the one
       board for everything else.
 
-  > **`Triage` cannot be built exactly as specified** — build the closest
-  > workable form and move on. Its spec groups by **`Type`**, which is an
-  > org-level issue field a personal account does not have, and filters on
-  > "missing a `Priority`" **or** `needs-triage`, a union across two qualifiers
-  > that Projects cannot express (distinct qualifiers AND). On a personal
-  > account, group by something you do have (`Status`); either way pick one
-  > half of the filter and know the other half of the inbox is not in this view.
-  > Tracked upstream as evanharmon1/harmon-init#444.
+  > Create **Triage** from the template's **Views** section in
+  > `docs/project-management.md`, the source of truth for its definition.
+  > On a personal account, leave this view **ungrouped**, per the template.
 
 - [ ] **[manual — GitHub UI]** Turn on the project's built-in **"Auto-add to
       project"** workflow — this is what puts **every** issue and PR on the board.
