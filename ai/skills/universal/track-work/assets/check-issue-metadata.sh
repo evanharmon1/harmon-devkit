@@ -5,7 +5,7 @@
 # manifest exists, and never calls a GitHub write endpoint.
 set -euo pipefail
 
-FORBIDDEN_RE='^(foreman:|rigor:|tier:|strategy:|method:|claim:|suggest:|agent:)'
+FORBIDDEN_RE='^(foreman:|rigor:|tier:pinned$|tier:|strategy:|method:|claim:|agent:|priority:|effort:)'
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 title_module_dir="$asset_dir/../../issue-title-support/assets"
 
@@ -17,6 +17,7 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           [--work-type-label LABEL]
           [--issue-type TYPE] (--agent-authored|--human-authored)
           [--inapplicable area|layer|domain]...
+          [--impact VALUE --risk VALUE --complexity VALUE]
 
        check-issue-metadata.sh --title-only --title TITLE [--previous-title PREV_TITLE]
 
@@ -31,12 +32,20 @@ Personal-account example:
   check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \
     --title '(cache): Reject stale entries' --body-file issue.md \
     --work-type-label bug --label area:build --inapplicable layer \
-    --label domain:platform --label ai-generated --agent-authored
+    --label domain:platform --label impact:medium --label risk:low \
+    --label complexity:s --label ai-generated --agent-authored
 
 Organization example:
   check-issue-metadata.sh --repo org/project --repo-root . --owner-type organization \
     --issue-type Bug --title '(cache): Reject stale entries' --body-file issue.md \
     --label area:build --inapplicable layer --label domain:platform --human-authored
+
+Organization field proposals use --impact/--risk/--complexity; personal
+proposals use impact:*/risk:*/complexity:* labels. Agent drafts require all
+three, a work type, and each area/layer/domain (explicit none is a value).
+Human drafts are exempt from completeness. --inapplicable remains a legacy
+preflight attestation; persist the corresponding axis:none label at creation.
+The sibling triage/assets/triage-apply.sh supplies classification values.
 
 Title-only example (for a proposed retitle):
   check-issue-metadata.sh --title-only --title '(cache): Reject stale entries' \
@@ -79,6 +88,9 @@ body_file=""
 issue_type=""
 work_type_label=""
 author_type=""
+impact=""
+risk=""
+complexity=""
 labels=()
 inapplicable=()
 
@@ -88,7 +100,7 @@ while [ "$#" -gt 0 ]; do
         help_text
         exit 0
         ;;
-    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable | --previous-title)
+    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable | --previous-title | --impact | --risk | --complexity)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo="$2" ;;
@@ -106,6 +118,23 @@ while [ "$#" -gt 0 ]; do
         --body-file) body_file="$2" ;;
         --issue-type) issue_type="$2" ;;
         --work-type-label) work_type_label="$2" ;;
+        --impact | --risk | --complexity)
+            [ -n "$2" ] || die "$1 requires a non-empty value"
+            case "$1" in
+            --impact)
+                [ -z "$impact" ] || die "--impact is repeated"
+                impact="$2"
+                ;;
+            --risk)
+                [ -z "$risk" ] || die "--risk is repeated"
+                risk="$2"
+                ;;
+            --complexity)
+                [ -z "$complexity" ] || die "--complexity is repeated"
+                complexity="$2"
+                ;;
+            esac
+            ;;
         --label) labels+=("$2") ;;
         --inapplicable) inapplicable+=("$2") ;;
         esac
@@ -178,7 +207,7 @@ validate_previous_title() {
 
 if [ "$title_only" -eq 1 ]; then
     [ "$title_set" -eq 1 ] || usage
-    [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type" ] ||
+    [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] ||
         die "--title-only accepts only --title and optional --previous-title"
     [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] ||
         die "--title-only accepts only --title and optional --previous-title"
@@ -437,6 +466,40 @@ if [ "$owner_type" != "$actual_owner_type" ]; then
     exit 1
 fi
 
+# Classification storage and provisioned rubric values belong to triage's
+# shared reader, including on repositories whose label manifest predates these
+# axes. Authoring validates proposals; only triage's apply path writes them.
+classification_json=""
+classification_requested=0
+[ -z "$impact$risk$complexity" ] || classification_requested=1
+for label in "${labels[@]+"${labels[@]}"}"; do
+    case "$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')" in
+    impact:* | risk:* | complexity:*) classification_requested=1 ;;
+    esac
+done
+if [ "$author_type" = agent ] || [ "$classification_requested" -eq 1 ]; then
+    classification_helper="$asset_dir/../../triage/assets/triage-apply.sh"
+    [ -x "$classification_helper" ] ||
+        die "shared classification reader is missing; vendor the triage skill alongside track-work"
+    classification_json="$("$classification_helper" classification-axes --repo "$repo")" ||
+        die "could not read provisioned Impact, Risk and Complexity"
+    expected_storage=label
+    [ "$owner_type" != organization ] || expected_storage=field
+    expected_owner=User
+    [ "$owner_type" != organization ] || expected_owner=Organization
+    jq -e --arg storage "$expected_storage" --arg owner "$expected_owner" '
+      .storage == $storage and .owner_type == $owner and
+      (.axes | type == "object") and
+      all(.axes.impact, .axes.risk, .axes.complexity;
+          (.provisioned | type == "boolean") and
+          (.values | type == "array") and all(.values[]; type == "string"))
+    ' <<<"$classification_json" >/dev/null ||
+        die "shared classification reader returned an invalid or mismatched catalogue"
+fi
+if [ "$owner_type" = personal ] && [ -n "$impact$risk$complexity" ]; then
+    violation "personal repositories use impact:*/risk:*/complexity:* labels, not field flags"
+fi
+
 # Preserve source line numbers while reducing the body to Markdown structure.
 # The shared parser accepts only the mechanized authoring profile: fenced
 # examples are blanked, and a draft carrying raw HTML, HTML comments, or any
@@ -629,6 +692,9 @@ work_type_count=0
 area_count=0
 layer_count=0
 domain_count=0
+impact_count=0
+risk_count=0
+complexity_count=0
 seen_labels="$tmp/seen-labels"
 : >"$seen_labels"
 
@@ -638,11 +704,37 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         continue
     fi
     printf '%s\n' "$label" >>"$seen_labels"
-    if grep -qiE "$FORBIDDEN_RE" <<<"$label"; then
-        violation "label '$label' belongs to a forbidden authoring-time family"
-        continue
-    fi
     label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+    if grep -qiE "$FORBIDDEN_RE" <<<"$label"; then
+        human_only=0
+        case "$label_key" in
+        priority:* | effort:*) [ "$author_type" != human ] || human_only=1 ;;
+        esac
+        if [ "$human_only" -ne 1 ]; then
+            violation "label '$label' belongs to a forbidden authoring-time family"
+            continue
+        fi
+    fi
+    case "$label_key" in
+    impact:* | risk:* | complexity:*)
+        classification_axis="${label_key%%:*}"
+        classification_value="${label_key#*:}"
+        if [ "$owner_type" = organization ]; then
+            violation "organization $classification_axis uses an issue field; pass --$classification_axis instead of '$label'"
+        elif jq -e --arg a "$classification_axis" --arg v "$classification_value" '
+          .axes[$a].provisioned and (.axes[$a].values | index($v) != null)
+        ' <<<"$classification_json" >/dev/null; then
+            case "$classification_axis" in
+            impact) impact_count=$((impact_count + 1)) ;;
+            risk) risk_count=$((risk_count + 1)) ;;
+            complexity) complexity_count=$((complexity_count + 1)) ;;
+            esac
+        else
+            violation "label '$label' is not a provisioned classification value"
+        fi
+        continue
+        ;;
+    esac
     record="$(awk -F '|' -v wanted="$label_key" 'tolower($1) == wanted { print; exit }' "$vocab")"
     if [ -z "$record" ]; then
         violation "label '$label' does not exist in the target vocabulary"
@@ -653,7 +745,7 @@ $record
 EOF
     # The prefix regex above catches the well-known spellings, but the
     # manifest may declare a strategy or Foreman family under any prefix, and
-    # a claim/suggest-shaped family under any axis it likes. The resolved
+    # a claim-shaped family under any axis it likes. The resolved
     # record's axis is the semantic class, so authoring-time rejection binds
     # to it as well: strategy, foreman, and model-routing labels are live
     # ownership or execution controls whatever they are named.
@@ -701,8 +793,10 @@ fi
 case "$owner_type" in
 personal)
     [ -z "$issue_type" ] || violation "personal-account repositories use a work-type label, not native Issue Type"
-    [ "$work_type_count" -eq 1 ] ||
-        violation "personal-account repositories require exactly one work-type label (found $work_type_count)"
+    if [ "$author_type" = agent ] || [ "$work_type_count" -gt 0 ]; then
+        [ "$work_type_count" -eq 1 ] ||
+            violation "personal-account repositories require exactly one work-type label (found $work_type_count)"
+    fi
     ;;
 organization)
     [ -z "$work_type_label" ] ||
@@ -720,11 +814,41 @@ organization)
         '; then
             violation "native Issue Type '$issue_type' does not exist for organization $repo_owner"
         fi
-    else
+    elif [ "$author_type" = agent ]; then
         violation "organization repositories require a native Issue Type"
     fi
     ;;
 esac
+
+for classification_axis in impact risk complexity; do
+    if [ "$owner_type" = personal ]; then
+        case "$classification_axis" in
+        impact) classification_count="$impact_count" ;;
+        risk) classification_count="$risk_count" ;;
+        complexity) classification_count="$complexity_count" ;;
+        esac
+        if [ "$classification_count" -gt 1 ]; then
+            violation "$classification_axis requires exactly one value (found $classification_count)"
+        elif [ "$author_type" = agent ] && [ "$classification_count" -ne 1 ]; then
+            violation "agent-authored drafts require $classification_axis (personal label)"
+        fi
+    else
+        case "$classification_axis" in
+        impact) classification_value="$impact" ;;
+        risk) classification_value="$risk" ;;
+        complexity) classification_value="$complexity" ;;
+        esac
+        if [ -n "$classification_value" ]; then
+            classification_value="$(printf '%s' "$classification_value" | tr '[:upper:]' '[:lower:]')"
+            jq -e --arg a "$classification_axis" --arg v "$classification_value" '
+              .axes[$a].provisioned and (.axes[$a].values | index($v) != null)
+            ' <<<"$classification_json" >/dev/null ||
+                violation "--$classification_axis is not a provisioned organization field value"
+        elif [ "$author_type" = agent ]; then
+            violation "agent-authored drafts require --$classification_axis (organization issue field)"
+        fi
+    fi
+done
 
 is_inapplicable() {
     _wanted="$1"
@@ -737,17 +861,20 @@ is_inapplicable() {
 undecided=""
 for axis in area layer domain; do
     eval "count=\${${axis}_count}"
+    if [ "$author_type" = agent ] && [ "$count" -gt 1 ]; then
+        violation "$axis requires exactly one label (found $count)"
+    fi
     if [ "$count" -gt 0 ] && is_inapplicable "$axis"; then
         violation "$axis cannot have both a label and an inapplicable declaration"
     elif [ "$count" -eq 0 ] && ! is_inapplicable "$axis"; then
         undecided="${undecided}${undecided:+, }$axis"
     fi
 done
-if [ -n "$undecided" ] && [ "$has_needs_triage" -ne 1 ]; then
-    violation "classification axes remain undecided ($undecided); add needs-triage or classify/declare them inapplicable"
+if [ -n "$undecided" ] && [ "$author_type" = agent ]; then
+    violation "agent-authored drafts require every classification axis ($undecided missing); choose a label or explicit none/inapplicability"
 fi
-if [ -z "$undecided" ] && [ "$has_needs_triage" -eq 1 ]; then
-    violation "needs-triage records an undecided classification, but every axis is decided; drop the label"
+if [ "$author_type" = agent ] && [ "$has_needs_triage" -eq 1 ]; then
+    violation "agent-authored drafts must be fully classified; needs-triage is derived by the shared helper, never authored"
 fi
 
 if [ "$violations" -ne 0 ]; then

@@ -109,15 +109,19 @@ EOF
 Run the full, read-only pre-create gate from §5 against the **target checkout**.
 Use exactly one owner-appropriate work classification: `--work-type-label
 <label>` for a personal repository, or `--issue-type <Type>` for an organization.
-Pass the concrete target labels or explicit axis inapplicability, including
-`ai-generated` for agent-authored work:
+Pass the concrete target labels or explicit axis inapplicability (persisted
+as `none` labels), the target's provisioned Impact/Risk/Complexity proposals,
+and `ai-generated` for agent-authored work. Ratings use personal labels or
+organization field flags; human-authored drafts alone are exempt from
+completeness. An agent unable to classify returns the draft before filing:
 
 ```sh
 <track-work-skill-dir>/assets/check-issue-metadata.sh \
   --repo <target-owner/target-repo> --repo-root <target-checkout> \
   --owner-type <personal|organization> --title "$title" \
   --body-file "$bodyfile" <owner-appropriate-work-classification> \
-  <target-labels-or-axis-inapplicability> --label ai-generated \
+  <target-labels-or-axis-inapplicability> <owner-appropriate-rating-proposals> \
+  --label ai-generated \
   --agent-authored
 ```
 
@@ -128,6 +132,21 @@ and owner-appropriate work classification it verified:
 gh issue create --repo <target-owner/target-repo> --title "$title" \
   --body-file "$bodyfile" <matching-create-time-metadata>
 ```
+
+Immediately apply the verified ratings through the shared helper from the
+target checkout, under the same write authorization:
+
+```sh
+TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
+  --repo <target-owner/target-repo> --issue <new-issue-number> \
+  --impact <value> --risk <value> --complexity <value> --execute
+```
+
+It writes personal labels or organization fields, derives the Tier label on
+both owner types, and reconciles `needs-triage`. Re-read the stored ratings,
+Tier and marker before reporting completion. If either creation or helper
+application partially succeeds, return the existing issue number and blocker;
+never create a duplicate to retry the classification.
 
 Then link back from where you found it, so the trail runs both ways:
 
