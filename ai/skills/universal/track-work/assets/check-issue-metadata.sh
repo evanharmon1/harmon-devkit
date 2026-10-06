@@ -437,14 +437,14 @@ EOF
 fi
 sort -u "$vocab" -o "$vocab"
 
-# A validated manifest may predate explicit absence values. Do not use the
-# live-label fallback, or a retired declared member, to widen this exception.
+# Use the validated vocabulary's existing retirement filter and author policy
+# when deciding whether the manifest offers an authorable absence value.
 if [ "$author_type" = agent ]; then
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
         if [ -e "$manifest" ] && ! awk -F '|' -v wanted="$axis:none" '
-          $1 == "value" && tolower($2) == wanted { found=1 }
+          tolower($1) == wanted && index("," $4 ",", ",agent,") { found=1 }
           END { exit(found ? 0 : 1) }
-        ' "$registry_records"; then
+        ' "$vocab"; then
             warn "registry is missing '$axis:none'; --inapplicable $axis needs needs-triage on the created issue"
         else
             violation "--inapplicable $axis requires a manifest missing its none member; use the \`$axis:none\` label"

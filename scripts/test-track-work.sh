@@ -896,6 +896,16 @@ grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
     fail "fallback must not authorize needs-triage on an agent draft"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
     fail "fallback must not invent a missing manifest label"
+echo "==> metadata: a retired none member does not block the agent absence fallback"
+jq '(.families[] | select(.family == "layer").values[] | select(.value == "none").retired) = true' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
+    fail "retired layer:none must permit agent inapplicability: $(cat "$tmp/metadata.out")"
+grep -Fq "warning: registry is missing 'layer:none'" "$tmp/metadata.out" ||
+    fail "retired none fallback must warn about the unavailable value: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
+    fail "retired layer:none must remain unavailable as a proposed label"
+
 printf '%s\n' '{' >"$metadata_without_none/label-registry.json"
 [ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 2 ] ||
     fail "absence fallback must not bypass manifest validation"
