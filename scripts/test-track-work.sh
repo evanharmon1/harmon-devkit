@@ -874,6 +874,32 @@ grep -Fq 'use the `layer:none` label' "$tmp/metadata.out" ||
     --inapplicable layer --label layer:none)" = 1 ] ||
     fail "a label and an inapplicability declaration must not coexist"
 
+echo "==> metadata: agent absence fallback requires a valid manifest missing none"
+metadata_without_none="$tmp/metadata-without-none"
+mkdir -p "$metadata_without_none"
+git -C "$metadata_without_none" init -q
+git -C "$metadata_without_none" remote add origin https://github.com/testowner/testrepo.git
+cp "$metadata_repo/agent-registry.json" "$metadata_without_none/agent-registry.json"
+jq '(.families[] | select(.family == "layer").values) |= map(select(.value != "none"))' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+fallback_absence=(--repo testowner/testrepo --repo-root "$metadata_without_none"
+    --owner-type personal --title 'Record unavailable layer absence' --body-file "$valid_body"
+    --agent-authored --label feature --label area:fixture --label domain:fixture
+    --label ai-generated --label impact:medium --label risk:low --label complexity:s)
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
+    fail "a valid manifest without layer:none must allow explicit absence: $(cat "$tmp/metadata.out")"
+grep -Fq "warning: registry is missing 'layer:none'" "$tmp/metadata.out" ||
+    fail "fallback warning must name missing layer:none: $(cat "$tmp/metadata.out")"
+grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
+    fail "fallback warning must name the filing marker"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer --label needs-triage)" = 1 ] ||
+    fail "fallback must not authorize needs-triage on an agent draft"
+[ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
+    fail "fallback must not invent a missing manifest label"
+printf '%s\n' '{' >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 2 ] ||
+    fail "absence fallback must not bypass manifest validation"
+
 for missing in area layer domain; do
     axes=()
     for axis in area layer domain; do

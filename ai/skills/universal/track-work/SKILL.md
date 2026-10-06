@@ -791,8 +791,10 @@ control labels.
   from each of `area:*`, `layer:*`, and `domain:*`; and Impact, Risk, and
   Complexity. Choose the family's explicit `none` label when an area, layer,
   or domain does not apply. Impact, Risk, and Complexity always need a rating.
-  An incomplete agent draft returns for classification; it cannot be filed by
-  adding `needs-triage`. This includes issues labelled `human` that an agent
+  If a valid present manifest lacks an axis's `none` member, the checker permits
+  `--inapplicable <axis>` with a warning; the created issue needs `needs-triage`
+  for that unrecordable axis. Otherwise an incomplete agent draft returns for
+  classification; it cannot be filed by adding `needs-triage`. This includes issues labelled `human` that an agent
   authors. Human-authored drafts (`--human-authored`) are exempt from the
   completeness requirement, while proposed values still have to be valid.
 - **Storage by owner type:** personal-account repositories use one work-type
@@ -822,8 +824,9 @@ control labels.
   alone. Agent authors still supply the full required classification.
 - **Never during authoring:** `claim:*`, legacy `agent:*`, `foreman:*`,
   `rigor:*`, `tier:*` (including `tier:pinned` and scoped `tier:<role>:*`),
-  `strategy:*`, the retired `method:*`, `priority:*`, and `effort:*`.
-  Unqualified Tier labels are written only by the shared helper as a
+  `strategy:*`, and the retired `method:*`. Agents never select `priority:*`
+  or `effort:*` or include them on agent-authored drafts. Preserve a human's
+  supplied Priority or Effort on a human-authored draft. Unqualified Tier labels are written only by the shared helper as a
   derivation, never selected by the author. `suggest:*` is retired from this
   never-list; a manifest's retirement or writer policy still governs any
   proposed ordinary label.
@@ -862,10 +865,11 @@ replace the three rating labels with `--impact <value> --risk <value>
 --complexity <value>`, and omit `--work-type-label`. The checker verifies the
 owner kind, native type, and provisioned field options. Repeat `--label` as
 needed. Agent drafts must supply the corresponding `area:none`, `layer:none`,
-or `domain:none` label for an inapplicable axis at preflight and creation so
-triage can reconcile from the stored state. Legacy
-`--inapplicable area|layer|domain` is a human-only preflight attestation; the
-checker rejects it for agent drafts.
+or `domain:none` label for an inapplicable axis when the manifest defines it.
+The narrow exception is a valid present manifest with no `none` member for that
+axis: `--inapplicable <axis>` passes with a warning naming the missing registry
+value. Human drafts may still use that legacy attestation. A missing or invalid
+manifest does not grant the agent exception.
 
 Authorship is explicit: pass exactly one of `--agent-authored` or
 `--human-authored`; omission never defaults to the more permissive human path.
@@ -893,6 +897,12 @@ Choose the path matching the draft's authorship:
   human-authored draft. If the human supplied proposals for the helper, run it
   with only those supplied values; omit missing rating flags. If none were
   supplied, skip the helper. Keep `needs-triage` on incomplete drafts.
+
+If preflight warned that an axis's `none` member is missing, omit that
+unavailable label and add `--label needs-triage` at creation for the affected
+axis. This marker is required even for the agent fallback; it remains on the
+issue until the axis can be recorded. Preflight still rejects the marker on
+agent drafts: marking the filed issue is distinct from proposing draft metadata.
 
 Do not copy the helper's field mutations, Tier matrix, or marker logic.
 
@@ -922,13 +932,14 @@ For an agent-authored organization draft, use the same sequence with
 pass the same three rating flags to the helper. Without `--execute` the helper
 only plans; `--execute` also needs the
 workflow-authorized `TRIAGE_EXECUTE=1`. These are intentional write inputs,
-never permission to bypass a gate. Do not pass `--priority` or a `tier:*`
-label. Priority (AI) is optional and outside this required creation recipe.
+never permission to bypass a gate. Agents do not select `--priority` or a
+`tier:*` label. Preserve human-supplied Priority or Effort on human-authored
+drafts. Priority (AI) is optional and outside this required agent creation recipe.
 
 Read every helper result and independently re-read the created issue's stored
 classification. For fully classified drafts, confirm the derived Tier label
-and absence of `needs-triage`; for incomplete human drafts, confirm only the
-supplied values and presence of `needs-triage`. A missing Tier matrix when
+and absence of `needs-triage`; for incomplete human drafts or the missing-none
+agent fallback, confirm the supplied values and presence of `needs-triage`. A missing Tier matrix when
 needed, unavailable Tier label, failed field write or failed verification is an incomplete creation: return the existing issue number and
 the blocker to the caller, never retry `gh issue create` or report completion.
 Creation and field application are separate writes; a partial failure must
@@ -938,7 +949,8 @@ remain visible as unfinished work on that existing issue.
 
 A brief delegating issue creation must carry the **target repository**, the
 **title and body contract**, the **concrete labels or explicit
-inapplicability** (persisted as `none`) for every classification axis, the
+inapplicability** (`none` when defined, otherwise the validated missing-none
+fallback) for every classification axis, the
 owner-appropriate work classification, Impact/Risk/Complexity proposals,
 agent-authored state, and the instruction to return the
 **created issue number** so the caller can re-read and verify its labels. A

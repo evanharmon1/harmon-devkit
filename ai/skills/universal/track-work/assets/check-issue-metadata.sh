@@ -44,8 +44,9 @@ Organization example:
 Organization field proposals use --impact/--risk/--complexity; personal
 proposals use impact:*/risk:*/complexity:* labels. Agent drafts require all
 three, a work type, and each area/layer/domain (explicit none is a value).
-Human drafts are exempt from completeness. --inapplicable is a legacy human-only
-preflight attestation. Agent drafts must use the corresponding axis:none label.
+Human drafts are exempt from completeness. Agent --inapplicable is accepted only
+when a valid present manifest has no corresponding axis:none member; the created
+issue then needs needs-triage. Otherwise agent drafts must use the axis:none label.
 The sibling triage/assets/triage-apply.sh supplies classification values.
 
 Title-only example (for a proposed retitle):
@@ -278,9 +279,6 @@ for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
     area | layer | domain) ;;
     *) die "--inapplicable accepts area, layer, or domain (got '$axis')" ;;
     esac
-    if [ "$author_type" = agent ]; then
-        violation "--inapplicable $axis is human-only; use the \`$axis:none\` label"
-    fi
 done
 for axis in area layer domain; do
     inapplicable_count=0
@@ -438,6 +436,21 @@ $live
 EOF
 fi
 sort -u "$vocab" -o "$vocab"
+
+# A validated manifest may predate explicit absence values. Do not use the
+# live-label fallback, or a retired declared member, to widen this exception.
+if [ "$author_type" = agent ]; then
+    for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
+        if [ -e "$manifest" ] && ! awk -F '|' -v wanted="$axis:none" '
+          $1 == "value" && tolower($2) == wanted { found=1 }
+          END { exit(found ? 0 : 1) }
+        ' "$registry_records"; then
+            warn "registry is missing '$axis:none'; --inapplicable $axis needs needs-triage on the created issue"
+        else
+            violation "--inapplicable $axis requires a manifest missing its none member; use the \`$axis:none\` label"
+        fi
+    done
+fi
 if [ -n "${CHECK_ISSUE_METADATA_DEBUG:-}" ]; then
     {
         echo "--- vocabulary ($(wc -l <"$vocab") records) ---"
