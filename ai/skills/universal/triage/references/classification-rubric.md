@@ -149,8 +149,8 @@ registry and policy work's concern, not this rubric's. Which models sit in each 
 
 The matrix below reproduces the policy matrix that harmon-init ships in `.devflow.toml` (`[tier.matrix]`), so a
 classifier can work offline. Where the repository's policy carries a matrix, **it wins on any disagreement and this
-table is the one to fix**; a repository whose policy has no matrix yet derives from this table. Look up the row for
-Complexity and the column for Risk.
+table is the one to fix**. Without a `[tier.matrix]` in the repository's policy, no Tier is derived or written: this
+table is then for reading only. Look up the row for Complexity and the column for Risk.
 
 | Complexity \ Risk | trivial | low | medium | high | critical |
 | --- | --- | --- | --- | --- | --- |

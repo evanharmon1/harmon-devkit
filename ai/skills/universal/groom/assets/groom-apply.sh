@@ -490,7 +490,13 @@ validate_label() {
         [ -n "$a" ] || continue
         args+=(--remove "$a")
     done < <(jq -r '.remove // [] | .[]' <<<"$row")
-    "$triage_apply" "${args[@]}" >/dev/null ||
+    # Exit 2 is triage-apply.sh's usage/environment error, not a refusal.
+    local rc=0
+    "$triage_apply" "${args[@]}" >/dev/null || rc=$?
+    [ "$rc" -ne 2 ] ||
+        die 2 "environment error: triage-apply.sh could not complete its" \
+            "dry run for #$issue"
+    [ "$rc" -eq 0 ] ||
         die 4 "refused: #$issue label op failed triage-apply.sh's own" \
             "dry-run validation (never-list, allowlist, axis, or repo-kind)"
 }
@@ -714,12 +720,23 @@ apply_label() {
     done < <(jq -r '.remove // [] | .[]' <<<"$row")
 
     if [ "$execute" -eq 0 ]; then
-        # Print the PLAN line only — validate_label (pass 1) already invoked
-        # this exact triage-apply.sh dry run to validate this row, so calling
-        # it again here would be a second, redundant subprocess/API round
-        # trip for identical validation with no functional difference
-        # (challenge round 3 finding 6).
+        # The PLAN line alone hides what the row really writes: triage-apply.sh
+        # derives writes the row never names (issue fields on an organization,
+        # the Tier label, the needs-triage change). Show its own dry run under
+        # the PLAN line, so the approved plan is the whole write
+        # (harmon-devkit#1250, challenge round 1 finding 2).
+        local dry rc=0
+        dry="$("$triage_apply" "${args[@]}" 2>&1)" || rc=$?
+        # Exit 2 is triage-apply.sh's usage/environment error (an unreadable
+        # issue-field catalogue, a failed read): not a refusal of the row.
+        [ "$rc" -ne 2 ] ||
+            die 2 "environment error: triage-apply.sh could not complete its" \
+                "dry run for #$issue: $dry"
+        [ "$rc" -eq 0 ] ||
+            die 4 "refused: #$issue label op failed triage-apply.sh's own" \
+                "dry run: $dry"
         print_plan "$triage_apply" "${args[@]}"
+        printf '%s\n' "$dry" | sed 's/^/  /'
         return 0
     fi
     log_write "$log" "$triage_apply" "${args[@]}" "--execute"
