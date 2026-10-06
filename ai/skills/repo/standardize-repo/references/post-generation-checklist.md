@@ -272,30 +272,24 @@ Both owner types — the org-only follow-ups are in the next section.
   > closed board holding the canonical title — run the identity preflight in
   > [`mode-update.md`](./mode-update.md) §6a **first**. On a genuinely fresh owner
   > with no boards, creation is the expected outcome and there is nothing to check.
-  > It seeds the full `Status` pipeline plus the **`Size`** number
-  > field — `Size` is the numeric estimate, because only project number fields sum
-  > in view group headers — and never deletes existing options or fields.
+  > It seeds the full `Status` pipeline and never deletes existing options or
+  > fields. Current releases no longer create `Priority` or `Size` project fields.
   > **On an org** it also records the project id in the `ORG_PROJECT_ID` org
   > variable that `project-automation.yml` and the `claude-*` workflows read
   > (falling back to the project's title), so it no longer has to be the org's
   > project number 1; the remaining metadata are org *issue* fields (next
-  > section), where Priority/Effort and the date fields are GitHub built-ins left
-  > at their defaults. **On a personal account** there are no issue fields at all
-  > (they are org-only, so no Priority/Effort/date built-ins either) — the script
-  > instead creates Priority/Product/Agent/Domain/Layer as project fields, and
+  > section); use the selected script for its current field list.
+  > **On a personal account** there are no issue fields at all
+  > (they are org-only) — the script creates the `Product` text project field, and
   > `Status` automation is a separate follow-up: the board exists, but issue/PR
   > status is not auto-synced. For the exact GraphQL (or to run it by hand), see
   > `scripts/setup-github-project.sh`.
 
-- [ ] **[manual — GitHub UI; personal accounts]** Customize the **`Domain`**
-      options in the Project UI — the script seeds `auth`/`billing`/`platform`
-      only, so add this product's real domains (from your ERD entities). `Layer`
-      (`ui`/`logic`/`data`/`integration`) is product-independent and normally needs
-      no edits. A re-run appends any missing *starter* option, but never your
-      repo-specific ones and never a **removal** — retiring an option is manual
-      too, and only after re-mapping (deleting an assigned option clears those
-      values). Org repos do this in the org's issue-field settings instead (next
-      section).
+- [ ] **[scriptable via gh; both owner types]** Customize the repo's `domain:`
+      labels for this product's real domains (from your ERD entities), using the
+      selected template's label vocabulary and setup task. `layer:` labels carry
+      the stack slice. These labels are the source of truth: do not create
+      duplicate Domain/Layer fields or an Agent field.
 
 - [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
       families (concerns / source / workflow / `layer:` / `domain:`). Labels are
@@ -378,7 +372,9 @@ answering `linear`/`none` has no such task and should skip them.
   task setup:github-issue-fields
   ```
 
-  > Adds the org's **Product**, **Agent**, **Domain**, and **Layer** issue fields
+  > Adds the org's declared issue fields, including **Product**; the selected
+  > script is the authority for the complete current list. It does not create
+  > the retired Domain/Layer/Agent fields
   > (public preview). Idempotent and additive: an existing field keeps every
   > option it has and gains any missing *starter* one, and nothing is ever
   > removed. It warns and exits 0 rather than failing when it cannot reconcile a
@@ -389,18 +385,13 @@ answering `linear`/`none` has no such task and should skip them.
   > or a `PATCH` the preview rejected — so read the WARNING lines rather than
   > trusting the exit code.
 
-- [ ] **[manual — GitHub UI; `project_management: github` only]** Customize the
-      **`Domain`** options. The script
-      seeds `auth`/`billing`/`platform` only — add this product's real domains
-      (from your ERD entities) in the org's issue-field settings. The field is
-      org-wide while labels are per-repo, so each repo carries the `domain:` labels
-      for the domains it actually uses: add those to
-      `scripts/setup-github-labels.sh` and re-run `task setup:github-labels` in
-      that repo. `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
-      and normally needs no edits. A re-run appends any missing *starter* option,
-      but never your repo-specific ones and never a **removal** — retiring an
-      option is manual too, and only after re-mapping (deleting an assigned option
-      clears those values).
+- [ ] **[manual — GitHub UI; older boards only]** Migrate retired metadata using
+      the selected repo's `docs/project-management.md`: provision `domain:` and
+      `layer:` labels in every affected repository, map old values to labels,
+      and re-point every saved view before deleting retired fields. An org
+      issue field's removal destroys values across every repository, so verify
+      the whole org rather than just this board. Current setup is additive and
+      will not perform this migration for you.
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does

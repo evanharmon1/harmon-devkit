@@ -1617,7 +1617,7 @@ has_repo_equivalent() {
             return 0
         fi
         ;;
-    docs/decisions/0001-record-architecture-decisions.md)
+    docs/decisions/[0-9]*-record-architecture-decisions.md)
         for adr in "$target"/docs/decisions/[0-9]*.md; do
             [ -f "$adr" ] || continue
             repo_parent_diverges "$adr" && continue

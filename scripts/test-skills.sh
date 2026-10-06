@@ -2452,21 +2452,49 @@ expect_ok "standards catalog documents the web-only skills-sync default" \
 expect_ok "standards catalog documents Foreman as deliberate opt-in" \
     grep -qF 'current template source now deliberately' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog names the six planning axes" \
-    grep -qF 'six planning axes are' \
-    "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog lists every planning axis" \
-    grep -qF '**Status, Priority, Size, Product, Domain, and Layer**' \
+expect_ok "standards catalog makes domain and layer labels authoritative" \
+    grep -qF '**`domain:` and `layer:` labels are the source of' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog removes Agent from the target field set" \
-    grep -qF 'The retired `Agent` field is not part of the' \
+    grep -qF 'also absent from the target state' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog distinguishes pre-rollout task behavior" \
-    grep -qF 'Those rows describe executable behavior in pre-rollout harmon-init releases' \
+expect_ok "standards catalog distinguishes current setup from older pins" \
+    grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog leaves transition execution to harmon-init" \
     grep -qF 'not re-specified' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog drops the obsolete Status hard-stop carve-out" \
+    grep -Eiq 'hard stop|known upstream gap' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standards catalog covers fixed Status handling and old pins" \
+    sh -c 'grep -qF "\`incompatible\` summary, and is skipped" "$1" &&
+        grep -qF "**≤ v4.7.2** still abort" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+for retired_fields_doc in standards-catalog post-generation-checklist mode-update; do
+    expect_fail "$retired_fields_doc does not prescribe the retired field list" \
+        grep -Eq 'Priority/Product/Agent/Domain/Layer|Product/Agent/Domain/Layer|\*\*Product \+|six planning axes' \
+        "$STANDARDIZE_REFS/$retired_fields_doc.md"
+done
+expect_ok "standards catalog describes grouped reads and exact literal grants" \
+    sh -c 'grep -qF "\`gh\` reads:" "$1" &&
+        grep -qF "\`git\` reads:" "$1" &&
+        grep -qF "**exact literals**" "$1" &&
+        grep -qF "Bash(gh auth status)" "$1" &&
+        grep -qF "Bash(actionlint)" "$1" &&
+        grep -qF "Bash(ps)" "$1" && grep -qF "Bash(tree)" "$1" &&
+        grep -qF "jq -n env" "$1" &&
+        grep -qF "git config --get" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+for adr_doc in standards-catalog mode-audit mode-adopt-existing mode-update; do
+    expect_ok "$adr_doc documents date-named ADRs and Date-based migration" \
+        sh -c 'grep -qF "YYYY-MM-DD-<kebab-title>.md" "$1" &&
+            grep -qF "Date:" "$1" && grep -qF "NNNN-" "$1"' sh \
+        "$STANDARDIZE_REFS/$adr_doc.md"
+    expect_fail "$adr_doc has no hardcoded numbered seed name" \
+        grep -qF '0001-record-architecture-decisions.md' \
+        "$STANDARDIZE_REFS/$adr_doc.md"
+done
 expect_ok "standards catalog documents model-centric suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -7021,6 +7049,42 @@ dt_skip_decl_variant() {
     git_commit_all "$dsv_dest" "rewrite the _skip_if_exists declaration"
     git -C "$dsv_dest" tag -f v1.0.0 >/dev/null
 }
+
+# A date-named rendered seed must enter the same equivalence check as the legacy
+# seed. Use a log with only a date-named unrelated record and README.md: neither
+# a numbered filename nor a record-decisions suffix can accidentally satisfy it.
+DT_DATE_TEMPLATE="$TMPROOT/diff-template-date-seed-source"
+DT_DATE_TARGET="$TMPROOT/diff-template-date-log-target"
+cp -pR "$DT_TEMPLATE" "$DT_DATE_TEMPLATE"
+git -C "$DT_DATE_TEMPLATE" mv \
+    template/docs/decisions/0001-record-architecture-decisions.md \
+    template/docs/decisions/2026-09-30-record-architecture-decisions.md
+git_commit_all "$DT_DATE_TEMPLATE" "date-name the template seed"
+git -C "$DT_DATE_TEMPLATE" tag -f v1.0.0 >/dev/null
+cp -pR "$DT_TARGET" "$DT_DATE_TARGET"
+rm -f "$DT_DATE_TARGET/docs/decisions/0007-record-architecture-decisions.md"
+printf '%s\n' '# Use Postgres' 'Date: 2026-10-01' \
+    >"$DT_DATE_TARGET/docs/decisions/2026-10-01-use-postgres.md"
+printf '%s\n' '# Decisions' >"$DT_DATE_TARGET/docs/decisions/README.md"
+git_commit_all "$DT_DATE_TARGET" "establish a date-only ADR log"
+if adr_date_out="$(HARMON_INIT="$DT_DATE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_DATE_TARGET" 2>&1)"; then
+    ok "diff-template passes with a date-named seed and date-only README-backed ADR log"
+else
+    bad "diff-template passes with a date-named seed and date-only README-backed ADR log: $adr_date_out"
+fi
+expect_ok "diff-template recognizes the date-named seed as redundant" \
+    grep -qF 'EQUIV    docs/decisions/2026-09-30-record-architecture-decisions.md  (repo already has an active ADR log; the seed ADR is redundant)' \
+    <<<"$adr_date_out"
+# An index without records still proves nothing, including for a date-named seed.
+rm -f "$DT_DATE_TARGET/docs/decisions/2026-10-01-use-postgres.md"
+git_commit_all "$DT_DATE_TARGET" "empty the ADR log"
+if adr_date_empty_out="$(HARMON_INIT="$DT_DATE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_DATE_TARGET" 2>&1)"; then
+    bad "diff-template gates a date-named seed missing from an empty ADR log"
+else
+    expect_ok "diff-template reports the date-named seed missing from an empty ADR log" \
+        grep -qF 'MISSING  docs/decisions/2026-09-30-record-architecture-decisions.md' \
+        <<<"$adr_date_empty_out"
+fi
 
 # --- OWNED: the template's own _skip_if_exists declaration (issue 359) --------
 # Both declared paths diverge permanently in the clean target, so this run also
