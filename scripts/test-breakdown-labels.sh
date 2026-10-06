@@ -29,7 +29,18 @@ set -euo pipefail
 fixture="${BREAKDOWN_LABEL_FIXTURE:?}"
 if [ "$1" = api ]; then
     joined="$*"
-    if [[ "$joined" == *"/contents/label-registry.json"* ]]; then
+    if [[ "$joined" == *"graphql"* ]]; then
+        if [[ "$joined" != *"--hostname"* || "$joined" != *"GraphQL-Features: issue_fields"* ]]; then
+            echo "field discovery must bind the host and preview header" >&2
+            exit 1
+        fi
+        if [ -f "$fixture/fields-denied" ]; then
+            echo "issue fields unavailable" >&2
+            exit 1
+        fi
+        cat "$fixture/fields.json"
+        exit 0
+    elif [[ "$joined" == *"/contents/label-registry.json"* ]]; then
         if [ ! -f "$fixture/label-registry.json" ]; then
             echo "gh: Not Found (HTTP 404)" >&2
             exit 1
@@ -89,7 +100,11 @@ if [ "$1" = api ]; then
         printf ']\n'
         exit 0
     else
-        printf '{"default_branch":"trunk"}\n'
+        if [ -f "$fixture/organization" ]; then
+            printf '{"default_branch":"trunk","owner":{"type":"Organization"}}\n'
+        else
+            printf '{"default_branch":"trunk","owner":{"type":"User"}}\n'
+        fi
         exit 0
     fi
     content="$(base64 <"$file" | tr -d '\n')"
@@ -120,6 +135,36 @@ write_registry() {
       "source":"inline","writers":["human","agent"],"readers":"humans",
       "lifecycle":"durable","exclusive":true,"provision":true,"color":"123456",
       "values":[{"value":"$area","description":"Area"},{"value":"missing","description":"Not live"}]
+    },
+    {
+      "family":"impact","prefix":"impact","purpose":"Effect of the work","axis":"classification",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"Broad effect"}]
+    },
+    {
+      "family":"risk","prefix":"risk","purpose":"Failure consequences","axis":"classification",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"low","description":"Limited risk"}]
+    },
+    {
+      "family":"complexity","prefix":"complexity","purpose":"Reasoning difficulty","axis":"classification",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"m","description":"Moderate work"}]
+    },
+    {
+      "family":"priority","prefix":"priority","purpose":"Human priority","axis":"classification",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"High"}]
+    },
+    {
+      "family":"effort","prefix":"effort","purpose":"Human estimate","axis":"classification",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"High"}]
+    },
+    {
+      "family":"tier","prefix":"tier","purpose":"Derived model tier","axis":"model",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":false,"provision":true,"color":"123456","values":[{"value":"frontier","description":"Tier"},{"value":"pinned","description":"Pin"}]
     },
     {
       "family":"suggest","prefix":"suggest","purpose":"Advisory family routing","axis":"model",
@@ -187,6 +232,13 @@ write_labels() {
     cat >"$fixture/labels.json" <<JSON
 [
   {"name":"area:$area","description":"Live area"},
+  {"name":"impact:high","description":"Broad effect"},
+  {"name":"risk:low","description":"Limited risk"},
+  {"name":"complexity:m","description":"Moderate work"},
+  {"name":"priority:high","description":"Human priority"},
+  {"name":"effort:high","description":"Human effort"},
+  {"name":"tier:frontier","description":"Derived tier"},
+  {"name":"tier:pinned","description":"Human pin"},
   {"name":"suggest:gpt","description":"Family suggestion"},
   {"name":"suggest:gpt:sol","description":"Model suggestion"},
   {"name":"suggest:gpt:ghost","description":"Unknown model"},
@@ -303,7 +355,7 @@ else
 fi
 
 names="$(jq -r '.families[].labels[].name' <<<"$output" | sort)"
-expected=$'area:api\ncustom:live\noverride:agent-safe\nsuggest:gpt\nsuggest:gpt:sol'
+expected=$'area:api\ncomplexity:m\ncustom:live\nimpact:high\noverride:agent-safe\nrisk:low'
 if [ "$names" = "$expected" ]; then
     ok "only durable agent-writable non-arming live labels survive"
 else
@@ -339,20 +391,109 @@ else
     bad "per-value semantic overrides take precedence"
 fi
 
-if jq -e '
-    .families[] | select(.family == "suggest-model") | .labels[0] |
-    .name == "suggest:gpt:sol" and .requires == ["suggest:gpt"]
-' <<<"$output" >/dev/null; then
-    ok "model suggestions require their live family suggestion"
-else
-    bad "model suggestions require their live family suggestion"
-fi
-
-if ! grep -qE 'area:missing|suggest:gpt:ghost|suggest:claude:opus|claim:|phase:|gated:|foreman:' \
+if ! grep -qE 'area:missing|suggest:|claim:|phase:|gated:|foreman:|priority:|effort:|tier:' \
     <<<"$names"; then
     ok "missing, unknown, lifecycle, ownership, gated, and arming labels are excluded"
 else
     bad "missing, unknown, lifecycle, ownership, gated, and arming labels are excluded"
+fi
+
+# Both registry shapes must work while the claim contract remains required.
+without_suggest="$tmproot/without-suggest"
+mkdir -p "$without_suggest"
+write_agent_registry "$without_suggest"
+write_registry "$without_suggest" api
+write_labels "$without_suggest" api
+jq 'del(.labels.suggest)' "$without_suggest/agent-registry.json" >"$without_suggest/updated.json"
+mv "$without_suggest/updated.json" "$without_suggest/agent-registry.json"
+# Match the target's post-removal schema; do not use a legacy schema to certify it.
+jq '.properties.labels.required |= map(select(. != "suggest")) |
+    del(.properties.labels.properties.suggest)' "$without_suggest/agent-registry.schema.json" >"$without_suggest/schema.json"
+mv "$without_suggest/schema.json" "$without_suggest/agent-registry.schema.json"
+if no_suggest_output="$(discover "$without_suggest")" &&
+    [ "$(jq -c .families <<<"$no_suggest_output")" = "$(jq -c .families <<<"$output")" ]; then
+    ok "registries with and without labels.suggest yield identical planning vocabulary"
+else
+    bad "claim-only agent registry is accepted"
+fi
+jq 'del(.labels.claim)' "$without_suggest/agent-registry.json" >"$without_suggest/updated.json"
+mv "$without_suggest/updated.json" "$without_suggest/agent-registry.json"
+jq '.properties.labels.required = []' "$without_suggest/agent-registry.schema.json" >"$without_suggest/schema.json"
+mv "$without_suggest/schema.json" "$without_suggest/agent-registry.schema.json"
+if discover "$without_suggest" >"$without_suggest/output" 2>"$without_suggest/error"; then
+    bad "claim namespace is still required"
+elif grep -q 'labels.claim has an unsupported namespace contract' "$without_suggest/error"; then
+    ok "claim namespace is still required by semantic validation"
+else
+    bad "missing claim must fail with a semantic diagnostic"
+fi
+
+organization="$tmproot/organization"
+mkdir -p "$organization"
+write_agent_registry "$organization"
+write_registry "$organization" api
+write_labels "$organization" api
+touch "$organization/organization"
+cat >"$organization/fields.json" <<'JSON'
+{"data":{"repository":{"issueFields":{"pageInfo":{"hasNextPage":false},"nodes":[
+  {"id":"I","name":"Impact","options":[{"id":"IH","name":"high"}]},
+  {"id":"R","name":"Risk","options":[{"id":"RL","name":"low"}]},
+  {"id":"C","name":"Complexity","options":[{"id":"CM","name":"m"}]},
+  {"id":"P","name":"Priority","options":[{"id":"PH","name":"high"}]},
+  {"id":"E","name":"Effort","options":[{"id":"EH","name":"high"}]},
+  {"id":"T","name":"Tier","options":[{"id":"TF","name":"frontier"}]}
+]}}}}
+JSON
+if org_output="$(discover "$organization")" && jq -e '
+    .owner_type == "Organization" and
+    (.issue_fields | keys) == ["complexity", "impact", "risk"] and
+    .issue_fields.impact.values == [{id:"IH",name:"high"}] and
+    .issue_fields.risk.values == [{id:"RL",name:"low"}] and
+    .issue_fields.complexity.values == [{id:"CM",name:"m"}] and
+    ([.families[].labels[].name] | sort) == ["area:api", "custom:live", "override:agent-safe"]
+' <<<"$org_output" >/dev/null; then
+    ok "organization discovery emits rating fields and excludes personal ratings and human fields"
+else
+    bad "organization discovery uses issue fields for ratings: $org_output"
+fi
+# Prefix-less values must obey the same owner-specific rating storage.
+jq '(.families[] | select(.family == "risk")) |=
+    (.prefix = null | .values[0].value = "risk:low")' "$organization/label-registry.json" >"$organization/updated.json"
+mv "$organization/updated.json" "$organization/label-registry.json"
+if org_rendered="$(discover "$organization")" && jq -e '
+    (any(.families[].labels[]; .name == "risk:low") | not)
+' <<<"$org_rendered" >/dev/null; then
+    ok "prefix-less rating declarations cannot bypass organization field storage"
+else
+    bad "organization field storage also governs rendered concrete names"
+fi
+# Absence of a manifest must not turn org rating labels into candidates.
+mv "$organization/label-registry.json" "$organization/saved-registry.json"
+if org_fallback="$(discover "$organization")" && jq -e '
+    .mode == "live-label-fallback" and (.issue_fields | keys | length) == 3 and
+    (any(.labels[]; .name | test("^(impact|risk|complexity|priority|effort|tier):")) | not)
+' <<<"$org_fallback" >/dev/null; then
+    ok "organization live fallback retains fields and excludes inert rating labels"
+else
+    bad "organization live fallback keeps owner-appropriate rating storage"
+fi
+mv "$organization/saved-registry.json" "$organization/label-registry.json"
+jq '.data.repository.issueFields.pageInfo.hasNextPage = true' "$organization/fields.json" >"$organization/updated.json"
+mv "$organization/updated.json" "$organization/fields.json"
+if discover "$organization" >"$organization/output" 2>"$organization/error"; then
+    bad "truncated organization field vocabulary is not certified"
+elif [ ! -s "$organization/output" ] && grep -q 'unavailable or truncated' "$organization/error"; then
+    ok "truncated organization field vocabulary fails closed"
+else
+    bad "truncated field discovery fails with a diagnostic"
+fi
+touch "$organization/fields-denied"
+if discover "$organization" >"$organization/output" 2>"$organization/error"; then
+    bad "unavailable organization fields cannot produce a verified vocabulary"
+elif [ ! -s "$organization/output" ] && grep -q 'reading issue fields' "$organization/error"; then
+    ok "unavailable organization fields fail closed"
+else
+    bad "unavailable field discovery fails with a diagnostic"
 fi
 
 second="$tmproot/second"
@@ -407,6 +548,8 @@ cat >"$fallback/labels.json" <<'JSON'
   {"name":"feature","description":"Feature"},
   {"name":"area:api","description":"Area"},
   {"name":"priority:high","description":"Priority"},
+  {"name":"Effort:high","description":"Human effort"},
+  {"name":"tier:pinned","description":"Human pin"},
   {"name":"security","description":"Security"},
   {"name":"claim:gpt","description":"Claim"},
   {"name":"Claim:claude","description":"Case-varied claim"},
@@ -422,7 +565,7 @@ fallback_output="$(discover "$fallback")"
 if jq -e '
     .mode == "live-label-fallback" and .verified_semantics == false and
     .work_type_selection == "human-confirmation-required" and
-    ([.labels[].name] | sort) == ["area:api", "feature", "priority:high", "security"]
+    ([.labels[].name] | sort) == ["area:api", "feature", "security"]
 ' <<<"$fallback_output" >/dev/null; then
     ok "missing registry leaves bounded live labels semantically unclassified"
 else
@@ -590,49 +733,6 @@ else
     bad "same-family case ambiguity fails closed with a diagnostic"
 fi
 
-suggest_concrete="$tmproot/suggest-concrete"
-mkdir -p "$suggest_concrete"
-write_agent_registry "$suggest_concrete"
-write_registry "$suggest_concrete" api
-write_labels "$suggest_concrete" api
-jq '.families += [{
-    "family":"unsafe-suggest-model", "prefix":null, "purpose":"Reserved unsafe model label",
-    "axis":"workflow", "source":"inline", "writers":["agent"], "readers":"agents",
-    "lifecycle":"transient", "exclusive":false, "provision":false,
-    "values":[{"value":"suggest:gpt:sol"}]
-}]' "$suggest_concrete/label-registry.json" >"$suggest_concrete/registry.json"
-mv "$suggest_concrete/registry.json" "$suggest_concrete/label-registry.json"
-if suggest_output="$(discover "$suggest_concrete")" && jq -e '
-    any(.families[].labels[]; .name == "suggest:gpt") and
-    (any(.families[].labels[]; .name == "suggest:gpt:sol") | not)
-' <<<"$suggest_output" >/dev/null; then
-    ok "suggest-model cannot reclassify an unsafe concrete declaration"
-else
-    bad "suggest-model honors concrete-label reservations"
-fi
-
-safe_suggest_concrete="$tmproot/safe-suggest-concrete"
-mkdir -p "$safe_suggest_concrete"
-write_agent_registry "$safe_suggest_concrete"
-write_registry "$safe_suggest_concrete" api
-write_labels "$safe_suggest_concrete" api
-jq '.families += [{
-    "family":"safe-suggest-model", "prefix":null, "purpose":"Unpaired model label",
-    "axis":"model", "source":"inline", "writers":["agent"], "readers":"agents",
-    "lifecycle":"durable", "exclusive":false, "provision":false,
-    "values":[{"value":"suggest:gpt:sol"}]
-}]' "$safe_suggest_concrete/label-registry.json" >"$safe_suggest_concrete/registry.json"
-mv "$safe_suggest_concrete/registry.json" "$safe_suggest_concrete/label-registry.json"
-if discover "$safe_suggest_concrete" >"$safe_suggest_concrete/output" 2>"$safe_suggest_concrete/error"; then
-    bad "planning-safe model-shaped suggestions cannot bypass family pairing"
-elif [ ! -s "$safe_suggest_concrete/output" ] &&
-    grep -q 'model-shaped suggestion suggest:gpt:sol outside the paired suggest-model path' \
-        "$safe_suggest_concrete/error"; then
-    ok "planning-safe model-shaped suggestions cannot bypass family pairing"
-else
-    bad "unpaired model-shaped suggestions fail closed with a diagnostic"
-fi
-
 # A prefix-less family's rendered name is just its bare value — so a value
 # that happens to spell out an execution-control label (no family.prefix
 # for safe()'s own check to see) must be caught on the RENDERED name, same
@@ -682,7 +782,7 @@ mkdir -p "$scope_order"
 write_agent_registry "$scope_order"
 write_registry "$scope_order" api
 write_labels "$scope_order" api
-jq '.labels.suggest.scopes = ["model", "family"] | .labels.claim.scopes = ["model", "family"]' \
+jq '.labels.claim.scopes = ["model", "family"]' \
     "$scope_order/agent-registry.json" >"$scope_order/agent-registry-updated.json"
 mv "$scope_order/agent-registry-updated.json" "$scope_order/agent-registry.json"
 if scope_output="$(discover "$scope_order")" && jq -e '.verified_semantics == true' \
@@ -697,7 +797,7 @@ mkdir -p "$missing_agent_placeholder"
 write_agent_registry "$missing_agent_placeholder"
 write_registry "$missing_agent_placeholder" api
 write_labels "$missing_agent_placeholder" api
-jq 'del(.families[] | select(.family == "suggest") | .placeholder)' \
+jq 'del(.families[] | select(.family == "claim") | .placeholder)' \
     "$missing_agent_placeholder/label-registry.json" >"$missing_agent_placeholder/registry.json"
 mv "$missing_agent_placeholder/registry.json" "$missing_agent_placeholder/label-registry.json"
 if discover "$missing_agent_placeholder" >"$missing_agent_placeholder/output" \

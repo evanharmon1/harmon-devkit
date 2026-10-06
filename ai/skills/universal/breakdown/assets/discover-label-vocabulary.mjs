@@ -134,9 +134,7 @@ const axes = new Set([
   'meta'
 ])
 const sources = new Set(['inline', 'devflow', 'agent-registry', 'tool-owned'])
-const registrySets = new Set(['suggest', 'claim', 'foreman-adapters', 'tier-roles'])
 const registrySetPrefixes = new Map([
-  ['suggest', 'suggest'],
   ['claim', 'claim'],
   ['foreman-adapters', 'foreman'],
   ['tier-roles', null]
@@ -270,13 +268,17 @@ function validateRegistry(registry) {
     }
     if (!Array.isArray(family.values)) die(`${where}.values must be an array`)
     if (family.source === 'agent-registry') {
-      if (!registrySets.has(family.registry_set)) {
+      // Model namespaces are opaque, schema-validated registry data. They
+      // are never planning candidates; only claim is expanded below.
+      if (!registrySetPrefixes.has(family.registry_set) &&
+          !(family.axis === 'model' && family.registry_set === family.prefix)) {
         die(`${where} needs a supported registry_set`)
       }
       if (!family.placeholder) {
         die(`${where} agent-registry families need a placeholder`)
       }
-      if (registrySetPrefixes.get(family.registry_set) !== family.prefix) {
+      if (registrySetPrefixes.has(family.registry_set) &&
+          registrySetPrefixes.get(family.registry_set) !== family.prefix) {
         die(`${where}.registry_set ${family.registry_set} does not match prefix ${family.prefix}`)
       }
       if (family.values.length !== 0) {
@@ -374,7 +376,7 @@ function validateAgentRegistry(registry) {
   if (registry.schema_version !== 2 && registry.schema_version !== 3) {
     die(`agent-registry.json schema_version must be 2 or 3 (got ${registry.schema_version})`)
   }
-  for (const namespace of ['suggest', 'claim']) {
+  for (const namespace of ['claim']) {
     const contract = registry.labels?.[namespace]
     const scopes = new Set(contract?.scopes ?? [])
     if (
@@ -421,13 +423,10 @@ function validateAgentRegistry(registry) {
 
 // Execution-control families, whatever a manifest claims about their
 // writers. track-work's check-issue-metadata.sh rejects these at
-// authoring time unconditionally (FORBIDDEN_RE, plus an axis backstop for
-// strategy/foreman/model families under any other prefix) — planning
-// vocabulary that the next gate always refuses is not planning-safe. Prefix,
-// not axis: axis "model" is shared with the legitimately plannable
-// suggest-model/claim-model refinement families, so axis alone would
-// over-exclude.
-const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method'])
+// authoring time unconditionally — discovery must not offer values that
+// the create gate refuses, including human Priority/Effort and derived Tier.
+const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method', 'priority', 'effort'])
+const ratingPrefixes = new Set(['impact', 'risk', 'complexity'])
 
 function safe(family, value = {}) {
   const writers = value.writers ?? family.writers
@@ -441,6 +440,8 @@ function safe(family, value = {}) {
     !retired &&
     !arming &&
     !gated &&
+    !['model', 'strategy', 'foreman'].includes(family.axis) &&
+    !(ownerType === 'Organization' && ratingPrefixes.has(family.prefix)) &&
     !executionControlPrefixes.has(family.prefix)
   )
 }
@@ -473,6 +474,45 @@ if (!repositoryMetadata.default_branch || typeof repositoryMetadata.default_bran
   die(`repository metadata for ${repo} has no default_branch`)
 }
 const defaultBranch = repositoryMetadata.default_branch
+const ownerType = repositoryMetadata.owner?.type
+if (!['User', 'Organization'].includes(ownerType)) {
+  die(`repository metadata for ${repo} has no supported owner type`)
+}
+
+// Read the target's issue fields, not its Projects V2 fields. This is the
+// same preview surface the shared triage helper uses when applying ratings.
+const issueFields = {}
+if (ownerType === 'Organization') {
+  const response = parseJson(gh([
+    'api', '--hostname', host, 'graphql',
+    '-H', 'GraphQL-Features: issue_fields',
+    '-f', `query=query($o: String!, $r: String!) {
+      repository(owner: $o, name: $r) {
+        issueFields(first: 100) {
+          pageInfo { hasNextPage }
+          nodes { ... on IssueFieldSingleSelect { id name options { id name } } }
+        }
+      }
+    }`, '-f', `o=${owner}`, '-f', `r=${repository}`
+  ], `reading issue fields for ${repo}`), 'organization issue fields')
+  const fields = response?.data?.repository?.issueFields
+  if (response?.errors?.length || fields?.pageInfo?.hasNextPage !== false ||
+      !Array.isArray(fields.nodes)) {
+    die('organization issue fields are unavailable or truncated')
+  }
+  for (const axis of ratingPrefixes) {
+    const name = axis[0].toUpperCase() + axis.slice(1)
+    const matches = fields.nodes.filter((field) => field?.name === name)
+    if (matches.length > 1) die(`organization issue field ${name} is ambiguous`)
+    if (matches.length === 0) continue
+    const field = matches[0]
+    if (typeof field.id !== 'string' || !Array.isArray(field.options) ||
+        field.options.some((option) => typeof option?.id !== 'string' || typeof option?.name !== 'string')) {
+      die(`organization issue field ${name} has an unexpected shape`)
+    }
+    issueFields[axis] = { id: field.id, name, values: field.options }
+  }
+}
 
 let branchMetadata
 let defaultBranchCommit = null
@@ -580,7 +620,8 @@ if (!defaultPaths.has('label-registry.json')) {
   const labels = liveLabels
     .filter((label) => {
       const normalized = normalizeLabelName(label.name)
-      return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix))
+      return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix)) &&
+        !(ownerType === 'Organization' && ratingPrefixes.has(normalized.split(':')[0]))
     })
     .sort((left, right) => left.name.localeCompare(right.name))
   process.stdout.write(
@@ -588,6 +629,8 @@ if (!defaultPaths.has('label-registry.json')) {
       {
         mode: 'live-label-fallback',
         repository: repo,
+        owner_type: ownerType,
+        issue_fields: issueFields,
         default_branch: defaultBranch,
         default_branch_commit: defaultBranchCommit,
         verified_semantics: false,
@@ -665,24 +708,6 @@ const reservedConcretePrefixes = [
   ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
 ]
 
-function isModelSuggestion(name) {
-  const [prefix, family, model, ...rest] = name.split(':')
-  return (
-    rest.length === 0 &&
-    prefix === 'suggest' &&
-    slugPattern.test(family ?? '') &&
-    slugPattern.test(model ?? '')
-  )
-}
-
-function isCanonicalModelPair(openFamily, candidateFamily) {
-  return (
-    (openFamily.family === 'suggest-model' || openFamily.family === 'claim-model') &&
-    candidateFamily?.source === 'agent-registry' &&
-    candidateFamily.registry_set === openFamily.family.replace('-model', '')
-  )
-}
-
 function reserveConcrete(family, name) {
   const normalized = normalizeLabelName(name)
   const prior = declaredOwners.get(normalized)
@@ -693,14 +718,11 @@ function reserveConcrete(family, name) {
   knownConcrete.add(normalized)
 }
 
-function addCandidate(family, name, value = {}, extra = {}) {
+function addCandidate(family, name, value = {}) {
   const normalized = normalizeLabelName(name)
-  if (family.prefix === null && isModelSuggestion(normalized)) {
-    die(
-      `planning-safe family ${family.family} declares model-shaped suggestion ${name} ` +
-      'outside the paired suggest-model path'
-    )
-  }
+  // Check rendered names too: a prefix-less family can enumerate a rating
+  // label, but organization ratings are still stored only as issue fields.
+  if (ownerType === 'Organization' && ratingPrefixes.has(normalized.split(':')[0])) return
   if (reservedConcretePrefixes.some((prefix) => normalized.startsWith(prefix))) {
     die(`planning-safe family ${family.family} declares reserved label ${name}`)
   }
@@ -721,8 +743,7 @@ function addCandidate(family, name, value = {}, extra = {}) {
     lifecycle: value.lifecycle ?? family.lifecycle,
     arming: family.arming === true || value.arming === true,
     provision: family.provision === true && value.provision !== false,
-    retired: family.retired === true || value.retired === true,
-    ...extra
+    retired: family.retired === true || value.retired === true
   })
 }
 
@@ -735,7 +756,7 @@ for (const family of registry.families) {
     }
   } else if (family.source === 'agent-registry') {
     let names = []
-    if (family.registry_set === 'suggest' || family.registry_set === 'claim') {
+    if (family.registry_set === 'claim') {
       names = [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
     } else if (family.registry_set === 'foreman-adapters') {
       names = [...agentVocabulary.adapters.entries()]
@@ -750,12 +771,14 @@ for (const family of registry.families) {
 }
 
 for (const family of registry.families.filter((candidate) => candidate.open_values === true)) {
-  if (family.prefix === null) continue
+  // Excluded model families may share a namespace; discovery no longer
+  // interprets their family/model refinement contracts. Planning families
+  // below still cannot overlap an excluded namespace.
+  if (family.prefix === null || family.axis === 'model') continue
   const conflictingFamily = registry.families.find(
     (candidate) =>
       candidate.family !== family.family &&
-      candidate.prefix === family.prefix &&
-      !isCanonicalModelPair(family, candidate)
+      candidate.prefix === family.prefix
   )
   if (conflictingFamily) {
     die(
@@ -764,11 +787,9 @@ for (const family of registry.families.filter((candidate) => candidate.open_valu
     )
   }
   const conflictingConcrete = [...candidateOwners].find(([name, owner]) => {
-    const ownerFamily = registry.families.find((candidate) => candidate.family === owner)
     return (
       owner !== family.family &&
-      name.startsWith(`${family.prefix}:`) &&
-      !isCanonicalModelPair(family, ownerFamily)
+      name.startsWith(`${family.prefix}:`)
     )
   })
   if (conflictingConcrete) {
@@ -786,30 +807,6 @@ for (const family of registry.families) {
     die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
   }
 
-  if (family.family === 'suggest-model') {
-    const baseFamily = registry.families.find(
-      (candidate) =>
-        candidate.source === 'agent-registry' &&
-        candidate.registry_set === 'suggest' &&
-        candidate.prefix === family.prefix &&
-        safe(candidate)
-    )
-    if (!baseFamily) die('suggest-model has no planning-safe suggest family to pair with')
-    for (const [familySlug, details] of agentVocabulary.families) {
-      const base = `${family.prefix}:${familySlug}`
-      const liveBase = live.get(normalizeLabelName(base))
-      if (!liveBase) continue
-      for (const model of details.models) {
-        const name = `${base}:${model}`
-        const normalized = normalizeLabelName(name)
-        if (!knownConcrete.has(normalized) && live.has(normalized)) {
-          addCandidate(family, name, {}, { requires: [liveBase.name] })
-        }
-      }
-    }
-    continue
-  }
-
   for (const [normalized, label] of live) {
     if (!normalized.startsWith(`${family.prefix}:`) || knownConcrete.has(normalized)) continue
     addCandidate(family, label.name)
@@ -825,6 +822,8 @@ process.stdout.write(
     {
       mode: 'registry',
       repository: repo,
+      owner_type: ownerType,
+      issue_fields: issueFields,
       default_branch: defaultBranch,
       default_branch_commit: defaultBranchCommit,
       verified_semantics: true,
