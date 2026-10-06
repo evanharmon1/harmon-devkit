@@ -97,7 +97,9 @@ recommending a `/triage` run.
 Read-only. Emits every open issue (with `age_days`, `days_since_update`,
 `bot_owned`, conformance block, and title health already computed), the milestone list, and
 whether the project board is readable (`board_access`) — note it rather than
-guessing when it is not.
+guessing when it is not. Every active classification axis requires one
+recognized label, including Layer; an explicit value such as `layer:none`
+counts as decided. An absent axis label is reported as `axis-missing:<axis>`.
 
 ### Pre-audit triage pass
 
