@@ -292,8 +292,9 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
 - labels and fields per issue, from §7's vocabulary read;
 - **Impact, Risk and Complexity per chunk**, each with its proposed value and
   a one-line reason grounded in triage's classification rubric. Use the
-  personal target's verified rating-label families or the organization's
-  `issue_fields` vocabulary; keep the ratings in canonical lowercase for
+  shared triage `classification-axes` reader's provisioned on-scale values
+  for either owner type (`classification` in discovery output); keep the
+  ratings in canonical lowercase for
   track-work's preflight and the shared helper. Missing vocabulary or an
   ambiguous rating is unresolved work to settle before approval. Include one
   area, layer and domain value each (or the axis's explicit `none` member),
@@ -481,16 +482,23 @@ verified planning vocabulary:
 - Model-routing and execution-policy families are excluded, along with human
   `priority:*`, `effort:*`, and all `tier:*` labels. Tier is derived by the
   shared helper after creation; it is never an agent proposal.
-- On personal targets, choose the three required ratings from the emitted
-  `impact`, `risk` and `complexity` families. On organization targets, these
-  labels are inert and excluded: use the emitted `issue_fields` instead.
+- Rating vocabulary comes from the sibling triage helper's read-only
+  `triage-apply.sh classification-axes --repo <owner/repo>` call for **both**
+  owner types, just as in track-work's preflight. The asset binds the helper
+  to the target host and emits its provisioned on-scale Impact/Risk/Complexity
+  under `classification`. The manifest remains the source for area/layer/domain.
+  Personal `impact`, `risk` and `complexity` families are emitted from those
+  helper values intersected with live labels, even when the manifest has no
+  rating families. Organization rating labels are inert and excluded: use
+  the helper's field vocabulary, also emitted under `issue_fields`. A missing
+  or failing helper blocks discovery; vendor triage alongside breakdown.
 
 Only an absent registry produces `mode: live-label-fallback`. Its labels are
 bounded to the live inventory and exclude the `claim:`, legacy `agent:`, and
 `foreman:` namespaces and human Priority/Effort and execution-policy prefixes,
 but their writer, lifecycle, and exclusivity semantics
-are explicitly unverified. Organization `issue_fields` still come from a
-separate verified field read. Missing rating vocabulary requires clarification
+are explicitly unverified. Ratings still come from the shared classification
+reader for both owner types; their vocabulary does not depend on a manifest. Missing rating vocabulary requires clarification
 before approval or writes. Use the fallback list conservatively: do not infer
 a family
 roster or apply anything that resembles ownership, execution, or transient

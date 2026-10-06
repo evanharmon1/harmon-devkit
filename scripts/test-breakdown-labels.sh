@@ -8,6 +8,40 @@ skill="$repo/ai/skills/universal/breakdown/SKILL.md"
 tmproot="$(mktemp -d)"
 trap 'rm -rf "$tmproot"' EXIT
 
+# Isolate the asset and its sibling helper; never replace the live triage skill.
+mkdir -p "$tmproot/skills/breakdown/assets" "$tmproot/skills/triage/assets"
+cp "$asset" "$tmproot/skills/breakdown/assets/discover-label-vocabulary.mjs"
+cp "$repo/ai/skills/universal/breakdown/assets/validate-json-schema.mjs" "$tmproot/skills/breakdown/assets/validate-json-schema.mjs"
+asset="$tmproot/skills/breakdown/assets/discover-label-vocabulary.mjs"
+helper="$tmproot/skills/triage/assets/triage-apply.sh"
+cat >"$helper" <<'FAKE_CLASSIFICATION'
+#!/usr/bin/env bash
+set -euo pipefail
+fixture="${BREAKDOWN_LABEL_FIXTURE:?}"
+[ "$*" = 'classification-axes --repo acme/project' ] || exit 2
+[ "${GH_HOST:-}" = github.com ] || exit 2
+if [ -f "$fixture/fields-denied" ]; then
+    echo 'could not read provisioned issue fields' >&2
+    exit 2
+fi
+if [ -f "$fixture/organization" ]; then
+    # The shared reader owns filtering; emulate its documented on-scale result.
+    jq -e '.data.repository.issueFields.pageInfo.hasNextPage == false'         "$fixture/fields.json" >/dev/null || exit 2
+    jq -c '.data.repository.issueFields.nodes as $fields |
+      {owner_type:"Organization",storage:"field",required:["impact","risk","complexity"],
+       axes: {impact:{field:"Impact",scale:["minimal","low","medium","high","massive"]},
+              risk:{field:"Risk",scale:["trivial","low","medium","high","critical"]},
+              complexity:{field:"Complexity",scale:["xs","s","m","l","xl"]}}}
+        | .axes |= with_entries(.value as $spec |
+            ([$fields[] | select(.name == $spec.field)] | first) as $f |
+            .value = {provisioned:($f != null), field:$spec.field,
+              values:[$spec.scale[] | . as $v | select(any($f.options[]; .name == $v))]})'         "$fixture/fields.json"
+else
+    printf '%s\n' '{"owner_type":"User","storage":"label","required":["impact","risk","complexity"],"axes":{"impact":{"provisioned":true,"values":["high"]},"risk":{"provisioned":true,"values":["low"]},"complexity":{"provisioned":true,"values":["m"]}}}'
+fi
+FAKE_CLASSIFICATION
+chmod +x "$helper"
+
 pass=0
 fail=0
 ok() {
@@ -30,16 +64,8 @@ fixture="${BREAKDOWN_LABEL_FIXTURE:?}"
 if [ "$1" = api ]; then
     joined="$*"
     if [[ "$joined" == *"graphql"* ]]; then
-        if [[ "$joined" != *"--hostname"* || "$joined" != *"GraphQL-Features: issue_fields"* ]]; then
-            echo "field discovery must bind the host and preview header" >&2
-            exit 1
-        fi
-        if [ -f "$fixture/fields-denied" ]; then
-            echo "issue fields unavailable" >&2
-            exit 1
-        fi
-        cat "$fixture/fields.json"
-        exit 0
+        echo 'ratings must come from the shared helper, never direct GraphQL' >&2
+        exit 1
     elif [[ "$joined" == *"/contents/label-registry.json"* ]]; then
         if [ ! -f "$fixture/label-registry.json" ]; then
             echo "gh: Not Found (HTTP 404)" >&2
@@ -398,6 +424,33 @@ else
     bad "missing, unknown, lifecycle, ownership, gated, and arming labels are excluded"
 fi
 
+without_ratings="$tmproot/without-ratings"
+mkdir -p "$without_ratings"
+write_agent_registry "$without_ratings"
+write_registry "$without_ratings" api
+write_labels "$without_ratings" api
+jq '.families |= map(select(.prefix != "impact" and .prefix != "risk" and .prefix != "complexity"))' "$without_ratings/label-registry.json" >"$without_ratings/updated.json"
+mv "$without_ratings/updated.json" "$without_ratings/label-registry.json"
+if helper_output="$(discover "$without_ratings")" && jq -e '
+    .classification.storage == "label" and
+    ([.families[] | select(.source == "classification-helper") | .labels[].name] |
+    sort) == ["complexity:m","impact:high","risk:low"]
+' <<<"$helper_output" >/dev/null; then
+    ok "personal registry without rating families discovers helper-provisioned ratings"
+else
+    bad "personal rating discovery does not require manifest rating families"
+fi
+mv "$helper" "$helper.saved"
+if discover "$first" >"$first/missing-helper-output" 2>"$first/missing-helper-error"; then
+    bad "missing shared classification helper fails closed"
+elif [ ! -s "$first/missing-helper-output" ] &&
+    grep -q 'vendor the triage skill alongside breakdown' "$first/missing-helper-error"; then
+    ok "missing shared classification helper fails closed with a vendoring diagnostic"
+else
+    bad "missing shared helper has an actionable diagnostic"
+fi
+mv "$helper.saved" "$helper"
+
 # Both registry shapes must work while the claim contract remains required.
 without_suggest="$tmproot/without-suggest"
 mkdir -p "$without_suggest"
@@ -436,7 +489,7 @@ write_labels "$organization" api
 touch "$organization/organization"
 cat >"$organization/fields.json" <<'JSON'
 {"data":{"repository":{"issueFields":{"pageInfo":{"hasNextPage":false},"nodes":[
-  {"id":"I","name":"Impact","options":[{"id":"IH","name":"high"}]},
+  {"id":"I","name":"Impact","options":[{"id":"IH","name":"high"},{"id":"IO","name":"off-scale"}]},
   {"id":"R","name":"Risk","options":[{"id":"RL","name":"low"}]},
   {"id":"C","name":"Complexity","options":[{"id":"CM","name":"m"}]},
   {"id":"P","name":"Priority","options":[{"id":"PH","name":"high"}]},
@@ -447,14 +500,19 @@ JSON
 if org_output="$(discover "$organization")" && jq -e '
     .owner_type == "Organization" and
     (.issue_fields | keys) == ["complexity", "impact", "risk"] and
-    .issue_fields.impact.values == [{id:"IH",name:"high"}] and
-    .issue_fields.risk.values == [{id:"RL",name:"low"}] and
-    .issue_fields.complexity.values == [{id:"CM",name:"m"}] and
+    .issue_fields.impact.values == ["high"] and
+    .issue_fields.risk.values == ["low"] and
+    .issue_fields.complexity.values == ["m"] and
     ([.families[].labels[].name] | sort) == ["area:api", "custom:live", "override:agent-safe"]
 ' <<<"$org_output" >/dev/null; then
     ok "organization discovery emits rating fields and excludes personal ratings and human fields"
 else
     bad "organization discovery uses issue fields for ratings: $org_output"
+fi
+if jq -e '(.classification.axes.impact.values | index("off-scale")) == null' <<<"$org_output" >/dev/null; then
+    ok "off-scale organization option is excluded by the shared reader"
+else
+    bad "off-scale organization option cannot become a rating proposal"
 fi
 # Prefix-less values must obey the same owner-specific rating storage.
 jq '(.families[] | select(.family == "risk")) |=
@@ -482,7 +540,7 @@ jq '.data.repository.issueFields.pageInfo.hasNextPage = true' "$organization/fie
 mv "$organization/updated.json" "$organization/fields.json"
 if discover "$organization" >"$organization/output" 2>"$organization/error"; then
     bad "truncated organization field vocabulary is not certified"
-elif [ ! -s "$organization/output" ] && grep -q 'unavailable or truncated' "$organization/error"; then
+elif [ ! -s "$organization/output" ] && grep -q 'could not read provisioned Impact, Risk and Complexity' "$organization/error"; then
     ok "truncated organization field vocabulary fails closed"
 else
     bad "truncated field discovery fails with a diagnostic"
@@ -490,7 +548,7 @@ fi
 touch "$organization/fields-denied"
 if discover "$organization" >"$organization/output" 2>"$organization/error"; then
     bad "unavailable organization fields cannot produce a verified vocabulary"
-elif [ ! -s "$organization/output" ] && grep -q 'reading issue fields' "$organization/error"; then
+elif [ ! -s "$organization/output" ] && grep -q 'could not read provisioned Impact, Risk and Complexity' "$organization/error"; then
     ok "unavailable organization fields fail closed"
 else
     bad "unavailable field discovery fails with a diagnostic"

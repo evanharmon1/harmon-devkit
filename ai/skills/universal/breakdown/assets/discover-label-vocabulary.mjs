@@ -5,6 +5,8 @@
 
 import { execFileSync } from 'node:child_process'
 import process from 'node:process'
+import { accessSync, constants } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { validateJsonSchema } from './validate-json-schema.mjs'
 
 const usage = `Usage: discover-label-vocabulary.mjs --repo [host/]owner/repo
@@ -441,7 +443,7 @@ function safe(family, value = {}) {
     !arming &&
     !gated &&
     !['model', 'strategy', 'foreman'].includes(family.axis) &&
-    !(ownerType === 'Organization' && ratingPrefixes.has(family.prefix)) &&
+    !ratingPrefixes.has(family.prefix) &&
     !executionControlPrefixes.has(family.prefix)
   )
 }
@@ -479,40 +481,44 @@ if (!['User', 'Organization'].includes(ownerType)) {
   die(`repository metadata for ${repo} has no supported owner type`)
 }
 
-// Read the target's issue fields, not its Projects V2 fields. This is the
-// same preview surface the shared triage helper uses when applying ratings.
-const issueFields = {}
-if (ownerType === 'Organization') {
-  const response = parseJson(gh([
-    'api', '--hostname', host, 'graphql',
-    '-H', 'GraphQL-Features: issue_fields',
-    '-f', `query=query($o: String!, $r: String!) {
-      repository(owner: $o, name: $r) {
-        issueFields(first: 100) {
-          pageInfo { hasNextPage }
-          nodes { ... on IssueFieldSingleSelect { id name options { id name } } }
-        }
-      }
-    }`, '-f', `o=${owner}`, '-f', `r=${repository}`
-  ], `reading issue fields for ${repo}`), 'organization issue fields')
-  const fields = response?.data?.repository?.issueFields
-  if (response?.errors?.length || fields?.pageInfo?.hasNextPage !== false ||
-      !Array.isArray(fields.nodes)) {
-    die('organization issue fields are unavailable or truncated')
-  }
-  for (const axis of ratingPrefixes) {
-    const name = axis[0].toUpperCase() + axis.slice(1)
-    const matches = fields.nodes.filter((field) => field?.name === name)
-    if (matches.length > 1) die(`organization issue field ${name} is ambiguous`)
-    if (matches.length === 0) continue
-    const field = matches[0]
-    if (typeof field.id !== 'string' || !Array.isArray(field.options) ||
-        field.options.some((option) => typeof option?.id !== 'string' || typeof option?.name !== 'string')) {
-      die(`organization issue field ${name} has an unexpected shape`)
-    }
-    issueFields[axis] = { id: field.id, name, values: field.options }
-  }
+// The shared reader owns rating storage and provisioned on-scale values,
+// including on targets whose label manifest predates classification ratings.
+const classificationHelper = fileURLToPath(new URL('../../triage/assets/triage-apply.sh', import.meta.url))
+try {
+  accessSync(classificationHelper, constants.X_OK)
+} catch {
+  die('shared classification reader is missing; vendor the triage skill alongside breakdown')
 }
+let classification
+try {
+  classification = parseJson(execFileSync(classificationHelper, [
+    'classification-axes', '--repo', `${owner}/${repository}`
+  ], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GH_HOST: host }
+  }), 'shared classification reader output')
+} catch (error) {
+  die(`could not read provisioned Impact, Risk and Complexity; check triage's classification-axes reader: ${String(error.stderr ?? error.message).trim()}`)
+}
+const storage = ownerType === 'Organization' ? 'field' : 'label'
+if (classification?.owner_type !== ownerType || classification?.storage !== storage ||
+    !Array.isArray(classification.required) ||
+    [...ratingPrefixes].some((axis) => {
+      const entry = classification.axes?.[axis]
+      return typeof entry?.provisioned !== 'boolean' || !Array.isArray(entry?.values) ||
+        entry.values.some((value) => typeof value !== 'string')
+    })) {
+  die('shared classification reader returned an invalid or mismatched catalogue; update the vendored triage skill')
+}
+// Priority and Tier may be in the shared read, but are not agent proposals.
+classification = {
+  owner_type: ownerType,
+  storage,
+  required: classification.required.filter((axis) => ratingPrefixes.has(axis)),
+  axes: Object.fromEntries([...ratingPrefixes].map((axis) => [axis, classification.axes[axis]]))
+}
+const issueFields = storage === 'field' ? classification.axes : {}
 
 let branchMetadata
 let defaultBranchCommit = null
@@ -605,6 +611,27 @@ for (const label of liveLabels) {
   live.set(normalized, label)
 }
 
+const ratingFamilies = storage === 'label' ? [...ratingPrefixes].map((axis) => ({
+  family: axis,
+  prefix: axis,
+  purpose: `Provisioned ${axis} ratings from triage's classification rubric`,
+  axis: 'classification',
+  source: 'classification-helper',
+  writers: ['agent'],
+  lifecycle: 'durable',
+  exclusive: true,
+  arming: false,
+  provision: true,
+  retired: false,
+  open_values: false,
+  labels: classification.axes[axis].values.flatMap((value) => {
+    const label = live.get(normalizeLabelName(`${axis}:${value}`))
+    return label ? [{ name: label.name, description: label.description ?? '',
+      writers: ['agent'], lifecycle: 'durable', arming: false,
+      provision: true, retired: false }] : []
+  })
+})).filter((family) => family.labels.length > 0) : []
+
 if (!defaultPaths.has('label-registry.json')) {
   // Same execution-control exclusion as the registry path's safe() (see its
   // definition for why: track-work's check-issue-metadata.sh rejects these
@@ -621,7 +648,7 @@ if (!defaultPaths.has('label-registry.json')) {
     .filter((label) => {
       const normalized = normalizeLabelName(label.name)
       return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix)) &&
-        !(ownerType === 'Organization' && ratingPrefixes.has(normalized.split(':')[0]))
+        !ratingPrefixes.has(normalized.split(':')[0])
     })
     .sort((left, right) => left.name.localeCompare(right.name))
   process.stdout.write(
@@ -631,6 +658,7 @@ if (!defaultPaths.has('label-registry.json')) {
         repository: repo,
         owner_type: ownerType,
         issue_fields: issueFields,
+        classification,
         default_branch: defaultBranch,
         default_branch_commit: defaultBranchCommit,
         verified_semantics: false,
@@ -638,6 +666,7 @@ if (!defaultPaths.has('label-registry.json')) {
         warning:
           'label-registry.json is absent; family, writer, lifecycle, and exclusivity semantics are unknown',
         excluded_prefixes: excludedPrefixes,
+        families: ratingFamilies,
         labels
       },
       null,
@@ -720,9 +749,9 @@ function reserveConcrete(family, name) {
 
 function addCandidate(family, name, value = {}) {
   const normalized = normalizeLabelName(name)
-  // Check rendered names too: a prefix-less family can enumerate a rating
-  // label, but organization ratings are still stored only as issue fields.
-  if (ownerType === 'Organization' && ratingPrefixes.has(normalized.split(':')[0])) return
+  // Check rendered names too: a prefix-less family cannot bypass the shared
+  // reader's rating vocabulary by enumerating arbitrary rating labels.
+  if (ratingPrefixes.has(normalized.split(':')[0])) return
   if (reservedConcretePrefixes.some((prefix) => normalized.startsWith(prefix))) {
     die(`planning-safe family ${family.family} declares reserved label ${name}`)
   }
@@ -824,11 +853,12 @@ process.stdout.write(
       repository: repo,
       owner_type: ownerType,
       issue_fields: issueFields,
+      classification,
       default_branch: defaultBranch,
       default_branch_commit: defaultBranchCommit,
       verified_semantics: true,
       work_type_selection: 'registry-semantics',
-      families: [...resultFamilies.values()]
+      families: [...resultFamilies.values(), ...ratingFamilies]
     },
     null,
     2
