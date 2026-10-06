@@ -105,7 +105,14 @@ counts as decided. An absent axis label is reported as `axis-missing:<axis>`.
 
 Before clustering and fanning out to subagents (Step 2), check whether the backlog requires a triage pass first:
 
-- **When to run**: Run a triage pass whenever `unclassified > 5` or `(unclassified / total_open) > 0.10` (where `unclassified` is the count of open issues carrying `missing-work-type` or `needs-triage` flags). Running a triage pass first ensures issues carry proper area/domain and work-type labels, which produces coherent domain clusters for Step 2.
+- **When to run**: Run a triage pass whenever `unclassified > 5` or
+  `(unclassified / total_open) > 0.10`. `unclassified` counts each open issue
+  once if its `conformance.flags` contains `missing-work-type`, any
+  `axis-missing:*`, `partially-classified`, or `missing-needs-triage`, or its
+  `labels` contains `needs-triage`. An issue matching several conditions
+  still counts once. Running a triage pass first ensures issues carry labels
+  for every active classification axis and a work type, which produces
+  coherent domain clusters for Step 2.
 - **Sharing `$SCRATCH`**: Both skills run in the same `$SCRATCH` workspace. Triage writes its scan to `$SCRATCH/triage-scan.json` and its report to `$SCRATCH/triage-report.md`. Both skills share the underlying scan projection (`ai/skills/universal/issue-title-support/assets/issue-conformance.jq`) and label vocabulary discovery (`ai/skills/universal/triage/assets/triage-apply.sh`).
 - **Reporting**: Groom's consolidation step records whether the pre-audit triage pass ran via `groom-verdicts.sh join ... --pre-audit-triage <ran|not run>`, and the generated report's `## Stats` summary block explicitly reports `- Pre-audit triage pass: <ran|not run>`.
 
