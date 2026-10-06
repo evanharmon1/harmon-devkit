@@ -907,6 +907,22 @@ echo "==> metadata: ratings use only the provisioned owner-appropriate storage"
 [ "$(run_metadata --title-only --title 'Reject unrelated rating flags' --impact medium)" = 2 ] ||
     fail "title-only still rejects metadata flags"
 
+echo "==> metadata: organization ratings must use canonical provisioned case"
+for impact_value in Medium medium; do
+    expected_rc=0
+    [ "$impact_value" != Medium ] || expected_rc=1
+    [ "$(run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
+        --owner-type organization --issue-type Task --title 'Use canonical ratings' \
+        --body-file "$valid_body" --agent-authored --label area:fixture \
+        --label layer:none --label domain:fixture --label ai-generated \
+        --impact "$impact_value" --risk low --complexity s)" = "$expected_rc" ] ||
+        fail "organization impact $impact_value returned the wrong status: $(cat "$tmp/metadata.out")"
+    if [ "$impact_value" = Medium ]; then
+        grep -Fq "use 'medium'" "$tmp/metadata.out" ||
+            fail "case refusal must name canonical medium: $(cat "$tmp/metadata.out")"
+    fi
+done
+
 echo "==> guidance: classification discovery delegates the storage catalogue"
 for target in testowner/testrepo testorg/testrepo; do
     catalogue="$("$guidance" --repo "$target" --repo-root "$metadata_repo" --classification-axes)" ||

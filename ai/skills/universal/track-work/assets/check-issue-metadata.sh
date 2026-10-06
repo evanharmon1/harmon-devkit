@@ -843,11 +843,20 @@ for classification_axis in impact risk complexity; do
         complexity) classification_value="$complexity" ;;
         esac
         if [ -n "$classification_value" ]; then
-            classification_value="$(printf '%s' "$classification_value" | tr '[:upper:]' '[:lower:]')"
-            jq -e --arg a "$classification_axis" --arg v "$classification_value" '
+            if ! jq -e --arg a "$classification_axis" --arg v "$classification_value" '
               .axes[$a].provisioned and (.axes[$a].values | index($v) != null)
-            ' <<<"$classification_json" >/dev/null ||
-                violation "--$classification_axis is not a provisioned organization field value"
+            ' <<<"$classification_json" >/dev/null; then
+                canonical_value="$(jq -r --arg a "$classification_axis" --arg v "$classification_value" '
+                  if .axes[$a].provisioned then
+                    [.axes[$a].values[] | select(ascii_downcase == ($v | ascii_downcase))][0] // empty
+                  else empty end
+                ' <<<"$classification_json")"
+                if [ -n "$canonical_value" ]; then
+                    violation "--$classification_axis '$classification_value' is not canonical; use '$canonical_value'"
+                else
+                    violation "--$classification_axis is not a provisioned organization field value"
+                fi
+            fi
         elif [ "$author_type" = agent ]; then
             violation "agent-authored drafts require --$classification_axis (organization issue field)"
         fi

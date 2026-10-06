@@ -878,11 +878,15 @@ Creation needs the user's go-ahead under the surrounding workflow. The
 commands run from the target checkout so its manifest and policy govern.
 Choose the path matching the draft's authorship:
 
-- **Agent-authored:** create with the verified title, body, work type,
-  area/layer/domain (including explicit `none`), provenance and concerns.
+- **Agent-authored:** create with the verified title, body, work type and
+  every label the preflight verified, including area/layer/domain (with
+  explicit `none`), provenance and concerns.
   Immediately apply all three verified ratings through triage's **same**
   helper; it writes organization fields or personal labels, derives the Tier
-  label, and reconciles `needs-triage`.
+  label, and reconciles `needs-triage`. Require the helper to exit 0. If it
+  fails after creation, add `needs-triage` to the created issue, then report
+  the blocker with that issue number. The preflight still refuses this marker
+  on an agent draft; marking a partly-created issue is the filing rule.
 - **Human-authored:** create with only the metadata the human supplied. Never
   invent missing classification values or ratings. Whoever files an issue that
   is not fully classified adds `needs-triage`, including when an agent files a
@@ -892,21 +896,31 @@ Choose the path matching the draft's authorship:
 
 Do not copy the helper's field mutations, Tier matrix, or marker logic.
 
-Agent-authored personal-account example (replace placeholders with the verified inputs):
+Agent-authored personal-account example (replace placeholders with the verified
+inputs; repeat the concern-label argument for every verified concern, or omit
+it when none were proposed):
 
 ```sh
 issue_url="$(gh issue create --repo <owner/repo> --title '<title>' \
   --body-file <draft-file> --label <work-type> --label <area:value> \
-  --label layer:none --label <domain:value> --label ai-generated)" || exit 1
+  --label layer:none --label <domain:value> --label ai-generated \
+  --label impact:<value> --label risk:<value> --label complexity:<value> \
+  --label <each-verified-concern-label>)" || exit 1
 issue_number="${issue_url##*/}"
-TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
+if ! TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
   --repo <owner/repo> --issue "$issue_number" \
-  --impact <value> --risk <value> --complexity <value> --execute
+  --impact <value> --risk <value> --complexity <value> --execute; then
+  gh issue edit "$issue_number" --repo <owner/repo> --add-label needs-triage ||
+    printf 'Could not mark issue #%s needs-triage\n' "$issue_number" >&2
+  printf 'Classification failed for issue #%s; report this blocker\n' "$issue_number" >&2
+  exit 1
+fi
 ```
 
 For an agent-authored organization draft, use the same sequence with
-`gh issue create --type '<Type>'` and no work-type label; pass the same three rating flags to the
-helper. Without `--execute` the helper only plans; `--execute` also needs the
+`gh issue create --type '<Type>'` and no work-type or personal rating labels;
+pass the same three rating flags to the helper. Without `--execute` the helper
+only plans; `--execute` also needs the
 workflow-authorized `TRIAGE_EXECUTE=1`. These are intentional write inputs,
 never permission to bypass a gate. Do not pass `--priority` or a `tier:*`
 label. Priority (AI) is optional and outside this required creation recipe.

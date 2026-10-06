@@ -248,12 +248,17 @@ re-reads the issue and verifies its observed labels.
 
 3. Run `check-issue-metadata.sh` with the final title, body, and labels.
 4. Follow the authorship path in SKILL.md §5's create-and-classify recipe.
-   Agent-authored drafts create with full verified classification, then
+   Agent-authored drafts create with full verified classification and every
+   label the preflight verified (including concerns), then
    immediately pass all three verified ratings to `triage-apply.sh label
    --repo <owner/repo> --issue <n> --impact <value> --risk <value>
    --complexity <value> --execute` with the workflow-authorized
-   `TRIAGE_EXECUTE=1`. Human-authored drafts create with only what the human
-   supplied; never invent missing values or ratings. Whoever files an issue
+   `TRIAGE_EXECUTE=1`. Require helper exit 0; if it fails after creation, add
+   `needs-triage` to the existing issue with `gh issue edit --repo <owner/repo>
+   <n> --add-label needs-triage`, then report the blocker with that issue
+   number. The preflight still refuses this marker on agent drafts; marking
+   partly-created issues is the filing rule. Human-authored drafts create with
+   only what the human supplied; never invent missing values or ratings. Whoever files an issue
    that is not fully classified adds `needs-triage`. Run the helper only for
    supplied proposals, omitting missing rating flags; skip it when none were
    supplied. It owns the owner-type writes, derived Tier and marker.
