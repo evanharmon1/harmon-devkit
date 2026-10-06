@@ -120,9 +120,17 @@ This renders harmon-init from the repo's own `.copier-answers.yml`, compares the
   known-false-`MISSING` list in [`mode-audit.md`](./mode-audit.md) §3 (drift
   class K) before "restoring" any of them (e.g. a repo using `.prettierrc.cjs`
   instead of the template's `prettier.config.cjs`).
-- **`EQUIV`** — a mature nested Terraform layout or established/renumbered ADR
-  log intentionally replaces a generated seed path. This is informational and
-  does not fail the comparison.
+- **`EQUIV`** — a mature nested Terraform layout or established ADR log
+  (numbered or date-named records) intentionally replaces a generated seed path.
+  This is informational and does not fail the helper's comparison. Separately
+  report each remaining `NNNN-` ADR as naming drift and recommend `git mv` to
+  `YYYY-MM-DD-<kebab-title>.md` using its own `Date:` line, updating links.
+  For missing or placeholder dates, follow the
+  [ADR date fallback](./standards-catalog.md#11-docs-folder-layout).
+  Structural equivalence does not make numbered naming conformant. The seed
+  is `<decisions_seed_date>-record-architecture-decisions.md`; migrate an older
+  numbered seed through the selected template using the recorded
+  `decisions_seed_date` answer.
 - **`OWNED`** — the **template itself** declares the path repo-owned, by listing
   it in `copier.yml`'s `_skip_if_exists`: `CHANGELOG.md`, `*.code-workspace`,
   `.github/CODEOWNERS`, `.devcontainer/related-repos.txt`, and
@@ -1341,21 +1349,22 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
     return 1
   }
   # The two ADR shapes diff-template.sh's `has_repo_equivalent` accepts, and only
-  # those: a RENUMBERED `*-record-architecture-decisions.md`, or a README-backed
-  # log holding at least one numbered ADR. "Any numbered ADR" is broader than the
+  # those: a numbered or date-named `*-record-architecture-decisions.md`, or an
+  # index.md/README.md-backed log holding at least one numbered or date-named ADR.
+  # "Any ADR" is broader than the
   # documented evidence — `0002-use-postgres.md` says the repo writes ADRs, not
   # that it re-recorded the decision this seed records or keeps an indexed log,
   # and accepting it filtered the seed away on the strength of an unrelated file.
   nonadoption_has_adr_log() {
-    NONADOPT_ADR_NUMBERED=0
-    for NONADOPT_ADR in docs/decisions/[0-9]*.md; do
+    NONADOPT_ADR_PRESENT=0
+    for NONADOPT_ADR in docs/decisions/[0-9][0-9][0-9][0-9]-*.md; do
       test -f "$NONADOPT_ADR" || continue
-      NONADOPT_ADR_NUMBERED=1
+      NONADOPT_ADR_PRESENT=1
       case "${NONADOPT_ADR##*/}" in
       *-record-architecture-decisions.md) return 0 ;;
       esac
     done
-    test "$NONADOPT_ADR_NUMBERED" -eq 1 || return 1
+    test "$NONADOPT_ADR_PRESENT" -eq 1 || return 1
     test -f docs/decisions/index.md || test -f docs/decisions/README.md
   }
   # Nested/split Terraform roots — a `*.tf` at least one directory BELOW
@@ -1463,7 +1472,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # says what the evidence was.
   nonadoption_known_false_note() {
     case "$1" in
-    docs/decisions/0001-record-architecture-decisions.md)
+    docs/decisions/[0-9]*-record-architecture-decisions.md)
       if nonadoption_has_adr_log; then
         nonadoption_add_note known-false-verified
       else
@@ -3601,12 +3610,11 @@ setup:github-labels` below seeds it on the first run, ordinary and additive
 like everything else in this section.
 
 ```bash
-task setup:github-project      # board + Status pipeline + the Size number field; on a
-                               # personal account also Priority/Product/Agent/Domain/Layer
+task setup:github-project      # board + Status pipeline; personal accounts also Product
 task setup:github-labels       # this repo's full label-registry.json-driven taxonomy
 
 # org-owned repos only (github_org != author_git_provider_username):
-task setup:github-issue-fields # org Product/Agent/Domain/Layer issue fields
+task setup:github-issue-fields # org declared issue fields, including Product
 task setup:github-issue-types  # org Bug/Feature/Task/Research — rendered for any org
                                # repo, independently of project_management
 ```
@@ -3625,9 +3633,10 @@ reset to the template's — reconcile those first if the repo has any.
 
 ### 6c. What the reruns still leave for you
 
-6b is **additive**. Both field scripts append whatever starter options an
-existing single-select lacks — `Status` and the custom `Domain`/`Layer`/`Agent`
-fields alike — and neither ever removes anything. That leaves four residues an
+6b is **additive**. Both field scripts append whatever starter options a
+declared single-select lacks, including `Status`, and neither ever removes
+anything. Domain/Layer values belong in `domain:`/`layer:` labels; agent routing
+and claims also use labels. Never re-provision retired fields. That leaves four residues an
 update can create, none of which any script closes:
 
 - **Options the scripts skipped and warned about.** The scripts warn-and-continue
@@ -3640,18 +3649,26 @@ update can create, none of which any script closes:
   **at GitHub's single-select option cap**, or an issue-fields `PATCH` **rejected
   by the public preview**. Read the run's WARNING lines; each names the field and
   the options it did not add.
-- **Repo-specific options.** The scripts ship only the starter *floor*
-  (`auth`/`billing`/`platform`). This product's real domains, from your ERD
-  entities, are still added by hand — org repos in the org's issue-field settings,
-  personal accounts in the Project UI.
+- **Repo-specific label vocabulary.** Add this product's real domains, from your
+  ERD entities, to the selected template's repo label vocabulary and re-run
+  `task setup:github-labels` in that repo. Do not add domain or layer field options.
 - **Retired labels.** `setup-github-labels.sh` never deletes, so a repo seeded
   before the layer family became `ui`/`logic`/`data`/`integration` ends up with
   the new four *alongside* orphaned `layer:frontend`, `layer:backend`, and
   `layer:infra`. Re-map those issues, then delete the three by hand.
-- **Retired field options.** Same additive story on the `Domain`/`Layer`/`Agent`
-  fields: an option the template dropped survives on the project (personal) or
-  the org issue field. Remove it only after re-mapping — deleting an option that
-  items are assigned to **clears those values**.
+- **Retired fields.** Migrate only fields the selected release no longer creates:
+  Domain/Layer from **v4.31.0** (harmon-init#875), Agent from **v4.23.0**
+  (harmon-init#662), and Priority/Size from **v5.0.1** (harmon-init#1451).
+  Retain fields still created by an older selected release. Old boards may carry
+  Domain/Layer/Agent fields, `Size` (both owner types), and `Priority` (personal-account project field only;
+  the organization's built-in Priority issue field stays). Setup no longer
+  creates or reconciles them at those boundaries. Nothing reads their leftover values
+  after retirement. Follow the selected template's `docs/project-management.md` **Fields → Migrating a board
+  that still has one**, including its **Priority / Size** migration
+  (harmon-init#1451). For Domain/Layer, provision replacement labels in every
+  affected repository and migrate values to those labels. Re-point every saved
+  view before an operator removes the fields. Org issue-field removal destroys
+  values across the org; checking only this board is insufficient.
 
 A renamed label family (harmon-init#1047's `method:*` → `strategy:*`) is
 **not** one of these residues — it is a precondition 6b assumes you already
@@ -3668,10 +3685,9 @@ warnings above describe:
 # labels — --limit matters, the default returns only 30
 gh label list --repo <owner>/<repo> --limit 1000
 
-# project fields — BOTH owner types. setup:github-project syncs Status and the
-# Size number field on an org board too, so an org run needs this snapshot as
-# much as a personal one (personal accounts additionally carry
-# Priority/Product/Agent/Domain/Layer here). Take <number> from the paginated
+# project fields — BOTH owner types. setup:github-project syncs Status; personal
+# accounts additionally carry Product. Releases >= v5.0.1 (harmon-init#1451)
+# create no Priority or Size project fields. Take <number> from the paginated
 # identity query in 6a — `gh project list` would miss a closed board or one past
 # its default 30.
 gh project field-list <number> --owner <owner> -L 100 --format json
@@ -3698,11 +3714,10 @@ list at the top of `scripts/setup-github-issue-types.sh` (the authority for the
 expected color and description) and fix it in the org's issue-type settings by
 hand. **[manual]**
 
-Expect the two halves to **agree where they overlap, not to be equal**. On an org
-the `Domain` issue field is the union across every repo, while a repo's `domain:`
-labels are only the subset it actually uses — so a label with no matching field
-option is drift, but a field option with no matching label in *this* repo is
-normal. Do not prune org options to match one repo.
+Validate the declared fields against the selected setup scripts, and the
+repo's labels against its selected vocabulary. `domain:` and `layer:` labels
+are the source of truth on both owner types; no corresponding field is expected
+and there is no parallel option list to preserve or synchronize.
 
 For the GitHub-side follow-ups that have no API at all — and so were never
 scripted in the first place — walk the "Project management" section of

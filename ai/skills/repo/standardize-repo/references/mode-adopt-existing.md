@@ -450,9 +450,20 @@ after the copier run:
    `docs/glossary.md`, `docs/conventions.md`, `docs/guides/` (incl.
    `onboarding.md`), `docs/architecture/` (incl. `tests.md`, `security.md`,
    `ci-cd.md`), `docs/product/` (incl. `roadmap.md`, `vision.md`),
-   `docs/decisions/` (ADRs, with the seed `0001-record-architecture-decisions.md`),
+   `docs/decisions/` (ADRs, with the template-managed seed
+   `<decisions_seed_date>-record-architecture-decisions.md`),
    `docs/runbooks/` (**plural**), and `docs/CHECKLIST.md`. Don't delete existing
    docs with real content — fold them into the standard locations.
+   ADR filenames follow `YYYY-MM-DD-<kebab-title>.md`. An established ADR log
+   with `index.md` or `README.md` and numbered or date-named records can be an
+   `EQUIV` replacement for the redundant seed; a numbered or date-named
+   `*-record-architecture-decisions.md` record can also establish equivalence.
+   That is structural evidence, not naming conformance: report every remaining
+   `NNNN-` record as drift and recommend `git mv` using its own `Date:` line,
+   updating links. For missing or placeholder dates, follow the
+   [ADR date fallback](./standards-catalog.md#11-docs-folder-layout).
+   A numbered template seed migrates through the selected
+   template using its recorded `decisions_seed_date` answer.
 
 3. **Leave YAML extensions alone.** Do not rename `.yaml`↔`.yml`. Each tool
    keeps its own conventional extension (`Taskfile.yml`, `.yamllint.yml`;

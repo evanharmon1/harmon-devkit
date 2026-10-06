@@ -1617,8 +1617,8 @@ has_repo_equivalent() {
             return 0
         fi
         ;;
-    docs/decisions/0001-record-architecture-decisions.md)
-        for adr in "$target"/docs/decisions/[0-9]*.md; do
+    docs/decisions/[0-9]*-record-architecture-decisions.md)
+        for adr in "$target"/docs/decisions/[0-9][0-9][0-9][0-9]-*.md; do
             [ -f "$adr" ] || continue
             repo_parent_diverges "$adr" && continue
             case "${adr##*/}" in
@@ -1637,7 +1637,7 @@ has_repo_equivalent() {
             adr_index="$target/docs/decisions/README.md"
         fi
         if [ -n "$adr_index" ]; then
-            for adr in "$target"/docs/decisions/[0-9]*.md; do
+            for adr in "$target"/docs/decisions/[0-9][0-9][0-9][0-9]-*.md; do
                 [ -f "$adr" ] || continue
                 repo_parent_diverges "$adr" && continue
                 equivalent_note="repo already has an active ADR log; the seed ADR is redundant"

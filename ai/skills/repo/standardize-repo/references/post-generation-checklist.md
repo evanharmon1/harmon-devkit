@@ -272,30 +272,25 @@ Both owner types — the org-only follow-ups are in the next section.
   > closed board holding the canonical title — run the identity preflight in
   > [`mode-update.md`](./mode-update.md) §6a **first**. On a genuinely fresh owner
   > with no boards, creation is the expected outcome and there is nothing to check.
-  > It seeds the full `Status` pipeline plus the **`Size`** number
-  > field — `Size` is the numeric estimate, because only project number fields sum
-  > in view group headers — and never deletes existing options or fields.
+  > It seeds the full `Status` pipeline and never deletes existing options or
+  > fields. Releases **≥ v5.0.1** (harmon-init #1451) no longer create `Priority`
+  > or `Size` project fields.
   > **On an org** it also records the project id in the `ORG_PROJECT_ID` org
   > variable that `project-automation.yml` and the `claude-*` workflows read
   > (falling back to the project's title), so it no longer has to be the org's
   > project number 1; the remaining metadata are org *issue* fields (next
-  > section), where Priority/Effort and the date fields are GitHub built-ins left
-  > at their defaults. **On a personal account** there are no issue fields at all
-  > (they are org-only, so no Priority/Effort/date built-ins either) — the script
-  > instead creates Priority/Product/Agent/Domain/Layer as project fields, and
+  > section); use the selected script for its current field list.
+  > **On a personal account** there are no issue fields at all
+  > (they are org-only) — the script creates the `Product` text project field, and
   > `Status` automation is a separate follow-up: the board exists, but issue/PR
   > status is not auto-synced. For the exact GraphQL (or to run it by hand), see
   > `scripts/setup-github-project.sh`.
 
-- [ ] **[manual — GitHub UI; personal accounts]** Customize the **`Domain`**
-      options in the Project UI — the script seeds `auth`/`billing`/`platform`
-      only, so add this product's real domains (from your ERD entities). `Layer`
-      (`ui`/`logic`/`data`/`integration`) is product-independent and normally needs
-      no edits. A re-run appends any missing *starter* option, but never your
-      repo-specific ones and never a **removal** — retiring an option is manual
-      too, and only after re-mapping (deleting an assigned option clears those
-      values). Org repos do this in the org's issue-field settings instead (next
-      section).
+- [ ] **[scriptable via gh; both owner types]** Customize the repo's `domain:`
+      labels for this product's real domains (from your ERD entities), using the
+      selected template's label vocabulary and setup task. `layer:` labels carry
+      the stack slice. These labels are the source of truth: do not create
+      duplicate Domain/Layer fields or an Agent field.
 
 - [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
       families (concerns / source / workflow / `layer:` / `domain:`). Labels are
@@ -318,14 +313,12 @@ Both owner types — the org-only follow-ups are in the next section.
       `docs/project-management.md`; keep the saved set small and slice the one
       board for everything else.
 
-  > **`Triage` cannot be built exactly as specified** — build the closest
-  > workable form and move on. Its spec groups by **`Type`**, which is an
-  > org-level issue field a personal account does not have, and filters on
-  > "missing a `Priority`" **or** `needs-triage`, a union across two qualifiers
-  > that Projects cannot express (distinct qualifiers AND). On a personal
-  > account, group by something you do have (`Priority`); either way pick one
-  > half of the filter and know the other half of the inbox is not in this view.
-  > Tracked upstream as evanharmon1/harmon-init#444.
+  > Create **Triage** from the selected release's `docs/project-management.md`
+  > **Views** section, the source of truth for its definition. For harmon-init
+  > **≥ v5.0.1**, use the template's current Views section; on a personal
+  > account, leave this view **ungrouped**, per that release. For an older
+  > selected release (for example **v4.45.0**), use that release's own Views
+  > section instead of applying the current definition to it.
 
 - [ ] **[manual — GitHub UI]** Turn on the project's built-in **"Auto-add to
       project"** workflow — this is what puts **every** issue and PR on the board.
@@ -364,11 +357,24 @@ Both owner types — the org-only follow-ups are in the next section.
   >   not a substitute either: it covers only form-created issues and hard-codes
   >   a project number.
 
+- [ ] **[manual — GitHub UI; older boards only; both owner types]** When reusing
+      an older board, follow the selected template's `docs/project-management.md`
+      **Fields → Migrating a board that still has one** before removing retired
+      fields the selected release no longer creates: Priority/Size from
+      **v5.0.1** (harmon-init#1451), Domain/Layer from **v4.31.0**
+      (harmon-init#875), and Agent from **v4.23.0** (harmon-init#662). Retain
+      fields still created by an older selected release. This covers `Size` on
+      both owner types, the `Priority` project field on a
+      personal account, `Domain`/`Layer` project fields, and
+      `Agent` where present. Preserve wanted values and re-point affected views
+      as that migration specifies; current setup is
+      additive and does not remove the old fields for you.
+
 ### Org repos only (`github_org != author_git_provider_username`)
 
-The first two items apply only when `project_management: github` — the
-issue-field task is rendered for `github` **and** an org owner, so an org repo
-answering `linear`/`none` has no such task and should skip them.
+The issue-field setup item applies only when `project_management: github` —
+that task is rendered for `github` **and** an org owner, so an org repo answering
+`linear`/`none` has no such task and should skip that setup item.
 
 - [ ] **[scriptable via gh; `project_management: github` only]** Add the org
       **issue fields**. Needs `gh` with the `admin:org` scope
@@ -378,7 +384,9 @@ answering `linear`/`none` has no such task and should skip them.
   task setup:github-issue-fields
   ```
 
-  > Adds the org's **Product**, **Agent**, **Domain**, and **Layer** issue fields
+  > Adds the org's declared issue fields, including **Product**; the selected
+  > script is the authority for the complete current list. It does not create
+  > the retired Domain/Layer/Agent fields
   > (public preview). Idempotent and additive: an existing field keeps every
   > option it has and gains any missing *starter* one, and nothing is ever
   > removed. It warns and exits 0 rather than failing when it cannot reconcile a
@@ -389,18 +397,21 @@ answering `linear`/`none` has no such task and should skip them.
   > or a `PATCH` the preview rejected — so read the WARNING lines rather than
   > trusting the exit code.
 
-- [ ] **[manual — GitHub UI; `project_management: github` only]** Customize the
-      **`Domain`** options. The script
-      seeds `auth`/`billing`/`platform` only — add this product's real domains
-      (from your ERD entities) in the org's issue-field settings. The field is
-      org-wide while labels are per-repo, so each repo carries the `domain:` labels
-      for the domains it actually uses: add those to
-      `scripts/setup-github-labels.sh` and re-run `task setup:github-labels` in
-      that repo. `Layer` (`ui`/`logic`/`data`/`integration`) is product-independent
-      and normally needs no edits. A re-run appends any missing *starter* option,
-      but never your repo-specific ones and never a **removal** — retiring an
-      option is manual too, and only after re-mapping (deleting an assigned option
-      clears those values).
+- [ ] **[manual — GitHub UI; retired issue fields present]** Detect retired
+      **Domain**, **Layer**, or **Agent** in the org's **Settings → Planning →
+      Issue fields**. Migrate only fields the selected release no longer creates:
+      Domain/Layer from **v4.31.0** (harmon-init#875) and Agent from **v4.23.0**
+      (harmon-init#662). Retain fields still created by an older selected release.
+      If any eligible field exists, migrate it regardless of board age or the
+      `project_management` answer. Follow the selected template's
+      `docs/project-management.md` **Fields → Migrating a board that still has
+      one** even when that document is not generated locally: provision
+      `domain:` and `layer:` labels in every affected repository, migrate
+      Domain/Layer values to those labels, and re-point every saved view before
+      deleting retired fields.
+      An org issue field's removal destroys values across every repository, so
+      verify the whole org rather than just this board. Current setup is additive
+      and will not perform this migration for you.
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does

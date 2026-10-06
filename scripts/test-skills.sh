@@ -2452,21 +2452,177 @@ expect_ok "standards catalog documents the web-only skills-sync default" \
 expect_ok "standards catalog documents Foreman as deliberate opt-in" \
     grep -qF 'current template source now deliberately' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog names the six planning axes" \
-    grep -qF 'six planning axes are' \
-    "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog lists every planning axis" \
-    grep -qF '**Status, Priority, Size, Product, Domain, and Layer**' \
+expect_ok "standards catalog makes domain and layer labels authoritative" \
+    grep -qF '**`domain:` and `layer:` labels are the source of' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog removes Agent from the target field set" \
-    grep -qF 'The retired `Agent` field is not part of the' \
+    grep -qF 'also absent from the target state' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog distinguishes pre-rollout task behavior" \
-    grep -qF 'Those rows describe executable behavior in pre-rollout harmon-init releases' \
+expect_ok "standards catalog distinguishes current setup from older pins" \
+    grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog leaves transition execution to harmon-init" \
-    grep -qF 'not re-specified' \
+    python3 -c 'import pathlib, sys
+sentence = ("The complete classification-field catalog is not re-specified here; consult\n"
+            "the target\u0027s generated `docs/project-management.md` and setup scripts.")
+sys.exit(sentence not in pathlib.Path(sys.argv[1]).read_text())' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+CATALOG_PM_FIELDS="$TMPROOT/catalog-pm-fields.md"
+awk '
+    /^### 1.13 / { pm = 1; next }
+    pm && /^### / { exit }
+    pm && /^- \*\*Fields\*\*/ { fields = 1 }
+    fields && /^- / && !/^- \*\*Fields\*\*/ { exit }
+    fields { print }
+' "$STANDARDIZE_REFS/standards-catalog.md" >"$CATALOG_PM_FIELDS"
+expect_ok "Status guard extracts the section 1.13 Fields subsection" \
+    grep -qF -- '- **Fields**' "$CATALOG_PM_FIELDS"
+expect_fail "standards catalog drops the obsolete Status hard-stop carve-out" \
+    grep -Eiq 'hard stop|known upstream gap' "$CATALOG_PM_FIELDS"
+expect_ok "standards catalog covers fixed Status handling and old pins" \
+    sh -c 'grep -qF "\`incompatible\` summary, and is skipped" "$1" &&
+        grep -qF "**≤ v4.7.2** still abort" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+for retired_fields_doc in standards-catalog post-generation-checklist mode-update; do
+    expect_fail "$retired_fields_doc does not prescribe the retired field list" \
+        grep -Eq 'Priority/Product/Agent/Domain/Layer|Product/Agent/Domain/Layer|\*\*Product \+|six planning axes' \
+        "$STANDARDIZE_REFS/$retired_fields_doc.md"
+done
+UPDATE_RETIRED_FIELDS="$TMPROOT/update-retired-fields.md"
+sed -n '/^- \*\*Retired fields\.\*\*/,/^$/p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$UPDATE_RETIRED_FIELDS"
+expect_ok "update lists retired Size and personal Priority with the template migration" \
+    sh -c 'grep -qF "\`Size\` (both owner types)" "$1" &&
+        grep -qF "\`Priority\` (personal-account project field only" "$1" &&
+        grep -qF "Nothing reads their leftover values" "$1" &&
+        grep -qF "\`docs/project-management.md\` **Fields → Migrating a board" "$1" &&
+        grep -qF "**Priority / Size** migration" "$1" &&
+        grep -qF "harmon-init#1451" "$1"' sh "$UPDATE_RETIRED_FIELDS"
+expect_ok "update field-list guidance pins the Priority/Size removal to v5.0.1" \
+    sh -c 'grep -qF "# accounts additionally carry Product. Releases >= v5.0.1 (harmon-init#1451)" "$1" &&
+        grep -qF "# create no Priority or Size project fields." "$1"' sh \
+    "$STANDARDIZE_REFS/mode-update.md"
+CHECKLIST_TRIAGE_NOTE="$TMPROOT/checklist-triage-note.md"
+sed -n '/^  > Create \*\*Triage\*\*/,/^$/p' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_TRIAGE_NOTE"
+expect_ok "checklist delegates Triage to Views and leaves personal accounts ungrouped" \
+    sh -c 'grep -qF "selected release'\''s \`docs/project-management.md\`" "$1" &&
+        grep -qF "**≥ v5.0.1**" "$1" &&
+        grep -qF "**Views** section, the source of truth" "$1" &&
+        grep -qF "leave this view **ungrouped**" "$1" &&
+        grep -qF "**v4.45.0**" "$1" &&
+        grep -qF "use that release'\''s own Views" "$1"' sh \
+    "$CHECKLIST_TRIAGE_NOTE"
+expect_fail "checklist no longer copies the obsolete Triage recipe" \
+    grep -Eq 'Triage.*cannot be built|group by something you do have|missing a `Priority`' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+CHECKLIST_ORG_MIGRATION="$TMPROOT/checklist-org-migration.md"
+sed -n '/retired issue fields present/,/^$/p' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_ORG_MIGRATION"
+expect_ok "org retired-field migration triggers on presence independent of board age or setup" \
+    sh -c 'grep -qF "**Domain**, **Layer**, or **Agent**" "$1" &&
+        grep -qF "**Settings → Planning →" "$1" &&
+        grep -qF "Issue fields**. Migrate only fields the selected release no longer creates:" "$1" &&
+        grep -qF "regardless of board age or the" "$1" &&
+        grep -qF "\`project_management\` answer" "$1" &&
+        grep -qF "even when that document is not generated locally" "$1"' sh \
+    "$CHECKLIST_ORG_MIGRATION"
+for migration_doc in "$UPDATE_RETIRED_FIELDS" "$CHECKLIST_ORG_MIGRATION"; do
+    expect_ok "$(basename "$migration_doc") gates retirement on the selected release" \
+        sh -c 'grep -qF "fields the selected release no longer creates:" "$1" &&
+            grep -qF "**v4.31.0** (harmon-init#875)" "$1" &&
+            grep -qF "**v4.23.0**" "$1" &&
+            grep -qF "harmon-init#662" "$1" &&
+            grep -qF "Retain fields still created by an older selected release" "$1"' sh \
+        "$migration_doc"
+done
+expect_ok "update pins Priority/Size migration to the selected v5.0.1 boundary" \
+    grep -qF "Priority/Size from **v5.0.1** (harmon-init#1451)" "$UPDATE_RETIRED_FIELDS"
+CHECKLIST_SHARED_PROJECT_SETUP="$TMPROOT/checklist-shared-project-setup.md"
+sed '/^### Org repos only/,$d' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_SHARED_PROJECT_SETUP"
+expect_ok "checklist gives both owners the older-board field migration before org-only steps" \
+    sh -c 'grep -qF "older boards only; both owner types" "$1" &&
+        grep -qF "**Fields → Migrating a board that still has one**" "$1" &&
+        grep -qF "This covers \`Size\` on" "$1" &&
+        grep -qF "both owner types, the \`Priority\` project field on a" "$1" &&
+        grep -qF "personal account, \`Domain\`/\`Layer\` project fields" "$1" &&
+        grep -qF "\`Agent\` where present" "$1"' sh \
+    "$CHECKLIST_SHARED_PROJECT_SETUP"
+CHECKLIST_PROJECT_MIGRATION="$TMPROOT/checklist-project-migration.md"
+sed -n '/older boards only; both owner types/,/^$/p' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_PROJECT_MIGRATION"
+expect_ok "shared project migration retains fields until their selected release retires them" \
+    sh -c 'grep -qF "fields the selected release no longer creates:" "$1" &&
+        grep -qF "**v5.0.1** (harmon-init#1451)" "$1" &&
+        grep -qF "**v4.31.0**" "$1" &&
+        grep -qF "harmon-init#875" "$1" &&
+        grep -qF "**v4.23.0** (harmon-init#662)" "$1" &&
+        grep -qF "fields still created by an older selected release" "$1"' sh \
+    "$CHECKLIST_PROJECT_MIGRATION"
+# Scope attribution to AI steering: another section mentioning the hook or a
+# grant must not mask a regression in the settings guidance.
+CATALOG_AI_STEERING="$TMPROOT/catalog-ai-steering.md"
+sed -n '/^### 1.10 AI steering$/,/^### 1.11 /p' \
+    "$STANDARDIZE_REFS/standards-catalog.md" >"$CATALOG_AI_STEERING"
+expect_ok "standards catalog describes grouped reads and exact literal grants" \
+    sh -c 'grep -qF "\`gh\` reads:" "$1" &&
+        grep -qF "\`git\` reads:" "$1" &&
+        grep -qF "Read-oriented tools:" "$1" &&
+        grep -qF "Bash(task:*)" "$1" &&
+        grep -qF "Bash(herdr agent start:*)" "$1" &&
+        grep -qF "Compare the target'\''s selected template revision" "$1" &&
+        grep -qF "**exact literals**" "$1" &&
+        grep -qF "Bash(gh auth status)" "$1" &&
+        grep -qF "Bash(actionlint)" "$1" &&
+        grep -qF "Bash(ps)" "$1" && grep -qF "Bash(tree)" "$1" &&
+        grep -qF "jq -n env" "$1" &&
+        grep -qF "git config --get" "$1"' sh \
+    "$CATALOG_AI_STEERING"
+expect_ok "catalog attributes git merge and git pull approval to the guard hook" \
+    sh -c 'grep -A3 -F "\`git merge\` and \`git pull\` are handled by" "$1" |
+        grep -F "\`git-merge-guard\` PreToolUse hook" >/dev/null' sh "$CATALOG_AI_STEERING"
+CATALOG_ASK_EXPECTED="$TMPROOT/catalog-ask-expected"
+CATALOG_ASK_ACTUAL="$TMPROOT/catalog-ask-actual"
+printf '%s\n' 'Bash(gh pr merge)' 'Bash(gh pr merge:*)' \
+    'Bash(git push origin main)' 'Bash(git push origin main:*)' \
+    'Bash(git push -f:*)' 'Bash(git push --force:*)' | LC_ALL=C sort \
+    >"$CATALOG_ASK_EXPECTED"
+sed -n '/permissions.ask/,/Codex gate controls/p' "$CATALOG_AI_STEERING" |
+    grep -oE 'Bash\([^)]*\)' | LC_ALL=C sort >"$CATALOG_ASK_ACTUAL"
+expect_ok "catalog lists exactly the six template merge/push ask literals" \
+    cmp "$CATALOG_ASK_EXPECTED" "$CATALOG_ASK_ACTUAL"
+for adr_doc in standards-catalog mode-audit mode-adopt-existing mode-update; do
+    expect_ok "$adr_doc documents date-named ADRs and Date-based migration" \
+        sh -c 'grep -qF "YYYY-MM-DD-<kebab-title>.md" "$1" &&
+            grep -qF "Date:" "$1" && grep -qF "NNNN-" "$1"' sh \
+        "$STANDARDIZE_REFS/$adr_doc.md"
+    expect_fail "$adr_doc has no hardcoded numbered seed name" \
+        grep -qF '0001-record-architecture-decisions.md' \
+        "$STANDARDIZE_REFS/$adr_doc.md"
+done
+expect_ok "catalog states one missing/placeholder ADR-date fallback with provenance" \
+    sh -c 'test "$(grep -cF "**ADR date fallback:**" "$1")" -eq 1 &&
+        grep -qF "\`Date:\` line is missing or not a real date" "$1" &&
+        grep -qF "\`Date: TODO\`" "$1" &&
+        grep -qF "git log --diff-filter=A --follow --format=%as -- <file> | tail -1" "$1" &&
+        grep -qF "Report that fallback and its provenance; never guess" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "ADR date fallback refuses shallow boundaries until history or manual dates exist" \
+    sh -c 'grep -qF "git rev-parse --is-shallow-repository" "$1" &&
+        grep -qF "If shallow, do not derive a date" "$1" &&
+        grep -qF "git fetch --unshallow" "$1" &&
+        grep -qF "report the record as needing a manual" "$1" &&
+        grep -qF "Never rename from a shallow boundary" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
+    expect_ok "$adr_rename_guide points at the canonical ADR-date fallback" \
+        grep -qF '[ADR date fallback](./standards-catalog.md#11-docs-folder-layout)' \
+        "$STANDARDIZE_REFS/$adr_rename_guide.md"
+    expect_fail "$adr_rename_guide does not duplicate the ADR-date fallback command" \
+        grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
+        "$STANDARDIZE_REFS/$adr_rename_guide.md"
+done
 expect_ok "standards catalog documents model-centric suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -6922,6 +7078,18 @@ else
     bad "diff-template reports missing seed ADR when index.md has no numbered ADRs (MISSING diagnostic missing)"
 fi
 
+# A numeric-looking note is not evidence of an ADR log: the prefix requires
+# exactly four digits followed by a hyphen (legacy NNNN or a date year).
+printf '%s\n' '# Notes' >"$DT_TARGET/docs/decisions/2-notes.md"
+if adr_short_prefix_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates an ADR index backed only by 2-notes.md (expected non-zero exit)"
+elif grep -qF 'MISSING  docs/decisions/0001-record-architecture-decisions.md' <<<"$adr_short_prefix_out"; then
+    ok "diff-template gates an ADR index backed only by 2-notes.md"
+else
+    bad "diff-template gates an ADR index backed only by 2-notes.md (MISSING diagnostic missing)"
+fi
+rm -f "$DT_TARGET/docs/decisions/2-notes.md"
+
 # Restore target baseline for subsequent tests
 rm -f "$DT_TARGET/docs/decisions/index.md"
 printf '%s\n' '# Record architecture decisions' \
@@ -7021,6 +7189,42 @@ dt_skip_decl_variant() {
     git_commit_all "$dsv_dest" "rewrite the _skip_if_exists declaration"
     git -C "$dsv_dest" tag -f v1.0.0 >/dev/null
 }
+
+# A date-named rendered seed must enter the same equivalence check as the legacy
+# seed. Use a log with only a date-named unrelated record and README.md: neither
+# a numbered filename nor a record-decisions suffix can accidentally satisfy it.
+DT_DATE_TEMPLATE="$TMPROOT/diff-template-date-seed-source"
+DT_DATE_TARGET="$TMPROOT/diff-template-date-log-target"
+cp -pR "$DT_TEMPLATE" "$DT_DATE_TEMPLATE"
+git -C "$DT_DATE_TEMPLATE" mv \
+    template/docs/decisions/0001-record-architecture-decisions.md \
+    template/docs/decisions/2026-09-30-record-architecture-decisions.md
+git_commit_all "$DT_DATE_TEMPLATE" "date-name the template seed"
+git -C "$DT_DATE_TEMPLATE" tag -f v1.0.0 >/dev/null
+cp -pR "$DT_TARGET" "$DT_DATE_TARGET"
+rm -f "$DT_DATE_TARGET/docs/decisions/0007-record-architecture-decisions.md"
+printf '%s\n' '# Use Postgres' 'Date: 2026-10-01' \
+    >"$DT_DATE_TARGET/docs/decisions/2026-10-01-use-postgres.md"
+printf '%s\n' '# Decisions' >"$DT_DATE_TARGET/docs/decisions/README.md"
+git_commit_all "$DT_DATE_TARGET" "establish a date-only ADR log"
+if adr_date_out="$(HARMON_INIT="$DT_DATE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_DATE_TARGET" 2>&1)"; then
+    ok "diff-template passes with a date-named seed and date-only README-backed ADR log"
+else
+    bad "diff-template passes with a date-named seed and date-only README-backed ADR log: $adr_date_out"
+fi
+expect_ok "diff-template recognizes the date-named seed as redundant" \
+    grep -qF 'EQUIV    docs/decisions/2026-09-30-record-architecture-decisions.md  (repo already has an active ADR log; the seed ADR is redundant)' \
+    <<<"$adr_date_out"
+# An index without records still proves nothing, including for a date-named seed.
+rm -f "$DT_DATE_TARGET/docs/decisions/2026-10-01-use-postgres.md"
+git_commit_all "$DT_DATE_TARGET" "empty the ADR log"
+if adr_date_empty_out="$(HARMON_INIT="$DT_DATE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_DATE_TARGET" 2>&1)"; then
+    bad "diff-template gates a date-named seed missing from an empty ADR log"
+else
+    expect_ok "diff-template reports the date-named seed missing from an empty ADR log" \
+        grep -qF 'MISSING  docs/decisions/2026-09-30-record-architecture-decisions.md' \
+        <<<"$adr_date_empty_out"
+fi
 
 # --- OWNED: the template's own _skip_if_exists declaration (issue 359) --------
 # Both declared paths diverge permanently in the clean target, so this run also
@@ -9365,6 +9569,7 @@ na_tpl_file docs/guide.md
 na_tpl_file docs/build.sh
 # Drift class K seeds, each needing its documented equivalent verified.
 na_tpl_file docs/decisions/0001-record-architecture-decisions.md
+na_tpl_file docs/decisions/2026-10-06-record-architecture-decisions.md
 na_tpl_file terraform/main.tf
 na_tpl_file prettier.config.cjs
 na_tpl_file Brewfile
@@ -9395,6 +9600,7 @@ printf '%s\n' '/.copier-guarded-update/' >>"$GU_NA_REPO/.git/info/exclude"
 rm "$GU_NA_REPO/AGENTS.md" "$GU_NA_REPO/docs/guide.md" \
     "$GU_NA_REPO/docs/build.sh" \
     "$GU_NA_REPO/docs/decisions/0001-record-architecture-decisions.md" \
+    "$GU_NA_REPO/docs/decisions/2026-10-06-record-architecture-decisions.md" \
     "$GU_NA_REPO/terraform/main.tf" "$GU_NA_REPO/prettier.config.cjs" \
     "$GU_NA_REPO/Brewfile" "$GU_NA_REPO/.vscode/local.json" \
     "$GU_NA_REPO/stray.md" "$GU_NA_REPO/dir-stub/.gitkeep" \
@@ -9547,6 +9753,13 @@ expect_ok "note fixture re-runs clean with an empty ADR index (index.md)" na_cla
 expect_ok "an index.md with no numbered ADR does not verify the seed ADR" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
     "$GU_NA_TSV"
+printf '%s\n' '# Notes' >"$GU_NA_REPO/docs/decisions/2-notes.md"
+git_commit_all "$GU_NA_REPO" "index with non-ADR notes only"
+expect_ok "note fixture re-runs clean with an index and lone 2-notes.md" na_classify
+expect_ok "a lone 2-notes.md does not count as an update-mode ADR log" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
+    "$GU_NA_TSV"
+rm -f "$GU_NA_REPO/docs/decisions/2-notes.md"
 rm -f "$GU_NA_REPO/docs/decisions/index.md"
 printf '%s\n' 'unrelated decision' \
     >"$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
@@ -9555,6 +9768,11 @@ git_commit_all "$GU_NA_REPO" "README-backed log"
 expect_ok "note fixture re-runs clean with a README-backed ADR log" na_classify
 expect_ok "a README-backed numbered ADR log is recorded as verified" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
+    "$GU_NA_TSV"
+# This is a date-named TEMPLATE seed, not merely a date-named replacement log.
+# Its row exercises nonadoption_known_false_note's seed-path case arm.
+expect_ok "a date-named seed gets the verified README-backed ADR log note" \
+    grep -qxF "$(printf 'docs/decisions/2026-10-06-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
     "$GU_NA_TSV"
 rm -f "$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
 git_commit_all "$GU_NA_REPO" "empty README index"
