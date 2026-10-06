@@ -908,6 +908,27 @@ else
     bad "unsafe open-family overlap fails with a diagnostic"
 fi
 
+model_open_overlap="$tmproot/model-open-overlap"
+mkdir -p "$model_open_overlap"
+write_agent_registry "$model_open_overlap"
+write_registry "$model_open_overlap" api
+write_labels "$model_open_overlap" api
+jq '.families += [{
+    "family":"model-area-open", "prefix":"area", "purpose":"Excluded model namespace",
+    "axis":"model", "source":"tool-owned", "writers":["agent"], "readers":"agents",
+    "lifecycle":"durable", "exclusive":false, "provision":false,
+    "open_values":true, "placeholder":"area:<model>", "values":[]
+}]' "$model_open_overlap/label-registry.json" >"$model_open_overlap/updated.json"
+mv "$model_open_overlap/updated.json" "$model_open_overlap/label-registry.json"
+if discover "$model_open_overlap" >"$model_open_overlap/output" 2>"$model_open_overlap/error"; then
+    bad "excluded open model families cannot share a planning area namespace"
+elif [ ! -s "$model_open_overlap/output" ] &&
+    grep -q 'open family model-area-open overlaps prefix area with family area' "$model_open_overlap/error"; then
+    ok "open model family under area fails the overlap refusal"
+else
+    bad "open model overlap fails closed with the expected diagnostic"
+fi
+
 prefix_null_open_overlap="$tmproot/prefix-null-open-overlap"
 mkdir -p "$prefix_null_open_overlap"
 write_agent_registry "$prefix_null_open_overlap"
@@ -1006,6 +1027,28 @@ if grep -qF 'On an organization-owned repository, choose exactly one valid nativ
     ok "breakdown enforces exactly one repository-appropriate work classification"
 else
     bad "breakdown enforces exactly one repository-appropriate work classification"
+fi
+
+proposal_section="$(sed -n '/^## 6\./,/^## 7\./p' "$skill")"
+execution_section="$(sed -n '/^## 7\./,/^## 8\./p' "$skill")"
+if grep -qF 'Impact, Risk and Complexity per chunk' <<<"$proposal_section" &&
+    grep -qF 'a one-line reason' <<<"$proposal_section"; then
+    ok "proposal section requires each chunk's three ratings and one-line reasons"
+else
+    bad "proposal section requires per-chunk ratings and one-line reasons"
+fi
+if grep -qF 'check-issue-metadata.sh' <<<"$execution_section" &&
+    grep -qF 'using the **agent-authored** path' <<<"$execution_section"; then
+    ok "execution section runs the agent-authored metadata preflight"
+else
+    bad "execution section runs the agent-authored metadata preflight"
+fi
+if grep -qF 'then immediately call triage' <<<"$execution_section" &&
+    grep -qF 'triage-apply.sh label' <<<"$execution_section" &&
+    grep -qF 'independently re-read the stored ratings' <<<"$execution_section"; then
+    ok "create-time classification uses the shared helper and re-reads its result"
+else
+    bad "create-time classification uses the shared helper and re-reads its result"
 fi
 
 echo "==> migrated registry (harmon-init#1047: devflow source, schema_version 3)"

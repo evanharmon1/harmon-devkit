@@ -800,14 +800,16 @@ for (const family of registry.families) {
 }
 
 for (const family of registry.families.filter((candidate) => candidate.open_values === true)) {
-  // Excluded model families may share a namespace; discovery no longer
-  // interprets their family/model refinement contracts. Planning families
-  // below still cannot overlap an excluded namespace.
-  if (family.prefix === null || family.axis === 'model') continue
+  // Every prefixed open family participates in overlap checks, including
+  // excluded model metadata. A model refinement may share its registry's
+  // model namespace, but never a planning family's namespace.
+  if (family.prefix === null) continue
   const conflictingFamily = registry.families.find(
     (candidate) =>
       candidate.family !== family.family &&
-      candidate.prefix === family.prefix
+      candidate.prefix === family.prefix &&
+      !(family.axis === 'model' && candidate.axis === 'model' &&
+        candidate.source === 'agent-registry' && candidate.registry_set === family.prefix)
   )
   if (conflictingFamily) {
     die(
