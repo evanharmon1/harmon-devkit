@@ -732,7 +732,7 @@ run_personal() {
     run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
         --owner-type personal --title "$_title" --body-file "$_body" \
         --agent-authored --label feature --label area:fixture \
-        --inapplicable layer --label domain:fixture --label ai-generated \
+        --label layer:none --label domain:fixture --label ai-generated \
         --label impact:medium --label risk:low --label complexity:s "$@"
 }
 
@@ -743,7 +743,7 @@ run_organization() {
     PATH="$metadata_stub:$PATH" run_metadata --repo testorg/testrepo --repo-root "$metadata_repo" \
         --owner-type organization --issue-type Task --title "$_title" \
         --body-file "$_body" --agent-authored --label area:fixture \
-        --inapplicable layer --label domain:fixture --label ai-generated \
+        --label layer:none --label domain:fixture --label ai-generated \
         --impact medium --risk low --complexity s "$@"
 }
 
@@ -790,7 +790,7 @@ PATH="$metadata_stub:$PATH" "$standalone_metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title '(tests): Validate standalone metadata' \
     --body-file "$valid_body" --agent-authored --label feature \
-    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label area:fixture --label layer:none --label domain:fixture \
     --label ai-generated --label impact:medium --label risk:low \
     --label complexity:s >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
@@ -845,15 +845,26 @@ for owner in personal organization; do
         fail "a human draft may omit every classification value: $(cat "$tmp/metadata.out")"
 done
 
-echo "==> metadata: persisted none values and legacy inapplicability both pass"
+echo "==> metadata: agent drafts require persisted none; human legacy flags remain valid"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Record explicit absence' --body-file "$valid_body" \
     --agent-authored --label feature --label area:none --label layer:none \
     --label domain:none --label impact:medium --label risk:low --label complexity:s \
     --label ai-generated)" = 0 ] || fail "none must decide every label axis: $(cat "$tmp/metadata.out")"
-[ "$(run_personal 'Keep legacy attestation compatible' "$valid_body")" = 0 ] ||
-    fail "documented --inapplicable callers stay compatible"
-[ "$(run_personal 'Reject contradictory absence' "$valid_body" --label layer:none)" = 1 ] ||
+absence_draft=(--repo testowner/testrepo --repo-root "$metadata_repo"
+    --owner-type personal --title 'Record layer absence' --body-file "$valid_body"
+    --label feature --label area:fixture --label domain:fixture --label ai-generated
+    --label impact:medium --label risk:low --label complexity:s)
+[ "$(run_metadata "${absence_draft[@]}" --agent-authored --inapplicable layer)" = 1 ] ||
+    fail "agent legacy inapplicability must be refused"
+grep -Fq 'use the `layer:none` label' "$tmp/metadata.out" ||
+    fail "agent refusal must name the persisted label: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata "${absence_draft[@]}" --agent-authored --label layer:none)" = 0 ] ||
+    fail "the same agent draft must pass with layer:none: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata "${absence_draft[@]}" --human-authored --inapplicable layer)" = 0 ] ||
+    fail "human legacy inapplicability must remain accepted: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata "${absence_draft[@]}" --human-authored \
+    --inapplicable layer --label layer:none)" = 1 ] ||
     fail "a label and an inapplicability declaration must not coexist"
 
 for missing in area layer domain; do
@@ -1560,7 +1571,7 @@ echo "==> metadata: labels must be known and exclusive families cannot conflict"
 echo "==> metadata: agent-authored issues require ai-generated and agent-writable labels"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Require issue provenance' --body-file "$valid_body" \
-    --agent-authored --label feature --label area:fixture --inapplicable layer \
+    --agent-authored --label feature --label area:fixture --label layer:none \
     --label domain:fixture)" = 1 ] || fail "missing ai-generated should fail"
 [ "$(run_personal 'Respect label writers' "$valid_body" --label sec)" = 1 ] ||
     fail "an agent must not propose a human-only concern"
@@ -1727,7 +1738,7 @@ _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_strategy" --owner-type personal \
     --title '(tests): Reject renamed strategy families' --body-file "$valid_body" \
-    --agent-authored --label feature --label area:fixture --inapplicable layer \
+    --agent-authored --label feature --label area:fixture --label layer:none \
     --label domain:fixture --label ai-generated --label route:fast \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "a strategy-axis label under a new prefix should fail (got $_rc)"
@@ -1830,13 +1841,13 @@ echo "==> metadata: incomplete agent classification fails even with needs-triage
 _rc="$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title '(tests): Keep incomplete classification visible' \
     --body-file "$valid_body" --agent-authored --label feature \
-    --label area:fixture --inapplicable layer --label ai-generated)"
+    --label area:fixture --label layer:none --label ai-generated)"
 [ "$_rc" = 1 ] || fail "missing domain without needs-triage should fail"
 grep -qi 'domain' "$tmp/metadata.out" || fail "the undecided domain axis should be named"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title '(tests): Keep incomplete classification visible' \
     --body-file "$valid_body" --agent-authored --label feature \
-    --label area:fixture --inapplicable layer --label ai-generated \
+    --label area:fixture --label layer:none --label ai-generated \
     --label needs-triage)" = 1 ] ||
     fail "needs-triage must not authorize an incomplete agent draft: $(cat "$tmp/metadata.out")"
 
@@ -1906,7 +1917,7 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(tests): Validate fallback metadata' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
-    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label area:fixture --label layer:none --label domain:fixture \
     --label ai-generated --label impact:medium --label risk:low \
     --label complexity:s >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] || fail "fallback draft should pass: $(cat "$tmp/metadata.out")"
@@ -1954,7 +1965,7 @@ collector_run() {
         --repo-root "$metadata_collector" --owner-type personal \
         --title '(QA): Verify the fixture release end to end' \
         --body-file "$collector_body" --agent-authored --label task \
-        --label area:fixture --inapplicable layer --label domain:fixture \
+        --label area:fixture --label layer:none --label domain:fixture \
         --label ai-generated --label impact:medium --label risk:low \
         --label complexity:s "$@"
 }
@@ -1970,7 +1981,7 @@ METADATA_GH_LABELS="$(printf '%s\n' task area:fixture domain:fixture \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(QA): Verify the fixture release end to end' \
     --body-file "$valid_body" --agent-authored --work-type-label task \
-    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label area:fixture --label layer:none --label domain:fixture \
     --label ai-generated --label impact:medium --label risk:low \
     --label complexity:s --label human --label umbrella >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "without a manifest, human/umbrella have no declared semantics and stay human-only (got $_rc)"
@@ -1983,7 +1994,7 @@ PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
     --repo-root "$metadata_fallback" --owner-type personal \
     --title '(tests): Reject authoring controls' --body-file "$valid_body" \
     --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
-    --inapplicable layer --label domain:fixture --label ai-generated \
+    --label layer:none --label domain:fixture --label ai-generated \
     >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "mixed-case forbidden family should exit 1 (got $_rc)"
 grep -qF 'Rigor:deep' "$tmp/metadata.out" || fail "forbidden-family error should name the label"
@@ -1995,7 +2006,7 @@ METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:fixture \
     "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(tests): Reject forged fallback writers' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
-    --label area:fixture --inapplicable layer --label domain:fixture \
+    --label area:fixture --label layer:none --label domain:fixture \
     --label ai-generated --label sec >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "a pipe-bearing live label must not forge an agent writer record"
 grep -q "label 'sec' is not writable by an agent" "$tmp/metadata.out" ||
@@ -2090,7 +2101,7 @@ grep -q 'Organization example' <<<"$help" || fail "help needs an organization ex
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Reject conflicting authorship' --body-file "$valid_body" \
     --agent-authored --human-authored --label feature --label area:fixture \
-    --inapplicable layer --label domain:fixture --label ai-generated)" = 2 ] ||
+    --label layer:none --label domain:fixture --label ai-generated)" = 2 ] ||
     fail "conflicting author types should exit 2"
 
 echo "==> metadata: delegation guidance preserves the concrete authoring contract"

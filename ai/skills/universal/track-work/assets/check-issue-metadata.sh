@@ -31,7 +31,7 @@ label exists; the manifest still supplies its policy.
 Personal-account example:
   check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \
     --title '(cache): Reject stale entries' --body-file issue.md \
-    --work-type-label bug --label area:build --inapplicable layer \
+    --work-type-label bug --label area:build --label layer:none \
     --label domain:platform --label impact:medium --label risk:low \
     --label complexity:s --label ai-generated --agent-authored
 
@@ -43,8 +43,8 @@ Organization example:
 Organization field proposals use --impact/--risk/--complexity; personal
 proposals use impact:*/risk:*/complexity:* labels. Agent drafts require all
 three, a work type, and each area/layer/domain (explicit none is a value).
-Human drafts are exempt from completeness. --inapplicable remains a legacy
-preflight attestation; persist the corresponding axis:none label at creation.
+Human drafts are exempt from completeness. --inapplicable is a legacy human-only
+preflight attestation. Agent drafts must use the corresponding axis:none label.
 The sibling triage/assets/triage-apply.sh supplies classification values.
 
 Title-only example (for a proposed retitle):
@@ -277,6 +277,9 @@ for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
     area | layer | domain) ;;
     *) die "--inapplicable accepts area, layer, or domain (got '$axis')" ;;
     esac
+    if [ "$author_type" = agent ]; then
+        violation "--inapplicable $axis is human-only; use the \`$axis:none\` label"
+    fi
 done
 for axis in area layer domain; do
     inapplicable_count=0
@@ -871,7 +874,7 @@ for axis in area layer domain; do
     fi
 done
 if [ -n "$undecided" ] && [ "$author_type" = agent ]; then
-    violation "agent-authored drafts require every classification axis ($undecided missing); choose a label or explicit none/inapplicability"
+    violation "agent-authored drafts require every classification axis ($undecided missing); choose a label or explicit none"
 fi
 if [ "$author_type" = agent ] && [ "$has_needs_triage" -eq 1 ]; then
     violation "agent-authored drafts must be fully classified; needs-triage is derived by the shared helper, never authored"

@@ -162,8 +162,9 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
   routing, or execution workflows and are rejected even when they exist.
 
 `needs-triage` is derived by the shared helper, never an author's escape from
-completeness. Legacy `--inapplicable` remains accepted as a preflight
-attestation, but creation must persist the corresponding axis's `none` label.
+completeness. Agent drafts must supply the corresponding axis's `none` label
+at preflight and creation. Legacy `--inapplicable` is a human-only preflight
+attestation and is rejected for agent drafts.
 
 ## Pre-create checker
 

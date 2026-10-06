@@ -861,10 +861,11 @@ For an organization, use `--owner-type organization --issue-type <Type>`,
 replace the three rating labels with `--impact <value> --risk <value>
 --complexity <value>`, and omit `--work-type-label`. The checker verifies the
 owner kind, native type, and provisioned field options. Repeat `--label` as
-needed. Legacy `--inapplicable area|layer|domain` remains a preflight-only
-attestation for documented callers; the creation step must persist the
-corresponding `area:none`, `layer:none`, or `domain:none` label so triage can
-reconcile from the stored state.
+needed. Agent drafts must supply the corresponding `area:none`, `layer:none`,
+or `domain:none` label for an inapplicable axis at preflight and creation so
+triage can reconcile from the stored state. Legacy
+`--inapplicable area|layer|domain` is a human-only preflight attestation; the
+checker rejects it for agent drafts.
 
 Authorship is explicit: pass exactly one of `--agent-authored` or
 `--human-authored`; omission never defaults to the more permissive human path.
