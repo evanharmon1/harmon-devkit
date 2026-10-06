@@ -765,7 +765,47 @@ install the Renovate GitHub App on the repo. Conventions:
   or writes: accepted residual paths include `jq -n env`, `pgrep -a`,
   `git config --get`, and output-file flags on show/blame/rev-list/stash list.
   Compare the target's selected template revision, not a separately maintained
-  four-grant baseline. The template's `permissions.ask` merge/push entries are
+  four-grant baseline. The template's **Bash allow literals** are:
+
+  ```text
+  Bash(task:*)  Bash(git status:*)
+  Bash(git diff:*)  Bash(git log:*)
+  Bash(gh auth status)  Bash(gh issue list)
+  Bash(gh issue list *)  Bash(gh issue view *)
+  Bash(gh label list)  Bash(gh label list *)
+  Bash(gh pr checks)  Bash(gh pr checks *)
+  Bash(gh pr diff)  Bash(gh pr diff *)
+  Bash(gh pr list)  Bash(gh pr list *)
+  Bash(gh pr view)  Bash(gh pr view *)
+  Bash(gh release list)  Bash(gh release list *)
+  Bash(gh release view)  Bash(gh release view *)
+  Bash(gh repo view)  Bash(gh repo view *)
+  Bash(gh run list)  Bash(gh run list *)
+  Bash(gh run view *)  Bash(gh search *)
+  Bash(gh workflow list)  Bash(gh workflow list *)
+  Bash(git blame *)  Bash(git branch --list)
+  Bash(git branch --list *)  Bash(git branch --show-current)
+  Bash(git branch -a)  Bash(git config --get *)
+  Bash(git describe)  Bash(git describe *)
+  Bash(git ls-files)  Bash(git ls-files *)
+  Bash(git ls-tree *)  Bash(git merge-base *)
+  Bash(git remote -v)  Bash(git rev-list *)
+  Bash(git rev-parse *)  Bash(git show)
+  Bash(git show *)  Bash(git stash list)
+  Bash(git stash list *)  Bash(git tag -l)
+  Bash(git tag -l *)  Bash(git worktree list)
+  Bash(git worktree list *)  Bash(actionlint)
+  Bash(basename *)  Bash(dirname *)
+  Bash(herdr agent start:*)  Bash(jq *)
+  Bash(mktemp)  Bash(mktemp *)
+  Bash(pgrep *)  Bash(ps)
+  Bash(readlink *)  Bash(realpath *)
+  Bash(shellcheck *)  Bash(tree)
+  Bash(uname)  Bash(uname *)
+  Bash(yamllint *)
+  ```
+
+  The template's `permissions.ask` merge/push entries are
   `Bash(gh pr merge)`, `Bash(gh pr merge:*)`, `Bash(git push origin main)`,
   `Bash(git push origin main:*)`, `Bash(git push -f:*)`, and
   `Bash(git push --force:*)`; Codex gate controls have conditional ask entries
