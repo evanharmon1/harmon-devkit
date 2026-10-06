@@ -2509,104 +2509,28 @@ expect_ok "checklist gives both owners the older-board field migration before or
         grep -qF "**Fields → Migrating a board that still has one**" "$1" &&
         grep -qF "\`Size\` on both owner types" "$1" &&
         grep -qF "\`Priority\` project field on a" "$1" &&
-        grep -qF "personal account, and \`Agent\` where present" "$1"' sh \
+        grep -qF "personal account, \`Domain\`/\`Layer\` project fields" "$1" &&
+        grep -qF "\`Agent\` where present" "$1"' sh \
     "$CHECKLIST_SHARED_PROJECT_SETUP"
+# Scope attribution to AI steering: another section mentioning the hook or a
+# grant must not mask a regression in the settings guidance.
+CATALOG_AI_STEERING="$TMPROOT/catalog-ai-steering.md"
+sed -n '/^### 1.10 AI steering$/,/^### 1.11 /p' \
+    "$STANDARDIZE_REFS/standards-catalog.md" >"$CATALOG_AI_STEERING"
 expect_ok "standards catalog describes grouped reads and exact literal grants" \
     sh -c 'grep -qF "\`gh\` reads:" "$1" &&
         grep -qF "\`git\` reads:" "$1" &&
+        grep -qF "Read-oriented tools:" "$1" &&
+        grep -qF "Bash(task:*)" "$1" &&
+        grep -qF "Bash(herdr agent start:*)" "$1" &&
+        grep -qF "Compare the target'\''s selected template revision" "$1" &&
         grep -qF "**exact literals**" "$1" &&
         grep -qF "Bash(gh auth status)" "$1" &&
         grep -qF "Bash(actionlint)" "$1" &&
         grep -qF "Bash(ps)" "$1" && grep -qF "Bash(tree)" "$1" &&
         grep -qF "jq -n env" "$1" &&
         grep -qF "git config --get" "$1"' sh \
-    "$STANDARDIZE_REFS/standards-catalog.md"
-# Scope attribution to AI steering: another section mentioning the hook or a
-# grant must not mask a regression in the settings guidance.
-CATALOG_AI_STEERING="$TMPROOT/catalog-ai-steering.md"
-sed -n '/^### 1.10 AI steering$/,/^### 1.11 /p' \
-    "$STANDARDIZE_REFS/standards-catalog.md" >"$CATALOG_AI_STEERING"
-# Checked-in Bash allow fixture, copied read-only from harmon-init's
-# template/.claude/settings.json.jinja at e3df5eec8d548ad01a4e38e0e6868c98f532d38f.
-# Keep the suite offline; compare the documented allow region as a set.
-CATALOG_ALLOW_EXPECTED="$TMPROOT/catalog-allow-expected"
-CATALOG_ALLOW_ACTUAL="$TMPROOT/catalog-allow-actual"
-cat >"$CATALOG_ALLOW_EXPECTED" <<'EOF'
-Bash(task:*)
-Bash(git status:*)
-Bash(git diff:*)
-Bash(git log:*)
-Bash(gh auth status)
-Bash(gh issue list)
-Bash(gh issue list *)
-Bash(gh issue view *)
-Bash(gh label list)
-Bash(gh label list *)
-Bash(gh pr checks)
-Bash(gh pr checks *)
-Bash(gh pr diff)
-Bash(gh pr diff *)
-Bash(gh pr list)
-Bash(gh pr list *)
-Bash(gh pr view)
-Bash(gh pr view *)
-Bash(gh release list)
-Bash(gh release list *)
-Bash(gh release view)
-Bash(gh release view *)
-Bash(gh repo view)
-Bash(gh repo view *)
-Bash(gh run list)
-Bash(gh run list *)
-Bash(gh run view *)
-Bash(gh search *)
-Bash(gh workflow list)
-Bash(gh workflow list *)
-Bash(git blame *)
-Bash(git branch --list)
-Bash(git branch --list *)
-Bash(git branch --show-current)
-Bash(git branch -a)
-Bash(git config --get *)
-Bash(git describe)
-Bash(git describe *)
-Bash(git ls-files)
-Bash(git ls-files *)
-Bash(git ls-tree *)
-Bash(git merge-base *)
-Bash(git remote -v)
-Bash(git rev-list *)
-Bash(git rev-parse *)
-Bash(git show)
-Bash(git show *)
-Bash(git stash list)
-Bash(git stash list *)
-Bash(git tag -l)
-Bash(git tag -l *)
-Bash(git worktree list)
-Bash(git worktree list *)
-Bash(actionlint)
-Bash(basename *)
-Bash(dirname *)
-Bash(herdr agent start:*)
-Bash(jq *)
-Bash(mktemp)
-Bash(mktemp *)
-Bash(pgrep *)
-Bash(ps)
-Bash(readlink *)
-Bash(realpath *)
-Bash(shellcheck *)
-Bash(tree)
-Bash(uname)
-Bash(uname *)
-Bash(yamllint *)
-EOF
-LC_ALL=C sort -u "$CATALOG_ALLOW_EXPECTED" -o "$CATALOG_ALLOW_EXPECTED"
-sed '/permissions.ask/,$d' "$CATALOG_AI_STEERING" |
-    grep -oE 'Bash\([^)]*\)' | LC_ALL=C sort -u >"$CATALOG_ALLOW_ACTUAL"
-expect_ok "catalog lists exactly the template Bash allow set" \
-    cmp "$CATALOG_ALLOW_EXPECTED" "$CATALOG_ALLOW_ACTUAL"
+    "$CATALOG_AI_STEERING"
 expect_ok "catalog attributes git merge and git pull approval to the guard hook" \
     sh -c 'grep -A3 -F "\`git merge\` and \`git pull\` are handled by" "$1" |
         grep -F "\`git-merge-guard\` PreToolUse hook" >/dev/null' sh "$CATALOG_AI_STEERING"

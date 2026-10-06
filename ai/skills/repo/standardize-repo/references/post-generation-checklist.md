@@ -358,8 +358,9 @@ Both owner types — the org-only follow-ups are in the next section.
       an older board, follow the selected template's `docs/project-management.md`
       **Fields → Migrating a board that still has one** before removing retired
       fields: `Size` on both owner types, the `Priority` project field on a
-      personal account, and `Agent` where present. Preserve wanted values and
-      re-point affected views as that migration specifies; current setup is
+      personal account, `Domain`/`Layer` project fields, and
+      `Agent` where present. Preserve wanted values and re-point affected views
+      as that migration specifies; current setup is
       additive and does not remove the old fields for you.
 
 ### Org repos only (`github_org != author_git_provider_username`)
