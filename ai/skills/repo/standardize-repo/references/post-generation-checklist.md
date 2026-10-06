@@ -360,7 +360,11 @@ Both owner types — the org-only follow-ups are in the next section.
 - [ ] **[manual — GitHub UI; older boards only; both owner types]** When reusing
       an older board, follow the selected template's `docs/project-management.md`
       **Fields → Migrating a board that still has one** before removing retired
-      fields: `Size` on both owner types, the `Priority` project field on a
+      fields the selected release no longer creates: Priority/Size from
+      **v5.0.1** (harmon-init#1451), Domain/Layer from **v4.31.0**
+      (harmon-init#875), and Agent from **v4.23.0** (harmon-init#662). Retain
+      fields still created by an older selected release. This covers `Size` on
+      both owner types, the `Priority` project field on a
       personal account, `Domain`/`Layer` project fields, and
       `Agent` where present. Preserve wanted values and re-point affected views
       as that migration specifies; current setup is
@@ -395,7 +399,10 @@ that task is rendered for `github` **and** an org owner, so an org repo answerin
 
 - [ ] **[manual — GitHub UI; retired issue fields present]** Detect retired
       **Domain**, **Layer**, or **Agent** in the org's **Settings → Planning →
-      Issue fields**. If any exists, migrate it regardless of board age or the
+      Issue fields**. Migrate only fields the selected release no longer creates:
+      Domain/Layer from **v4.31.0** (harmon-init#875) and Agent from **v4.23.0**
+      (harmon-init#662). Retain fields still created by an older selected release.
+      If any eligible field exists, migrate it regardless of board age or the
       `project_management` answer. Follow the selected template's
       `docs/project-management.md` **Fields → Migrating a board that still has
       one** even when that document is not generated locally: provision

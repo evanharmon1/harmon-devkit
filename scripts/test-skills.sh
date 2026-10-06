@@ -2522,22 +2522,44 @@ sed -n '/retired issue fields present/,/^$/p' \
 expect_ok "org retired-field migration triggers on presence independent of board age or setup" \
     sh -c 'grep -qF "**Domain**, **Layer**, or **Agent**" "$1" &&
         grep -qF "**Settings → Planning →" "$1" &&
-        grep -qF "Issue fields**. If any exists" "$1" &&
+        grep -qF "Issue fields**. Migrate only fields the selected release no longer creates:" "$1" &&
         grep -qF "regardless of board age or the" "$1" &&
         grep -qF "\`project_management\` answer" "$1" &&
         grep -qF "even when that document is not generated locally" "$1"' sh \
     "$CHECKLIST_ORG_MIGRATION"
+for migration_doc in "$UPDATE_RETIRED_FIELDS" "$CHECKLIST_ORG_MIGRATION"; do
+    expect_ok "$(basename "$migration_doc") gates retirement on the selected release" \
+        sh -c 'grep -qF "fields the selected release no longer creates:" "$1" &&
+            grep -qF "**v4.31.0** (harmon-init#875)" "$1" &&
+            grep -qF "**v4.23.0**" "$1" &&
+            grep -qF "harmon-init#662" "$1" &&
+            grep -qF "Retain fields still created by an older selected release" "$1"' sh \
+        "$migration_doc"
+done
+expect_ok "update pins Priority/Size migration to the selected v5.0.1 boundary" \
+    grep -qF "Priority/Size from **v5.0.1** (harmon-init#1451)" "$UPDATE_RETIRED_FIELDS"
 CHECKLIST_SHARED_PROJECT_SETUP="$TMPROOT/checklist-shared-project-setup.md"
 sed '/^### Org repos only/,$d' \
     "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_SHARED_PROJECT_SETUP"
 expect_ok "checklist gives both owners the older-board field migration before org-only steps" \
     sh -c 'grep -qF "older boards only; both owner types" "$1" &&
         grep -qF "**Fields → Migrating a board that still has one**" "$1" &&
-        grep -qF "\`Size\` on both owner types" "$1" &&
-        grep -qF "\`Priority\` project field on a" "$1" &&
+        grep -qF "This covers \`Size\` on" "$1" &&
+        grep -qF "both owner types, the \`Priority\` project field on a" "$1" &&
         grep -qF "personal account, \`Domain\`/\`Layer\` project fields" "$1" &&
         grep -qF "\`Agent\` where present" "$1"' sh \
     "$CHECKLIST_SHARED_PROJECT_SETUP"
+CHECKLIST_PROJECT_MIGRATION="$TMPROOT/checklist-project-migration.md"
+sed -n '/older boards only; both owner types/,/^$/p' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_PROJECT_MIGRATION"
+expect_ok "shared project migration retains fields until their selected release retires them" \
+    sh -c 'grep -qF "fields the selected release no longer creates:" "$1" &&
+        grep -qF "**v5.0.1** (harmon-init#1451)" "$1" &&
+        grep -qF "**v4.31.0**" "$1" &&
+        grep -qF "harmon-init#875" "$1" &&
+        grep -qF "**v4.23.0** (harmon-init#662)" "$1" &&
+        grep -qF "fields still created by an older selected release" "$1"' sh \
+    "$CHECKLIST_PROJECT_MIGRATION"
 # Scope attribution to AI steering: another section mentioning the hook or a
 # grant must not mask a regression in the settings guidance.
 CATALOG_AI_STEERING="$TMPROOT/catalog-ai-steering.md"
@@ -9731,6 +9753,13 @@ expect_ok "note fixture re-runs clean with an empty ADR index (index.md)" na_cla
 expect_ok "an index.md with no numbered ADR does not verify the seed ADR" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
     "$GU_NA_TSV"
+printf '%s\n' '# Notes' >"$GU_NA_REPO/docs/decisions/2-notes.md"
+git_commit_all "$GU_NA_REPO" "index with non-ADR notes only"
+expect_ok "note fixture re-runs clean with an index and lone 2-notes.md" na_classify
+expect_ok "a lone 2-notes.md does not count as an update-mode ADR log" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
+    "$GU_NA_TSV"
+rm -f "$GU_NA_REPO/docs/decisions/2-notes.md"
 rm -f "$GU_NA_REPO/docs/decisions/index.md"
 printf '%s\n' 'unrelated decision' \
     >"$GU_NA_REPO/docs/decisions/0002-use-postgres.md"

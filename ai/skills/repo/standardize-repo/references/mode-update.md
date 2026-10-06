@@ -1357,7 +1357,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
   # and accepting it filtered the seed away on the strength of an unrelated file.
   nonadoption_has_adr_log() {
     NONADOPT_ADR_PRESENT=0
-    for NONADOPT_ADR in docs/decisions/[0-9]*.md; do
+    for NONADOPT_ADR in docs/decisions/[0-9][0-9][0-9][0-9]-*.md; do
       test -f "$NONADOPT_ADR" || continue
       NONADOPT_ADR_PRESENT=1
       case "${NONADOPT_ADR##*/}" in
@@ -3656,11 +3656,14 @@ update can create, none of which any script closes:
   before the layer family became `ui`/`logic`/`data`/`integration` ends up with
   the new four *alongside* orphaned `layer:frontend`, `layer:backend`, and
   `layer:infra`. Re-map those issues, then delete the three by hand.
-- **Retired fields.** Old boards may still carry Domain/Layer/Agent fields,
-  `Size` (both owner types), and `Priority` (personal-account project field only;
+- **Retired fields.** Migrate only fields the selected release no longer creates:
+  Domain/Layer from **v4.31.0** (harmon-init#875), Agent from **v4.23.0**
+  (harmon-init#662), and Priority/Size from **v5.0.1** (harmon-init#1451).
+  Retain fields still created by an older selected release. Old boards may carry
+  Domain/Layer/Agent fields, `Size` (both owner types), and `Priority` (personal-account project field only;
   the organization's built-in Priority issue field stays). Setup no longer
-  creates or reconciles them. Nothing reads their leftover values. Follow the
-  selected template's `docs/project-management.md` **Fields → Migrating a board
+  creates or reconciles them at those boundaries. Nothing reads their leftover values
+  after retirement. Follow the selected template's `docs/project-management.md` **Fields → Migrating a board
   that still has one**, including its **Priority / Size** migration
   (harmon-init#1451). For Domain/Layer, provision replacement labels in every
   affected repository and migrate values to those labels. Re-point every saved
