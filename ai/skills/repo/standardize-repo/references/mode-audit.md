@@ -169,7 +169,7 @@ symlinks on re-template.
 `docs/index.md`, `docs/architecture/{index,ci-cd,branch-protection,security,tests}.md`,
 `docs/glossary.md`, `docs/conventions.md`, `docs/guides/{index,onboarding,deploying,troubleshooting}.md`,
 `docs/product/{index,vision,domain,roadmap}.md`, `docs/decisions/` (ADRs, seeded
-with `0001-record-architecture-decisions.md` + `index.md`), and
+with `<decisions_seed_date>-record-architecture-decisions.md` + `index.md`), and
 `docs/runbooks/` — **plural `runbooks/`** (matches harmon-infra; old repos use
 singular `runbook`). Also: `specs/` and `tests/` belong at **repo root**, not
 under `docs/` (old repos nest `docs/specs/`). Common misses: no `guides/`, no
@@ -457,8 +457,15 @@ caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
 An absent tracked path that still exists in the index is compared from an index
 snapshot, so a transient, unstaged working-tree deletion does not create false
 drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
-roots and an established or renumbered ADR log are reported as benign `EQUIV`
-instead of false `MISSING` and do not affect the exit status.
+roots and an established ADR log (numbered or date-named records) are reported
+as benign `EQUIV` instead of false `MISSING` and do not affect the helper's exit
+status. Separately audit ADR naming: report each remaining `NNNN-` record as
+drift and recommend `git mv` to `YYYY-MM-DD-<kebab-title>.md` using its own
+`Date:` line, updating links. For missing or placeholder dates, follow the
+[ADR date fallback](./standards-catalog.md#11-docs-folder-layout).
+Structural equivalence never makes numbered
+names conformant. A numbered template seed migrates through the selected
+template using its recorded `decisions_seed_date` answer.
 
 Three further classes are informational — **their content never affects the exit
 status** (a `MODE` finding on the same file still gates) — and their diffs are
@@ -534,9 +541,12 @@ standards; re-adding the template's seed is wrong. The recurring ones:
   `Brewfile` `private_Brewfile` (→ `~/Brewfile`), so `Brewfile` reads `MISSING`. Add
   a root `Brewfile` per [mode-adopt-existing.md](./mode-adopt-existing.md) §4.7, not
   a "restored" copy.
-- **ADR renumbering** — the seed `docs/decisions/0001-record-architecture-decisions.md`
-  is `EQUIV` when the repo carries a renumbered record-decisions ADR or already
-  has a README-backed numbered ADR log. Don't re-add — it would duplicate.
+- **Established ADR log** — the rendered seed
+  `docs/decisions/<decisions_seed_date>-record-architecture-decisions.md` is
+  `EQUIV` when the repo carries a numbered or date-named record-decisions ADR or an
+  `index.md`/`README.md`-backed log with numbered or date-named records. Don't
+  re-add a redundant seed. Still report numbered filenames as naming drift;
+  `EQUIV` only recognizes that the repo already records its decisions.
 - **Replaced terraform skeleton** — an iac repo with real infra (e.g.
   `terraform/environments/…`) deleted the template's flat
   `terraform/{main,variables,outputs}.tf` skeleton. Nested `*.tf` roots make

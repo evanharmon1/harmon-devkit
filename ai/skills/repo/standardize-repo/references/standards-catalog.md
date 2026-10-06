@@ -54,7 +54,7 @@ landing pages within `docs/` are `index.md`. **[copier]** generates the whole sk
 | `docs/CHECKLIST.md` | Run-once post-generation setup list | [copier] |
 | `docs/product/` | Why it exists / who for — `vision.md`, `roadmap.md`, `domain.md`, `index.md` | [copier] |
 | `docs/architecture/` | How it's built — `index.md`, `ci-cd.md`, `security.md`, `branch-protection.md`, `tests.md` (+ `design-language.md` for web types) | [copier] |
-| `docs/decisions/` | ADRs, numbered `0001-`, zero-padded; `0001-record-architecture-decisions.md` ships as the template ADR; `index.md` index | [copier] |
+| `docs/decisions/` | ADRs named `YYYY-MM-DD-<kebab-title>.md`; `<decisions_seed_date>-record-architecture-decisions.md` is the template-managed seed; `index.md` index | [copier] |
 | `docs/guides/` | Calm how-tos read in advance — `onboarding.md`, `deploying.md`, `troubleshooting.md`, `index.md` | [copier] |
 | `docs/runbooks/` | Crisis procedures read under pressure — `index.md` | [copier] |
 
@@ -68,7 +68,22 @@ Repo-root siblings of `docs/` (deliberately NOT under `docs/`):
 - **ADR rules:** one ADR per decision; immutable once Accepted; to change a
   decision add a new ADR that supersedes and update the old one's Status
   (Proposed / Accepted / Deprecated / Superseded). Sections: Status, Context,
-  Decision, Consequences.
+  Decision, Consequences. New filenames use `YYYY-MM-DD-<kebab-title>.md`, with
+  the filing date fixed at creation. Remaining `NNNN-` records are naming drift:
+  recommend `git mv` to the date form using each record's own `Date:` line,
+  and update links. Do not infer the date from a sequence number.
+  **ADR date fallback:** when the `Date:` line is missing or not a real date
+  (for example `Date: TODO`, seeded by harmon-init v3.1.0–v4.42.0), first check
+  `git rev-parse --is-shallow-repository`. If shallow, do not derive a date:
+  unshallow with `git fetch --unshallow` or report the record as needing a manual
+  date. Never rename from a shallow boundary. With complete history, use the
+  file's first-commit date from
+  `git log --diff-filter=A --follow --format=%as -- <file> | tail -1`.
+  Report that fallback and its provenance; never guess. The seed's
+  date comes from the recorded `decisions_seed_date` answer; migrate a numbered
+  seed through the selected template's update mechanism. An existing log may
+  structurally contain numbered or date-named records; recognizing it as an
+  `EQUIV` replacement for a redundant seed does not make numbered names conformant.
 - **`.gitkeep`** keeps otherwise-empty dirs in git (`tests/.gitkeep`,
   `.claude/skills/.gitkeep`, and ansible `roles|playbooks|inventory/.gitkeep`
   for iac). Across the live repos, `docs/` subdirs are also kept with `.gitkeep`
@@ -736,11 +751,30 @@ install the Renovate GitHub App on the repo. Conventions:
   `AGENTS.md`. (`copier.yml` sets `_preserve_symlinks: true`.) Live repos at older
   commits have the symlink flipped the other way (`AGENTS.md -> CLAUDE.md`) — see
   Part 3. **[copier]**
-- **`.claude/settings.json`** (repo-level): minimal allow-list —
-  `Bash(task:*)`, `Bash(git status:*)`, `Bash(git diff:*)`, `Bash(git log:*)` —
-  plus a `permissions.ask` list that forces a prompt on merge commands:
-  `gh pr merge` (all variants incl. `--auto`/`--admin`), `git merge`,
-  `git push origin main`, and force pushes (harmon-init ≥3.18.0, init #221).
+- **`.claude/settings.json`** (repo-level): the generated template's allow-list
+  includes `Bash(task:*)`, `git status/diff/log`, and these read-oriented groups:
+  - `gh` reads: issue list/view, label list, PR checks/diff/list/view, release
+    list/view, repo view, run list/view, workflow list, search, and auth status.
+  - `git` reads: show, blame, branch `--list`/`--show-current`/`-a`, config
+    `--get`, describe, ls-files, ls-tree, merge-base, remote `-v`, rev-list,
+    rev-parse, stash list, tag `-l`, and worktree list.
+  - Read-oriented tools: jq, pgrep, ps, tree, mktemp, realpath, readlink,
+    basename, dirname, uname, shellcheck, yamllint, and actionlint. The template
+    also grants `Bash(herdr agent start:*)` for the configured agent launcher.
+  Some grants are **exact literals**, including `Bash(gh auth status)`,
+  `Bash(actionlint)`, `Bash(ps)`, and `Bash(tree)` — no trailing arguments.
+  Preserve those boundaries when auditing; do not widen them to wildcards.
+  “Read-oriented” is a threat-model choice, not a guarantee of no disclosure
+  or writes: accepted residual paths include `jq -n env`, `pgrep -a`,
+  `git config --get`, and output-file flags on show/blame/rev-list/stash list.
+  Compare the target's selected template revision for the complete allow-list.
+  The template's `permissions.ask` merge/push entries are
+  `Bash(gh pr merge)`, `Bash(gh pr merge:*)`, `Bash(git push origin main)`,
+  `Bash(git push origin main:*)`, `Bash(git push -f:*)`, and
+  `Bash(git push --force:*)`; Codex gate controls have conditional ask entries
+  when `use_codex_review` is enabled. `git merge` and `git pull` are handled by
+  the **`git-merge-guard` PreToolUse hook**: it asks when it cannot verify that
+  the operation lands on a feature branch, as the target's `AGENTS.md` describes.
   **[copier]**
 - **Agents never merge to main.** AGENTS.md Definition of Done carries the rule
   (harmon-init ≥3.18.0, init #221): no `gh pr merge`/`git merge`/push to `main`
@@ -942,16 +976,19 @@ applicable mode's existing remote-verified release-selection procedure. Never
 infer the target's current roster from these reference links or mutable `main`.
 
 **One default Project (V2) per owner**, titled after the owner's GitHub login
-(`<owner> Project`); every repo feeds the one board. Its six planning axes are
-**Status, Priority, Size, Product, Domain, and Layer**. Slice it by those
-single-valued fields — for `Domain` and `Layer`, use the field rather than the
-mirrored `domain:`/`layer:` labels, which carry the same option names but are
-never synced to field values. Advisory agent routing is multi-valued label
-metadata, not a seventh field. The retired `Agent` field is not part of the
-target state; on an older board, review and migrate its values before deleting
-it because the setup scripts are deliberately additive-only. Live field removal
-belongs to harmon-init's migration units, not this catalog; until those units
-verify the owner-wide associations and fleet state, leave the field in place.
+(`<owner> Project`); every repo feeds the one board. `Status` is the project
+pipeline, and `Product` identifies the product (an org issue field, or a
+personal project field). **`domain:` and `layer:` labels are the source of
+truth** for those axes, on both owner types; there are no corresponding
+Domain/Layer fields to provision or reconcile. The retired `Agent` field is
+also absent from the target state: advisory routing and live claims use labels.
+On an older board, field removal is an explicit operator migration: enumerate
+affected issues and every saved view first, provision replacement labels in
+every affected repository, migrate Domain/Layer values to those labels, and
+re-point views before deleting retired fields. Deleting an org issue field
+destroys its values across the org, so checking one board is insufficient.
+Follow the selected template's `docs/project-management.md` migration guidance;
+setup scripts never delete live fields.
 
 **Human work is collected, not scattered.** Steps only a human can do live on
 collector issues labelled `human` + `umbrella` and typed `Task`, instead of as
@@ -970,16 +1007,20 @@ drift.
 
 | Task | Needs | Rendered when | Does |
 |---|---|---|---|
-| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline + the `Size` number field (both owner types); write the `ORG_PROJECT_ID` org var (org only); on a **personal** account also create Priority/Product/Agent/Domain/Layer as project fields in pre-rollout releases |
-| `setup:github-labels` | `gh` + repo write | `project_management: github` | Create/update the release-defined static label list; pre-rollout releases still include legacy `agent:*` rows and, when `use_foreman` is enabled, phantom `foreman:*` rows rather than the registry-driven target |
-| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org **issue fields** Product + Agent + Domain + Layer in pre-rollout releases (public preview) |
+| `setup:github-project` | `gh` + `project` scope | `project_management: github` | Create/sync the board + `Status` pipeline; write the `ORG_PROJECT_ID` org var (org only); on a **personal** account create the `Product` text field |
+| `setup:github-labels` | `gh` + repo write | `project_management: github` | Create/update this repo's label vocabulary from the selected release, including `domain:`/`layer:`; retired fields are not a vocabulary source |
+| `setup:github-issue-fields` | `gh` + `admin:org` | `github` **and** org owner | Add the org's declared **issue fields**, including `Product` (public preview); use the selected script for the complete current list; never create retired fields |
 | `setup:github-issue-types` | `gh` + `admin:org` | **org owner** (independent of `project_management`) | Ensure org issue types Bug/Feature/Task/Research (Task is GitHub's default; adds Research) |
 
-Those rows describe executable behavior in pre-rollout harmon-init releases,
-not the registry's completed target. The ordered rollout is owned by
-harmon-init#661–#665 and the linked devkit session-suite unit, not re-specified
-here. Until those changes reach the selected releases, report the difference as
-template-version lag and leave live fields and labels unchanged.
+Those rows describe current setup behavior. Older pins may still provision
+retired fields: compare against the selected release, report template-version
+lag, and follow the explicit migration guidance before changing live metadata.
+The complete classification-field catalog is not re-specified here; consult
+the target's generated `docs/project-management.md` and setup scripts.
+Pre-rollout label scripts still included legacy `agent:*` rows and,
+when `use_foreman` is enabled, phantom `foreman:*` rows rather than the
+registry-driven vocabulary. Treat those older-pin differences as version lag;
+the retired-field correction does not change the Foreman opt-in boundary.
 
 **Conventions the doc encodes** (audit the doc + the field/label/workflow
 artifacts; the prose rules are guidance, not lint):
@@ -990,16 +1031,13 @@ artifacts; the prose rules are guidance, not lint):
   status; **no `Archived`** (native 90-day auto-archive); Canceled/Duplicate are
   close reasons; Blocked is the native blocked-by relationship or `blocked` label.
   `Agent Queue` is the AI-agent hand-off lane.
-- **Fields** — `Status` is a project field. **Size is ALWAYS a project Number
-  field** (estimation points, Fibonacci): only project number fields sum in view
-  group headers, so it lives on the project even for orgs. The GitHub built-in
-  issue fields (**Priority**, single-select **Effort**, Start/Target date) are
-  left at their defaults — **`Effort` is never re-created as a project field**;
-  `Size` is the numeric, summable estimate. In the target state, **Product +
-  Domain + Layer** are org issue fields from `setup:github-issue-fields` (Domain
-  = which part of the product, Layer = which slice of the stack). On a personal
-  account (no issue fields), their equivalents plus Priority/Size are project
-  fields. Pre-rollout scripts also create the retired `Agent` field. Both scripts
+- **Fields** — `Status` is a project single-select. `Product` is an org issue
+  field or, on a personal account, a project text field. The current project
+  setup **≥ v5.0.1** (harmon-init #1451) no longer creates `Priority` or `Size`;
+  compare the selected template's field list rather than re-provisioning an
+  older catalog's fields.
+  Domain/Layer classification and agent routing/claims use labels, never
+  duplicate fields. Both scripts
   are **create-if-missing then additive** for every field they declare: an
   existing field keeps every option it has, and a re-run appends whatever
   **starter** option it lacks — `Status` and the custom fields alike, so items
@@ -1007,23 +1045,23 @@ artifacts; the prose rules are guidance, not lint):
   an option or a field, so a starter the template retires survives until you
   delete it by hand (only after re-mapping — deleting an assigned option clears
   those values). **[manual]**
-  What a re-run still will not do: add **repo-specific** options (the scripts ship
-  only the `auth`/`billing`/`platform` floor — this product's real domains are
-  yours to add), or fix anything the script *warned and continued* past. Both
-  warn-and-exit-0 rather than abort a half-reconciled project — with one known
-  upstream gap: `setup-github-project.sh` routes only the **custom** fields
-  through its `field_exists` data-type guard, so a reused project carrying a
-  non-single-select field named **`Status`** goes straight to `append_options`
-  and the task fails there instead of warning (possibly after `ORG_PROJECT_ID`
-  was already written). Treat that one as a hard stop, not a warning. Otherwise
-  read the WARNING lines: a field that already exists with the **wrong data type**
+  What a re-run still will not do: add **repo-specific** values outside the
+  selected script's declared starters, or fix anything it *warned and
+  continued* past. Domain vocabulary belongs in repo labels, not field options. Both
+  warn-and-exit-0 for incompatible fields rather than abort a half-reconciled
+  project. A non-single-select **`Status`** goes through the same data-type
+  guard as any other wrong-typed field: it warns, appears in the end-of-run
+  `incompatible` summary, and is skipped. Repos pinned at harmon-init
+  **≤ v4.7.2** still abort on that case; select a release carrying
+  harmon-init#450's fix before expecting the guarded behavior. Read the
+  WARNING lines: a field that already exists with the **wrong data type**
   (GitHub can't
   change a type in place, and deleting the field destroys every issue's value for
   it org-wide — rename it, let the re-run create the replacement, migrate the
   values, then delete the original), one **at the
   single-select option cap**, or an issue-fields `PATCH` **rejected by the public
   preview**. Each names the field and the options it skipped. Skipping those
-  leaves the label and field vocabularies divergent.
+  leaves the declared field incompletely reconciled.
   The option arrays are replaced wholesale with no expected-version token, so
   **never run these concurrently against one owner** — a racing write (parallel
   fleet run, or the Project UI) can be silently dropped along with its
@@ -1040,13 +1078,10 @@ artifacts; the prose rules are guidance, not lint):
   **Layer** (blue `1D76DB`) `layer:ui`, `layer:logic`, `layer:data`,
   `layer:integration`; **Domain** (yellow `FBCA04`) `domain:auth`,
   `domain:billing`, `domain:platform`. The `layer:`/`domain:` families are
-  deliberately the **same vocabulary** as the Layer/Domain fields above — same
-  option names, but **nothing syncs a label to a field value**, so group board
-  views by the fields and use the labels for `gh issue list --label`; extend the
-  label list and both field lists together. Names must agree where they overlap,
-  but the sets need not be equal: on an org the `Domain` issue field is org-wide
-  while labels are repo-level, so a repo's `domain:` labels are the **subset** it
-  actually uses, not the org's full option list. There is no shared
+  the only source for these axes; use them in board filters and
+  `gh issue list --label`, and extend the selected repo's label vocabulary for
+  its real domains. There are no parallel field option lists to extend or sync.
+  There is no shared
   org label pool; run `setup:github-labels` per repo. It is create-or-update
   (`--force`) and never deletes, so a repo seeded before the layer family became
   `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
@@ -1124,10 +1159,8 @@ artifacts; the prose rules are guidance, not lint):
   gap is an open design question. Filter qualifiers AND together, so
   `is:issue is:pr` matches nothing; leave the type unqualified.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
-  milestone/project (children inherit both); leaves hold the `Task` type + the
-  **`Size` points** (the numeric estimate — on an org, the built-in `Effort`
-  single-select is a separate coarse field left at its default and never used for
-  points; on a personal account there is no `Effort` field at all).
+  milestone/project (children inherit both); leaves hold the `Task` type.
+  Current setup ships no points field; do not provision `Size` for estimates.
 
 **Org-only automation** (`github_org != author`):
 `.github/workflows/project-automation.yml` syncs `Status` from PR/CI events as the
