@@ -106,28 +106,18 @@ repository owns <thing>.
 EOF
 ```
 
-Run the full, read-only pre-create gate from §5 against the **target checkout**.
-Use exactly one owner-appropriate work classification: `--work-type-label
-<label>` for a personal repository, or `--issue-type <Type>` for an organization.
-Pass the concrete target labels or explicit axis inapplicability, including
-`ai-generated` for agent-authored work:
+Run the full, read-only pre-create gate from §5 against the **target checkout**:
+`<track-work-skill-dir>/assets/check-issue-metadata.sh` must receive
+`--repo <target-owner/target-repo>` and `--repo-root <target-checkout>`, so the
+target's owner type, manifest and provisioned vocabulary govern the draft.
 
-```sh
-<track-work-skill-dir>/assets/check-issue-metadata.sh \
-  --repo <target-owner/target-repo> --repo-root <target-checkout> \
-  --owner-type <personal|organization> --title "$title" \
-  --body-file "$bodyfile" <owner-appropriate-work-classification> \
-  <target-labels-or-axis-inapplicability> --label ai-generated \
-  --agent-authored
-```
-
-Only after that gate exits 0, create the issue with the same title, body, labels,
-and owner-appropriate work classification it verified:
-
-```sh
-gh issue create --repo <target-owner/target-repo> --title "$title" \
-  --body-file "$bodyfile" <matching-create-time-metadata>
-```
+Only after that gate exits 0, follow SKILL.md's
+[agent-authored or human-authored create path](../SKILL.md#create-and-classify-through-the-shared-helper).
+Run its creation and any shared-helper application against the **target
+repository**, from the target checkout, under the same write authorization.
+Return the created issue number so the caller can re-read the target's stored
+metadata. If a write partially succeeds, return that existing issue number and
+blocker; never create a duplicate in either repository to retry it.
 
 Then link back from where you found it, so the trail runs both ways:
 

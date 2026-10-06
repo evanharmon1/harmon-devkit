@@ -5,7 +5,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo OWNER/REPO --repo-root CHECKOUT" >&2
+    echo "Usage: $0 --repo OWNER/REPO --repo-root CHECKOUT [--classification-axes]" >&2
     exit 2
 }
 
@@ -16,6 +16,7 @@ die() {
 
 repo=""
 repo_root=""
+classification_axes=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -27,6 +28,10 @@ while [ "$#" -gt 0 ]; do
         [ "$#" -ge 2 ] || usage
         repo_root="$2"
         shift 2
+        ;;
+    --classification-axes)
+        classification_axes=1
+        shift
         ;;
     -h | --help) usage ;;
     *) usage ;;
@@ -68,5 +73,12 @@ asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
 [ -x "$registry_helper" ] ||
     die "shared label-registry interpreter is missing: $registry_helper"
+
+if [ "$classification_axes" -eq 1 ]; then
+    classification_helper="$asset_dir/../../triage/assets/triage-apply.sh"
+    [ -x "$classification_helper" ] ||
+        die "shared classification reader is missing; vendor triage alongside track-work"
+    exec "$classification_helper" classification-axes --repo "$repo"
+fi
 
 exec "$registry_helper" guidance "$repo_root/label-registry.json" "$repo"
