@@ -2486,6 +2486,24 @@ expect_ok "standards catalog describes grouped reads and exact literal grants" \
         grep -qF "jq -n env" "$1" &&
         grep -qF "git config --get" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
+# Scope attribution to AI steering: another section mentioning the hook or a
+# grant must not mask a regression in the settings guidance.
+CATALOG_AI_STEERING="$TMPROOT/catalog-ai-steering.md"
+sed -n '/^### 1.10 AI steering$/,/^### 1.11 /p' \
+    "$STANDARDIZE_REFS/standards-catalog.md" >"$CATALOG_AI_STEERING"
+expect_ok "catalog attributes git merge and git pull approval to the guard hook" \
+    sh -c 'grep -A3 -F "\`git merge\` and \`git pull\` are handled by" "$1" |
+        grep -F "\`git-merge-guard\` PreToolUse hook" >/dev/null' sh "$CATALOG_AI_STEERING"
+CATALOG_ASK_EXPECTED="$TMPROOT/catalog-ask-expected"
+CATALOG_ASK_ACTUAL="$TMPROOT/catalog-ask-actual"
+printf '%s\n' 'Bash(gh pr merge)' 'Bash(gh pr merge:*)' \
+    'Bash(git push origin main)' 'Bash(git push origin main:*)' \
+    'Bash(git push -f:*)' 'Bash(git push --force:*)' | LC_ALL=C sort \
+    >"$CATALOG_ASK_EXPECTED"
+sed -n '/permissions.ask/,/Codex gate controls/p' "$CATALOG_AI_STEERING" |
+    grep -oE 'Bash\([^)]*\)' | LC_ALL=C sort >"$CATALOG_ASK_ACTUAL"
+expect_ok "catalog lists exactly the six template merge/push ask literals" \
+    cmp "$CATALOG_ASK_EXPECTED" "$CATALOG_ASK_ACTUAL"
 for adr_doc in standards-catalog mode-audit mode-adopt-existing mode-update; do
     expect_ok "$adr_doc documents date-named ADRs and Date-based migration" \
         sh -c 'grep -qF "YYYY-MM-DD-<kebab-title>.md" "$1" &&
@@ -9429,6 +9447,7 @@ na_tpl_file docs/guide.md
 na_tpl_file docs/build.sh
 # Drift class K seeds, each needing its documented equivalent verified.
 na_tpl_file docs/decisions/0001-record-architecture-decisions.md
+na_tpl_file docs/decisions/2026-10-06-record-architecture-decisions.md
 na_tpl_file terraform/main.tf
 na_tpl_file prettier.config.cjs
 na_tpl_file Brewfile
@@ -9459,6 +9478,7 @@ printf '%s\n' '/.copier-guarded-update/' >>"$GU_NA_REPO/.git/info/exclude"
 rm "$GU_NA_REPO/AGENTS.md" "$GU_NA_REPO/docs/guide.md" \
     "$GU_NA_REPO/docs/build.sh" \
     "$GU_NA_REPO/docs/decisions/0001-record-architecture-decisions.md" \
+    "$GU_NA_REPO/docs/decisions/2026-10-06-record-architecture-decisions.md" \
     "$GU_NA_REPO/terraform/main.tf" "$GU_NA_REPO/prettier.config.cjs" \
     "$GU_NA_REPO/Brewfile" "$GU_NA_REPO/.vscode/local.json" \
     "$GU_NA_REPO/stray.md" "$GU_NA_REPO/dir-stub/.gitkeep" \
@@ -9619,6 +9639,11 @@ git_commit_all "$GU_NA_REPO" "README-backed log"
 expect_ok "note fixture re-runs clean with a README-backed ADR log" na_classify
 expect_ok "a README-backed numbered ADR log is recorded as verified" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
+    "$GU_NA_TSV"
+# This is a date-named TEMPLATE seed, not merely a date-named replacement log.
+# Its row exercises nonadoption_known_false_note's seed-path case arm.
+expect_ok "a date-named seed gets the verified README-backed ADR log note" \
+    grep -qxF "$(printf 'docs/decisions/2026-10-06-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
     "$GU_NA_TSV"
 rm -f "$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
 git_commit_all "$GU_NA_REPO" "empty README index"

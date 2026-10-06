@@ -1025,8 +1025,9 @@ artifacts; the prose rules are guidance, not lint):
   `Agent Queue` is the AI-agent hand-off lane.
 - **Fields** — `Status` is a project single-select. `Product` is an org issue
   field or, on a personal account, a project text field. The current project
-  setup no longer creates `Priority` or `Size`; compare the selected template's
-  field list rather than re-provisioning an older catalog's fields.
+  setup **≥ v5.0.1** (harmon-init #1451) no longer creates `Priority` or `Size`;
+  compare the selected template's field list rather than re-provisioning an
+  older catalog's fields.
   Domain/Layer classification and agent routing/claims use labels, never
   duplicate fields. Both scripts
   are **create-if-missing then additive** for every field they declare: an
@@ -1150,10 +1151,8 @@ artifacts; the prose rules are guidance, not lint):
   gap is an open design question. Filter qualifiers AND together, so
   `is:issue is:pr` matches nothing; leave the type unqualified.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
-  milestone/project (children inherit both); leaves hold the `Task` type + the
-  **`Size` points** (the numeric estimate — on an org, the built-in `Effort`
-  single-select is a separate coarse field left at its default and never used for
-  points; on a personal account there is no `Effort` field at all).
+  milestone/project (children inherit both); leaves hold the `Task` type.
+  Current setup ships no points field; do not provision `Size` for estimates.
 
 **Org-only automation** (`github_org != author`):
 `.github/workflows/project-automation.yml` syncs `Status` from PR/CI events as the

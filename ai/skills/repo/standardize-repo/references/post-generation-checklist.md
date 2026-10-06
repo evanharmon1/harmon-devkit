@@ -273,7 +273,8 @@ Both owner types — the org-only follow-ups are in the next section.
   > [`mode-update.md`](./mode-update.md) §6a **first**. On a genuinely fresh owner
   > with no boards, creation is the expected outcome and there is nothing to check.
   > It seeds the full `Status` pipeline and never deletes existing options or
-  > fields. Current releases no longer create `Priority` or `Size` project fields.
+  > fields. Releases **≥ v5.0.1** (harmon-init #1451) no longer create `Priority`
+  > or `Size` project fields.
   > **On an org** it also records the project id in the `ORG_PROJECT_ID` org
   > variable that `project-automation.yml` and the `claude-*` workflows read
   > (falling back to the project's title), so it no longer has to be the org's
@@ -317,7 +318,7 @@ Both owner types — the org-only follow-ups are in the next section.
   > org-level issue field a personal account does not have, and filters on
   > "missing a `Priority`" **or** `needs-triage`, a union across two qualifiers
   > that Projects cannot express (distinct qualifiers AND). On a personal
-  > account, group by something you do have (`Priority`); either way pick one
+  > account, group by something you do have (`Status`); either way pick one
   > half of the filter and know the other half of the inbox is not in this view.
   > Tracked upstream as evanharmon1/harmon-init#444.
 
