@@ -313,9 +313,12 @@ Both owner types — the org-only follow-ups are in the next section.
       `docs/project-management.md`; keep the saved set small and slice the one
       board for everything else.
 
-  > Create **Triage** from the template's **Views** section in
-  > `docs/project-management.md`, the source of truth for its definition.
-  > On a personal account, leave this view **ungrouped**, per the template.
+  > Create **Triage** from the selected release's `docs/project-management.md`
+  > **Views** section, the source of truth for its definition. For harmon-init
+  > **≥ v5.0.1**, use the template's current Views section; on a personal
+  > account, leave this view **ungrouped**, per that release. For an older
+  > selected release (for example **v4.45.0**), use that release's own Views
+  > section instead of applying the current definition to it.
 
 - [ ] **[manual — GitHub UI]** Turn on the project's built-in **"Auto-add to
       project"** workflow — this is what puts **every** issue and PR on the board.
@@ -365,9 +368,9 @@ Both owner types — the org-only follow-ups are in the next section.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
-The first two items apply only when `project_management: github` — the
-issue-field task is rendered for `github` **and** an org owner, so an org repo
-answering `linear`/`none` has no such task and should skip them.
+The issue-field setup item applies only when `project_management: github` —
+that task is rendered for `github` **and** an org owner, so an org repo answering
+`linear`/`none` has no such task and should skip that setup item.
 
 - [ ] **[scriptable via gh; `project_management: github` only]** Add the org
       **issue fields**. Needs `gh` with the `admin:org` scope
@@ -390,13 +393,18 @@ answering `linear`/`none` has no such task and should skip them.
   > or a `PATCH` the preview rejected — so read the WARNING lines rather than
   > trusting the exit code.
 
-- [ ] **[manual — GitHub UI; older boards only]** Migrate retired metadata using
-      the selected repo's `docs/project-management.md`: provision `domain:` and
-      `layer:` labels in every affected repository, map old values to labels,
-      and re-point every saved view before deleting retired fields. An org
-      issue field's removal destroys values across every repository, so verify
-      the whole org rather than just this board. Current setup is additive and
-      will not perform this migration for you.
+- [ ] **[manual — GitHub UI; retired issue fields present]** Detect retired
+      **Domain**, **Layer**, or **Agent** in the org's **Settings → Planning →
+      Issue fields**. If any exists, migrate it regardless of board age or the
+      `project_management` answer. Follow the selected template's
+      `docs/project-management.md` **Fields → Migrating a board that still has
+      one** even when that document is not generated locally: provision
+      `domain:` and `layer:` labels in every affected repository, migrate
+      Domain/Layer values to those labels, and re-point every saved view before
+      deleting retired fields.
+      An org issue field's removal destroys values across every repository, so
+      verify the whole org rather than just this board. Current setup is additive
+      and will not perform this migration for you.
 
 - [ ] **[scriptable via gh]** Add the bot machine account
       (`<author_git_provider_username>-bot`) as a **Write** collaborator (it does

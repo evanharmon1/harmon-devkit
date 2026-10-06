@@ -2462,11 +2462,23 @@ expect_ok "standards catalog distinguishes current setup from older pins" \
     grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog leaves transition execution to harmon-init" \
-    grep -qF 'not re-specified' \
+    python3 -c 'import pathlib, sys
+sentence = ("The complete classification-field catalog is not re-specified here; consult\n"
+            "the target\u0027s generated `docs/project-management.md` and setup scripts.")
+sys.exit(sentence not in pathlib.Path(sys.argv[1]).read_text())' \
     "$STANDARDIZE_REFS/standards-catalog.md"
+CATALOG_PM_FIELDS="$TMPROOT/catalog-pm-fields.md"
+awk '
+    /^### 1.13 / { pm = 1; next }
+    pm && /^### / { exit }
+    pm && /^- \*\*Fields\*\*/ { fields = 1 }
+    fields && /^- / && !/^- \*\*Fields\*\*/ { exit }
+    fields { print }
+' "$STANDARDIZE_REFS/standards-catalog.md" >"$CATALOG_PM_FIELDS"
+expect_ok "Status guard extracts the section 1.13 Fields subsection" \
+    grep -qF -- '- **Fields**' "$CATALOG_PM_FIELDS"
 expect_fail "standards catalog drops the obsolete Status hard-stop carve-out" \
-    grep -Eiq 'hard stop|known upstream gap' \
-    "$STANDARDIZE_REFS/standards-catalog.md"
+    grep -Eiq 'hard stop|known upstream gap' "$CATALOG_PM_FIELDS"
 expect_ok "standards catalog covers fixed Status handling and old pins" \
     sh -c 'grep -qF "\`incompatible\` summary, and is skipped" "$1" &&
         grep -qF "**≤ v4.7.2** still abort" "$1"' sh \
@@ -2494,13 +2506,27 @@ CHECKLIST_TRIAGE_NOTE="$TMPROOT/checklist-triage-note.md"
 sed -n '/^  > Create \*\*Triage\*\*/,/^$/p' \
     "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_TRIAGE_NOTE"
 expect_ok "checklist delegates Triage to Views and leaves personal accounts ungrouped" \
-    sh -c 'grep -qF "template'\''s **Views** section" "$1" &&
-        grep -qF "\`docs/project-management.md\`, the source of truth" "$1" &&
-        grep -qF "On a personal account, leave this view **ungrouped**" "$1"' sh \
+    sh -c 'grep -qF "selected release'\''s \`docs/project-management.md\`" "$1" &&
+        grep -qF "**≥ v5.0.1**" "$1" &&
+        grep -qF "**Views** section, the source of truth" "$1" &&
+        grep -qF "leave this view **ungrouped**" "$1" &&
+        grep -qF "**v4.45.0**" "$1" &&
+        grep -qF "use that release'\''s own Views" "$1"' sh \
     "$CHECKLIST_TRIAGE_NOTE"
 expect_fail "checklist no longer copies the obsolete Triage recipe" \
     grep -Eq 'Triage.*cannot be built|group by something you do have|missing a `Priority`' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
+CHECKLIST_ORG_MIGRATION="$TMPROOT/checklist-org-migration.md"
+sed -n '/retired issue fields present/,/^$/p' \
+    "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_ORG_MIGRATION"
+expect_ok "org retired-field migration triggers on presence independent of board age or setup" \
+    sh -c 'grep -qF "**Domain**, **Layer**, or **Agent**" "$1" &&
+        grep -qF "**Settings → Planning →" "$1" &&
+        grep -qF "Issue fields**. If any exists" "$1" &&
+        grep -qF "regardless of board age or the" "$1" &&
+        grep -qF "\`project_management\` answer" "$1" &&
+        grep -qF "even when that document is not generated locally" "$1"' sh \
+    "$CHECKLIST_ORG_MIGRATION"
 CHECKLIST_SHARED_PROJECT_SETUP="$TMPROOT/checklist-shared-project-setup.md"
 sed '/^### Org repos only/,$d' \
     "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_SHARED_PROJECT_SETUP"
@@ -2559,6 +2585,13 @@ expect_ok "catalog states one missing/placeholder ADR-date fallback with provena
         grep -qF "\`Date: TODO\`" "$1" &&
         grep -qF "git log --diff-filter=A --follow --format=%as -- <file> | tail -1" "$1" &&
         grep -qF "Report that fallback and its provenance; never guess" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "ADR date fallback refuses shallow boundaries until history or manual dates exist" \
+    sh -c 'grep -qF "git rev-parse --is-shallow-repository" "$1" &&
+        grep -qF "If shallow, do not derive a date" "$1" &&
+        grep -qF "git fetch --unshallow" "$1" &&
+        grep -qF "report the record as needing a manual" "$1" &&
+        grep -qF "Never rename from a shallow boundary" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
     expect_ok "$adr_rename_guide points at the canonical ADR-date fallback" \
@@ -7022,6 +7055,18 @@ elif grep -qF "MISSING  docs/decisions/0001-record-architecture-decisions.md" <<
 else
     bad "diff-template reports missing seed ADR when index.md has no numbered ADRs (MISSING diagnostic missing)"
 fi
+
+# A numeric-looking note is not evidence of an ADR log: the prefix requires
+# exactly four digits followed by a hyphen (legacy NNNN or a date year).
+printf '%s\n' '# Notes' >"$DT_TARGET/docs/decisions/2-notes.md"
+if adr_short_prefix_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template gates an ADR index backed only by 2-notes.md (expected non-zero exit)"
+elif grep -qF 'MISSING  docs/decisions/0001-record-architecture-decisions.md' <<<"$adr_short_prefix_out"; then
+    ok "diff-template gates an ADR index backed only by 2-notes.md"
+else
+    bad "diff-template gates an ADR index backed only by 2-notes.md (MISSING diagnostic missing)"
+fi
+rm -f "$DT_TARGET/docs/decisions/2-notes.md"
 
 # Restore target baseline for subsequent tests
 rm -f "$DT_TARGET/docs/decisions/index.md"

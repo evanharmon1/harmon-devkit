@@ -73,7 +73,10 @@ Repo-root siblings of `docs/` (deliberately NOT under `docs/`):
   recommend `git mv` to the date form using each record's own `Date:` line,
   and update links. Do not infer the date from a sequence number.
   **ADR date fallback:** when the `Date:` line is missing or not a real date
-  (for example `Date: TODO`, seeded by harmon-init v3.1.0–v4.42.0), use the
+  (for example `Date: TODO`, seeded by harmon-init v3.1.0–v4.42.0), first check
+  `git rev-parse --is-shallow-repository`. If shallow, do not derive a date:
+  unshallow with `git fetch --unshallow` or report the record as needing a manual
+  date. Never rename from a shallow boundary. With complete history, use the
   file's first-commit date from
   `git log --diff-filter=A --follow --format=%as -- <file> | tail -1`.
   Report that fallback and its provenance; never guess. The seed's
