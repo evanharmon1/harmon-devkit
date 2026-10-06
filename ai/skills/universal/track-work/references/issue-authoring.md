@@ -161,9 +161,11 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
   replaces (still reserved), or `agent:*` labels. They belong to later claim,
   routing, or execution workflows and are rejected even when they exist.
 
-`needs-triage` is derived by the shared helper, never an author's escape from
-completeness. Agent drafts must supply the corresponding axis's `none` label
-at preflight and creation. Legacy `--inapplicable` is a human-only preflight
+`needs-triage` is derived by the shared helper for classified issues, never an
+agent author's escape from completeness. Whoever files an incompletely
+classified human draft adds `needs-triage` and never invents missing ratings.
+Agent drafts must supply the corresponding axis's `none` label at preflight
+and creation. Legacy `--inapplicable` is a human-only preflight
 attestation and is rejected for agent drafts.
 
 ## Pre-create checker
@@ -200,9 +202,10 @@ The checker is read-only. It exits 0 when verified, 1 for an authoring-contract
 violation, and 2 for a usage error or indeterminate repository/vocabulary read.
 When `<target-checkout>/label-registry.json` exists, it is authoritative; an
 invalid or unreadable present manifest fails closed. When it is absent, the
-checker performs one bounded `gh label list --limit 1000` read against the
-target repository. Without a manifest there is no repository-declared writer
-policy to infer, so agent proposals are limited to the canonical axes, the
+checker performs one bounded `gh label list --limit 1000` vocabulary read
+against the target repository. Agent drafts also read labels independently
+through `classification-axes` for the provisioned rating catalogue. Without a
+manifest there is no repository-declared writer policy to infer, so agent proposals are limited to the canonical axes, the
 explicitly named work type, and `ai-generated`; other ordinary live labels
 remain human-only. The shared classification reader supplies the rating
 labels/field options independently of the ordinary manifest taxonomy. The checkout must have a GitHub remote matching
@@ -244,14 +247,21 @@ re-reads the issue and verifies its observed labels.
    ```
 
 3. Run `check-issue-metadata.sh` with the final title, body, and labels.
-4. Follow SKILL.md §5's create-and-classify recipe: create with the verified
-   labels/Type, then immediately pass the verified Impact/Risk/Complexity to
-   `triage-apply.sh label --repo <owner/repo> --issue <n> --impact <value>
-   --risk <value> --complexity <value> --execute` with the workflow-authorized
-   `TRIAGE_EXECUTE=1`. It owns the owner-type writes, derived Tier and marker.
-5. Return and independently re-read the created issue number, stored ratings,
-   Tier label, and absence of `needs-triage`. A helper or verification failure
-   returns the existing issue number and blocker, never successful completion.
+4. Follow the authorship path in SKILL.md §5's create-and-classify recipe.
+   Agent-authored drafts create with full verified classification, then
+   immediately pass all three verified ratings to `triage-apply.sh label
+   --repo <owner/repo> --issue <n> --impact <value> --risk <value>
+   --complexity <value> --execute` with the workflow-authorized
+   `TRIAGE_EXECUTE=1`. Human-authored drafts create with only what the human
+   supplied; never invent missing values or ratings. Whoever files an issue
+   that is not fully classified adds `needs-triage`. Run the helper only for
+   supplied proposals, omitting missing rating flags; skip it when none were
+   supplied. It owns the owner-type writes, derived Tier and marker.
+5. Return and independently re-read the created issue number and stored values.
+   For full classification, confirm the derived Tier and absence of
+   `needs-triage`; for incomplete human drafts, confirm the supplied values and
+   presence of `needs-triage`. A helper or verification failure returns the
+   existing issue number and blocker, never successful completion.
 
 ## Close reasons
 

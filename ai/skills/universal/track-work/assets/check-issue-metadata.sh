@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # check-issue-metadata.sh — validate an issue draft and its proposed metadata
 # before `gh issue create`. This script is deliberately read-only: it reads the
-# target checkout's label registries, or one bounded live label listing when no
-# manifest exists, and never calls a GitHub write endpoint.
+# target checkout's label registries and bounded live label listings when needed,
+# and never calls a GitHub write endpoint.
 set -euo pipefail
 
 FORBIDDEN_RE='^(foreman:|rigor:|tier:pinned$|tier:|strategy:|method:|claim:|agent:|priority:|effort:)'
@@ -23,8 +23,9 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
 
 Validates a proposed issue without writing to GitHub. The target checkout's
 label-registry.json is authoritative when present; otherwise the checker makes
-one bounded `gh label list --limit 1000` read against --repo. The checkout must
-have a GitHub remote matching --repo. A proposed member of a manifest
+one bounded `gh label list --limit 1000` vocabulary read against --repo. Agent
+drafts also read labels independently through `classification-axes` for the
+provisioned rating catalogue. The checkout must have a GitHub remote matching --repo. A proposed member of a manifest
 `open_values` family also uses one bounded label read to prove that concrete
 label exists; the manifest still supplies its policy.
 

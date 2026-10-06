@@ -845,6 +845,13 @@ for owner in personal organization; do
         fail "a human draft may omit every classification value: $(cat "$tmp/metadata.out")"
 done
 
+echo "==> metadata: a human draft with supplied classification may omit ratings"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Keep human ratings optional' --body-file "$valid_body" \
+    --human-authored --label feature --label area:fixture --label layer:none \
+    --label domain:fixture --label needs-triage)" = 0 ] ||
+    fail "human supplied classification without ratings must pass: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: agent drafts require persisted none; human legacy flags remain valid"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title 'Record explicit absence' --body-file "$valid_body" \

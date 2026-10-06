@@ -874,15 +874,25 @@ indeterminate repository/vocabulary read. The checker performs no GitHub writes.
 
 ### Create and classify through the shared helper
 
-Creation needs the user's go-ahead under the surrounding workflow. Once
-approved, create with the verified title, body, work type, area/layer/domain
-(including explicit `none`), provenance and concerns. Immediately apply the
-verified ratings through triage's **same** helper; it writes organization
-fields or personal labels, derives the Tier label, and reconciles
-`needs-triage`. Do not copy its field mutations, Tier matrix, or marker logic.
-The commands run from the target checkout so its manifest and policy govern.
+Creation needs the user's go-ahead under the surrounding workflow. The
+commands run from the target checkout so its manifest and policy govern.
+Choose the path matching the draft's authorship:
 
-Personal-account example (replace placeholders with the verified inputs):
+- **Agent-authored:** create with the verified title, body, work type,
+  area/layer/domain (including explicit `none`), provenance and concerns.
+  Immediately apply all three verified ratings through triage's **same**
+  helper; it writes organization fields or personal labels, derives the Tier
+  label, and reconciles `needs-triage`.
+- **Human-authored:** create with only the metadata the human supplied. Never
+  invent missing classification values or ratings. Whoever files an issue that
+  is not fully classified adds `needs-triage`, including when an agent files a
+  human-authored draft. If the human supplied proposals for the helper, run it
+  with only those supplied values; omit missing rating flags. If none were
+  supplied, skip the helper. Keep `needs-triage` on incomplete drafts.
+
+Do not copy the helper's field mutations, Tier matrix, or marker logic.
+
+Agent-authored personal-account example (replace placeholders with the verified inputs):
 
 ```sh
 issue_url="$(gh issue create --repo <owner/repo> --title '<title>' \
@@ -894,17 +904,18 @@ TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
   --impact <value> --risk <value> --complexity <value> --execute
 ```
 
-For an organization, use the same sequence with `gh issue create --type
-'<Type>'` and no work-type label; pass the same three rating flags to the
+For an agent-authored organization draft, use the same sequence with
+`gh issue create --type '<Type>'` and no work-type label; pass the same three rating flags to the
 helper. Without `--execute` the helper only plans; `--execute` also needs the
 workflow-authorized `TRIAGE_EXECUTE=1`. These are intentional write inputs,
 never permission to bypass a gate. Do not pass `--priority` or a `tier:*`
 label. Priority (AI) is optional and outside this required creation recipe.
 
 Read every helper result and independently re-read the created issue's stored
-classification. Confirm the derived Tier label and absence of `needs-triage`.
-A missing Tier matrix, unavailable Tier label, failed field write or failed
-verification is an incomplete creation: return the existing issue number and
+classification. For fully classified drafts, confirm the derived Tier label
+and absence of `needs-triage`; for incomplete human drafts, confirm only the
+supplied values and presence of `needs-triage`. A missing Tier matrix when
+needed, unavailable Tier label, failed field write or failed verification is an incomplete creation: return the existing issue number and
 the blocker to the caller, never retry `gh issue create` or report completion.
 Creation and field application are separate writes; a partial failure must
 remain visible as unfinished work on that existing issue.
