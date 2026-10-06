@@ -1198,6 +1198,26 @@ jq -e '.open[0].conformance.axis_state.layer == "ok"
        and (.open[0].conformance.flags | index("needs-triage-removable") != null)' \
     "$none_layer_out" >/dev/null || fail "groom must accept explicit layer:none"
 
+echo "==> scan: absent Layer requeues triage, explicit layer:none does not"
+jq '.[0].labels |= map(select(.name != "layer:none" and .name != "needs-triage"))' \
+    "$stub_dir/open-issues.json" >"$tmp/layer-issues.json"
+cp "$tmp/layer-issues.json" "$stub_dir/open-issues.json"
+missing_nt_out="$tmp/scan-layer-missing-needs-triage.json"
+[ "$(cd "$tmp" && run "$scan_script" --repo "$repo" --out "$missing_nt_out")" = 0 ] ||
+    fail "missing needs-triage scan must succeed: $(cat "$tmp/out" "$tmp/err")"
+jq -e '.open[0].conformance.flags
+       | index("axis-missing:layer") != null and index("missing-needs-triage") != null' \
+    "$missing_nt_out" >/dev/null || fail "groom must flag missing Layer without needs-triage"
+jq '.[0].labels += [{name: "layer:none"}]' "$stub_dir/open-issues.json" >"$tmp/layer-issues.json"
+cp "$tmp/layer-issues.json" "$stub_dir/open-issues.json"
+decided_nt_out="$tmp/scan-layer-decided-no-needs-triage.json"
+[ "$(cd "$tmp" && run "$scan_script" --repo "$repo" --out "$decided_nt_out")" = 0 ] ||
+    fail "decided Layer scan must succeed: $(cat "$tmp/out" "$tmp/err")"
+jq -e '.open[0].conformance.axis_state.layer == "ok"
+       and (.open[0].conformance.flags | index("axis-missing:layer") == null)
+       and (.open[0].conformance.flags | index("missing-needs-triage") == null)' \
+    "$decided_nt_out" >/dev/null || fail "layer:none must not flag missing needs-triage"
+
 cp "$tmp/issues-before-layer.json" "$stub_dir/open-issues.json"
 cp "$tmp/labels-before-layer.json" "$stub_dir/labels.json"
 

@@ -118,7 +118,7 @@ def issue_conformance($issue; $axes; $known; $wt; $owner_type; $nts; $claim_stal
   | (($typed | not)
      or ([$axes[] | select(axis_incomplete($ls; .; $known))] | length > 0)
      or ([$axes[] | axis_unknown($ls; .; $known) | length] | any(. > 0))) as $incomplete
-  | (([$ax[]] | any(. == "conflict"))
+  | (([$ax[]] | any(. == "none" or . == "conflict"))
      or ([$axes[] | axis_unknown($ls; .; $known) | length] | any(. > 0))
      or ($owner_type == "User" and ($have_wt | length) == 0)
      or ($owner_type == "Organization" and $nts == "unset")) as $needs_triage_worthy
