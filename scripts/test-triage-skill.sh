@@ -2864,6 +2864,13 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
              {"name": "priority-ai:p3"}],
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""},
+ {"number": 95, "title": "(classification): Only a retired tier label",
+  "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
+             {"name": "domain:auth"}, {"name": "impact:low"},
+             {"name": "risk:low"}, {"name": "complexity:s"},
+             {"name": "priority-ai:p2"}, {"name": "tier:adaptive"}],
+  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+  "assignees": [], "body": ""},
  {"number": 84, "title": "(classification): Two tier labels",
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}, {"name": "impact:low"},
@@ -2928,6 +2935,16 @@ jq -e '(.open[] | select(.number == 90)
             | length == 0)' \
     "$tmp/class-scan.json" >/dev/null ||
     fail "priority-ai-invalid: a conflicting Priority (AI), never required"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+    fail "default classification scan failed: $(cat "$tmp/out")"
+jq -e '(.open[] | select(.number == 95)
+        | (.flags | index("tier-invalid") != null)
+          and (.flags | index("tier-missing") == null)
+          and .required_missing == [])
+       and (.open[] | select(.number == 84) | .flags | index("tier-invalid") == null)
+       and (.open[] | select(.number == 81) | .flags | index("tier-invalid") == null)' \
+    "$tmp/out" >/dev/null ||
+    fail "a lone unpinned tier:adaptive must be flagged tier-invalid and stay in the default scan"
 jq -e '(.open[] | select(.number == 83) | .flags | index("priority-ai-missing") != null)
        and (.open[] | select(.number == 80) | .flags | index("priority-ai-missing") == null)
        and (.open[] | select(.number == 81) | .flags | index("priority-ai-missing") == null)' \
@@ -2980,7 +2997,7 @@ mv "$stub_dir/issues-open-types.json" "$tmp/issues-open-types.keep"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
     fail "per-issue org scan failed: $(cat "$tmp/out")"
 jq -e '.native_type_mode == "per-issue"
-       and ([.open[].number] | sort) == [80, 81, 82, 83, 84, 90]
+       and ([.open[].number] | sort) == [80, 81, 82, 83, 84, 90, 95]
        and ([.open[] | .flags | index("native-type-unknown") != null] | all)' \
     "$tmp/out" >/dev/null ||
     fail "an undecided native Type must flag native-type-unknown on every issue"
@@ -2997,7 +3014,7 @@ echo "==> scan: an unreadable org field pass is unknown, never unset"
 [ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
     --manifest "$manifest")" = 0 ] ||
     fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
-jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84, 90]
+jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84, 90, 95]
        and ([.open[] | .flags | index("classification-unreadable") != null]
             | all)' "$tmp/out" >/dev/null ||
     fail "every issue whose fields were not read must stay in open[], flagged"

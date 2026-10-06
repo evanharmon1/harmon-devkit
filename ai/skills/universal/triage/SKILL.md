@@ -286,9 +286,11 @@ and never removes it while it cannot read the native Type. The scan's
 
 **Settle the marker and the Tier even when nothing else is written.** For
 every issue the scan flags `missing-needs-triage`, `needs-triage-removable`,
-`tier-missing` (Risk and Complexity set, no Tier label, not pinned), or
-`tier-conflict` (more than one Tier label, not pinned) and that got no other
-apply call in 2a–2c, make one reconcile call:
+`tier-missing` (Risk and Complexity set, no Tier label, not pinned),
+`tier-conflict` (more than one Tier label, not pinned), or `tier-invalid` (a
+Tier label outside the provisioned rungs, such as the retired
+`tier:adaptive`, not pinned) and that got no other apply call in 2a–2c, make
+one reconcile call:
 
 ```sh
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> --reconcile
@@ -298,8 +300,8 @@ It writes nothing but the derived `needs-triage` and, where Risk and
 Complexity are both set and the issue carries no `tier:pinned`, the derived
 Tier: whenever it runs it repairs a missing, conflicting or stale Tier label.
 (Every other apply call makes the same derived writes alongside its own.) The
-scan selects issues only for a missing or conflicting Tier — it calls no
-resolver, so it cannot see a stale one. A stale Tier is repaired by the
+scan selects issues only for a missing, conflicting or invalid Tier — it
+calls no resolver, so it cannot see a stale one. A stale Tier is repaired by the
 reconcile call when it runs for another reason, or by the classification
 reconciler.
 

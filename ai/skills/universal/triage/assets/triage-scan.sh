@@ -724,9 +724,15 @@ jq -n -L "$title_module_dir" \
                | length > 0)) as $undecided
         | (($ls | index("needs-triage")) != null) as $has_nt
         # Unqualified Tier labels (tier:pinned and tier:<role>:* aside),
-        # tier:adaptive and off-ladder values included.
+        # tier:adaptive and off-ladder values included; $bad_tiers are the
+        # ones outside the provisioned rungs (classification-axes
+        # tier_values).
         | ([$ls[] | select(test("^tier:[^:]+$"))
-            | select(. != "tier:pinned")] | length) as $tiers
+            | select(. != "tier:pinned")]) as $tier_labels
+        | ($tier_labels | length) as $tiers
+        | ([$tier_labels[] | ltrimstr("tier:") as $v
+            | select(($class.tier_values | index($v)) == null)]
+           | length) as $bad_tiers
         | (($ls | index("tier:pinned")) != null) as $pinned
         | ([$conf.flags[]
             | select(. != "missing-needs-triage" and . != "partially-classified"
@@ -755,10 +761,13 @@ jq -n -L "$title_module_dir" \
            + (if $cls.risk.state == "set" and $cls.complexity.state == "set"
                  and ($pinned | not) and $tiers == 0
               then ["tier-missing"] else [] end)
-           # More than one Tier label on an unpinned issue: the reconcile
-           # call writes the derived Tier and removes every other unqualified
-           # tier label, tier:adaptive and off-ladder values included.
+           # More than one Tier label on an unpinned issue, or one outside the
+           # provisioned rungs (a lone tier:adaptive among them): the
+           # reconcile call writes the derived Tier and removes every other
+           # unqualified tier label, tier:adaptive and off-ladder included.
            + (if ($pinned | not) and $tiers > 1 then ["tier-conflict"]
+              else [] end)
+           + (if ($pinned | not) and $bad_tiers > 0 then ["tier-invalid"]
               else [] end)
            # A conflicting or off-scale Priority (AI). Never part of
            # required_missing: Priority (AI) is never required.

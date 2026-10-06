@@ -200,7 +200,14 @@ validate_label() {
     done <<<"$remove_labels"
     [ -z "$manifest" ] || cmd+=(--manifest "$manifest")
 
-    "${cmd[@]}" >/dev/null || die 4 "refused: #$issue label op failed triage-apply.sh validation"
+    # Exit 2 is triage-apply.sh's usage/environment error (an unreadable
+    # issue-field catalogue, a failed read): not a refusal of the row.
+    local rc=0
+    "${cmd[@]}" >/dev/null || rc=$?
+    [ "$rc" -ne 2 ] ||
+        die 2 "environment error: triage-apply.sh could not complete its" \
+            "dry run for #$issue"
+    [ "$rc" -eq 0 ] || die 4 "refused: #$issue label op failed triage-apply.sh validation"
 }
 
 validate_milestone_assign() {

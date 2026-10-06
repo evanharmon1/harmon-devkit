@@ -2144,6 +2144,24 @@ grep -q "^  tier: not written" "$tmp/out" ||
 grep -q "^issue edit" "$GH_STUB_LOG" && fail "a dry-run plan must not edit"
 cp "$tmp/labels-before-axes.json" "$stub_dir/labels.json"
 
+echo "==> apply-plan: a triage-apply.sh environment error is exit 2, not a refusal (harmon-devkit#1250)"
+env_plan="$tmp/label-env-plan.jsonl"
+cat >"$env_plan" <<'JSONL'
+{"op":"label","issue":31,"add":["risk:high"],"bot_owned":false}
+JSONL
+env_log="$tmp/label-env.log"
+: >"$env_log"
+: >"$GH_STUB_LOG"
+# An organization whose issue-field catalogue cannot be read (this stub
+# serves no GraphQL): triage-apply.sh exits 2 in pass 1.
+[ "$(run env GH_STUB_OWNER_TYPE=Organization "$apply" apply-plan \
+    --repo "$repo" --plan-file "$env_plan" --log "$env_log")" = 2 ] ||
+    fail "an environment error in pass 1 must exit 2: $(cat "$tmp/out" "$tmp/err")"
+grep -q "environment error: triage-apply.sh could not complete its dry run for #31" \
+    "$tmp/err" || fail "the error must say environment error: $(cat "$tmp/err")"
+grep -q "refused" "$tmp/err" && fail "an environment error is not a refusal: $(cat "$tmp/err")"
+grep -q "^issue edit" "$GH_STUB_LOG" && fail "nothing may be written"
+
 echo "==> apply-plan: an unwritable --outcomes sink is refused in pass 1, before any write (finding 8)"
 : >"$GH_STUB_LOG"
 outcomes_refuse_log="$tmp/outcomes-refuse.log"

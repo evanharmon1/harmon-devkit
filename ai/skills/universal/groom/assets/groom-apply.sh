@@ -490,7 +490,13 @@ validate_label() {
         [ -n "$a" ] || continue
         args+=(--remove "$a")
     done < <(jq -r '.remove // [] | .[]' <<<"$row")
-    "$triage_apply" "${args[@]}" >/dev/null ||
+    # Exit 2 is triage-apply.sh's usage/environment error, not a refusal.
+    local rc=0
+    "$triage_apply" "${args[@]}" >/dev/null || rc=$?
+    [ "$rc" -ne 2 ] ||
+        die 2 "environment error: triage-apply.sh could not complete its" \
+            "dry run for #$issue"
+    [ "$rc" -eq 0 ] ||
         die 4 "refused: #$issue label op failed triage-apply.sh's own" \
             "dry-run validation (never-list, allowlist, axis, or repo-kind)"
 }
