@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.52.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.51.0...v0.52.0) (2026-10-07)
+
+
+### Features
+
+* **breakdown:** propose impact, risk and complexity per chunk and drop suggest from the vocabulary ([#1302](https://github.com/evanharmon1/harmon-devkit/issues/1302)) ([c362d6f](https://github.com/evanharmon1/harmon-devkit/commit/c362d6f609914fa84ce8fc2dd7b725e1d24b7fe8))
+* **track-work:** require full classification on agent-authored issues at creation ([#1294](https://github.com/evanharmon1/harmon-devkit/issues/1294)) ([579d56c](https://github.com/evanharmon1/harmon-devkit/commit/579d56c495add67a8df3c7e427a8b912e36dbaf0))
+* **triage:** decide the human label at triage and at filing ([#1304](https://github.com/evanharmon1/harmon-devkit/issues/1304)) ([e8fc4a8](https://github.com/evanharmon1/harmon-devkit/commit/e8fc4a84773ff4858285ea06fbec1d309776787a))
+* **triage:** set impact, risk, complexity and priority (AI) and derive the tier in triage-apply ([#1275](https://github.com/evanharmon1/harmon-devkit/issues/1275)) ([975de6c](https://github.com/evanharmon1/harmon-devkit/commit/975de6cde6421415db2cad8133e4f9dc774aabc0))
+
+
+### Bug Fixes
+
+* **groom:** require Layer in the shared conformance check like Area and Domain ([#1301](https://github.com/evanharmon1/harmon-devkit/issues/1301)) ([796ec54](https://github.com/evanharmon1/harmon-devkit/commit/796ec54a282964ad2d2f387e4b4c65abe1f36788))
+* **standardize-repo:** sweep catalog and mode-guide drift against the template ([#1295](https://github.com/evanharmon1/harmon-devkit/issues/1295)) ([9c13e25](https://github.com/evanharmon1/harmon-devkit/commit/9c13e258d355e98ca3ad0d9e60109fa559b711d1))
+* **triage:** stop flagging tier-missing when no Tier can be derived ([#1306](https://github.com/evanharmon1/harmon-devkit/issues/1306)) ([8bba6f3](https://github.com/evanharmon1/harmon-devkit/commit/8bba6f352578f286d8bc0f8d519ffffa483b84ce))
+
 ## [0.51.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.50.0...v0.51.0) (2026-10-04)
 
 
