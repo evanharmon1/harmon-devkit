@@ -165,26 +165,27 @@ live_label_exists() {
       END { exit(found ? 0 : 1) }'
 }
 
-# One agent-none rule for discovery, inapplicability and explicit label validation.
+# One author-aware none rule for discovery, inapplicability and label validation.
 # Open classification families use family writers and live existence only;
 # closed families retain their enumerated policy. Return 2 for unknown reads.
-agent_none_available() {
-    local axis="$1" family="$2" known="$3" policy
+none_available() {
+    local axis="$1" author="$2" family policy
+    family="$(required_none_family "$axis:none")"
     policy="$(awk -F '|' -v family="$family" '
       $1 == "family" && $2 == family && $4 == "classification" &&
       $8 == "true" && $9 == "false" { print $5; exit }' "$registry_records")"
     if [ -n "$policy" ]; then
         case ",$policy," in
-        *,agent,*) ;;
+        *,"$author",*) ;;
         *) return 1 ;;
         esac
-        [ "$known" -eq 1 ] || return 2
+        [ "$live_known" -eq 1 ] || return 2
         live_label_exists "$axis:none"
     else
         [ -e "$manifest" ] || return 2
-        awk -F '|' -v wanted="$axis:none" -v family="$family" '
+        awk -F '|' -v wanted="$axis:none" -v family="$family" -v author="$author" '
           tolower($1) == wanted && $2 == family &&
-          index("," $4 ",", ",agent,") { found=1 }
+          index("," $4 ",", "," author ",") { found=1 }
           END { exit(found ? 0 : 1) }' "$vocab"
     fi
 }
@@ -193,8 +194,8 @@ required_none_family() {
     awk -F '|' -v label="$1" 'tolower($1 ":none") == label { print $2; exit }' "$required_families"
 }
 
-# Reconcile open-family values once; none comes from the shared predicate,
-# never from an enumerated record (including per-value writer overrides).
+# Reconcile live open-family values without filtering by any author's policy.
+# None records carry family writers, independent of enumeration and authorship.
 filter_required_open_vocabulary() {
     local label family axis writers exclusive prefix
     : >"$vocab.live"
@@ -208,7 +209,7 @@ filter_required_open_vocabulary() {
     mv "$vocab.live" "$vocab" || die "could not filter open-family vocabulary"
     while IFS='|' read -r prefix family; do
         grep -qxF -- "$family" "$required_open_families" || continue
-        if agent_none_available "$prefix" "$family" "$1"; then
+        if [ "$1" -eq 1 ] && live_label_exists "$prefix:none"; then
             writers="$(awk -F '|' -v family="$family" '$1 == "family" && $2 == family { print $5; exit }' "$registry_records")"
             printf '%s:none|%s|classification|%s|true\n' "$prefix" "$family" "$writers" >>"$vocab"
         fi
@@ -430,7 +431,7 @@ if [ "$required_axes_only" -eq 1 ]; then
     : >"$none_availability"
     while IFS='|' read -r axis family; do
         none_status=0
-        agent_none_available "$axis" "$family" "$live_known" || none_status=$?
+        none_available "$axis" agent || none_status=$?
         case "$none_status" in
         0) available=true ;;
         1) available=false ;;
@@ -646,13 +647,13 @@ if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
 fi
 
 # The complete filing-marker listing also supplies the shared open-none rule.
+live_known=1
 filter_required_open_vocabulary 1
 
 if [ "$author_type" = agent ]; then
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
-        family="$(awk -F '|' -v axis="$axis" '$1 == axis { print $2; exit }' "$required_families")"
         none_status=0
-        agent_none_available "$axis" "$family" 1 || none_status=$?
+        none_available "$axis" agent || none_status=$?
         if [ "$none_status" -eq 1 ]; then
             warn "registry has no agent-writable '$axis:none' member; --inapplicable $axis needs needs-triage on the created issue"
         else
@@ -973,9 +974,9 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         ;;
     esac
     none_family="$(required_none_family "$label_key")"
-    if [ "$author_type" = agent ] && [ -n "$none_family" ] && [ -e "$manifest" ]; then
-        if ! agent_none_available "${label_key%:none}" "$none_family" 1; then
-            violation "label '$label' is not writable by an agent (none member unavailable)"
+    if [ -n "$none_family" ] && [ -e "$manifest" ]; then
+        if ! none_available "${label_key%:none}" "$author_type"; then
+            violation "label '$label' is not writable by an $author_type (none member unavailable)"
             continue
         fi
     fi

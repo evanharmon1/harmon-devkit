@@ -805,8 +805,10 @@ the same bounded live listing
 and existence check as enforcement; an unavailable or truncated read reports null.
 For open classification families, `agent_writable_none` depends only on the live
 `<axis>:none` label and the family's agent writer policy, regardless of enumeration.
-Closed families retain their enumerated rule. Inapplicability and explicit none
-label validation use the same predicate.
+Closed families retain their enumerated rule. The shared `none_available <axis>
+<author>` predicate checks the draft's actual author for explicit none labels;
+availability reporting and agent inapplicability pass `agent`. Live none records
+retain family writer policy in the vocabulary for per-author authorization.
 It keeps the canonical fallback without a manifest; an unreadable
 or invalid manifest refuses. Every consumer uses this output as its axis list
 and never re-derives it. An axis with `agent_writable_value: false` is a finding

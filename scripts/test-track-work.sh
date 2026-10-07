@@ -972,6 +972,11 @@ jq -e '.axes[] | select(.axis == "surface").agent_writable_none == false' \
 [ "$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' run_metadata "${axes_draft[@]}" \
     --label area:none --label domain:none --label layer:none --inapplicable surface)" = 0 ] ||
     fail "human-only open-none family must permit agent inapplicability"
+[ "$(METADATA_GH_LABELS=$'needs-triage\nsurface:none' run_metadata \
+    --repo testowner/testrepo --repo-root "$metadata_axes" --owner-type personal \
+    --title 'Accept human open none' --body-file "$valid_body" --human-authored \
+    --work-type-label feature --label surface:none)" = 0 ] ||
+    fail "human-authored live open none must use family human policy: $(cat "$tmp/metadata.out")"
 
 : >"$tmp/required-axes-gh.log"
 axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
