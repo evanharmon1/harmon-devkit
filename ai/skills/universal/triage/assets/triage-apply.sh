@@ -204,6 +204,20 @@ render_manifest() {
     printf '%s\n' "$records"
 }
 
+# Relative policy/manifest names are trustworthy only at the checkout root.
+# The scan invokes this same check through the internal check-root command.
+guard_run_root() {
+    [ -n "${TRIAGE_REPO:-}" ] || return 0
+    local root cwd
+    cwd="$(pwd -P)" || die 4 "refused: could not resolve the bound run's working directory"
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" ||
+        die 4 "refused: a bound run must run from the repository root (not a Git checkout)"
+    root="$(cd "$root" && pwd -P)" ||
+        die 4 "refused: could not resolve the bound run's repository root"
+    [ "$cwd" = "$root" ] ||
+        die 4 "refused: a bound run must run from the repository root '$root' (got '$cwd')"
+}
+
 # In a bound run (TRIAGE_REPO set by the wrapper) the manifest is the repo's
 # own ./label-registry.json and nothing else: the worker holds a scratch
 # Write grant, so a caller-chosen manifest path would let a prompt-injected
@@ -1752,7 +1766,9 @@ cmd_label() {
 [ "$#" -ge 1 ] || usage
 cmd="$1"
 shift
+guard_run_root
 case "$cmd" in
+check-root) [ "$#" -eq 0 ] || usage ;;
 allowlist) cmd_allowlist "$@" ;;
 axes) cmd_axes "$@" ;;
 axis-values) cmd_axis_values "$@" ;;

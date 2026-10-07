@@ -778,6 +778,31 @@ echo "==> label: a mismatched --repo is refused when the run is bound"
     --add area:ci)" = 0 ] ||
     fail "bound repo write must pass (fallback allowlist)"
 
+echo "==> bound reads and writes require the physical repository root"
+root_apply="$(pwd -P)/${apply#./}"
+root_scan="$(pwd -P)/${scan#./}"
+for bound_cwd in scripts "$tmp"; do
+    (
+        cd "$bound_cwd"
+        for root_cmd in label classification-axes scan; do
+            : >"$GH_STUB_LOG"
+            case "$root_cmd" in
+            label) status="$(run env TRIAGE_REPO="$repo" "$root_apply" label \
+                --repo "$repo" --issue 10 --add area:ci)" ;;
+            classification-axes) status="$(run env TRIAGE_REPO="$repo" "$root_apply" \
+                classification-axes --repo "$repo" --tier-derivation)" ;;
+            scan) status="$(run env TRIAGE_REPO="$repo" "$root_scan" --repo "$repo")" ;;
+            esac
+            [ "$status" = 4 ] || fail "bound $root_cmd must refuse cwd $bound_cwd"
+            grep -q 'bound run must run from the repository root' "$tmp/out" ||
+                fail "bound $root_cmd must explain the cwd refusal"
+            [ ! -s "$GH_STUB_LOG" ] || fail "bound cwd refusal must precede API reads"
+        done
+    )
+done
+[ "$(run env TRIAGE_REPO="$repo" "$apply" classification-axes --repo "$repo")" = 0 ] ||
+    fail "bound catalogue from the repository root must work"
+
 echo "==> label: a bound run refuses a caller-chosen manifest"
 [ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo "$repo" --issue 10 \
     --add area:ci --manifest "$manifest")" = 4 ] ||
@@ -1453,6 +1478,38 @@ cat >"$stub_dir/issues-closed.json" <<'JSON'
   "closedAt": "2026-01-01T00:00:00Z", "labels": [],
   "body": "1. [ ] ordered\n> - [ ] quoted\n-  [ ] wide gap"}]
 JSON
+
+echo "==> bound scan from the physical repository root still works"
+[ "$(run env TRIAGE_REPO="$repo" "$scan" --repo "$repo")" = 0 ] ||
+    fail "bound scan from the repository root must work"
+
+echo "==> scan: derivability summary tolerates missing fields and null cases"
+summary_bundle="$tmp/summary-bundle"
+cp -R "$standalone_triage" "$summary_bundle"
+summary_apply="$summary_bundle/triage/assets/triage-apply.sh"
+mv "$summary_apply" "$summary_apply.original"
+cat >"$summary_apply" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = classification-axes ]; then
+    "$0.original" "$@" | jq --arg shape "${GH_STUB_DERIVATION_SHAPE:?}" '
+      if $shape == "missing" then del(.tier_derivation)
+      else .tier_derivation = {cases: null} end'
+else
+    exec "$0.original" "$@"
+fi
+STUB
+chmod +x "$summary_apply"
+summary_fixtures="$tmp/summary-fixtures"
+cp -R "$stub_dir" "$summary_fixtures"
+echo '[]' >"$summary_fixtures/issues-open.json"
+for shape in missing null; do
+    [ "$(run env GH_STUB_DIR="$summary_fixtures" GH_STUB_DERIVATION_SHAPE="$shape" \
+        "$summary_bundle/triage/assets/triage-scan.sh" --repo "$repo" \
+        --manifest "$manifest")" = 0 ] || fail "summary with $shape derivation failed"
+    jq -e '.summary.tier_derivation_reasons == []' "$tmp/out" >/dev/null ||
+        fail "summary with $shape derivation must have no unavailable reasons"
+done
 
 echo "==> scan: emits facts, flags, and excludes the report issue"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||

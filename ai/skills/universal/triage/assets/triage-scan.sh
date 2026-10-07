@@ -425,6 +425,10 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$repo" ] || usage
 guard_repo_binding "$repo"
+# Share the writer's physical-root check before trusting relative input paths.
+if [ -n "${TRIAGE_REPO:-}" ]; then
+    "$script_dir/triage-apply.sh" check-root || exit "$?"
+fi
 # Same manifest rule as triage-apply.sh: a bound run reads the repo's own
 # manifest only — a worker-writable one would define its own vocabulary.
 if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
@@ -705,9 +709,11 @@ jq -n -L "$title_module_dir" \
     axes: $axes,
     classification_axes: $class,
     summary: {tier_derivation_reasons:
-      ([$class.tier_derivation.cases[] | select(.derivable | not) | .reason]
-       + (if $class.tier_derivation.cases == []
-          then [$class.tier_derivation.reason] else [] end) | unique)},
+      (($class.tier_derivation // {}) as $derivation
+       | ($derivation.cases // []) as $cases
+       | [$cases[] | select(.derivable | not) | .reason]
+         + (if $cases == [] then [$derivation.reason // empty] else [] end)
+       | unique)},
     fields_mode: $fields_mode,
     native_type_mode: $native_type_mode,
     thresholds: {claim_stale_days: $claim_stale,
