@@ -222,8 +222,6 @@ function validateRegistry(registry) {
     die('label-registry.json families must be a non-empty array')
   }
 
-  const familyIds = new Set()
-  const provisionedNames = new Map()
   for (const [familyIndex, family] of registry.families.entries()) {
     const where = `family[${familyIndex}]`
     assertObject(family, where)
@@ -246,8 +244,6 @@ function validateRegistry(registry) {
     if (typeof family.family !== 'string' || !slugPattern.test(family.family)) {
       die(`${where}.family must be a lowercase slug`)
     }
-    if (familyIds.has(family.family)) die(`duplicate family id ${family.family}`)
-    familyIds.add(family.family)
     if (family.prefix !== null && (typeof family.prefix !== 'string' || !slugPattern.test(family.prefix))) {
       die(`${where}.prefix must be null or a lowercase slug`)
     }
@@ -361,10 +357,6 @@ function validateRegistry(registry) {
         if (typeof value.color !== 'string' && typeof family.color !== 'string') {
           die(`${valueWhere} provisioned labels need a color`)
         }
-        if (provisionedNames.has(name)) {
-          die(`${valueWhere} duplicates provisioned label ${name} from ${provisionedNames.get(name)}`)
-        }
-        provisionedNames.set(name, family.family)
       }
     }
   }
@@ -429,6 +421,9 @@ function validateAgentRegistry(registry) {
 // the create gate refuses, including human Priority/Effort and derived Tier.
 const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method', 'priority', 'effort'])
 const ratingPrefixes = new Set(['impact', 'risk', 'complexity'])
+function isRatingLabel(name) {
+  return [...ratingPrefixes].some((prefix) => name.startsWith(`${prefix}:`))
+}
 
 function safe(family, value = {}) {
   const writers = value.writers ?? family.writers
@@ -648,7 +643,7 @@ if (!defaultPaths.has('label-registry.json')) {
     .filter((label) => {
       const normalized = normalizeLabelName(label.name)
       return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix)) &&
-        !ratingPrefixes.has(normalized.split(':')[0])
+        !isRatingLabel(normalized)
     })
     .sort((left, right) => left.name.localeCompare(right.name))
   process.stdout.write(
@@ -719,10 +714,70 @@ if (registry.families.some((family) => family.source === 'agent-registry')) {
   agentVocabulary = validateAgentRegistry(agentRegistry)
 }
 
+// One collision invariant covers emitted and excluded sources alike.
+// A null prefix owns no namespace; a concrete name under another source's
+// prefix still collides even if that source has no live candidates.
+function assertDisjointSources(sources) {
+  const ids = new Map()
+  const prefixes = new Map()
+  const names = new Map()
+  function reserve(index, kind, value, source) {
+    const prior = index.get(value)
+    if (prior && prior !== source) {
+      die(`collision: ${kind} ${value} is shared by ${prior.origin} and ${source.origin}`)
+    }
+    index.set(value, source)
+  }
+  for (const source of sources) {
+    reserve(ids, 'family id', source.family, source)
+    if (source.prefix !== null) reserve(prefixes, 'prefix', source.prefix, source)
+    for (const name of source.names) reserve(names, 'label', normalizeLabelName(name), source)
+  }
+  for (const [name, source] of names) {
+    for (const [prefix, owner] of prefixes) {
+      if (source !== owner && name.startsWith(`${prefix}:`)) {
+        die(`collision: label ${name} is shared by ${source.origin} and ${owner.origin} (prefix ${prefix})`)
+      }
+    }
+  }
+}
+
+function generatedNames(family) {
+  if (family.source !== 'agent-registry') return []
+  if (family.axis === 'model' && family.registry_set === family.prefix) {
+    return [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
+  }
+  if (family.registry_set === 'foreman-adapters') {
+    return [...agentVocabulary.adapters.entries()]
+      .filter(([, adapter]) => adapter.provision_label === true)
+      .map(([slug]) => `${family.prefix}:${slug}`)
+  }
+  return []
+}
+
+const manifestSources = registry.families.map((family, index) => ({
+  origin: `manifest family[${index}] ${family.family}`,
+  family: family.family,
+  prefix: family.prefix,
+  names: new Set([
+    ...family.values.map((value) => family.prefix === null ? value.value : `${family.prefix}:${value.value}`),
+    ...generatedNames(family),
+    ...(family.open_values === true && family.prefix !== null ?
+      liveLabels.filter((label) => normalizeLabelName(label.name).startsWith(`${family.prefix}:`))
+        .map((label) => label.name) : [])
+  ])
+}))
+assertDisjointSources([
+  ...manifestSources,
+  ...[...ratingPrefixes].map((axis) => ({
+    origin: `classification-helper family ${axis}`,
+    family: axis,
+    prefix: axis,
+    names: new Set(classification.axes[axis].values.map((value) => `${axis}:${value}`))
+  }))
+])
+
 const resultFamilies = new Map()
-const candidateOwners = new Map()
-const declaredOwners = new Map()
-const knownConcrete = new Set()
 // claim:/agent:/foreman: are live ownership/dispatch controls; the
 // execution-control prefixes (see safe()'s definition) belong here too — a
 // prefix-less family (family.prefix === null, so safe()'s own check never
@@ -737,33 +792,16 @@ const reservedConcretePrefixes = [
   ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
 ]
 
-function reserveConcrete(family, name) {
-  const normalized = normalizeLabelName(name)
-  const prior = declaredOwners.get(normalized)
-  if (prior && prior !== family.family) {
-    die(`label ${name} is declared by both family ${prior} and family ${family.family}`)
-  }
-  declaredOwners.set(normalized, family.family)
-  knownConcrete.add(normalized)
-}
-
 function addCandidate(family, name, value = {}) {
   const normalized = normalizeLabelName(name)
   // Check rendered names too: a prefix-less family cannot bypass the shared
   // reader's rating vocabulary by enumerating arbitrary rating labels.
-  if (ratingPrefixes.has(normalized.split(':')[0])) return
+  if (isRatingLabel(normalized)) return
   if (reservedConcretePrefixes.some((prefix) => normalized.startsWith(prefix))) {
     die(`planning-safe family ${family.family} declares reserved label ${name}`)
   }
   const liveLabel = live.get(normalized)
   if (!liveLabel) return
-  const prior = candidateOwners.get(normalized)
-  if (prior && prior !== family.family) {
-    die(
-      `label ${liveLabel.name} is ambiguous between planning-safe families ${prior} and ${family.family}`
-    )
-  }
-  candidateOwners.set(normalized, family.family)
   if (!resultFamilies.has(family.family)) resultFamilies.set(family.family, outputFamily(family))
   resultFamilies.get(family.family).labels.push({
     name: liveLabel.name,
@@ -777,70 +815,22 @@ function addCandidate(family, name, value = {}) {
 }
 
 for (const family of registry.families) {
-  if (family.source !== 'agent-registry') {
-    for (const value of family.values) {
-      const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
-      reserveConcrete(family, name)
-      if (safe(family, value)) addCandidate(family, name, value)
-    }
-  } else if (family.source === 'agent-registry') {
-    let names = []
-    if (family.registry_set === 'claim') {
-      names = [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
-    } else if (family.registry_set === 'foreman-adapters') {
-      names = [...agentVocabulary.adapters.entries()]
-        .filter(([, adapter]) => adapter.provision_label === true)
-        .map(([slug]) => `${family.prefix}:${slug}`)
-    }
-    for (const name of names) {
-      reserveConcrete(family, name)
-      if (safe(family)) addCandidate(family, name)
-    }
+  for (const value of family.values) {
+    const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
+    if (safe(family, value)) addCandidate(family, name, value)
   }
-}
-
-for (const family of registry.families.filter((candidate) => candidate.open_values === true)) {
-  // Every prefixed open family participates in overlap checks, including
-  // excluded model metadata. A model refinement may share its registry's
-  // model namespace, but never a planning family's namespace.
-  if (family.prefix === null) continue
-  const conflictingFamily = registry.families.find(
-    (candidate) =>
-      candidate.family !== family.family &&
-      candidate.prefix === family.prefix &&
-      !(family.axis === 'model' && candidate.axis === 'model' &&
-        candidate.source === 'agent-registry' && candidate.registry_set === family.prefix)
-  )
-  if (conflictingFamily) {
-    die(
-      `planning-safe open family ${family.family} overlaps prefix ${family.prefix} with ` +
-      `family ${conflictingFamily.family}; excluded labels cannot be reclassified safely`
-    )
+  for (const name of generatedNames(family)) {
+    if (safe(family)) addCandidate(family, name)
   }
-  const conflictingConcrete = [...candidateOwners].find(([name, owner]) => {
-    return (
-      owner !== family.family &&
-      name.startsWith(`${family.prefix}:`)
-    )
-  })
-  if (conflictingConcrete) {
-    const [name, owner] = conflictingConcrete
-    die(
-      `planning-safe concrete label ${live.get(name)?.name ?? name} from family ${owner} overlaps ` +
-      `open family ${family.family} prefix ${family.prefix}; semantics cannot be verified safely`
-    )
-  }
-}
-
-for (const family of registry.families) {
   if (!safe(family) || family.open_values !== true) continue
   if (family.prefix === null) {
     die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
   }
-
+  const declared = new Set(family.values.map((value) => normalizeLabelName(`${family.prefix}:${value.value}`)))
   for (const [normalized, label] of live) {
-    if (!normalized.startsWith(`${family.prefix}:`) || knownConcrete.has(normalized)) continue
-    addCandidate(family, label.name)
+    if (normalized.startsWith(`${family.prefix}:`) && !declared.has(normalized)) {
+      addCandidate(family, label.name)
+    }
   }
 }
 

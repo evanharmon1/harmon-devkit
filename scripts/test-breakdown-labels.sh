@@ -163,21 +163,6 @@ write_registry() {
       "values":[{"value":"$area","description":"Area"},{"value":"missing","description":"Not live"}]
     },
     {
-      "family":"impact","prefix":"impact","purpose":"Effect of the work","axis":"classification",
-      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
-      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"Broad effect"}]
-    },
-    {
-      "family":"risk","prefix":"risk","purpose":"Failure consequences","axis":"classification",
-      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
-      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"low","description":"Limited risk"}]
-    },
-    {
-      "family":"complexity","prefix":"complexity","purpose":"Reasoning difficulty","axis":"classification",
-      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
-      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"m","description":"Moderate work"}]
-    },
-    {
       "family":"priority","prefix":"priority","purpose":"Human priority","axis":"classification",
       "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
       "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"High"}]
@@ -199,12 +184,6 @@ write_registry() {
       "placeholder":"suggest:<family>","color":"BFD4F2","values":[]
     },
     {
-      "family":"suggest-model","prefix":"suggest","purpose":"Advisory model refinement","axis":"model",
-      "source":"tool-owned","writers":["human","agent"],"readers":"humans",
-      "lifecycle":"durable","exclusive":false,"provision":false,"open_values":true,
-      "placeholder":"suggest:<family>:<model>","values":[]
-    },
-    {
       "family":"override","prefix":"override","purpose":"Per-value overrides","axis":"meta",
       "source":"inline","writers":["human"],"readers":"humans","lifecycle":"durable",
       "exclusive":false,"provision":true,
@@ -224,12 +203,6 @@ write_registry() {
       "source":"agent-registry","registry_set":"claim","writers":["agent"],"readers":"agents",
       "lifecycle":"claim-release","exclusive":false,"provision":true,
       "placeholder":"claim:<family>","color":"006B75","values":[]
-    },
-    {
-      "family":"claim-model","prefix":"claim","purpose":"Model ownership refinement","axis":"model",
-      "source":"tool-owned","writers":["agent"],"readers":"agents",
-      "lifecycle":"claim-release","exclusive":false,"provision":false,
-      "open_values":true,"placeholder":"claim:<family>:<model>","values":[]
     },
     {
       "family":"workflow","prefix":"phase","purpose":"Transient state","axis":"workflow",
@@ -514,17 +487,6 @@ if jq -e '(.classification.axes.impact.values | index("off-scale")) == null' <<<
 else
     bad "off-scale organization option cannot become a rating proposal"
 fi
-# Prefix-less values must obey the same owner-specific rating storage.
-jq '(.families[] | select(.family == "risk")) |=
-    (.prefix = null | .values[0].value = "risk:low")' "$organization/label-registry.json" >"$organization/updated.json"
-mv "$organization/updated.json" "$organization/label-registry.json"
-if org_rendered="$(discover "$organization")" && jq -e '
-    (any(.families[].labels[]; .name == "risk:low") | not)
-' <<<"$org_rendered" >/dev/null; then
-    ok "prefix-less rating declarations cannot bypass organization field storage"
-else
-    bad "organization field storage also governs rendered concrete names"
-fi
 # Absence of a manifest must not turn org rating labels into candidates.
 mv "$organization/label-registry.json" "$organization/saved-registry.json"
 if org_fallback="$(discover "$organization")" && jq -e '
@@ -553,6 +515,62 @@ elif [ ! -s "$organization/output" ] && grep -q 'could not read provisioned Impa
 else
     bad "unavailable field discovery fails with a diagnostic"
 fi
+
+# One table exercises the integration collision invariant across all surfaces.
+for invariant_case in open-rating prefixless-model helper-id bare-ratings open-model excluded-concrete; do
+    invariant_fixture="$tmproot/invariant-$invariant_case"
+    mkdir -p "$invariant_fixture"
+    write_agent_registry "$invariant_fixture"
+    write_registry "$invariant_fixture" api
+    write_labels "$invariant_fixture" api
+    case "$invariant_case" in
+    open-rating)
+        extra='[{"family":"rating-open","prefix":"risk","axis":"meta","source":"tool-owned","open_values":true,"placeholder":"risk:<value>","values":[]}]'
+        sources='rating-open.*classification-helper family risk'
+        ;;
+    prefixless-model)
+        extra='[{"family":"hidden-model","prefix":null,"axis":"model","source":"inline","values":[{"value":"area:api"}]}]'
+        sources='(hidden-model.*family\[0\] area|family\[0\] area.*hidden-model)'
+        ;;
+    helper-id)
+        extra='[{"family":"risk","prefix":"custom-risk","axis":"meta","source":"inline","values":[{"value":"live"}]}]'
+        sources='manifest family.*risk.*classification-helper family risk'
+        ;;
+    bare-ratings)
+        extra='[{"family":"bare-ratings","prefix":null,"axis":"meta","source":"inline","values":[{"value":"risk"},{"value":"impact"},{"value":"complexity"}]}]'
+        jq '. + [{name:"risk"},{name:"impact"},{name:"complexity"}]' "$invariant_fixture/labels.json" >"$invariant_fixture/labels-updated.json"
+        mv "$invariant_fixture/labels-updated.json" "$invariant_fixture/labels.json"
+        ;;
+    open-model)
+        extra='[{"family":"model-open","prefix":"area","axis":"model","source":"tool-owned","open_values":true,"placeholder":"area:<model>","values":[]}]'
+        sources='family\[0\] area.*model-open'
+        ;;
+    excluded-concrete)
+        extra='[{"family":"hidden-owner","prefix":null,"axis":"model","source":"inline","values":[{"value":"Ready"}]},{"family":"visible-owner","prefix":null,"axis":"meta","source":"inline","values":[{"value":"ready"}]}]'
+        sources='hidden-owner.*visible-owner'
+        ;;
+    esac
+    jq --argjson extra "$extra" '.families += ($extra | map(
+        {purpose:"Collision invariant fixture", writers:["agent"], readers:"agents",
+         lifecycle:"durable", exclusive:false, provision:false} + .))' "$invariant_fixture/label-registry.json" >"$invariant_fixture/updated.json"
+    mv "$invariant_fixture/updated.json" "$invariant_fixture/label-registry.json"
+    if invariant_output="$(discover "$invariant_fixture" 2>"$invariant_fixture/error")"; then
+        if [ "$invariant_case" = bare-ratings ] && jq -e '
+            ([.families[] | select(.family == "bare-ratings") | .labels[].name] | sort) ==
+            ["complexity", "impact", "risk"]
+        ' <<<"$invariant_output" >/dev/null; then
+            ok "collision invariant table: bare rating names remain ordinary labels"
+        else
+            bad "collision invariant table: $invariant_case must fail closed"
+        fi
+    elif [ "$invariant_case" != bare-ratings ] && [ -z "$invariant_output" ] &&
+        grep -q 'collision:' "$invariant_fixture/error" &&
+        grep -qE "$sources" "$invariant_fixture/error"; then
+        ok "collision invariant table: $invariant_case names both conflicting sources"
+    else
+        bad "collision invariant table: $invariant_case diagnostic: $(cat "$invariant_fixture/error")"
+    fi
+done
 
 second="$tmproot/second"
 mkdir -p "$second"
@@ -609,6 +627,9 @@ cat >"$fallback/labels.json" <<'JSON'
   {"name":"Effort:high","description":"Human effort"},
   {"name":"tier:pinned","description":"Human pin"},
   {"name":"security","description":"Security"},
+  {"name":"risk","description":"Ordinary bare label"},
+  {"name":"impact","description":"Ordinary bare label"},
+  {"name":"complexity","description":"Ordinary bare label"},
   {"name":"claim:gpt","description":"Claim"},
   {"name":"Claim:claude","description":"Case-varied claim"},
   {"name":"agent:codex","description":"Legacy claim"},
@@ -623,7 +644,7 @@ fallback_output="$(discover "$fallback")"
 if jq -e '
     .mode == "live-label-fallback" and .verified_semantics == false and
     .work_type_selection == "human-confirmation-required" and
-    ([.labels[].name] | sort) == ["area:api", "feature", "security"]
+    ([.labels[].name] | sort) == ["area:api", "complexity", "feature", "impact", "risk", "security"]
 ' <<<"$fallback_output" >/dev/null; then
     ok "missing registry leaves bounded live labels semantically unclassified"
 else
@@ -745,7 +766,7 @@ jq '.families += [{
 mv "$namespace_collision/registry.json" "$namespace_collision/label-registry.json"
 if discover "$namespace_collision" >"$namespace_collision/output" 2>"$namespace_collision/error"; then
     bad "excluded generated namespaces cannot be reclassified by open families"
-elif [ ! -s "$namespace_collision/output" ] && grep -q 'overlaps prefix claim' "$namespace_collision/error"; then
+elif [ ! -s "$namespace_collision/output" ] && grep -q 'collision: prefix claim.*claim.*claim-open' "$namespace_collision/error"; then
     ok "excluded generated namespaces cannot be reclassified by open families"
 else
     bad "excluded generated namespace overlap fails closed with a diagnostic"
@@ -765,7 +786,7 @@ jq '.families += [{
 mv "$concrete_collision/registry.json" "$concrete_collision/label-registry.json"
 if discover "$concrete_collision" >"$concrete_collision/output" 2>"$concrete_collision/error"; then
     bad "safe and unsafe families cannot declare the same concrete label"
-elif [ ! -s "$concrete_collision/output" ] && grep -q 'declared by both family area and family unsafe-area' "$concrete_collision/error"; then
+elif [ ! -s "$concrete_collision/output" ] && grep -q 'collision: prefix area.*area.*unsafe-area' "$concrete_collision/error"; then
     ok "safe and unsafe families cannot declare the same concrete label"
 else
     bad "cross-family concrete-label ambiguity fails closed with a diagnostic"
@@ -902,7 +923,7 @@ jq '.families += [{
 mv "$unsafe_open_overlap/registry.json" "$unsafe_open_overlap/label-registry.json"
 if discover "$unsafe_open_overlap" >"$unsafe_open_overlap/output" 2>"$unsafe_open_overlap/error"; then
     bad "unsafe open families cannot overlap planning-safe closed families"
-elif [ ! -s "$unsafe_open_overlap/output" ] && grep -q 'overlaps prefix area' "$unsafe_open_overlap/error"; then
+elif [ ! -s "$unsafe_open_overlap/output" ] && grep -q 'collision: prefix area.*area.*unsafe-area-open' "$unsafe_open_overlap/error"; then
     ok "unsafe open-family prefix overlaps fail closed"
 else
     bad "unsafe open-family overlap fails with a diagnostic"
@@ -923,7 +944,7 @@ mv "$model_open_overlap/updated.json" "$model_open_overlap/label-registry.json"
 if discover "$model_open_overlap" >"$model_open_overlap/output" 2>"$model_open_overlap/error"; then
     bad "excluded open model families cannot share a planning area namespace"
 elif [ ! -s "$model_open_overlap/output" ] &&
-    grep -q 'open family model-area-open overlaps prefix area with family area' "$model_open_overlap/error"; then
+    grep -q 'collision: prefix area.*area.*model-area-open' "$model_open_overlap/error"; then
     ok "open model family under area fails the overlap refusal"
 else
     bad "open model overlap fails closed with the expected diagnostic"
@@ -948,7 +969,7 @@ if discover "$prefix_null_open_overlap" >"$prefix_null_open_overlap/output" \
     2>"$prefix_null_open_overlap/error"; then
     bad "prefix-null concrete labels cannot bypass unsafe open-family overlap"
 elif [ ! -s "$prefix_null_open_overlap/output" ] &&
-    grep -q 'concrete label area:api from family area overlaps open family unsafe-area-open' \
+    grep -q 'collision: label area:api.*area.*unsafe-area-open' \
         "$prefix_null_open_overlap/error"; then
     ok "prefix-null concrete labels cannot bypass unsafe open-family overlap"
 else
@@ -971,7 +992,7 @@ JSON
 printf '[{"name":"shared:x","description":"Ambiguous"}]\n' >"$ambiguous/labels.json"
 if discover "$ambiguous" >"$ambiguous/output" 2>"$ambiguous/error"; then
     bad "ambiguous registry interpretation fails closed"
-elif [ ! -s "$ambiguous/output" ] && grep -Eq 'ambiguous|overlaps prefix shared' "$ambiguous/error"; then
+elif [ ! -s "$ambiguous/output" ] && grep -q 'collision: prefix shared.*first.*second' "$ambiguous/error"; then
     ok "ambiguous registry interpretation fails closed with a diagnostic"
 else
     bad "ambiguous registry interpretation fails closed with a diagnostic"

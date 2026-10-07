@@ -440,8 +440,15 @@ target's issues (`gh issue list --repo <target> --state all` with `--json
 number,title,body`, newest first, wide enough to cover the gap), matches
 already-filed chunks by title *and* body — GitHub enforces neither unique
 titles nor anything about provenance lines, so a hit counts only when both
-agree with the approved chunk — and continues from the first chunk with no
-confirmed hit. The same rule covers milestones: list existing ones
+agree with the approved chunk. Before skipping any matched issue, independently
+re-read its stored classification and required labels against the approved
+chunk: matching title and body alone never proves creation completed. If
+ratings, derived Tier or required labels are missing, resume track-work §5's
+shared-helper write on that **existing issue**, then re-run its relationship
+steps and verify their read-back. The helper is idempotent; never create a
+second copy to recover classification. Otherwise skip the completed issue.
+Continue from the first chunk with no confirmed hit. A helper failure or
+indeterminate read still halts recovery and reports the existing issue number. The same rule covers milestones: list existing ones
 (`gh api --paginate`) and reuse by title before ever creating. Nothing is
 ever re-filed on top of an ambiguity; a listing that cannot settle whether a
 chunk exists is a report back to the human, not a license to retry.
