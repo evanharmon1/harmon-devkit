@@ -2176,6 +2176,22 @@ grep -qE "^issue close" "$GH_STUB_LOG" &&
     fail "a pass-1-refused label op must prevent the earlier valid close from writing too"
 grep -q "^WRITE " "$label_never_log" && fail "no WRITE lines should be logged when pass 1 refuses"
 
+echo "==> apply-plan: human removal inherits triage's add-only refusal before any write"
+human_remove_plan="$tmp/label-human-remove-plan.jsonl"
+cat >"$human_remove_plan" <<'JSONL'
+{"op":"close","issue":30,"reason":"completed","bot_owned":false}
+{"op":"label","issue":30,"remove":["human"],"bot_owned":false}
+JSONL
+: >"$GH_STUB_LOG"
+human_remove_log="$tmp/label-human-remove.log"
+: >"$human_remove_log"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" \
+    --plan-file "$human_remove_plan" --log "$human_remove_log" --execute)" = 4 ] ||
+    fail "groom must inherit human removal refusal: $(cat "$tmp/out" "$tmp/err")"
+grep -qE '^issue (close|edit)' "$GH_STUB_LOG" &&
+    fail "human removal refusal must prevent every write in the plan"
+grep -q '^WRITE ' "$human_remove_log" && fail "refused removal must not log writes"
+
 echo "==> apply-plan: a label row's dry-run plan shows triage-apply.sh's derived writes (harmon-devkit#1250)"
 cp "$stub_dir/labels.json" "$tmp/labels-before-axes.json"
 cat >"$stub_dir/labels.json" <<'JSON'

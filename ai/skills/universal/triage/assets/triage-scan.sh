@@ -32,6 +32,9 @@
 #     `completion-candidate:human-only-remaining` flags. This scan never
 #     ticks, edits, or closes anything; it only reports a candidate for a
 #     human (or the `delivery` subcommand below) to confirm.
+#   - human_work: rendered human/total criteria counts, collector and label
+#     facts, and an advisory recommendation. A missing human label and a
+#     potential human removal are flags; only a human removes that label.
 #   - flagged closed issues: closed-completed with unticked acceptance
 #     criteria, and duplicate closes (pointer presence is per-issue judgment
 #     the skill verifies from comments)
@@ -659,6 +662,20 @@ jq -n -L "$title_module_dir" \
          then ($fields[$k]["Priority"] // null) else null end)
     else ([$ls[] | select(startswith("priority:")) | ltrimstr("priority:")]
           | if length == 0 then null else join(",") end) end;
+  # Count column-0 and two-space-nested tasks without tracking parent markers.
+  # Leave the shared groom projection unchanged.
+  # A majority is evidence for human work, not a guess from title keywords.
+  def human_work($issue; $ls):
+    ([criteria_lines($issue.body)[]
+      | select(test("^(  )?([-*+]|[0-9]{1,9}[.)]) \\[[ xX]\\]( |$)"))
+      | sub("^  "; "") | rest_tag(checkbox_rest(.))]) as $tags
+    | ([$tags[] | select(. == "human")] | length) as $human
+    | ($issue.title | test("^\\((HUMAN|QA)\\): ")) as $collector
+    | {labelled: (($ls | index("human")) != null),
+       collector: $collector, human_criteria: $human,
+       total_criteria: ($tags | length),
+       recommendation: (if $collector or ($human * 2 > ($tags | length))
+                        then "human" else "review" end)};
   # The required set (harmon-init ADR 2026-09-30 D6): a work type, one
   # recognized label of every active label axis (layer included — its
   # `none` value is the explicit "does not apply"), and every provisioned
@@ -709,6 +726,13 @@ jq -n -L "$title_module_dir" \
            else "n/a" end) as $nts
         | (if $nts == "set" then .issueType.name else null end) as $nt
         | issue_conformance(.; $axes; $known; $wt; $owner_type; $nts; $claim_stale; $needs_stale) as $conf
+        | human_work(.; $ls) as $hw
+        # QA is a standing queue even when its collector labels are missing.
+        # HUMAN collectors can finish, but their human criteria are not leftovers.
+        | (if (.title | startswith("(QA): ")) then []
+           elif $hw.collector then ($conf.completion_reasons
+             | map(select(. != "completion-candidate:human-only-remaining")))
+           else $conf.completion_reasons end) as $completion
         | .number as $num
         | ({"impact": class_axis($ls; $num; "impact"),
             "risk": class_axis($ls; $num; "risk"),
@@ -736,7 +760,9 @@ jq -n -L "$title_module_dir" \
         | (($ls | index("tier:pinned")) != null) as $pinned
         | ([$conf.flags[]
             | select(. != "missing-needs-triage" and . != "partially-classified"
-                     and . != "needs-triage-removable")]
+                     and . != "needs-triage-removable"
+                     and (startswith("completion-candidate:") | not))]
+           + $completion
            + [$class.required[] as $a
               | ($cls[$a].state) as $st
               | if $st == "unset" then "classification-missing:\($a)"
@@ -783,7 +809,14 @@ jq -n -L "$title_module_dir" \
                  and $cls.complexity.state == "set"
                  and $class.axes["priority-ai"].provisioned
                  and $cls["priority-ai"].state == "unset"
-              then ["priority-ai-missing"] else [] end))
+              then ["priority-ai-missing"] else [] end)
+           + (if $hw.recommendation == "human" and ($hw.labelled | not)
+              then ["human-label-missing"] else [] end)
+           + (if $hw.collector and (($ls | index("umbrella")) == null)
+              then ["collector-umbrella-missing"] else [] end)
+           + (if $hw.labelled and ($hw.collector | not)
+                 and $hw.recommendation != "human"
+              then ["human-removal-candidate"] else [] end))
           as $flags
         | {number, title, updatedAt,
            days_since_update: $days,
@@ -819,7 +852,8 @@ jq -n -L "$title_module_dir" \
              tier_pinned: (($ls | index("tier:pinned")) != null)},
            required_missing: $missing,
            criteria: $conf.criteria,
-           completion_reasons: $conf.completion_reasons,
+           human_work: $hw,
+           completion_reasons: $completion,
            flags: $flags}
         | select(($all == 1) or ((.flags | length) > 0))
       ],

@@ -733,10 +733,10 @@ reference it rather than contain it.
    scope's milestone explicitly — the source issue's, or the epic's — and,
    under an `epic`, also attach it as the epic's sub-issue. Never give the
    `(QA):` issue a milestone or a parent, and never close it because its
-   checklist is empty. Where the target vocabulary does not let an agent
-   write `human` and `umbrella` (no `label-registry.json`, or one that
-   predates them), return the draft to the operator instead of filing it
-   without them.
+   checklist is empty. Where an existing `label-registry.json` does not let
+   an agent write `human` and `umbrella`, return the draft to the operator
+   instead of filing it without them. Without a registry, the fallback
+   grant for these labels applies.
 3. **One criterion per task, naming its source**:
    `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`, with
    the source written `owner/repo#N` when it lives in another repository (a
@@ -819,9 +819,17 @@ control labels.
   one exception: a `(HUMAN):` collector copies the milestone already set on
   the source issue or epic it serves, which chooses nothing new. The `(QA):`
   issue never takes a milestone.
-- **Human work:** a collector carries `human` + `umbrella`; a standalone
-  human-only issue, such as a precondition (step 5 above), carries `human`
-  alone. Agent authors still supply the full required classification.
+- **Human work:** set `human` at creation when completion is primarily a
+  human's: actions, decisions, QA, purchases, credentials, physical work, or
+  a majority of `[HUMAN]` criteria, even when an agent can assist with parts.
+  One `[HUMAN]` box on a primarily agent issue does not by itself require the
+  label. Follow harmon-init's **Human work** paragraph in
+  [docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
+  Agents may add `human`; only a human removes it. A collector is the special
+  case carrying `human` + `umbrella`; standalone human work carries `human`
+  without `umbrella`. When it has an agent-doable part, give that part a native
+  blocked-by link to a standalone `human` issue for the human step, never to a
+  collector. Agent authors still supply the full required classification.
 - **Never during authoring:** `claim:*`, legacy `agent:*`, `foreman:*`,
   `rigor:*`, `tier:*` (including `tier:pinned` and scoped `tier:<role>:*`),
   `strategy:*`, and the retired `method:*`. Agents never select `priority:*`
@@ -837,7 +845,7 @@ exclusivity. Do not duplicate that taxonomy in prose. A repository without the
 manifest remains portable through one bounded `gh label list` fallback. With no
 manifest there is no repository-declared writer policy to invent: the fallback
 accepts agent-authored ordinary labels only for the canonical classification
-axes, the explicitly named work type, and `ai-generated`; other live labels
+axes, the explicitly named work type, `ai-generated`, `human`, and `umbrella`; other live labels
 remain human-only. Impact, Risk and Complexity use the shared classification
 reader rather than the ordinary manifest label-axis path. A present but invalid manifest is indeterminate and
 fails closed. In both modes, `--repo-root` must be a Git checkout with a GitHub
@@ -884,15 +892,18 @@ Choose the path matching the draft's authorship:
 
 - **Agent-authored:** create with the verified title, body, work type and
   every label the preflight verified, including area/layer/domain (with
-  explicit `none`), provenance and concerns.
+  explicit `none`), provenance and concerns, and `human` when primarily human.
   Immediately apply all three verified ratings through triage's **same**
   helper; it writes organization fields or personal labels, derives the Tier
   label, and reconciles `needs-triage`. Require the helper to exit 0. If it
   fails after creation, add `needs-triage` to the created issue, then report
   the blocker with that issue number. The preflight still refuses this marker
   on an agent draft; marking a partly-created issue is the filing rule.
-- **Human-authored:** create with only the metadata the human supplied. Never
-  invent missing classification values or ratings. Whoever files an issue that
+- **Human-authored:** create with the metadata the human supplied, adding `human`
+  when the human says the work is primarily theirs. Otherwise triage's scan
+  reports `human-label-missing` when it detects human work. Collector titles
+  require `human` + `umbrella` for every author. Never invent missing
+  classification values or ratings. Whoever files an issue that
   is not fully classified adds `needs-triage`, including when an agent files a
   human-authored draft. If the human supplied proposals for the helper, run it
   with only those supplied values; omit missing rating flags. If none were

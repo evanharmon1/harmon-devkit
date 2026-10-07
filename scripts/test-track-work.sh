@@ -756,6 +756,66 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> metadata: human-majority drafts require human; collectors require human + umbrella"
+cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-before-human.json"
+jq '.families += [{"family":"human-work","prefix":null,
+    "purpose":"Work primarily completed by a human","axis":"meta",
+    "source":"inline","writers":["human","agent"],"readers":"fixture",
+    "lifecycle":"durable","exclusive":false,"provision":false,
+    "values":[{"value":"human"}]},
+    {"family":"initiative","prefix":null,"purpose":"Collector horizon",
+    "axis":"meta","source":"inline","writers":["human","agent"],
+    "readers":"fixture","lifecycle":"durable","exclusive":true,
+    "provision":false,"values":[{"value":"umbrella"}]}]' \
+    "$tmp/metadata-registry-before-human.json" >"$metadata_repo/label-registry.json"
+human_body="$tmp/metadata-human.md"
+cat >"$human_body" <<'BODY'
+## Problem
+
+Choose and approve access.
+
+## Acceptance criteria
+
+- [ ] [HUMAN] Approve access
+- [x] [HUMAN] Choose account
+BODY
+[ "$(run_personal 'Approve access' "$human_body")" = 1 ] ||
+    fail "human-majority draft without human must fail"
+grep -q "requires label 'human'" "$tmp/metadata.out" || fail "human refusal must explain why"
+[ "$(run_personal 'Approve access' "$human_body" --label human)" = 0 ] ||
+    fail "human-labelled majority draft must pass: $(cat "$tmp/metadata.out")"
+agent_body="$tmp/metadata-agent-human.md"
+cat >"$agent_body" <<'BODY'
+## Problem
+
+Implement a feature with manual verification later.
+
+## Acceptance criteria
+
+- [ ] [CI] Test feature
+- [x] [CI] Ship feature
+- [ ] [HUMAN] Try by hand
+BODY
+[ "$(run_personal 'Implement feature' "$agent_body")" = 0 ] ||
+    fail "one human box must not require human: $(cat "$tmp/metadata.out")"
+for collector_title in '(HUMAN): Complete setup' '(QA): Verify shipped work'; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$collector_title" "$valid_body" --label human --label umbrella)" = 0 ] ||
+        fail "collector human + umbrella must pass: $(cat "$tmp/metadata.out")"
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$collector_title" "$valid_body" --label human)" = 1 ] ||
+        fail "collector must require umbrella even with CI criteria"
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --repo testowner/testrepo \
+        --repo-root "$metadata_repo" --owner-type personal --title "$collector_title" \
+        --body-file "$valid_body" --human-authored --label human)" = 1 ] ||
+        fail "human-authored collector without umbrella must fail"
+    grep -q "a collector requires 'umbrella'" "$tmp/metadata.out" ||
+        fail "human-authored collector refusal must name the missing umbrella"
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --repo testowner/testrepo \
+        --repo-root "$metadata_repo" --owner-type personal --title "$collector_title" \
+        --body-file "$valid_body" --human-authored --label human --label umbrella)" = 0 ] ||
+        fail "human-authored collector with both labels must pass: $(cat "$tmp/metadata.out")"
+done
+cp "$tmp/metadata-registry-before-human.json" "$metadata_repo/label-registry.json"
+
 echo "==> guidance: Track Work exposes read-only descriptions and family purpose"
 guidance_output="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
     fail "track-work guidance should render from the target manifest"
@@ -2033,19 +2093,35 @@ collector_run() {
 [ "$(collector_run --label human --label umbrella --label epic)" = 1 ] ||
     fail "umbrella and epic share the exclusive initiative family and must not combine"
 
-echo "==> metadata: the fallback keeps the collector labels human-only"
-_rc=0
-METADATA_GH_LABELS="$(printf '%s\n' task area:fixture domain:fixture \
-    ai-generated human umbrella)" \
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
-    --owner-type personal --title '(QA): Verify the fixture release end to end' \
-    --body-file "$valid_body" --agent-authored --work-type-label task \
-    --label area:fixture --label layer:none --label domain:fixture \
-    --label ai-generated --label impact:medium --label risk:low \
-    --label complexity:s --label human --label umbrella >"$tmp/metadata.out" 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "without a manifest, human/umbrella have no declared semantics and stay human-only (got $_rc)"
-grep -q "label 'human' is not writable by an agent" "$tmp/metadata.out" ||
-    fail "the rejection should name the human label: $(cat "$tmp/metadata.out")"
+echo "==> metadata: no-registry human work and collectors permit agents, and require their labels"
+export METADATA_GH_LABELS
+METADATA_GH_LABELS="$(printf '%s\n' task area:fixture layer:none domain:fixture \
+    ai-generated human umbrella impact:medium risk:low complexity:s)"
+fallback_human_args=(--repo fallback/repo --repo-root "$metadata_fallback"
+    --owner-type personal --agent-authored --work-type-label task
+    --label area:fixture --label layer:none --label domain:fixture
+    --label ai-generated --label impact:medium --label risk:low --label complexity:s)
+[ "$(run_metadata "${fallback_human_args[@]}" --title 'Approve human access' \
+    --body-file "$human_body" --label human)" = 0 ] ||
+    fail "no-registry agent human-majority draft must pass with human: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata "${fallback_human_args[@]}" --title 'Approve human access' \
+    --body-file "$human_body")" = 1 ] ||
+    fail "no-registry human-majority draft must fail without human"
+grep -q "requires label 'human'" "$tmp/metadata.out" || fail "missing human must be the refusal"
+[ "$(METADATA_RAW_TITLE=1 run_metadata "${fallback_human_args[@]}" \
+    --title '(QA): Verify the fixture release end to end' --body-file "$valid_body" \
+    --label human --label umbrella)" = 0 ] ||
+    fail "no-registry agent collector must pass with both labels: $(cat "$tmp/metadata.out")"
+for missing in human umbrella; do
+    keep=human
+    [ "$missing" != human ] || keep=umbrella
+    [ "$(METADATA_RAW_TITLE=1 run_metadata "${fallback_human_args[@]}" \
+        --title '(QA): Verify the fixture release end to end' --body-file "$valid_body" \
+        --label "$keep")" = 1 ] || fail "no-registry collector must require $missing"
+    grep -q "a collector requires '$missing'" "$tmp/metadata.out" ||
+        fail "collector refusal must name $missing"
+done
+unset METADATA_GH_LABELS
 
 echo "==> metadata: forbidden fallback families are case-insensitive"
 _rc=0
