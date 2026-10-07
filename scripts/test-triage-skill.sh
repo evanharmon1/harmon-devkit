@@ -3113,7 +3113,11 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "assignees":[],"body":"## Acceptance criteria\n\n- [ ] [CI] Test feature"},
  {"number":607,"title":"(QA): Keep completed QA in the standing queue",
   "labels":[{"name":"human"}],"updatedAt":"2026-01-01T00:00:00Z",
-  "assignees":[],"body":"## Acceptance criteria\n\n- [x] [HUMAN] Verify release"}]
+  "assignees":[],"body":"## Acceptance criteria\n\n- [x] [HUMAN] Verify release"},
+ {"number":608,"title":"(HUMAN): Complete manual setup",
+  "labels":[{"name":"human"},{"name":"umbrella"}],
+  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
+  "body":"## Acceptance criteria\n\n- [x] [HUMAN] Approve access"}]
 JSON
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
     fail "human scan must pass: $(cat "$tmp/out")"
@@ -3146,6 +3150,12 @@ jq -e '.open[] | select(.number == 607)
       and ([.flags[] | select(startswith("completion-candidate:"))] | length == 0)
       and (.completion_reasons | length == 0)' "$human_scan" >/dev/null ||
     fail "fully ticked QA without umbrella must report metadata, never completion"
+jq -e '.open[] | select(.number == 608)
+    | .human_work.collector and .criteria.total == 1 and .criteria.unticked == 0
+      and (.flags | index("completion-candidate:all-criteria-checked") != null)
+      and (.completion_reasons == ["completion-candidate:all-criteria-checked"])' \
+    "$human_scan" >/dev/null ||
+    fail "fully ticked HUMAN collector must remain a completion candidate"
 for number in 601 602 603 604; do
     jq --argjson n "$number" '.[] | select(.number == $n)' \
         "$stub_dir/issues-open.json" >"$stub_dir/issue-$number.json"
