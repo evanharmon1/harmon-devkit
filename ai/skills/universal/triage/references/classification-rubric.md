@@ -32,6 +32,18 @@ leak into another:
 | Choosing a Tier because the issue feels important | The Tier is derived from Risk × Complexity, and Impact does not enter it | Set Risk and Complexity; the Tier follows |
 | Reading Impact as urgency | Ordering belongs to Priority (set by a human) and Priority (AI) (an agent's suggestion), not to Impact | Leave ordering to the Priority rubric |
 
+## Human work is a separate decision
+
+Set `human` when completion is primarily a human's: actions, decisions, QA,
+purchases, credentials, physical work, or a majority of `[HUMAN]` criteria.
+Agent assistance does not change that decision; one human box on primarily
+agent work does not by itself require the label. Follow harmon-init's **Human
+work** paragraph in
+[docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
+This label does not replace Impact, Risk, Complexity, or Tier. Agents may add
+it, but only a human removes it; triage reports a dispatchable labelled issue
+as a removal candidate for a human. Collectors keep `human` + `umbrella`.
+
 ## Impact
 
 Impact is the expected significance of completing the issue: what finishing it buys the product's users or the

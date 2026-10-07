@@ -41,6 +41,10 @@ it in the summary; never work around it).
   `Complexity` and `Priority (AI)` issue fields on an organization, the
   `impact:*`, `risk:*`, `complexity:*` and `priority-ai:*` labels on a
   personal account — and never the other.
+- **Decide `human` for every issue you classify.** Add it when completion is
+  primarily a human's (step 2e), in the same apply call as the other axes.
+  Agents add `human`, never remove it; only a human removes it. A dispatchable
+  issue still carrying it is a report candidate, never an agent removal.
 - **The script writes, you never choose:** the **Tier** (`tier:<value>`, a
   label on every owner type), derived from Risk × Complexity by the policy
   reader in the same call that writes them, and never over an issue carrying
@@ -85,7 +89,7 @@ Set two values and a scratch directory:
 ## Step 1 — Scan
 
 ```sh
-"$DIR/assets/triage-scan.sh" --repo "$REPO" --out "$SCRATCH/scan.json"
+"$DIR/assets/triage-scan.sh" --repo "$REPO" --all --out "$SCRATCH/scan.json"
 ```
 
 (`--out`, never a `>` redirection — the script owns where its output lands.)
@@ -120,6 +124,11 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   candidates),
   `completion_reasons` (machine-readable strings backing the
   `completion-candidate:*` flags below), and `flags`.
+- `human_work` on each open issue — whether it is `labelled`, a `collector`,
+  and the counts `human_criteria` / `total_criteria` (checked criteria included).
+  Its `recommendation` is `human` for a majority of `[HUMAN]` criteria or a
+  collector, otherwise `review`: the classifier still decides from the work.
+  `--all` includes fully classified issues so the human decision is not skipped.
 - `closed_flagged[]` — closed issues for report step 3 only.
 - `report_issue` — the rolling report issue (already excluded from the lists;
   never label it, never add report entries about it).
@@ -319,6 +328,35 @@ An issue whose only gap is a work type the organization cannot express (no
 enabled Type clearly applies), or an axis you could not rate with confidence,
 keeps `needs-triage` and is listed in the report (step 3).
 
+### 2e — Human work
+
+Decide whether completion is primarily a human's: actions, decisions, QA,
+purchases, credentials, physical work, or a majority of `[HUMAN]` criteria.
+Agent assistance with parts of the issue does not change who primarily completes
+it. This follows harmon-init's **Human work** paragraph in
+[docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
+Read the body when the scan's counts and title do not settle it; that read spends
+the same budget as the other axes. One `[HUMAN]` box among mostly agent criteria
+does not by itself make the issue human work. Count all criteria, including
+checked ones; do not relabel agent delivery as human merely because only a manual
+follow-up remains.
+
+For primarily human work without `human`, include `--add human` in the **same**
+apply call as 2a–2d, within the same `task triage -- --execute` run. A collector
+keeps `human` + `umbrella`; triage does not add or remove `umbrella`. If the target
+manifest withholds `human` or does not declare it, report the refusal; do not
+invent a family or bypass the helper. Without a manifest, the live fallback must
+provision `human` before it can be added.
+
+Agents never remove `human`, even when work has become dispatchable. For a
+labelled issue you verify is primarily agent work, report `human removal
+candidate` and ask a human to decide whether to remove it. The scan's
+`human-removal-candidate` is advisory: inspect the work before reporting; a
+human action can have `[CI]` criteria and still properly carry `human`.
+If the reading budget prevents a decision, list the issue under `## Unverified
+candidates`; never silently drop it. Claimed issues remain report-only under
+step 2's skip rule.
+
 ## Step 3 — Report entries
 
 Create `$SCRATCH/entries.md`. For each finding below, write one entry. If one
@@ -341,6 +379,8 @@ a finding):
 | `stale-claim-candidate`              | `gh issue view <n> --repo "$REPO" --comments`        | claim marker present, no later "Claim released" comment, no recent activity |
 | `blocked-candidate`                  | same                                                 | no comment states what it is blocked on                                    |
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
+| `human-label-missing` | the human-work decision and apply output (2e) | when `human` could not be added; name the withheld or missing vocabulary |
+| `human-removal-candidate`, or a labelled issue judged dispatchable in 2e | inspect its title and body under the reading budget | only when primarily agent work; category `human removal candidate`; suggest a human remove `human`, never remove it yourself |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
 | `needs-triage-removable`             | the output of its reconcile call (2d)                | only when that call did not remove `needs-triage` — say why (the manifest withholds it, or the native Type could not be read) |

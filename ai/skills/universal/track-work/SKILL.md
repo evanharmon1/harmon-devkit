@@ -819,9 +819,17 @@ control labels.
   one exception: a `(HUMAN):` collector copies the milestone already set on
   the source issue or epic it serves, which chooses nothing new. The `(QA):`
   issue never takes a milestone.
-- **Human work:** a collector carries `human` + `umbrella`; a standalone
-  human-only issue, such as a precondition (step 5 above), carries `human`
-  alone. Agent authors still supply the full required classification.
+- **Human work:** set `human` at creation when completion is primarily a
+  human's: actions, decisions, QA, purchases, credentials, physical work, or
+  a majority of `[HUMAN]` criteria, even when an agent can assist with parts.
+  One `[HUMAN]` box on a primarily agent issue does not by itself require the
+  label. Follow harmon-init's **Human work** paragraph in
+  [docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
+  Agents may add `human`; only a human removes it. A collector is the special
+  case carrying `human` + `umbrella`; standalone human work carries `human`
+  without `umbrella`. When it has an agent-doable part, give that part a native
+  blocked-by link to a standalone `human` issue for the human step, never to a
+  collector. Agent authors still supply the full required classification.
 - **Never during authoring:** `claim:*`, legacy `agent:*`, `foreman:*`,
   `rigor:*`, `tier:*` (including `tier:pinned` and scoped `tier:<role>:*`),
   `strategy:*`, and the retired `method:*`. Agents never select `priority:*`
@@ -884,15 +892,16 @@ Choose the path matching the draft's authorship:
 
 - **Agent-authored:** create with the verified title, body, work type and
   every label the preflight verified, including area/layer/domain (with
-  explicit `none`), provenance and concerns.
+  explicit `none`), provenance and concerns, and `human` when primarily human.
   Immediately apply all three verified ratings through triage's **same**
   helper; it writes organization fields or personal labels, derives the Tier
   label, and reconciles `needs-triage`. Require the helper to exit 0. If it
   fails after creation, add `needs-triage` to the created issue, then report
   the blocker with that issue number. The preflight still refuses this marker
   on an agent draft; marking a partly-created issue is the filing rule.
-- **Human-authored:** create with only the metadata the human supplied. Never
-  invent missing classification values or ratings. Whoever files an issue that
+- **Human-authored:** create with the metadata the human supplied, plus `human`
+  when the filing rule above identifies primarily human work. Never invent
+  missing classification values or ratings. Whoever files an issue that
   is not fully classified adds `needs-triage`, including when an agent files a
   human-authored draft. If the human supplied proposals for the helper, run it
   with only those supplied values; omit missing rating flags. If none were

@@ -636,6 +636,7 @@ if [ -n "$bounds" ]; then
           match(line, /\[[ xX]\][[:space:]]+/)
           line=substr(line, RSTART + RLENGTH)
           lower=tolower(line)
+          if (lower ~ /^\[human\][[:space:]]+/) human_criteria++
           if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
           else {
             sub(/^\[(ci|human)\][[:space:]]+/, "", lower)
@@ -652,19 +653,32 @@ if [ -n "$bounds" ]; then
         if (seen && line ~ /^[[:space:]]+/) next
         non_task++
       }
-      END { printf "%d %d %d %d\n", criteria + 0, bad_tag + 0,
-                   non_task + 0, empty_description + 0 }
+      END { printf "%d %d %d %d %d\n", criteria + 0, bad_tag + 0,
+                   non_task + 0, empty_description + 0, human_criteria + 0 }
     ' "$rendered_tasks" "$visible_body")"
     criteria="${acceptance_result%% *}"
     rest="${acceptance_result#* }"
     bad_tag="${rest%% *}"
     non_task="${rest#* }"
     empty_description="${non_task#* }"
+    human_criteria="${empty_description#* }"
+    empty_description="${empty_description%% *}"
     non_task="${non_task%% *}"
     [ "$criteria" -gt 0 ] || violation "acceptance criteria section needs at least one rendered task-list item"
     [ "$bad_tag" -eq 0 ] || violation "every acceptance criterion must begin with [CI] or [HUMAN]"
     [ "$non_task" -eq 0 ] || violation "acceptance criteria must be rendered task-list items, not prose or plain lists"
     [ "$empty_description" -eq 0 ] || violation "every acceptance criterion needs nonempty text after its [CI] or [HUMAN] tag"
+    if [ "$author_type" = agent ] && [ "$((human_criteria * 2))" -gt "$criteria" ]; then
+        printf '%s\n' "${labels[@]+"${labels[@]}"}" | grep -xF human >/dev/null ||
+            violation "primarily human work (a majority of [HUMAN] criteria) requires label 'human' at creation"
+    fi
+fi
+
+if [ "$author_type" = agent ] && [[ "$title" =~ ^\((HUMAN|QA)\):\  ]]; then
+    for required_label in human umbrella; do
+        printf '%s\n' "${labels[@]+"${labels[@]}"}" | grep -xF "$required_label" >/dev/null ||
+            violation "a collector requires '$required_label' at creation"
+    done
 fi
 
 rot_rc=0

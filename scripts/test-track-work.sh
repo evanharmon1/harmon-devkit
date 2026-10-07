@@ -756,6 +756,56 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> metadata: human-majority drafts require human; collectors require human + umbrella"
+cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-before-human.json"
+jq '.families += [{"family":"human-work","prefix":null,
+    "purpose":"Work primarily completed by a human","axis":"meta",
+    "source":"inline","writers":["human","agent"],"readers":"fixture",
+    "lifecycle":"durable","exclusive":false,"provision":false,
+    "values":[{"value":"human"}]},
+    {"family":"initiative","prefix":null,"purpose":"Collector horizon",
+    "axis":"meta","source":"inline","writers":["human","agent"],
+    "readers":"fixture","lifecycle":"durable","exclusive":true,
+    "provision":false,"values":[{"value":"umbrella"}]}]' \
+    "$tmp/metadata-registry-before-human.json" >"$metadata_repo/label-registry.json"
+human_body="$tmp/metadata-human.md"
+cat >"$human_body" <<'BODY'
+## Problem
+
+Choose and approve access.
+
+## Acceptance criteria
+
+- [ ] [HUMAN] Approve access
+- [x] [HUMAN] Choose account
+BODY
+[ "$(run_personal 'Approve access' "$human_body")" = 1 ] ||
+    fail "human-majority draft without human must fail"
+grep -q "requires label 'human'" "$tmp/metadata.out" || fail "human refusal must explain why"
+[ "$(run_personal 'Approve access' "$human_body" --label human)" = 0 ] ||
+    fail "human-labelled majority draft must pass: $(cat "$tmp/metadata.out")"
+agent_body="$tmp/metadata-agent-human.md"
+cat >"$agent_body" <<'BODY'
+## Problem
+
+Implement a feature with manual verification later.
+
+## Acceptance criteria
+
+- [ ] [CI] Test feature
+- [x] [CI] Ship feature
+- [ ] [HUMAN] Try by hand
+BODY
+[ "$(run_personal 'Implement feature' "$agent_body")" = 0 ] ||
+    fail "one human box must not require human: $(cat "$tmp/metadata.out")"
+for collector_title in '(HUMAN): Complete setup' '(QA): Verify shipped work'; do
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$collector_title" "$valid_body" --label human --label umbrella)" = 0 ] ||
+        fail "collector human + umbrella must pass: $(cat "$tmp/metadata.out")"
+    [ "$(METADATA_RAW_TITLE=1 run_personal "$collector_title" "$valid_body" --label human)" = 1 ] ||
+        fail "collector must require umbrella even with CI criteria"
+done
+cp "$tmp/metadata-registry-before-human.json" "$metadata_repo/label-registry.json"
+
 echo "==> guidance: Track Work exposes read-only descriptions and family purpose"
 guidance_output="$("$guidance" --repo testowner/testrepo --repo-root "$metadata_repo")" ||
     fail "track-work guidance should render from the target manifest"

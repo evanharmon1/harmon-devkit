@@ -33,6 +33,8 @@
 #       label axis, Impact, Risk, Complexity), never added or removed by
 #       judgement: added while any required axis is missing, removed once
 #       every one is present.
+#     - human — added when completion is primarily a human's; only a human
+#       removes it. Every explicit or derived removal is refused in code.
 #   NEVER writes: the human Priority and Effort (fields or labels), foreman:*,
 #   rigor:*, tier:pinned, scoped tier:<role>:* (tier:implementer:* and the
 #   other roles), strategy:*, method:* (the retired prefix strategy:* replaces
@@ -311,14 +313,17 @@ allowlist_compute() {
     if [ -f "$manifest" ]; then
         records="$(render_manifest "$manifest")"
         # v1 scope: the manifest's own classification families (any axis the
-        # registry declares, not a fixed three), work-type, and needs-triage.
+        # registry declares, not a fixed three), work-type, needs-triage, and
+        # human from the human-work family. Removal permission is NOT granted
+        # by effective writers: only a human removes human.
         printf '%s\n' "$records" |
             awk -F '|' '$1 == "value" && $10 == "false" && $11 == "false" &&
                 ("," $6 ",") ~ /,agent,/ &&
                 $2 !~ /^(impact|risk|complexity|priority-ai):/ &&
                 (($5 == "classification" && $7 == "true") ||
                  $5 == "work-type" ||
-                 ($5 == "workflow" && $2 == "needs-triage")) {
+                 ($5 == "workflow" && $2 == "needs-triage") ||
+                 ($3 == "human-work" && $2 == "human")) {
                     print $2
                 }' |
             sort -u
@@ -329,7 +334,7 @@ allowlist_compute() {
         live="$(live_labels "$repo")" ||
             die 2 "could not list the live labels of $repo"
         axis_values_recognized "$repo" "$manifest"
-        for wt in $FALLBACK_WORK_TYPES needs-triage; do
+        for wt in $FALLBACK_WORK_TYPES needs-triage human; do
             grep -qx "$wt" <<<"$live" && printf '%s\n' "$wt"
         done
         return 0
@@ -906,6 +911,19 @@ cmd_label() {
             "(--impact/--risk/--complexity/--priority-ai), --remove, or" \
             "--reconcile"
 
+    # Exactly one label kind may be removed on request. Everything else is
+    # out of scope by construction, not by validation of a wider mechanism.
+    for l in "${removes[@]+"${removes[@]}"}"; do
+        case "$l" in
+        *,*) die 4 "refused: '$l' contains a comma — gh would split its removal" ;;
+        esac
+        [ "$l" != "human" ] ||
+            die 4 "refused: removal of 'human' is on the triage never-list;" \
+                "only a human removes it"
+        [ "$l" = "needs-triage" ] ||
+            die 2 "--remove accepts only needs-triage (got '$l')"
+    done
+
     # Validate the registry here, in this shell: a refusal inside the command
     # substitutions below would only end that subshell (no inherit_errexit)
     # and leave an empty vocabulary behind.
@@ -914,13 +932,6 @@ cmd_label() {
     fi
     local axes
     axes="$(axes_active "$repo" "$manifest")"
-    # Exactly one label kind may be removed on request. Everything else is
-    # out of scope by construction, not by validation of a wider mechanism.
-    for l in "${removes[@]+"${removes[@]}"}"; do
-        [ "$l" = "needs-triage" ] ||
-            die 2 "--remove accepts only needs-triage (got '$l')"
-    done
-
     # Never-list next — independent of, and senior to, any manifest content.
     for l in "${adds[@]+"${adds[@]}"}"; do
         if grep -qE "$NEVER_RE" <<<"$l"; then
@@ -1373,6 +1384,9 @@ cmd_label() {
         # gh splits a comma-bearing name into two labels, so one such label
         # could remove another (tier:pinned, say) that was never validated.
         for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
+            [ "$l" != "human" ] ||
+                die 4 "refused: removal of 'human' is on the triage never-list;" \
+                    "only a human removes it"
             case "$l" in
             *,*) die 4 "refused: '$l' on $repo#$issue contains a comma — gh would" \
                 "split its removal into multiple labels; report it" ;;
