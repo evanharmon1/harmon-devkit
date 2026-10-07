@@ -798,10 +798,12 @@ values or delegating authoring, read its local, read-only axis contract:
 The JSON `axes` array lists each `axis` and `family`, plus
 `agent_writable_value` and `agent_writable_none`. Discovery and enforcement use
 the same required-family loader. These availability fields describe validated
-manifest members, not live provisioning: true means an agent-writable member is
-known; false means none is offered; null means a canonical fallback or an
-unresolved open-value family needs live candidate discovery. The mode makes no
-GitHub calls and keeps the canonical fallback without a manifest; an unreadable
+manifest members: true means an agent-writable member is known (and live for
+an open family); false means none is offered; null means availability needs
+live candidate discovery. The mode checks enumerated open-family members with
+the same bounded live listing
+and existence check as enforcement; an unavailable or truncated read reports null.
+It keeps the canonical fallback without a manifest; an unreadable
 or invalid manifest refuses. Every consumer uses this output as its axis list
 and never re-derives it. An axis with `agent_writable_value: false` is a finding
 to report before approval, never an incomplete draft to file.

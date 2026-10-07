@@ -57,8 +57,10 @@ supplies classification values.
 
 --required-axes prints the same required-axis set used by agent preflight as
 JSON, including family, agent_writable_value and agent_writable_none. It reads
-only the local manifest and never contacts GitHub. Availability is null when
-only a canonical fallback or an unresolved open-value family supplies policy;
+the local manifest and checks open-family members against live labels.
+Availability is null when
+only a canonical fallback or an unresolved open-value family supplies policy,
+or the bounded live listing is unavailable;
 false means the validated manifest offers no agent-writable value. Missing
 manifests retain the canonical fallback; unreadable or invalid manifests refuse.
 
@@ -119,6 +121,15 @@ load_required_axis_contract() {
           $6 == "true" && $9 == "false" && $3 != "" &&
           $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 "|" $2 }
         ' "$registry_records" | sort -u >"$required_families"
+        ambiguity="$(awk -F '|' '
+          seen[$1] && seen[$1] != $2 {
+            print "classification families " seen[$1] " and " $2 " share prefix " $1;
+            exit
+          }
+          { seen[$1]=$2 }
+        ' "$required_families")"
+        [ -z "$ambiguity" ] ||
+            die "$ambiguity; assign distinct prefixes before filing or discovering required axes"
         awk -F '|' '{ print $1 }' "$required_families" | sort -u >"$required_axes"
 
         awk -F '|' '
@@ -129,6 +140,24 @@ load_required_axis_contract() {
         ' "$registry_records" >"$vocab"
 
     fi
+}
+
+# Both discovery and enforcement use this bounded, truncation-guarded listing.
+read_live_labels() {
+    local listing count
+    listing="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" || return 2
+    count="$(printf '%s\n' "$listing" | grep -c . || true)"
+    if [ "$count" -ge 1000 ]; then
+        warn "the repo reports $count labels — the fetch may be truncated; use a complete label listing before creation"
+        return 2
+    fi
+    printf '%s\n' "$listing"
+}
+
+live_label_exists() {
+    printf '%s\n' "$live" | awk -v wanted="$1" '
+      tolower($0) == tolower(wanted) { found=1 }
+      END { exit(found ? 0 : 1) }'
 }
 
 repo=""
@@ -296,7 +325,30 @@ if [ "$required_axes_only" -eq 1 ]; then
     load_required_axis_contract
     axis_source=manifest
     [ -e "$manifest" ] || axis_source=canonical-fallback
-    jq -n --arg source "$axis_source" --rawfile required "$required_families" \
+    unknown_open="$tmp/unknown-open"
+    : >"$unknown_open"
+    open_mode_families="$tmp/open-mode-families"
+    awk -F '|' 'NR == FNR { required[$2]=1; next }
+      $1 == "family" && required[$2] && $7 != "agent-registry" &&
+      $8 == "true" && $9 == "false" { print $2 }' \
+        "$required_families" "$registry_records" >"$open_mode_families"
+    if [ -s "$open_mode_families" ]; then
+        live_known=1
+        live="$(read_live_labels)" || live_known=0
+        if [ "$live_known" -eq 0 ]; then
+            cp "$open_mode_families" "$unknown_open"
+            warn "open-family live availability is unknown"
+        fi
+        : >"$vocab.live"
+        while IFS='|' read -r label family axis writers exclusive; do
+            if grep -qxF -- "$family" "$open_mode_families"; then
+                [ "$live_known" -eq 1 ] && live_label_exists "$label" || continue
+            fi
+            printf '%s|%s|%s|%s|%s\n' "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab.live"
+        done <"$vocab"
+        mv "$vocab.live" "$vocab"
+    fi
+    jq -n --rawfile unknown "$unknown_open" --arg source "$axis_source" --rawfile required "$required_families" \
         --rawfile vocabulary "$vocab" --rawfile registry "$registry_records" '
       def records: split("\n") | map(select(length > 0) | split("|"));
       def agent: split(",") | index("agent") != null;
@@ -306,13 +358,13 @@ if [ "$required_axes_only" -eq 1 ]; then
         .[0] as $axis | .[1] as $family |
         {axis: $axis, family: $family,
          agent_writable_value:
-           (if $source == "canonical-fallback" then null
+           (if $source == "canonical-fallback" or ($unknown | split("\n") | index($family)) != null then null
            elif any($values[]; .[1] == $family and (.[3] | agent)) then true
            elif any($policy[]; .[0] == "family" and .[1] == $family and
              .[7] == "true" and (.[4] | agent)) then null
            else false end),
          agent_writable_none:
-           (if $source == "canonical-fallback" then null
+           (if $source == "canonical-fallback" or ($unknown | split("\n") | index($family)) != null then null
            else any($values[]; .[1] == $family and
              (.[0] | ascii_downcase) == ($axis + ":none") and (.[3] | agent)) end)} ]}
     '
@@ -447,12 +499,12 @@ if [ -e "$manifest" ]; then
         fi
     done
     if [ -s "$open_candidates" ]; then
-        live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
+        live="$(read_live_labels)" ||
             die "could not read open-value labels from the target repository"
         live_read=1
         while IFS='|' read -r label family axis writers exclusive; do
             label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
-            if ! printf '%s\n' "$live" | awk -v wanted="$label_key" 'tolower($0) == wanted { found=1 } END { exit(found ? 0 : 1) }'; then
+            if ! live_label_exists "$label_key"; then
                 # Open families opt into live existence: a proposed member the
                 # bounded read cannot find must not validate, including one
                 # the family itself enumerates for a per-value policy — the
@@ -471,7 +523,7 @@ if [ -e "$manifest" ]; then
     fi
 
 else
-    live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
+    live="$(read_live_labels)" ||
         die "could not read the target repository's labels"
     live_read=1
     while IFS= read -r label; do
@@ -527,12 +579,8 @@ elif ! awk -F '|' 'tolower($1) == "needs-triage" &&
     violation "filing marker 'needs-triage' is not writable by an agent; ask the maintainer to authorize the filing path before creation"
 fi
 if [ "$live_read" -eq 0 ]; then
-    live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
+    live="$(read_live_labels)" ||
         die "could not verify provisioning of filing marker 'needs-triage'"
-fi
-live_count="$(printf '%s\n' "$live" | grep -c . || true)"
-if [ "$live_count" -ge 1000 ]; then
-    die "the repo reports $live_count labels — the fetch may be truncated; provision or verify the filing marker with a complete label listing before creation"
 fi
 if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
   END { exit(found ? 0 : 1) }'; then

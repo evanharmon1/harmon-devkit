@@ -640,6 +640,7 @@ case "${1:-} ${2:-}" in
 "issue view") printf '%s\n' feature area:fixture layer:none domain:fixture ai-generated ;;
 "api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
 "label list")
+    [ "${METADATA_LABELS_FAIL:-0}" = 0 ] || exit 1
     if [ "${METADATA_GH_LABELS+x}" = x ]; then
         printf '%s\n' "$METADATA_GH_LABELS"
     else
@@ -838,6 +839,23 @@ while IFS= read -r missing; do
     grep -q "$missing missing" "$tmp/metadata.out" || fail "refusal must name reported axis $missing"
 done <<<"$reported_axes"
 
+# A required axis has exactly one active exclusive classification family.
+cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-unambiguous.json"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "area-sibling" | .values = [{"value":"sibling","description":"Sibling"}])]' \
+    "$tmp/metadata-axes-unambiguous.json" >"$metadata_axes/label-registry.json"
+_rc=0
+"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "mode must refuse two required families sharing a prefix"
+[ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 2 ] ||
+    fail "preflight must refuse two required families sharing a prefix"
+for diagnostic in "$tmp/required-axes.out" "$tmp/metadata.out"; do
+    grep -q 'families area and area-sibling share prefix area' "$diagnostic" ||
+        fail "ambiguous-axis refusal must name both families and their shared prefix"
+done
+cp "$tmp/metadata-axes-unambiguous.json" "$metadata_axes/label-registry.json"
+
 jq '.families |= map(select(.family != "layer" and .family != "domain" and .family != "delivery-target"))' \
     "$metadata_axes/label-registry.json" >"$tmp/metadata-axes-subset.json"
 cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-custom.json"
@@ -873,6 +891,34 @@ axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-ro
 jq -e '.axes[] | select(.axis == "surface") |
     .agent_writable_value == null and .agent_writable_none == false' \
     <<<"$axis_contract" >/dev/null || fail "unresolved open values must not be reported as unavailable"
+
+# Enumerated open-family members need the same live existence as draft enforcement.
+jq '(.families[] | select(.family == "delivery-target")) |=
+    (.open_values = true | .placeholder = "surface:<value>" |
+     .values = [{"value":"api","description":"Only writable member"}])' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "absent open member must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value != true and .agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "absent open member must not report availability"
+[ "$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none \
+    --label layer:none --label surface:api)" = 1 ] || fail "draft must refuse absent enumerated open member"
+axis_contract="$(METADATA_GH_LABELS=$'needs-triage\nsurface:api' "$metadata" \
+    --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "live open member must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface").agent_writable_value == true' \
+    <<<"$axis_contract" >/dev/null || fail "live writable open member must report availability"
+axis_contract="$(METADATA_LABELS_FAIL=1 "$metadata" --required-axes \
+    --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "unreadable live availability must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value == null and .agent_writable_none == null' \
+    <<<"$axis_contract" >/dev/null || fail "unreadable live availability must report unknown"
+truncated_labels="$(awk 'BEGIN { for (i=1; i<=1000; i++) print "surface:value" i }')"
+axis_contract="$(METADATA_GH_LABELS="$truncated_labels" "$metadata" --required-axes \
+    --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "truncated live availability must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface").agent_writable_value == null' \
+    <<<"$axis_contract" >/dev/null || fail "truncated live availability must report unknown"
 
 : >"$tmp/required-axes-gh.log"
 axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
