@@ -3117,7 +3117,10 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
  {"number":608,"title":"(HUMAN): Complete manual setup",
   "labels":[{"name":"human"},{"name":"umbrella"}],
   "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n- [x] [HUMAN] Approve access"}]
+  "body":"## Acceptance criteria\n\n- [x] [HUMAN] Approve access"},
+ {"number":609,"title":"(agent): Implement legacy feature",
+  "labels":[],"updatedAt":"2026-01-01T00:00:00Z","assignees":[],
+  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n- [ ] Implement feature\n- [x] Test feature"}]
 JSON
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
     fail "human scan must pass: $(cat "$tmp/out")"
@@ -3130,6 +3133,10 @@ jq -e '.open[] | select(.number == 601) | .human_work.recommendation == "human"
 jq -e '.open[] | select(.number == 602) | .human_work.recommendation == "review"
     and (.flags | index("human-label-missing") == null)' "$human_scan" >/dev/null ||
     fail "one human box must not recommend human on primarily agent work"
+jq -e '.open[] | select(.number == 609) | .human_work.recommendation == "review"
+    and .human_work.human_criteria == 1 and .human_work.total_criteria == 3
+    and (.flags | index("human-label-missing") == null)' "$human_scan" >/dev/null ||
+    fail "one human box among two untagged boxes must not recommend human"
 jq -e '.open[] | select(.number == 603) | .human_work.collector
     and (.flags | index("human-removal-candidate") == null)' "$human_scan" >/dev/null ||
     fail "collector must not become a removal candidate"

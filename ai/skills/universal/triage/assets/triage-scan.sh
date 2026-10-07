@@ -666,7 +666,7 @@ jq -n -L "$title_module_dir" \
   # A majority is evidence for human work, not a guess from title keywords.
   def human_work($issue; $ls):
     ([criteria_lines($issue.body)[] | select(test(checkbox_line_re))
-      | rest_tag(checkbox_rest(.)) | select(. != "untagged")]) as $tags
+      | rest_tag(checkbox_rest(.))]) as $tags
     | ([$tags[] | select(. == "human")] | length) as $human
     | ($issue.title | test("^\\((HUMAN|QA)\\): ")) as $collector
     | {labelled: (($ls | index("human")) != null),

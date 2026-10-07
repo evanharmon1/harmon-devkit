@@ -733,10 +733,10 @@ reference it rather than contain it.
    scope's milestone explicitly — the source issue's, or the epic's — and,
    under an `epic`, also attach it as the epic's sub-issue. Never give the
    `(QA):` issue a milestone or a parent, and never close it because its
-   checklist is empty. Where the target vocabulary does not let an agent
-   write `human` and `umbrella` (no `label-registry.json`, or one that
-   predates them), return the draft to the operator instead of filing it
-   without them.
+   checklist is empty. Where an existing `label-registry.json` does not let
+   an agent write `human` and `umbrella`, return the draft to the operator
+   instead of filing it without them. Without a registry, the fallback
+   grant for these labels applies.
 3. **One criterion per task, naming its source**:
    `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`, with
    the source written `owner/repo#N` when it lives in another repository (a
