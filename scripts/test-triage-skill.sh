@@ -2266,6 +2266,29 @@ jq -e '.storage == "label" and .required == ["impact", "risk", "complexity"]
        and .tier_values == ["local", "economy", "standard", "frontier", "apex"]' \
     "$tmp/out" >/dev/null || fail "personal classification-axes: $(cat "$tmp/out")"
 
+echo "==> classification-axes: derivability is additive and shares the writer resolver"
+cp "$tmp/out" "$tmp/axes-original.json"
+[ "$(run "$apply" classification-axes --repo "$repo" --policy "$policy")" = 0 ] ||
+    fail "provisioned derivation failed: $(cat "$tmp/out")"
+jq -e '.tier_derivation.derivable and .tier_derivation.reason == null
+       and all(.tier_derivation.cases[]; .derivable and .reason == null)' \
+    "$tmp/out" >/dev/null || fail "all provisioned pairs must derive"
+jq -S 'del(.tier_derivation)' "$tmp/out" >"$tmp/axes-new.json"
+jq -S 'del(.tier_derivation)' "$tmp/axes-original.json" >"$tmp/axes-old.json"
+cmp -s "$tmp/axes-old.json" "$tmp/axes-new.json" ||
+    fail "existing catalogue fields must remain unchanged"
+[ "$(run "$apply" classification-axes --repo "$repo" --policy "$no_matrix_policy")" = 0 ] ||
+    fail "no-matrix catalogue failed"
+jq -e '(.tier_derivation.derivable | not)
+       and (.tier_derivation.reason | contains("no [tier.matrix]"))
+       and all(.tier_derivation.cases[]; .derivable | not)' "$tmp/out" >/dev/null ||
+    fail "missing matrix must expose an unavailable reason: $(cat "$tmp/out")"
+[ "$(run "$standalone_triage/triage/assets/triage-apply.sh" classification-axes \
+    --repo "$repo" --policy "$policy")" = 0 ] || fail "standalone catalogue failed"
+jq -e '(.tier_derivation.derivable | not)
+       and (.tier_derivation.reason | contains("not vendored beside triage"))' \
+    "$tmp/out" >/dev/null || fail "missing resolver must be reported"
+
 echo "==> label: personal repo writes the axes as labels and derives the Tier"
 : >"$GH_STUB_LOG"
 [ "$(run "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
@@ -2913,7 +2936,7 @@ GH_STUB_OWNER_TYPE="User"
 unset GH_STUB_NATIVE_TYPE
 
 echo "==> scan: a personal repo reads the axes, Tier and pin from labels"
-[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --policy "$policy" --all)" = 0 ] ||
     fail "classification scan failed: $(cat "$tmp/out")"
 cp "$tmp/out" "$tmp/class-scan.json"
 jq -e '.classification_axes.storage == "label" and .fields_mode == "n/a"' \
@@ -2983,6 +3006,38 @@ jq -e '(.open[] | select(.number == 83) | .flags | index("tier-missing") != null
        and (.open[] | select(.number == 81) | .flags | index("tier-missing") == null)' \
     "$tmp/class-scan.json" >/dev/null ||
     fail "tier-missing: only Risk+Complexity set, unpinned, with no tier label"
+
+echo "==> scan: underivable Tiers are suppressed with unique summary reasons"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" \
+    --policy "$no_matrix_policy" --all)" = 0 ] || fail "no-matrix scan failed"
+jq -e 'all(.open[]; (.flags | index("tier-missing")) == null)
+       and (.summary.tier_derivation_reasons | length) == 1
+       and (.summary.tier_derivation_reasons[0] | contains("no [tier.matrix]"))
+       and all(.open[]; has("tier_derivation") | not)' "$tmp/out" >/dev/null ||
+    fail "missing matrix must suppress flags and report its reason once"
+cp "$stub_dir/labels.json" "$tmp/labels-tier-full.json"
+jq 'map(select(.name != "tier:economy"))' "$tmp/labels-tier-full.json" \
+    >"$stub_dir/labels.json"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" \
+    --policy "$policy" --all)" = 0 ] || fail "partial Tier scan failed"
+jq -e --arg reason "no 'tier:economy' label is provisioned" \
+    '(.classification_axes.tier_derivation.derivable)
+       and (.open[] | select(.number == 83) | .flags | index("tier-missing")) == null
+       and (.summary.tier_derivation_reasons == [$reason])
+       and any(.classification_axes.tier_derivation.cases[];
+           .risk == "high" and .complexity == "m" and .derivable)' \
+    "$tmp/out" >/dev/null || fail "partial labels must gate the exact derived rung"
+jq 'map(select(.name | startswith("tier:") | not))' "$tmp/labels-tier-full.json" \
+    >"$stub_dir/labels.json"
+[ "$(run "$scan" --repo "$repo" --manifest "$manifest" \
+    --policy "$policy" --all)" = 0 ] || fail "unprovisioned Tier scan failed"
+jq -e '(.classification_axes.tier_derivation.derivable | not)
+       and all(.open[]; (.flags | index("tier-missing")) == null)
+       and (.summary.tier_derivation_reasons | length) > 0
+       and (.summary.tier_derivation_reasons | length) ==
+           (.summary.tier_derivation_reasons | unique | length)' "$tmp/out" >/dev/null ||
+    fail "no Tier labels must suppress flags with deduplicated reasons"
+cp "$tmp/labels-tier-full.json" "$stub_dir/labels.json"
 
 echo "==> scan: an organization reads the axes from issue fields only"
 GH_STUB_OWNER_TYPE="Organization"

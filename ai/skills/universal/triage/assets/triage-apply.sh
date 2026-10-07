@@ -61,7 +61,7 @@
 #   triage-apply.sh axes [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh axis-values [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh work-types [--repo owner/repo] [--manifest PATH]
-#   triage-apply.sh classification-axes --repo owner/repo
+#   triage-apply.sh classification-axes --repo owner/repo [--policy PATH]
 #   triage-apply.sh native-type --repo owner/repo --issue N
 #   triage-apply.sh native-types --repo owner/repo
 #   triage-apply.sh label --repo owner/repo --issue N
@@ -162,7 +162,7 @@ usage() {
     echo "       $0 axes [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 axis-values [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
-    echo "       $0 classification-axes --repo owner/repo" >&2
+    echo "       $0 classification-axes --repo owner/repo [--policy PATH]" >&2
     echo "       $0 native-types --repo owner/repo" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--native-type TYPE] [--impact V] [--risk V]" >&2
@@ -732,12 +732,17 @@ classification_axes_json() {
 }
 
 cmd_classification_axes() {
-    local repo="" owner_type
+    local repo="" owner_type policy="./.devflow.toml" catalogue derivation
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
             [ "$#" -ge 2 ] || usage
             repo="$2"
+            shift 2
+            ;;
+        --policy)
+            [ "$#" -ge 2 ] || usage
+            policy="$2"
             shift 2
             ;;
         *) usage ;;
@@ -746,7 +751,10 @@ cmd_classification_axes() {
     [ -n "$repo" ] || usage
     owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
         die 2 "could not read the owner type of $repo"
-    classification_axes_json "$repo" "$owner_type"
+    catalogue="$(classification_axes_json "$repo" "$owner_type")"
+    derivation="$(tier_derivation_json "$catalogue" "$policy")"
+    jq -c --argjson derivation "$derivation" \
+        '. + {tier_derivation: $derivation}' <<<"$catalogue"
 }
 
 # derive_tier RISK COMPLEXITY POLICY — the Tier, by CALLING the vendored
@@ -790,6 +798,34 @@ derive_tier() {
             <<<"$out")"
         ;;
     esac
+}
+
+# Evaluate provisioned input pairs with the same helper and policy the writer
+# uses. Partial Tier-label provisioning must not hide pairs it can write.
+tier_derivation_json() {
+    local catalogue="$1" policy="$2" risk complexity derived reason rows="[]"
+    while IFS= read -r risk; do
+        while IFS= read -r complexity; do
+            derived="$(derive_tier "$risk" "$complexity" "$policy")"
+            reason=""
+            if [[ "$derived" == '!'* ]]; then
+                reason="${derived#!}"
+            elif ! jq -e --arg t "$derived" '.tier_values | index($t) != null' \
+                <<<"$catalogue" >/dev/null; then
+                reason="no 'tier:$derived' label is provisioned"
+            fi
+            rows="$(jq -c --arg risk "$risk" --arg complexity "$complexity" \
+                --arg reason "$reason" '. + [{risk: $risk, complexity: $complexity,
+                  derivable: ($reason == ""),
+                  reason: (if $reason == "" then null else $reason end)}]' <<<"$rows")"
+        done < <(jq -r '.axes.complexity.values[]' <<<"$catalogue")
+    done < <(jq -r '.axes.risk.values[]' <<<"$catalogue")
+    jq -cn --argjson cases "$rows" '
+      {derivable: any($cases[]; .derivable),
+       reason: (if any($cases[]; .derivable) then null
+                elif $cases == [] then "Risk and Complexity are not both provisioned"
+                else [$cases[].reason] | unique | join("; ") end),
+       cases: $cases}'
 }
 
 cmd_label() {

@@ -52,7 +52,7 @@
 # TRIAGE_NEEDS_STALE_DAYS (default 30).
 #
 # Usage:
-#   triage-scan.sh --repo owner/repo [--manifest PATH] [--limit N]
+#   triage-scan.sh --repo owner/repo [--manifest PATH] [--policy PATH] [--limit N]
 #                  [--closed-limit N] [--all] [--out PATH]
 #   triage-scan.sh delivery --repo owner/repo --issue N [--out PATH]
 #
@@ -82,7 +82,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 title_module_dir="$script_dir/../../issue-title-support/assets"
 
 usage() {
-    echo "Usage: $0 --repo owner/repo [--manifest PATH] [--limit N]" >&2
+    echo "Usage: $0 --repo owner/repo [--manifest PATH] [--policy PATH] [--limit N]" >&2
     echo "          [--closed-limit N] [--all] [--out PATH]" >&2
     echo "       $0 delivery --repo owner/repo --issue N [--out PATH]" >&2
     exit 2
@@ -388,6 +388,7 @@ fi
 
 repo=""
 manifest="./label-registry.json"
+policy="./.devflow.toml"
 limit=500
 closed_limit=100
 all=0
@@ -407,6 +408,11 @@ while [ "$#" -gt 0 ]; do
     --manifest)
         [ "$#" -ge 2 ] || usage
         manifest="$2"
+        shift 2
+        ;;
+    --policy)
+        [ "$#" -ge 2 ] || usage
+        policy="$2"
         shift 2
         ;;
     --limit)
@@ -490,7 +496,8 @@ fi
 # Impact/Risk/Complexity/Priority (AI) provisioning, from triage-apply.sh
 # (one source, no drift): which axes the repository provisions, with which
 # values, and in which storage.
-class_json="$("$script_dir/triage-apply.sh" classification-axes --repo "$repo")" ||
+class_json="$("$script_dir/triage-apply.sh" classification-axes --repo "$repo" \
+    --policy "$policy")" ||
     die "could not compute the provisioned classification axes"
 
 report="$("$script_dir/triage-report.sh" find --repo "$repo")" ||
@@ -703,6 +710,10 @@ jq -n -L "$title_module_dir" \
     mode: $mode,
     axes: $axes,
     classification_axes: $class,
+    summary: {tier_derivation_reasons:
+      ([$class.tier_derivation.cases[] | select(.derivable | not) | .reason]
+       + (if $class.tier_derivation.cases == []
+          then [$class.tier_derivation.reason] else [] end) | unique)},
     fields_mode: $fields_mode,
     native_type_mode: $native_type_mode,
     thresholds: {claim_stale_days: $claim_stale,
@@ -780,10 +791,13 @@ jq -n -L "$title_module_dir" \
            # stays in open[] so the report can say it was not read.
            + (if $unreadable then ["classification-unreadable"] else [] end)
            # Risk and Complexity set, no pin, and no Tier label at all: the
-           # reconcile call writes it. No resolver call here — a stale but
-           # present Tier is the reconcile call'"'"'s and the reconciler'"'"'s.
+           # reconcile call writes it only when this pair derives a provisioned
+           # label. The shared catalogue called the writer'"'"'s resolver helper.
            + (if $cls.risk.state == "set" and $cls.complexity.state == "set"
                  and ($pinned | not) and $tiers == 0
+                 and any($class.tier_derivation.cases[];
+                     .risk == $cls.risk.value and .complexity == $cls.complexity.value
+                     and .derivable)
               then ["tier-missing"] else [] end)
            # More than one Tier label on an unpinned issue, or one outside the
            # provisioned rungs (a lone tier:adaptive among them): the
