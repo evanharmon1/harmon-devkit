@@ -52,7 +52,7 @@
 # TRIAGE_NEEDS_STALE_DAYS (default 30).
 #
 # Usage:
-#   triage-scan.sh --repo owner/repo [--manifest PATH] [--policy PATH] [--limit N]
+#   triage-scan.sh --repo owner/repo [--manifest PATH] [--limit N]
 #                  [--closed-limit N] [--all] [--out PATH]
 #   triage-scan.sh delivery --repo owner/repo --issue N [--out PATH]
 #
@@ -82,7 +82,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 title_module_dir="$script_dir/../../issue-title-support/assets"
 
 usage() {
-    echo "Usage: $0 --repo owner/repo [--manifest PATH] [--policy PATH] [--limit N]" >&2
+    echo "Usage: $0 --repo owner/repo [--manifest PATH] [--limit N]" >&2
     echo "          [--closed-limit N] [--all] [--out PATH]" >&2
     echo "       $0 delivery --repo owner/repo --issue N [--out PATH]" >&2
     exit 2
@@ -388,7 +388,6 @@ fi
 
 repo=""
 manifest="./label-registry.json"
-policy="./.devflow.toml"
 limit=500
 closed_limit=100
 all=0
@@ -408,11 +407,6 @@ while [ "$#" -gt 0 ]; do
     --manifest)
         [ "$#" -ge 2 ] || usage
         manifest="$2"
-        shift 2
-        ;;
-    --policy)
-        [ "$#" -ge 2 ] || usage
-        policy="$2"
         shift 2
         ;;
     --limit)
@@ -436,13 +430,6 @@ guard_repo_binding "$repo"
 if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
     echo "triage-scan: refused: --manifest is fixed to ./label-registry.json" \
         "in a bound run" >&2
-    exit 4
-fi
-
-# The capability read uses the same bound policy as the Tier writer.
-if [ -n "${TRIAGE_REPO:-}" ] && [ "$policy" != "./.devflow.toml" ]; then
-    echo "triage-scan: refused: --policy is fixed to ./.devflow.toml in a bound run" \
-        "— a worker-writable policy would choose its own Tier" >&2
     exit 4
 fi
 
@@ -504,7 +491,7 @@ fi
 # (one source, no drift): which axes the repository provisions, with which
 # values, and in which storage.
 class_json="$("$script_dir/triage-apply.sh" classification-axes --repo "$repo" \
-    --policy "$policy" --tier-derivation)" ||
+    --tier-derivation)" ||
     die "could not compute the provisioned classification axes"
 
 report="$("$script_dir/triage-report.sh" find --repo "$repo")" ||
