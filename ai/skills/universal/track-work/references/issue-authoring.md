@@ -140,7 +140,7 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
 - In a personal-account repository, select exactly one work-type label.
 - In an organization repository, select one native Issue Type and no work-type
   label.
-- For each active exclusive classification prefix in the manifest, select
+- For each axis reported by `check-issue-metadata.sh --required-axes`, select
   exactly one valid label when clearly inferable or declare that axis explicitly
   inapplicable with that family's explicit `none` label. If a valid present
   manifest has no agent-writable `<axis>:none` member, the checker permits
@@ -253,7 +253,8 @@ brief instead of relying on surrounding orchestrator context:
 - the title and body contract, including the canonical headings and tagged
   acceptance items;
 - concrete labels or explicit inapplicability (`none` when agent-writable, otherwise
-  the validated inapplicability fallback) for `area`, `layer`, and `domain`, plus
+  the validated inapplicability fallback) for every axis in track-work's
+  `check-issue-metadata.sh --required-axes` output, plus
   the owner-appropriate work classification,
   Impact/Risk/Complexity values, provenance, and the shared-helper create recipe;
 - any attributable milestone instruction; and

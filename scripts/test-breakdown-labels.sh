@@ -2433,14 +2433,17 @@ if grep -qF 'check-issue-metadata.sh' <<<"$execution_section" &&
 else
     bad "execution section runs the agent-authored metadata preflight"
 fi
-if grep -qF 'value for every required classification axis from track-work §5' <<<"$proposal_section" &&
-    grep -qF 'value for every required classification axis' <<<"$execution_section" &&
-    grep -qF 'from track-work §5, using the same preflight rule' <<<"$execution_section" &&
-    grep -qF '(`axis`, `exclusive`, `prefix`, and `family`)' <<<"$proposal_section" &&
-    grep -qF 'axes are the fallback without a manifest' <<<"$proposal_section"; then
-    ok "breakdown proposes and preflights every manifest-required classification axis"
+if grep -qF 'check-issue-metadata.sh --required-axes --repo' <<<"$proposal_section" &&
+    grep -qF 'every axis in the `--required-axes`' <<<"$execution_section" &&
+    grep -qF 'never derive' <<<"$proposal_section" &&
+    grep -qF 'required axes from discovery `families`' <<<"$proposal_section" &&
+    grep -qF 'If `agent_writable_value` is false' <<<"$proposal_section" &&
+    grep -qF 'before approval; never turn it' <<<"$proposal_section" &&
+    ! grep -qF 'Derive the required axes from the target manifest' "$skill" &&
+    ! grep -qF '(`axis`, `exclusive`, `prefix`, and `family`)' <<<"$proposal_section"; then
+    ok "breakdown consumes preflight required axes and reports unwriteable axes before approval"
 else
-    bad "breakdown must use track-work required axes in both proposal and execution"
+    bad "breakdown must consume --required-axes instead of deriving its own axis list"
 fi
 if grep -qF 'then immediately call triage' <<<"$execution_section" &&
     grep -qF 'triage-apply.sh label' <<<"$execution_section" &&

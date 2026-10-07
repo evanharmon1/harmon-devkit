@@ -19,6 +19,8 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           [--inapplicable AXIS]...
           [--impact VALUE --risk VALUE --complexity VALUE]
 
+       check-issue-metadata.sh --required-axes --repo OWNER/REPO --repo-root PATH
+
        check-issue-metadata.sh --title-only --title TITLE [--previous-title PREV_TITLE]
 
 Validates a proposed issue without writing to GitHub. The target checkout's
@@ -53,6 +55,13 @@ classification write; preflight verifies its existence and agent writer policy
 separately from draft authorship. The sibling triage/assets/triage-apply.sh
 supplies classification values.
 
+--required-axes prints the same required-axis set used by agent preflight as
+JSON, including family, agent_writable_value and agent_writable_none. It reads
+only the local manifest and never contacts GitHub. Availability is null when
+only a canonical fallback or an unresolved open-value family supplies policy;
+false means the validated manifest offers no agent-writable value. Missing
+manifests retain the canonical fallback; unreadable or invalid manifests refuse.
+
 Title-only example (for a proposed retitle):
   check-issue-metadata.sh --title-only --title '(cache): Reject stale entries' \
     --previous-title '(cache): Reject stale entries when cache is cold'
@@ -82,12 +91,53 @@ warn() {
     echo "check-issue-metadata: warning: $*" >&2
 }
 
+load_required_axis_contract() {
+    tmp="$(mktemp -d)" || die "cannot create temporary directory"
+    trap 'rm -rf "$tmp"' EXIT
+    vocab="$tmp/vocabulary"
+    : >"$vocab"
+    manifest="$repo_root/label-registry.json"
+    registry_records="$tmp/registry-records"
+    : >"$registry_records"
+    required_axes="$tmp/required-axes"
+    required_families="$tmp/required-families"
+    printf '%s\n' area layer domain >"$required_axes"
+    printf '%s\n' 'area|area' 'layer|layer' 'domain|domain' >"$required_families"
+    registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
+    [ -x "$registry_helper" ] ||
+        die "shared label-registry interpreter is missing: $registry_helper"
+
+    if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+        [ -f "$manifest" ] && [ -r "$manifest" ] ||
+            die "label-registry.json is present but unreadable"
+        "$registry_helper" render "$manifest" >"$registry_records" ||
+            die "label-registry.json is present but invalid"
+
+        # Match triage's axes_active rule: prefixes, not family names, define
+        # active exclusive label classification axes. Ratings use separate storage.
+        awk -F '|' '$1 == "family" && $4 == "classification" &&
+          $6 == "true" && $9 == "false" && $3 != "" &&
+          $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 "|" $2 }
+        ' "$registry_records" | sort -u >"$required_families"
+        awk -F '|' '{ print $1 }' "$required_families" | sort -u >"$required_axes"
+
+        awk -F '|' '
+          $1 == "value" && $8 != "agent-registry" &&
+          $10 == "false" && $11 == "false" {
+            print $2 "|" $3 "|" $5 "|" $6 "|" $7
+          }
+        ' "$registry_records" >"$vocab"
+
+    fi
+}
+
 repo=""
 repo_root=""
 owner_type=""
 title=""
 title_set=0
 title_only=0
+required_axes_only=0
 previous_title=""
 previous_title_set=0
 body_file=""
@@ -156,6 +206,10 @@ while [ "$#" -gt 0 ]; do
         author_type="human"
         shift
         ;;
+    --required-axes)
+        required_axes_only=1
+        shift
+        ;;
     --title-only)
         title_only=1
         shift
@@ -212,6 +266,7 @@ validate_previous_title() {
 }
 
 if [ "$title_only" -eq 1 ]; then
+    [ "$required_axes_only" -eq 0 ] || usage
     [ "$title_set" -eq 1 ] || usage
     [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] ||
         die "--title-only accepts only --title and optional --previous-title"
@@ -223,6 +278,44 @@ if [ "$title_only" -eq 1 ]; then
     fi
     [ "$violations" -eq 0 ] || exit 1
     echo "check-issue-metadata: issue title verified"
+    exit 0
+fi
+
+if [ "$required_axes_only" -eq 1 ]; then
+    [ -n "$repo" ] && [ -n "$repo_root" ] || usage
+    [ -z "$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] &&
+        [ "$title_set" -eq 0 ] && [ "$previous_title_set" -eq 0 ] &&
+        [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] || usage
+    grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" || usage
+    [ -d "$repo_root" ] || die "target repository root is not a directory: $repo_root"
+    repo_root="$(cd "$repo_root" && pwd -P)"
+    # Prefer the checkout root for the same subdirectory semantics as preflight;
+    # a non-checkout path can still expose a standalone local manifest.
+    checkout_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -z "$checkout_root" ] || repo_root="$checkout_root"
+    load_required_axis_contract
+    axis_source=manifest
+    [ -e "$manifest" ] || axis_source=canonical-fallback
+    jq -n --arg source "$axis_source" --rawfile required "$required_families" \
+        --rawfile vocabulary "$vocab" --rawfile registry "$registry_records" '
+      def records: split("\n") | map(select(length > 0) | split("|"));
+      def agent: split(",") | index("agent") != null;
+      ($vocabulary | records) as $values |
+      ($registry | records) as $policy |
+      {source: $source, axes: [($required | records)[] |
+        .[0] as $axis | .[1] as $family |
+        {axis: $axis, family: $family,
+         agent_writable_value:
+           (if $source == "canonical-fallback" then null
+           elif any($values[]; .[1] == $family and (.[3] | agent)) then true
+           elif any($policy[]; .[0] == "family" and .[1] == $family and
+             .[7] == "true" and (.[4] | agent)) then null
+           else false end),
+         agent_writable_none:
+           (if $source == "canonical-fallback" then null
+           else any($values[]; .[1] == $family and
+             (.[0] | ascii_downcase) == ($axis + ":none") and (.[3] | agent)) end)} ]}
+    '
     exit 0
 fi
 
@@ -285,42 +378,9 @@ for label in "${labels[@]+"${labels[@]}"}"; do
     esac
 done
 
-tmp="$(mktemp -d)" || die "cannot create temporary directory"
-trap 'rm -rf "$tmp"' EXIT
-vocab="$tmp/vocabulary"
-: >"$vocab"
-manifest="$repo_root/label-registry.json"
-required_axes="$tmp/required-axes"
-required_families="$tmp/required-families"
-printf '%s\n' area layer domain >"$required_axes"
-printf '%s\n' 'area|area' 'layer|layer' 'domain|domain' >"$required_families"
-registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
-[ -x "$registry_helper" ] ||
-    die "shared label-registry interpreter is missing: $registry_helper"
-
+load_required_axis_contract
 live_read=0
 if [ -e "$manifest" ]; then
-    [ -f "$manifest" ] && [ -r "$manifest" ] ||
-        die "label-registry.json is present but unreadable"
-    registry_records="$tmp/registry-records"
-    "$registry_helper" render "$manifest" >"$registry_records" ||
-        die "label-registry.json is present but invalid"
-
-    # Match triage's axes_active rule: prefixes, not family names, define
-    # active exclusive label classification axes. Ratings use separate storage.
-    awk -F '|' '$1 == "family" && $4 == "classification" &&
-      $6 == "true" && $9 == "false" &&
-      $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 "|" $2 }
-    ' "$registry_records" | sort -u >"$required_families"
-    awk -F '|' '{ print $1 }' "$required_families" | sort -u >"$required_axes"
-
-    awk -F '|' '
-      $1 == "value" && $8 != "agent-registry" &&
-      $10 == "false" && $11 == "false" {
-        print $2 "|" $3 "|" $5 "|" $6 "|" $7
-      }
-    ' "$registry_records" >"$vocab"
-
     # Retired members of active families are excluded from the vocabulary,
     # and the open-value fallback below must not resurrect one from its live
     # label: the manifest retiring a value is an authoritative "no".

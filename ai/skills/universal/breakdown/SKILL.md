@@ -296,13 +296,18 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   for either owner type (`classification` in discovery output); keep the
   ratings in canonical lowercase for
   track-work's preflight and the shared helper. Missing vocabulary or an
-  ambiguous rating is unresolved work to settle before approval. Include one
-  value for every required classification axis from track-work §5 (or an
-  agent-writable explicit `none` member), and the owner-appropriate work type.
-  Derive the required axes from the target manifest by track-work's preflight
-  rule. Select candidate values from discovery's `families` records
-  (`axis`, `exclusive`, `prefix`, and `family`); the canonical
-  `area`, `layer`, and `domain` axes are the fallback without a manifest.
+  ambiguous rating is unresolved work to settle before approval. Obtain the
+  required axes before proposing with track-work's read-only mode:
+  `check-issue-metadata.sh --required-axes --repo <owner/repo> --repo-root <target-checkout>`.
+  This output is the axis list for both proposal and preflight; never derive
+  required axes from discovery `families` or maintain a separate roster.
+  Propose a value or an agent-writable explicit `none` for every reported axis,
+  plus the owner-appropriate work type. If `agent_writable_value` is false,
+  report that axis as a §6 finding to the human before approval; never turn it
+  into a draft. An unknown availability (`null`, for the canonical fallback or
+  unresolved open values) requires selecting a verified live candidate from
+  discovery before approval. The mode supplies the canonical fallback without
+  a manifest. Follow track-work §5 for its validated inapplicability fallback.
   Never propose human Priority/Effort, derived Tier or `tier:pinned`;
 - **the source issue's disposition, when the input was a live issue** — a big
   issue left open and unmarked after its chunks are filed is a second,
@@ -427,8 +432,10 @@ children, and flat issues, with `track-work`'s
 `check-issue-metadata.sh` against the checkout and metadata for its target
 repository, using the **agent-authored** path. Supply all three approved ratings
 as personal labels or organization `--impact/--risk/--complexity` values,
-and the required work type and a value for every required classification axis
-from track-work §5, using the same preflight rule as the approved proposal.
+and the required work type and a value for every axis in the `--required-axes`
+output used for the approved proposal. Re-read that mode before execution;
+a changed axis contract or an axis with no agent-writable value returns to §6
+before the first write. Never derive or substitute an axis list from discovery.
 Use agent-writable explicit `none` labels for inapplicable axes; only when the
 target manifest has no agent-writable `<axis>:none` member
 may the preflight's `--inapplicable` fallback apply, with the required

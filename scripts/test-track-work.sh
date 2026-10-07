@@ -796,6 +796,116 @@ jq '.families += [(.families[] | select(.family == "area") |
     fail "optional and retired classification families must not be required"
 cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
 
+echo "==> metadata: required-axes mode is the authoring and delegation contract"
+metadata_axes="$tmp/metadata-required-axes"
+mkdir -p "$metadata_axes/nested"
+git -C "$metadata_axes" init -q
+git -C "$metadata_axes" remote add origin https://github.com/testowner/testrepo.git
+cp "$metadata_repo/agent-registry.json" "$metadata_axes/agent-registry.json"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "delivery-target" | .prefix = "surface" |
+    .values = [{"value":"api","description":"Fixture delivery target"},
+               {"value":"none","description":"Fixture explicit absence"}])]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_axes/label-registry.json"
+: >"$tmp/required-axes-gh.log"
+axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
+    --required-axes --repo testowner/testrepo --repo-root "$metadata_axes/nested")" ||
+    fail "required axes must be readable from a custom manifest"
+[ ! -s "$tmp/required-axes-gh.log" ] || fail "required-axes must make no GitHub reads or writes"
+jq -e '.source == "manifest" and
+    ([.axes[].axis] == ["area", "domain", "layer", "surface"]) and
+    all(.axes[]; .agent_writable_value == true and .agent_writable_none == true) and
+    (.axes[] | select(.axis == "surface").family) == "delivery-target"' \
+    <<<"$axis_contract" >/dev/null || fail "custom axis contract must retain families and writer availability"
+axes_draft=(--repo testowner/testrepo --repo-root "$metadata_axes"
+    --owner-type personal --title 'Consume the required axis contract' --body-file "$valid_body"
+    --agent-authored --label feature --label ai-generated
+    --label impact:medium --label risk:low --label complexity:s)
+reported_axes="$(jq -r '.axes[].axis' <<<"$axis_contract")"
+reported_labels=()
+while IFS= read -r axis; do
+    reported_labels+=(--label "$axis:none")
+done <<<"$reported_axes"
+[ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 0 ] ||
+    fail "exactly the mode's reported axes must pass enforcement: $(cat "$tmp/metadata.out")"
+while IFS= read -r missing; do
+    remaining_labels=()
+    while IFS= read -r axis; do
+        [ "$axis" = "$missing" ] || remaining_labels+=(--label "$axis:none")
+    done <<<"$reported_axes"
+    [ "$(run_metadata "${axes_draft[@]}" "${remaining_labels[@]}")" = 1 ] ||
+        fail "enforcement must refuse missing reported axis $missing"
+    grep -q "$missing missing" "$tmp/metadata.out" || fail "refusal must name reported axis $missing"
+done <<<"$reported_axes"
+
+jq '.families |= map(select(.family != "layer" and .family != "domain" and .family != "delivery-target"))' \
+    "$metadata_axes/label-registry.json" >"$tmp/metadata-axes-subset.json"
+cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-custom.json"
+cp "$tmp/metadata-axes-subset.json" "$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "subset axis contract must be readable"
+jq -e '[.axes[].axis] == ["area"]' <<<"$axis_contract" >/dev/null || fail "subset mode must require only the provisioned axis"
+[ "$(run_metadata "${axes_draft[@]}" --label area:none)" = 0 ] ||
+    fail "subset enforcement must agree with the mode"
+[ "$(run_metadata "${axes_draft[@]}")" = 1 ] || fail "subset enforcement must refuse its reported axis's absence"
+
+jq '(.families[] | select(.family == "delivery-target").writers) = ["human"]' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "an unavailable writer must be reported, not fail discovery"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value == false and .agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "a human-only required family must be reported as unavailable"
+jq '(.families[] | select(.family == "delivery-target").values[] |
+    select(.value == "none").writers) = ["human"]' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "human-only none must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value == true and .agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "value availability must be distinct from none availability"
+
+jq '(.families[] | select(.family == "delivery-target")) |=
+    (.open_values = true | .placeholder = "surface:<value>" | .values = [])' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "open required family must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value == null and .agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "unresolved open values must not be reported as unavailable"
+
+: >"$tmp/required-axes-gh.log"
+axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
+    --required-axes --repo fallback/repo --repo-root "$metadata_fallback")" ||
+    fail "no-manifest mode must return its canonical fallback"
+jq -e '.source == "canonical-fallback" and
+    ([.axes[].axis] == ["area", "layer", "domain"]) and
+    all(.axes[]; .agent_writable_value == null and .agent_writable_none == null)' \
+    <<<"$axis_contract" >/dev/null || fail "no-manifest mode must preserve the canonical axis set without inventing live availability"
+[ ! -s "$tmp/required-axes-gh.log" ] || fail "canonical mode must not need GitHub"
+fallback_axis_labels=()
+while IFS= read -r axis; do
+    axis_value=fixture
+    [ "$axis" != layer ] || axis_value=none
+    fallback_axis_labels+=(--label "$axis:$axis_value")
+done < <(jq -r '.axes[].axis' <<<"$axis_contract")
+[ "$(run_metadata --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Consume fallback axes' --body-file "$valid_body" \
+    --agent-authored --work-type-label enhancement --label ai-generated \
+    --label impact:medium --label risk:low --label complexity:s "${fallback_axis_labels[@]}")" = 0 ] ||
+    fail "canonical mode and enforcement must agree"
+printf '{invalid json\n' >"$metadata_axes/label-registry.json"
+_rc=0
+"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "required-axes must refuse an invalid manifest"
+rm "$metadata_axes/label-registry.json"
+mkdir "$metadata_axes/label-registry.json"
+_rc=0
+"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "required-axes must refuse a non-readable manifest path"
+
 echo "==> metadata: completeness counts only the required vocabulary family"
 jq '.families += [(.families[] | select(.family == "area") |
     .family = "area-concern" | .axis = "concern" | .exclusive = false |
@@ -1350,7 +1460,7 @@ for title in '' 'Metadata is missing' '(): Repair metadata' '( scope): Repair me
     '(scope): fix: Add metadata' '(scope): fix(track-work): Add metadata' \
     '(scope): P1: Repair metadata'; do
     [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
-        fail "malformed or nested-prefix title should fail: $title"
+        fail "malformed or nested-prefix title should fail: $title ($(cat "$tmp/metadata.out"))"
 done
 
 echo "==> metadata: surrounding whitespace and controls fail"
