@@ -809,18 +809,41 @@ assert_count "$reprom_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:spa
 # #1041 challenge r2 finding claude-2: the healthy-lane assertion alone
 # does not prove observation_ready() ever actually returns false -- a
 # mutation that always attempts every endpoint still passes it. So this
-# also counts ALPHA's own gh pr list attempts: with --interval-seconds 1
-# and the first backoff tier at 5s, alpha's degraded PR endpoint must be
-# attempted exactly once across all 3 polls (poll 1 fails and schedules a
-# retry ~5s out; polls 2 and 3, only 1-2s later, must be genuinely skipped,
-# not merely deduplicated in the output) and its persisted DEGRADE detail
-# must show exactly one recorded attempt.
+# also counts ALPHA's own gh pr list attempts. A fixture clock advances
+# exactly one second between polls: poll 1 schedules a retry 5s out, so
+# polls 2 and 3 must be genuinely skipped, not merely deduplicated in the
+# output. Real elapsed time under concurrent load cannot make that retry
+# due. Only this invocation sees the clock/sleep stubs; production code and
+# the other tests keep using the real clock.
+clock_bin="$test_tmp/clock-bin"
+clock_file="$test_tmp/multilane.clock"
+real_date="$(command -v date)"
+mkdir -p "$clock_bin"
+printf '%s\n' 2000000000 >"$clock_file"
+cat >"$clock_bin/date" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$*" = '-u +%s' ]; then
+    cat "$WATCH_CLOCK"
+else
+    exec "$WATCH_REAL_DATE" "$@"
+fi
+STUB
+cat >"$clock_bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 1 ] && [ "$1" = 1 ] || exit 93
+now="$(<"$WATCH_CLOCK")"
+printf '%s\n' "$((now + 1))" >"$WATCH_CLOCK"
+STUB
+chmod +x "$clock_bin/date" "$clock_bin/sleep"
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/healthy-pr-list-calls" \
     "$fixture_dir/alpha-pr-list-attempts"
 touch "$fixture_dir/fail-branch-alpha-pr-list"
 multilane_out="$test_tmp/multilane.out"
 multilane_state="$test_tmp/multilane.state"
-bash "$watcher" --iterations 3 --state-file "$multilane_state" \
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 3 --state-file "$multilane_state" \
     --registry "$registry" --workspace-root "$workspace_root" \
     --interval-seconds 1 --degrade-window-seconds 60 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
@@ -838,7 +861,8 @@ alpha_attempts="$(<"$fixture_dir/alpha-pr-list-attempts")"
 [ "$alpha_attempts" -eq 1 ] ||
     fail "alpha's degraded gh pr list was not skipped on later polls (expected exactly 1 attempt, got $alpha_attempts)"
 rm -f "$fixture_dir/alpha-pr-list-attempts"
-assert_count "$multilane_state" 1 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+[0-9]+[[:space:]]+1[[:space:]]+1:[0-9]+$'
+assert_count "$multilane_state" 1 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+2000000000[[:space:]]+1[[:space:]]+1:2000000005$'
+assert_line "$clock_file" 2000000002
 
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"

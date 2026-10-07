@@ -95,12 +95,8 @@ def axis_state($ls; $a; $known):
     elif (axis_unknown($ls; $a; $known) | length) > 0 then "unknown"
     else "none" end;
 
-def axis_optional_when_absent($a): $a == "layer";
-
 def axis_incomplete($ls; $a; $known):
-  axis_state($ls; $a; $known) as $state
-  | ($state != "ok"
-     and ($state != "none" or (axis_optional_when_absent($a) | not)));
+  axis_state($ls; $a; $known) != "ok";
 
 # 2-arg forms when $known is in scope:
 def axis_known($ls; $a): axis_known($ls; $a; $known);
@@ -122,7 +118,7 @@ def issue_conformance($issue; $axes; $known; $wt; $owner_type; $nts; $claim_stal
   | (($typed | not)
      or ([$axes[] | select(axis_incomplete($ls; .; $known))] | length > 0)
      or ([$axes[] | axis_unknown($ls; .; $known) | length] | any(. > 0))) as $incomplete
-  | (([$ax[]] | any(. == "conflict"))
+  | (([$ax[]] | any(. == "none" or . == "conflict"))
      or ([$axes[] | axis_unknown($ls; .; $known) | length] | any(. > 0))
      or ($owner_type == "User" and ($have_wt | length) == 0)
      or ($owner_type == "Organization" and $nts == "unset")) as $needs_triage_worthy
@@ -132,7 +128,7 @@ def issue_conformance($issue; $axes; $known; $wt; $owner_type; $nts; $claim_stal
        (if ($have_wt | length) == 0 and ($owner_type == "User" or $nts == "unset")
         then "missing-work-type" else empty end),
        ($ax | to_entries[]
-        | select(.value == "none" and (axis_optional_when_absent(.key) | not))
+        | select(.value == "none")
         | "axis-missing:\(.key)"),
        ($ax | to_entries[] | select(.value == "conflict") | "axis-conflict:\(.key)"),
        ($axes[] | . as $a

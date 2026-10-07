@@ -1163,6 +1163,64 @@ grep -qE "^issue (edit|close|comment) " "$GH_STUB_LOG" && fail "scan must never 
 [ "$(jq -r '.open[1].conformance.title_valid' "$scan_out")" = "false" ] || fail "scan must attach conformance.title_valid for issue 2"
 [ "$(jq -r '.open[1].conformance.flags | length' "$scan_out")" -gt 0 ] || fail "scan must compute conformance flags"
 
+echo "==> scan: missing Layer is reported while layer:none counts as decided"
+jq -e '.open[0].conformance.axis_state.layer == "none"
+       and (.open[0].conformance.flags | index("axis-missing:layer") != null)' \
+    "$scan_out" >/dev/null || fail "groom must report an issue with no layer label"
+cp "$stub_dir/open-issues.json" "$tmp/issues-before-layer.json"
+cp "$stub_dir/labels.json" "$tmp/labels-before-layer.json"
+# A portable consumer with no manifest discovers explicit none from live labels.
+cat >"$stub_dir/labels.json" <<'JSON'
+[{"name":"area:ci"}, {"name":"domain:project-tracking"}, {"name":"layer:none"},
+ {"name":"task"}, {"name":"needs-triage"}]
+JSON
+scan_script="$PWD/ai/skills/universal/groom/assets/groom-scan.sh"
+# Otherwise complete classification isolates the needs-triage decision to Layer.
+jq '.[0].labels = [{name: "area:ci"}, {name: "domain:project-tracking"},
+                    {name: "task"}, {name: "needs-triage"}]' \
+    "$stub_dir/open-issues.json" >"$tmp/layer-issues.json"
+cp "$tmp/layer-issues.json" "$stub_dir/open-issues.json"
+missing_layer_out="$tmp/scan-missing-layer.json"
+[ "$(cd "$tmp" && run "$scan_script" --repo "$repo" --out "$missing_layer_out")" = 0 ] ||
+    fail "missing Layer scan must succeed: $(cat "$tmp/out" "$tmp/err")"
+jq -e '.open[0].conformance.flags
+       | index("axis-missing:layer") != null and index("partially-classified") != null
+         and index("needs-triage-removable") == null' "$missing_layer_out" >/dev/null ||
+    fail "missing Layer must keep the groom issue partially classified"
+jq '.[0].labels += [{name: "layer:none"}]' "$stub_dir/open-issues.json" >"$tmp/layer-issues.json"
+cp "$tmp/layer-issues.json" "$stub_dir/open-issues.json"
+none_layer_out="$tmp/scan-none-layer.json"
+[ "$(cd "$tmp" && run "$scan_script" --repo "$repo" --out "$none_layer_out")" = 0 ] ||
+    fail "layer:none scan must succeed: $(cat "$tmp/out" "$tmp/err")"
+jq -e '.open[0].conformance.axis_state.layer == "ok"
+       and (.open[0].conformance.flags | index("axis-missing:layer") == null)
+       and (.open[0].conformance.flags | index("partially-classified") == null)
+       and (.open[0].conformance.flags | index("needs-triage-removable") != null)' \
+    "$none_layer_out" >/dev/null || fail "groom must accept explicit layer:none"
+
+echo "==> scan: absent Layer requeues triage, explicit layer:none does not"
+jq '.[0].labels |= map(select(.name != "layer:none" and .name != "needs-triage"))' \
+    "$stub_dir/open-issues.json" >"$tmp/layer-issues.json"
+cp "$tmp/layer-issues.json" "$stub_dir/open-issues.json"
+missing_nt_out="$tmp/scan-layer-missing-needs-triage.json"
+[ "$(cd "$tmp" && run "$scan_script" --repo "$repo" --out "$missing_nt_out")" = 0 ] ||
+    fail "missing needs-triage scan must succeed: $(cat "$tmp/out" "$tmp/err")"
+jq -e '.open[0].conformance.flags
+       | index("axis-missing:layer") != null and index("missing-needs-triage") != null' \
+    "$missing_nt_out" >/dev/null || fail "groom must flag missing Layer without needs-triage"
+jq '.[0].labels += [{name: "layer:none"}]' "$stub_dir/open-issues.json" >"$tmp/layer-issues.json"
+cp "$tmp/layer-issues.json" "$stub_dir/open-issues.json"
+decided_nt_out="$tmp/scan-layer-decided-no-needs-triage.json"
+[ "$(cd "$tmp" && run "$scan_script" --repo "$repo" --out "$decided_nt_out")" = 0 ] ||
+    fail "decided Layer scan must succeed: $(cat "$tmp/out" "$tmp/err")"
+jq -e '.open[0].conformance.axis_state.layer == "ok"
+       and (.open[0].conformance.flags | index("axis-missing:layer") == null)
+       and (.open[0].conformance.flags | index("missing-needs-triage") == null)' \
+    "$decided_nt_out" >/dev/null || fail "layer:none must not flag missing needs-triage"
+
+cp "$tmp/issues-before-layer.json" "$stub_dir/open-issues.json"
+cp "$tmp/labels-before-layer.json" "$stub_dir/labels.json"
+
 echo "==> scan: an empty milestones page flattens to an empty list, not an error"
 cat >"$stub_dir/milestones.json" <<'JSON'
 []
