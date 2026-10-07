@@ -140,13 +140,15 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
 - In a personal-account repository, select exactly one work-type label.
 - In an organization repository, select one native Issue Type and no work-type
   label.
-- For each classification axis `area`, `layer`, and `domain`, select exactly
-  one valid label when clearly inferable or declare that axis explicitly
+- For each active exclusive classification prefix in the manifest, select
+  exactly one valid label when clearly inferable or declare that axis explicitly
   inapplicable with that family's explicit `none` label. If a valid present
   manifest lacks that member, the checker permits `--inapplicable <axis>` with
   a warning and the filed issue needs `needs-triage` for that axis. Otherwise
   agent-authored drafts cannot leave an axis undecided, even with `needs-triage`; return the draft
-  for classification rather than inventing an answer.
+  for classification rather than inventing an answer. Exclude the separately
+  stored `impact`, `risk`, `complexity`, and `priority-ai` prefixes. Without a
+  manifest, require the canonical `area`, `layer`, and `domain` axes.
 - Rate Impact, Risk and Complexity using triage's classification rubric and
   provisioned values. On personal accounts these are labels; organizations
   store them as issue fields. The derived Tier is a label on both owner types.
@@ -182,7 +184,16 @@ manifest defines it. Only a valid present manifest without that member permits
 an agent `--inapplicable <axis>` fallback, with a warning naming the missing
 value. Add `needs-triage` at creation for the unrecordable axis; this is a
 filing marker, not permission to include it in an agent draft. Human drafts
-may still use the legacy attestation.
+may still use the legacy attestation for a required prefix.
+
+Before any creation, preflight also reserves `needs-triage` for incomplete
+filing and classification-write failures. Its manifest value must be active
+and agent-writable, and its live label must be provisioned. Without a manifest,
+the canonical marker grant still requires live provisioning. Marker permission
+uses the filing agent's policy even for human-authored drafts. A missing or
+forbidden marker refuses creation with a provisioning or authorization action;
+an unreadable listing is indeterminate. Rerun preflight after the maintainer
+resolves it; never create first or work around the refusal.
 
 ## Pre-create checker
 

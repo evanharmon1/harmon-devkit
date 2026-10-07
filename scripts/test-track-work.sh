@@ -756,6 +756,72 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+echo "==> metadata: required prefixes include custom axes and honor subset manifests"
+cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-axes.json"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "delivery-target" | .prefix = "surface" |
+    .values = [{"value":"api","description":"Fixture delivery target"},
+               {"value":"none","description":"Fixture explicit absence"}])]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Require custom classification' "$valid_body")" = 1 ] ||
+    fail "custom exclusive classification prefix must be required"
+grep -q 'surface missing' "$tmp/metadata.out" || fail "refusal must name the custom prefix"
+[ "$(run_personal 'Supply custom classification' "$valid_body" --label surface:api)" = 0 ] ||
+    fail "custom prefix must satisfy completeness: $(cat "$tmp/metadata.out")"
+[ "$(run_personal 'Record custom absence' "$valid_body" --label surface:none)" = 0 ] ||
+    fail "custom explicit none must satisfy completeness"
+[ "$(run_personal 'Reject custom conflict' "$valid_body" --label surface:api --label surface:none)" = 1 ] ||
+    fail "custom exclusive axis must reject multiple values"
+[ "$(run_personal 'Reject custom attestation' "$valid_body" --inapplicable surface)" = 1 ] ||
+    fail "custom prefix with none must require its persisted label"
+jq '(.families[] | select(.family == "delivery-target").values) |= map(select(.value != "none"))' \
+    "$metadata_repo/label-registry.json" >"$tmp/metadata-custom-no-none.json"
+cp "$tmp/metadata-custom-no-none.json" "$metadata_repo/label-registry.json"
+[ "$(run_personal 'Record unavailable custom absence' "$valid_body" --inapplicable surface)" = 0 ] ||
+    fail "custom prefix missing none must allow the validated filing fallback"
+jq '.families |= map(select(.family != "layer" and .family != "domain"))' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Use subset classification' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:fixture --label ai-generated \
+    --label impact:medium --label risk:low --label complexity:s)" = 0 ] ||
+    fail "a subset manifest must not require absent canonical axes: $(cat "$tmp/metadata.out")"
+# Nonexclusive and retired families are not completeness axes.
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "optional-axis" | .prefix = "optional" | .exclusive = false),
+    (.families[] | select(.family == "area") |
+    .family = "retired-axis" | .prefix = "retired" | .retired = true | .provision = false)]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Ignore optional and retired axes' "$valid_body")" = 0 ] ||
+    fail "optional and retired classification families must not be required"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
+echo "==> metadata: filing marker requires agent policy even for human content"
+jq '(.families[] | select(.family == "workflow").values[] |
+    select(.value == "needs-triage").writers) = ["human"]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Reserve helper failure marker' "$valid_body")" = 1 ] ||
+    fail "complete agent draft must reserve an agent-writable helper-failure marker"
+grep -q "filing marker 'needs-triage' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "marker refusal must identify agent writer policy"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'File incomplete human draft' --body-file "$valid_body" \
+    --human-authored)" = 1 ] || fail "human content must not bypass filing agent permissions"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+echo "==> metadata: declared but unprovisioned filing marker refuses creation"
+[ "$(METADATA_GH_LABELS=$'impact:medium\nrisk:low\ncomplexity:s' \
+    run_personal 'Reject unprovisioned marker' "$valid_body")" = 1 ] ||
+    fail "a manifest declaration must not prove live marker provisioning"
+grep -q "filing marker 'needs-triage' is not provisioned" "$tmp/metadata.out" ||
+    fail "marker refusal must explain provisioning action"
+jq '(.families[] | select(.family == "workflow").values) |= map(select(.value != "needs-triage"))' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Reject undeclared marker' "$valid_body")" = 1 ] ||
+    fail "a live marker must not bypass missing manifest policy"
+grep -q "filing marker 'needs-triage' does not exist in the target vocabulary" "$tmp/metadata.out" ||
+    fail "marker refusal must name missing manifest declaration"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
 echo "==> metadata: human-majority drafts require human; collectors require human + umbrella"
 cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-before-human.json"
 jq '.families += [{"family":"human-work","prefix":null,
@@ -956,6 +1022,21 @@ grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
     fail "fallback must not authorize needs-triage on an agent draft"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
     fail "fallback must not invent a missing manifest label"
+echo "==> metadata: missing-none fallback validates its filing marker before creation"
+jq '(.families[] | select(.family == "workflow").values[] |
+    select(.value == "needs-triage").writers) = ["human"]' \
+    "$metadata_without_none/label-registry.json" >"$tmp/metadata-no-none-human-marker.json"
+cp "$metadata_without_none/label-registry.json" "$tmp/metadata-no-none-agent-marker.json"
+cp "$tmp/metadata-no-none-human-marker.json" "$metadata_without_none/label-registry.json"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 1 ] ||
+    fail "missing-none fallback must refuse a human-only filing marker"
+grep -q "filing marker 'needs-triage' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "missing-none refusal must name marker writer policy"
+cp "$tmp/metadata-no-none-agent-marker.json" "$metadata_without_none/label-registry.json"
+[ "$(METADATA_GH_LABELS=$'impact:medium\nrisk:low\ncomplexity:s' \
+    run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 1 ] ||
+    fail "missing-none fallback must refuse an unprovisioned marker"
+
 echo "==> metadata: a retired none member does not block the agent absence fallback"
 jq '(.families[] | select(.family == "layer").values[] | select(.value == "none").retired) = true' \
     "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
@@ -1766,7 +1847,7 @@ jq '.families |= map(
       else . end)' "$metadata_repo/label-registry.json" \
     >"$metadata_open_enumerated/label-registry.json"
 _rc=0
-METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture)" \
+METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture needs-triage)" \
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_enumerated" --owner-type personal \
     --title '(tests): Allow a case-insensitive open member' --body-file "$valid_body" \
@@ -2045,6 +2126,17 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
 grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
     fail "fallback label read must be repo-bound and bounded"
 
+echo "==> metadata: no-manifest filing marker still requires live provisioning"
+[ "$(METADATA_GH_LABELS=$'enhancement\narea:fixture\nlayer:none\ndomain:fixture\nai-generated\nimpact:medium\nrisk:low\ncomplexity:s' \
+    run_metadata --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Require fallback filing marker' --body-file "$valid_body" \
+    --agent-authored --work-type-label enhancement --label area:fixture \
+    --label layer:none --label domain:fixture --label ai-generated \
+    --label impact:medium --label risk:low --label complexity:s)" = 1 ] ||
+    fail "no-manifest fallback must refuse an unprovisioned filing marker"
+grep -q "filing marker 'needs-triage' is not provisioned" "$tmp/metadata.out" ||
+    fail "no-manifest marker refusal must explain provisioning"
+
 echo "==> metadata: a manifest granting the collector labels lets an agent file a collector"
 metadata_collector="$tmp/metadata-collector"
 mkdir -p "$metadata_collector"
@@ -2096,7 +2188,7 @@ collector_run() {
 echo "==> metadata: no-registry human work and collectors permit agents, and require their labels"
 export METADATA_GH_LABELS
 METADATA_GH_LABELS="$(printf '%s\n' task area:fixture layer:none domain:fixture \
-    ai-generated human umbrella impact:medium risk:low complexity:s)"
+    ai-generated needs-triage human umbrella impact:medium risk:low complexity:s)"
 fallback_human_args=(--repo fallback/repo --repo-root "$metadata_fallback"
     --owner-type personal --agent-authored --work-type-label task
     --label area:fixture --label layer:none --label domain:fixture

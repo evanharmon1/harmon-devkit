@@ -16,7 +16,7 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           --title TITLE --body-file PATH [--label LABEL]...
           [--work-type-label LABEL]
           [--issue-type TYPE] (--agent-authored|--human-authored)
-          [--inapplicable area|layer|domain]...
+          [--inapplicable AXIS]...
           [--impact VALUE --risk VALUE --complexity VALUE]
 
        check-issue-metadata.sh --title-only --title TITLE [--previous-title PREV_TITLE]
@@ -43,11 +43,15 @@ Organization example:
 
 Organization field proposals use --impact/--risk/--complexity; personal
 proposals use impact:*/risk:*/complexity:* labels. Agent drafts require all
-three, a work type, and each area/layer/domain (explicit none is a value).
+three, a work type, and each active exclusive classification prefix from the
+manifest (area/layer/domain without a manifest; explicit none is a value).
 Human drafts are exempt from completeness. Agent --inapplicable is accepted only
 when a valid present manifest has no corresponding axis:none member; the created
 issue then needs needs-triage. Otherwise agent drafts must use the axis:none label.
-The sibling triage/assets/triage-apply.sh supplies classification values.
+Every creation recipe reserves needs-triage for incomplete filing or a failed
+classification write; preflight verifies its existence and agent writer policy
+separately from draft authorship. The sibling triage/assets/triage-apply.sh
+supplies classification values.
 
 Title-only example (for a proposed retitle):
   check-issue-metadata.sh --title-only --title '(cache): Reject stale entries' \
@@ -274,19 +278,6 @@ repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null)" ||
 [ -n "$repo_root" ] && [ -d "$repo_root" ] ||
     die "could not resolve the target checkout's top-level directory"
 
-for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
-    case "$axis" in
-    area | layer | domain) ;;
-    *) die "--inapplicable accepts area, layer, or domain (got '$axis')" ;;
-    esac
-done
-for axis in area layer domain; do
-    inapplicable_count=0
-    for declared in "${inapplicable[@]+"${inapplicable[@]}"}"; do
-        [ "$declared" = "$axis" ] && inapplicable_count=$((inapplicable_count + 1))
-    done
-    [ "$inapplicable_count" -le 1 ] || die "--inapplicable $axis is repeated"
-done
 for label in "${labels[@]+"${labels[@]}"}"; do
     [ -n "$label" ] || die "--label cannot be empty"
     case "$label" in
@@ -299,16 +290,26 @@ trap 'rm -rf "$tmp"' EXIT
 vocab="$tmp/vocabulary"
 : >"$vocab"
 manifest="$repo_root/label-registry.json"
+required_axes="$tmp/required-axes"
+printf '%s\n' area layer domain >"$required_axes"
 registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
 [ -x "$registry_helper" ] ||
     die "shared label-registry interpreter is missing: $registry_helper"
 
+live_read=0
 if [ -e "$manifest" ]; then
     [ -f "$manifest" ] && [ -r "$manifest" ] ||
         die "label-registry.json is present but unreadable"
     registry_records="$tmp/registry-records"
     "$registry_helper" render "$manifest" >"$registry_records" ||
         die "label-registry.json is present but invalid"
+
+    # Match triage's axes_active rule: prefixes, not family names, define
+    # active exclusive label classification axes. Ratings use separate storage.
+    awk -F '|' '$1 == "family" && $4 == "classification" &&
+      $6 == "true" && $9 == "false" &&
+      $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 }
+    ' "$registry_records" | sort -u >"$required_axes"
 
     awk -F '|' '
       $1 == "value" && $8 != "agent-registry" &&
@@ -385,6 +386,7 @@ if [ -e "$manifest" ]; then
     if [ -s "$open_candidates" ]; then
         live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
             die "could not read open-value labels from the target repository"
+        live_read=1
         while IFS='|' read -r label family axis writers exclusive; do
             label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
             if ! printf '%s\n' "$live" | awk -v wanted="$label_key" 'tolower($0) == wanted { found=1 } END { exit(found ? 0 : 1) }'; then
@@ -408,6 +410,7 @@ if [ -e "$manifest" ]; then
 else
     live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
         die "could not read the target repository's labels"
+    live_read=1
     while IFS= read -r label; do
         [ -n "$label" ] || continue
         # Proposed labels reject the record delimiter, so a live label that
@@ -437,6 +440,37 @@ $live
 EOF
 fi
 sort -u "$vocab" -o "$vocab"
+
+for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
+    grep -qxF -- "$axis" "$required_axes" ||
+        die "--inapplicable requires an active classification prefix (got '$axis')"
+    inapplicable_count=0
+    for declared in "${inapplicable[@]+"${inapplicable[@]}"}"; do
+        [ "$declared" = "$axis" ] && inapplicable_count=$((inapplicable_count + 1))
+    done
+    [ "$inapplicable_count" -le 1 ] || die "--inapplicable $axis is repeated"
+done
+
+# This is a filing operation by an agent even for human-authored content.
+# Reserve the marker before creation: helper failure cannot be predicted, and
+# every create-and-classify recipe must be able to mark its partial result.
+marker_record="$(awk -F '|' 'tolower($1) == "needs-triage" { print; exit }' "$vocab")"
+if [ -z "$marker_record" ]; then
+    violation "filing marker 'needs-triage' does not exist in the target vocabulary; provision it before creation"
+elif ! awk -F '|' 'tolower($1) == "needs-triage" &&
+  index("," $4 ",", ",agent,") { found=1 }
+  END { exit(found ? 0 : 1) }
+' "$vocab"; then
+    violation "filing marker 'needs-triage' is not writable by an agent; ask the maintainer to authorize the filing path before creation"
+fi
+if [ "$live_read" -eq 0 ]; then
+    live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
+        die "could not verify provisioning of filing marker 'needs-triage'"
+fi
+if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
+  END { exit(found ? 0 : 1) }'; then
+    violation "filing marker 'needs-triage' is not provisioned in the target repository; provision it before creation"
+fi
 
 # Use the validated vocabulary's existing retirement filter and author policy
 # when deciding whether the manifest offers an authorable absence value.
@@ -721,9 +755,6 @@ fi
 has_ai_generated=0
 has_needs_triage=0
 work_type_count=0
-area_count=0
-layer_count=0
-domain_count=0
 impact_count=0
 risk_count=0
 complexity_count=0
@@ -804,11 +835,6 @@ EOF
     [ "$label_key" = ai-generated ] && has_ai_generated=1
     [ "$label_key" = needs-triage ] && has_needs_triage=1
     [ "$axis" = work-type ] && work_type_count=$((work_type_count + 1))
-    case "$family" in
-    area) area_count=$((area_count + 1)) ;;
-    layer) layer_count=$((layer_count + 1)) ;;
-    domain) domain_count=$((domain_count + 1)) ;;
-    esac
     if [ "$exclusive" = true ]; then
         family_count="$(awk -F '|' -v fam="$family" -v seen="$seen_labels" '
           BEGIN { while ((getline line < seen) > 0) selected[tolower(line)]=1 }
@@ -900,8 +926,12 @@ is_inapplicable() {
 }
 
 undecided=""
-for axis in area layer domain; do
-    eval "count=\${${axis}_count}"
+while IFS= read -r axis; do
+    [ -n "$axis" ] || continue
+    count="$(awk -v prefix="$axis:" '
+      index(tolower($0), tolower(prefix)) == 1 { n++ }
+      END { print n + 0 }
+    ' "$seen_labels")"
     if [ "$author_type" = agent ] && [ "$count" -gt 1 ]; then
         violation "$axis requires exactly one label (found $count)"
     fi
@@ -910,7 +940,7 @@ for axis in area layer domain; do
     elif [ "$count" -eq 0 ] && ! is_inapplicable "$axis"; then
         undecided="${undecided}${undecided:+, }$axis"
     fi
-done
+done <"$required_axes"
 if [ -n "$undecided" ] && [ "$author_type" = agent ]; then
     violation "agent-authored drafts require every classification axis ($undecided missing); choose a label or explicit none"
 fi
