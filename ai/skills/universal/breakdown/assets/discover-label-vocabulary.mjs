@@ -718,6 +718,10 @@ if (registry.families.some((family) => family.source === 'agent-registry')) {
 
 // An emitted planning family must be disjoint from every other source.
 // Excluded sources can overlap each other; null owns no prefix namespace.
+// Matching rating-axis declarations are superseded by the authoritative helper.
+function supersededRatingDeclaration(family) {
+  return ratingPrefixes.has(family.family) && family.prefix === family.family
+}
 function assertDisjointSources(sources) {
   for (const source of sources.filter((candidate) => candidate.planning)) {
     for (const other of sources) {
@@ -769,6 +773,7 @@ const resultFamilies = new Map()
 // prefix), and that must be refused exactly like a family that declares the
 // prefix directly.
 const reservedConcretePrefixes = [
+  'suggest:',
   'claim:',
   'agent:',
   'foreman:',
@@ -803,6 +808,7 @@ function emitCandidate(family, name, value = {}) {
   if (addCandidate(family, name, value)) planningFamilies.add(family)
 }
 for (const family of registry.families) {
+  if (supersededRatingDeclaration(family)) continue
   for (const value of family.values) {
     const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
     if (safe(family, value)) emitCandidate(family, name, value)
@@ -822,7 +828,7 @@ for (const family of registry.families) {
   }
 }
 
-const manifestSources = registry.families.map((family, index) => ({
+const manifestSources = registry.families.flatMap((family, index) => supersededRatingDeclaration(family) ? [] : [{
   origin: `manifest family[${index}] ${family.family}`,
   family: family.family,
   planning: planningFamilies.has(family),
@@ -834,7 +840,7 @@ const manifestSources = registry.families.map((family, index) => ({
       liveLabels.filter((label) => normalizeLabelName(label.name).startsWith(`${family.prefix}:`))
         .map((label) => label.name) : [])
   ].map(normalizeLabelName))
-}))
+}])
 assertDisjointSources([
   ...manifestSources,
   ...[...ratingPrefixes].map((axis) => ({

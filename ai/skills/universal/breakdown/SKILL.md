@@ -496,7 +496,9 @@ verified planning vocabulary:
   under `classification`. The manifest remains the source for area/layer/domain.
   Personal `impact`, `risk` and `complexity` families are emitted from those
   helper values intersected with live labels, even when the manifest has no
-  rating families. Organization rating labels are inert and excluded: use
+  rating families. A manifest rating-axis family whose id and prefix both
+  equal that axis is superseded by the helper for emission and collision checks.
+  Organization rating labels are inert and excluded: use
   the helper's field vocabulary, also emitted under `issue_fields`. A missing
   or failing helper blocks discovery; vendor triage alongside breakdown.
 
@@ -590,8 +592,9 @@ quoted variable or a file, never spliced into a single-quoted command string.
   approved `--impact`, `--risk` and `--complexity` values and `--execute`.
   Set `GH_HOST` to the same target host passed to discovery's `--repo`
   (`<host>/<owner>/<repo>`), including for the post-create helper write:
-  `GH_HOST="$target_host" <triage-skill-dir>/assets/triage-apply.sh label
-  --repo <owner/repo> … --execute`. The helper accepts `owner/repo`, so its
+  `GH_HOST="$target_host" TRIAGE_EXECUTE=1
+  <triage-skill-dir>/assets/triage-apply.sh label --repo <owner/repo> … --execute`.
+  Both bindings are required. The helper accepts `owner/repo`, so its
   `gh` calls inherit that host; never substitute the active default host.
   Require exit 0 and independently re-read the stored ratings, derived Tier
   and marker state before attaching relationships. If classification fails
