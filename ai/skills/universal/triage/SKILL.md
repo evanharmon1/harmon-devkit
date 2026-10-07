@@ -105,8 +105,10 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   (AI) the repo provisions, with their allowed `values`, its `storage`
   (`label` or `field`), and `required` (the provisioned ones of Impact, Risk
   and Complexity). Never pass a value that is not in `values`.
-  Its additive `tier_derivation` field has `derivable` (at least one provisioned
-  Risk × Complexity pair can write a Tier), `reason` (null when derivable),
+  Its additive `tier_derivation` field is present only when `classification-axes`
+  is called with `--tier-derivation` (the scan requests it). Default catalogue
+  reads omit it and do not run the policy resolver. The field has `derivable`
+  (at least one provisioned Risk × Complexity pair can write a Tier), `reason` (null when derivable),
   and `cases` (each pair with `risk`, `complexity`, `derivable`, and `reason`).
   The writer's policy resolver supplies these results; provisioned Tier labels
   are required too. `summary.tier_derivation_reasons` lists unique unavailable

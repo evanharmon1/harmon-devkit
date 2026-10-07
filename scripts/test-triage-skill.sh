@@ -2266,9 +2266,22 @@ jq -e '.storage == "label" and .required == ["impact", "risk", "complexity"]
        and .tier_values == ["local", "economy", "standard", "frontier", "apex"]' \
     "$tmp/out" >/dev/null || fail "personal classification-axes: $(cat "$tmp/out")"
 
-echo "==> classification-axes: derivability is additive and shares the writer resolver"
+echo "==> classification-axes: default catalogue preserves the old shape exactly"
+jq -e 'has("tier_derivation") | not' "$tmp/out" >/dev/null ||
+    fail "default catalogue must omit tier_derivation"
+jq -cn '{owner_type: "User", storage: "label", axes: {
+    impact: {provisioned: true, values: ["minimal", "low", "medium", "high", "massive"]},
+    risk: {provisioned: true, values: ["trivial", "low", "medium", "high", "critical"]},
+    complexity: {provisioned: true, values: ["xs", "s", "m", "l", "xl"]},
+    "priority-ai": {provisioned: true, values: ["p0", "p1", "p2", "p3", "p4"]}},
+    required: ["impact", "risk", "complexity"],
+    tier_values: ["local", "economy", "standard", "frontier", "apex"]}' >"$tmp/axes-expected.json"
+cmp -s "$tmp/out" "$tmp/axes-expected.json" ||
+    fail "default catalogue must be byte-identical to the old catalogue"
+
+echo "==> classification-axes: opt-in derivability shares the writer resolver"
 cp "$tmp/out" "$tmp/axes-original.json"
-[ "$(run "$apply" classification-axes --repo "$repo" --policy "$policy")" = 0 ] ||
+[ "$(run "$apply" classification-axes --repo "$repo" --policy "$policy" --tier-derivation)" = 0 ] ||
     fail "provisioned derivation failed: $(cat "$tmp/out")"
 jq -e '.tier_derivation.derivable and .tier_derivation.reason == null
        and all(.tier_derivation.cases[]; .derivable and .reason == null)' \
@@ -2277,14 +2290,14 @@ jq -S 'del(.tier_derivation)' "$tmp/out" >"$tmp/axes-new.json"
 jq -S 'del(.tier_derivation)' "$tmp/axes-original.json" >"$tmp/axes-old.json"
 cmp -s "$tmp/axes-old.json" "$tmp/axes-new.json" ||
     fail "existing catalogue fields must remain unchanged"
-[ "$(run "$apply" classification-axes --repo "$repo" --policy "$no_matrix_policy")" = 0 ] ||
+[ "$(run "$apply" classification-axes --repo "$repo" --policy "$no_matrix_policy" --tier-derivation)" = 0 ] ||
     fail "no-matrix catalogue failed"
 jq -e '(.tier_derivation.derivable | not)
        and (.tier_derivation.reason | contains("no [tier.matrix]"))
        and all(.tier_derivation.cases[]; .derivable | not)' "$tmp/out" >/dev/null ||
     fail "missing matrix must expose an unavailable reason: $(cat "$tmp/out")"
 [ "$(run "$standalone_triage/triage/assets/triage-apply.sh" classification-axes \
-    --repo "$repo" --policy "$policy")" = 0 ] || fail "standalone catalogue failed"
+    --repo "$repo" --policy "$policy" --tier-derivation)" = 0 ] || fail "standalone catalogue failed"
 jq -e '(.tier_derivation.derivable | not)
        and (.tier_derivation.reason | contains("not vendored beside triage"))' \
     "$tmp/out" >/dev/null || fail "missing resolver must be reported"

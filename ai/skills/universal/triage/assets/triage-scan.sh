@@ -497,7 +497,7 @@ fi
 # (one source, no drift): which axes the repository provisions, with which
 # values, and in which storage.
 class_json="$("$script_dir/triage-apply.sh" classification-axes --repo "$repo" \
-    --policy "$policy")" ||
+    --policy "$policy" --tier-derivation)" ||
     die "could not compute the provisioned classification axes"
 
 report="$("$script_dir/triage-report.sh" find --repo "$repo")" ||

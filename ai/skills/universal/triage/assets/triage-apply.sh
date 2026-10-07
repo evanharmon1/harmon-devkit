@@ -61,7 +61,7 @@
 #   triage-apply.sh axes [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh axis-values [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh work-types [--repo owner/repo] [--manifest PATH]
-#   triage-apply.sh classification-axes --repo owner/repo [--policy PATH]
+#   triage-apply.sh classification-axes --repo owner/repo [--policy PATH] [--tier-derivation]
 #   triage-apply.sh native-type --repo owner/repo --issue N
 #   triage-apply.sh native-types --repo owner/repo
 #   triage-apply.sh label --repo owner/repo --issue N
@@ -78,6 +78,8 @@
 # `field`), which of Impact/Risk/Complexity/Priority (AI) the repository
 # provisions and with which values, and the provisioned tier labels — the one
 # source triage-scan.sh reads, so the two can never drift.
+# --tier-derivation opts into the additive tier_derivation capability field;
+# default catalogue reads do not invoke the policy resolver.
 #
 # Dry-run is the DEFAULT: without --execute the script prints exactly what it
 # would write and writes nothing. --execute additionally requires
@@ -162,7 +164,7 @@ usage() {
     echo "       $0 axes [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 axis-values [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
-    echo "       $0 classification-axes --repo owner/repo [--policy PATH]" >&2
+    echo "       $0 classification-axes --repo owner/repo [--policy PATH] [--tier-derivation]" >&2
     echo "       $0 native-types --repo owner/repo" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--native-type TYPE] [--impact V] [--risk V]" >&2
@@ -732,7 +734,7 @@ classification_axes_json() {
 }
 
 cmd_classification_axes() {
-    local repo="" owner_type policy="./.devflow.toml" catalogue derivation
+    local repo="" owner_type policy="./.devflow.toml" catalogue derivation with_derivation=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -745,6 +747,7 @@ cmd_classification_axes() {
             policy="$2"
             shift 2
             ;;
+        --tier-derivation) with_derivation=1 && shift ;;
         *) usage ;;
         esac
     done
@@ -752,6 +755,10 @@ cmd_classification_axes() {
     owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
         die 2 "could not read the owner type of $repo"
     catalogue="$(classification_axes_json "$repo" "$owner_type")"
+    if [ "$with_derivation" -eq 0 ]; then
+        printf '%s\n' "$catalogue"
+        return 0
+    fi
     derivation="$(tier_derivation_json "$catalogue" "$policy")"
     jq -c --argjson derivation "$derivation" \
         '. + {tier_derivation: $derivation}' <<<"$catalogue"
