@@ -796,6 +796,22 @@ jq '.families += [(.families[] | select(.family == "area") |
     fail "optional and retired classification families must not be required"
 cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
 
+echo "==> metadata: completeness counts only the required vocabulary family"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "area-concern" | .axis = "concern" | .exclusive = false |
+    .values = [{"value":"shadow","description":"Same prefix, different family"}])]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject a shadow classification value' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:shadow --label layer:none \
+    --label domain:fixture --label ai-generated --label impact:medium \
+    --label risk:low --label complexity:s)" = 1 ] ||
+    fail "a label from a different family sharing the prefix must not satisfy classification"
+grep -q 'area missing' "$tmp/metadata.out" || fail "required family's absence must be named"
+[ "$(run_personal 'Allow a separate same-prefix concern' "$valid_body" --label area:shadow)" = 0 ] ||
+    fail "same-prefix concern must not count as a second required-family value: $(cat "$tmp/metadata.out")"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
 echo "==> metadata: filing marker requires agent policy even for human content"
 jq '(.families[] | select(.family == "workflow").values[] |
     select(.value == "needs-triage").writers) = ["human"]' \
@@ -821,6 +837,19 @@ jq '(.families[] | select(.family == "workflow").values) |= map(select(.value !=
 grep -q "filing marker 'needs-triage' does not exist in the target vocabulary" "$tmp/metadata.out" ||
     fail "marker refusal must name missing manifest declaration"
 cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
+echo "==> metadata: possibly truncated label listings are indeterminate"
+truncated_labels="$(
+    printf '%s\n' needs-triage impact:medium risk:low complexity:s
+    for ((label_index = 4; label_index < 1000; label_index++)); do
+        printf 'fixture-%s\n' "$label_index"
+    done
+)"
+[ "$(METADATA_GH_LABELS="$truncated_labels" \
+    run_personal 'Refuse truncated marker provisioning' "$valid_body")" = 2 ] ||
+    fail "1000 labels must be indeterminate even when the marker is visible"
+grep -q 'fetch may be truncated' "$tmp/metadata.out" ||
+    fail "truncation refusal must explain the incomplete listing"
 
 echo "==> metadata: human-majority drafts require human; collectors require human + umbrella"
 cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-before-human.json"
@@ -1014,7 +1043,7 @@ fallback_absence=(--repo testowner/testrepo --repo-root "$metadata_without_none"
     --label ai-generated --label impact:medium --label risk:low --label complexity:s)
 [ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
     fail "a valid manifest without layer:none must allow explicit absence: $(cat "$tmp/metadata.out")"
-grep -Fq "warning: registry is missing 'layer:none'" "$tmp/metadata.out" ||
+grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
     fail "fallback warning must name missing layer:none: $(cat "$tmp/metadata.out")"
 grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
     fail "fallback warning must name the filing marker"
@@ -1037,12 +1066,25 @@ cp "$tmp/metadata-no-none-agent-marker.json" "$metadata_without_none/label-regis
     run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 1 ] ||
     fail "missing-none fallback must refuse an unprovisioned marker"
 
+echo "==> metadata: human-only none retains the agent inapplicability fallback"
+jq '(.families[] | select(.family == "layer").values[] |
+    select(.value == "none").writers) = ["human"]' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
+    fail "human-only none must allow agent fallback: $(cat "$tmp/metadata.out")"
+grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
+    fail "human-only none warning must explain the missing writer grant"
+[ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
+    fail "fallback must not authorize an agent to write human-only none"
+grep -Fq "label 'layer:none' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "direct human-only none refusal must name the writer policy"
+
 echo "==> metadata: a retired none member does not block the agent absence fallback"
 jq '(.families[] | select(.family == "layer").values[] | select(.value == "none").retired) = true' \
     "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
 [ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
     fail "retired layer:none must permit agent inapplicability: $(cat "$tmp/metadata.out")"
-grep -Fq "warning: registry is missing 'layer:none'" "$tmp/metadata.out" ||
+grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
     fail "retired none fallback must warn about the unavailable value: $(cat "$tmp/metadata.out")"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
     fail "retired layer:none must remain unavailable as a proposed label"

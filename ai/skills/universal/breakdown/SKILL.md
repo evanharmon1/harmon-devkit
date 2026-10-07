@@ -297,9 +297,13 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   ratings in canonical lowercase for
   track-work's preflight and the shared helper. Missing vocabulary or an
   ambiguous rating is unresolved work to settle before approval. Include one
-  area, layer and domain value each (or the axis's explicit `none` member),
-  and the owner-appropriate work type. Never propose human Priority/Effort,
-  derived Tier or `tier:pinned`;
+  value for every required classification axis from track-work §5 (or an
+  agent-writable explicit `none` member), and the owner-appropriate work type.
+  Derive the required axes from the target manifest by track-work's preflight
+  rule. Select candidate values from discovery's `families` records
+  (`axis`, `exclusive`, `prefix`, and `family`); the canonical
+  `area`, `layer`, and `domain` axes are the fallback without a manifest.
+  Never propose human Priority/Effort, derived Tier or `tier:pinned`;
 - **the source issue's disposition, when the input was a live issue** — a big
   issue left open and unmarked after its chunks are filed is a second,
   claimable copy of the same work. Propose one of: reuse it as the
@@ -423,8 +427,10 @@ children, and flat issues, with `track-work`'s
 `check-issue-metadata.sh` against the checkout and metadata for its target
 repository, using the **agent-authored** path. Supply all three approved ratings
 as personal labels or organization `--impact/--risk/--complexity` values,
-and the required work type and area/layer/domain labels. Use explicit `none`
-labels for inapplicable axes; only when the target manifest has no such member
+and the required work type and a value for every required classification axis
+from track-work §5, using the same preflight rule as the approved proposal.
+Use agent-writable explicit `none` labels for inapplicable axes; only when the
+target manifest has no agent-writable `<axis>:none` member
 may the preflight's `--inapplicable` fallback apply, with the required
 `needs-triage` marker at filing as specified in track-work §5. This is the last
 check after any approved retitle and before any

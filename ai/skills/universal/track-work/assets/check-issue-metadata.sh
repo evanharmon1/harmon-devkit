@@ -46,7 +46,7 @@ proposals use impact:*/risk:*/complexity:* labels. Agent drafts require all
 three, a work type, and each active exclusive classification prefix from the
 manifest (area/layer/domain without a manifest; explicit none is a value).
 Human drafts are exempt from completeness. Agent --inapplicable is accepted only
-when a valid present manifest has no corresponding axis:none member; the created
+when a valid present manifest has no agent-writable axis:none member; the created
 issue then needs needs-triage. Otherwise agent drafts must use the axis:none label.
 Every creation recipe reserves needs-triage for incomplete filing or a failed
 classification write; preflight verifies its existence and agent writer policy
@@ -291,7 +291,9 @@ vocab="$tmp/vocabulary"
 : >"$vocab"
 manifest="$repo_root/label-registry.json"
 required_axes="$tmp/required-axes"
+required_families="$tmp/required-families"
 printf '%s\n' area layer domain >"$required_axes"
+printf '%s\n' 'area|area' 'layer|layer' 'domain|domain' >"$required_families"
 registry_helper="$asset_dir/../../label-registry-support/assets/label-registry.sh"
 [ -x "$registry_helper" ] ||
     die "shared label-registry interpreter is missing: $registry_helper"
@@ -308,8 +310,9 @@ if [ -e "$manifest" ]; then
     # active exclusive label classification axes. Ratings use separate storage.
     awk -F '|' '$1 == "family" && $4 == "classification" &&
       $6 == "true" && $9 == "false" &&
-      $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 }
-    ' "$registry_records" | sort -u >"$required_axes"
+      $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 "|" $2 }
+    ' "$registry_records" | sort -u >"$required_families"
+    awk -F '|' '{ print $1 }' "$required_families" | sort -u >"$required_axes"
 
     awk -F '|' '
       $1 == "value" && $8 != "agent-registry" &&
@@ -467,22 +470,26 @@ if [ "$live_read" -eq 0 ]; then
     live="$(gh label list --repo "$repo" --limit 1000 --json name -q '.[].name')" ||
         die "could not verify provisioning of filing marker 'needs-triage'"
 fi
+live_count="$(printf '%s\n' "$live" | grep -c . || true)"
+if [ "$live_count" -ge 1000 ]; then
+    die "the repo reports $live_count labels — the fetch may be truncated; provision or verify the filing marker with a complete label listing before creation"
+fi
 if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
   END { exit(found ? 0 : 1) }'; then
     violation "filing marker 'needs-triage' is not provisioned in the target repository; provision it before creation"
 fi
 
 # Use the validated vocabulary's existing retirement filter and author policy
-# when deciding whether the manifest offers an authorable absence value.
+# when deciding whether the manifest offers an agent-writable <axis>:none member.
 if [ "$author_type" = agent ]; then
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
         if [ -e "$manifest" ] && ! awk -F '|' -v wanted="$axis:none" '
           tolower($1) == wanted && index("," $4 ",", ",agent,") { found=1 }
           END { exit(found ? 0 : 1) }
         ' "$vocab"; then
-            warn "registry is missing '$axis:none'; --inapplicable $axis needs needs-triage on the created issue"
+            warn "registry has no agent-writable '$axis:none' member; --inapplicable $axis needs needs-triage on the created issue"
         else
-            violation "--inapplicable $axis requires a manifest missing its none member; use the \`$axis:none\` label"
+            violation "--inapplicable $axis requires a manifest with no agent-writable '$axis:none' member; use the \`$axis:none\` label"
         fi
     done
 fi
@@ -926,12 +933,13 @@ is_inapplicable() {
 }
 
 undecided=""
-while IFS= read -r axis; do
+while IFS='|' read -r axis family; do
     [ -n "$axis" ] || continue
-    count="$(awk -v prefix="$axis:" '
-      index(tolower($0), tolower(prefix)) == 1 { n++ }
+    count="$(awk -F '|' -v fam="$family" -v seen="$seen_labels" '
+      BEGIN { while ((getline line < seen) > 0) selected[tolower(line)]=1 }
+      selected[tolower($1)] && $2 == fam { n++ }
       END { print n + 0 }
-    ' "$seen_labels")"
+    ' "$vocab")"
     if [ "$author_type" = agent ] && [ "$count" -gt 1 ]; then
         violation "$axis requires exactly one label (found $count)"
     fi
@@ -940,7 +948,7 @@ while IFS= read -r axis; do
     elif [ "$count" -eq 0 ] && ! is_inapplicable "$axis"; then
         undecided="${undecided}${undecided:+, }$axis"
     fi
-done <"$required_axes"
+done <"$required_families"
 if [ -n "$undecided" ] && [ "$author_type" = agent ]; then
     violation "agent-authored drafts require every classification axis ($undecided missing); choose a label or explicit none"
 fi

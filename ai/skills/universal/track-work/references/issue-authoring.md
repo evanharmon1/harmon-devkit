@@ -143,8 +143,9 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
 - For each active exclusive classification prefix in the manifest, select
   exactly one valid label when clearly inferable or declare that axis explicitly
   inapplicable with that family's explicit `none` label. If a valid present
-  manifest lacks that member, the checker permits `--inapplicable <axis>` with
-  a warning and the filed issue needs `needs-triage` for that axis. Otherwise
+  manifest has no agent-writable `<axis>:none` member, the checker permits
+  `--inapplicable <axis>` with a warning and the filed issue needs
+  `needs-triage` for that axis. Otherwise
   agent-authored drafts cannot leave an axis undecided, even with `needs-triage`; return the draft
   for classification rather than inventing an answer. Exclude the separately
   stored `impact`, `risk`, `complexity`, and `priority-ai` prefixes. Without a
@@ -180,9 +181,10 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
 agent author's escape from completeness. Whoever files an incompletely
 classified human draft adds `needs-triage` and never invents missing ratings.
 Agent drafts must supply the corresponding axis's `none` label when the
-manifest defines it. Only a valid present manifest without that member permits
-an agent `--inapplicable <axis>` fallback, with a warning naming the missing
-value. Add `needs-triage` at creation for the unrecordable axis; this is a
+manifest makes it agent-writable. Only a valid present manifest with no
+agent-writable `<axis>:none` member permits an agent `--inapplicable <axis>`
+fallback, with a warning naming the unavailable agent-writable member. Add
+`needs-triage` at creation for the unrecordable axis; this is a
 filing marker, not permission to include it in an agent draft. Human drafts
 may still use the legacy attestation for a required prefix.
 
@@ -250,8 +252,8 @@ brief instead of relying on surrounding orchestrator context:
 - the target repository;
 - the title and body contract, including the canonical headings and tagged
   acceptance items;
-- concrete labels or explicit inapplicability (`none` when defined, otherwise
-  the validated missing-none fallback) for `area`, `layer`, and `domain`, plus
+- concrete labels or explicit inapplicability (`none` when agent-writable, otherwise
+  the validated inapplicability fallback) for `area`, `layer`, and `domain`, plus
   the owner-appropriate work classification,
   Impact/Risk/Complexity values, provenance, and the shared-helper create recipe;
 - any attributable milestone instruction; and
@@ -290,11 +292,11 @@ re-reads the issue and verifies its observed labels.
    that is not fully classified adds `needs-triage`. Run the helper only for
    supplied proposals, omitting missing rating flags; skip it when none were
    supplied. It owns the owner-type writes, derived Tier and marker.
-   For the missing-none fallback, omit the unavailable label and add
+   For the inapplicability fallback, omit the unavailable label and add
    `needs-triage` at creation; keep it until the affected axis can be recorded.
 5. Return and independently re-read the created issue number and stored values.
    For full classification, confirm the derived Tier and absence of
-   `needs-triage`; for incomplete human drafts or the missing-none agent
+   `needs-triage`; for incomplete human drafts or the inapplicability agent
    fallback, confirm the supplied values and presence of `needs-triage`. A helper or verification failure returns the
    existing issue number and blocker, never successful completion.
 

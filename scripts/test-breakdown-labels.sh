@@ -2433,6 +2433,15 @@ if grep -qF 'check-issue-metadata.sh' <<<"$execution_section" &&
 else
     bad "execution section runs the agent-authored metadata preflight"
 fi
+if grep -qF 'value for every required classification axis from track-work §5' <<<"$proposal_section" &&
+    grep -qF 'value for every required classification axis' <<<"$execution_section" &&
+    grep -qF 'from track-work §5, using the same preflight rule' <<<"$execution_section" &&
+    grep -qF '(`axis`, `exclusive`, `prefix`, and `family`)' <<<"$proposal_section" &&
+    grep -qF 'axes are the fallback without a manifest' <<<"$proposal_section"; then
+    ok "breakdown proposes and preflights every manifest-required classification axis"
+else
+    bad "breakdown must use track-work required axes in both proposal and execution"
+fi
 if grep -qF 'then immediately call triage' <<<"$execution_section" &&
     grep -qF 'triage-apply.sh label' <<<"$execution_section" &&
     grep -qF 'independently re-read the stored ratings' <<<"$execution_section"; then
