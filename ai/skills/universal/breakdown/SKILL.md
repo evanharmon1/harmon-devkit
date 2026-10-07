@@ -588,6 +588,11 @@ quoted variable or a file, never spliced into a single-quoted command string.
   create with every preflight-verified label and the owner-appropriate work
   type, then immediately call triage's `triage-apply.sh label` with all three
   approved `--impact`, `--risk` and `--complexity` values and `--execute`.
+  Set `GH_HOST` to the same target host passed to discovery's `--repo`
+  (`<host>/<owner>/<repo>`), including for the post-create helper write:
+  `GH_HOST="$target_host" <triage-skill-dir>/assets/triage-apply.sh label
+  --repo <owner/repo> … --execute`. The helper accepts `owner/repo`, so its
+  `gh` calls inherit that host; never substitute the active default host.
   Require exit 0 and independently re-read the stored ratings, derived Tier
   and marker state before attaching relationships. If classification fails
   after create, add `needs-triage`, report the existing issue number and halt

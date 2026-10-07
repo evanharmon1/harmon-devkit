@@ -168,6 +168,11 @@ write_registry() {
       "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"High"}]
     },
     {
+      "family":"priority-ai","prefix":"priority-ai","purpose":"Helper-derived priority","axis":"classification",
+      "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
+      "exclusive":true,"provision":true,"color":"123456","values":[{"value":"p1","description":"High priority"}]
+    },
+    {
       "family":"effort","prefix":"effort","purpose":"Human estimate","axis":"classification",
       "source":"inline","writers":["agent"],"readers":"humans","lifecycle":"durable",
       "exclusive":true,"provision":true,"color":"123456","values":[{"value":"high","description":"High"}]
@@ -235,6 +240,7 @@ write_labels() {
   {"name":"risk:low","description":"Limited risk"},
   {"name":"complexity:m","description":"Moderate work"},
   {"name":"priority:high","description":"Human priority"},
+  {"name":"priority-ai:p1","description":"Helper-derived priority"},
   {"name":"effort:high","description":"Human effort"},
   {"name":"tier:frontier","description":"Derived tier"},
   {"name":"tier:pinned","description":"Human pin"},
@@ -390,7 +396,7 @@ else
     bad "per-value semantic overrides take precedence"
 fi
 
-if ! grep -qE 'area:missing|suggest:|claim:|phase:|gated:|foreman:|priority:|effort:|tier:' \
+if ! grep -qE 'area:missing|suggest:|claim:|phase:|gated:|foreman:|priority:|priority-ai:|effort:|tier:' \
     <<<"$names"; then
     ok "missing, unknown, lifecycle, ownership, gated, and arming labels are excluded"
 else
@@ -423,6 +429,24 @@ else
     bad "missing shared helper has an actionable diagnostic"
 fi
 mv "$helper.saved" "$helper"
+
+real_registry="$tmproot/real-registry"
+mkdir -p "$real_registry"
+write_agent_registry "$real_registry"
+cp "$repo/label-registry.json" "$real_registry/label-registry.json"
+cp "$repo/label-registry.schema.json" "$real_registry/label-registry.schema.json"
+cmp -s "$repo/label-registry.json" "$real_registry/label-registry.json" || exit 1
+jq '[.families[] | . as $family | .values[] |
+    {name:(if $family.prefix == null then .value else ($family.prefix + ":" + .value) end),
+     description:(.description // "")}] | unique_by(.name)' "$real_registry/label-registry.json" >"$real_registry/labels.json"
+if real_output="$(discover "$real_registry" 2>"$real_registry/error")" && jq -e '
+    .mode == "registry" and .verified_semantics == true and
+    any(.families[]; .source != "classification-helper" and (.labels | length) > 0)
+' <<<"$real_output" >/dev/null; then
+    ok "byte-copy real repository registry emits planning vocabulary despite excluded shared prefixes"
+else
+    bad "real repository registry discovery succeeds: $(cat "$real_registry/error")"
+fi
 
 # Both registry shapes must work while the claim contract remains required.
 without_suggest="$tmproot/without-suggest"
@@ -526,7 +550,7 @@ for invariant_case in open-rating prefixless-model helper-id bare-ratings open-m
     case "$invariant_case" in
     open-rating)
         extra='[{"family":"rating-open","prefix":"risk","axis":"meta","source":"tool-owned","open_values":true,"placeholder":"risk:<value>","values":[]}]'
-        sources='rating-open.*classification-helper family risk'
+        sources='(rating-open.*classification-helper family risk|classification-helper family risk.*rating-open)'
         ;;
     prefixless-model)
         extra='[{"family":"hidden-model","prefix":null,"axis":"model","source":"inline","values":[{"value":"area:api"}]}]'
@@ -534,7 +558,7 @@ for invariant_case in open-rating prefixless-model helper-id bare-ratings open-m
         ;;
     helper-id)
         extra='[{"family":"risk","prefix":"custom-risk","axis":"meta","source":"inline","values":[{"value":"live"}]}]'
-        sources='manifest family.*risk.*classification-helper family risk'
+        sources='(manifest family.*risk.*classification-helper family risk|classification-helper family risk.*manifest family.*risk)'
         ;;
     bare-ratings)
         extra='[{"family":"bare-ratings","prefix":null,"axis":"meta","source":"inline","values":[{"value":"risk"},{"value":"impact"},{"value":"complexity"}]}]'
@@ -547,7 +571,9 @@ for invariant_case in open-rating prefixless-model helper-id bare-ratings open-m
         ;;
     excluded-concrete)
         extra='[{"family":"hidden-owner","prefix":null,"axis":"model","source":"inline","values":[{"value":"Ready"}]},{"family":"visible-owner","prefix":null,"axis":"meta","source":"inline","values":[{"value":"ready"}]}]'
-        sources='hidden-owner.*visible-owner'
+        sources='(hidden-owner.*visible-owner|visible-owner.*hidden-owner)'
+        jq '. + [{name:"Ready"}]' "$invariant_fixture/labels.json" >"$invariant_fixture/labels-updated.json"
+        mv "$invariant_fixture/labels-updated.json" "$invariant_fixture/labels.json"
         ;;
     esac
     jq --argjson extra "$extra" '.families += ($extra | map(
@@ -624,6 +650,9 @@ cat >"$fallback/labels.json" <<'JSON'
   {"name":"feature","description":"Feature"},
   {"name":"area:api","description":"Area"},
   {"name":"priority:high","description":"Priority"},
+  {"name":"Priority-AI:p1","description":"Helper-derived priority"},
+  {"name":"Suggest:gpt","description":"Legacy advisory model family"},
+  {"name":"suggest:gpt:sol","description":"Legacy advisory model refinement"},
   {"name":"Effort:high","description":"Human effort"},
   {"name":"tier:pinned","description":"Human pin"},
   {"name":"security","description":"Security"},
@@ -654,6 +683,13 @@ if grep -qi '"name": *"strategy:\|"name": *"rigor:\|"name": *"tier:\|"name": *"m
     bad "the no-registry live-label fallback must exclude execution-control labels (strategy/rigor/tier/method), case-insensitively, same as the registry path"
 else
     ok "the no-registry live-label fallback excludes strategy/rigor/tier/method labels case-insensitively, same as the registry path"
+fi
+
+if jq -e '(any(.families[].labels[]; .name | test("^priority-ai:"; "i")) | not)' <<<"$output" >/dev/null &&
+    jq -e '(any(.labels[]; .name | test("^(priority-ai|suggest):"; "i")) | not)' <<<"$fallback_output" >/dev/null; then
+    ok "Priority (AI) is excluded in registry and fallback; fallback also excludes suggestions"
+else
+    bad "helper-owned Priority (AI) and legacy fallback suggestions are never proposed"
 fi
 
 empty="$tmproot/empty"
@@ -766,7 +802,7 @@ jq '.families += [{
 mv "$namespace_collision/registry.json" "$namespace_collision/label-registry.json"
 if discover "$namespace_collision" >"$namespace_collision/output" 2>"$namespace_collision/error"; then
     bad "excluded generated namespaces cannot be reclassified by open families"
-elif [ ! -s "$namespace_collision/output" ] && grep -q 'collision: prefix claim.*claim.*claim-open' "$namespace_collision/error"; then
+elif [ ! -s "$namespace_collision/output" ] && grep -Eq 'collision: prefix claim.*claim.*claim-open|declares reserved label claim:gpt' "$namespace_collision/error"; then
     ok "excluded generated namespaces cannot be reclassified by open families"
 else
     bad "excluded generated namespace overlap fails closed with a diagnostic"
@@ -1070,6 +1106,13 @@ if grep -qF 'then immediately call triage' <<<"$execution_section" &&
     ok "create-time classification uses the shared helper and re-reads its result"
 else
     bad "create-time classification uses the shared helper and re-reads its result"
+fi
+
+if grep -qF 'GH_HOST="$target_host" <triage-skill-dir>/assets/triage-apply.sh label' <<<"$execution_section" &&
+    grep -qF 'same target host passed to discovery' <<<"$execution_section"; then
+    ok "post-create helper write inherits the host used for vocabulary discovery"
+else
+    bad "post-create helper write is bound to the discovery target host"
 fi
 
 echo "==> migrated registry (harmon-init#1047: devflow source, schema_version 3)"

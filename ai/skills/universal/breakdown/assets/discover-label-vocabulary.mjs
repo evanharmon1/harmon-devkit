@@ -421,8 +421,9 @@ function validateAgentRegistry(registry) {
 // the create gate refuses, including human Priority/Effort and derived Tier.
 const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method', 'priority', 'effort'])
 const ratingPrefixes = new Set(['impact', 'risk', 'complexity'])
+const helperOwnedPrefixes = new Set([...ratingPrefixes, 'priority-ai'])
 function isRatingLabel(name) {
-  return [...ratingPrefixes].some((prefix) => name.startsWith(`${prefix}:`))
+  return [...helperOwnedPrefixes].some((prefix) => name.startsWith(`${prefix}:`))
 }
 
 function safe(family, value = {}) {
@@ -438,7 +439,7 @@ function safe(family, value = {}) {
     !arming &&
     !gated &&
     !['model', 'strategy', 'foreman'].includes(family.axis) &&
-    !ratingPrefixes.has(family.prefix) &&
+    !helperOwnedPrefixes.has(family.prefix) &&
     !executionControlPrefixes.has(family.prefix)
   )
 }
@@ -637,6 +638,7 @@ if (!defaultPaths.has('label-registry.json')) {
     'claim:',
     'agent:',
     'foreman:',
+    'suggest:',
     ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
   ]
   const labels = liveLabels
@@ -714,30 +716,32 @@ if (registry.families.some((family) => family.source === 'agent-registry')) {
   agentVocabulary = validateAgentRegistry(agentRegistry)
 }
 
-// One collision invariant covers emitted and excluded sources alike.
-// A null prefix owns no namespace; a concrete name under another source's
-// prefix still collides even if that source has no live candidates.
+// An emitted planning family must be disjoint from every other source.
+// Excluded sources can overlap each other; null owns no prefix namespace.
 function assertDisjointSources(sources) {
-  const ids = new Map()
-  const prefixes = new Map()
-  const names = new Map()
-  function reserve(index, kind, value, source) {
-    const prior = index.get(value)
-    if (prior && prior !== source) {
-      die(`collision: ${kind} ${value} is shared by ${prior.origin} and ${source.origin}`)
-    }
-    index.set(value, source)
-  }
-  for (const source of sources) {
-    reserve(ids, 'family id', source.family, source)
-    if (source.prefix !== null) reserve(prefixes, 'prefix', source.prefix, source)
-    for (const name of source.names) reserve(names, 'label', normalizeLabelName(name), source)
-  }
-  for (const [name, source] of names) {
-    for (const [prefix, owner] of prefixes) {
-      if (source !== owner && name.startsWith(`${prefix}:`)) {
-        die(`collision: label ${name} is shared by ${source.origin} and ${owner.origin} (prefix ${prefix})`)
+  for (const source of sources.filter((candidate) => candidate.planning)) {
+    for (const other of sources) {
+      if (source === other) continue
+      let collision
+      if (source.family === other.family) collision = `family id ${source.family}`
+      else if (source.prefix !== null && source.prefix === other.prefix) collision = `prefix ${source.prefix}`
+      else {
+        for (const name of source.names) {
+          if (other.names.has(name) || (other.prefix !== null && name.startsWith(`${other.prefix}:`))) {
+            collision = `label ${name}`
+            break
+          }
+        }
+        if (!collision && source.prefix !== null) {
+          for (const name of other.names) {
+            if (name.startsWith(`${source.prefix}:`)) {
+              collision = `label ${name}`
+              break
+            }
+          }
+        }
       }
+      if (collision) die(`collision: ${collision} is shared by ${source.origin} and ${other.origin}`)
     }
   }
 }
@@ -755,27 +759,6 @@ function generatedNames(family) {
   return []
 }
 
-const manifestSources = registry.families.map((family, index) => ({
-  origin: `manifest family[${index}] ${family.family}`,
-  family: family.family,
-  prefix: family.prefix,
-  names: new Set([
-    ...family.values.map((value) => family.prefix === null ? value.value : `${family.prefix}:${value.value}`),
-    ...generatedNames(family),
-    ...(family.open_values === true && family.prefix !== null ?
-      liveLabels.filter((label) => normalizeLabelName(label.name).startsWith(`${family.prefix}:`))
-        .map((label) => label.name) : [])
-  ])
-}))
-assertDisjointSources([
-  ...manifestSources,
-  ...[...ratingPrefixes].map((axis) => ({
-    origin: `classification-helper family ${axis}`,
-    family: axis,
-    prefix: axis,
-    names: new Set(classification.axes[axis].values.map((value) => `${axis}:${value}`))
-  }))
-])
 
 const resultFamilies = new Map()
 // claim:/agent:/foreman: are live ownership/dispatch controls; the
@@ -812,15 +795,20 @@ function addCandidate(family, name, value = {}) {
     provision: family.provision === true && value.provision !== false,
     retired: family.retired === true || value.retired === true
   })
+  return true
 }
 
+const planningFamilies = new Set()
+function emitCandidate(family, name, value = {}) {
+  if (addCandidate(family, name, value)) planningFamilies.add(family)
+}
 for (const family of registry.families) {
   for (const value of family.values) {
     const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
-    if (safe(family, value)) addCandidate(family, name, value)
+    if (safe(family, value)) emitCandidate(family, name, value)
   }
   for (const name of generatedNames(family)) {
-    if (safe(family)) addCandidate(family, name)
+    if (safe(family)) emitCandidate(family, name)
   }
   if (!safe(family) || family.open_values !== true) continue
   if (family.prefix === null) {
@@ -829,10 +817,36 @@ for (const family of registry.families) {
   const declared = new Set(family.values.map((value) => normalizeLabelName(`${family.prefix}:${value.value}`)))
   for (const [normalized, label] of live) {
     if (normalized.startsWith(`${family.prefix}:`) && !declared.has(normalized)) {
-      addCandidate(family, label.name)
+      emitCandidate(family, label.name)
     }
   }
 }
+
+const manifestSources = registry.families.map((family, index) => ({
+  origin: `manifest family[${index}] ${family.family}`,
+  family: family.family,
+  planning: planningFamilies.has(family),
+  prefix: family.prefix,
+  names: new Set([
+    ...family.values.map((value) => family.prefix === null ? value.value : `${family.prefix}:${value.value}`),
+    ...generatedNames(family),
+    ...(family.open_values === true && family.prefix !== null ?
+      liveLabels.filter((label) => normalizeLabelName(label.name).startsWith(`${family.prefix}:`))
+        .map((label) => label.name) : [])
+  ].map(normalizeLabelName))
+}))
+assertDisjointSources([
+  ...manifestSources,
+  ...[...ratingPrefixes].map((axis) => ({
+    origin: `classification-helper family ${axis}`,
+    family: axis,
+    planning: storage === 'field' ? classification.axes[axis].provisioned &&
+      classification.axes[axis].values.length > 0 : ratingFamilies.some((family) => family.family === axis),
+    prefix: axis,
+    names: new Set(classification.axes[axis].values.map((value) => `${axis}:${value}`))
+  }))
+])
+
 
 for (const family of resultFamilies.values()) {
   family.labels.sort((left, right) => left.name.localeCompare(right.name))
