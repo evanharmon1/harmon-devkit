@@ -34,7 +34,7 @@ runs:
     - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
-        version: 3.53.1
+        version: 3.54.0
         repo-token: ${{ github.token }}
     - name: Install lint tools (file, shellcheck, shfmt, actionlint, yamllint, yq)
       if: inputs.lint-tools == 'true'
@@ -54,7 +54,7 @@ runs:
         # renovate: datasource=pypi depName=yamllint
         YAMLLINT_VERSION=1.38.0
         # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
-        YQ_VERSION=4.53.6
+        YQ_VERSION=4.54.1
 
         runner_arch="${RUNNER_ARCH:-$(uname -m)}"
         case "$runner_arch" in
@@ -64,7 +64,7 @@ runs:
             shfmt_sha256=76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf
             actionlint_arch=amd64
             yq_arch=amd64
-            yq_sha256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
+            yq_sha256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
             ;;
           ARM64|arm64|aarch64)
             shellcheck_arch=aarch64
@@ -72,7 +72,7 @@ runs:
             shfmt_sha256=5f2db09dae91fca848f7adbdd014632e921a383863a2ad7e0450ad3aba0c6489
             actionlint_arch=arm64
             yq_arch=arm64
-            yq_sha256=88a1016bc1d657375a35864e4f44b6f333df8ff97b559f51bba0adcb2169df09
+            yq_sha256=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b
             ;;
           *)
             echo "::error::Unsupported runner architecture for pinned lint tools: ${runner_arch}" >&2

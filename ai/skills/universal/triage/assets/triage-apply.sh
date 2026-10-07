@@ -61,7 +61,7 @@
 #   triage-apply.sh axes [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh axis-values [--repo owner/repo] [--manifest PATH]
 #   triage-apply.sh work-types [--repo owner/repo] [--manifest PATH]
-#   triage-apply.sh classification-axes --repo owner/repo
+#   triage-apply.sh classification-axes --repo owner/repo [--policy PATH] [--tier-derivation]
 #   triage-apply.sh native-type --repo owner/repo --issue N
 #   triage-apply.sh native-types --repo owner/repo
 #   triage-apply.sh label --repo owner/repo --issue N
@@ -78,6 +78,8 @@
 # `field`), which of Impact/Risk/Complexity/Priority (AI) the repository
 # provisions and with which values, and the provisioned tier labels — the one
 # source triage-scan.sh reads, so the two can never drift.
+# --tier-derivation opts into the additive tier_derivation capability field;
+# default catalogue reads do not invoke the policy resolver.
 #
 # Dry-run is the DEFAULT: without --execute the script prints exactly what it
 # would write and writes nothing. --execute additionally requires
@@ -162,7 +164,7 @@ usage() {
     echo "       $0 axes [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 axis-values [--repo owner/repo] [--manifest PATH]" >&2
     echo "       $0 work-types [--repo owner/repo] [--manifest PATH]" >&2
-    echo "       $0 classification-axes --repo owner/repo" >&2
+    echo "       $0 classification-axes --repo owner/repo [--policy PATH] [--tier-derivation]" >&2
     echo "       $0 native-types --repo owner/repo" >&2
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--native-type TYPE] [--impact V] [--risk V]" >&2
@@ -202,6 +204,20 @@ render_manifest() {
     printf '%s\n' "$records"
 }
 
+# Relative policy/manifest names are trustworthy only at the checkout root.
+# The scan invokes this same check through the internal check-root command.
+guard_run_root() {
+    [ -n "${TRIAGE_REPO:-}" ] || return 0
+    local root cwd
+    cwd="$(pwd -P)" || die 4 "refused: could not resolve the bound run's working directory"
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" ||
+        die 4 "refused: a bound run must run from the repository root (not a Git checkout)"
+    root="$(cd "$root" && pwd -P)" ||
+        die 4 "refused: could not resolve the bound run's repository root"
+    [ "$cwd" = "$root" ] ||
+        die 4 "refused: a bound run must run from the repository root '$root' (got '$cwd')"
+}
+
 # In a bound run (TRIAGE_REPO set by the wrapper) the manifest is the repo's
 # own ./label-registry.json and nothing else: the worker holds a scratch
 # Write grant, so a caller-chosen manifest path would let a prompt-injected
@@ -211,6 +227,16 @@ guard_manifest() {
     if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
         die 4 "refused: --manifest is fixed to ./label-registry.json in a" \
             "bound run — a worker-writable manifest would define its own allowlist"
+    fi
+}
+
+# Reads and writes use the repo's own policy in a bound run: a scratch policy
+# must neither choose a Tier nor suppress the scan's missing-Tier flags.
+guard_policy() {
+    local policy="$1"
+    if [ -n "${TRIAGE_REPO:-}" ] && [ "$policy" != "./.devflow.toml" ]; then
+        die 4 "refused: --policy is fixed to ./.devflow.toml in a bound run" \
+            "— a worker-writable policy would choose its own Tier"
     fi
 }
 
@@ -732,7 +758,7 @@ classification_axes_json() {
 }
 
 cmd_classification_axes() {
-    local repo="" owner_type
+    local repo="" owner_type policy="./.devflow.toml" catalogue derivation with_derivation=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -740,13 +766,27 @@ cmd_classification_axes() {
             repo="$2"
             shift 2
             ;;
+        --policy)
+            [ "$#" -ge 2 ] || usage
+            policy="$2"
+            shift 2
+            ;;
+        --tier-derivation) with_derivation=1 && shift ;;
         *) usage ;;
         esac
     done
     [ -n "$repo" ] || usage
+    guard_policy "$policy"
     owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
         die 2 "could not read the owner type of $repo"
-    classification_axes_json "$repo" "$owner_type"
+    catalogue="$(classification_axes_json "$repo" "$owner_type")"
+    if [ "$with_derivation" -eq 0 ]; then
+        printf '%s\n' "$catalogue"
+        return 0
+    fi
+    derivation="$(tier_derivation_json "$catalogue" "$policy")"
+    jq -c --argjson derivation "$derivation" \
+        '. + {tier_derivation: $derivation}' <<<"$catalogue"
 }
 
 # derive_tier RISK COMPLEXITY POLICY — the Tier, by CALLING the vendored
@@ -790,6 +830,34 @@ derive_tier() {
             <<<"$out")"
         ;;
     esac
+}
+
+# Evaluate provisioned input pairs with the same helper and policy the writer
+# uses. Partial Tier-label provisioning must not hide pairs it can write.
+tier_derivation_json() {
+    local catalogue="$1" policy="$2" risk complexity derived reason rows="[]"
+    while IFS= read -r risk; do
+        while IFS= read -r complexity; do
+            derived="$(derive_tier "$risk" "$complexity" "$policy")"
+            reason=""
+            if [[ "$derived" == '!'* ]]; then
+                reason="${derived#!}"
+            elif ! jq -e --arg t "$derived" '.tier_values | index($t) != null' \
+                <<<"$catalogue" >/dev/null; then
+                reason="no 'tier:$derived' label is provisioned"
+            fi
+            rows="$(jq -c --arg risk "$risk" --arg complexity "$complexity" \
+                --arg reason "$reason" '. + [{risk: $risk, complexity: $complexity,
+                  derivable: ($reason == ""),
+                  reason: (if $reason == "" then null else $reason end)}]' <<<"$rows")"
+        done < <(jq -r '.axes.complexity.values[]' <<<"$catalogue")
+    done < <(jq -r '.axes.risk.values[]' <<<"$catalogue")
+    jq -cn --argjson cases "$rows" '
+      {derivable: any($cases[]; .derivable),
+       reason: (if any($cases[]; .derivable) then null
+                elif $cases == [] then "Risk and Complexity are not both provisioned"
+                else [$cases[].reason] | unique | join("; ") end),
+       cases: $cases}'
 }
 
 cmd_label() {
@@ -868,12 +936,7 @@ cmd_label() {
     [ -n "$repo" ] && [ -n "$issue" ] || usage
     guard_issue_number "$issue"
     guard_manifest "$manifest"
-    # The policy decides the derived Tier, so a bound run reads the repo's own
-    # policy for the same reason it reads the repo's own manifest.
-    if [ -n "${TRIAGE_REPO:-}" ] && [ "$policy" != "./.devflow.toml" ]; then
-        die 4 "refused: --policy is fixed to ./.devflow.toml in a bound run" \
-            "— a worker-writable policy would choose its own Tier"
-    fi
+    guard_policy "$policy"
     # The wrapper binds the run to one repository; a mismatched --repo here is
     # a confused (or prompt-injected) caller, not a supported use.
     if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then
@@ -1703,7 +1766,9 @@ cmd_label() {
 [ "$#" -ge 1 ] || usage
 cmd="$1"
 shift
+guard_run_root
 case "$cmd" in
+check-root) [ "$#" -eq 0 ] || usage ;;
 allowlist) cmd_allowlist "$@" ;;
 axes) cmd_axes "$@" ;;
 axis-values) cmd_axis_values "$@" ;;
