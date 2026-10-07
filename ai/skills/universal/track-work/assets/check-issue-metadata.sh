@@ -122,12 +122,12 @@ load_required_axis_contract() {
           $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 "|" $2 }
         ' "$registry_records" | sort -u >"$required_families"
         ambiguity="$(awk -F '|' '
-          seen[$1] && seen[$1] != $2 {
-            print "classification families " seen[$1] " and " $2 " share prefix " $1;
+          FILENAME == ARGV[1] { if (!($1 in required)) required[$1]=$2; next }
+          $1 == "family" && $9 == "false" && $3 in required && required[$3] != $2 {
+            print "families " required[$3] " and " $2 " share prefix " $3;
             exit
           }
-          { seen[$1]=$2 }
-        ' "$required_families")"
+        ' "$required_families" "$registry_records")"
         [ -z "$ambiguity" ] ||
             die "$ambiguity; assign distinct prefixes before filing or discovering required axes"
         awk -F '|' '{ print $1 }' "$required_families" | sort -u >"$required_axes"

@@ -845,20 +845,26 @@ while IFS= read -r missing; do
     grep -q "$missing missing" "$tmp/metadata.out" || fail "refusal must name reported axis $missing"
 done <<<"$reported_axes"
 
-# A required axis has exactly one active exclusive classification family.
+# A required classification prefix is unique across ALL active families.
 cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-unambiguous.json"
-jq '.families += [(.families[] | select(.family == "area") |
-    .family = "area-sibling" | .values = [{"value":"sibling","description":"Sibling"}])]' \
-    "$tmp/metadata-axes-unambiguous.json" >"$metadata_axes/label-registry.json"
-_rc=0
-"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
-    >"$tmp/required-axes.out" 2>&1 || _rc=$?
-[ "$_rc" = 2 ] || fail "mode must refuse two required families sharing a prefix"
-[ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 2 ] ||
-    fail "preflight must refuse two required families sharing a prefix"
-for diagnostic in "$tmp/required-axes.out" "$tmp/metadata.out"; do
-    grep -q 'families area and area-sibling share prefix area' "$diagnostic" ||
-        fail "ambiguous-axis refusal must name both families and their shared prefix"
+for sibling_kind in classification open-concern nonexclusive; do
+    jq --arg kind "$sibling_kind" '.families += [(.families[] | select(.family == "area") |
+        .family = "area-sibling" | .values = [{"value":"sibling","description":"Sibling"}] |
+        if $kind == "open-concern" then
+            .axis = "concern" | .exclusive = false | .open_values = true | .placeholder = "area:<value>"
+        elif $kind == "nonexclusive" then .exclusive = false
+        else . end)]' \
+        "$tmp/metadata-axes-unambiguous.json" >"$metadata_axes/label-registry.json"
+    _rc=0
+    "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+        >"$tmp/required-axes.out" 2>&1 || _rc=$?
+    [ "$_rc" = 2 ] || fail "mode must refuse a shared required prefix ($sibling_kind)"
+    [ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 2 ] ||
+        fail "preflight must refuse a shared required prefix ($sibling_kind)"
+    for diagnostic in "$tmp/required-axes.out" "$tmp/metadata.out"; do
+        grep -q 'families area and area-sibling share prefix area' "$diagnostic" ||
+            fail "ambiguous-axis refusal must name both families and their shared prefix ($sibling_kind)"
+    done
 done
 cp "$tmp/metadata-axes-unambiguous.json" "$metadata_axes/label-registry.json"
 
@@ -1010,7 +1016,7 @@ _rc=0
     >"$tmp/required-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "required-axes must refuse a non-readable manifest path"
 
-echo "==> metadata: completeness counts only the required vocabulary family"
+echo "==> metadata: a same-prefix concern makes required classification ambiguous"
 jq '.families += [(.families[] | select(.family == "area") |
     .family = "area-concern" | .axis = "concern" | .exclusive = false |
     .values = [{"value":"shadow","description":"Same prefix, different family"}])]' \
@@ -1019,11 +1025,12 @@ jq '.families += [(.families[] | select(.family == "area") |
     --owner-type personal --title 'Reject a shadow classification value' --body-file "$valid_body" \
     --agent-authored --label feature --label area:shadow --label layer:none \
     --label domain:fixture --label ai-generated --label impact:medium \
-    --label risk:low --label complexity:s)" = 1 ] ||
-    fail "a label from a different family sharing the prefix must not satisfy classification"
-grep -q 'area missing' "$tmp/metadata.out" || fail "required family's absence must be named"
-[ "$(run_personal 'Allow a separate same-prefix concern' "$valid_body" --label area:shadow)" = 0 ] ||
-    fail "same-prefix concern must not count as a second required-family value: $(cat "$tmp/metadata.out")"
+    --label risk:low --label complexity:s)" = 2 ] ||
+    fail "same-prefix concern must make the required axis ambiguous"
+grep -q 'families area and area-concern share prefix area' "$tmp/metadata.out" ||
+    fail "same-prefix concern refusal must name both families"
+[ "$(run_personal 'Reject a same-prefix concern' "$valid_body" --label area:shadow)" = 2 ] ||
+    fail "a real area member cannot resolve a same-prefix family ambiguity: $(cat "$tmp/metadata.out")"
 cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
 
 echo "==> metadata: filing marker requires agent policy even for human content"
