@@ -668,8 +668,7 @@ jq -n -L "$title_module_dir" \
     ([criteria_lines($issue.body)[] | select(test(checkbox_line_re))
       | rest_tag(checkbox_rest(.)) | select(. != "untagged")]) as $tags
     | ([$tags[] | select(. == "human")] | length) as $human
-    | (($issue.title | test("^\\((HUMAN|QA)\\): "))
-       and (($ls | index("umbrella")) != null)) as $collector
+    | ($issue.title | test("^\\((HUMAN|QA)\\): ")) as $collector
     | {labelled: (($ls | index("human")) != null),
        collector: $collector, human_criteria: $human,
        total_criteria: ($tags | length),
@@ -803,6 +802,8 @@ jq -n -L "$title_module_dir" \
               then ["priority-ai-missing"] else [] end)
            + (if $hw.recommendation == "human" and ($hw.labelled | not)
               then ["human-label-missing"] else [] end)
+           + (if $hw.collector and (($ls | index("umbrella")) == null)
+              then ["collector-umbrella-missing"] else [] end)
            + (if $hw.labelled and ($hw.collector | not)
                  and $hw.recommendation != "human"
               then ["human-removal-candidate"] else [] end))

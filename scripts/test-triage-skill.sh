@@ -3104,6 +3104,12 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "updatedAt":"2026-01-01T00:00:00Z","assignees":[],"body":""},
  {"number":604,"title":"(agent): Implement dispatchable feature",
   "labels":[{"name":"human"}],"updatedAt":"2026-01-01T00:00:00Z",
+  "assignees":[],"body":"## Acceptance criteria\n\n- [ ] [CI] Test feature"},
+ {"number":605,"title":"(QA): Restore collector metadata",
+  "labels":[{"name":"human"}],"updatedAt":"2026-01-01T00:00:00Z",
+  "assignees":[],"body":""},
+ {"number":606,"title":"(HUMAN): Restore collector metadata",
+  "labels":[{"name":"human"}],"updatedAt":"2026-01-01T00:00:00Z",
   "assignees":[],"body":"## Acceptance criteria\n\n- [ ] [CI] Test feature"}]
 JSON
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
@@ -3123,6 +3129,14 @@ jq -e '.open[] | select(.number == 603) | .human_work.collector
 jq -e '.open[] | select(.number == 604) | .flags
     | index("human-removal-candidate") != null' "$human_scan" >/dev/null ||
     fail "dispatchable human-labelled issue must be reported, not removed"
+for number in 605 606; do
+    jq -e --argjson n "$number" '.open[] | select(.number == $n)
+        | .human_work.collector and .human_work.recommendation == "human"
+          and (.flags | index("collector-umbrella-missing") != null)
+          and (.flags | index("human-removal-candidate") == null)' \
+        "$human_scan" >/dev/null ||
+        fail "collector title alone must report missing umbrella, never human removal"
+done
 for number in 601 602 603 604; do
     jq --argjson n "$number" '.[] | select(.number == $n)' \
         "$stub_dir/issues-open.json" >"$stub_dir/issue-$number.json"

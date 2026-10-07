@@ -803,6 +803,16 @@ for collector_title in '(HUMAN): Complete setup' '(QA): Verify shipped work'; do
         fail "collector human + umbrella must pass: $(cat "$tmp/metadata.out")"
     [ "$(METADATA_RAW_TITLE=1 run_personal "$collector_title" "$valid_body" --label human)" = 1 ] ||
         fail "collector must require umbrella even with CI criteria"
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --repo testowner/testrepo \
+        --repo-root "$metadata_repo" --owner-type personal --title "$collector_title" \
+        --body-file "$valid_body" --human-authored --label human)" = 1 ] ||
+        fail "human-authored collector without umbrella must fail"
+    grep -q "a collector requires 'umbrella'" "$tmp/metadata.out" ||
+        fail "human-authored collector refusal must name the missing umbrella"
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --repo testowner/testrepo \
+        --repo-root "$metadata_repo" --owner-type personal --title "$collector_title" \
+        --body-file "$valid_body" --human-authored --label human --label umbrella)" = 0 ] ||
+        fail "human-authored collector with both labels must pass: $(cat "$tmp/metadata.out")"
 done
 cp "$tmp/metadata-registry-before-human.json" "$metadata_repo/label-registry.json"
 

@@ -899,9 +899,11 @@ Choose the path matching the draft's authorship:
   fails after creation, add `needs-triage` to the created issue, then report
   the blocker with that issue number. The preflight still refuses this marker
   on an agent draft; marking a partly-created issue is the filing rule.
-- **Human-authored:** create with the metadata the human supplied, plus `human`
-  when the filing rule above identifies primarily human work. Never invent
-  missing classification values or ratings. Whoever files an issue that
+- **Human-authored:** create with the metadata the human supplied, adding `human`
+  when the human says the work is primarily theirs. Otherwise triage's scan
+  reports `human-label-missing` when it detects human work. Collector titles
+  require `human` + `umbrella` for every author. Never invent missing
+  classification values or ratings. Whoever files an issue that
   is not fully classified adds `needs-triage`, including when an agent files a
   human-authored draft. If the human supplied proposals for the helper, run it
   with only those supplied values; omit missing rating flags. If none were

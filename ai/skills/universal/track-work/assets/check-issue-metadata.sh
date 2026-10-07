@@ -674,7 +674,7 @@ if [ -n "$bounds" ]; then
     fi
 fi
 
-if [ "$author_type" = agent ] && [[ "$title" =~ ^\((HUMAN|QA)\):\  ]]; then
+if [[ "$title" =~ ^\((HUMAN|QA)\):\  ]]; then
     for required_label in human umbrella; do
         printf '%s\n' "${labels[@]+"${labels[@]}"}" | grep -xF "$required_label" >/dev/null ||
             violation "a collector requires '$required_label' at creation"

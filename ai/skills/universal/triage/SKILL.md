@@ -380,6 +380,7 @@ a finding):
 | `blocked-candidate`                  | same                                                 | no comment states what it is blocked on                                    |
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `human-label-missing` | the human-work decision and apply output (2e) | when `human` could not be added; name the withheld or missing vocabulary |
+| `collector-umbrella-missing` | nothing — the flag is the finding | always; a `(HUMAN):`/`(QA):` title identifies the collector even without `umbrella`; suggest a human restore `umbrella`, never remove `human` |
 | `human-removal-candidate`, or a labelled issue judged dispatchable in 2e | inspect its title and body under the reading budget | only when primarily agent work; category `human removal candidate`; suggest a human remove `human`, never remove it yourself |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
