@@ -126,7 +126,8 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   `completion-candidate:*` flags below), and `flags`.
 - `human_work` on each open issue — whether it is `labelled`, a `collector`,
   and the counts `human_criteria` / `total_criteria` (all acceptance-criteria
-  checkboxes, checked and untagged included in the total).
+  checkboxes in the authoring profile, including checked, untagged, and
+  exactly-two-space nested criteria under a `-` parent in the total).
   Its `recommendation` is `human` when `[HUMAN]` boxes are a majority of that total or for a
   collector, otherwise `review`: the classifier still decides from the work.
   `--all` includes fully classified issues so the human decision is not skipped.

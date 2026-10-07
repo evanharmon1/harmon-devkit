@@ -3120,7 +3120,13 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "body":"## Acceptance criteria\n\n- [x] [HUMAN] Approve access"},
  {"number":609,"title":"(agent): Implement legacy feature",
   "labels":[],"updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n- [ ] Implement feature\n- [x] Test feature"}]
+  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n- [ ] Implement feature\n- [x] Test feature"},
+ {"number":610,"title":"(accounts): Complete human setup","labels":[],
+  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
+  "body":"## Acceptance criteria\n\n- [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"},
+ {"number":611,"title":"(agent): Implement nested feature","labels":[],
+  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
+  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n  - [ ] [CI] Implement feature\n  - [x] [CI] Test feature"}]
 JSON
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
     fail "human scan must pass: $(cat "$tmp/out")"
@@ -3137,6 +3143,27 @@ jq -e '.open[] | select(.number == 609) | .human_work.recommendation == "review"
     and .human_work.human_criteria == 1 and .human_work.total_criteria == 3
     and (.flags | index("human-label-missing") == null)' "$human_scan" >/dev/null ||
     fail "one human box among two untagged boxes must not recommend human"
+nested_failures=0
+for number in 610 611; do
+    if [ "$number" = 610 ]; then
+        expected=human
+        human_count=2
+    else
+        expected=review
+        human_count=1
+    fi
+    if ! jq -e --argjson n "$number" --arg expected "$expected" \
+        --argjson human_count "$human_count" '.open[] | select(.number == $n)
+        | .human_work.recommendation == $expected
+          and .human_work.total_criteria == 3
+          and .human_work.human_criteria == $human_count
+          and ((.flags | index("human-label-missing") != null) == ($expected == "human"))' \
+        "$human_scan" >/dev/null; then
+        echo "nested majority fixture $number failed: expected $expected with total 3" >&2
+        nested_failures=1
+    fi
+done
+[ "$nested_failures" = 0 ] || fail "nested criteria must count in both human majority directions"
 jq -e '.open[] | select(.number == 603) | .human_work.collector
     and (.flags | index("human-removal-candidate") == null)' "$human_scan" >/dev/null ||
     fail "collector must not become a removal candidate"
