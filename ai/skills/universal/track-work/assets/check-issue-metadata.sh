@@ -165,17 +165,54 @@ live_label_exists() {
       END { exit(found ? 0 : 1) }'
 }
 
-# Availability and --inapplicable read the same filtered required-family set.
+# One agent-none rule for discovery, inapplicability and explicit label validation.
+# Open classification families use family writers and live existence only;
+# closed families retain their enumerated policy. Return 2 for unknown reads.
+agent_none_available() {
+    local axis="$1" family="$2" known="$3" policy
+    policy="$(awk -F '|' -v family="$family" '
+      $1 == "family" && $2 == family && $4 == "classification" &&
+      $8 == "true" && $9 == "false" { print $5; exit }' "$registry_records")"
+    if [ -n "$policy" ]; then
+        case ",$policy," in
+        *,agent,*) ;;
+        *) return 1 ;;
+        esac
+        [ "$known" -eq 1 ] || return 2
+        live_label_exists "$axis:none"
+    else
+        [ -e "$manifest" ] || return 2
+        awk -F '|' -v wanted="$axis:none" -v family="$family" '
+          tolower($1) == wanted && $2 == family &&
+          index("," $4 ",", ",agent,") { found=1 }
+          END { exit(found ? 0 : 1) }' "$vocab"
+    fi
+}
+
+required_none_family() {
+    awk -F '|' -v label="$1" 'tolower($1 ":none") == label { print $2; exit }' "$required_families"
+}
+
+# Reconcile open-family values once; none comes from the shared predicate,
+# never from an enumerated record (including per-value writer overrides).
 filter_required_open_vocabulary() {
-    local label family axis writers exclusive
+    local label family axis writers exclusive prefix
     : >"$vocab.live"
     while IFS='|' read -r label family axis writers exclusive; do
         if grep -qxF -- "$family" "$required_open_families"; then
+            [ -z "$(required_none_family "$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')")" ] || continue
             [ "$1" -eq 1 ] && live_label_exists "$label" || continue
         fi
         printf '%s|%s|%s|%s|%s\n' "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab.live"
     done <"$vocab"
     mv "$vocab.live" "$vocab" || die "could not filter open-family vocabulary"
+    while IFS='|' read -r prefix family; do
+        grep -qxF -- "$family" "$required_open_families" || continue
+        if agent_none_available "$prefix" "$family" "$1"; then
+            writers="$(awk -F '|' -v family="$family" '$1 == "family" && $2 == family { print $5; exit }' "$registry_records")"
+            printf '%s:none|%s|classification|%s|true\n' "$prefix" "$family" "$writers" >>"$vocab"
+        fi
+    done <"$required_families"
 }
 
 normalize_github_remote() {
@@ -379,6 +416,7 @@ if [ "$required_axes_only" -eq 1 ]; then
     [ -e "$manifest" ] || axis_source=canonical-fallback
     unknown_open="$tmp/unknown-open"
     : >"$unknown_open"
+    live_known=0
     if [ -s "$required_open_families" ]; then
         live_known=1
         live="$(read_live_labels)" || live_known=0
@@ -388,7 +426,19 @@ if [ "$required_axes_only" -eq 1 ]; then
         fi
         filter_required_open_vocabulary "$live_known"
     fi
-    jq -n --rawfile unknown "$unknown_open" --arg source "$axis_source" --rawfile required "$required_families" \
+    none_availability="$tmp/none-availability"
+    : >"$none_availability"
+    while IFS='|' read -r axis family; do
+        none_status=0
+        agent_none_available "$axis" "$family" "$live_known" || none_status=$?
+        case "$none_status" in
+        0) available=true ;;
+        1) available=false ;;
+        *) available=null ;;
+        esac
+        printf '%s|%s\n' "$axis" "$available" >>"$none_availability"
+    done <"$required_families"
+    jq -n --rawfile none "$none_availability" --rawfile unknown "$unknown_open" --arg source "$axis_source" --rawfile required "$required_families" \
         --rawfile vocabulary "$vocab" --rawfile registry "$registry_records" '
       def records: split("\n") | map(select(length > 0) | split("|"));
       def agent: split(",") | index("agent") != null;
@@ -404,9 +454,7 @@ if [ "$required_axes_only" -eq 1 ]; then
              .[7] == "true" and (.[4] | agent)) then null
            else false end),
          agent_writable_none:
-           (if $source == "canonical-fallback" or ($unknown | split("\n") | index($family)) != null then null
-           else any($values[]; .[1] == $family and
-             (.[0] | ascii_downcase) == ($axis + ":none") and (.[3] | agent)) end)} ]}
+           ([$none | records | .[] | select(.[0] == $axis) | .[1] | fromjson][0])} ]}
     '
     exit 0
 fi
@@ -484,7 +532,8 @@ if [ -e "$manifest" ]; then
         done <"$open_families"
         [ "$matched_count" -le 1 ] ||
             die "label '$label' matches multiple open-value families ($matched_families); the manifest gives it no unique policy"
-        if [ "$matched_count" -eq 1 ] && grep -ixqF -- "$label" "$retired_members"; then
+        if [ "$matched_count" -eq 1 ] && [ -z "$(required_none_family "$label_key")" ] &&
+            grep -ixqF -- "$label" "$retired_members"; then
             violation "label '$label' is retired by the manifest"
             continue
         fi
@@ -511,6 +560,8 @@ if [ -e "$manifest" ]; then
         live_read=1
         while IFS='|' read -r label family axis writers exclusive; do
             label_key="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
+            # Required none members are resolved by the shared predicate below.
+            [ -z "$(required_none_family "$label_key")" ] || continue
             if ! live_label_exists "$label_key"; then
                 # Open families opt into live existence: a proposed member the
                 # bounded read cannot find must not validate, including one
@@ -594,19 +645,15 @@ if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
     violation "filing marker 'needs-triage' is not provisioned in the target repository; provision it before creation"
 fi
 
-# The filing-marker read has supplied a complete live listing even when no
-# open member was proposed. Remove stale required-family none records before
-# deciding whether --inapplicable is permitted, using discovery's exact filter.
+# The complete filing-marker listing also supplies the shared open-none rule.
 filter_required_open_vocabulary 1
 
-# Use the validated vocabulary's existing retirement filter and author policy
-# when deciding whether the manifest offers an agent-writable <axis>:none member.
 if [ "$author_type" = agent ]; then
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
-        if [ -e "$manifest" ] && ! awk -F '|' -v wanted="$axis:none" '
-          tolower($1) == wanted && index("," $4 ",", ",agent,") { found=1 }
-          END { exit(found ? 0 : 1) }
-        ' "$vocab"; then
+        family="$(awk -F '|' -v axis="$axis" '$1 == axis { print $2; exit }' "$required_families")"
+        none_status=0
+        agent_none_available "$axis" "$family" 1 || none_status=$?
+        if [ "$none_status" -eq 1 ]; then
             warn "registry has no agent-writable '$axis:none' member; --inapplicable $axis needs needs-triage on the created issue"
         else
             violation "--inapplicable $axis requires a manifest with no agent-writable '$axis:none' member; use the \`$axis:none\` label"
@@ -925,6 +972,13 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         continue
         ;;
     esac
+    none_family="$(required_none_family "$label_key")"
+    if [ "$author_type" = agent ] && [ -n "$none_family" ] && [ -e "$manifest" ]; then
+        if ! agent_none_available "${label_key%:none}" "$none_family" 1; then
+            violation "label '$label' is not writable by an agent (none member unavailable)"
+            continue
+        fi
+    fi
     record="$(awk -F '|' -v wanted="$label_key" 'tolower($1) == wanted { print; exit }' "$vocab")"
     if [ -z "$record" ]; then
         violation "label '$label' does not exist in the target vocabulary"

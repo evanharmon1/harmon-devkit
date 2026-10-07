@@ -926,20 +926,52 @@ axis_contract="$(METADATA_GH_LABELS="$truncated_labels" "$metadata" --required-a
 jq -e '.axes[] | select(.axis == "surface").agent_writable_value == null' \
     <<<"$axis_contract" >/dev/null || fail "truncated live availability must report unknown"
 
-# Absent open none members must agree with the --inapplicable decision.
+# One open-none invariant, independent of enumeration, for all three consumers.
+for enumerated in true false; do
+    for provisioned in true false; do
+        jq --argjson enumerated "$enumerated" '
+            (.families[] | select(.family == "delivery-target")) |=
+            (.open_values = true | .placeholder = "surface:<value>" |
+             .values = (if $enumerated then
+                [{"value":"none","description":"Enumerated absence","writers":["human"]}]
+                else [] end))' \
+            "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+        none_live=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s'
+        [ "$provisioned" != true ] || none_live="$none_live"$'\nsurface:none'
+        axis_contract="$(METADATA_GH_LABELS="$none_live" "$metadata" --required-axes \
+            --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "open-none state must remain discoverable"
+        jq -e --argjson available "$provisioned" '
+            .axes[] | select(.axis == "surface").agent_writable_none == $available' \
+            <<<"$axis_contract" >/dev/null || fail "open-none mode disagrees: enumerated=$enumerated live=$provisioned"
+        label_exit=1
+        inapplicable_exit=0
+        if [ "$provisioned" = true ]; then
+            label_exit=0
+            inapplicable_exit=1
+        fi
+        [ "$(METADATA_GH_LABELS="$none_live" run_metadata "${axes_draft[@]}" \
+            --label area:none --label domain:none --label layer:none --label surface:none)" = "$label_exit" ] ||
+            fail "open-none label disagrees: enumerated=$enumerated live=$provisioned ($(cat "$tmp/metadata.out"))"
+        [ "$(METADATA_GH_LABELS="$none_live" run_metadata "${axes_draft[@]}" \
+            --label area:none --label domain:none --label layer:none --inapplicable surface)" = "$inapplicable_exit" ] ||
+            fail "open-none inapplicability disagrees: enumerated=$enumerated live=$provisioned ($(cat "$tmp/metadata.out"))"
+    done
+done
+# Family authorization governs open none even if enumeration grants an agent.
 jq '(.families[] | select(.family == "delivery-target")) |=
-    (.open_values = true | .placeholder = "surface:<value>")' \
-    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
-axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
-    fail "absent open none member must remain discoverable"
+    (.writers = ["human"] | .values = [{"value":"none","description":"Absence","writers":["agent"]}])' \
+    "$metadata_axes/label-registry.json" >"$tmp/metadata-open-none-human.json"
+cp "$tmp/metadata-open-none-human.json" "$metadata_axes/label-registry.json"
+axis_contract="$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' "$metadata" --required-axes \
+    --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "human-only open-none family must remain discoverable"
 jq -e '.axes[] | select(.axis == "surface").agent_writable_none == false' \
-    <<<"$axis_contract" >/dev/null || fail "mode must permit inapplicability for absent open none"
-[ "$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none \
-    --label layer:none --inapplicable surface)" = 0 ] ||
-    fail "preflight must permit inapplicability for the same absent open none: $(cat "$tmp/metadata.out")"
-[ "$(METADATA_GH_LABELS=$'needs-triage\nsurface:none' run_metadata "${axes_draft[@]}" \
-    --label area:none --label domain:none --label layer:none --inapplicable surface)" = 1 ] ||
-    fail "preflight must still refuse inapplicability when open none is live"
+    <<<"$axis_contract" >/dev/null || fail "family writers must govern open-none availability"
+[ "$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' run_metadata "${axes_draft[@]}" \
+    --label area:none --label domain:none --label layer:none --label surface:none)" = 1 ] ||
+    fail "family writers must forbid agent open-none label"
+[ "$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' run_metadata "${axes_draft[@]}" \
+    --label area:none --label domain:none --label layer:none --inapplicable surface)" = 0 ] ||
+    fail "human-only open-none family must permit agent inapplicability"
 
 : >"$tmp/required-axes-gh.log"
 axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \

@@ -803,6 +803,10 @@ an open family); false means none is offered; null means availability needs
 live candidate discovery. The mode checks enumerated open-family members with
 the same bounded live listing
 and existence check as enforcement; an unavailable or truncated read reports null.
+For open classification families, `agent_writable_none` depends only on the live
+`<axis>:none` label and the family's agent writer policy, regardless of enumeration.
+Closed families retain their enumerated rule. Inapplicability and explicit none
+label validation use the same predicate.
 It keeps the canonical fallback without a manifest; an unreadable
 or invalid manifest refuses. Every consumer uses this output as its axis list
 and never re-derives it. An axis with `agent_writable_value: false` is a finding
