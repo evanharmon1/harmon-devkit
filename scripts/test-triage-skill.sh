@@ -3126,7 +3126,13 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "body":"## Acceptance criteria\n\n- [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"},
  {"number":611,"title":"(agent): Implement nested feature","labels":[],
   "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n  - [ ] [CI] Implement feature\n  - [x] [CI] Test feature"}]
+  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n  - [ ] [CI] Implement feature\n  - [x] [CI] Test feature"},
+ {"number":612,"title":"(accounts): Complete star parent setup","labels":[],
+  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
+  "body":"## Acceptance criteria\n\n* [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"},
+ {"number":613,"title":"(accounts): Complete plus parent setup","labels":[],
+  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
+  "body":"## Acceptance criteria\n\n+ [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"}]
 JSON
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
     fail "human scan must pass: $(cat "$tmp/out")"
@@ -3144,8 +3150,8 @@ jq -e '.open[] | select(.number == 609) | .human_work.recommendation == "review"
     and (.flags | index("human-label-missing") == null)' "$human_scan" >/dev/null ||
     fail "one human box among two untagged boxes must not recommend human"
 nested_failures=0
-for number in 610 611; do
-    if [ "$number" = 610 ]; then
+for number in 610 611 612 613; do
+    if [ "$number" != 611 ]; then
         expected=human
         human_count=2
     else

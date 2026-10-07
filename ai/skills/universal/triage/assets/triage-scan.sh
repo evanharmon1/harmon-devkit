@@ -662,19 +662,13 @@ jq -n -L "$title_module_dir" \
          then ($fields[$k]["Priority"] // null) else null end)
     else ([$ls[] | select(startswith("priority:")) | ltrimstr("priority:")]
           | if length == 0 then null else join(",") end) end;
-  # Match the authoring profile here; leave the shared groom projection unchanged.
+  # Count column-0 and two-space-nested tasks without tracking parent markers.
+  # Leave the shared groom projection unchanged.
   # A majority is evidence for human work, not a guess from title keywords.
   def human_work($issue; $ls):
-    (reduce criteria_lines($issue.body)[] as $line ({parent: false, tags: []};
-      if ($line | test("^([-*+]|[0-9]{1,9}[.)]) \\[[ xX]\\]( |$)")) then
-        .tags += [rest_tag(checkbox_rest($line))]
-        | .parent = ($line | startswith("- "))
-      elif .parent and ($line | test("^  [-*+] \\[[ xX]\\]( |$)")) then
-        .tags += [rest_tag(checkbox_rest($line[2:]))]
-      elif ($line | startswith("- ")) then .parent = true
-      elif ($line | test("^[ ]*$|^  ")) then .
-      else .parent = false end)
-      | .tags) as $tags
+    ([criteria_lines($issue.body)[]
+      | select(test("^(  )?([-*+]|[0-9]{1,9}[.)]) \\[[ xX]\\]( |$)"))
+      | sub("^  "; "") | rest_tag(checkbox_rest(.))]) as $tags
     | ([$tags[] | select(. == "human")] | length) as $human
     | ($issue.title | test("^\\((HUMAN|QA)\\): ")) as $collector
     | {labelled: (($ls | index("human")) != null),
