@@ -216,6 +216,16 @@ guard_manifest() {
     fi
 }
 
+# Reads and writes use the repo's own policy in a bound run: a scratch policy
+# must neither choose a Tier nor suppress the scan's missing-Tier flags.
+guard_policy() {
+    local policy="$1"
+    if [ -n "${TRIAGE_REPO:-}" ] && [ "$policy" != "./.devflow.toml" ]; then
+        die 4 "refused: --policy is fixed to ./.devflow.toml in a bound run" \
+            "— a worker-writable policy would choose its own Tier"
+    fi
+}
+
 # gh issue view/edit accept URLs as well as numbers, and a URL names its own
 # repository — which would bypass the TRIAGE_REPO binding entirely. Numbers
 # only.
@@ -752,6 +762,7 @@ cmd_classification_axes() {
         esac
     done
     [ -n "$repo" ] || usage
+    guard_policy "$policy"
     owner_type="$(gh api "repos/$repo" -q .owner.type)" ||
         die 2 "could not read the owner type of $repo"
     catalogue="$(classification_axes_json "$repo" "$owner_type")"
@@ -911,12 +922,7 @@ cmd_label() {
     [ -n "$repo" ] && [ -n "$issue" ] || usage
     guard_issue_number "$issue"
     guard_manifest "$manifest"
-    # The policy decides the derived Tier, so a bound run reads the repo's own
-    # policy for the same reason it reads the repo's own manifest.
-    if [ -n "${TRIAGE_REPO:-}" ] && [ "$policy" != "./.devflow.toml" ]; then
-        die 4 "refused: --policy is fixed to ./.devflow.toml in a bound run" \
-            "— a worker-writable policy would choose its own Tier"
-    fi
+    guard_policy "$policy"
     # The wrapper binds the run to one repository; a mismatched --repo here is
     # a confused (or prompt-injected) caller, not a supported use.
     if [ -n "${TRIAGE_REPO:-}" ] && [ "$repo" != "$TRIAGE_REPO" ]; then

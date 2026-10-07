@@ -439,6 +439,13 @@ if [ -n "${TRIAGE_REPO:-}" ] && [ "$manifest" != "./label-registry.json" ]; then
     exit 4
 fi
 
+# The capability read uses the same bound policy as the Tier writer.
+if [ -n "${TRIAGE_REPO:-}" ] && [ "$policy" != "./.devflow.toml" ]; then
+    echo "triage-scan: refused: --policy is fixed to ./.devflow.toml in a bound run" \
+        "— a worker-writable policy would choose its own Tier" >&2
+    exit 4
+fi
+
 guard_out_path "$out"
 
 claim_stale="${TRIAGE_CLAIM_STALE_DAYS:-14}"

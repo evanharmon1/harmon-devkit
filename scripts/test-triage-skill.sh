@@ -2228,6 +2228,24 @@ awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' \
 grep -q '^\[tier\.matrix\]' "$no_matrix_policy" &&
     fail "could not strip [tier.matrix] from the policy fixture"
 
+echo "==> bound capability reads refuse a custom policy before suppressing Tier flags"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_REPO="$repo" "$scan" --repo "$repo" \
+    --policy "$no_matrix_policy" --out "$tmp/refused-policy-scan.json")" = 4 ] ||
+    fail "bound scan with custom policy must exit 4"
+grep -q -- '--policy is fixed to ./.devflow.toml in a bound run' "$tmp/out" ||
+    fail "bound scan must explain the policy refusal"
+[ ! -e "$tmp/refused-policy-scan.json" ] && [ ! -s "$GH_STUB_LOG" ] ||
+    fail "refused scan must not emit suppressed flags or read issue data"
+[ "$(run env TRIAGE_REPO="$repo" "$apply" classification-axes --repo "$repo" \
+    --tier-derivation --policy "$no_matrix_policy")" = 4 ] ||
+    fail "bound classification-axes with custom policy must exit 4"
+grep -q -- '--policy is fixed to ./.devflow.toml in a bound run' "$tmp/out" ||
+    fail "bound catalogue must explain the policy refusal"
+[ ! -s "$GH_STUB_LOG" ] || fail "refused catalogue must not read classification data"
+grep -q '"tier_derivation"' "$tmp/out" &&
+    fail "refused catalogue must not return capability that could suppress Tier flags"
+
 # issue_fixture N LABEL... — one issue's labels.
 issue_fixture() {
     local n="$1"
