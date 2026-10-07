@@ -140,6 +140,11 @@ load_required_axis_contract() {
         ' "$registry_records" >"$vocab"
 
     fi
+    required_open_families="$tmp/required-open-families"
+    awk -F '|' 'FILENAME == ARGV[1] { required[$2]=1; next }
+      $1 == "family" && required[$2] && $7 != "agent-registry" &&
+      $8 == "true" && $9 == "false" { print $2 }' \
+        "$required_families" "$registry_records" >"$required_open_families"
 }
 
 # Both discovery and enforcement use this bounded, truncation-guarded listing.
@@ -158,6 +163,56 @@ live_label_exists() {
     printf '%s\n' "$live" | awk -v wanted="$1" '
       tolower($0) == tolower(wanted) { found=1 }
       END { exit(found ? 0 : 1) }'
+}
+
+# Availability and --inapplicable read the same filtered required-family set.
+filter_required_open_vocabulary() {
+    local label family axis writers exclusive
+    : >"$vocab.live"
+    while IFS='|' read -r label family axis writers exclusive; do
+        if grep -qxF -- "$family" "$required_open_families"; then
+            [ "$1" -eq 1 ] && live_label_exists "$label" || continue
+        fi
+        printf '%s|%s|%s|%s|%s\n' "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab.live"
+    done <"$vocab"
+    mv "$vocab.live" "$vocab" || die "could not filter open-family vocabulary"
+}
+
+normalize_github_remote() {
+    _remote="$1"
+    case "$_remote" in
+    https://github.com/*) _slug="${_remote#https://github.com/}" ;;
+    http://github.com/*) _slug="${_remote#http://github.com/}" ;;
+    git@github.com:*) _slug="${_remote#git@github.com:}" ;;
+    ssh://git@github.com/*) _slug="${_remote#ssh://git@github.com/}" ;;
+    ssh://git@ssh.github.com:443/*) _slug="${_remote#ssh://git@ssh.github.com:443/}" ;;
+    ssh://git@ssh.github.com/*) _slug="${_remote#ssh://git@ssh.github.com/}" ;;
+    *) return 1 ;;
+    esac
+    _slug="${_slug%.git}"
+    printf '%s\n' "$_slug" | tr '[:upper:]' '[:lower:]'
+}
+
+bind_target_checkout() {
+    target_repo="$(printf '%s\n' "$repo" | tr '[:upper:]' '[:lower:]')"
+    repo_bound=0
+    remote_names="$(git -C "$repo_root" remote 2>/dev/null)" ||
+        die "target repository root is not a readable Git checkout"
+    for remote_name in $remote_names; do
+        remote_url="$(git -C "$repo_root" remote get-url "$remote_name" 2>/dev/null)" || continue
+        remote_repo="$(normalize_github_remote "$remote_url" || true)"
+        [ "$remote_repo" = "$target_repo" ] && repo_bound=1
+    done
+    [ "$repo_bound" -eq 1 ] ||
+        die "target repository root has no GitHub remote matching --repo $repo"
+    # Resolve the checkout's top level: `--repo-root .` from a subdirectory binds
+    # the same remotes but would look for the manifest beside the subdirectory,
+    # silently bypassing an authoritative top-level label-registry.json in favor
+    # of the weaker live-label fallback.
+    repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null)" ||
+        die "could not resolve the target checkout's top-level directory"
+    [ -n "$repo_root" ] && [ -d "$repo_root" ] ||
+        die "could not resolve the target checkout's top-level directory"
 }
 
 repo=""
@@ -317,36 +372,21 @@ if [ "$required_axes_only" -eq 1 ]; then
         [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] || usage
     grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" || usage
     [ -d "$repo_root" ] || die "target repository root is not a directory: $repo_root"
-    repo_root="$(cd "$repo_root" && pwd -P)"
-    # Prefer the checkout root for the same subdirectory semantics as preflight;
-    # a non-checkout path can still expose a standalone local manifest.
-    checkout_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
-    [ -z "$checkout_root" ] || repo_root="$checkout_root"
+    repo_root="$(cd "$repo_root" && pwd -P)" || die "cannot resolve target repository root"
+    bind_target_checkout
     load_required_axis_contract
     axis_source=manifest
     [ -e "$manifest" ] || axis_source=canonical-fallback
     unknown_open="$tmp/unknown-open"
     : >"$unknown_open"
-    open_mode_families="$tmp/open-mode-families"
-    awk -F '|' 'NR == FNR { required[$2]=1; next }
-      $1 == "family" && required[$2] && $7 != "agent-registry" &&
-      $8 == "true" && $9 == "false" { print $2 }' \
-        "$required_families" "$registry_records" >"$open_mode_families"
-    if [ -s "$open_mode_families" ]; then
+    if [ -s "$required_open_families" ]; then
         live_known=1
         live="$(read_live_labels)" || live_known=0
         if [ "$live_known" -eq 0 ]; then
-            cp "$open_mode_families" "$unknown_open"
+            cp "$required_open_families" "$unknown_open"
             warn "open-family live availability is unknown"
         fi
-        : >"$vocab.live"
-        while IFS='|' read -r label family axis writers exclusive; do
-            if grep -qxF -- "$family" "$open_mode_families"; then
-                [ "$live_known" -eq 1 ] && live_label_exists "$label" || continue
-            fi
-            printf '%s|%s|%s|%s|%s\n' "$label" "$family" "$axis" "$writers" "$exclusive" >>"$vocab.live"
-        done <"$vocab"
-        mv "$vocab.live" "$vocab"
+        filter_required_open_vocabulary "$live_known"
     fi
     jq -n --rawfile unknown "$unknown_open" --arg source "$axis_source" --rawfile required "$required_families" \
         --rawfile vocabulary "$vocab" --rawfile registry "$registry_records" '
@@ -388,40 +428,7 @@ esac
 repo_root="$(cd "$repo_root" && pwd -P)" || die "cannot resolve target repository root"
 [ -f "$body_file" ] && [ -r "$body_file" ] || die "cannot read body draft: $body_file"
 
-normalize_github_remote() {
-    _remote="$1"
-    case "$_remote" in
-    https://github.com/*) _slug="${_remote#https://github.com/}" ;;
-    http://github.com/*) _slug="${_remote#http://github.com/}" ;;
-    git@github.com:*) _slug="${_remote#git@github.com:}" ;;
-    ssh://git@github.com/*) _slug="${_remote#ssh://git@github.com/}" ;;
-    ssh://git@ssh.github.com:443/*) _slug="${_remote#ssh://git@ssh.github.com:443/}" ;;
-    ssh://git@ssh.github.com/*) _slug="${_remote#ssh://git@ssh.github.com/}" ;;
-    *) return 1 ;;
-    esac
-    _slug="${_slug%.git}"
-    printf '%s\n' "$_slug" | tr '[:upper:]' '[:lower:]'
-}
-
-target_repo="$(printf '%s\n' "$repo" | tr '[:upper:]' '[:lower:]')"
-repo_bound=0
-remote_names="$(git -C "$repo_root" remote 2>/dev/null)" ||
-    die "target repository root is not a readable Git checkout"
-for remote_name in $remote_names; do
-    remote_url="$(git -C "$repo_root" remote get-url "$remote_name" 2>/dev/null)" || continue
-    remote_repo="$(normalize_github_remote "$remote_url" || true)"
-    [ "$remote_repo" = "$target_repo" ] && repo_bound=1
-done
-[ "$repo_bound" -eq 1 ] ||
-    die "target repository root has no GitHub remote matching --repo $repo"
-# Resolve the checkout's top level: `--repo-root .` from a subdirectory binds
-# the same remotes but would look for the manifest beside the subdirectory,
-# silently bypassing an authoritative top-level label-registry.json in favor
-# of the weaker live-label fallback.
-repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null)" ||
-    die "could not resolve the target checkout's top-level directory"
-[ -n "$repo_root" ] && [ -d "$repo_root" ] ||
-    die "could not resolve the target checkout's top-level directory"
+bind_target_checkout
 
 for label in "${labels[@]+"${labels[@]}"}"; do
     [ -n "$label" ] || die "--label cannot be empty"
@@ -586,6 +593,11 @@ if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
   END { exit(found ? 0 : 1) }'; then
     violation "filing marker 'needs-triage' is not provisioned in the target repository; provision it before creation"
 fi
+
+# The filing-marker read has supplied a complete live listing even when no
+# open member was proposed. Remove stale required-family none records before
+# deciding whether --inapplicable is permitted, using discovery's exact filter.
+filter_required_open_vocabulary 1
 
 # Use the validated vocabulary's existing retirement filter and author policy
 # when deciding whether the manifest offers an agent-writable <axis>:none member.

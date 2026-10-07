@@ -818,6 +818,12 @@ jq -e '.source == "manifest" and
     all(.axes[]; .agent_writable_value == true and .agent_writable_none == true) and
     (.axes[] | select(.axis == "surface").family) == "delivery-target"' \
     <<<"$axis_contract" >/dev/null || fail "custom axis contract must retain families and writer availability"
+_rc=0
+"$metadata" --required-axes --repo another/repository --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "required-axes must refuse a checkout bound to another repository"
+grep -q 'no GitHub remote matching --repo another/repository' "$tmp/required-axes.out" ||
+    fail "mode repository mismatch must explain the required remote binding"
 axes_draft=(--repo testowner/testrepo --repo-root "$metadata_axes"
     --owner-type personal --title 'Consume the required axis contract' --body-file "$valid_body"
     --agent-authored --label feature --label ai-generated
@@ -919,6 +925,21 @@ axis_contract="$(METADATA_GH_LABELS="$truncated_labels" "$metadata" --required-a
     --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "truncated live availability must remain discoverable"
 jq -e '.axes[] | select(.axis == "surface").agent_writable_value == null' \
     <<<"$axis_contract" >/dev/null || fail "truncated live availability must report unknown"
+
+# Absent open none members must agree with the --inapplicable decision.
+jq '(.families[] | select(.family == "delivery-target")) |=
+    (.open_values = true | .placeholder = "surface:<value>")' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "absent open none member must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface").agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "mode must permit inapplicability for absent open none"
+[ "$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none \
+    --label layer:none --inapplicable surface)" = 0 ] ||
+    fail "preflight must permit inapplicability for the same absent open none: $(cat "$tmp/metadata.out")"
+[ "$(METADATA_GH_LABELS=$'needs-triage\nsurface:none' run_metadata "${axes_draft[@]}" \
+    --label area:none --label domain:none --label layer:none --inapplicable surface)" = 1 ] ||
+    fail "preflight must still refuse inapplicability when open none is live"
 
 : >"$tmp/required-axes-gh.log"
 axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
