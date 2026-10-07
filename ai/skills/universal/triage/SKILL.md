@@ -105,6 +105,15 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   (AI) the repo provisions, with their allowed `values`, its `storage`
   (`label` or `field`), and `required` (the provisioned ones of Impact, Risk
   and Complexity). Never pass a value that is not in `values`.
+  Its additive `tier_derivation` field is present only when `classification-axes`
+  is called with `--tier-derivation` (the scan requests it). Default catalogue
+  reads omit it and do not run the policy resolver. The field has `derivable`
+  (at least one provisioned Risk × Complexity pair can write a Tier), `reason` (null when derivable),
+  and `cases` (each pair with `risk`, `complexity`, `derivable`, and `reason`).
+  The writer's policy resolver supplies these results; provisioned Tier labels
+  are required too. `summary.tier_derivation_reasons` lists unique unavailable
+  reasons once for the scan. Include those reasons once in the run summary,
+  without repeating them per issue.
 - `allowlist` / `vocabulary` — every label you may apply, with descriptions.
 - `work_type_values` — the work-type vocabulary for this repo.
 - `open[]` — open issues that need attention, each with `axis_state` (one
@@ -297,7 +306,8 @@ and never removes it while it cannot read the native Type. The scan's
 
 **Settle the marker and the Tier even when nothing else is written.** For
 every issue the scan flags `missing-needs-triage`, `needs-triage-removable`,
-`tier-missing` (Risk and Complexity set, no Tier label, not pinned),
+`tier-missing` (Risk and Complexity set, derivable Tier provisioned, no Tier
+label, not pinned),
 `tier-conflict` (more than one Tier label, not pinned), or `tier-invalid` (a
 Tier label outside the provisioned rungs, such as the retired
 `tier:adaptive`, not pinned) and that got no other apply call in 2a–2c, make
@@ -312,7 +322,7 @@ Complexity are both set and the issue carries no `tier:pinned`, the derived
 Tier: whenever it runs it repairs a missing, conflicting or stale Tier label.
 (Every other apply call makes the same derived writes alongside its own.) The
 scan selects issues only for a missing, conflicting or invalid Tier — it
-calls no resolver, so it cannot see a stale one. A stale Tier is repaired by the
+uses the shared derivability catalogue, so it cannot see a stale one. A stale Tier is repaired by the
 reconcile call when it runs for another reason, or by the classification
 reconciler.
 
@@ -520,6 +530,7 @@ Triage run — <DRY-RUN | EXECUTE> over <repo>
 - labels: <n> applied|would-apply (<list them: #issue +label ...>)
 - classification: <n> applied|would-apply (<list them: #issue impact=<v> risk=<v> complexity=<v> priority-ai=<v> ... | none>)
 - tier: <n> derived (<#issue tier:<v> ...>), <n> not written (<#issue reason ...> | none)
+- tier derivation unavailable: <summary.tier_derivation_reasons, each once | none>
 - native Issue Types: <n> applied|would-apply (<list them: #issue Type ... | none>)
 - needs-triage: <n> added, <n> removed (derived)
 - report: <n> entries → <created #N | updated #N | would create | would update #N>

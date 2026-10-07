@@ -778,6 +778,31 @@ echo "==> label: a mismatched --repo is refused when the run is bound"
     --add area:ci)" = 0 ] ||
     fail "bound repo write must pass (fallback allowlist)"
 
+echo "==> bound reads and writes require the physical repository root"
+root_apply="$(pwd -P)/${apply#./}"
+root_scan="$(pwd -P)/${scan#./}"
+for bound_cwd in scripts "$tmp"; do
+    (
+        cd "$bound_cwd"
+        for root_cmd in label classification-axes scan; do
+            : >"$GH_STUB_LOG"
+            case "$root_cmd" in
+            label) status="$(run env TRIAGE_REPO="$repo" "$root_apply" label \
+                --repo "$repo" --issue 10 --add area:ci)" ;;
+            classification-axes) status="$(run env TRIAGE_REPO="$repo" "$root_apply" \
+                classification-axes --repo "$repo" --tier-derivation)" ;;
+            scan) status="$(run env TRIAGE_REPO="$repo" "$root_scan" --repo "$repo")" ;;
+            esac
+            [ "$status" = 4 ] || fail "bound $root_cmd must refuse cwd $bound_cwd"
+            grep -q 'bound run must run from the repository root' "$tmp/out" ||
+                fail "bound $root_cmd must explain the cwd refusal"
+            [ ! -s "$GH_STUB_LOG" ] || fail "bound cwd refusal must precede API reads"
+        done
+    )
+done
+[ "$(run env TRIAGE_REPO="$repo" "$apply" classification-axes --repo "$repo")" = 0 ] ||
+    fail "bound catalogue from the repository root must work"
+
 echo "==> label: a bound run refuses a caller-chosen manifest"
 [ "$(run env TRIAGE_REPO="$repo" "$apply" label --repo "$repo" --issue 10 \
     --add area:ci --manifest "$manifest")" = 4 ] ||
@@ -1453,6 +1478,38 @@ cat >"$stub_dir/issues-closed.json" <<'JSON'
   "closedAt": "2026-01-01T00:00:00Z", "labels": [],
   "body": "1. [ ] ordered\n> - [ ] quoted\n-  [ ] wide gap"}]
 JSON
+
+echo "==> bound scan from the physical repository root still works"
+[ "$(run env TRIAGE_REPO="$repo" "$scan" --repo "$repo")" = 0 ] ||
+    fail "bound scan from the repository root must work"
+
+echo "==> scan: derivability summary tolerates missing fields and null cases"
+summary_bundle="$tmp/summary-bundle"
+cp -R "$standalone_triage" "$summary_bundle"
+summary_apply="$summary_bundle/triage/assets/triage-apply.sh"
+mv "$summary_apply" "$summary_apply.original"
+cat >"$summary_apply" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = classification-axes ]; then
+    "$0.original" "$@" | jq --arg shape "${GH_STUB_DERIVATION_SHAPE:?}" '
+      if $shape == "missing" then del(.tier_derivation)
+      else .tier_derivation = {cases: null} end'
+else
+    exec "$0.original" "$@"
+fi
+STUB
+chmod +x "$summary_apply"
+summary_fixtures="$tmp/summary-fixtures"
+cp -R "$stub_dir" "$summary_fixtures"
+echo '[]' >"$summary_fixtures/issues-open.json"
+for shape in missing null; do
+    [ "$(run env GH_STUB_DIR="$summary_fixtures" GH_STUB_DERIVATION_SHAPE="$shape" \
+        "$summary_bundle/triage/assets/triage-scan.sh" --repo "$repo" \
+        --manifest "$manifest")" = 0 ] || fail "summary with $shape derivation failed"
+    jq -e '.summary.tier_derivation_reasons == []' "$tmp/out" >/dev/null ||
+        fail "summary with $shape derivation must have no unavailable reasons"
+done
 
 echo "==> scan: emits facts, flags, and excludes the report issue"
 [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
@@ -2228,6 +2285,21 @@ awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' \
 grep -q '^\[tier\.matrix\]' "$no_matrix_policy" &&
     fail "could not strip [tier.matrix] from the policy fixture"
 
+echo "==> scan: policy overrides are unsupported"
+[ "$(run "$scan" --repo "$repo" --policy x)" = 2 ] ||
+    fail "scan --policy must be a usage error"
+
+echo "==> bound catalogue reads refuse a custom policy"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_REPO="$repo" "$apply" classification-axes --repo "$repo" \
+    --tier-derivation --policy "$no_matrix_policy")" = 4 ] ||
+    fail "bound classification-axes with custom policy must exit 4"
+grep -q -- '--policy is fixed to ./.devflow.toml in a bound run' "$tmp/out" ||
+    fail "bound catalogue must explain the policy refusal"
+[ ! -s "$GH_STUB_LOG" ] || fail "refused catalogue must not read classification data"
+grep -q '"tier_derivation"' "$tmp/out" &&
+    fail "refused catalogue must not return capability that could suppress Tier flags"
+
 # issue_fixture N LABEL... — one issue's labels.
 issue_fixture() {
     local n="$1"
@@ -2265,6 +2337,42 @@ jq -e '.storage == "label" and .required == ["impact", "risk", "complexity"]
        and .axes["priority-ai"].provisioned
        and .tier_values == ["local", "economy", "standard", "frontier", "apex"]' \
     "$tmp/out" >/dev/null || fail "personal classification-axes: $(cat "$tmp/out")"
+
+echo "==> classification-axes: default catalogue preserves the old shape exactly"
+jq -e 'has("tier_derivation") | not' "$tmp/out" >/dev/null ||
+    fail "default catalogue must omit tier_derivation"
+jq -cn '{owner_type: "User", storage: "label", axes: {
+    impact: {provisioned: true, values: ["minimal", "low", "medium", "high", "massive"]},
+    risk: {provisioned: true, values: ["trivial", "low", "medium", "high", "critical"]},
+    complexity: {provisioned: true, values: ["xs", "s", "m", "l", "xl"]},
+    "priority-ai": {provisioned: true, values: ["p0", "p1", "p2", "p3", "p4"]}},
+    required: ["impact", "risk", "complexity"],
+    tier_values: ["local", "economy", "standard", "frontier", "apex"]}' >"$tmp/axes-expected.json"
+cmp -s "$tmp/out" "$tmp/axes-expected.json" ||
+    fail "default catalogue must be byte-identical to the old catalogue"
+
+echo "==> classification-axes: opt-in derivability shares the writer resolver"
+cp "$tmp/out" "$tmp/axes-original.json"
+[ "$(run "$apply" classification-axes --repo "$repo" --policy "$policy" --tier-derivation)" = 0 ] ||
+    fail "provisioned derivation failed: $(cat "$tmp/out")"
+jq -e '.tier_derivation.derivable and .tier_derivation.reason == null
+       and all(.tier_derivation.cases[]; .derivable and .reason == null)' \
+    "$tmp/out" >/dev/null || fail "all provisioned pairs must derive"
+jq -S 'del(.tier_derivation)' "$tmp/out" >"$tmp/axes-new.json"
+jq -S 'del(.tier_derivation)' "$tmp/axes-original.json" >"$tmp/axes-old.json"
+cmp -s "$tmp/axes-old.json" "$tmp/axes-new.json" ||
+    fail "existing catalogue fields must remain unchanged"
+[ "$(run "$apply" classification-axes --repo "$repo" --policy "$no_matrix_policy" --tier-derivation)" = 0 ] ||
+    fail "no-matrix catalogue failed"
+jq -e '(.tier_derivation.derivable | not)
+       and (.tier_derivation.reason | contains("no [tier.matrix]"))
+       and all(.tier_derivation.cases[]; .derivable | not)' "$tmp/out" >/dev/null ||
+    fail "missing matrix must expose an unavailable reason: $(cat "$tmp/out")"
+[ "$(run "$standalone_triage/triage/assets/triage-apply.sh" classification-axes \
+    --repo "$repo" --policy "$policy" --tier-derivation)" = 0 ] || fail "standalone catalogue failed"
+jq -e '(.tier_derivation.derivable | not)
+       and (.tier_derivation.reason | contains("not vendored beside triage"))' \
+    "$tmp/out" >/dev/null || fail "missing resolver must be reported"
 
 echo "==> label: personal repo writes the axes as labels and derives the Tier"
 : >"$GH_STUB_LOG"
@@ -2854,7 +2962,14 @@ grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
 rm -f "$stub_dir/fields-unreadable" "$stub_dir/issue-fields-70.json"
 
 # ── scan: Impact/Risk/Complexity/Tier facts on both owner types ──────────────
-cat >"$stub_dir/issues-open.json" <<'JSON'
+scan_policy_root="$tmp/scan-policy-root"
+mkdir -p "$scan_policy_root"
+cp "$policy" "$scan_policy_root/.devflow.toml"
+cp "$policy" "$tmp/scan-policy-matrix.toml"
+(
+    scan="$(pwd)/${scan#./}"
+    cd "$scan_policy_root"
+    cat >"$stub_dir/issues-open.json" <<'JSON'
 [{"number": 80, "title": "(classification): Fully classified",
   "labels": [{"name": "bug"}, {"name": "area:ci"}, {"name": "layer:ui"},
              {"name": "domain:auth"}, {"name": "impact:high"},
@@ -2908,17 +3023,17 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
   "assignees": [], "body": ""}]
 JSON
-echo '[]' >"$stub_dir/issues-closed.json"
-GH_STUB_OWNER_TYPE="User"
-unset GH_STUB_NATIVE_TYPE
+    echo '[]' >"$stub_dir/issues-closed.json"
+    GH_STUB_OWNER_TYPE="User"
+    unset GH_STUB_NATIVE_TYPE
 
-echo "==> scan: a personal repo reads the axes, Tier and pin from labels"
-[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
-    fail "classification scan failed: $(cat "$tmp/out")"
-cp "$tmp/out" "$tmp/class-scan.json"
-jq -e '.classification_axes.storage == "label" and .fields_mode == "n/a"' \
-    "$tmp/class-scan.json" >/dev/null || fail "personal storage must be label"
-jq -e '.open[] | select(.number == 80)
+    echo "==> scan: a personal repo reads the axes, Tier and pin from labels"
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
+        fail "classification scan failed: $(cat "$tmp/out")"
+    cp "$tmp/out" "$tmp/class-scan.json"
+    jq -e '.classification_axes.storage == "label" and .fields_mode == "n/a"' \
+        "$tmp/class-scan.json" >/dev/null || fail "personal storage must be label"
+    jq -e '.open[] | select(.number == 80)
        | .classification == {storage: "label",
            impact: {state: "set", value: "high"},
            risk: {state: "set", value: "high"},
@@ -2926,136 +3041,174 @@ jq -e '.open[] | select(.number == 80)
            priority_ai: {state: "set", value: "p1"},
            priority: null, tier: ["frontier"], tier_pinned: false}
          and .required_missing == [] and .flags == []' \
-    "$tmp/class-scan.json" >/dev/null ||
-    fail "#80 classification facts: $(jq -c '.open[] | select(.number == 80)' "$tmp/class-scan.json")"
-jq -e '.open[] | select(.number == 81)
+        "$tmp/class-scan.json" >/dev/null ||
+        fail "#80 classification facts: $(jq -c '.open[] | select(.number == 80)' "$tmp/class-scan.json")"
+    jq -e '.open[] | select(.number == 81)
        | .classification.risk.state == "unset"
          and .classification.tier == ["apex"] and .classification.tier_pinned
          and .classification.priority == "high"
          and .required_missing == ["risk"]
          and (.flags | index("classification-missing:risk") != null)
          and (.flags | index("partially-classified") != null)' \
-    "$tmp/class-scan.json" >/dev/null ||
-    fail "#81 must report the missing Risk and the pin"
-jq -e '.open[] | select(.number == 82)
+        "$tmp/class-scan.json" >/dev/null ||
+        fail "#81 must report the missing Risk and the pin"
+    jq -e '.open[] | select(.number == 82)
        | .classification.risk.state == "conflict"
          and (.flags | index("classification-conflict:risk") != null)
          and (.flags | index("missing-needs-triage") != null)' \
-    "$tmp/class-scan.json" >/dev/null || fail "#82 risk conflict must be flagged"
-jq -e '.open[] | select(.number == 83)
+        "$tmp/class-scan.json" >/dev/null || fail "#82 risk conflict must be flagged"
+    jq -e '.open[] | select(.number == 83)
        | .required_missing == []
          and (.flags | index("needs-triage-removable") != null)' \
-    "$tmp/class-scan.json" >/dev/null || fail "#83 must read removable"
-jq -e '(.open[] | select(.number == 84)
+        "$tmp/class-scan.json" >/dev/null || fail "#83 must read removable"
+    jq -e '(.open[] | select(.number == 84)
         | (.flags | index("tier-conflict") != null)
           and (.flags | index("tier-missing") == null)
           and (.flags | index("priority-ai-missing") == null))
        and (.open[] | select(.number == 81)
             | .flags | index("tier-conflict") == null)' \
-    "$tmp/class-scan.json" >/dev/null ||
-    fail "tier-conflict: more than one tier label on an unpinned issue only"
-jq -e '(.open[] | select(.number == 90)
+        "$tmp/class-scan.json" >/dev/null ||
+        fail "tier-conflict: more than one tier label on an unpinned issue only"
+    jq -e '(.open[] | select(.number == 90)
         | (.flags | index("priority-ai-invalid") != null)
           and .required_missing == [])
        and (.open[] | select(.number == 84)
             | .flags | index("priority-ai-invalid") == null)
        and ([.open[] | .flags[] | select(. == "native-type-unknown")]
             | length == 0)' \
-    "$tmp/class-scan.json" >/dev/null ||
-    fail "priority-ai-invalid: a conflicting Priority (AI), never required"
-[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
-    fail "default classification scan failed: $(cat "$tmp/out")"
-jq -e '(.open[] | select(.number == 95)
+        "$tmp/class-scan.json" >/dev/null ||
+        fail "priority-ai-invalid: a conflicting Priority (AI), never required"
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+        fail "default classification scan failed: $(cat "$tmp/out")"
+    jq -e '(.open[] | select(.number == 95)
         | (.flags | index("tier-invalid") != null)
           and (.flags | index("tier-missing") == null)
           and .required_missing == [])
        and (.open[] | select(.number == 84) | .flags | index("tier-invalid") == null)
        and (.open[] | select(.number == 81) | .flags | index("tier-invalid") == null)' \
-    "$tmp/out" >/dev/null ||
-    fail "a lone unpinned tier:adaptive must be flagged tier-invalid and stay in the default scan"
-jq -e '(.open[] | select(.number == 83) | .flags | index("priority-ai-missing") != null)
+        "$tmp/out" >/dev/null ||
+        fail "a lone unpinned tier:adaptive must be flagged tier-invalid and stay in the default scan"
+    jq -e '(.open[] | select(.number == 83) | .flags | index("priority-ai-missing") != null)
        and (.open[] | select(.number == 80) | .flags | index("priority-ai-missing") == null)
        and (.open[] | select(.number == 81) | .flags | index("priority-ai-missing") == null)' \
-    "$tmp/class-scan.json" >/dev/null ||
-    fail "priority-ai-missing: classified, Priority (AI) provisioned and unset only"
-jq -e '(.open[] | select(.number == 83) | .flags | index("tier-missing") != null)
+        "$tmp/class-scan.json" >/dev/null ||
+        fail "priority-ai-missing: classified, Priority (AI) provisioned and unset only"
+    jq -e '(.open[] | select(.number == 83) | .flags | index("tier-missing") != null)
        and (.open[] | select(.number == 80) | .flags | index("tier-missing") == null)
        and (.open[] | select(.number == 81) | .flags | index("tier-missing") == null)' \
-    "$tmp/class-scan.json" >/dev/null ||
-    fail "tier-missing: only Risk+Complexity set, unpinned, with no tier label"
+        "$tmp/class-scan.json" >/dev/null ||
+        fail "tier-missing: only Risk+Complexity set, unpinned, with no tier label"
 
-echo "==> scan: an organization reads the axes from issue fields only"
-GH_STUB_OWNER_TYPE="Organization"
-jq 'map(.issueType = {name: "Bug"})' "$stub_dir/issues-open.json" \
-    >"$stub_dir/issues-open-types.json"
-echo '{"Impact": "High", "Risk": "high", "Complexity": "m", "Priority": "Low"}' \
-    >"$stub_dir/issue-fields-80.json"
-rm -f "$stub_dir"/issue-fields-8[23].json
-echo '{"Impact": "huge", "Risk": "low", "Complexity": "s"}' \
-    >"$stub_dir/issue-fields-81.json"
-[ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
-    fail "org classification scan failed: $(cat "$tmp/out")"
-jq -e '.classification_axes.storage == "field" and .fields_mode == "bulk"' \
-    "$tmp/out" >/dev/null || fail "org storage must be field, read in bulk"
-jq -e '.open[] | select(.number == 80)
+    echo "==> scan: underivable Tiers are suppressed with unique summary reasons"
+    cp "$no_matrix_policy" ./.devflow.toml
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest" \
+        --all)" = 0 ] || fail "no-matrix scan failed"
+    jq -e 'all(.open[]; (.flags | index("tier-missing")) == null)
+       and (.summary.tier_derivation_reasons | length) == 1
+       and (.summary.tier_derivation_reasons[0] | contains("no [tier.matrix]"))
+       and all(.open[]; has("tier_derivation") | not)' "$tmp/out" >/dev/null ||
+        fail "missing matrix must suppress flags and report its reason once"
+    cp "$tmp/scan-policy-matrix.toml" ./.devflow.toml
+    cp "$stub_dir/labels.json" "$tmp/labels-tier-full.json"
+    jq 'map(select(.name != "tier:economy"))' "$tmp/labels-tier-full.json" \
+        >"$stub_dir/labels.json"
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest" \
+        --all)" = 0 ] || fail "partial Tier scan failed"
+    jq -e --arg reason "no 'tier:economy' label is provisioned" \
+        '(.classification_axes.tier_derivation.derivable)
+       and (.open[] | select(.number == 83) | .flags | index("tier-missing")) == null
+       and (.summary.tier_derivation_reasons == [$reason])
+       and any(.classification_axes.tier_derivation.cases[];
+           .risk == "high" and .complexity == "m" and .derivable)' \
+        "$tmp/out" >/dev/null || fail "partial labels must gate the exact derived rung"
+    jq 'map(select(.name | startswith("tier:") | not))' "$tmp/labels-tier-full.json" \
+        >"$stub_dir/labels.json"
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest" \
+        --all)" = 0 ] || fail "unprovisioned Tier scan failed"
+    jq -e '(.classification_axes.tier_derivation.derivable | not)
+       and all(.open[]; (.flags | index("tier-missing")) == null)
+       and (.summary.tier_derivation_reasons | length) > 0
+       and (.summary.tier_derivation_reasons | length) ==
+           (.summary.tier_derivation_reasons | unique | length)' "$tmp/out" >/dev/null ||
+        fail "no Tier labels must suppress flags with deduplicated reasons"
+    cp "$tmp/labels-tier-full.json" "$stub_dir/labels.json"
+
+    echo "==> scan: an organization reads the axes from issue fields only"
+    GH_STUB_OWNER_TYPE="Organization"
+    jq 'map(.issueType = {name: "Bug"})' "$stub_dir/issues-open.json" \
+        >"$stub_dir/issues-open-types.json"
+    echo '{"Impact": "High", "Risk": "high", "Complexity": "m", "Priority": "Low"}' \
+        >"$stub_dir/issue-fields-80.json"
+    rm -f "$stub_dir"/issue-fields-8[23].json
+    echo '{"Impact": "huge", "Risk": "low", "Complexity": "s"}' \
+        >"$stub_dir/issue-fields-81.json"
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest" --all)" = 0 ] ||
+        fail "org classification scan failed: $(cat "$tmp/out")"
+    jq -e '.classification_axes.storage == "field" and .fields_mode == "bulk"' \
+        "$tmp/out" >/dev/null || fail "org storage must be field, read in bulk"
+    jq -e '.open[] | select(.number == 80)
        | .classification.impact == {state: "set", value: "high"}
          and .classification.priority == "Low"
          and .classification.priority_ai.state == "unset"
          and .required_missing == []' "$tmp/out" >/dev/null ||
-    fail "#80 org facts must come from the fields: $(jq -c '.open[] | select(.number == 80)' "$tmp/out")"
-jq -e '.open[] | select(.number == 83)
+        fail "#80 org facts must come from the fields: $(jq -c '.open[] | select(.number == 80)' "$tmp/out")"
+    jq -e '.open[] | select(.number == 83)
        | .required_missing == ["impact", "risk", "complexity"]
          and (.flags | index("needs-triage-removable") == null)
          and (.flags | index("partially-classified") != null)' \
-    "$tmp/out" >/dev/null ||
-    fail "#83: stray org labels must not count as the axes being set"
-jq -e '.open[] | select(.number == 81)
+        "$tmp/out" >/dev/null ||
+        fail "#83: stray org labels must not count as the axes being set"
+    jq -e '.open[] | select(.number == 81)
        | .classification.tier_pinned and .classification.tier == ["apex"]' \
-    "$tmp/out" >/dev/null || fail "the Tier and pin are labels on an org too"
-jq -e '.open[] | select(.number == 81)
+        "$tmp/out" >/dev/null || fail "the Tier and pin are labels on an org too"
+    jq -e '.open[] | select(.number == 81)
        | .classification.impact == {state: "unknown", value: "huge"}
          and .required_missing == ["impact"]
          and (.flags | index("classification-unknown-value:impact") != null)
          and (.flags | index("needs-triage-removable") == null)' \
-    "$tmp/out" >/dev/null ||
-    fail "an off-scale field value read must count as missing, as apply does"
+        "$tmp/out" >/dev/null ||
+        fail "an off-scale field value read must count as missing, as apply does"
 
-echo "==> scan: per-issue native Type mode keeps every org issue in the scan"
-mv "$stub_dir/issues-open-types.json" "$tmp/issues-open-types.keep"
-[ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
-    fail "per-issue org scan failed: $(cat "$tmp/out")"
-jq -e '.native_type_mode == "per-issue"
+    echo "==> scan: per-issue native Type mode keeps every org issue in the scan"
+    mv "$stub_dir/issues-open-types.json" "$tmp/issues-open-types.keep"
+    [ "$(run "$scan" --repo "$repo" --manifest "$manifest")" = 0 ] ||
+        fail "per-issue org scan failed: $(cat "$tmp/out")"
+    jq -e '.native_type_mode == "per-issue"
        and ([.open[].number] | sort) == [80, 81, 82, 83, 84, 90, 95]
        and ([.open[] | .flags | index("native-type-unknown") != null] | all)' \
-    "$tmp/out" >/dev/null ||
-    fail "an undecided native Type must flag native-type-unknown on every issue"
-mv "$tmp/issues-open-types.keep" "$stub_dir/issues-open-types.json"
+        "$tmp/out" >/dev/null ||
+        fail "an undecided native Type must flag native-type-unknown on every issue"
+    mv "$tmp/issues-open-types.keep" "$stub_dir/issues-open-types.json"
 
-echo "==> scan: an unreadable org issue-field catalogue fails closed, actionably"
-[ "$(run env GH_STUB_ISSUE_FIELDS=ERROR "$scan" --repo "$repo" \
-    --manifest "$manifest")" = 2 ] ||
-    fail "the scan must exit 2 without the catalogue: $(cat "$tmp/out")"
-grep -q "GraphQL-Features: issue_fields" "$tmp/out" ||
-    fail "the scan error must name the preview: $(cat "$tmp/out")"
+    echo "==> scan: an unreadable org issue-field catalogue fails closed, actionably"
+    [ "$(run env GH_STUB_ISSUE_FIELDS=ERROR "$scan" --repo "$repo" \
+        --manifest "$manifest")" = 2 ] ||
+        fail "the scan must exit 2 without the catalogue: $(cat "$tmp/out")"
+    grep -q "GraphQL-Features: issue_fields" "$tmp/out" ||
+        fail "the scan error must name the preview: $(cat "$tmp/out")"
 
-echo "==> scan: an unreadable org field pass is unknown, never unset"
-[ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
-    --manifest "$manifest")" = 0 ] ||
-    fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
-jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84, 90, 95]
+    echo "==> scan: an unreadable org field pass is unknown, never unset"
+    [ "$(run env GH_STUB_OPEN_FIELDS=ERROR "$scan" --repo "$repo" \
+        --manifest "$manifest")" = 0 ] ||
+        fail "org scan with unreadable fields failed: $(cat "$tmp/out")"
+    jq -e '([.open[].number] | sort) == [80, 81, 82, 83, 84, 90, 95]
        and ([.open[] | .flags | index("classification-unreadable") != null]
             | all)' "$tmp/out" >/dev/null ||
-    fail "every issue whose fields were not read must stay in open[], flagged"
-jq -e '.fields_mode == "unknown"
+        fail "every issue whose fields were not read must stay in open[], flagged"
+    jq -e '.fields_mode == "unknown"
        and ([.open[] | .classification.risk.state] | unique) == ["unknown"]
        and ([.open[] | .flags[] | select(. == "needs-triage-removable"
              or startswith("classification-missing:"))] | length == 0)' \
-    "$tmp/out" >/dev/null ||
-    fail "unread fields must not read as missing or removable"
-rm -f "$stub_dir/issues-open-types.json" "$stub_dir"/issue-fields-*.json
+        "$tmp/out" >/dev/null ||
+        fail "unread fields must not read as missing or removable"
+    rm -f "$stub_dir/issues-open-types.json" "$stub_dir"/issue-fields-*.json
+    unset GH_STUB_NATIVE_TYPE
+    GH_STUB_OWNER_TYPE="User"
+    cp "$tmp/labels-before-classification.json" "$stub_dir/labels.json"
+
+)
 unset GH_STUB_NATIVE_TYPE
 GH_STUB_OWNER_TYPE="User"
-cp "$tmp/labels-before-classification.json" "$stub_dir/labels.json"
 
 echo "==> SKILL.md: rubric first, and none applied explicitly"
 grep -q 'Read `references/classification-rubric.md`' \
