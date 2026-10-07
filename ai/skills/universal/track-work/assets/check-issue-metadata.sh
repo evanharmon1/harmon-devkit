@@ -423,6 +423,7 @@ else
         domain:*) printf '%s|domain|classification|human,agent|true\n' "$label" ;;
         ai-generated) printf '%s|provenance|provenance|human,agent|false\n' "$label" ;;
         needs-triage) printf '%s|workflow|workflow|human,agent|false\n' "$label" ;;
+        human | umbrella) printf '%s|fallback-other|meta|human,agent|false\n' "$label" ;;
         *)
             if [ -n "$work_type_label" ] && [ "$label_key" = "$(printf '%s' "$work_type_label" | tr '[:upper:]' '[:lower:]')" ]; then
                 printf '%s|work-type|work-type|human,agent|false\n' "$label"

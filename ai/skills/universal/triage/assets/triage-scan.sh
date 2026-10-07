@@ -725,6 +725,12 @@ jq -n -L "$title_module_dir" \
         | (if $nts == "set" then .issueType.name else null end) as $nt
         | issue_conformance(.; $axes; $known; $wt; $owner_type; $nts; $claim_stale; $needs_stale) as $conf
         | human_work(.; $ls) as $hw
+        # QA is a standing queue even when its collector labels are missing.
+        # HUMAN collectors can finish, but their human criteria are not leftovers.
+        | (if (.title | startswith("(QA): ")) then []
+           elif $hw.collector then ($conf.completion_reasons
+             | map(select(. != "completion-candidate:human-only-remaining")))
+           else $conf.completion_reasons end) as $completion
         | .number as $num
         | ({"impact": class_axis($ls; $num; "impact"),
             "risk": class_axis($ls; $num; "risk"),
@@ -752,7 +758,9 @@ jq -n -L "$title_module_dir" \
         | (($ls | index("tier:pinned")) != null) as $pinned
         | ([$conf.flags[]
             | select(. != "missing-needs-triage" and . != "partially-classified"
-                     and . != "needs-triage-removable")]
+                     and . != "needs-triage-removable"
+                     and (startswith("completion-candidate:") | not))]
+           + $completion
            + [$class.required[] as $a
               | ($cls[$a].state) as $st
               | if $st == "unset" then "classification-missing:\($a)"
@@ -843,7 +851,7 @@ jq -n -L "$title_module_dir" \
            required_missing: $missing,
            criteria: $conf.criteria,
            human_work: $hw,
-           completion_reasons: $conf.completion_reasons,
+           completion_reasons: $completion,
            flags: $flags}
         | select(($all == 1) or ((.flags | length) > 0))
       ],

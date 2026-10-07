@@ -222,7 +222,7 @@ checker performs one bounded `gh label list --limit 1000` vocabulary read
 against the target repository. Agent drafts also read labels independently
 through `classification-axes` for the provisioned rating catalogue. Without a
 manifest there is no repository-declared writer policy to infer, so agent proposals are limited to the canonical axes, the
-explicitly named work type, and `ai-generated`; other ordinary live labels
+explicitly named work type, `ai-generated`, `human`, and `umbrella`; other ordinary live labels
 remain human-only. The shared classification reader supplies the rating
 labels/field options independently of the ordinary manifest taxonomy. The checkout must have a GitHub remote matching
 `--repo`. The checker never applies labels or creates an issue.
