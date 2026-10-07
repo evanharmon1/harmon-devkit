@@ -5,6 +5,8 @@
 
 import { execFileSync } from 'node:child_process'
 import process from 'node:process'
+import { accessSync, constants } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { validateJsonSchema } from './validate-json-schema.mjs'
 
 const usage = `Usage: discover-label-vocabulary.mjs --repo [host/]owner/repo
@@ -134,9 +136,7 @@ const axes = new Set([
   'meta'
 ])
 const sources = new Set(['inline', 'devflow', 'agent-registry', 'tool-owned'])
-const registrySets = new Set(['suggest', 'claim', 'foreman-adapters', 'tier-roles'])
 const registrySetPrefixes = new Map([
-  ['suggest', 'suggest'],
   ['claim', 'claim'],
   ['foreman-adapters', 'foreman'],
   ['tier-roles', null]
@@ -222,8 +222,6 @@ function validateRegistry(registry) {
     die('label-registry.json families must be a non-empty array')
   }
 
-  const familyIds = new Set()
-  const provisionedNames = new Map()
   for (const [familyIndex, family] of registry.families.entries()) {
     const where = `family[${familyIndex}]`
     assertObject(family, where)
@@ -246,8 +244,6 @@ function validateRegistry(registry) {
     if (typeof family.family !== 'string' || !slugPattern.test(family.family)) {
       die(`${where}.family must be a lowercase slug`)
     }
-    if (familyIds.has(family.family)) die(`duplicate family id ${family.family}`)
-    familyIds.add(family.family)
     if (family.prefix !== null && (typeof family.prefix !== 'string' || !slugPattern.test(family.prefix))) {
       die(`${where}.prefix must be null or a lowercase slug`)
     }
@@ -270,13 +266,17 @@ function validateRegistry(registry) {
     }
     if (!Array.isArray(family.values)) die(`${where}.values must be an array`)
     if (family.source === 'agent-registry') {
-      if (!registrySets.has(family.registry_set)) {
+      // Model namespaces are opaque, schema-validated registry data. They
+      // are never planning candidates; only claim is expanded below.
+      if (!registrySetPrefixes.has(family.registry_set) &&
+          !(family.axis === 'model' && family.registry_set === family.prefix)) {
         die(`${where} needs a supported registry_set`)
       }
       if (!family.placeholder) {
         die(`${where} agent-registry families need a placeholder`)
       }
-      if (registrySetPrefixes.get(family.registry_set) !== family.prefix) {
+      if (registrySetPrefixes.has(family.registry_set) &&
+          registrySetPrefixes.get(family.registry_set) !== family.prefix) {
         die(`${where}.registry_set ${family.registry_set} does not match prefix ${family.prefix}`)
       }
       if (family.values.length !== 0) {
@@ -357,10 +357,6 @@ function validateRegistry(registry) {
         if (typeof value.color !== 'string' && typeof family.color !== 'string') {
           die(`${valueWhere} provisioned labels need a color`)
         }
-        if (provisionedNames.has(name)) {
-          die(`${valueWhere} duplicates provisioned label ${name} from ${provisionedNames.get(name)}`)
-        }
-        provisionedNames.set(name, family.family)
       }
     }
   }
@@ -374,7 +370,7 @@ function validateAgentRegistry(registry) {
   if (registry.schema_version !== 2 && registry.schema_version !== 3) {
     die(`agent-registry.json schema_version must be 2 or 3 (got ${registry.schema_version})`)
   }
-  for (const namespace of ['suggest', 'claim']) {
+  for (const namespace of ['claim']) {
     const contract = registry.labels?.[namespace]
     const scopes = new Set(contract?.scopes ?? [])
     if (
@@ -421,13 +417,14 @@ function validateAgentRegistry(registry) {
 
 // Execution-control families, whatever a manifest claims about their
 // writers. track-work's check-issue-metadata.sh rejects these at
-// authoring time unconditionally (FORBIDDEN_RE, plus an axis backstop for
-// strategy/foreman/model families under any other prefix) — planning
-// vocabulary that the next gate always refuses is not planning-safe. Prefix,
-// not axis: axis "model" is shared with the legitimately plannable
-// suggest-model/claim-model refinement families, so axis alone would
-// over-exclude.
-const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method'])
+// authoring time unconditionally — discovery must not offer values that
+// the create gate refuses, including human Priority/Effort and derived Tier.
+const executionControlPrefixes = new Set(['strategy', 'rigor', 'tier', 'method', 'priority', 'effort'])
+const ratingPrefixes = new Set(['impact', 'risk', 'complexity'])
+const helperOwnedPrefixes = new Set([...ratingPrefixes, 'priority-ai'])
+function isRatingLabel(name) {
+  return [...helperOwnedPrefixes].some((prefix) => name.startsWith(`${prefix}:`))
+}
 
 function safe(family, value = {}) {
   const writers = value.writers ?? family.writers
@@ -441,6 +438,8 @@ function safe(family, value = {}) {
     !retired &&
     !arming &&
     !gated &&
+    !['model', 'strategy', 'foreman'].includes(family.axis) &&
+    !helperOwnedPrefixes.has(family.prefix) &&
     !executionControlPrefixes.has(family.prefix)
   )
 }
@@ -473,6 +472,49 @@ if (!repositoryMetadata.default_branch || typeof repositoryMetadata.default_bran
   die(`repository metadata for ${repo} has no default_branch`)
 }
 const defaultBranch = repositoryMetadata.default_branch
+const ownerType = repositoryMetadata.owner?.type
+if (!['User', 'Organization'].includes(ownerType)) {
+  die(`repository metadata for ${repo} has no supported owner type`)
+}
+
+// The shared reader owns rating storage and provisioned on-scale values,
+// including on targets whose label manifest predates classification ratings.
+const classificationHelper = fileURLToPath(new URL('../../triage/assets/triage-apply.sh', import.meta.url))
+try {
+  accessSync(classificationHelper, constants.X_OK)
+} catch {
+  die('shared classification reader is missing; vendor the triage skill alongside breakdown')
+}
+let classification
+try {
+  classification = parseJson(execFileSync(classificationHelper, [
+    'classification-axes', '--repo', `${owner}/${repository}`
+  ], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GH_HOST: host }
+  }), 'shared classification reader output')
+} catch (error) {
+  die(`could not read provisioned Impact, Risk and Complexity; check triage's classification-axes reader: ${String(error.stderr ?? error.message).trim()}`)
+}
+const storage = ownerType === 'Organization' ? 'field' : 'label'
+if (classification?.owner_type !== ownerType || classification?.storage !== storage ||
+    !Array.isArray(classification.required) ||
+    [...ratingPrefixes].some((axis) => {
+      const entry = classification.axes?.[axis]
+      return typeof entry?.provisioned !== 'boolean' || !Array.isArray(entry?.values) ||
+        entry.values.some((value) => typeof value !== 'string')
+    })) {
+  die('shared classification reader returned an invalid or mismatched catalogue; update the vendored triage skill')
+}
+// Priority and Tier may be in the shared read, but are not agent proposals.
+classification = {
+  owner_type: ownerType,
+  storage,
+  required: classification.required.filter((axis) => ratingPrefixes.has(axis)),
+  axes: Object.fromEntries([...ratingPrefixes].map((axis) => [axis, classification.axes[axis]]))
+}
+const issueFields = storage === 'field' ? classification.axes : {}
 
 let branchMetadata
 let defaultBranchCommit = null
@@ -565,6 +607,27 @@ for (const label of liveLabels) {
   live.set(normalized, label)
 }
 
+const ratingFamilies = storage === 'label' ? [...ratingPrefixes].map((axis) => ({
+  family: axis,
+  prefix: axis,
+  purpose: `Provisioned ${axis} ratings from triage's classification rubric`,
+  axis: 'classification',
+  source: 'classification-helper',
+  writers: ['agent'],
+  lifecycle: 'durable',
+  exclusive: true,
+  arming: false,
+  provision: true,
+  retired: false,
+  open_values: false,
+  labels: classification.axes[axis].values.flatMap((value) => {
+    const label = live.get(normalizeLabelName(`${axis}:${value}`))
+    return label ? [{ name: label.name, description: label.description ?? '',
+      writers: ['agent'], lifecycle: 'durable', arming: false,
+      provision: true, retired: false }] : []
+  })
+})).filter((family) => family.labels.length > 0) : []
+
 if (!defaultPaths.has('label-registry.json')) {
   // Same execution-control exclusion as the registry path's safe() (see its
   // definition for why: track-work's check-issue-metadata.sh rejects these
@@ -575,12 +638,14 @@ if (!defaultPaths.has('label-registry.json')) {
     'claim:',
     'agent:',
     'foreman:',
+    'suggest:',
     ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
   ]
   const labels = liveLabels
     .filter((label) => {
       const normalized = normalizeLabelName(label.name)
-      return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix))
+      return !excludedPrefixes.some((prefix) => normalized.startsWith(prefix)) &&
+        !isRatingLabel(normalized)
     })
     .sort((left, right) => left.name.localeCompare(right.name))
   process.stdout.write(
@@ -588,6 +653,9 @@ if (!defaultPaths.has('label-registry.json')) {
       {
         mode: 'live-label-fallback',
         repository: repo,
+        owner_type: ownerType,
+        issue_fields: issueFields,
+        classification,
         default_branch: defaultBranch,
         default_branch_commit: defaultBranchCommit,
         verified_semantics: false,
@@ -595,6 +663,7 @@ if (!defaultPaths.has('label-registry.json')) {
         warning:
           'label-registry.json is absent; family, writer, lifecycle, and exclusivity semantics are unknown',
         excluded_prefixes: excludedPrefixes,
+        families: ratingFamilies,
         labels
       },
       null,
@@ -647,10 +716,56 @@ if (registry.families.some((family) => family.source === 'agent-registry')) {
   agentVocabulary = validateAgentRegistry(agentRegistry)
 }
 
+// An emitted planning family must be disjoint from every other source.
+// Excluded sources can overlap each other; null owns no prefix namespace.
+// Matching rating-axis declarations are superseded by the authoritative helper.
+function supersededRatingDeclaration(family) {
+  return ratingPrefixes.has(family.family) && family.prefix === family.family &&
+    family.axis === 'classification'
+}
+function assertDisjointSources(sources) {
+  for (const source of sources.filter((candidate) => candidate.planning)) {
+    for (const other of sources) {
+      if (source === other) continue
+      let collision
+      if (source.family === other.family) collision = `family id ${source.family}`
+      else if (source.prefix !== null && source.prefix === other.prefix) collision = `prefix ${source.prefix}`
+      else {
+        for (const name of source.names) {
+          if (other.names.has(name) || (other.prefix !== null && name.startsWith(`${other.prefix}:`))) {
+            collision = `label ${name}`
+            break
+          }
+        }
+        if (!collision && source.prefix !== null) {
+          for (const name of other.names) {
+            if (name.startsWith(`${source.prefix}:`)) {
+              collision = `label ${name}`
+              break
+            }
+          }
+        }
+      }
+      if (collision) die(`collision: ${collision} is shared by ${source.origin} and ${other.origin}`)
+    }
+  }
+}
+
+function generatedNames(family) {
+  if (family.source !== 'agent-registry') return []
+  if (family.axis === 'model' && family.registry_set === family.prefix) {
+    return [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
+  }
+  if (family.registry_set === 'foreman-adapters') {
+    return [...agentVocabulary.adapters.entries()]
+      .filter(([, adapter]) => adapter.provision_label === true)
+      .map(([slug]) => `${family.prefix}:${slug}`)
+  }
+  return []
+}
+
+
 const resultFamilies = new Map()
-const candidateOwners = new Map()
-const declaredOwners = new Map()
-const knownConcrete = new Set()
 // claim:/agent:/foreman: are live ownership/dispatch controls; the
 // execution-control prefixes (see safe()'s definition) belong here too — a
 // prefix-less family (family.prefix === null, so safe()'s own check never
@@ -659,60 +774,23 @@ const knownConcrete = new Set()
 // prefix), and that must be refused exactly like a family that declares the
 // prefix directly.
 const reservedConcretePrefixes = [
+  'suggest:',
   'claim:',
   'agent:',
   'foreman:',
   ...[...executionControlPrefixes].map((prefix) => `${prefix}:`)
 ]
 
-function isModelSuggestion(name) {
-  const [prefix, family, model, ...rest] = name.split(':')
-  return (
-    rest.length === 0 &&
-    prefix === 'suggest' &&
-    slugPattern.test(family ?? '') &&
-    slugPattern.test(model ?? '')
-  )
-}
-
-function isCanonicalModelPair(openFamily, candidateFamily) {
-  return (
-    (openFamily.family === 'suggest-model' || openFamily.family === 'claim-model') &&
-    candidateFamily?.source === 'agent-registry' &&
-    candidateFamily.registry_set === openFamily.family.replace('-model', '')
-  )
-}
-
-function reserveConcrete(family, name) {
+function addCandidate(family, name, value = {}) {
   const normalized = normalizeLabelName(name)
-  const prior = declaredOwners.get(normalized)
-  if (prior && prior !== family.family) {
-    die(`label ${name} is declared by both family ${prior} and family ${family.family}`)
-  }
-  declaredOwners.set(normalized, family.family)
-  knownConcrete.add(normalized)
-}
-
-function addCandidate(family, name, value = {}, extra = {}) {
-  const normalized = normalizeLabelName(name)
-  if (family.prefix === null && isModelSuggestion(normalized)) {
-    die(
-      `planning-safe family ${family.family} declares model-shaped suggestion ${name} ` +
-      'outside the paired suggest-model path'
-    )
-  }
+  // Check rendered names too: a prefix-less family cannot bypass the shared
+  // reader's rating vocabulary by enumerating arbitrary rating labels.
+  if (isRatingLabel(normalized)) return
   if (reservedConcretePrefixes.some((prefix) => normalized.startsWith(prefix))) {
     die(`planning-safe family ${family.family} declares reserved label ${name}`)
   }
   const liveLabel = live.get(normalized)
   if (!liveLabel) return
-  const prior = candidateOwners.get(normalized)
-  if (prior && prior !== family.family) {
-    die(
-      `label ${liveLabel.name} is ambiguous between planning-safe families ${prior} and ${family.family}`
-    )
-  }
-  candidateOwners.set(normalized, family.family)
   if (!resultFamilies.has(family.family)) resultFamilies.set(family.family, outputFamily(family))
   resultFamilies.get(family.family).labels.push({
     name: liveLabel.name,
@@ -721,100 +799,61 @@ function addCandidate(family, name, value = {}, extra = {}) {
     lifecycle: value.lifecycle ?? family.lifecycle,
     arming: family.arming === true || value.arming === true,
     provision: family.provision === true && value.provision !== false,
-    retired: family.retired === true || value.retired === true,
-    ...extra
+    retired: family.retired === true || value.retired === true
   })
+  return true
 }
 
+const planningFamilies = new Set()
+function emitCandidate(family, name, value = {}) {
+  if (addCandidate(family, name, value)) planningFamilies.add(family)
+}
 for (const family of registry.families) {
-  if (family.source !== 'agent-registry') {
-    for (const value of family.values) {
-      const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
-      reserveConcrete(family, name)
-      if (safe(family, value)) addCandidate(family, name, value)
-    }
-  } else if (family.source === 'agent-registry') {
-    let names = []
-    if (family.registry_set === 'suggest' || family.registry_set === 'claim') {
-      names = [...agentVocabulary.families.keys()].map((slug) => `${family.prefix}:${slug}`)
-    } else if (family.registry_set === 'foreman-adapters') {
-      names = [...agentVocabulary.adapters.entries()]
-        .filter(([, adapter]) => adapter.provision_label === true)
-        .map(([slug]) => `${family.prefix}:${slug}`)
-    }
-    for (const name of names) {
-      reserveConcrete(family, name)
-      if (safe(family)) addCandidate(family, name)
-    }
+  if (supersededRatingDeclaration(family)) continue
+  for (const value of family.values) {
+    const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
+    if (safe(family, value)) emitCandidate(family, name, value)
   }
-}
-
-for (const family of registry.families.filter((candidate) => candidate.open_values === true)) {
-  if (family.prefix === null) continue
-  const conflictingFamily = registry.families.find(
-    (candidate) =>
-      candidate.family !== family.family &&
-      candidate.prefix === family.prefix &&
-      !isCanonicalModelPair(family, candidate)
-  )
-  if (conflictingFamily) {
-    die(
-      `planning-safe open family ${family.family} overlaps prefix ${family.prefix} with ` +
-      `family ${conflictingFamily.family}; excluded labels cannot be reclassified safely`
-    )
+  for (const name of generatedNames(family)) {
+    if (safe(family)) emitCandidate(family, name)
   }
-  const conflictingConcrete = [...candidateOwners].find(([name, owner]) => {
-    const ownerFamily = registry.families.find((candidate) => candidate.family === owner)
-    return (
-      owner !== family.family &&
-      name.startsWith(`${family.prefix}:`) &&
-      !isCanonicalModelPair(family, ownerFamily)
-    )
-  })
-  if (conflictingConcrete) {
-    const [name, owner] = conflictingConcrete
-    die(
-      `planning-safe concrete label ${live.get(name)?.name ?? name} from family ${owner} overlaps ` +
-      `open family ${family.family} prefix ${family.prefix}; semantics cannot be verified safely`
-    )
-  }
-}
-
-for (const family of registry.families) {
   if (!safe(family) || family.open_values !== true) continue
   if (family.prefix === null) {
     die(`planning-safe open family ${family.family} has no prefix and cannot be interpreted safely`)
   }
-
-  if (family.family === 'suggest-model') {
-    const baseFamily = registry.families.find(
-      (candidate) =>
-        candidate.source === 'agent-registry' &&
-        candidate.registry_set === 'suggest' &&
-        candidate.prefix === family.prefix &&
-        safe(candidate)
-    )
-    if (!baseFamily) die('suggest-model has no planning-safe suggest family to pair with')
-    for (const [familySlug, details] of agentVocabulary.families) {
-      const base = `${family.prefix}:${familySlug}`
-      const liveBase = live.get(normalizeLabelName(base))
-      if (!liveBase) continue
-      for (const model of details.models) {
-        const name = `${base}:${model}`
-        const normalized = normalizeLabelName(name)
-        if (!knownConcrete.has(normalized) && live.has(normalized)) {
-          addCandidate(family, name, {}, { requires: [liveBase.name] })
-        }
-      }
-    }
-    continue
-  }
-
+  const declared = new Set(family.values.map((value) => normalizeLabelName(`${family.prefix}:${value.value}`)))
   for (const [normalized, label] of live) {
-    if (!normalized.startsWith(`${family.prefix}:`) || knownConcrete.has(normalized)) continue
-    addCandidate(family, label.name)
+    if (normalized.startsWith(`${family.prefix}:`) && !declared.has(normalized)) {
+      emitCandidate(family, label.name)
+    }
   }
 }
+
+const manifestSources = registry.families.flatMap((family, index) => supersededRatingDeclaration(family) ? [] : [{
+  origin: `manifest family[${index}] ${family.family}`,
+  family: family.family,
+  planning: planningFamilies.has(family),
+  prefix: family.prefix,
+  names: new Set([
+    ...family.values.map((value) => family.prefix === null ? value.value : `${family.prefix}:${value.value}`),
+    ...generatedNames(family),
+    ...(family.open_values === true && family.prefix !== null ?
+      liveLabels.filter((label) => normalizeLabelName(label.name).startsWith(`${family.prefix}:`))
+        .map((label) => label.name) : [])
+  ].map(normalizeLabelName))
+}])
+assertDisjointSources([
+  ...manifestSources,
+  ...[...ratingPrefixes].map((axis) => ({
+    origin: `classification-helper family ${axis}`,
+    family: axis,
+    planning: storage === 'field' ? classification.axes[axis].provisioned &&
+      classification.axes[axis].values.length > 0 : ratingFamilies.some((family) => family.family === axis),
+    prefix: axis,
+    names: new Set(classification.axes[axis].values.map((value) => `${axis}:${value}`))
+  }))
+])
+
 
 for (const family of resultFamilies.values()) {
   family.labels.sort((left, right) => left.name.localeCompare(right.name))
@@ -825,11 +864,14 @@ process.stdout.write(
     {
       mode: 'registry',
       repository: repo,
+      owner_type: ownerType,
+      issue_fields: issueFields,
+      classification,
       default_branch: defaultBranch,
       default_branch_commit: defaultBranchCommit,
       verified_semantics: true,
       work_type_selection: 'registry-semantics',
-      families: [...resultFamilies.values()]
+      families: [...resultFamilies.values(), ...ratingFamilies]
     },
     null,
     2
