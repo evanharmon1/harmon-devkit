@@ -380,6 +380,10 @@ the graph is verified. A target that dispatches unconditionally on
 `issues.opened`, with nothing that can be withheld, cannot be sequenced
 safely at all: that is a §6 finding for the human to decide on (pause the
 automation, or accept the race), not something ordering can paper over.
+The same §6 finding applies when the gating input identified from the target's
+configuration is a signal the mandatory classification helper writes: a
+`tier:*` label, or the absence of `needs-triage`. The human either pauses the
+automation or accepts the race; breakdown must not skip or reorder classification.
 Where nothing automates dispatch, the window is only cosmetic — immediate
 attachment is still the rule.
 
@@ -441,12 +445,15 @@ number,title,body`, newest first, wide enough to cover the gap), matches
 already-filed chunks by title *and* body — GitHub enforces neither unique
 titles nor anything about provenance lines, so a hit counts only when both
 agree with the approved chunk. Before skipping any matched issue, independently
-re-read its stored classification and required labels against the approved
-chunk: matching title and body alone never proves creation completed. If
-ratings, derived Tier or required labels are missing, resume track-work §5's
-shared-helper write on that **existing issue**, then re-run its relationship
-steps and verify their read-back. The helper is idempotent; never create a
-second copy to recover classification. Otherwise skip the completed issue.
+re-read its stored classification, required labels and relationship edges
+(dependencies and sub-issue parent) against the approved chunk: matching title
+and body alone never proves creation completed. If ratings, derived Tier or
+required labels are missing, resume track-work §5's shared-helper write on
+that **existing issue** and verify its result. Regardless of classification
+completeness, attach any missing relationship edges, then verify them by
+read-back before continuing. Skip a matched issue only when both its
+classification and relationship edges have been re-read and match the approved
+chunk. The helper is idempotent; never re-create the issue to recover.
 Continue from the first chunk with no confirmed hit. A helper failure or
 indeterminate read still halts recovery and reports the existing issue number. The same rule covers milestones: list existing ones
 (`gh api --paginate`) and reuse by title before ever creating. Nothing is
@@ -497,7 +504,7 @@ verified planning vocabulary:
   Personal `impact`, `risk` and `complexity` families are emitted from those
   helper values intersected with live labels, even when the manifest has no
   rating families. A manifest rating-axis family whose id and prefix both
-  equal that axis is superseded by the helper for emission and collision checks.
+  equal that axis and whose axis is `classification` is superseded by the helper for emission and collision checks.
   Organization rating labels are inert and excluded: use
   the helper's field vocabulary, also emitted under `issue_fields`. A missing
   or failing helper blocks discovery; vendor triage alongside breakdown.
@@ -588,7 +595,11 @@ quoted variable or a file, never spliced into a single-quoted command string.
   These are **agent-authored** drafts. Follow track-work §5's **Create and
   classify through the shared helper** recipe from the target checkout:
   create with every preflight-verified label and the owner-appropriate work
-  type, then immediately call triage's `triage-apply.sh label` with all three
+  type. If the target's configured gating input is a `tier:*` label or the
+  absence of `needs-triage` that the classification helper writes, report a
+  §6 finding: the human either pauses the automation or accepts the race.
+  Keep classification mandatory and in this order: create,
+  then immediately call triage's `triage-apply.sh label` with all three
   approved `--impact`, `--risk` and `--complexity` values and `--execute`.
   Set `GH_HOST` to the same target host passed to discovery's `--repo`
   (`<host>/<owner>/<repo>`), including for the post-create helper write:

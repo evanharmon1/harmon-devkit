@@ -1732,6 +1732,32 @@ else
     bad "prefix-less registry suggestion has the reserved-label diagnostic"
 fi
 
+# Personal helper ratings match live labels case-insensitively in both modes.
+mixed_ratings="$tmproot/mixed-ratings"
+mkdir -p "$mixed_ratings"
+write_agent_registry "$mixed_ratings"
+write_registry "$mixed_ratings" api
+write_labels "$mixed_ratings" api
+jq 'map(if .name == "impact:high" then .name = "Impact:High"
+        elif .name == "risk:low" then .name = "Risk:Low"
+        elif .name == "complexity:m" then .name = "Complexity:M" else . end)' \
+    "$mixed_ratings/labels.json" >"$mixed_ratings/updated.json"
+mv "$mixed_ratings/updated.json" "$mixed_ratings/labels.json"
+for rating_mode in registry live-label-fallback; do
+    if [ "$rating_mode" = live-label-fallback ]; then
+        mv "$mixed_ratings/label-registry.json" "$mixed_ratings/saved-registry.json"
+    fi
+    if mixed_output="$(discover "$mixed_ratings" 2>"$mixed_ratings/error")" && jq -e --arg mode "$rating_mode" '
+        .mode == $mode and
+        ([.families[] | select(.source == "classification-helper") | .labels[].name] | sort) ==
+        ["Complexity:M","Impact:High","Risk:Low"]
+    ' <<<"$mixed_output" >/dev/null; then
+        ok "mixed-case personal ratings retain live spelling in $rating_mode"
+    else
+        bad "mixed-case personal ratings survive $rating_mode: $(cat "$mixed_ratings/error")"
+    fi
+done
+
 # Both registry shapes must work while the claim contract remains required.
 without_suggest="$tmproot/without-suggest"
 mkdir -p "$without_suggest"
@@ -1840,7 +1866,7 @@ else
 fi
 
 # One table exercises the integration collision invariant across all surfaces.
-for invariant_case in open-rating prefixless-model helper-id prefixless-rating bare-ratings open-model excluded-concrete; do
+for invariant_case in open-rating prefixless-model helper-id nonclassification-rating prefixless-rating bare-ratings open-model excluded-concrete; do
     invariant_fixture="$tmproot/invariant-$invariant_case"
     mkdir -p "$invariant_fixture"
     write_agent_registry "$invariant_fixture"
@@ -1858,6 +1884,10 @@ for invariant_case in open-rating prefixless-model helper-id prefixless-rating b
     helper-id)
         extra='[{"family":"risk","prefix":"custom-risk","axis":"meta","source":"inline","values":[{"value":"live"}]}]'
         sources='(manifest family.*risk.*classification-helper family risk|classification-helper family risk.*manifest family.*risk)'
+        ;;
+    nonclassification-rating)
+        extra='[{"family":"impact","prefix":"impact","axis":"meta","source":"inline","values":[{"value":"high"}]}]'
+        sources='(manifest family.*impact.*classification-helper family impact|classification-helper family impact.*manifest family.*impact)'
         ;;
     prefixless-rating)
         extra='[{"family":"disguised-rating","prefix":null,"axis":"classification","source":"inline","values":[{"value":"impact:high"}]}]'
@@ -2417,6 +2447,25 @@ if grep -qF 'GH_HOST="$target_host" TRIAGE_EXECUTE=1' <<<"$execution_section" &&
     ok "post-create helper write binds the discovery host and authorizes execution"
 else
     bad "post-create helper write requires both discovery host and execution bindings"
+fi
+
+if [ "$(grep -cF 'human either pauses the' <<<"$execution_section")" -eq 2 ] &&
+    grep -qF 'signal the mandatory classification helper writes' <<<"$execution_section" &&
+    grep -qF '`tier:*` label, or the absence of `needs-triage`' <<<"$execution_section" &&
+    grep -qF 'Keep classification mandatory and in this order' <<<"$execution_section"; then
+    ok "helper-owned gating inputs require a human race decision without skipping classification"
+else
+    bad "both gating and create clauses cover helper-owned dispatch signals"
+fi
+if grep -qF '(dependencies and sub-issue parent) against the approved chunk' <<<"$execution_section" &&
+    grep -qF 'Regardless of classification' <<<"$execution_section" &&
+    grep -qF 'completeness, attach any missing relationship edges, then verify them by' <<<"$execution_section" &&
+    grep -qF 'Skip a matched issue only when both its' <<<"$execution_section" &&
+    grep -qF 'classification and relationship edges have been re-read and match the approved' <<<"$execution_section" &&
+    grep -qF 'never re-create the issue to recover' <<<"$execution_section"; then
+    ok "recovery verifies and repairs relationship edges even when classification is complete"
+else
+    bad "recovery skips only after classification and relationship read-back match"
 fi
 
 echo "==> migrated registry (harmon-init#1047: devflow source, schema_version 3)"

@@ -720,7 +720,8 @@ if (registry.families.some((family) => family.source === 'agent-registry')) {
 // Excluded sources can overlap each other; null owns no prefix namespace.
 // Matching rating-axis declarations are superseded by the authoritative helper.
 function supersededRatingDeclaration(family) {
-  return ratingPrefixes.has(family.family) && family.prefix === family.family
+  return ratingPrefixes.has(family.family) && family.prefix === family.family &&
+    family.axis === 'classification'
 }
 function assertDisjointSources(sources) {
   for (const source of sources.filter((candidate) => candidate.planning)) {
