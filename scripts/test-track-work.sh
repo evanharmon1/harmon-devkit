@@ -1288,6 +1288,11 @@ jq '(.families[] | select(.family == "layer").values[] |
     fail "human-only none must allow agent fallback: $(cat "$tmp/metadata.out")"
 grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
     fail "human-only none warning must explain the missing writer grant"
+# Closed enumerated none authorizes each draft by its own writer policy.
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_without_none" \
+    --owner-type personal --title 'Accept human closed none' --body-file "$valid_body" \
+    --human-authored --work-type-label feature --label layer:none)" = 0 ] ||
+    fail "closed human-only none must pass for a human draft: $(cat "$tmp/metadata.out")"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
     fail "fallback must not authorize an agent to write human-only none"
 grep -Fq "label 'layer:none' is not writable by an agent" "$tmp/metadata.out" ||
