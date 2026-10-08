@@ -2319,7 +2319,10 @@ async function main() {
   try {
     headsMap = loadHeadsMap(headsFile);
   } catch (err) {
-    return indeterminate(args, `--heads could not be read as JSON: ${err.message}`);
+    // Name the file actually read: without --heads it is the run's own
+    // heads.json default, which the caller never typed.
+    const source = args.heads ? "--heads" : `the run directory's default head map ${runHeadsFile}`;
+    return indeterminate(args, `${source} could not be read as JSON: ${err.message}`);
   }
   const ancestryOpts = { headsMap, repoRoot: args["repo-root"] };
 

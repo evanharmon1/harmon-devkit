@@ -943,14 +943,27 @@ echo "== harmon-devkit#1240: a head-map walk that runs off the map falls through
 # stays `continue` (sparse-head-map-without-repo-root-not-retained).
 sparse_dir="$(mktemp -d)"
 cp -r "ai/schemas/fixtures/exit/sparse-head-map-without-repo-root-not-retained/." "${sparse_dir}/"
-git init -q "${sparse_dir}/repo"
-sparse_tree="$(git -C "${sparse_dir}/repo" mktree </dev/null)"
-sparse_c1="$(git -C "${sparse_dir}/repo" -c user.email=t@example.invalid -c user.name=t commit-tree -m r1 "${sparse_tree}")"
-sparse_c2="$(git -C "${sparse_dir}/repo" -c user.email=t@example.invalid -c user.name=t commit-tree -m r2 -p "${sparse_c1}" "${sparse_tree}")"
-find "${sparse_dir}/run" -name '*.json' -exec sed -i \
-    -e "s/0101010101010101010101010101010101010101/${sparse_c1}/g" \
-    -e "s/0202020202020202020202020202020202020202/${sparse_c2}/g" {} +
-node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${sparse_dir}/run" --stage challenge \
+# Every git command here — the engine's own `merge-base` included — runs with
+# the scratch repository owning its whole config, so no ambient `init.*` (a
+# global init.defaultObjectFormat=sha256 yields 64-char ids the engine rejects
+# as --current-head) or env-injected GIT_CONFIG_COUNT pair reaches it.
+: >"${sparse_dir}/gitconfig"
+sparse_env() {
+    env GIT_CONFIG_GLOBAL="${sparse_dir}/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 "$@"
+}
+sparse_env git init -q "${sparse_dir}/repo"
+sparse_tree="$(sparse_env git -C "${sparse_dir}/repo" mktree </dev/null)"
+sparse_c1="$(sparse_env git -C "${sparse_dir}/repo" -c user.email=t@example.invalid -c user.name=t commit-tree -m r1 "${sparse_tree}")"
+sparse_c2="$(sparse_env git -C "${sparse_dir}/repo" -c user.email=t@example.invalid -c user.name=t commit-tree -m r2 -p "${sparse_c1}" "${sparse_tree}")"
+# `sed -i.bak` then remove the backup: the one in-place form GNU and BSD sed
+# both accept (bare `-i` takes BSD's next argument as the backup suffix).
+find "${sparse_dir}/run" -name '*.json' | while IFS= read -r sparse_file; do
+    sed -i.bak \
+        -e "s/0101010101010101010101010101010101010101/${sparse_c1}/g" \
+        -e "s/0202020202020202020202020202020202020202/${sparse_c2}/g" "${sparse_file}" &&
+        rm -f "${sparse_file}.bak"
+done
+sparse_env node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${sparse_dir}/run" --stage challenge \
     --policy "${sparse_dir}/policy.toml" --current-head "${sparse_c2}" --repo-root "${sparse_dir}/repo" --json \
     >"${scratch}/dfe-sparse.out" 2>"${scratch}/dfe-sparse.err" && sparse_status=0 || sparse_status=$?
 node -e '
