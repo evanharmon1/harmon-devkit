@@ -1,0 +1,51 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0101010101010101010101010101010101010101",
+  "produced_at": "2026-10-08T00:05:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "fixture",
+    "tier": "economy"
+  },
+  "run": {
+    "run_id": "run-integration-cycle-ordinal-gap-rejected",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "build",
+        "bucket": "pass",
+        "run_id": "1",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "0101010101010101010101010101010101010101",
+      "cycle": 1,
+      "charged": 1,
+      "exempt": 0,
+      "attempt": 1,
+      "trigger_comment_id": "8001",
+      "exit_code": 10,
+      "accepted": {
+        "surface": "review",
+        "id": "7001",
+        "reviewed_commit": "0101010101010101010101010101010101010101"
+      }
+    },
+    "integration_round": 1,
+    "findings": [
+      {
+        "id": "integration-r1-codex-cloud-1",
+        "body": "finding 1 of integration round 1",
+        "source_id": "9010"
+      }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-10-08T00:05:00Z",
+    "verdict": "findings"
+  }
+}
