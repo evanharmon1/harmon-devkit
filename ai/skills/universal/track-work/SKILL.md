@@ -856,7 +856,10 @@ to report before approval, never an incomplete draft to file.
   One `[HUMAN]` box on a primarily agent issue does not by itself require the
   label. Follow harmon-init's **Human work** paragraph in
   [docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
-  Agents may add `human`; only a human removes it. A collector is the special
+  Agents may add `human`; filing never removes it. Triage may remove it only
+  for a non-collector without a `[HUMAN]` majority whose remaining work the
+  classifier judges agent-completable, through its guarded helper and with
+  every removal reported (triage step 2e). A collector is the special
   case carrying `human` + `umbrella`; standalone human work carries `human`
   without `umbrella`. When it has an agent-doable part, give that part a native
   blocked-by link to a standalone `human` issue for the human step, never to a

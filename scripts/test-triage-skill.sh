@@ -243,13 +243,18 @@ api\ repos/*)
     # GH_STUB_LABELS_CHANGE_ON_READ=K adds the labels named in
     # GH_STUB_LABELS_CHANGE_ADD to the issue on its K-th read: a person
     # labelling it between triage's first read and its snapshot.
-    if [ -n "${GH_STUB_LABELS_CHANGE_ON_READ:-}" ]; then
+    if [ -n "${GH_STUB_LABELS_CHANGE_ON_READ:-}${GH_STUB_CONTENT_CHANGE_ON_READ:-}" ]; then
         reads="$(cat "$GH_STUB_DIR/.label-reads-$3" 2>/dev/null || echo 0)"
         reads=$((reads + 1))
         echo "$reads" >"$GH_STUB_DIR/.label-reads-$3"
-        if [ "$reads" -eq "$GH_STUB_LABELS_CHANGE_ON_READ" ]; then
+        if [ "$reads" -eq "${GH_STUB_LABELS_CHANGE_ON_READ:-0}" ]; then
             jq --arg add "${GH_STUB_LABELS_CHANGE_ADD:?}" \
                 '.labels += [$add | split(" ")[] | {name: .}]' \
+                "$issue_src" >"$issue_src.next"
+            mv "$issue_src.next" "$issue_src"
+        fi
+        if [ "$reads" -eq "${GH_STUB_CONTENT_CHANGE_ON_READ:-0}" ]; then
+            jq --argjson patch "${GH_STUB_CONTENT_CHANGE_JSON:?}" '. + $patch' \
                 "$issue_src" >"$issue_src.next"
             mv "$issue_src.next" "$issue_src"
         fi
@@ -433,7 +438,7 @@ printf '%s\n' area:ci area:none area:tasks bug domain:auth domain:delivery \
     sort >"$tmp/want"
 diff -u "$tmp/want" "$tmp/got" >&2 || fail "allowlist mismatch"
 
-echo "==> human work: fixture manifest permits addition but never removal"
+echo "==> human work: fixture manifest grants guarded human writes"
 human_manifest="$tmp/human-registry.json"
 jq '.families += [{"family":"human-work","prefix":null,
     "purpose":"Work primarily completed by a human","axis":"meta",
@@ -443,14 +448,9 @@ jq '.families += [{"family":"human-work","prefix":null,
 [ "$(run "$apply" allowlist --manifest "$human_manifest")" = 0 ] ||
     fail "human manifest must be valid: $(cat "$tmp/out")"
 grep -qx human "$tmp/out" || fail "human must be agent-addable"
-for removal in human 'human,needs-triage'; do
-    [ "$(run "$apply" label --repo "$repo" --issue 10 \
-        --manifest "$human_manifest" --remove "$removal")" = 4 ] ||
-        fail "human removal must use never-list refusal: $(cat "$tmp/out")"
-done
 [ "$(run "$apply" label --repo "$repo" --issue 10 \
-    --manifest "$tmp/no-manifest.json" --remove human)" = 4 ] ||
-    fail "no-manifest removal must also refuse human"
+    --manifest "$human_manifest" --remove 'human,needs-triage')" = 4 ] ||
+    fail "comma-bearing removal must still refuse"
 
 echo "==> allowlist: triage works from a standalone vendored support bundle"
 standalone_triage="$tmp/standalone-triage"
@@ -3244,7 +3244,7 @@ for rubric in classification-rubric priority-rubric; do
         fail "SKILL.md must link references/$rubric.md"
 done
 
-echo "==> human work: scan recommendation and combined apply preserve the add-only rule"
+echo "==> human work: scan recommendation and combined apply preserve guarded human writes"
 cat >"$stub_dir/issues-open.json" <<'JSON'
 [{"number":601,"title":"(accounts): Approve access","labels":[],
   "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
@@ -3328,7 +3328,7 @@ jq -e '.open[] | select(.number == 603) | .human_work.collector
     fail "collector must not become a removal candidate"
 jq -e '.open[] | select(.number == 604) | .flags
     | index("human-removal-candidate") != null' "$human_scan" >/dev/null ||
-    fail "dispatchable human-labelled issue must be reported, not removed"
+    fail "dispatchable human-labelled issue must be an input to classifier judgement"
 for number in 605 606; do
     jq -e --argjson n "$number" '.open[] | select(.number == $n)
         | .human_work.collector and .human_work.recommendation == "human"
@@ -3353,6 +3353,9 @@ for number in 601 602 603 604; do
     jq --argjson n "$number" '.[] | select(.number == $n)' \
         "$stub_dir/issues-open.json" >"$stub_dir/issue-$number.json"
     human_add=()
+    human_remove=()
+    # Fixture 604's remaining work is agent-completable: classifier decision.
+    [ "$number" != 604 ] || human_remove=(--remove human)
     if jq -e --argjson n "$number" '.open[] | select(.number == $n)
         | .human_work.recommendation == "human" and (.human_work.labelled | not)' \
         "$human_scan" >/dev/null; then
@@ -3361,7 +3364,8 @@ for number in 601 602 603 604; do
     : >"$GH_STUB_LOG"
     [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue "$number" \
         --manifest "$human_manifest" --add bug --add area:ci --add layer:ui \
-        --add domain:auth "${human_add[@]+"${human_add[@]}"}" --execute)" = 0 ] ||
+        --add domain:auth "${human_add[@]+"${human_add[@]}"}" \
+        "${human_remove[@]+"${human_remove[@]}"}" --execute)" = 0 ] ||
         fail "human decision must share classification call: $(cat "$tmp/out")"
     if [ "$number" = 601 ]; then
         grep -q "APPLIED add 'human'" "$tmp/out" || fail "human-only work must get human"
@@ -3370,12 +3374,123 @@ for number in 601 602 603 604; do
     elif [ "$number" = 602 ]; then
         grep -q "APPLIED add 'human'" "$tmp/out" && fail "agent issue must not get human"
     fi
-    grep -q -- '--remove-label.*human' "$GH_STUB_LOG" && fail "human must never be removed"
+    if [ "$number" = 604 ]; then
+        grep -q "APPLIED remove 'human'" "$tmp/out" || fail "dispatchable issue must lose human"
+        [ "$(grep -c '^issue edit' "$GH_STUB_LOG")" = 1 ] ||
+            fail "human removal and axes must share the label mutation"
+        grep '^issue edit' "$GH_STUB_LOG" | grep -- '--remove-label human' >/dev/null ||
+            fail "combined apply must remove human"
+    else
+        grep -q -- '--remove-label.*human' "$GH_STUB_LOG" && fail "unrequested human removal"
+    fi
     if [ "$number" = 603 ]; then
         [ "$(run "$apply" label --repo "$repo" --issue "$number" \
             --manifest "$human_manifest" --reconcile)" = 0 ] || fail "collector reconcile"
         grep -qE "would remove '(human|umbrella)'" "$tmp/out" && fail "collector labels must stay"
     fi
 done
+
+echo "==> human removal: live mechanical guards and permissions"
+# Recreate fixtures independently of overlays from the combined apply above.
+for number in 601 603 604 605 606 607 610 611 612 613; do
+    jq --argjson n "$number" '.[] | select(.number == $n)
+        | .labels += [{name:"human"}] | .labels |= unique_by(.name)' \
+        "$stub_dir/issues-open.json" >"$stub_dir/issue-$number.json"
+done
+for number in 603 605 606 607; do
+    : >"$GH_STUB_LOG"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue "$number" \
+        --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+        fail "collector #$number must refuse human removal"
+    grep -q 'collector title' "$tmp/out" || fail "refusal must name collector guard"
+    grep -q '^issue edit' "$GH_STUB_LOG" && fail "collector refusal must make no writes"
+done
+for number in 601 610 612 613; do
+    : >"$GH_STUB_LOG"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue "$number" \
+        --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+        fail "human majority #$number must refuse removal (including nested criteria)"
+    grep -q '\[HUMAN\] majority' "$tmp/out" || fail "refusal must name majority guard"
+    grep -q '^issue edit' "$GH_STUB_LOG" && fail "majority refusal must make no writes"
+done
+[ "$(run "$apply" label --repo "$repo" --issue 611 --manifest "$human_manifest" \
+    --remove human)" = 0 ] || fail "nested CI majority must allow removal"
+grep -q "DRY-RUN would remove 'human'" "$tmp/out" || fail "dry-run must plan human removal"
+[ "$(run "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
+    --add human --remove human)" = 2 ] || fail "contradictory human request must refuse"
+jq '.families |= map(if .family == "human-work" then .writers=["human"] else . end)' \
+    "$human_manifest" >"$tmp/human-withheld.json"
+for registry in "$manifest" "$tmp/human-withheld.json"; do
+    [ "$(run "$apply" label --repo "$repo" --issue 604 --manifest "$registry" \
+        --remove human)" = 4 ] || fail "withheld or absent human grant must refuse"
+done
+cp "$stub_dir/labels.json" "$tmp/labels-human-removal.json"
+jq '. + [{name:"human",description:""}] | unique_by(.name)' \
+    "$tmp/labels-human-removal.json" >"$stub_dir/labels.json"
+[ "$(run "$apply" label --repo "$repo" --issue 604 --manifest "$tmp/no-manifest.json" \
+    --remove human)" = 0 ] || fail "live fallback grant must allow guarded removal"
+cp "$tmp/labels-human-removal.json" "$stub_dir/labels.json"
+
+# Exact half is not a majority; examples outside criteria and fences never count.
+jq '.body="## Acceptance criteria\n\n- [x] [HUMAN] Try it\n- [ ] [CI] Test it\n```md\n- [ ] [HUMAN] Example\n```\n## Notes\n- [ ] [HUMAN] Not a criterion"' \
+    "$stub_dir/issue-604.json" >"$stub_dir/issue-614.json"
+[ "$(run "$apply" label --repo "$repo" --issue 614 --manifest "$human_manifest" \
+    --remove human)" = 0 ] || fail "half human and excluded examples must allow removal"
+
+# Snapshot drift before the first write: collector, majority, claims, and unreadable body.
+for patch in '{"title":"(QA): Keep collector"}' \
+    '{"body":"## Acceptance criteria\n- [ ] [HUMAN] Approve"}' \
+    '{"labels":[{"name":"human"},{"name":"claim:gpt"}]}' \
+    '{"labels":[{"name":"human"},{"name":"agent:legacy"}]}' \
+    '{"body":null}'; do
+    cp "$stub_dir/issue-604.json" "$stub_dir/issue-615.json"
+    rm -f "$stub_dir/.label-reads-615"
+    : >"$GH_STUB_LOG"
+    expected=4
+    [ "$patch" != '{"body":null}' ] || expected=2
+    [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_CONTENT_CHANGE_ON_READ=2 \
+        GH_STUB_CONTENT_CHANGE_JSON="$patch" "$apply" label --repo "$repo" --issue 615 \
+        --manifest "$human_manifest" --remove human --execute)" = "$expected" ] ||
+        fail "live drift must refuse before any write: $(cat "$tmp/out")"
+    grep -q '^issue edit' "$GH_STUB_LOG" && fail "live drift must make no writes"
+done
+
+# Requests remain inert without execute; the live execute gate is still required.
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
+    --remove human --execute)" = 2 ] || fail "human removal must require execute gate"
+grep -q '^issue edit' "$GH_STUB_LOG" && fail "ungated removal must make no writes"
+
+echo "==> human removal: org read between mutations rechecks collector identity"
+cp "$stub_dir/issue-604.json" "$stub_dir/issue-616.json"
+rm -f "$stub_dir/.label-reads-616"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_OWNER_TYPE=Organization GH_STUB_NATIVE_TYPE= \
+    GH_STUB_CONTENT_CHANGE_ON_READ=3 GH_STUB_CONTENT_CHANGE_JSON='{"title":"(QA): Keep collector"}' \
+    "$apply" label --repo "$repo" --issue 616 --native-type Bug \
+    --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+    fail "collector drift between org mutations must refuse: $(cat "$tmp/out")"
+grep -q "APPLIED add 'needs-triage'" "$tmp/out" || fail "first marker write must be recorded"
+grep -q 'collector title' "$tmp/out" || fail "late refusal must name collector guard"
+grep -q -- '--remove-label human' "$GH_STUB_LOG" && fail "late collector drift must retain human"
+
+# The entries renderer already accepts keyed removal records. The classifier
+# supplies the reason and records actual apply output, then sync preserves both.
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 604 \
+    --manifest "$human_manifest" --remove human --execute)" = 0 ] ||
+    fail "removal for report must apply: $(cat "$tmp/out")"
+removal_evidence="$(grep "APPLIED remove 'human'" "$tmp/out")"
+[ -n "$removal_evidence" ] || fail "report requires actual removal evidence"
+cat >"$tmp/human-removal-entries.md" <<MD
+### #604 — human removed: remaining feature work is agent-completable
+<!-- triage-entry:604 -->
+- Evidence: $removal_evidence; non-collector, 0 of 1 criteria human.
+- Reason: remaining feature implementation and its tests are agent-completable.
+MD
+[ "$(run "$report" sync --repo "$repo" --entries-file "$tmp/human-removal-entries.md")" = 0 ] ||
+    fail "human removal report must render: $(cat "$tmp/out")"
+grep -q 'human removed: remaining feature work is agent-completable' "$tmp/out" ||
+    fail "every removal must appear in the report"
+grep -q "APPLIED remove 'human'" "$tmp/out" || fail "report must preserve removal evidence"
 
 echo "All triage skill tests passed."

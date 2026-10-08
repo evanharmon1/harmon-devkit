@@ -33,8 +33,9 @@
 #       label axis, Impact, Risk, Complexity), never added or removed by
 #       judgement: added while any required axis is missing, removed once
 #       every one is present.
-#     - human — added when completion is primarily a human's; only a human
-#       removes it. Every explicit or derived removal is refused in code.
+#     - human — added when completion is primarily a human's; explicit removal
+#       requires a live non-collector without a [HUMAN] majority. The classifier
+#       judges agent-completability; this helper enforces the mechanical guards.
 #   NEVER writes: the human Priority and Effort (fields or labels), foreman:*,
 #   rigor:*, tier:pinned, scoped tier:<role>:* (tier:implementer:* and the
 #   other roles), strategy:*, method:* (the retired prefix strategy:* replaces
@@ -67,7 +68,7 @@
 #   triage-apply.sh label --repo owner/repo --issue N
 #                   [--add LABEL]... [--native-type TYPE]
 #                   [--impact V] [--risk V] [--complexity V]
-#                   [--priority-ai V] [--remove needs-triage]
+#                   [--priority-ai V] [--remove needs-triage|human]
 #                   [--reconcile] [--manifest PATH] [--policy PATH]
 #                   [--execute]
 #
@@ -120,7 +121,7 @@
 #       1 = the write failed
 #       2 = usage/environment error (bad flags, --execute without the env gate,
 #           could not verify something the gate needs)
-#       4 = refused: never-list, allowlist, exclusive-axis conflict, a value
+#       4 = refused: human-removal guard, never-list, allowlist, exclusive-axis conflict, a value
 #           off its scale or not provisioned, or a different value already set
 #       5 = refused: work-type label on an org repo, or native Type on a
 #           personal repo
@@ -169,7 +170,7 @@ usage() {
     echo "       $0 label --repo owner/repo --issue N [--add LABEL]..." >&2
     echo "           [--native-type TYPE] [--impact V] [--risk V]" >&2
     echo "           [--complexity V] [--priority-ai V]" >&2
-    echo "           [--remove needs-triage] [--reconcile] [--manifest PATH]" >&2
+    echo "           [--remove needs-triage|human] [--reconcile] [--manifest PATH]" >&2
     echo "           [--policy PATH] [--execute]" >&2
     exit 2
 }
@@ -340,8 +341,8 @@ allowlist_compute() {
         records="$(render_manifest "$manifest")"
         # v1 scope: the manifest's own classification families (any axis the
         # registry declares, not a fixed three), work-type, needs-triage, and
-        # human from the human-work family. Removal permission is NOT granted
-        # by effective writers: only a human removes human.
+        # human from the human-work family. Effective writers grant the write;
+        # human removal additionally requires the live mechanical guards.
         printf '%s\n' "$records" |
             awk -F '|' '$1 == "value" && $10 == "false" && $11 == "false" &&
                 ("," $6 ",") ~ /,agent,/ &&
@@ -974,18 +975,20 @@ cmd_label() {
             "(--impact/--risk/--complexity/--priority-ai), --remove, or" \
             "--reconcile"
 
-    # Exactly one label kind may be removed on request. Everything else is
-    # out of scope by construction, not by validation of a wider mechanism.
+    # Requested removals are bounded to the derived marker and guarded human.
+    local human_remove=0
     for l in "${removes[@]+"${removes[@]}"}"; do
         case "$l" in
         *,*) die 4 "refused: '$l' contains a comma — gh would split its removal" ;;
+        human) human_remove=1 ;;
+        needs-triage) ;;
+        *) die 2 "--remove accepts only needs-triage or human (got '$l')" ;;
         esac
-        [ "$l" != "human" ] ||
-            die 4 "refused: removal of 'human' is on the triage never-list;" \
-                "only a human removes it"
-        [ "$l" = "needs-triage" ] ||
-            die 2 "--remove accepts only needs-triage (got '$l')"
     done
+    if [ "$human_remove" -eq 1 ]; then
+        ! in_list human "$(printf '%s\n' "${adds[@]+"${adds[@]}"}")" ||
+            die 2 "human cannot be both added and removed"
+    fi
 
     # Validate the registry here, in this shell: a refusal inside the command
     # substitutions below would only end that subshell (no inherit_errexit)
@@ -1023,13 +1026,12 @@ cmd_label() {
         in_list "$l" "$allowlist" ||
             die 4 "refused: '$l' is not on the triage write-allowlist"
     done
-    # Removal is a write too: a manifest that withholds needs-triage from
-    # agents withholds the removal as much as the add.
-    if [ "${#removes[@]}" -gt 0 ]; then
-        in_list "needs-triage" "$allowlist" ||
-            die 4 "refused: this repo's manifest does not grant agents" \
-                "needs-triage, so triage may not remove it either"
-    fi
+    # Removal is a write too: effective writers must grant each requested label.
+    for l in "${removes[@]+"${removes[@]}"}"; do
+        in_list "$l" "$allowlist" ||
+            die 4 "refused: this repo's manifest or live fallback does not grant" \
+                "agents '$l', so triage may not remove it either"
+    done
 
     # needs-triage is never an ordinary add: it is derived below, and an
     # explicit request is only checked against that derivation.
@@ -1043,7 +1045,9 @@ cmd_label() {
         fi
     done
     adds=("${label_adds[@]+"${label_adds[@]}"}")
-    [ "${#removes[@]}" -eq 0 ] || nt_explicit_remove=1
+    for l in "${removes[@]+"${removes[@]}"}"; do
+        [ "$l" != "needs-triage" ] || nt_explicit_remove=1
+    done
     [ "$nt_explicit_add" -eq 0 ] || [ "$nt_explicit_remove" -eq 0 ] ||
         die 2 "needs-triage cannot be both added and removed"
 
@@ -1072,12 +1076,34 @@ cmd_label() {
     # it writes changed (triage only fills) or a human Priority appeared before
     # a Priority (AI) replacement, and re-plans everything from the snapshot.
     # No later re-read exists to disagree with it.
+    local human_issue_json="" human_guard_jq="" title_module_dir
+    title_module_dir="$asset_dir/../../issue-title-support/assets"
+    if [ "$human_remove" -eq 1 ]; then
+        human_guard_jq="$(cat "$title_module_dir/issue-conformance.jq" \
+            "$asset_dir/human-work.jq")" ||
+            die 2 "could not read the shared human-work projection"
+    fi
     local current="" issue_fields_json='{"id":null,"fields":{}}' issue_id=""
     local native_state=""
     read_state() {
-        current="$(gh issue view "$issue" --repo "$repo" --json labels \
-            -q '.labels[].name')" ||
-            die 2 "could not read labels of $repo#$issue"
+        if [ "$human_remove" -eq 1 ]; then
+            human_issue_json="$(gh issue view "$issue" --repo "$repo" \
+                --json labels,title,body)" ||
+                die 2 "could not read live title/body/labels of $repo#$issue"
+            jq -e '(.title | type == "string") and (.body | type == "string")
+                and (.labels | type == "array")
+                and all(.labels[]; .name | type == "string")' \
+                <<<"$human_issue_json" >/dev/null ||
+                die 2 "could not verify live title/body/labels of $repo#$issue"
+            current="$(jq -r '.labels[].name' <<<"$human_issue_json")"
+        else
+            current="$(gh issue view "$issue" --repo "$repo" --json labels \
+                -q '.labels[].name')" ||
+                die 2 "could not read labels of $repo#$issue"
+        fi
+        if grep -qE '^(claim:|agent:)' <<<"$current"; then
+            die 4 "refused: $repo#$issue is claimed — report-only, no write"
+        fi
         if [ "$owner_type" = "Organization" ]; then
             issue_fields_json="$(org_issue_field_values "$repo" "$issue")" ||
                 die 2 "could not read the issue field values of $repo#$issue"
@@ -1092,6 +1118,18 @@ cmd_label() {
     local label_change_adds=() label_change_removes=() org_field_writes=()
     local marker_first=0
     plan_call() {
+        # Recomputed from every snapshot, including reads between org mutations.
+        if [ "$human_remove" -eq 1 ]; then
+            local human_facts
+            human_facts="$(jq -L "$title_module_dir" --argjson known '[]' "$human_guard_jq"'
+                human_work(.; [.labels[].name])' <<<"$human_issue_json")" ||
+                die 2 "could not evaluate human-removal guards for $repo#$issue"
+            [ "$(jq -r '.collector' <<<"$human_facts")" = false ] ||
+                die 4 "refused: removal of 'human' from $repo#$issue — collector title"
+            jq -e '.human_criteria * 2 <= .total_criteria' \
+                <<<"$human_facts" >/dev/null ||
+                die 4 "refused: removal of 'human' from $repo#$issue — [HUMAN] majority"
+        fi
 
         effective_adds=()
         for l in "${adds[@]+"${adds[@]}"}"; do
@@ -1447,14 +1485,16 @@ cmd_label() {
         # gh splits a comma-bearing name into two labels, so one such label
         # could remove another (tier:pinned, say) that was never validated.
         for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
-            [ "$l" != "human" ] ||
-                die 4 "refused: removal of 'human' is on the triage never-list;" \
-                    "only a human removes it"
             case "$l" in
             *,*) die 4 "refused: '$l' on $repo#$issue contains a comma — gh would" \
                 "split its removal into multiple labels; report it" ;;
             esac
         done
+        # Only the explicit guarded request can remove human; replacements above
+        # remain comma-checked and never select that label.
+        if [ "$human_remove" -eq 1 ] && in_list human "$current"; then
+            label_change_removes+=("human")
+        fi
         org_field_writes=()
         [ "$owner_type" != "Organization" ] ||
             org_field_writes=("${field_writes[@]+"${field_writes[@]}"}")

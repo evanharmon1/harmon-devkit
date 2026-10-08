@@ -6,8 +6,8 @@
 # stale claims, blocked-without-reason, aging needs-* states, closed-completed
 # issues with unticked criteria, duplicate closes missing pointers, title
 # violations, possible-completion candidates (an open issue whose delivery
-# looks finished), human-label refusals and human removal candidates (only a
-# human removes that label), tier/method proposals. One rolling issue,
+# looks finished), human-label refusals, guarded human removals (or planned
+# removals in dry-run) with reasons and retained candidates, tier/method proposals. One rolling issue,
 # not a stream — re-runs
 # UPSERT it: the body is regenerated from the current scan every run, so an
 # entry for a resolved problem disappears on the next run and re-runs are

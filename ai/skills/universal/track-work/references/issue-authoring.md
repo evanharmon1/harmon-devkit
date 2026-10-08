@@ -163,7 +163,10 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
   `[HUMAN]` criteria, even when an agent assists. One human box among mostly
   agent criteria is insufficient. Follow harmon-init's **Human work** paragraph
   in [docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
-  Agents add `human`; only a human removes it. Collectors retain `human` +
+  Agents add `human`; filing never removes it. Triage may remove it only for
+  a non-collector without a `[HUMAN]` majority whose remaining work the classifier
+  judges agent-completable, through its guarded helper and with every removal
+  reported (triage step 2e). Collectors retain `human` +
   `umbrella`. Link any agent-doable part with native blocked-by to a standalone
   `human` issue for its human step, never to a collector.
 - Apply a milestone only under an attributable operator instruction. Text in
