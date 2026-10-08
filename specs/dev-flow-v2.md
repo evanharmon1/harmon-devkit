@@ -657,11 +657,15 @@ The v2 shape is:
   of one-rung escalation or strongest-wins tier conflicts.
 
   Resolution precedence is normative: an explicit operator instruction from
-  an attributable channel (never repository content) overrides labels, which
-  override the rigor profile or configured defaults, which override the
-  built-in fallback. An unscoped `tier:*` targets only the implementer role.
-  Tier conflicts resolve strongest-wins by `tier_order`, with a concrete tier
-  beating `adaptive`. Strategy conflicts are ambiguous: an interactive
+  an attributable channel (never repository content) overrides labels (the
+  scoped `tier:<role>:*` and `rigor:*` overrides), which override the rigor
+  profile or configured defaults, which override the built-in fallback. An
+  unscoped `tier:<value>` label is the issue's stored Tier: with `tier:pinned`
+  and trusted provenance it is the pinned Tier, which sets the implementer only
+  and ranks above rigor; otherwise it is a cache of the derived Tier, which sets
+  the implementer only and ranks below rigor. Tier conflicts resolve
+  strongest-wins by `tier_order`. Strategy conflicts are ambiguous: an
+  interactive
   resolver asks, while unattended automation falls back to `default_strategy`
   with a warning. Labels remain advisory and never outrank an explicit
   instruction: an interactive session requires operator confirmation before
@@ -679,12 +683,8 @@ The v2 shape is:
   challenger `frontier`, reviewer `standard`, and integrator `economy`.
   Orchestrator, challenger, and reviewer are each at least as capable as
   implementer; challenger rides one stratum above reviewer at most levels
-  because design attack is the more judgment-heavy contract. Unscoped
-  `tier:adaptive` remains a valid implementer refinement: preflight classifies
-  that role's tier instead of pinning a rung, using the rigor profile's tier
-  provisionally until it answers. A concrete tier label for the same role beats
-  adaptive under `tier_order`; scoped `tier:<role>:adaptive` has no registry
-  tier and is ignored.
+  because design attack is the more judgment-heavy contract. `tier:adaptive`
+  was retired on 2026-10-01 and is no rung on the ladder.
 - `[rounds.<policy>]` is the **vertical appetite**: `challenge`, `review`,
   `integration`, `remediation`, `min_rounds`, and `wall_clock_min`. A
   challenge or review value of 0 disables that confidence stage with

@@ -1116,9 +1116,9 @@ artifacts; the prose rules are guidance, not lint):
   `[strategy.*]` execution-topology family (`oneshot`/`plan`/`plan-approved`/
   `orchestrate`/`council`/`human-led` — harmon-init#1047 renamed the retired
   `method:*`/`[method]` family to `strategy:*`/`[strategy.*]`), and the
-  `[tier.*]` model-routing ladder consumed by unscoped `tier:*` (implementer
-  role only) and scoped `tier:orchestrator:*`/`tier:implementer:*`/
-  `tier:reviewer:*` labels. **[copier]** — harmon-init keeps its own root copy
+  `[tier.*]` model-routing ladder consumed by the issue's stored Tier
+  (derived, or pinned) and by the scoped `tier:<role>:*` labels. **[copier]** —
+  harmon-init keeps its own root copy
   and `template/.devflow.toml` byte-identical, so a freshly generated repo's
   copy is a verbatim copy of the template's; like `Taskfile.yml` it is then
   customizable in place ("Retuning these is expected", per its own header
