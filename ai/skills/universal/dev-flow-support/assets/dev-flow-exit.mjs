@@ -79,6 +79,16 @@
 // and fail closed on drift instead of silently trusting whichever caps a
 // later .devflow.toml edit happens to resolve today. Purely additive: no
 // predicate, exit code, or verdict depends on it.
+//
+// Head ancestry evidence (harmon-devkit#1240). A round is retained only when
+// its reviewed head is PROVEN an ancestor-or-equal of --current-head; an
+// undecidable head is never retained. Without --heads, `<run>/heads.json` is
+// read when present — the location the confidence-stage skill materializes the
+// trusted head map to — so a caller that names only the run directory no
+// longer loses round N merely because round N's own fixes moved the head round
+// N+1 reviewed. A head-map walk that runs off the map (a head with no entry) is
+// inconclusive rather than a "no", and falls through to --repo-root when given;
+// only an explicit root (`parent: null`) or a cycle is a definitive "no".
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -617,8 +627,15 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       dispatchedRounds.add(`${slotFailure.stage}:${slotFailure.round}`);
     }
   }
+  // Integration adjudications are exempt: an integration round's findings are
+  // PR review comments, so it never has a pass or slot_failures record here by
+  // design, and this confidence-stage computation never joins them to a round
+  // (adjByRound below is filtered to `stage`). Treating them as orphans made
+  // every completed run — one that reached integration — unverifiable for
+  // challenge and review alike (harmon-devkit#1240). Confidence-stage orphans
+  // are still refused.
   const orphanAdjudication = adjudications.find(
-    (entry) => !dispatchedRounds.has(`${entry.doc.stage}:${entry.doc.round}`),
+    (entry) => entry.doc.stage !== "integration" && !dispatchedRounds.has(`${entry.doc.stage}:${entry.doc.round}`),
   );
   if (orphanAdjudication) {
     throw new ExitIndeterminate(
@@ -1321,14 +1338,27 @@ function loadHeadsMap(headsFile) {
 function isAncestorOrEqual(candidate, currentHead, { headsMap, repoRoot }) {
   if (candidate === currentHead) return true;
   if (headsMap) {
+    // A walk that ends at an explicit root (`parent: null`) or loops has
+    // seen the map's whole recorded history for currentHead without meeting
+    // candidate: a definitive "no". A walk that runs off the map — a head
+    // the map holds no entry for, typically a fix commit pushed after the
+    // map was last materialized — has proven nothing either way, and used to
+    // return `false` all the same, dropping round N whenever its own fixes
+    // moved the head (harmon-devkit#1240). That case is inconclusive: fall
+    // through to --repo-root when the caller supplied one, else "unknown".
     let cur = currentHead;
     const seen = new Set();
+    let ranOffMap = false;
     while (cur && !seen.has(cur)) {
       seen.add(cur);
       if (cur === candidate) return true;
+      if (!Object.hasOwn(headsMap, cur)) {
+        ranOffMap = true;
+        break;
+      }
       cur = headsMap[cur] ? headsMap[cur].parent : null;
     }
-    return false;
+    if (!ranOffMap) return false;
   }
   if (repoRoot) {
     // `git merge-base --is-ancestor` documents exactly two meaningful exit
@@ -1547,32 +1577,38 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
           if (base.rounds_counted >= minRounds) {
             return { ...base, outcome: "converged", reason: "empty_round", action: "advance" };
           }
-        } else {
-          // A NONEMPTY clean round (findings exist but none are gating)
-          // needs a SECOND CONSECUTIVE clean round to converge — AGENTS.md
-          // "ends when two consecutive rounds adjudicate to zero P0 and
-          // zero P1 findings", and explicitly NOT via min_rounds ("min_rounds
-          // only governs the empty-round shortcut"). Post-merge cloud
-          // review, confirmed: this branch previously let ANY round satisfy
-          // convergence the moment rounds_counted >= minRounds, so with the
-          // common min_rounds = 1, a single nonempty all-P2 round converged
-          // immediately — never checking whether an earlier round was also
-          // clean.
-          // Array-adjacent, not round-number-adjacent, was wrong: if an
-          // intervening round was excluded from `retained` (ancestry
-          // incomparable/unknown), the array's previous ELEMENT is an
-          // earlier, non-consecutive round — e.g. retained = [round 1,
-          // round 3] with round 2 excluded, where round 1 is clean but is
-          // not round 3's immediate predecessor. That still let round 3
-          // converge on a confirmation that never actually happened.
-          // Shepherd-stage cloud finding, confirmed: require the array
-          // neighbor's OWN round number to be exactly one less, not merely
-          // its array position.
-          const previous = currentIndex > 0 ? retained[currentIndex - 1] : null;
-          const previousClean = previous && previous.round === latest.round - 1 && previous.status === "complete" && gatingFindings(previous).length === 0;
-          if (previousClean) {
-            return { ...base, outcome: "converged", reason: "predicates_satisfied", action: "advance" };
-          }
+        }
+        // Every other clean round — nonempty, or empty but below the floor —
+        // converges on the two-consecutive rule. An empty round below
+        // min_rounds used to return `continue` here without consulting the
+        // previous round, so two consecutive clean rounds failed to converge
+        // whenever the floor exceeded 2 (harmon-devkit#1240 challenge round 2;
+        // AGENTS.md: "Those rounds may be empty", "min_rounds constrains the
+        // empty-round exit alone").
+        // A clean round that does not take the empty-round exit
+        // needs a SECOND CONSECUTIVE clean round to converge — AGENTS.md
+        // "ends when two consecutive rounds adjudicate to zero P0 and
+        // zero P1 findings", and explicitly NOT via min_rounds ("min_rounds
+        // only governs the empty-round shortcut"). Post-merge cloud
+        // review, confirmed: this branch previously let ANY round satisfy
+        // convergence the moment rounds_counted >= minRounds, so with the
+        // common min_rounds = 1, a single nonempty all-P2 round converged
+        // immediately — never checking whether an earlier round was also
+        // clean.
+        // Array-adjacent, not round-number-adjacent, was wrong: if an
+        // intervening round was excluded from `retained` (ancestry
+        // incomparable/unknown), the array's previous ELEMENT is an
+        // earlier, non-consecutive round — e.g. retained = [round 1,
+        // round 3] with round 2 excluded, where round 1 is clean but is
+        // not round 3's immediate predecessor. That still let round 3
+        // converge on a confirmation that never actually happened.
+        // Shepherd-stage cloud finding, confirmed: require the array
+        // neighbor's OWN round number to be exactly one less, not merely
+        // its array position.
+        const previous = currentIndex > 0 ? retained[currentIndex - 1] : null;
+        const previousClean = previous && previous.round === latest.round - 1 && previous.status === "complete" && gatingFindings(previous).length === 0;
+        if (previousClean) {
+          return { ...base, outcome: "converged", reason: "predicates_satisfied", action: "advance" };
         }
       }
     }
@@ -2275,11 +2311,24 @@ async function main() {
   // result as other failures that prevent exit computation, not an
   // uncaught exception with an empty --json stdout. Shepherd-stage cloud
   // finding, confirmed.
+  // Without --heads, the run directory's own heads.json is the head map:
+  // it is where the confidence-stage skill materializes the trusted map
+  // (review/SKILL.md, `--heads <record>/heads.json`), from the same
+  // feature-owner state as every other record this invocation already
+  // trusts. A caller naming only --run otherwise had no ancestry evidence at
+  // all, so every round but the exact current-head one was dropped and two
+  // consecutive clean rounds read as one whenever round N's fixes moved the
+  // head (harmon-devkit#1240). An explicit --heads still wins.
+  const runHeadsFile = path.join(args.run, "heads.json");
+  const headsFile = args.heads || (existsSync(runHeadsFile) ? runHeadsFile : null);
   let headsMap;
   try {
-    headsMap = loadHeadsMap(args.heads);
+    headsMap = loadHeadsMap(headsFile);
   } catch (err) {
-    return indeterminate(args, `--heads could not be read as JSON: ${err.message}`);
+    // Name the file actually read: without --heads it is the run's own
+    // heads.json default, which the caller never typed.
+    const source = args.heads ? "--heads" : `the run directory's default head map ${runHeadsFile}`;
+    return indeterminate(args, `${source} could not be read as JSON: ${err.message}`);
   }
   const ancestryOpts = { headsMap, repoRoot: args["repo-root"] };
 

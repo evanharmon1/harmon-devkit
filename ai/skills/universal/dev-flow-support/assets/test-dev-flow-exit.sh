@@ -910,6 +910,70 @@ grep -q "disagrees with the flags" "${scratch}/dfe-disagree-$$.err" || {
 rm -rf "${disagree_dir}"
 echo "OK: persisted finder_selection + conflicting --add-finder is blocked"
 
+echo "== harmon-devkit#1240: the issue's verify command counts both clean rounds across a fix-moved head =="
+# The corpus runner checks every outcome's documented exit code, and the
+# --verification-only projection always exits 0, so the issue's own verify
+# command is asserted here against the corpus fixture rather than there. No
+# --heads and no --repo-root: the run directory's heads.json is the evidence.
+moved_fixture="ai/schemas/fixtures/exit/fix-moved-head-p2-then-clean-converges"
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${moved_fixture}/run" --stage challenge \
+    --policy "${moved_fixture}/policy.toml" --current-head 0202020202020202020202020202020202020202 \
+    --verification-only --json >"${scratch}/dfe-moved.out" 2>"${scratch}/dfe-moved.err" || {
+    cat "${scratch}/dfe-moved.out" "${scratch}/dfe-moved.err" >&2
+    fail "#1240: --verification-only on the fix-moved-head fixture exited non-zero"
+}
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.outcome, "converged");
+  assert.equal(body.rounds_counted, 2);
+  assert.equal(body.retained_rounds, undefined, "no round may be dropped from retention");
+' "${scratch}/dfe-moved.out" || {
+    cat "${scratch}/dfe-moved.out" >&2
+    fail "#1240: --verification-only did not report converged with rounds_counted 2"
+}
+echo "OK: --verification-only without ancestry flags reads <run>/heads.json and counts both rounds"
+
+echo "== harmon-devkit#1240: a head-map walk that runs off the map falls through to --repo-root =="
+# A fixture cannot carry real commits, so the --repo-root half of the sparse
+# map case is built here: a two-commit repository (plumbing only — no hook
+# runs, none is bypassed) whose SHAs replace the fixture's synthetic heads.
+# The map records round 2's head with a parent it holds no entry for, so the
+# walk proves nothing and git must decide. Without --repo-root the same run
+# stays `continue` (sparse-head-map-without-repo-root-not-retained).
+sparse_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/sparse-head-map-without-repo-root-not-retained/." "${sparse_dir}/"
+# sha1 pinned: a global init.defaultObjectFormat=sha256 would otherwise yield
+# 64-char ids the engine rejects as --current-head.
+git init -q --object-format=sha1 "${sparse_dir}/repo"
+sparse_tree="$(git -C "${sparse_dir}/repo" mktree </dev/null)"
+sparse_c1="$(git -C "${sparse_dir}/repo" -c user.email=t@example.invalid -c user.name=t commit-tree -m r1 "${sparse_tree}")"
+sparse_c2="$(git -C "${sparse_dir}/repo" -c user.email=t@example.invalid -c user.name=t commit-tree -m r2 -p "${sparse_c1}" "${sparse_tree}")"
+# `sed -i.bak` then remove the backup: the one in-place form GNU and BSD sed
+# both accept (bare `-i` takes BSD's next argument as the backup suffix).
+find "${sparse_dir}/run" -name '*.json' | while IFS= read -r sparse_file; do
+    sed -i.bak \
+        -e "s/0101010101010101010101010101010101010101/${sparse_c1}/g" \
+        -e "s/0202020202020202020202020202020202020202/${sparse_c2}/g" "${sparse_file}" &&
+        rm -f "${sparse_file}.bak"
+done
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${sparse_dir}/run" --stage challenge \
+    --policy "${sparse_dir}/policy.toml" --current-head "${sparse_c2}" --repo-root "${sparse_dir}/repo" --json \
+    >"${scratch}/dfe-sparse.out" 2>"${scratch}/dfe-sparse.err" && sparse_status=0 || sparse_status=$?
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.outcome, "converged");
+  assert.equal(body.reason, "predicates_satisfied");
+  assert.equal(body.rounds_counted, 2);
+' "${scratch}/dfe-sparse.out" && [ "${sparse_status}" -eq 20 ] || {
+    cat "${scratch}/dfe-sparse.out" "${scratch}/dfe-sparse.err" >&2
+    rm -rf "${sparse_dir}"
+    fail "#1240: an off-map head-map walk did not fall through to --repo-root (exit ${sparse_status})"
+}
+rm -rf "${sparse_dir}"
+echo "OK: an off-map head-map walk is decided by --repo-root"
+
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
 node ai/skills/universal/dev-flow-support/assets/lib/run-exit-fixtures.mjs

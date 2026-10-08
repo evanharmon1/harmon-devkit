@@ -1,0 +1,18 @@
+{
+  "run_id": "run-fix-moved-head-p2-then-clean-converges",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r2-codex-cli"
+    }
+  ]
+}
