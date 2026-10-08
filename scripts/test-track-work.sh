@@ -862,6 +862,12 @@ for root_case in denied present; do
     grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
         fail "contents 404 must require authorized proof of absence ($root_case)"
 done
+_rc=0
+METADATA_ROOT_CONTENTS="$(jq -cn '[range(1000) | {name: ("fixture-" + tostring)}]')" \
+    "$metadata" --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "contents 404 with 1000 root entries must fail closed"
+grep -q 'remote label-registry.json is unreadable.*listing may be truncated' "$tmp/remote-axes.out" ||
+    fail "1000-entry root refusal must explain possible truncation"
 printf '{invalid json\n' >"$tmp/remote-invalid-manifest.json"
 _rc=0
 METADATA_REMOTE_MANIFEST="$tmp/remote-invalid-manifest.json" "$metadata" \

@@ -111,6 +111,9 @@ load_required_axis_contract() {
                       all(.[]; type == "object" and (.name | type == "string")) and
                       all(.[]; .name != "label-registry.json")' "$tmp/root-contents" >/dev/null ||
                     die "remote label-registry.json is unreadable"
+                if jq -e 'length >= 1000' "$tmp/root-contents" >/dev/null; then
+                    die "remote label-registry.json is unreadable; the root listing may be truncated (1000 or more entries)"
+                fi
                 rm "$manifest"
             else
                 die "remote label-registry.json is unreadable"
