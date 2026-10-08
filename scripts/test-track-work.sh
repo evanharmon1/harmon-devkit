@@ -1041,6 +1041,34 @@ grep -q 'families area and area-concern share prefix area' "$tmp/metadata.out" |
     fail "a real area member cannot resolve a same-prefix family ambiguity: $(cat "$tmp/metadata.out")"
 cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
 
+echo "==> metadata: filing marker must be non-exclusive workflow policy"
+for marker_shape in wrong-axis exclusive; do
+    jq --arg shape "$marker_shape" '(.families[] | select(.family == "workflow")) |=
+        (if $shape == "wrong-axis" then .family = "misplaced-marker" | .axis = "meta"
+         else .exclusive = true end)' "$tmp/metadata-registry-axes.json" \
+        >"$metadata_repo/label-registry.json"
+    [ "$(run_personal 'Refuse malformed filing marker' "$valid_body")" = 1 ] ||
+        fail "filing marker must refuse $marker_shape policy"
+    if [ "$marker_shape" = wrong-axis ]; then
+        grep -q "filing marker 'needs-triage' must have axis workflow (got 'meta')" "$tmp/metadata.out" ||
+            fail "marker axis refusal must identify the wrong axis"
+    else
+        grep -q "filing marker 'needs-triage' must be non-exclusive (got 'true')" "$tmp/metadata.out" ||
+            fail "marker exclusivity refusal must identify exclusivity"
+    fi
+done
+# The actual shipped registry needs no marker-policy mutation to pass filing.
+cp label-registry.json "$metadata_repo/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Accept shipped workflow marker' --body-file "$valid_body" \
+    --human-authored --work-type-label feature)" = 0 ] ||
+    fail "harmon-devkit's shipped filing marker must pass: $(cat "$tmp/metadata.out")"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+[ "$(run_personal 'Reject case-variant duplicate classification' "$valid_body" --label Area:Fixture)" = 1 ] ||
+    fail "agent draft must refuse case-variant duplicate label arguments"
+grep -q "label 'Area:Fixture' is proposed more than once" "$tmp/metadata.out" ||
+    fail "case-variant duplicate refusal must come from the existing duplicate guard"
+
 echo "==> metadata: filing marker requires agent policy even for human content"
 jq '(.families[] | select(.family == "workflow").values[] |
     select(.value == "needs-triage").writers) = ["human"]' \

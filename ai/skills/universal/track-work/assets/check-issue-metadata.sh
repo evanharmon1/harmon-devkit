@@ -609,11 +609,18 @@ done
 marker_record="$(awk -F '|' 'tolower($1) == "needs-triage" { print; exit }' "$vocab")"
 if [ -z "$marker_record" ]; then
     violation "filing marker 'needs-triage' does not exist in the target vocabulary; provision it before creation"
-elif ! awk -F '|' 'tolower($1) == "needs-triage" &&
-  index("," $4 ",", ",agent,") { found=1 }
-  END { exit(found ? 0 : 1) }
-' "$vocab"; then
-    violation "filing marker 'needs-triage' is not writable by an agent; ask the maintainer to authorize the filing path before creation"
+else
+    IFS='|' read -r marker_name marker_family marker_axis marker_writers marker_exclusive <<EOF
+$marker_record
+EOF
+    case ",$marker_writers," in
+    *,agent,*) ;;
+    *) violation "filing marker 'needs-triage' is not writable by an agent; ask the maintainer to authorize the filing path before creation" ;;
+    esac
+    [ "$marker_axis" = workflow ] ||
+        violation "filing marker 'needs-triage' must have axis workflow (got '$marker_axis'); fix its manifest policy before creation"
+    [ "$marker_exclusive" = false ] ||
+        violation "filing marker 'needs-triage' must be non-exclusive (got '$marker_exclusive'); fix its manifest policy before creation"
 fi
 if [ "$live_read" -eq 0 ]; then
     live="$(read_live_labels)" ||
@@ -911,7 +918,7 @@ seen_labels="$tmp/seen-labels"
 : >"$seen_labels"
 
 for label in "${labels[@]+"${labels[@]}"}"; do
-    if grep -qxF -- "$label" "$seen_labels"; then
+    if grep -ixqF -- "$label" "$seen_labels"; then
         violation "label '$label' is proposed more than once"
         continue
     fi
