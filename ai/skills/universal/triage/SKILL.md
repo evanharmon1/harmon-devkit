@@ -375,6 +375,8 @@ by itself. A human action can have `[CI]` criteria and still properly carry `hum
 When all three hold, include `--remove human` in the **same** apply call as 2a–2d.
 The helper rechecks the live title and body before writing and refuses a collector,
 a `[HUMAN]` majority, or a withheld writer grant. It cannot verify your judgement.
+Removal also refuses any heading indented one to three spaces anywhere in the
+body because the acceptance-criteria section boundary is ambiguous.
 Filing never removes `human`; this guarded removal belongs only to triage.
 
 Report **every** removal, using the apply output as evidence and your judgement

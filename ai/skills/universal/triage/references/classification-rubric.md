@@ -46,6 +46,8 @@ Impact, Risk, Complexity, or Tier. Agents may add it. Triage may remove it only 
 whose remaining work the classifier judges agent-completable, through the guarded
 helper; every removal is reported (SKILL.md step 2e). Filing never removes it.
 Collectors keep `human` + `umbrella`.
+Removal also refuses any heading indented one to three spaces anywhere in the
+body because the acceptance-criteria section boundary is ambiguous.
 
 ## Impact
 

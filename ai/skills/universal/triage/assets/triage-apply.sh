@@ -1126,6 +1126,12 @@ cmd_label() {
                 die 2 "could not evaluate human-removal guards for $repo#$issue"
             [ "$(jq -r '.collector' <<<"$human_facts")" = false ] ||
                 die 4 "refused: removal of 'human' from $repo#$issue — collector title"
+            # Fail closed on ambiguous section boundaries, even inside code fences.
+            jq -e '.body | split("\n")
+                | all(.[]; test("^ {1,3}#{1,6}([ \\t]|$)") | not)' \
+                <<<"$human_issue_json" >/dev/null ||
+                die 4 "refused: removal of 'human' from $repo#$issue —" \
+                    "ambiguous section boundary: heading indented one to three spaces"
             jq -e '.human_criteria * 2 <= .total_criteria' \
                 <<<"$human_facts" >/dev/null ||
                 die 4 "refused: removal of 'human' from $repo#$issue — [HUMAN] majority"

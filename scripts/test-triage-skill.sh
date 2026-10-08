@@ -3466,9 +3466,30 @@ jq '.body="## Acceptance criteria\n\n- [x] [HUMAN] Try it\n- [ ] [CI] Test it\n`
 [ "$(run "$apply" label --repo "$repo" --issue 614 --manifest "$human_manifest" \
     --remove human)" = 0 ] || fail "half human and excluded examples must allow removal"
 
+# An indented section heading must not dilute the human majority for removal.
+jq '.body="## Acceptance criteria\n- [ ] [HUMAN] Approve\n  ## Notes\n- [ ] [CI] Test\n- [ ] [CI] Ship"' \
+    "$stub_dir/issue-604.json" >"$stub_dir/issue-623.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 623 \
+    --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+    fail "ambiguous section boundary must refuse removal"
+grep -q 'ambiguous section boundary' "$tmp/out" || fail "refusal must name boundary ambiguity"
+grep -q '^issue edit' "$GH_STUB_LOG" && fail "ambiguous boundary must make no writes"
+jq '.body |= sub("  ## Notes"; "## Notes")' "$stub_dir/issue-623.json" \
+    >"$stub_dir/issue-624.json"
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 624 \
+    --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+    fail "ordinary section boundary must preserve human majority"
+# Without an indented heading, the existing agent-completable body still removes.
+[ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 604 \
+    --manifest "$human_manifest" --remove human --execute)" = 0 ] ||
+    fail "unambiguous agent body must still allow removal"
+grep -q "APPLIED remove 'human'" "$tmp/out" || fail "unambiguous body must remove human"
+
 # Snapshot drift before the first write: collector, majority, claims, and unreadable body.
 for patch in '{"title":"(QA): Keep collector"}' \
     '{"body":"## Acceptance criteria\n- [ ] [HUMAN] Approve"}' \
+    '{"body":"## Acceptance criteria\n- [ ] [HUMAN] Approve\n  ## Notes\n- [ ] [CI] Test\n- [ ] [CI] Ship"}' \
     '{"labels":[{"name":"human"},{"name":"claim:gpt"}]}' \
     '{"labels":[{"name":"human"},{"name":"agent:legacy"}]}' \
     '{"body":null}'; do
