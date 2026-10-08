@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "stage": "integration",
+  "round": 1,
+  "reviewed_head": "0202020202020202020202020202020202020202",
+  "adjudications": [
+    {
+      "finding_id": "integration-r1-codex-cloud-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "confirmed",
+      "evidence": "PR review thread",
+      "override": null
+    }
+  ],
+  "run_id": "run-integration-adjudication-ignored-by-confidence-stage"
+}

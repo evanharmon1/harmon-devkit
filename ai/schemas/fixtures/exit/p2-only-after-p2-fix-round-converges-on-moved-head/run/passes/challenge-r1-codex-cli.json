@@ -1,0 +1,50 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "0101010101010101010101010101010101010101",
+  "produced_at": "2026-10-08T03:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "model-x",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-p2-only-after-p2-fix-round-converges-on-moved-head",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "0101010101010101010101010101010101010101",
+    "slot": "codex-cli",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-cli-1",
+        "path": "scripts/example.mjs",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "evidence text"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 1,
+      "P3": 0
+    },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "probed the change under review for a correctness defect",
+        "outcome": "surfaced-finding",
+        "finding_id": "challenge-r1-codex-cli-1"
+      }
+    ]
+  }
+}
