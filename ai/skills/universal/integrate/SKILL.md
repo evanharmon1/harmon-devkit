@@ -1246,14 +1246,15 @@ For every failing check and every review finding:
    about a command or platform behavior is cheap to verify empirically
    before rejecting.
 
-**A second finding of the same kind calls for a surface sweep before either
-fix.** When a finding shares a class with an earlier finding in the same PR (the
-same rule, fact, or input stated or consumed in more than one place), before
-fixing either, enumerate every surface that states or feeds that rule — searching
-by a distinctive token, not by the finding's phrasing — and fix the confirmed
-cause across that whole set in one remediation round. Record the sweep (the token
-searched and the surfaces found) in the fix commit's message. Two recurring
-shapes require this check:
+**A second finding of the same kind calls for a surface sweep before it is
+fixed.** Find every surface that states or feeds the rule — the earlier
+finding's fix counts as one already-covered surface — and fix the confirmed cause
+across the rest of that set in one remediation round. When a finding shares a
+class with an earlier finding in the same PR (the same rule, fact, or input
+stated or consumed in more than one place), enumerate every surface by searching
+for a distinctive token, not by the finding's phrasing. Record the sweep (the
+token searched and the surfaces found) in the fix commit's message. Two
+recurring shapes require this check:
 
 - **Rule copies across twins and docs** — the same fact corrected in one copy but
   not its root/template twins or the guides that restate it.
