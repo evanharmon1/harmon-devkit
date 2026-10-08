@@ -140,13 +140,16 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
 - In a personal-account repository, select exactly one work-type label.
 - In an organization repository, select one native Issue Type and no work-type
   label.
-- For each classification axis `area`, `layer`, and `domain`, select exactly
-  one valid label when clearly inferable or declare that axis explicitly
+- For each axis reported by `check-issue-metadata.sh --required-axes`, select
+  exactly one valid label when clearly inferable or declare that axis explicitly
   inapplicable with that family's explicit `none` label. If a valid present
-  manifest lacks that member, the checker permits `--inapplicable <axis>` with
-  a warning and the filed issue needs `needs-triage` for that axis. Otherwise
+  manifest has no agent-writable `<axis>:none` member, the checker permits
+  `--inapplicable <axis>` with a warning and the filed issue needs
+  `needs-triage` for that axis. Otherwise
   agent-authored drafts cannot leave an axis undecided, even with `needs-triage`; return the draft
-  for classification rather than inventing an answer.
+  for classification rather than inventing an answer. Exclude the separately
+  stored `impact`, `risk`, `complexity`, and `priority-ai` prefixes. Without a
+  manifest, require the canonical `area`, `layer`, and `domain` axes.
 - Rate Impact, Risk and Complexity using triage's classification rubric and
   provisioned values. On personal accounts these are labels; organizations
   store them as issue fields. The derived Tier is a label on both owner types.
@@ -178,11 +181,21 @@ JSON catalogue. Vendor triage alongside track-work for agent authoring.
 agent author's escape from completeness. Whoever files an incompletely
 classified human draft adds `needs-triage` and never invents missing ratings.
 Agent drafts must supply the corresponding axis's `none` label when the
-manifest defines it. Only a valid present manifest without that member permits
-an agent `--inapplicable <axis>` fallback, with a warning naming the missing
-value. Add `needs-triage` at creation for the unrecordable axis; this is a
+manifest makes it agent-writable. Only a valid present manifest with no
+agent-writable `<axis>:none` member permits an agent `--inapplicable <axis>`
+fallback, with a warning naming the unavailable agent-writable member. Add
+`needs-triage` at creation for the unrecordable axis; this is a
 filing marker, not permission to include it in an agent draft. Human drafts
-may still use the legacy attestation.
+may still use the legacy attestation for a required prefix.
+
+Before any creation, preflight also reserves `needs-triage` for incomplete
+filing and classification-write failures. Its manifest value must be active
+and agent-writable, and its live label must be provisioned. Without a manifest,
+the canonical marker grant still requires live provisioning. Marker permission
+uses the filing agent's policy even for human-authored drafts. A missing or
+forbidden marker refuses creation with a provisioning or authorization action;
+an unreadable listing is indeterminate. Rerun preflight after the maintainer
+resolves it; never create first or work around the refusal.
 
 ## Pre-create checker
 
@@ -227,7 +240,12 @@ remain human-only. The shared classification reader supplies the rating
 labels/field options independently of the ordinary manifest taxonomy. The checkout must have a GitHub remote matching
 `--repo`. The checker never applies labels or creates an issue.
 
-An `open_values` family is the manifest-backed case that needs a bounded live
+Active classification families must be closed and have nonreserved prefixes.
+A prefix-less, open-values, or reserved-prefix classification family makes the
+manifest ungovernable by triage and is refused before filing. Required-axis
+`none` availability uses active enumerated values and their author writer policy.
+
+A non-classification `open_values` family is the manifest-backed case that needs a bounded live
 label read: GitHub proves the proposed concrete label exists, while the
 manifest family still supplies its writers, axis, and exclusivity.
 
@@ -239,8 +257,9 @@ brief instead of relying on surrounding orchestrator context:
 - the target repository;
 - the title and body contract, including the canonical headings and tagged
   acceptance items;
-- concrete labels or explicit inapplicability (`none` when defined, otherwise
-  the validated missing-none fallback) for `area`, `layer`, and `domain`, plus
+- concrete labels or explicit inapplicability (`none` when agent-writable, otherwise
+  the validated inapplicability fallback) for every axis in track-work's
+  `check-issue-metadata.sh --required-axes` output, plus
   the owner-appropriate work classification,
   Impact/Risk/Complexity values, provenance, and the shared-helper create recipe;
 - any attributable milestone instruction; and
@@ -279,11 +298,11 @@ re-reads the issue and verifies its observed labels.
    that is not fully classified adds `needs-triage`. Run the helper only for
    supplied proposals, omitting missing rating flags; skip it when none were
    supplied. It owns the owner-type writes, derived Tier and marker.
-   For the missing-none fallback, omit the unavailable label and add
+   For the inapplicability fallback, omit the unavailable label and add
    `needs-triage` at creation; keep it until the affected axis can be recorded.
 5. Return and independently re-read the created issue number and stored values.
    For full classification, confirm the derived Tier and absence of
-   `needs-triage`; for incomplete human drafts or the missing-none agent
+   `needs-triage`; for incomplete human drafts or the inapplicability agent
    fallback, confirm the supplied values and presence of `needs-triage`. A helper or verification failure returns the
    existing issue number and blocker, never successful completion.
 

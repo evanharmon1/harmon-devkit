@@ -9,7 +9,7 @@ description: >-
   executing its issue-graph writes; unattended runs file the proposal only.
   Use when a body of work needs to become an executable issue graph. Invoke as
   /breakdown [topic, doc path, or issue reference].
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*), Bash(node ./ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.agents/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.claude/skills/breakdown/assets/discover-label-vocabulary.mjs:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*), Bash(node ./ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.agents/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.claude/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh --required-axes:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh --required-axes:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh --required-axes:*)
 ---
 
 # Breakdown
@@ -296,10 +296,21 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   for either owner type (`classification` in discovery output); keep the
   ratings in canonical lowercase for
   track-work's preflight and the shared helper. Missing vocabulary or an
-  ambiguous rating is unresolved work to settle before approval. Include one
-  area, layer and domain value each (or the axis's explicit `none` member),
-  and the owner-appropriate work type. Never propose human Priority/Effort,
-  derived Tier or `tier:pinned`;
+  ambiguous rating is unresolved work to settle before approval. Obtain the
+  required axes before proposing with track-work's read-only mode:
+  `check-issue-metadata.sh --required-axes --repo <owner/repo>`.
+  This reads the default-branch manifest remotely. Wherever a target checkout
+  is already in use, add `--repo-root <target-checkout>` for the local manifest
+  and remote-binding check.
+  This output is the axis list for both proposal and preflight; never derive
+  required axes from discovery `families` or maintain a separate roster.
+  Propose a value or an agent-writable explicit `none` for every reported axis,
+  plus the owner-appropriate work type. If `agent_writable_value` is false,
+  report that axis as a §6 finding to the human before approval; never turn it
+  into a draft. An unknown availability (`null`, for the canonical fallback) requires selecting a verified live candidate from
+  discovery before approval. The mode supplies the canonical fallback without
+  a manifest. Follow track-work §5 for its validated inapplicability fallback.
+  Never propose human Priority/Effort, derived Tier or `tier:pinned`;
 - **the source issue's disposition, when the input was a live issue** — a big
   issue left open and unmarked after its chunks are filed is a second,
   claimable copy of the same work. Propose one of: reuse it as the
@@ -423,8 +434,12 @@ children, and flat issues, with `track-work`'s
 `check-issue-metadata.sh` against the checkout and metadata for its target
 repository, using the **agent-authored** path. Supply all three approved ratings
 as personal labels or organization `--impact/--risk/--complexity` values,
-and the required work type and area/layer/domain labels. Use explicit `none`
-labels for inapplicable axes; only when the target manifest has no such member
+and the required work type and a value for every axis in the `--required-axes`
+output used for the approved proposal. Re-read that mode before execution;
+a changed axis contract or an axis with no agent-writable value returns to §6
+before the first write. Never derive or substitute an axis list from discovery.
+Use agent-writable explicit `none` labels for inapplicable axes; only when the
+target manifest has no agent-writable `<axis>:none` member
 may the preflight's `--inapplicable` fallback apply, with the required
 `needs-triage` marker at filing as specified in track-work §5. This is the last
 check after any approved retitle and before any

@@ -619,6 +619,22 @@ cat >"$metadata_stub/gh" <<'STUB'
 set -euo pipefail
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
 case "${1:-} ${2:-}" in
+"api repos/"*"/contents/")
+    [ "${METADATA_ROOT_FAIL:-0}" = 0 ] || exit 1
+    printf '%s\n' "${METADATA_ROOT_CONTENTS:-[]}"
+    ;;
+"api repos/"*"/contents/label-registry.json")
+    [ "${3:-}" = -H ] && [ "${4:-}" = 'Accept: application/vnd.github.raw+json' ] || exit 97
+    if [ "${METADATA_REMOTE_FAIL:-0}" != 0 ]; then
+        echo 'gh: Forbidden (HTTP 403)' >&2
+        exit 1
+    elif [ -n "${METADATA_REMOTE_MANIFEST:-}" ]; then
+        cat "$METADATA_REMOTE_MANIFEST"
+    else
+        echo 'gh: Not Found (HTTP 404)' >&2
+        exit 1
+    fi
+    ;;
 "api repos/testowner/testrepo" | "api repos/fallback/repo") printf '%s\n' User ;;
 "api repos/testorg/testrepo") printf '%s\n' Organization ;;
 "api graphql")
@@ -640,6 +656,7 @@ case "${1:-} ${2:-}" in
 "issue view") printf '%s\n' feature area:fixture layer:none domain:fixture ai-generated ;;
 "api orgs/testorg/issue-types") printf '%s\n' Task Bug Feature Research ;;
 "label list")
+    [ "${METADATA_LABELS_FAIL:-0}" = 0 ] || exit 1
     if [ "${METADATA_GH_LABELS+x}" = x ]; then
         printf '%s\n' "$METADATA_GH_LABELS"
     else
@@ -755,6 +772,347 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
         "$valid_body" >/dev/null
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
+
+echo "==> metadata: required prefixes include custom axes and honor subset manifests"
+cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-axes.json"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "delivery-target" | .prefix = "surface" |
+    .values = [{"value":"api","description":"Fixture delivery target"},
+               {"value":"none","description":"Fixture explicit absence"}])]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Require custom classification' "$valid_body")" = 1 ] ||
+    fail "custom exclusive classification prefix must be required"
+grep -q 'surface missing' "$tmp/metadata.out" || fail "refusal must name the custom prefix"
+[ "$(run_personal 'Supply custom classification' "$valid_body" --label surface:api)" = 0 ] ||
+    fail "custom prefix must satisfy completeness: $(cat "$tmp/metadata.out")"
+[ "$(run_personal 'Record custom absence' "$valid_body" --label surface:none)" = 0 ] ||
+    fail "custom explicit none must satisfy completeness"
+[ "$(run_personal 'Reject custom conflict' "$valid_body" --label surface:api --label surface:none)" = 1 ] ||
+    fail "custom exclusive axis must reject multiple values"
+[ "$(run_personal 'Reject custom attestation' "$valid_body" --inapplicable surface)" = 1 ] ||
+    fail "custom prefix with none must require its persisted label"
+jq '(.families[] | select(.family == "delivery-target").values) |= map(select(.value != "none"))' \
+    "$metadata_repo/label-registry.json" >"$tmp/metadata-custom-no-none.json"
+cp "$tmp/metadata-custom-no-none.json" "$metadata_repo/label-registry.json"
+[ "$(run_personal 'Record unavailable custom absence' "$valid_body" --inapplicable surface)" = 0 ] ||
+    fail "custom prefix missing none must allow the validated filing fallback"
+jq '.families |= map(select(.family != "layer" and .family != "domain"))' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Use subset classification' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:fixture --label ai-generated \
+    --label impact:medium --label risk:low --label complexity:s)" = 0 ] ||
+    fail "a subset manifest must not require absent canonical axes: $(cat "$tmp/metadata.out")"
+# Nonexclusive and retired families are not completeness axes.
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "optional-axis" | .prefix = "optional" | .exclusive = false),
+    (.families[] | select(.family == "area") |
+    .family = "retired-axis" | .prefix = "retired" | .retired = true | .provision = false)]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Ignore optional and retired axes' "$valid_body")" = 0 ] ||
+    fail "optional and retired classification families must not be required"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
+echo "==> metadata: required-axes mode is the authoring and delegation contract"
+metadata_axes="$tmp/metadata-required-axes"
+mkdir -p "$metadata_axes/nested"
+git -C "$metadata_axes" init -q
+git -C "$metadata_axes" remote add origin https://github.com/testowner/testrepo.git
+cp "$metadata_repo/agent-registry.json" "$metadata_axes/agent-registry.json"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "delivery-target" | .prefix = "surface" |
+    .values = [{"value":"api","description":"Fixture delivery target"},
+               {"value":"none","description":"Fixture explicit absence"}])]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_axes/label-registry.json"
+: >"$tmp/required-axes-gh.log"
+axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
+    --required-axes --repo testowner/testrepo --repo-root "$metadata_axes/nested")" ||
+    fail "required axes must be readable from a custom manifest"
+[ ! -s "$tmp/required-axes-gh.log" ] || fail "required-axes must make no GitHub reads or writes"
+jq -e '.source == "manifest" and
+    ([.axes[].axis] == ["area", "domain", "layer", "surface"]) and
+    all(.axes[]; .agent_writable_value == true and .agent_writable_none == true) and
+    (.axes[] | select(.axis == "surface").family) == "delivery-target"' \
+    <<<"$axis_contract" >/dev/null || fail "custom axis contract must retain families and writer availability"
+# Remote proposal mode shares the exact local required-axis contract.
+local_axis_contract="$axis_contract"
+: >"$tmp/remote-axes-gh.log"
+remote_axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" \
+    METADATA_GH_LOG="$tmp/remote-axes-gh.log" "$metadata" --required-axes --repo testowner/testrepo)" ||
+    fail "remote manifest must supply required axes without a checkout"
+[ "$(jq -S . <<<"$remote_axis_contract")" = "$(jq -S . <<<"$local_axis_contract")" ] ||
+    fail "remote and local modes must derive identical axes from the same manifest"
+grep -qF 'api repos/testowner/testrepo/contents/label-registry.json -H Accept: application/vnd.github.raw+json' \
+    "$tmp/remote-axes-gh.log" || fail "remote mode must read the default-branch manifest as raw content"
+remote_axis_contract="$("$metadata" --required-axes --repo testowner/testrepo)" ||
+    fail "missing remote manifest must retain the canonical fallback"
+jq -e '.source == "canonical-fallback" and [.axes[].axis] == ["area", "layer", "domain"] and
+    all(.axes[]; .agent_writable_value == null and .agent_writable_none == null)' \
+    <<<"$remote_axis_contract" >/dev/null || fail "missing remote manifest must match canonical local fallback"
+for root_case in denied present; do
+    _rc=0
+    if [ "$root_case" = denied ]; then
+        METADATA_ROOT_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
+            >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+    else
+        METADATA_ROOT_CONTENTS='[{"name":"label-registry.json"}]' "$metadata" \
+            --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+    fi
+    [ "$_rc" = 2 ] || fail "contents 404 with $root_case root listing must fail closed"
+    grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
+        fail "contents 404 must require authorized proof of absence ($root_case)"
+done
+_rc=0
+METADATA_ROOT_CONTENTS="$(jq -cn '[range(1000) | {name: ("fixture-" + tostring)}]')" \
+    "$metadata" --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "contents 404 with 1000 root entries must fail closed"
+grep -q 'remote label-registry.json is unreadable.*listing may be truncated' "$tmp/remote-axes.out" ||
+    fail "1000-entry root refusal must explain possible truncation"
+printf '{invalid json\n' >"$tmp/remote-invalid-manifest.json"
+_rc=0
+METADATA_REMOTE_MANIFEST="$tmp/remote-invalid-manifest.json" "$metadata" \
+    --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "invalid remote manifest must fail closed"
+_rc=0
+METADATA_REMOTE_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
+    >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "unreadable remote manifest must fail closed"
+grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
+    fail "unreadable remote manifest must not fall back"
+
+_rc=0
+"$metadata" --required-axes --repo another/repository --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "required-axes must refuse a checkout bound to another repository"
+grep -q 'no GitHub remote matching --repo another/repository' "$tmp/required-axes.out" ||
+    fail "mode repository mismatch must explain the required remote binding"
+axes_draft=(--repo testowner/testrepo --repo-root "$metadata_axes"
+    --owner-type personal --title 'Consume the required axis contract' --body-file "$valid_body"
+    --agent-authored --label feature --label ai-generated
+    --label impact:medium --label risk:low --label complexity:s)
+reported_axes="$(jq -r '.axes[].axis' <<<"$axis_contract")"
+reported_labels=()
+while IFS= read -r axis; do
+    reported_labels+=(--label "$axis:none")
+done <<<"$reported_axes"
+[ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 0 ] ||
+    fail "exactly the mode's reported axes must pass enforcement: $(cat "$tmp/metadata.out")"
+while IFS= read -r missing; do
+    remaining_labels=()
+    while IFS= read -r axis; do
+        [ "$axis" = "$missing" ] || remaining_labels+=(--label "$axis:none")
+    done <<<"$reported_axes"
+    [ "$(run_metadata "${axes_draft[@]}" "${remaining_labels[@]}")" = 1 ] ||
+        fail "enforcement must refuse missing reported axis $missing"
+    grep -q "$missing missing" "$tmp/metadata.out" || fail "refusal must name reported axis $missing"
+done <<<"$reported_axes"
+
+# A required classification prefix is unique across ALL active families.
+cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-unambiguous.json"
+for sibling_kind in classification open-concern nonexclusive; do
+    jq --arg kind "$sibling_kind" '.families += [(.families[] | select(.family == "area") |
+        .family = "area-sibling" | .values = [{"value":"sibling","description":"Sibling"}] |
+        if $kind == "open-concern" then
+            .axis = "concern" | .exclusive = false | .open_values = true | .placeholder = "area:<value>"
+        elif $kind == "nonexclusive" then .exclusive = false
+        else . end)]' \
+        "$tmp/metadata-axes-unambiguous.json" >"$metadata_axes/label-registry.json"
+    _rc=0
+    "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+        >"$tmp/required-axes.out" 2>&1 || _rc=$?
+    [ "$_rc" = 2 ] || fail "mode must refuse a shared required prefix ($sibling_kind)"
+    [ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 2 ] ||
+        fail "preflight must refuse a shared required prefix ($sibling_kind)"
+    for diagnostic in "$tmp/required-axes.out" "$tmp/metadata.out"; do
+        grep -q 'families area and area-sibling share prefix area' "$diagnostic" ||
+            fail "ambiguous-axis refusal must name both families and their shared prefix ($sibling_kind)"
+    done
+done
+cp "$tmp/metadata-axes-unambiguous.json" "$metadata_axes/label-registry.json"
+
+jq '.families |= map(select(.family != "layer" and .family != "domain" and .family != "delivery-target"))' \
+    "$metadata_axes/label-registry.json" >"$tmp/metadata-axes-subset.json"
+cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-custom.json"
+cp "$tmp/metadata-axes-subset.json" "$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "subset axis contract must be readable"
+jq -e '[.axes[].axis] == ["area"]' <<<"$axis_contract" >/dev/null || fail "subset mode must require only the provisioned axis"
+[ "$(run_metadata "${axes_draft[@]}" --label area:none)" = 0 ] ||
+    fail "subset enforcement must agree with the mode"
+[ "$(run_metadata "${axes_draft[@]}")" = 1 ] || fail "subset enforcement must refuse its reported axis's absence"
+
+jq '(.families[] | select(.family == "delivery-target").writers) = ["human"]' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "an unavailable writer must be reported, not fail discovery"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value == false and .agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "a human-only required family must be reported as unavailable"
+jq '(.families[] | select(.family == "delivery-target").values[] |
+    select(.value == "none").writers) = ["human"]' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "human-only none must remain discoverable"
+jq -e '.axes[] | select(.axis == "surface") |
+    .agent_writable_value == true and .agent_writable_none == false' \
+    <<<"$axis_contract" >/dev/null || fail "value availability must be distinct from none availability"
+
+# Authoring refuses exactly the active classification families triage cannot govern.
+for unsupported in open prefixless reserved; do
+    jq --arg kind "$unsupported" '(.families[] | select(.family == "delivery-target")) |=
+        (if $kind == "open" then .open_values = true | .placeholder = "surface:<value>"
+         elif $kind == "prefixless" then .prefix = null
+         else .prefix = "agent" end)' \
+        "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+    for mode in local remote preflight; do
+        _rc=0
+        case "$mode" in
+        local) "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+            >"$tmp/unsupported-axis.out" 2>&1 || _rc=$? ;;
+        remote) METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" "$metadata" \
+            --required-axes --repo testowner/testrepo >"$tmp/unsupported-axis.out" 2>&1 || _rc=$? ;;
+        preflight)
+            _rc="$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none --label layer:none)"
+            cp "$tmp/metadata.out" "$tmp/unsupported-axis.out"
+            ;;
+        esac
+        [ "$_rc" = 2 ] || fail "$mode must refuse $unsupported active classification family"
+        grep -q 'triage cannot govern.*delivery-target' "$tmp/unsupported-axis.out" ||
+            fail "$mode refusal must name the ungovernable $unsupported family"
+    done
+done
+jq '(.families[] | select(.family == "delivery-target")) |=
+    (.open_values = true | .placeholder = "surface:<value>" | .retired = true | .provision = false)' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+for mode in local remote; do
+    if [ "$mode" = local ]; then
+        axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+            fail "retired open classification must not be refused locally"
+    else
+        axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" "$metadata" \
+            --required-axes --repo testowner/testrepo)" || fail "retired open classification must not be refused remotely"
+    fi
+    jq -e '[.axes[].axis] == ["area", "domain", "layer"]' <<<"$axis_contract" >/dev/null ||
+        fail "retired open classification must not contribute a required axis"
+done
+[ "$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none --label layer:none)" = 0 ] ||
+    fail "retired open classification must not block filing: $(cat "$tmp/metadata.out")"
+
+: >"$tmp/required-axes-gh.log"
+axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
+    --required-axes --repo fallback/repo --repo-root "$metadata_fallback")" ||
+    fail "no-manifest mode must return its canonical fallback"
+jq -e '.source == "canonical-fallback" and
+    ([.axes[].axis] == ["area", "layer", "domain"]) and
+    all(.axes[]; .agent_writable_value == null and .agent_writable_none == null)' \
+    <<<"$axis_contract" >/dev/null || fail "no-manifest mode must preserve the canonical axis set without inventing live availability"
+[ ! -s "$tmp/required-axes-gh.log" ] || fail "canonical mode must not need GitHub"
+fallback_axis_labels=()
+while IFS= read -r axis; do
+    axis_value=fixture
+    [ "$axis" != layer ] || axis_value=none
+    fallback_axis_labels+=(--label "$axis:$axis_value")
+done < <(jq -r '.axes[].axis' <<<"$axis_contract")
+[ "$(run_metadata --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Consume fallback axes' --body-file "$valid_body" \
+    --agent-authored --work-type-label enhancement --label ai-generated \
+    --label impact:medium --label risk:low --label complexity:s "${fallback_axis_labels[@]}")" = 0 ] ||
+    fail "canonical mode and enforcement must agree"
+printf '{invalid json\n' >"$metadata_axes/label-registry.json"
+_rc=0
+"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "required-axes must refuse an invalid manifest"
+rm "$metadata_axes/label-registry.json"
+mkdir "$metadata_axes/label-registry.json"
+_rc=0
+"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+    >"$tmp/required-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "required-axes must refuse a non-readable manifest path"
+
+echo "==> metadata: a same-prefix concern makes required classification ambiguous"
+jq '.families += [(.families[] | select(.family == "area") |
+    .family = "area-concern" | .axis = "concern" | .exclusive = false |
+    .values = [{"value":"shadow","description":"Same prefix, different family"}])]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Reject a shadow classification value' --body-file "$valid_body" \
+    --agent-authored --label feature --label area:shadow --label layer:none \
+    --label domain:fixture --label ai-generated --label impact:medium \
+    --label risk:low --label complexity:s)" = 2 ] ||
+    fail "same-prefix concern must make the required axis ambiguous"
+grep -q 'families area and area-concern share prefix area' "$tmp/metadata.out" ||
+    fail "same-prefix concern refusal must name both families"
+[ "$(run_personal 'Reject a same-prefix concern' "$valid_body" --label area:shadow)" = 2 ] ||
+    fail "a real area member cannot resolve a same-prefix family ambiguity: $(cat "$tmp/metadata.out")"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
+echo "==> metadata: filing marker must be non-exclusive workflow policy"
+for marker_shape in wrong-axis exclusive; do
+    jq --arg shape "$marker_shape" '(.families[] | select(.family == "workflow")) |=
+        (if $shape == "wrong-axis" then .family = "misplaced-marker" | .axis = "meta"
+         else .exclusive = true end)' "$tmp/metadata-registry-axes.json" \
+        >"$metadata_repo/label-registry.json"
+    [ "$(run_personal 'Refuse malformed filing marker' "$valid_body")" = 1 ] ||
+        fail "filing marker must refuse $marker_shape policy"
+    if [ "$marker_shape" = wrong-axis ]; then
+        grep -q "filing marker 'needs-triage' must have axis workflow (got 'meta')" "$tmp/metadata.out" ||
+            fail "marker axis refusal must identify the wrong axis"
+    else
+        grep -q "filing marker 'needs-triage' must be non-exclusive (got 'true')" "$tmp/metadata.out" ||
+            fail "marker exclusivity refusal must identify exclusivity"
+    fi
+done
+# The actual shipped registry needs no marker-policy mutation to pass filing.
+cp label-registry.json "$metadata_repo/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'Accept shipped workflow marker' --body-file "$valid_body" \
+    --human-authored --work-type-label feature)" = 0 ] ||
+    fail "harmon-devkit's shipped filing marker must pass: $(cat "$tmp/metadata.out")"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+[ "$(run_personal 'Reject case-variant duplicate classification' "$valid_body" --label Area:Fixture)" = 1 ] ||
+    fail "agent draft must refuse case-variant duplicate label arguments"
+grep -q "label 'Area:Fixture' is proposed more than once" "$tmp/metadata.out" ||
+    fail "case-variant duplicate refusal must come from the existing duplicate guard"
+
+echo "==> metadata: filing marker requires agent policy even for human content"
+jq '(.families[] | select(.family == "workflow").values[] |
+    select(.value == "needs-triage").writers) = ["human"]' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Reserve helper failure marker' "$valid_body")" = 1 ] ||
+    fail "complete agent draft must reserve an agent-writable helper-failure marker"
+grep -q "filing marker 'needs-triage' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "marker refusal must identify agent writer policy"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" \
+    --owner-type personal --title 'File incomplete human draft' --body-file "$valid_body" \
+    --human-authored)" = 1 ] || fail "human content must not bypass filing agent permissions"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+echo "==> metadata: declared but unprovisioned filing marker refuses creation"
+[ "$(METADATA_GH_LABELS=$'impact:medium\nrisk:low\ncomplexity:s' \
+    run_personal 'Reject unprovisioned marker' "$valid_body")" = 1 ] ||
+    fail "a manifest declaration must not prove live marker provisioning"
+grep -q "filing marker 'needs-triage' is not provisioned" "$tmp/metadata.out" ||
+    fail "marker refusal must explain provisioning action"
+jq '(.families[] | select(.family == "workflow").values) |= map(select(.value != "needs-triage"))' \
+    "$tmp/metadata-registry-axes.json" >"$metadata_repo/label-registry.json"
+[ "$(run_personal 'Reject undeclared marker' "$valid_body")" = 1 ] ||
+    fail "a live marker must not bypass missing manifest policy"
+grep -q "filing marker 'needs-triage' does not exist in the target vocabulary" "$tmp/metadata.out" ||
+    fail "marker refusal must name missing manifest declaration"
+cp "$tmp/metadata-registry-axes.json" "$metadata_repo/label-registry.json"
+
+echo "==> metadata: possibly truncated label listings are indeterminate"
+truncated_labels="$(
+    printf '%s\n' needs-triage impact:medium risk:low complexity:s
+    for ((label_index = 4; label_index < 1000; label_index++)); do
+        printf 'fixture-%s\n' "$label_index"
+    done
+)"
+[ "$(METADATA_GH_LABELS="$truncated_labels" \
+    run_personal 'Refuse truncated marker provisioning' "$valid_body")" = 2 ] ||
+    fail "1000 labels must be indeterminate even when the marker is visible"
+grep -q 'fetch may be truncated' "$tmp/metadata.out" ||
+    fail "truncation refusal must explain the incomplete listing"
 
 echo "==> metadata: human-majority drafts require human; collectors require human + umbrella"
 cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-before-human.json"
@@ -948,7 +1306,7 @@ fallback_absence=(--repo testowner/testrepo --repo-root "$metadata_without_none"
     --label ai-generated --label impact:medium --label risk:low --label complexity:s)
 [ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
     fail "a valid manifest without layer:none must allow explicit absence: $(cat "$tmp/metadata.out")"
-grep -Fq "warning: registry is missing 'layer:none'" "$tmp/metadata.out" ||
+grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
     fail "fallback warning must name missing layer:none: $(cat "$tmp/metadata.out")"
 grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
     fail "fallback warning must name the filing marker"
@@ -956,12 +1314,65 @@ grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
     fail "fallback must not authorize needs-triage on an agent draft"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
     fail "fallback must not invent a missing manifest label"
+echo "==> metadata: missing-none fallback validates its filing marker before creation"
+jq '(.families[] | select(.family == "workflow").values[] |
+    select(.value == "needs-triage").writers) = ["human"]' \
+    "$metadata_without_none/label-registry.json" >"$tmp/metadata-no-none-human-marker.json"
+cp "$metadata_without_none/label-registry.json" "$tmp/metadata-no-none-agent-marker.json"
+cp "$tmp/metadata-no-none-human-marker.json" "$metadata_without_none/label-registry.json"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 1 ] ||
+    fail "missing-none fallback must refuse a human-only filing marker"
+grep -q "filing marker 'needs-triage' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "missing-none refusal must name marker writer policy"
+cp "$tmp/metadata-no-none-agent-marker.json" "$metadata_without_none/label-registry.json"
+[ "$(METADATA_GH_LABELS=$'impact:medium\nrisk:low\ncomplexity:s' \
+    run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 1 ] ||
+    fail "missing-none fallback must refuse an unprovisioned marker"
+
+echo "==> metadata: human-only none retains the agent inapplicability fallback"
+jq '(.families[] | select(.family == "layer").values[] |
+    select(.value == "none").writers) = ["human"]' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
+    fail "human-only none must allow agent fallback: $(cat "$tmp/metadata.out")"
+grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
+    fail "human-only none warning must explain the missing writer grant"
+# Closed enumerated none authorizes each draft by its own writer policy.
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_without_none" \
+    --owner-type personal --title 'Accept human closed none' --body-file "$valid_body" \
+    --human-authored --work-type-label feature --label layer:none)" = 0 ] ||
+    fail "closed human-only none must pass for a human draft: $(cat "$tmp/metadata.out")"
+[ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
+    fail "fallback must not authorize an agent to write human-only none"
+grep -Fq "label 'layer:none' is not writable by an agent" "$tmp/metadata.out" ||
+    fail "direct human-only none refusal must name the writer policy"
+
+jq '(.families[] | select(.family == "layer").values[] |
+    select(.value == "none").writers) = ["agent"]' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_without_none" \
+    --owner-type personal --title 'Refuse agent-only none for human' --body-file "$valid_body" \
+    --human-authored --work-type-label feature --label layer:none)" = 1 ] ||
+    fail "human draft must not write agent-only none"
+grep -q "label 'layer:none' is not writable by a human" "$tmp/metadata.out" ||
+    fail "human none refusal must use the correct article"
+
+jq '(.families[] | select(.family == "layer").values[] |
+    select(.value == "none").writers) = ["trusted-human"]' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_without_none" \
+    --owner-type personal --title 'Refuse unverified trusted human' --body-file "$valid_body" \
+    --human-authored --work-type-label feature --label layer:none)" = 2 ] ||
+    fail "trusted-human-only none must use the actor-verification refusal exit"
+grep -q 'actor-verifying trusted-human workflow' "$tmp/metadata.out" ||
+    fail "trusted-human-only none refusal must explain actor verification"
+
 echo "==> metadata: a retired none member does not block the agent absence fallback"
 jq '(.families[] | select(.family == "layer").values[] | select(.value == "none").retired) = true' \
     "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
 [ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer)" = 0 ] ||
     fail "retired layer:none must permit agent inapplicability: $(cat "$tmp/metadata.out")"
-grep -Fq "warning: registry is missing 'layer:none'" "$tmp/metadata.out" ||
+grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/metadata.out" ||
     fail "retired none fallback must warn about the unavailable value: $(cat "$tmp/metadata.out")"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
     fail "retired layer:none must remain unavailable as a proposed label"
@@ -1227,7 +1638,7 @@ for title in '' 'Metadata is missing' '(): Repair metadata' '( scope): Repair me
     '(scope): fix: Add metadata' '(scope): fix(track-work): Add metadata' \
     '(scope): P1: Repair metadata'; do
     [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 1 ] ||
-        fail "malformed or nested-prefix title should fail: $title"
+        fail "malformed or nested-prefix title should fail: $title ($(cat "$tmp/metadata.out"))"
 done
 
 echo "==> metadata: surrounding whitespace and controls fail"
@@ -1734,25 +2145,25 @@ grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
 
-echo "==> metadata: open classification policy remains a track-work capability"
-metadata_open_classification="$tmp/metadata-open-classification"
-mkdir -p "$metadata_open_classification"
-git -C "$metadata_open_classification" init -q
-git -C "$metadata_open_classification" remote add origin \
+echo "==> metadata: general nonclassification open policy remains a track-work capability"
+metadata_open_general="$tmp/metadata-open-general"
+mkdir -p "$metadata_open_general"
+git -C "$metadata_open_general" init -q
+git -C "$metadata_open_general" remote add origin \
     https://github.com/testowner/testrepo.git
 jq '.families |= map(
       if .family == "area" then
-        .open_values = true | .placeholder = "area:<value>" | .values = []
+        .axis = "concern" | .exclusive = false | .open_values = true | .placeholder = "area:<value>" | .values = []
       else . end)' "$metadata_repo/label-registry.json" \
-    >"$metadata_open_classification/label-registry.json"
+    >"$metadata_open_general/label-registry.json"
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
-    --repo-root "$metadata_open_classification" --owner-type personal \
-    --title '(tests): Allow an open classification family' --body-file "$valid_body" \
+    --repo-root "$metadata_open_general" --owner-type personal \
+    --title '(tests): Allow a general open family' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture \
     --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
-    fail "track-work should accept a live member of an open classification family: $(cat "$tmp/metadata.out")"
+    fail "track-work should accept a live member of a nonclassification open family: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: enumerated open members use case-insensitive vocabulary lookup"
 metadata_open_enumerated="$tmp/metadata-open-enumerated"
@@ -1762,11 +2173,11 @@ git -C "$metadata_open_enumerated" remote add origin \
     https://github.com/testowner/testrepo.git
 jq '.families |= map(
       if .family == "area" then
-        .open_values = true | .placeholder = "area:<value>"
+        .axis = "concern" | .exclusive = false | .open_values = true | .placeholder = "area:<value>"
       else . end)' "$metadata_repo/label-registry.json" \
     >"$metadata_open_enumerated/label-registry.json"
 _rc=0
-METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture)" \
+METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture needs-triage)" \
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_enumerated" --owner-type personal \
     --title '(tests): Allow a case-insensitive open member' --body-file "$valid_body" \
@@ -2045,6 +2456,17 @@ PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
 grep -q 'label list.*--repo fallback/repo.*--limit 1000.*--json name' "$tmp/metadata-gh.log" ||
     fail "fallback label read must be repo-bound and bounded"
 
+echo "==> metadata: no-manifest filing marker still requires live provisioning"
+[ "$(METADATA_GH_LABELS=$'enhancement\narea:fixture\nlayer:none\ndomain:fixture\nai-generated\nimpact:medium\nrisk:low\ncomplexity:s' \
+    run_metadata --repo fallback/repo --repo-root "$metadata_fallback" \
+    --owner-type personal --title 'Require fallback filing marker' --body-file "$valid_body" \
+    --agent-authored --work-type-label enhancement --label area:fixture \
+    --label layer:none --label domain:fixture --label ai-generated \
+    --label impact:medium --label risk:low --label complexity:s)" = 1 ] ||
+    fail "no-manifest fallback must refuse an unprovisioned filing marker"
+grep -q "filing marker 'needs-triage' is not provisioned" "$tmp/metadata.out" ||
+    fail "no-manifest marker refusal must explain provisioning"
+
 echo "==> metadata: a manifest granting the collector labels lets an agent file a collector"
 metadata_collector="$tmp/metadata-collector"
 mkdir -p "$metadata_collector"
@@ -2096,7 +2518,7 @@ collector_run() {
 echo "==> metadata: no-registry human work and collectors permit agents, and require their labels"
 export METADATA_GH_LABELS
 METADATA_GH_LABELS="$(printf '%s\n' task area:fixture layer:none domain:fixture \
-    ai-generated human umbrella impact:medium risk:low complexity:s)"
+    ai-generated needs-triage human umbrella impact:medium risk:low complexity:s)"
 fallback_human_args=(--repo fallback/repo --repo-root "$metadata_fallback"
     --owner-type personal --agent-authored --work-type-label task
     --label area:fixture --label layer:none --label domain:fixture

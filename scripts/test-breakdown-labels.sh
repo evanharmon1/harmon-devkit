@@ -2433,6 +2433,30 @@ if grep -qF 'check-issue-metadata.sh' <<<"$execution_section" &&
 else
     bad "execution section runs the agent-authored metadata preflight"
 fi
+required_axes_tools=1
+for prefix in ./ai/skills/universal ./.agents/skills ./.claude/skills; do
+    grep -qF "Bash($prefix/track-work/assets/check-issue-metadata.sh --required-axes:*)" \
+        "$skill" || required_axes_tools=0
+done
+if [ "$required_axes_tools" = 1 ] &&
+    grep -qF '`check-issue-metadata.sh --required-axes --repo <owner/repo>`.' <<<"$proposal_section" &&
+    grep -qF 'add `--repo-root <target-checkout>`' <<<"$proposal_section"; then
+    ok "breakdown allows required-axes through all vendored paths and proposes without a checkout"
+else
+    bad "breakdown must allow required-axes and use remote proposal/local checkout modes"
+fi
+if grep -qF 'check-issue-metadata.sh --required-axes --repo' <<<"$proposal_section" &&
+    grep -qF 'every axis in the `--required-axes`' <<<"$execution_section" &&
+    grep -qF 'never derive' <<<"$proposal_section" &&
+    grep -qF 'required axes from discovery `families`' <<<"$proposal_section" &&
+    grep -qF 'If `agent_writable_value` is false' <<<"$proposal_section" &&
+    grep -qF 'before approval; never turn it' <<<"$proposal_section" &&
+    ! grep -qF 'Derive the required axes from the target manifest' "$skill" &&
+    ! grep -qF '(`axis`, `exclusive`, `prefix`, and `family`)' <<<"$proposal_section"; then
+    ok "breakdown consumes preflight required axes and reports unwriteable axes before approval"
+else
+    bad "breakdown must consume --required-axes instead of deriving its own axis list"
+fi
 if grep -qF 'then immediately call triage' <<<"$execution_section" &&
     grep -qF 'triage-apply.sh label' <<<"$execution_section" &&
     grep -qF 'independently re-read the stored ratings' <<<"$execution_section"; then

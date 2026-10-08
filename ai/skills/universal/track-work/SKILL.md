@@ -787,13 +787,44 @@ control labels.
   --repo <owner/repo> --repo-root <target-checkout>
 ```
 
+The preflight is the single source of required label axes. Before choosing
+values or delegating authoring, read its local, read-only axis contract:
+
+```sh
+<skill-dir>/assets/check-issue-metadata.sh --required-axes \
+  --repo <owner/repo> --repo-root <target-checkout>
+```
+
+Omit `--repo-root` to read the target's default-branch manifest remotely through
+`gh api`; a supplied checkout retains the local manifest and remote-binding
+check. A missing remote manifest has the same canonical fallback as a missing local
+manifest only after an authorized root Contents listing proves absence.
+Unreadable or invalid content refuses. Active classification families that are
+prefix-less, open-values, or reserved for agents are refused, as triage cannot
+govern them. Required axes therefore come only from closed families.
+
+The JSON `axes` array lists each `axis` and `family`, plus
+`agent_writable_value` and `agent_writable_none`. Discovery and enforcement use
+the same required-family loader. These availability fields describe validated
+manifest members: true means an enumerated agent-writable member is known; false
+means none is offered; null means the canonical fallback needs live candidate
+discovery. The shared `none_available <axis> <author>` predicate checks active
+enumerated values for the draft's actual author when validating explicit none;
+availability reporting and agent inapplicability pass `agent`.
+It keeps the canonical fallback without a manifest; an unreadable
+or invalid manifest refuses. Every consumer uses this output as its axis list
+and never re-derives it. An axis with `agent_writable_value: false` is a finding
+to report before approval, never an incomplete draft to file.
+
 - **Required for agent-authored drafts:** exactly one work type; one label
-  from each of `area:*`, `layer:*`, and `domain:*`; and Impact, Risk, and
-  Complexity. Choose the family's explicit `none` label when an area, layer,
-  or domain does not apply. Impact, Risk, and Complexity always need a rating.
-  If a valid present manifest lacks an axis's `none` member, the checker permits
-  `--inapplicable <axis>` with a warning; the created issue needs `needs-triage`
-  for that unrecordable axis. Otherwise an incomplete agent draft returns for
+  from each axis reported by `--required-axes`; and Impact,
+  Risk, and Complexity. Rating prefixes (`impact`, `risk`, `complexity`, and
+  `priority-ai`) use their separate storage and are excluded from that label-axis
+  set. Without a manifest, require `area:*`, `layer:*`, and `domain:*`. Choose
+  the family's explicit `none` label when a required axis does not apply. Impact, Risk, and Complexity always need a rating.
+  If a valid present manifest has no agent-writable `<axis>:none` member,
+  the checker permits `--inapplicable <axis>` with a warning; the created
+  issue needs `needs-triage` for that unrecordable axis. Otherwise an incomplete agent draft returns for
   classification; it cannot be filed by adding `needs-triage`. This includes issues labelled `human` that an agent
   authors. Human-authored drafts (`--human-authored`) are exempt from the
   completeness requirement, while proposed values still have to be valid.
@@ -872,17 +903,30 @@ For an organization, use `--owner-type organization --issue-type <Type>`,
 replace the three rating labels with `--impact <value> --risk <value>
 --complexity <value>`, and omit `--work-type-label`. The checker verifies the
 owner kind, native type, and provisioned field options. Repeat `--label` as
-needed. Agent drafts must supply the corresponding `area:none`, `layer:none`,
-or `domain:none` label for an inapplicable axis when the manifest defines it.
-The narrow exception is a valid present manifest with no `none` member for that
-axis: `--inapplicable <axis>` passes with a warning naming the missing registry
-value. Human drafts may still use that legacy attestation. A missing or invalid
-manifest does not grant the agent exception.
+needed. Agent drafts must supply the corresponding `<axis>:none` label for
+an inapplicable required classification prefix when the manifest makes it
+agent-writable.
+The narrow exception is a valid present manifest with no agent-writable
+`<axis>:none` member: `--inapplicable <axis>` passes with a warning naming the
+unavailable agent-writable member. Human drafts may still use that legacy
+attestation. A missing or invalid manifest does not grant the agent exception.
 
 Authorship is explicit: pass exactly one of `--agent-authored` or
 `--human-authored`; omission never defaults to the more permissive human path.
 Exit 0 is verified, 1 is a contract violation, and 2 is usage or an
 indeterminate repository/vocabulary read. The checker performs no GitHub writes.
+
+Preflight reserves the filing marker `needs-triage` for every creation recipe:
+incomplete human drafts and the inapplicability fallback need it at creation, and
+any classification-helper failure needs it on the existing issue. The checker
+validates the marker separately from proposed draft labels, requiring an active
+manifest value writable by an agent (or the canonical no-manifest grant) and
+its presence in the bounded live label listing. This agent permission check
+also applies when an agent files human-authored content. Missing provisioning,
+a forbidden writer, or an indeterminate read stops creation; ask the maintainer
+to provision or authorize the marker, then rerun preflight. Never create first
+or route around a refusal. This reservation does not allow an agent author to
+propose `needs-triage` instead of complete classification.
 
 ### Create and classify through the shared helper
 
@@ -891,7 +935,7 @@ commands run from the target checkout so its manifest and policy govern.
 Choose the path matching the draft's authorship:
 
 - **Agent-authored:** create with the verified title, body, work type and
-  every label the preflight verified, including area/layer/domain (with
+  every label the preflight verified, including every required label axis (with
   explicit `none`), provenance and concerns, and `human` when primarily human.
   Immediately apply all three verified ratings through triage's **same**
   helper; it writes organization fields or personal labels, derives the Tier
@@ -909,7 +953,7 @@ Choose the path matching the draft's authorship:
   with only those supplied values; omit missing rating flags. If none were
   supplied, skip the helper. Keep `needs-triage` on incomplete drafts.
 
-If preflight warned that an axis's `none` member is missing, omit that
+If preflight warned there is no agent-writable `<axis>:none` member, omit that
 unavailable label and add `--label needs-triage` at creation for the affected
 axis. This marker is required even for the agent fallback; it remains on the
 issue until the axis can be recorded. Preflight still rejects the marker on
@@ -949,7 +993,7 @@ drafts. Priority (AI) is optional and outside this required agent creation recip
 
 Read every helper result and independently re-read the created issue's stored
 classification. For fully classified drafts, confirm the derived Tier label
-and absence of `needs-triage`; for incomplete human drafts or the missing-none
+and absence of `needs-triage`; for incomplete human drafts or the inapplicability
 agent fallback, confirm the supplied values and presence of `needs-triage`. A missing Tier matrix when
 needed, unavailable Tier label, failed field write or failed verification is an incomplete creation: return the existing issue number and
 the blocker to the caller, never retry `gh issue create` or report completion.
@@ -960,7 +1004,7 @@ remain visible as unfinished work on that existing issue.
 
 A brief delegating issue creation must carry the **target repository**, the
 **title and body contract**, the **concrete labels or explicit
-inapplicability** (`none` when defined, otherwise the validated missing-none
+inapplicability** (`none` when agent-writable, otherwise the validated inapplicability
 fallback) for every classification axis, the
 owner-appropriate work classification, Impact/Risk/Complexity proposals,
 agent-authored state, and the instruction to return the
