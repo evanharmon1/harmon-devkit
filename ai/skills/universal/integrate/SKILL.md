@@ -1246,6 +1246,21 @@ For every failing check and every review finding:
    about a command or platform behavior is cheap to verify empirically
    before rejecting.
 
+**A second finding of the same kind calls for a surface sweep before either
+fix.** When a finding shares a class with an earlier finding in the same PR (the
+same rule, fact, or input stated or consumed in more than one place), before
+fixing either, enumerate every surface that states or feeds that rule — searching
+by a distinctive token, not by the finding's phrasing — and fix the confirmed
+cause across that whole set in one remediation round. Record the sweep (the token
+searched and the surfaces found) in the fix commit's message. Two recurring
+shapes require this check:
+
+- **Rule copies across twins and docs** — the same fact corrected in one copy but
+  not its root/template twins or the guides that restate it.
+- **An input surface enumerated one member at a time** — each review cycle finding
+  one more member of the same input set (for example, local Git configuration
+  inputs to a canonical-diff identity).
+
 ## 4. Reply in-thread
 
 Reply to **every** inline review comment in its own thread — fixes ("fixed
