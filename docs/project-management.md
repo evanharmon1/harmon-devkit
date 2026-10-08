@@ -480,16 +480,19 @@ the taxonomy table below is generated from) and the starter set is created by
   more-or-less continuum, topologies have no rank between them, so a
   conflict is a resolution error rather than a silent pick.
 - **Tier** — which model-routing stratum works a specific **role** —
-  orchestrator, implementer, reviewer, challenger, or integrator — advisory,
-  human-written, and inert
-  until a consumer resolves it under its own trust model. An unqualified
-  `tier:<value>` refines the **implementer** role only; a scoped
-  `tier:orchestrator:<value>` / `tier:implementer:<value>` /
+  orchestrator, implementer, reviewer, challenger, or integrator — advisory
+  and inert until a consumer resolves it under its own trust model. An
+  unqualified `tier:<value>` label is the issue's stored **Tier**: a cache
+  of the Tier derived from Risk × Complexity, written by agents and the
+  reconciler, or, with `tier:pinned`, the Tier a human pinned; it is not a
+  role override. Only an unqualified operator tier instruction targets the
+  implementer. The scoped `tier:<role>:<value>` labels
+  (`tier:orchestrator:<value>` / `tier:implementer:<value>` /
   `tier:reviewer:<value>` / `tier:challenger:<value>` /
-  `tier:integrator:<value>` targets exactly the role it names. Absent any
-  override, all five roles come from the resolved rigor level. All 25
-  scoped values (5 roles × 5 concrete tiers) are **provisioned** like every
-  other tier value, not created on demand.
+  `tier:integrator:<value>`) target exactly the role they name and stay
+  human-written. Absent any override, all five roles come from the resolved
+  rigor level. All 25 scoped values (5 roles × 5 concrete tiers) are
+  **provisioned** like every other tier value, not created on demand.
 
 The prose above describes what each family *means*; the actual values — names,
 colors, writers, lifecycle — live in `label-registry.json` and appear in the
