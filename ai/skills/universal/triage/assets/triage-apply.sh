@@ -1775,8 +1775,23 @@ cmd_label() {
             IFS=,
             echo "${label_change_removes[*]}"
         )")
-        gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null ||
+        if ! gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null; then
+            # A failed CLI call can still have applied its edit. Preserve only
+            # a proven human removal for the report, never claim the call passed.
+            if in_list human "$(printf '%s\n' "${label_change_removes[@]+"${label_change_removes[@]}"}")"; then
+                local failed_edit_labels
+                if failed_edit_labels="$(gh issue view "$issue" --repo "$repo" \
+                    --json labels)" &&
+                    jq -e '(.labels | type == "array")
+                        and all(.labels[]; .name | type == "string")
+                        and all(.labels[]; .name != "human")' \
+                        <<<"$failed_edit_labels" >/dev/null; then
+                    record_done "label-:human"
+                    echo "APPLIED remove 'human' from $repo#$issue (confirmed by re-read after failed edit)"
+                fi
+            fi
             die 1 "write failed: gh issue edit $repo#$issue"
+        fi
         for l in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
             if [ "$l" = needs-triage ]; then
                 record_done "nt-add"

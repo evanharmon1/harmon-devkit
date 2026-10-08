@@ -327,6 +327,7 @@ api\ repos/*)
             mv "$overlay.next" "$overlay"
         fi
     fi
+    [ "${GH_STUB_EDIT_FAIL_AFTER_APPLY:-0}" = 0 ] || exit 1
     ;;
 "issue create")
     [ -t 0 ] || cat >/dev/null
@@ -3287,10 +3288,26 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
   "body":"## Acceptance criteria\n\n+ [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"}]
 JSON
+# Count the shared parser's marker spacing, including optional nested tasks.
+jq '. + [
+    {number:617,title:"(accounts): Approve spaced tasks",labels:[{name:"human"}],
+     updatedAt:"2026-01-01T00:00:00Z",assignees:[],
+     body:"## Acceptance criteria\n-   [ ] [HUMAN] Approve\n  -   [x] [HUMAN] Choose\n- [ ] [CI] Test"},
+    {number:618,title:"(accounts): Approve tab tasks",labels:[{name:"human"}],
+     updatedAt:"2026-01-01T00:00:00Z",assignees:[],
+     body:"## Acceptance criteria\n-\t[ ] [HUMAN] Approve\n  -\t[x] [HUMAN] Choose\n- [ ] [CI] Test"}]' \
+    "$stub_dir/issues-open.json" >"$stub_dir/issues-open.next"
+mv "$stub_dir/issues-open.next" "$stub_dir/issues-open.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
     fail "human scan must pass: $(cat "$tmp/out")"
 human_scan="$tmp/human-scan.json"
 cp "$tmp/out" "$human_scan"
+for number in 617 618; do
+    jq -e --argjson n "$number" '.open[] | select(.number == $n)
+        | .human_work.human_criteria == 2 and .human_work.total_criteria == 3
+          and .human_work.recommendation == "human"' "$human_scan" >/dev/null ||
+        fail "multi-space/tab human tasks must count, including nested and checked ones"
+done
 jq -e '.open[] | select(.number == 601) | .human_work.recommendation == "human"
     and .human_work.human_criteria == 2 and .human_work.total_criteria == 2
     and (.flags | index("human-label-missing") != null)' "$human_scan" >/dev/null ||
@@ -3392,7 +3409,7 @@ done
 
 echo "==> human removal: live mechanical guards and permissions"
 # Recreate fixtures independently of overlays from the combined apply above.
-for number in 601 603 604 605 606 607 610 611 612 613; do
+for number in 601 603 604 605 606 607 610 611 612 613 617 618; do
     jq --argjson n "$number" '.[] | select(.number == $n)
         | .labels += [{name:"human"}] | .labels |= unique_by(.name)' \
         "$stub_dir/issues-open.json" >"$stub_dir/issue-$number.json"
@@ -3405,7 +3422,7 @@ for number in 603 605 606 607; do
     grep -q 'collector title' "$tmp/out" || fail "refusal must name collector guard"
     grep -q '^issue edit' "$GH_STUB_LOG" && fail "collector refusal must make no writes"
 done
-for number in 601 610 612 613; do
+for number in 601 610 612 613 617 618; do
     : >"$GH_STUB_LOG"
     [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue "$number" \
         --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
@@ -3492,5 +3509,35 @@ MD
 grep -q 'human removed: remaining feature work is agent-completable' "$tmp/out" ||
     fail "every removal must appear in the report"
 grep -q "APPLIED remove 'human'" "$tmp/out" || fail "report must preserve removal evidence"
+
+echo "==> human removal: failed edit still reports a removal confirmed by re-read"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
+    --repo "$repo" --issue 604 --manifest "$human_manifest" --remove human --execute)" = 1 ] ||
+    fail "applied-then-failed edit must retain its nonzero exit"
+removal_evidence="$(grep "APPLIED remove 'human'" "$tmp/out")"
+grep -q 'confirmed by re-read after failed edit' <<<"$removal_evidence" ||
+    fail "failed edit must emit confirmed human removal evidence: $(cat "$tmp/out")"
+grep -q 'write failed:' "$tmp/out" || fail "partial result must still report the write failure"
+cat >"$tmp/failed-human-removal-entries.md" <<MD
+### #604 — human removed: confirmed after a failed edit
+<!-- triage-entry:604 -->
+- Evidence: $removal_evidence
+- Reason: remaining feature work is agent-completable; the edit failed but the removal was confirmed.
+MD
+[ "$(run "$report" sync --repo "$repo" --entries-file "$tmp/failed-human-removal-entries.md")" = 0 ] ||
+    fail "confirmed partial removal must reach the report"
+grep -q 'confirmed by re-read after failed edit' "$tmp/out" ||
+    fail "report must preserve removal evidence despite a nonzero apply exit"
+
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL=1 "$apply" label --repo "$repo" \
+    --issue 604 --manifest "$human_manifest" --remove human --execute)" = 1 ] ||
+    fail "edit failure without applying must still fail"
+grep -q "APPLIED remove 'human'" "$tmp/out" && fail "retained human must never be reported removed"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
+    --repo "$repo" --issue 604 --manifest "$human_manifest" --add area:ci --execute)" = 1 ] ||
+    fail "edit failure without human removal must behave as before"
+grep -q 'APPLIED' "$tmp/out" && fail "other failed edits must not gain applied output"
+grep -q -- '--json labels$' "$GH_STUB_LOG" && fail "other failed edits must not gain a reconciliation read"
 
 echo "All triage skill tests passed."

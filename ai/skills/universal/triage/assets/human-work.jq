@@ -6,8 +6,8 @@
   # A majority is evidence for human work, not a guess from title keywords.
   def human_work($issue; $ls):
     ([criteria_lines($issue.body)[]
-      | select(test("^(  )?([-*+]|[0-9]{1,9}[.)]) \\[[ xX]\\]( |$)"))
-      | sub("^  "; "") | rest_tag(checkbox_rest(.))]) as $tags
+      | sub("^  "; "") | select(test(checkbox_line_re))
+      | rest_tag(checkbox_rest(.))]) as $tags
     | ([$tags[] | select(. == "human")] | length) as $human
     | ($issue.title | test("^\\((HUMAN|QA)\\): ")) as $collector
     | {labelled: (($ls | index("human")) != null),
