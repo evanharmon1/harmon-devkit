@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-p2-only-after-p2-fix-round-converges-on-moved-head",
+  "stage": "challenge",
+  "round": 2,
+  "reviewed_head": "0202020202020202020202020202020202020202",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r2-codex-cli-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "confirmed",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    }
+  ]
+}

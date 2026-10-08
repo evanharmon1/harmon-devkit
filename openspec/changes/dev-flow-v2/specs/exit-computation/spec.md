@@ -20,7 +20,11 @@ stage SHALL NOT count in a later stage even when both name the same head.
 Finding IDs SHALL be unique across the run. The orchestrator SHALL validate
 identity, chronology, stage, and payload agreement before reading a result's
 recommendation or evidence. The chronology-attack fixtures enumerated in
-`tasks.md` SHALL exercise these boundaries.
+`tasks.md` SHALL exercise these boundaries. A confidence-stage adjudication
+document whose round no pass or slot-failure record names SHALL make the
+trajectory indeterminate. An integration adjudication document is not a
+confidence-stage orphan: integration findings are PR review comments with no
+pass record by design, so it SHALL NOT block confidence-stage computation.
 
 #### Scenario: A stale retry returns into a newer run
 
@@ -36,6 +40,11 @@ recommendation or evidence. The chronology-attack fixtures enumerated in
 
 - **WHEN** a challenge pass and the active review stage name the same commit
 - **THEN** the challenge pass cannot satisfy a review finder slot or contribute to the review round
+
+#### Scenario: A completed run also holds integration adjudications
+
+- **WHEN** the run directory holds an integration adjudication document beside the challenge and review records
+- **THEN** challenge and review exits compute from their own passes and adjudications and do not return `indeterminate` for the integration document
 
 #### Scenario: Stage transitions are out of order
 
@@ -97,8 +106,9 @@ outcome.
 ### Requirement: Convergence is gated by current-head cleanliness
 
 `converged` SHALL require zero adjudicated P0 or P1 findings of every class on
-a logical round that reviewed the current head, a configured convergence
-predicate, and the effective minimum rounds. The predicate catalog, its
+a logical round that reviewed the current head and a configured convergence
+predicate; the effective minimum rounds constrains only the `empty_round`
+exit, never the two-consecutive exit below. The predicate catalog, its
 parameters, evaluation domains, and the `any`/`all` composition grammar defined
 by `specs/dev-flow-v2.md` section **Convergence model v0** are normatively
 incorporated by reference. Every implementation SHALL implement and evaluate
@@ -109,7 +119,14 @@ current-head round that meets the effective `min_rounds` and for which every
 configured converged predicate evaluates true MUST end the stage with outcome
 `converged` and reason `empty_round`; this dedicated empty-round exit is
 mandatory when those conditions hold and does not depend on a consumer's
-preference. Below the cap, if any configured converged predicate evaluates
+preference. Below the cap, any other current-head round with zero adjudicated
+P0/P1 findings, empty or not, whose immediately preceding round by number is retained,
+complete, and also zero P0/P1 MUST end the stage with outcome `converged` and
+reason `predicates_satisfied` when every configured converged predicate
+evaluates true; the second clean round is itself the confirmation, so no
+further pass is owed, empty and P2-only rounds count as clean for this exit,
+and `min_rounds` does not apply to it. Below
+the cap, if any configured converged predicate evaluates
 false, the outcome SHALL be `continue` even after the floor is met. A final
 clean round at the cap SHALL instead return outcome `capped`, reason `clean`,
 the contract's capped terminal exit code, and an advance action without
@@ -122,8 +139,8 @@ requiring a forbidden confirmation round.
 
 #### Scenario: Reviewer reports clean below the floor
 
-- **WHEN** a clean logical round completes before the effective `min_rounds`
-- **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation
+- **WHEN** a lone clean logical round completes before the effective `min_rounds`, with no immediately preceding zero-P0/P1 round to satisfy the two-consecutive exit
+- **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation; the shared conformance corpus pins this as `floor-single-empty-round-continues`
 
 #### Scenario: An empty round satisfies convergence at the floor below the cap
 
@@ -134,6 +151,11 @@ requiring a forbidden confirmation round.
 
 - **WHEN** a zero-finding logical round reviewed the current head and meets the effective `min_rounds`, but at least one configured converged predicate evaluates false
 - **THEN** the evaluator returns `continue` and does not take the `empty_round` exit
+
+#### Scenario: A P2-only round follows a P2-only round
+
+- **WHEN** round N adjudicates to P2 findings only, its fixes move the head, and round N+1 reviews the moved head and also adjudicates to zero P0/P1
+- **THEN** the evaluator returns outcome `converged` with reason `predicates_satisfied` and two rounds counted, and owes no round N+2
 
 #### Scenario: The capped final round is clean
 
@@ -181,7 +203,13 @@ round-provenance findings; otherwise it SHALL stop with a blocker.
 
 Only a logical round that reviewed the current head SHALL satisfy convergence
 or capped-clean. Ancestor-head rounds MAY inform trajectory predicates and
-minimum-round counts. Rounds on incomparable heads SHALL be excluded and yield
+minimum-round counts, and a retained ancestor round is the preceding round of
+the two-consecutive exit. A round is retained only on proven ancestry: the
+trusted head map, which defaults to the run directory's `heads.json` when the
+caller names none, or the repository when the head map's walk leaves the map
+without reaching the round's head. A head map walk that ends at a recorded root
+is a definitive non-ancestor; an ancestry no evidence decides SHALL be treated
+as unknown and the round SHALL NOT be retained. Rounds on incomparable heads SHALL be excluded and yield
 `continue` with reason `invalidated` when no valid current-head exit remains and
 the cap still permits another round. If every retained round is head-invalidated
 and the cap is already spent, the `capped` precedence SHALL win: the evaluator
@@ -193,6 +221,11 @@ attributable human grant of another round is the only way forward.
 
 - **WHEN** any commit is added after the clean round, including a P2-only fix
 - **THEN** the clean ancestor round cannot certify the new head and another permitted round is required
+
+#### Scenario: Round N's fixes moved the head round N+1 reviewed
+
+- **WHEN** the caller supplies no head map and no repository, and the run directory's `heads.json` records round N+1's head as a descendant of round N's
+- **THEN** both rounds are retained and counted; without that file, or with a walk that leaves the map and no repository to decide it, round N is not retained
 
 #### Scenario: Every retained round is invalidated at the cap
 

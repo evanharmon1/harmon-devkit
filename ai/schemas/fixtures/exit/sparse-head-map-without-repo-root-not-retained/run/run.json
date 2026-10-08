@@ -1,0 +1,18 @@
+{
+  "run_id": "run-sparse-head-map-without-repo-root-not-retained",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r2-codex-cli"
+    }
+  ]
+}
