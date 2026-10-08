@@ -424,10 +424,13 @@ without a reviewer reading it is precisely what a human must be able to see.
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,
 `challenger_tier`, `reviewer_tier`, and `integrator_tier`; `[role.*]` supplies
-the role's baseline tier and ordered family/harness preferences. Unqualified
-`tier:<value>` input targets the implementer; `tier:<role>:<value>` targets
-one of those five roles. Resolve conflicts on `tier_order`, disclose every
-off-profile choice, and never silently change model family or vendor.
+the role's baseline tier and ordered family/harness preferences. Only an
+unqualified operator tier instruction targets the implementer;
+`tier:<role>:<value>` targets exactly one role. An unqualified `tier:<value>`
+label is not a role override — it is the issue's stored Tier (a cache of the
+derived Tier, or, with `tier:pinned`, the pinned Tier). Resolve conflicts on
+`tier_order`, disclose every off-profile choice, and never silently change
+model family or vendor.
 
 **When the change under review edits `.devflow.toml`, `agent-registry.json`,
 or the policy reader itself**, resolve every parameter from the merge-base
