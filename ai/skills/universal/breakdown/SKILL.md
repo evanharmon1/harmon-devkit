@@ -9,7 +9,7 @@ description: >-
   executing its issue-graph writes; unattended runs file the proposal only.
   Use when a body of work needs to become an executable issue graph. Invoke as
   /breakdown [topic, doc path, or issue reference].
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*), Bash(node ./ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.agents/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.claude/skills/breakdown/assets/discover-label-vocabulary.mjs:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh label list:*), Bash(gh repo view:*), Bash(task --list-all:*), Bash(node ./ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.agents/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(node ./.claude/skills/breakdown/assets/discover-label-vocabulary.mjs:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh --required-axes:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh --required-axes:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh --required-axes:*)
 ---
 
 # Breakdown
@@ -298,7 +298,10 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   track-work's preflight and the shared helper. Missing vocabulary or an
   ambiguous rating is unresolved work to settle before approval. Obtain the
   required axes before proposing with track-work's read-only mode:
-  `check-issue-metadata.sh --required-axes --repo <owner/repo> --repo-root <target-checkout>`.
+  `check-issue-metadata.sh --required-axes --repo <owner/repo>`.
+  This reads the default-branch manifest remotely. Wherever a target checkout
+  is already in use, add `--repo-root <target-checkout>` for the local manifest
+  and remote-binding check.
   This output is the axis list for both proposal and preflight; never derive
   required axes from discovery `families` or maintain a separate roster.
   Propose a value or an agent-writable explicit `none` for every reported axis,

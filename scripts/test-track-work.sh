@@ -619,6 +619,18 @@ cat >"$metadata_stub/gh" <<'STUB'
 set -euo pipefail
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
 case "${1:-} ${2:-}" in
+"api repos/"*"/contents/label-registry.json")
+    [ "${3:-}" = -H ] && [ "${4:-}" = 'Accept: application/vnd.github.raw+json' ] || exit 97
+    if [ "${METADATA_REMOTE_FAIL:-0}" != 0 ]; then
+        echo 'gh: Forbidden (HTTP 403)' >&2
+        exit 1
+    elif [ -n "${METADATA_REMOTE_MANIFEST:-}" ]; then
+        cat "$METADATA_REMOTE_MANIFEST"
+    else
+        echo 'gh: Not Found (HTTP 404)' >&2
+        exit 1
+    fi
+    ;;
 "api repos/testowner/testrepo" | "api repos/fallback/repo") printf '%s\n' User ;;
 "api repos/testorg/testrepo") printf '%s\n' Organization ;;
 "api graphql")
@@ -818,6 +830,45 @@ jq -e '.source == "manifest" and
     all(.axes[]; .agent_writable_value == true and .agent_writable_none == true) and
     (.axes[] | select(.axis == "surface").family) == "delivery-target"' \
     <<<"$axis_contract" >/dev/null || fail "custom axis contract must retain families and writer availability"
+# Remote proposal mode shares the exact local required-axis contract.
+local_axis_contract="$axis_contract"
+: >"$tmp/remote-axes-gh.log"
+remote_axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" \
+    METADATA_GH_LOG="$tmp/remote-axes-gh.log" "$metadata" --required-axes --repo testowner/testrepo)" ||
+    fail "remote manifest must supply required axes without a checkout"
+[ "$(jq -S . <<<"$remote_axis_contract")" = "$(jq -S . <<<"$local_axis_contract")" ] ||
+    fail "remote and local modes must derive identical axes from the same manifest"
+grep -qF 'api repos/testowner/testrepo/contents/label-registry.json -H Accept: application/vnd.github.raw+json' \
+    "$tmp/remote-axes-gh.log" || fail "remote mode must read the default-branch manifest as raw content"
+remote_axis_contract="$("$metadata" --required-axes --repo testowner/testrepo)" ||
+    fail "missing remote manifest must retain the canonical fallback"
+jq -e '.source == "canonical-fallback" and [.axes[].axis] == ["area", "layer", "domain"] and
+    all(.axes[]; .agent_writable_value == null and .agent_writable_none == null)' \
+    <<<"$remote_axis_contract" >/dev/null || fail "missing remote manifest must match canonical local fallback"
+printf '{invalid json\n' >"$tmp/remote-invalid-manifest.json"
+_rc=0
+METADATA_REMOTE_MANIFEST="$tmp/remote-invalid-manifest.json" "$metadata" \
+    --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "invalid remote manifest must fail closed"
+_rc=0
+METADATA_REMOTE_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
+    >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "unreadable remote manifest must fail closed"
+grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
+    fail "unreadable remote manifest must not fall back"
+
+# Manifest classification cannot make reserved prefixes required authoring axes.
+cp "$metadata_axes/label-registry.json" "$tmp/metadata-before-reserved.json"
+jq '.families += [(.families[] | select(.family == "area")) as $family |
+    ["foreman", "rigor", "tier", "strategy", "method", "claim", "agent", "priority", "effort"][] as $prefix |
+    $family | .family = ("reserved-" + $prefix) | .prefix = $prefix]' \
+    "$tmp/metadata-before-reserved.json" >"$metadata_axes/label-registry.json"
+reserved_axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+    fail "reserved classification prefixes must be excluded"
+[ "$(jq -S . <<<"$reserved_axis_contract")" = "$(jq -S . <<<"$local_axis_contract")" ] ||
+    fail "required-axes must exclude all authoring-reserved prefixes"
+cp "$tmp/metadata-before-reserved.json" "$metadata_axes/label-registry.json"
+
 _rc=0
 "$metadata" --required-axes --repo another/repository --repo-root "$metadata_axes" \
     >"$tmp/required-axes.out" 2>&1 || _rc=$?

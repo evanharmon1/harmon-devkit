@@ -2433,6 +2433,18 @@ if grep -qF 'check-issue-metadata.sh' <<<"$execution_section" &&
 else
     bad "execution section runs the agent-authored metadata preflight"
 fi
+required_axes_tools=1
+for prefix in ./ai/skills/universal ./.agents/skills ./.claude/skills; do
+    grep -qF "Bash($prefix/track-work/assets/check-issue-metadata.sh --required-axes:*)" \
+        "$skill" || required_axes_tools=0
+done
+if [ "$required_axes_tools" = 1 ] &&
+    grep -qF '`check-issue-metadata.sh --required-axes --repo <owner/repo>`.' <<<"$proposal_section" &&
+    grep -qF 'add `--repo-root <target-checkout>`' <<<"$proposal_section"; then
+    ok "breakdown allows required-axes through all vendored paths and proposes without a checkout"
+else
+    bad "breakdown must allow required-axes and use remote proposal/local checkout modes"
+fi
 if grep -qF 'check-issue-metadata.sh --required-axes --repo' <<<"$proposal_section" &&
     grep -qF 'every axis in the `--required-axes`' <<<"$execution_section" &&
     grep -qF 'never derive' <<<"$proposal_section" &&

@@ -795,6 +795,12 @@ values or delegating authoring, read its local, read-only axis contract:
   --repo <owner/repo> --repo-root <target-checkout>
 ```
 
+Omit `--repo-root` to read the target's default-branch manifest remotely through
+`gh api`; a supplied checkout retains the local manifest and remote-binding
+check. A missing remote manifest in a readable repository has the same canonical
+fallback as a missing local manifest; unreadable or invalid content refuses.
+Reserved agent prefixes are excluded from the required-axis output.
+
 The JSON `axes` array lists each `axis` and `family`, plus
 `agent_writable_value` and `agent_writable_none`. Discovery and enforcement use
 the same required-family loader. These availability fields describe validated

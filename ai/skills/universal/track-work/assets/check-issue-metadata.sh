@@ -19,7 +19,7 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           [--inapplicable AXIS]...
           [--impact VALUE --risk VALUE --complexity VALUE]
 
-       check-issue-metadata.sh --required-axes --repo OWNER/REPO --repo-root PATH
+       check-issue-metadata.sh --required-axes --repo OWNER/REPO [--repo-root PATH]
 
        check-issue-metadata.sh --title-only --title TITLE [--previous-title PREV_TITLE]
 
@@ -57,7 +57,8 @@ supplies classification values.
 
 --required-axes prints the same required-axis set used by agent preflight as
 JSON, including family, agent_writable_value and agent_writable_none. It reads
-the local manifest and checks open-family members against live labels.
+the local manifest when --repo-root is given, otherwise the target default-branch
+manifest via gh, and checks open-family members against live labels.
 Availability is null when
 only a canonical fallback or an unresolved open-value family supplies policy,
 or the bounded live listing is unavailable;
@@ -99,6 +100,20 @@ load_required_axis_contract() {
     vocab="$tmp/vocabulary"
     : >"$vocab"
     manifest="$repo_root/label-registry.json"
+    if [ -z "$repo_root" ]; then
+        manifest="$tmp/remote-label-registry.json"
+        if ! gh api "repos/$repo/contents/label-registry.json" \
+            -H 'Accept: application/vnd.github.raw+json' >"$manifest" 2>"$tmp/manifest-read-error"; then
+            if grep -qF '(HTTP 404)' "$tmp/manifest-read-error"; then
+                # A contents 404 is a missing manifest only in a readable repo.
+                gh api "repos/$repo" >/dev/null 2>&1 ||
+                    die "could not read the target repository for remote manifest discovery"
+                rm "$manifest"
+            else
+                die "remote label-registry.json is unreadable"
+            fi
+        fi
+    fi
     registry_records="$tmp/registry-records"
     : >"$registry_records"
     required_axes="$tmp/required-axes"
@@ -120,7 +135,13 @@ load_required_axis_contract() {
         awk -F '|' '$1 == "family" && $4 == "classification" &&
           $6 == "true" && $9 == "false" && $3 != "" &&
           $3 !~ /^(impact|risk|complexity|priority-ai)$/ { print $3 "|" $2 }
-        ' "$registry_records" | sort -u >"$required_families"
+        ' "$registry_records" | sort -u >"$required_families.candidates"
+        : >"$required_families"
+        while IFS='|' read -r prefix family; do
+            if ! grep -qiE "$FORBIDDEN_RE" <<<"$prefix:"; then
+                printf '%s|%s\n' "$prefix" "$family" >>"$required_families"
+            fi
+        done <"$required_families.candidates"
         ambiguity="$(awk -F '|' '
           FILENAME == ARGV[1] { if (!($1 in required)) required[$1]=$2; next }
           $1 == "family" && $9 == "false" && $3 in required && required[$3] != $2 {
@@ -217,7 +238,7 @@ filter_required_open_vocabulary() {
 }
 
 normalize_github_remote() {
-    _remote="$1"
+    local _remote="$1" _slug
     case "$_remote" in
     https://github.com/*) _slug="${_remote#https://github.com/}" ;;
     http://github.com/*) _slug="${_remote#http://github.com/}" ;;
@@ -232,6 +253,7 @@ normalize_github_remote() {
 }
 
 bind_target_checkout() {
+    local target_repo repo_bound remote_names remote_name remote_url remote_repo
     target_repo="$(printf '%s\n' "$repo" | tr '[:upper:]' '[:lower:]')"
     repo_bound=0
     remote_names="$(git -C "$repo_root" remote 2>/dev/null)" ||
@@ -404,14 +426,16 @@ if [ "$title_only" -eq 1 ]; then
 fi
 
 if [ "$required_axes_only" -eq 1 ]; then
-    [ -n "$repo" ] && [ -n "$repo_root" ] || usage
+    [ -n "$repo" ] || usage
     [ -z "$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] &&
         [ "$title_set" -eq 0 ] && [ "$previous_title_set" -eq 0 ] &&
         [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] || usage
     grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" || usage
-    [ -d "$repo_root" ] || die "target repository root is not a directory: $repo_root"
-    repo_root="$(cd "$repo_root" && pwd -P)" || die "cannot resolve target repository root"
-    bind_target_checkout
+    if [ -n "$repo_root" ]; then
+        [ -d "$repo_root" ] || die "target repository root is not a directory: $repo_root"
+        repo_root="$(cd "$repo_root" && pwd -P)" || die "cannot resolve target repository root"
+        bind_target_checkout
+    fi
     load_required_axis_contract
     axis_source=manifest
     [ -e "$manifest" ] || axis_source=canonical-fallback
@@ -442,7 +466,7 @@ if [ "$required_axes_only" -eq 1 ]; then
     jq -n --rawfile none "$none_availability" --rawfile unknown "$unknown_open" --arg source "$axis_source" --rawfile required "$required_families" \
         --rawfile vocabulary "$vocab" --rawfile registry "$registry_records" '
       def records: split("\n") | map(select(length > 0) | split("|"));
-      def agent: split(",") | index("agent") != null;
+      def agent: (. // "") | split(",") | index("agent") != null;
       ($vocabulary | records) as $values |
       ($registry | records) as $policy |
       {source: $source, axes: [($required | records)[] |
