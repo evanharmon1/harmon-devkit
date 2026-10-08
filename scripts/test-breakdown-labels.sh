@@ -1717,7 +1717,7 @@ write_agent_registry "$custom_suggest"
 write_registry "$custom_suggest" api
 write_labels "$custom_suggest" api
 jq '.families |= map(select(.family != "suggest")) |
-    .families += [{family:"custom",prefix:null,purpose:"Custom labels",axis:"classification",
+    .families += [{family:"custom-suggest",prefix:null,purpose:"Custom labels",axis:"classification",
       source:"inline",writers:["agent"],readers:"humans",lifecycle:"durable",
       exclusive:false,provision:true,color:"123456",
       values:[{value:"suggest:gpt:sol",description:"Disguised suggestion"}]}]' \
@@ -1725,7 +1725,7 @@ jq '.families |= map(select(.family != "suggest")) |
 mv "$custom_suggest/updated.json" "$custom_suggest/label-registry.json"
 if discover "$custom_suggest" >"$custom_suggest/output" 2>"$custom_suggest/error"; then
     bad "prefix-less registry family cannot emit a suggestion label"
-elif grep -qF 'planning-safe family custom declares reserved label suggest:gpt:sol' "$custom_suggest/error" &&
+elif grep -qF 'planning-safe family custom-suggest declares reserved label suggest:gpt:sol' "$custom_suggest/error" &&
     [ ! -s "$custom_suggest/output" ]; then
     ok "prefix-less registry suggestion fails closed without a canonical suggestion family"
 else
@@ -2160,6 +2160,46 @@ elif [ ! -s "$concrete_collision/output" ] && grep -q 'collision: prefix area.*a
 else
     bad "cross-family concrete-label ambiguity fails closed with a diagnostic"
 fi
+
+# IDs belong to manifest declarations, even when filtering or the rating helper
+# removes both declarations from the collision invariant.
+for duplicate_case in both-excluded one-emitted no-live superseded-rating; do
+    duplicate_id="$tmproot/duplicate-id-$duplicate_case"
+    mkdir -p "$duplicate_id"
+    write_agent_registry "$duplicate_id"
+    write_registry "$duplicate_id" api
+    write_labels "$duplicate_id" api
+    case "$duplicate_case" in
+    both-excluded)
+        family_id=workflow
+        duplicate_filter='.families += [(.families[] | select(.family == "workflow") | .prefix = "other-phase")]'
+        ;;
+    one-emitted)
+        family_id=area
+        duplicate_filter='.families += [(.families[] | select(.family == "area") | .prefix = "other-area" | .writers = ["human"])]'
+        ;;
+    no-live)
+        family_id=area
+        duplicate_filter='.families |= map(if .family == "area" then .values |= map(select(.value == "missing")) else . end) |
+          .families += [(.families[] | select(.family == "area") | .prefix = "other-area")]'
+        ;;
+    superseded-rating)
+        family_id=impact
+        duplicate_filter='(.families[] | select(.family == "priority") | .family = "impact" | .prefix = "impact") as $rating |
+          .families += [$rating, $rating]'
+        ;;
+    esac
+    jq "$duplicate_filter" "$duplicate_id/label-registry.json" >"$duplicate_id/updated.json"
+    mv "$duplicate_id/updated.json" "$duplicate_id/label-registry.json"
+    if discover "$duplicate_id" >"$duplicate_id/output" 2>"$duplicate_id/error"; then
+        bad "duplicate manifest family IDs are refused: $duplicate_case"
+    elif [ ! -s "$duplicate_id/output" ] &&
+        grep -q "duplicate family id $family_id" "$duplicate_id/error"; then
+        ok "duplicate manifest family IDs are refused: $duplicate_case"
+    else
+        bad "duplicate manifest family IDs fail closed with a diagnostic: $duplicate_case"
+    fi
+done
 
 case_duplicate="$tmproot/case-duplicate"
 mkdir -p "$case_duplicate"
