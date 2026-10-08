@@ -34,7 +34,8 @@
 #     human (or the `delivery` subcommand below) to confirm.
 #   - human_work: rendered human/total criteria counts, collector and label
 #     facts, and an advisory recommendation. A missing human label and a
-#     potential human removal are flags; only a human removes that label.
+#     potential human removal are flags; step 2e judges agent-completability
+#     before requesting removal through triage-apply.sh's live guards.
 #   - flagged closed issues: closed-completed with unticked acceptance
 #     criteria, and duplicate closes (pointer presence is per-issue judgment
 #     the skill verifies from comments)
@@ -614,6 +615,8 @@ printf '%s' "$closed_json" >"$scan_tmp/closed.json"
 # still exactly one implementation of the projection, in that one file.
 conformance_jq="$(cat "$title_module_dir/issue-conformance.jq")" ||
     die "cannot read the shared conformance projection: $title_module_dir/issue-conformance.jq"
+human_work_jq="$(cat "$script_dir/human-work.jq")" ||
+    die "cannot read the shared human-work projection"
 jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
     --arg owner_type "$owner_type" \
@@ -634,7 +637,7 @@ jq -n -L "$title_module_dir" \
     --argjson class "$class_json" \
     --arg fields_mode "$fields_mode" \
     --argjson fields "$fields_json" \
-    --argjson wt "$wt_json" "$conformance_jq"'
+    --argjson wt "$wt_json" "$conformance_jq"$'\n'"$human_work_jq"'
   ($open_arr[0]) as $open | ($closed_arr[0]) as $closed |
 
   # One Impact/Risk/Complexity/Priority (AI) reading in the owner type'"'"'s
@@ -667,20 +670,6 @@ jq -n -L "$title_module_dir" \
          then ($fields[$k]["Priority"] // null) else null end)
     else ([$ls[] | select(startswith("priority:")) | ltrimstr("priority:")]
           | if length == 0 then null else join(",") end) end;
-  # Count column-0 and two-space-nested tasks without tracking parent markers.
-  # Leave the shared groom projection unchanged.
-  # A majority is evidence for human work, not a guess from title keywords.
-  def human_work($issue; $ls):
-    ([criteria_lines($issue.body)[]
-      | select(test("^(  )?([-*+]|[0-9]{1,9}[.)]) \\[[ xX]\\]( |$)"))
-      | sub("^  "; "") | rest_tag(checkbox_rest(.))]) as $tags
-    | ([$tags[] | select(. == "human")] | length) as $human
-    | ($issue.title | test("^\\((HUMAN|QA)\\): ")) as $collector
-    | {labelled: (($ls | index("human")) != null),
-       collector: $collector, human_criteria: $human,
-       total_criteria: ($tags | length),
-       recommendation: (if $collector or ($human * 2 > ($tags | length))
-                        then "human" else "review" end)};
   # The required set (harmon-init ADR 2026-09-30 D6): a work type, one
   # recognized label of every active label axis (layer included — its
   # `none` value is the explicit "does not apply"), and every provisioned

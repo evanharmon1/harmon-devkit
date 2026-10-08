@@ -43,8 +43,9 @@ it in the summary; never work around it).
   personal account — and never the other.
 - **Decide `human` for every issue you classify.** Add it when completion is
   primarily a human's (step 2e), in the same apply call as the other axes.
-  Agents add `human`, never remove it; only a human removes it. A dispatchable
-  issue still carrying it is a report candidate, never an agent removal.
+  Remove it only for a non-collector without a `[HUMAN]` majority whose
+  remaining work you judge agent-completable. Include `--remove human` in that
+  same apply call and report every removal with its reason (step 2e).
 - **The script writes, you never choose:** the **Tier** (`tier:<value>`, a
   label on every owner type), derived from Risk × Complexity by the policy
   reader in the same call that writes them, and never over an issue carrying
@@ -134,9 +135,10 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   `completion_reasons` (machine-readable strings backing the
   `completion-candidate:*` flags below), and `flags`.
 - `human_work` on each open issue — whether it is `labelled`, a `collector`,
-  and the counts `human_criteria` / `total_criteria` (all acceptance-criteria
-  column-0 and two-space-nested task items, any list marker, including
-  checked and untagged items in the total).
+  and the counts `human_criteria` / `total_criteria`: every checkbox line in
+  the acceptance-criteria section counts at **any indentation** (leading spaces
+  and tabs are stripped before applying the shared checkbox grammar), including
+  checked and untagged items in the total.
   Its `recommendation` is `human` when `[HUMAN]` boxes are a majority of that total or for a
   collector, otherwise `review`: the classifier still decides from the work.
   `--all` includes fully classified issues so the human decision is not skipped.
@@ -172,7 +174,7 @@ nothing):
 "$DIR/assets/triage-apply.sh" label --repo "$REPO" --issue <n> \
   [--add <label>]... [--native-type <Type>] \
   [--impact <v>] [--risk <v>] [--complexity <v>] [--priority-ai <v>] \
-  [--reconcile]
+  [--remove human] [--reconcile]
 ```
 
 In EXECUTE mode append `--execute`. Record every line the script prints —
@@ -350,8 +352,8 @@ it. This follows harmon-init's **Human work** paragraph in
 Read the body when the scan's counts and title do not settle it; that read spends
 the same budget as the other axes. One `[HUMAN]` box among mostly agent criteria
 does not by itself make the issue human work. Count all criteria, including
-checked ones; do not relabel agent delivery as human merely because only a manual
-follow-up remains.
+checked ones, at any indentation; do not relabel agent delivery as human merely
+because only a manual follow-up remains.
 
 For primarily human work without `human`, include `--add human` in the **same**
 apply call as 2a–2d, within the same `task triage -- --execute` run. A collector
@@ -360,14 +362,34 @@ manifest withholds `human` or does not declare it, report the refusal; do not
 invent a family or bypass the helper. Without a manifest, the live fallback must
 provision `human` before it can be added.
 
-Agents never remove `human`, even when work has become dispatchable. For a
-labelled issue you verify is primarily agent work, report `human removal
-candidate` and ask a human to decide whether to remove it. The scan's
-`human-removal-candidate` is advisory: inspect the work before reporting; a
-human action can have `[CI]` criteria and still properly carry `human`.
+For a labelled issue, remove `human` only when **all three** conditions hold:
+
+1. Its title does not start with `(HUMAN):` or `(QA):` followed by a space
+   (the scan's collector test).
+2. `[HUMAN]` criteria are not a majority: `human_criteria * 2 <= total_criteria`,
+   using the scan's all-criteria count, including checked and untagged items.
+3. You judge the remaining work agent-completable after inspecting the work.
+
+The scan's `human-removal-candidate` is the input to that judgement, not permission
+by itself. A human action can have `[CI]` criteria and still properly carry `human`.
+When all three hold, include `--remove human` in the **same** apply call as 2a–2d.
+The helper rechecks the live title and body before writing and refuses a collector,
+a `[HUMAN]` majority, or a withheld writer grant. It cannot verify your judgement.
+Removal also refuses any heading indented one to three spaces anywhere in the
+body because the acceptance-criteria section boundary is ambiguous.
+Filing never removes `human`; this guarded removal belongs only to triage.
+
+Report **every** removal, using the apply output as evidence and your judgement
+as its reason: category `human removed` after `APPLIED remove 'human'`, or `human
+removal planned` after `DRY-RUN would remove 'human'`. After `INDETERMINATE remove
+'human'`, report `human removal unconfirmed`, preserving the unknown outcome and
+its evidence; do not count it as confirmed removal. If the helper refuses,
+report `human kept` with the refusal. If inspection shows the work still needs a
+human, keep the label and report why; never turn a scan candidate straight into a
+removal. If it no longer carries the label at apply time, do not claim a removal.
 If the reading budget prevents a decision, list the issue under `## Unverified
 candidates`; never silently drop it. Claimed issues remain report-only under
-step 2's skip rule.
+step 2's skip rule, and the helper also refuses live claim labels before human removal.
 
 ## Step 3 — Report entries
 
@@ -393,7 +415,7 @@ a finding):
 | `aging-needs-candidate`              | nothing — the flag is the finding                    | always                                                                     |
 | `human-label-missing` | the human-work decision and apply output (2e) | when `human` could not be added; name the withheld or missing vocabulary |
 | `collector-umbrella-missing` | nothing — the flag is the finding | always; a `(HUMAN):`/`(QA):` title identifies the collector even without `umbrella`; suggest a human restore `umbrella`, never remove `human` |
-| `human-removal-candidate`, or a labelled issue judged dispatchable in 2e | inspect its title and body under the reading budget | only when primarily agent work; category `human removal candidate`; suggest a human remove `human`, never remove it yourself |
+| `human-removal-candidate`, or a labelled issue inspected in 2e | inspect its title and body under the reading budget, then use the apply output | every removal: `human removed` (execute) or `human removal planned` (dry-run), with its reason; otherwise `human kept` with the judgement or refusal that retained it |
 | `axis-conflict:*`                    | nothing — the flag is the finding                    | always; name both labels and, only if the body states one, the right one   |
 | `axis-unknown-value:*`               | nothing — the flag is the finding                    | always; name the unrecognized label — read it from the issue's `unknown_labels` field, never guess from `axis_labels` (a human must rename or delete it) |
 | `needs-triage-removable`             | the output of its reconcile call (2d)                | only when that call did not remove `needs-triage` — say why (the manifest withholds it, or the native Type could not be read) |
@@ -421,7 +443,8 @@ finding — treat them as ambiguous and leave the issue unreported on this
 axis: a "done"/"delivered"-shaped comment (a comment is never trusted
 evidence, whoever posted it — including a comment on a merged PR that
 mentions the issue: `delivery` requires the PR's own title or body to name
-it); a nested or indented task item (criteria are flush-left); a merged PR sitting beside an unticked `[CI]`
+it); an indented task item as a completion signal (the human-work counter still
+counts every checkbox line at any indentation); a merged PR sitting beside an unticked `[CI]`
 or an untagged criterion (that is partial delivery, not completion); an
 issue with no acceptance criteria at all; a merged PR from a different
 repository; and a closing-keyword PR that merged while the issue stayed
@@ -507,7 +530,11 @@ the entries file, no entry keys):
   One bullet with the issue, the value, and one line of reasoning. Never
   apply such labels yourself.
 
-If there are no findings at all, create the file empty (`: > entries.md`).
+Put all removal records, including unconfirmed outcomes, under `## Human removals`
+first in the entries file. The renderer preserves that section in full and budgets
+only the remaining sections for truncation, even when removals alone exceed the budget.
+Removal records are required entries even when no unresolved findings remain.
+If there are no findings or removal records at all, create the file empty (`: > entries.md`).
 
 ## Step 4 — Sync the report
 
@@ -532,6 +559,7 @@ Triage run — <DRY-RUN | EXECUTE> over <repo>
 - tier: <n> derived (<#issue tier:<v> ...>), <n> not written (<#issue reason ...> | none)
 - tier derivation unavailable: <summary.tier_derivation_reasons, each once | none>
 - native Issue Types: <n> applied|would-apply (<list them: #issue Type ... | none>)
+- human: <n> added, <n> removed|would-remove (<#issue reason ...> | none)
 - needs-triage: <n> added, <n> removed (derived)
 - report: <n> entries → <created #N | updated #N | would create | would update #N>
 - refused by scripts: <list each refusal line, or "none">

@@ -6,8 +6,8 @@
 # stale claims, blocked-without-reason, aging needs-* states, closed-completed
 # issues with unticked criteria, duplicate closes missing pointers, title
 # violations, possible-completion candidates (an open issue whose delivery
-# looks finished), human-label refusals and human removal candidates (only a
-# human removes that label), tier/method proposals. One rolling issue,
+# looks finished), human-label refusals, guarded human removals (or planned
+# removals in dry-run) with reasons and retained candidates, tier/method proposals. One rolling issue,
 # not a stream — re-runs
 # UPSERT it: the body is regenerated from the current scan every run, so an
 # entry for a resolved problem disappears on the next run and re-runs are
@@ -212,32 +212,46 @@ cmd_sync() {
 
     local now body entries_content
     now="${TRIAGE_NOW:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
-    # GitHub caps issue bodies at 65,536 characters, and a large backlog can
-    # legitimately produce more. Truncate at a section boundary with a loud
-    # note rather than letting the write fail after labels already applied —
-    # a stale-but-present report beats an update that errors out.
-    local budget=60000
-    if [ "$(wc -c <"$entries")" -gt "$budget" ]; then
-        entries_content="$(awk -v b="$budget" '
-            {n += length($0) + 1
-             if (n > b && ($0 ~ /^### #/ || $0 ~ /^## /)) exit
-             print}' "$entries")"
-        # The awk pass cuts at section boundaries; a single section larger
-        # than the whole budget would pass through intact, so hard-cap the
-        # result as a fallback. Pure bash substring — a printf|head pipeline
-        # here dies of SIGPIPE under pipefail exactly when the cap triggers.
-        if [ "${#entries_content}" -gt "$budget" ]; then
-            entries_content="${entries_content:0:$budget}"
+    # Removal evidence cannot be reconstructed after labels change. Render it
+    # first and reserve its bytes before truncating any other report entries.
+    local removal_content other_content budget=60000 removal_size remaining_budget
+    local partition='
+        /^## / {section = ($0 == "## Human removals"); keep = section}
+        /^### #/ {keep = section || ($0 ~ /human (removed|removal planned|removal unconfirmed):/)}
+        keep == wanted {print}'
+    removal_content="$(awk -v wanted=1 "$partition" "$entries")"
+    other_content="$(awk -v wanted=0 "$partition" "$entries")"
+    removal_size="$(printf '%s' "$removal_content" | wc -c)"
+    remaining_budget=$((budget - removal_size))
+    [ -z "$removal_content" ] || remaining_budget=$((remaining_budget - 2))
+    if [ "$(printf '%s' "$other_content" | wc -c)" -gt "$remaining_budget" ]; then
+        if [ "$remaining_budget" -le 0 ]; then
+            other_content=""
+        else
+            other_content="$(awk -v b="$remaining_budget" '
+                {n += length($0) + 1
+                 if (n > b && ($0 ~ /^### #/ || $0 ~ /^## /)) exit
+                 print}' <<<"$other_content")"
+            # A single oversized non-removal section needs a hard-cap fallback.
+            if [ "${#other_content}" -gt "$remaining_budget" ]; then
+                other_content="${other_content:0:$remaining_budget}"
+            fi
         fi
-        entries_content="$entries_content
+        other_content="$other_content
 
 ## Report truncated
 
-This run produced more findings than fit in one issue body. Everything
-below the last section above was omitted — re-run after resolving some
-entries, or triage a narrower window."
-    elif [ -s "$entries" ]; then
-        entries_content="$(cat "$entries")"
+This run produced more findings than fit in one issue body. Other entries
+below the last retained section were omitted — re-run after resolving some
+entries, or triage a narrower window. Human removal records are retained in full."
+    fi
+    if [ -n "$removal_content" ]; then
+        entries_content="$removal_content"
+        [ -z "$other_content" ] || entries_content="$entries_content
+
+$other_content"
+    elif [ -n "$other_content" ]; then
+        entries_content="$other_content"
     else
         entries_content="No findings this run."
     fi
