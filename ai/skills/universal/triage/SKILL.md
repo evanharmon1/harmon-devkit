@@ -381,13 +381,15 @@ Filing never removes `human`; this guarded removal belongs only to triage.
 
 Report **every** removal, using the apply output as evidence and your judgement
 as its reason: category `human removed` after `APPLIED remove 'human'`, or `human
-removal planned` after `DRY-RUN would remove 'human'`. If the helper refuses,
+removal planned` after `DRY-RUN would remove 'human'`. After `INDETERMINATE remove
+'human'`, report `human removal unconfirmed`, preserving the unknown outcome and
+its evidence; do not count it as confirmed removal. If the helper refuses,
 report `human kept` with the refusal. If inspection shows the work still needs a
 human, keep the label and report why; never turn a scan candidate straight into a
 removal. If it no longer carries the label at apply time, do not claim a removal.
 If the reading budget prevents a decision, list the issue under `## Unverified
 candidates`; never silently drop it. Claimed issues remain report-only under
-step 2's skip rule, and the helper also refuses live claim labels before writing.
+step 2's skip rule, and the helper also refuses live claim labels before human removal.
 
 ## Step 3 — Report entries
 
@@ -528,6 +530,9 @@ the entries file, no entry keys):
   One bullet with the issue, the value, and one line of reasoning. Never
   apply such labels yourself.
 
+Put all removal records, including unconfirmed outcomes, under `## Human removals`
+first in the entries file. The renderer preserves that section in full and budgets
+only the remaining sections for truncation, even when removals alone exceed the budget.
 Removal records are required entries even when no unresolved findings remain.
 If there are no findings or removal records at all, create the file empty (`: > entries.md`).
 

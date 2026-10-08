@@ -236,6 +236,10 @@ api\ repos/*)
     fi
     ;;
 "issue view")
+    if [ "${GH_STUB_RECONCILIATION_READ_FAIL:-0}" = 1 ] &&
+        grep -q -- '--json labels$' <<<"$*"; then
+        exit 1
+    fi
     issue_src="${GH_STUB_DIR:?}/issue-${3:?}.json"
     [ -z "${GH_STUB_RUN_ID:-}" ] ||
         [ ! -f "$GH_STUB_DIR/.overlay-$GH_STUB_RUN_ID-$3.json" ] ||
@@ -3511,6 +3515,22 @@ done
     --remove human --execute)" = 2 ] || fail "human removal must require execute gate"
 grep -q '^issue edit' "$GH_STUB_LOG" && fail "ungated removal must make no writes"
 
+echo "==> claim guards: only human removal refuses claimed issues"
+for claim_label in claim:gpt agent:legacy; do
+    jq --arg claim "$claim_label" '.labels += [{name:$claim}]' \
+        "$stub_dir/issue-604.json" >"$stub_dir/issue-625.json"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 625 \
+        --manifest "$human_manifest" --add area:ci --execute)" = 0 ] ||
+        fail "non-removal label write must allow $claim_label: $(cat "$tmp/out")"
+    grep -q "APPLIED add 'area:ci'" "$tmp/out" || fail "claimed issue must accept ordinary label"
+    : >"$GH_STUB_LOG"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 625 \
+        --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+        fail "human removal must refuse $claim_label"
+    grep -q 'is claimed' "$tmp/out" || fail "refusal must name claim guard"
+    grep -q '^issue edit' "$GH_STUB_LOG" && fail "claimed removal must make no writes"
+done
+
 echo "==> human removal: org read between mutations rechecks collector identity"
 cp "$stub_dir/issue-604.json" "$stub_dir/issue-616.json"
 rm -f "$stub_dir/.label-reads-616"
@@ -3532,6 +3552,8 @@ grep -q -- '--remove-label human' "$GH_STUB_LOG" && fail "late collector drift m
 removal_evidence="$(grep "APPLIED remove 'human'" "$tmp/out")"
 [ -n "$removal_evidence" ] || fail "report requires actual removal evidence"
 cat >"$tmp/human-removal-entries.md" <<MD
+## Human removals
+
 ### #604 — human removed: remaining feature work is agent-completable
 <!-- triage-entry:604 -->
 - Evidence: $removal_evidence; non-collector, 0 of 1 criteria human.
@@ -3543,6 +3565,31 @@ grep -q 'human removed: remaining feature work is agent-completable' "$tmp/out" 
     fail "every removal must appear in the report"
 grep -q "APPLIED remove 'human'" "$tmp/out" || fail "report must preserve removal evidence"
 
+echo "==> removal reports: truncation preserves every removal record"
+for removal_count in 2 700; do
+    {
+        cat "$tmp/huge.md"
+        printf '\n## Human removals\n\n'
+        for ((i = 1; i <= removal_count; i++)); do
+            printf '### #%d — human removed: retained evidence\n<!-- triage-entry:%d -->\n' "$i" "$i"
+            printf -- "- Evidence: APPLIED remove 'human' from %s#%d retention-%d %s\n\n" \
+                "$repo" "$i" "$i" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        done
+        printf '## Other findings\n\nOther findings after removals.\n'
+    } >"$tmp/oversized-removal-entries.md"
+    [ "$(run "$report" sync --repo "$repo" --entries-file "$tmp/oversized-removal-entries.md")" = 0 ] ||
+        fail "oversized removal report must render"
+    [ "$(grep -c 'Evidence: APPLIED remove.*retention-' "$tmp/out")" = "$removal_count" ] ||
+        fail "truncation must retain every removal line, even when removals exceed budget"
+    first_section="$(grep '^## ' "$tmp/out" | head -1)"
+    [ "$first_section" = '## Human removals' ] || fail "removals must render first"
+    grep -q '## Report truncated' "$tmp/out" || fail "other entries must be truncated"
+    if [ "$removal_count" -eq 700 ]; then
+        grep -q 'noise: filler entry' "$tmp/out" && fail "over-budget removals leave no budget for other entries"
+        grep -q 'Other findings after removals' "$tmp/out" && fail "remaining sections must be omitted"
+    fi
+done
+
 echo "==> human removal: failed edit still reports a removal confirmed by re-read"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
     --repo "$repo" --issue 604 --manifest "$human_manifest" --remove human --execute)" = 1 ] ||
@@ -3552,6 +3599,8 @@ grep -q 'confirmed by re-read after failed edit' <<<"$removal_evidence" ||
     fail "failed edit must emit confirmed human removal evidence: $(cat "$tmp/out")"
 grep -q 'write failed:' "$tmp/out" || fail "partial result must still report the write failure"
 cat >"$tmp/failed-human-removal-entries.md" <<MD
+## Human removals
+
 ### #604 — human removed: confirmed after a failed edit
 <!-- triage-entry:604 -->
 - Evidence: $removal_evidence
@@ -3566,6 +3615,28 @@ grep -q 'confirmed by re-read after failed edit' "$tmp/out" ||
     --issue 604 --manifest "$human_manifest" --remove human --execute)" = 1 ] ||
     fail "edit failure without applying must still fail"
 grep -q "APPLIED remove 'human'" "$tmp/out" && fail "retained human must never be reported removed"
+grep -q 'INDETERMINATE' "$tmp/out" && fail "successful re-read retaining human is determinate"
+
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL=1 GH_STUB_RECONCILIATION_READ_FAIL=1 \
+    "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
+    --remove human --execute)" = 1 ] || fail "failed edit and re-read must retain exit 1"
+removal_evidence="$(grep "INDETERMINATE remove 'human'" "$tmp/out")"
+[ "$removal_evidence" = "INDETERMINATE remove 'human' from $repo#604 (edit failed; re-read failed)" ] ||
+    fail "unknown outcome must emit exact indeterminate evidence"
+grep -q "APPLIED remove 'human'" "$tmp/out" && fail "unknown outcome is not confirmed"
+cat >"$tmp/indeterminate-human-removal-entries.md" <<MD
+## Human removals
+
+### #604 — human removal unconfirmed: edit and re-read failed
+<!-- triage-entry:604 -->
+- Evidence: $removal_evidence
+- Outcome: unconfirmed; inspect live labels before deciding whether to retry.
+MD
+[ "$(run "$report" sync --repo "$repo" --entries-file "$tmp/indeterminate-human-removal-entries.md")" = 0 ] ||
+    fail "unknown removal outcome must reach report"
+grep -q "INDETERMINATE remove 'human'" "$tmp/out" || fail "report must retain unknown outcome evidence"
+grep -q 'human removal unconfirmed' "$tmp/out" || fail "report must mark unknown removal unconfirmed"
+
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
     --repo "$repo" --issue 604 --manifest "$human_manifest" --add area:ci --execute)" = 1 ] ||
