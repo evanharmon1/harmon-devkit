@@ -307,8 +307,7 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   Propose a value or an agent-writable explicit `none` for every reported axis,
   plus the owner-appropriate work type. If `agent_writable_value` is false,
   report that axis as a §6 finding to the human before approval; never turn it
-  into a draft. An unknown availability (`null`, for the canonical fallback or
-  unresolved open values) requires selecting a verified live candidate from
+  into a draft. An unknown availability (`null`, for the canonical fallback) requires selecting a verified live candidate from
   discovery before approval. The mode supplies the canonical fallback without
   a manifest. Follow track-work §5 for its validated inapplicability fallback.
   Never propose human Priority/Effort, derived Tier or `tier:pinned`;

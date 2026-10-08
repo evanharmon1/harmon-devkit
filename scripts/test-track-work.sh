@@ -619,6 +619,10 @@ cat >"$metadata_stub/gh" <<'STUB'
 set -euo pipefail
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
 case "${1:-} ${2:-}" in
+"api repos/"*"/contents/")
+    [ "${METADATA_ROOT_FAIL:-0}" = 0 ] || exit 1
+    printf '%s\n' "${METADATA_ROOT_CONTENTS:-[]}"
+    ;;
 "api repos/"*"/contents/label-registry.json")
     [ "${3:-}" = -H ] && [ "${4:-}" = 'Accept: application/vnd.github.raw+json' ] || exit 97
     if [ "${METADATA_REMOTE_FAIL:-0}" != 0 ]; then
@@ -845,6 +849,19 @@ remote_axis_contract="$("$metadata" --required-axes --repo testowner/testrepo)" 
 jq -e '.source == "canonical-fallback" and [.axes[].axis] == ["area", "layer", "domain"] and
     all(.axes[]; .agent_writable_value == null and .agent_writable_none == null)' \
     <<<"$remote_axis_contract" >/dev/null || fail "missing remote manifest must match canonical local fallback"
+for root_case in denied present; do
+    _rc=0
+    if [ "$root_case" = denied ]; then
+        METADATA_ROOT_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
+            >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+    else
+        METADATA_ROOT_CONTENTS='[{"name":"label-registry.json"}]' "$metadata" \
+            --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+    fi
+    [ "$_rc" = 2 ] || fail "contents 404 with $root_case root listing must fail closed"
+    grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
+        fail "contents 404 must require authorized proof of absence ($root_case)"
+done
 printf '{invalid json\n' >"$tmp/remote-invalid-manifest.json"
 _rc=0
 METADATA_REMOTE_MANIFEST="$tmp/remote-invalid-manifest.json" "$metadata" \
@@ -856,18 +873,6 @@ METADATA_REMOTE_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
 [ "$_rc" = 2 ] || fail "unreadable remote manifest must fail closed"
 grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
     fail "unreadable remote manifest must not fall back"
-
-# Manifest classification cannot make reserved prefixes required authoring axes.
-cp "$metadata_axes/label-registry.json" "$tmp/metadata-before-reserved.json"
-jq '.families += [(.families[] | select(.family == "area")) as $family |
-    ["foreman", "rigor", "tier", "strategy", "method", "claim", "agent", "priority", "effort"][] as $prefix |
-    $family | .family = ("reserved-" + $prefix) | .prefix = $prefix]' \
-    "$tmp/metadata-before-reserved.json" >"$metadata_axes/label-registry.json"
-reserved_axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
-    fail "reserved classification prefixes must be excluded"
-[ "$(jq -S . <<<"$reserved_axis_contract")" = "$(jq -S . <<<"$local_axis_contract")" ] ||
-    fail "required-axes must exclude all authoring-reserved prefixes"
-cp "$tmp/metadata-before-reserved.json" "$metadata_axes/label-registry.json"
 
 _rc=0
 "$metadata" --required-axes --repo another/repository --repo-root "$metadata_axes" \
@@ -946,94 +951,46 @@ jq -e '.axes[] | select(.axis == "surface") |
     .agent_writable_value == true and .agent_writable_none == false' \
     <<<"$axis_contract" >/dev/null || fail "value availability must be distinct from none availability"
 
-jq '(.families[] | select(.family == "delivery-target")) |=
-    (.open_values = true | .placeholder = "surface:<value>" | .values = [])' \
-    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
-axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
-    fail "open required family must remain discoverable"
-jq -e '.axes[] | select(.axis == "surface") |
-    .agent_writable_value == null and .agent_writable_none == false' \
-    <<<"$axis_contract" >/dev/null || fail "unresolved open values must not be reported as unavailable"
-
-# Enumerated open-family members need the same live existence as draft enforcement.
-jq '(.families[] | select(.family == "delivery-target")) |=
-    (.open_values = true | .placeholder = "surface:<value>" |
-     .values = [{"value":"api","description":"Only writable member"}])' \
-    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
-axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
-    fail "absent open member must remain discoverable"
-jq -e '.axes[] | select(.axis == "surface") |
-    .agent_writable_value != true and .agent_writable_none == false' \
-    <<<"$axis_contract" >/dev/null || fail "absent open member must not report availability"
-[ "$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none \
-    --label layer:none --label surface:api)" = 1 ] || fail "draft must refuse absent enumerated open member"
-axis_contract="$(METADATA_GH_LABELS=$'needs-triage\nsurface:api' "$metadata" \
-    --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
-    fail "live open member must remain discoverable"
-jq -e '.axes[] | select(.axis == "surface").agent_writable_value == true' \
-    <<<"$axis_contract" >/dev/null || fail "live writable open member must report availability"
-axis_contract="$(METADATA_LABELS_FAIL=1 "$metadata" --required-axes \
-    --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "unreadable live availability must remain discoverable"
-jq -e '.axes[] | select(.axis == "surface") |
-    .agent_writable_value == null and .agent_writable_none == null' \
-    <<<"$axis_contract" >/dev/null || fail "unreadable live availability must report unknown"
-truncated_labels="$(awk 'BEGIN { for (i=1; i<=1000; i++) print "surface:value" i }')"
-axis_contract="$(METADATA_GH_LABELS="$truncated_labels" "$metadata" --required-axes \
-    --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "truncated live availability must remain discoverable"
-jq -e '.axes[] | select(.axis == "surface").agent_writable_value == null' \
-    <<<"$axis_contract" >/dev/null || fail "truncated live availability must report unknown"
-
-# One open-none invariant, independent of enumeration, for all three consumers.
-for enumerated in true false; do
-    for provisioned in true false; do
-        jq --argjson enumerated "$enumerated" '
-            (.families[] | select(.family == "delivery-target")) |=
-            (.open_values = true | .placeholder = "surface:<value>" |
-             .values = (if $enumerated then
-                [{"value":"none","description":"Enumerated absence","writers":["human"]}]
-                else [] end))' \
-            "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
-        none_live=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s'
-        [ "$provisioned" != true ] || none_live="$none_live"$'\nsurface:none'
-        axis_contract="$(METADATA_GH_LABELS="$none_live" "$metadata" --required-axes \
-            --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "open-none state must remain discoverable"
-        jq -e --argjson available "$provisioned" '
-            .axes[] | select(.axis == "surface").agent_writable_none == $available' \
-            <<<"$axis_contract" >/dev/null || fail "open-none mode disagrees: enumerated=$enumerated live=$provisioned"
-        label_exit=1
-        inapplicable_exit=0
-        if [ "$provisioned" = true ]; then
-            label_exit=0
-            inapplicable_exit=1
-        fi
-        [ "$(METADATA_GH_LABELS="$none_live" run_metadata "${axes_draft[@]}" \
-            --label area:none --label domain:none --label layer:none --label surface:none)" = "$label_exit" ] ||
-            fail "open-none label disagrees: enumerated=$enumerated live=$provisioned ($(cat "$tmp/metadata.out"))"
-        [ "$(METADATA_GH_LABELS="$none_live" run_metadata "${axes_draft[@]}" \
-            --label area:none --label domain:none --label layer:none --inapplicable surface)" = "$inapplicable_exit" ] ||
-            fail "open-none inapplicability disagrees: enumerated=$enumerated live=$provisioned ($(cat "$tmp/metadata.out"))"
+# Authoring refuses exactly the active classification families triage cannot govern.
+for unsupported in open prefixless reserved; do
+    jq --arg kind "$unsupported" '(.families[] | select(.family == "delivery-target")) |=
+        (if $kind == "open" then .open_values = true | .placeholder = "surface:<value>"
+         elif $kind == "prefixless" then .prefix = null
+         else .prefix = "agent" end)' \
+        "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+    for mode in local remote preflight; do
+        _rc=0
+        case "$mode" in
+        local) "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+            >"$tmp/unsupported-axis.out" 2>&1 || _rc=$? ;;
+        remote) METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" "$metadata" \
+            --required-axes --repo testowner/testrepo >"$tmp/unsupported-axis.out" 2>&1 || _rc=$? ;;
+        preflight)
+            _rc="$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none --label layer:none)"
+            cp "$tmp/metadata.out" "$tmp/unsupported-axis.out"
+            ;;
+        esac
+        [ "$_rc" = 2 ] || fail "$mode must refuse $unsupported active classification family"
+        grep -q 'triage cannot govern.*delivery-target' "$tmp/unsupported-axis.out" ||
+            fail "$mode refusal must name the ungovernable $unsupported family"
     done
 done
-# Family authorization governs open none even if enumeration grants an agent.
 jq '(.families[] | select(.family == "delivery-target")) |=
-    (.writers = ["human"] | .values = [{"value":"none","description":"Absence","writers":["agent"]}])' \
-    "$metadata_axes/label-registry.json" >"$tmp/metadata-open-none-human.json"
-cp "$tmp/metadata-open-none-human.json" "$metadata_axes/label-registry.json"
-axis_contract="$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' "$metadata" --required-axes \
-    --repo testowner/testrepo --repo-root "$metadata_axes")" || fail "human-only open-none family must remain discoverable"
-jq -e '.axes[] | select(.axis == "surface").agent_writable_none == false' \
-    <<<"$axis_contract" >/dev/null || fail "family writers must govern open-none availability"
-[ "$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' run_metadata "${axes_draft[@]}" \
-    --label area:none --label domain:none --label layer:none --label surface:none)" = 1 ] ||
-    fail "family writers must forbid agent open-none label"
-[ "$(METADATA_GH_LABELS=$'needs-triage\nimpact:medium\nrisk:low\ncomplexity:s\nsurface:none' run_metadata "${axes_draft[@]}" \
-    --label area:none --label domain:none --label layer:none --inapplicable surface)" = 0 ] ||
-    fail "human-only open-none family must permit agent inapplicability"
-[ "$(METADATA_GH_LABELS=$'needs-triage\nsurface:none' run_metadata \
-    --repo testowner/testrepo --repo-root "$metadata_axes" --owner-type personal \
-    --title 'Accept human open none' --body-file "$valid_body" --human-authored \
-    --work-type-label feature --label surface:none)" = 0 ] ||
-    fail "human-authored live open none must use family human policy: $(cat "$tmp/metadata.out")"
+    (.open_values = true | .placeholder = "surface:<value>" | .retired = true | .provision = false)' \
+    "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
+for mode in local remote; do
+    if [ "$mode" = local ]; then
+        axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+            fail "retired open classification must not be refused locally"
+    else
+        axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" "$metadata" \
+            --required-axes --repo testowner/testrepo)" || fail "retired open classification must not be refused remotely"
+    fi
+    jq -e '[.axes[].axis] == ["area", "domain", "layer"]' <<<"$axis_contract" >/dev/null ||
+        fail "retired open classification must not contribute a required axis"
+done
+[ "$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none --label layer:none)" = 0 ] ||
+    fail "retired open classification must not block filing: $(cat "$tmp/metadata.out")"
 
 : >"$tmp/required-axes-gh.log"
 axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
@@ -1355,6 +1312,26 @@ grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/met
     fail "fallback must not authorize an agent to write human-only none"
 grep -Fq "label 'layer:none' is not writable by an agent" "$tmp/metadata.out" ||
     fail "direct human-only none refusal must name the writer policy"
+
+jq '(.families[] | select(.family == "layer").values[] |
+    select(.value == "none").writers) = ["agent"]' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_without_none" \
+    --owner-type personal --title 'Refuse agent-only none for human' --body-file "$valid_body" \
+    --human-authored --work-type-label feature --label layer:none)" = 1 ] ||
+    fail "human draft must not write agent-only none"
+grep -q "label 'layer:none' is not writable by a human" "$tmp/metadata.out" ||
+    fail "human none refusal must use the correct article"
+
+jq '(.families[] | select(.family == "layer").values[] |
+    select(.value == "none").writers) = ["trusted-human"]' \
+    "$metadata_repo/label-registry.json" >"$metadata_without_none/label-registry.json"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_without_none" \
+    --owner-type personal --title 'Refuse unverified trusted human' --body-file "$valid_body" \
+    --human-authored --work-type-label feature --label layer:none)" = 2 ] ||
+    fail "trusted-human-only none must use the actor-verification refusal exit"
+grep -q 'actor-verifying trusted-human workflow' "$tmp/metadata.out" ||
+    fail "trusted-human-only none refusal must explain actor verification"
 
 echo "==> metadata: a retired none member does not block the agent absence fallback"
 jq '(.families[] | select(.family == "layer").values[] | select(.value == "none").retired) = true' \
@@ -2134,25 +2111,25 @@ grep -q 'label list.*--repo testowner/testrepo.*--limit 1000.*--json name' \
     --label area:fixture --inapplicable layer --label domain:fixture \
     --label type:missing)" = 1 ] || fail "an absent open-value label should remain unknown"
 
-echo "==> metadata: open classification policy remains a track-work capability"
-metadata_open_classification="$tmp/metadata-open-classification"
-mkdir -p "$metadata_open_classification"
-git -C "$metadata_open_classification" init -q
-git -C "$metadata_open_classification" remote add origin \
+echo "==> metadata: general nonclassification open policy remains a track-work capability"
+metadata_open_general="$tmp/metadata-open-general"
+mkdir -p "$metadata_open_general"
+git -C "$metadata_open_general" init -q
+git -C "$metadata_open_general" remote add origin \
     https://github.com/testowner/testrepo.git
 jq '.families |= map(
       if .family == "area" then
-        .open_values = true | .placeholder = "area:<value>" | .values = []
+        .axis = "concern" | .exclusive = false | .open_values = true | .placeholder = "area:<value>" | .values = []
       else . end)' "$metadata_repo/label-registry.json" \
-    >"$metadata_open_classification/label-registry.json"
+    >"$metadata_open_general/label-registry.json"
 _rc=0
 PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
-    --repo-root "$metadata_open_classification" --owner-type personal \
-    --title '(tests): Allow an open classification family' --body-file "$valid_body" \
+    --repo-root "$metadata_open_general" --owner-type personal \
+    --title '(tests): Allow a general open family' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture \
     --inapplicable layer --label domain:fixture >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 0 ] ||
-    fail "track-work should accept a live member of an open classification family: $(cat "$tmp/metadata.out")"
+    fail "track-work should accept a live member of a nonclassification open family: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: enumerated open members use case-insensitive vocabulary lookup"
 metadata_open_enumerated="$tmp/metadata-open-enumerated"
@@ -2162,7 +2139,7 @@ git -C "$metadata_open_enumerated" remote add origin \
     https://github.com/testowner/testrepo.git
 jq '.families |= map(
       if .family == "area" then
-        .open_values = true | .placeholder = "area:<value>"
+        .axis = "concern" | .exclusive = false | .open_values = true | .placeholder = "area:<value>"
       else . end)' "$metadata_repo/label-registry.json" \
     >"$metadata_open_enumerated/label-registry.json"
 _rc=0

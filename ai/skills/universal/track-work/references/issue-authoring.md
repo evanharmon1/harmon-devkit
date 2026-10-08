@@ -240,7 +240,12 @@ remain human-only. The shared classification reader supplies the rating
 labels/field options independently of the ordinary manifest taxonomy. The checkout must have a GitHub remote matching
 `--repo`. The checker never applies labels or creates an issue.
 
-An `open_values` family is the manifest-backed case that needs a bounded live
+Active classification families must be closed and have nonreserved prefixes.
+A prefix-less, open-values, or reserved-prefix classification family makes the
+manifest ungovernable by triage and is refused before filing. Required-axis
+`none` availability uses active enumerated values and their author writer policy.
+
+A non-classification `open_values` family is the manifest-backed case that needs a bounded live
 label read: GitHub proves the proposed concrete label exists, while the
 manifest family still supplies its writers, axis, and exclusivity.
 

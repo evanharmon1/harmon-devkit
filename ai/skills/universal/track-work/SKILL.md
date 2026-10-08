@@ -797,24 +797,20 @@ values or delegating authoring, read its local, read-only axis contract:
 
 Omit `--repo-root` to read the target's default-branch manifest remotely through
 `gh api`; a supplied checkout retains the local manifest and remote-binding
-check. A missing remote manifest in a readable repository has the same canonical
-fallback as a missing local manifest; unreadable or invalid content refuses.
-Reserved agent prefixes are excluded from the required-axis output.
+check. A missing remote manifest has the same canonical fallback as a missing local
+manifest only after an authorized root Contents listing proves absence.
+Unreadable or invalid content refuses. Active classification families that are
+prefix-less, open-values, or reserved for agents are refused, as triage cannot
+govern them. Required axes therefore come only from closed families.
 
 The JSON `axes` array lists each `axis` and `family`, plus
 `agent_writable_value` and `agent_writable_none`. Discovery and enforcement use
 the same required-family loader. These availability fields describe validated
-manifest members: true means an agent-writable member is known (and live for
-an open family); false means none is offered; null means availability needs
-live candidate discovery. The mode checks enumerated open-family members with
-the same bounded live listing
-and existence check as enforcement; an unavailable or truncated read reports null.
-For open classification families, `agent_writable_none` depends only on the live
-`<axis>:none` label and the family's agent writer policy, regardless of enumeration.
-Closed families retain their enumerated rule. The shared `none_available <axis>
-<author>` predicate checks the draft's actual author for explicit none labels;
-availability reporting and agent inapplicability pass `agent`. Live none records
-retain family writer policy in the vocabulary for per-author authorization.
+manifest members: true means an enumerated agent-writable member is known; false
+means none is offered; null means the canonical fallback needs live candidate
+discovery. The shared `none_available <axis> <author>` predicate checks active
+enumerated values for the draft's actual author when validating explicit none;
+availability reporting and agent inapplicability pass `agent`.
 It keeps the canonical fallback without a manifest; an unreadable
 or invalid manifest refuses. Every consumer uses this output as its axis list
 and never re-derives it. An axis with `agent_writable_value: false` is a finding
