@@ -222,6 +222,7 @@ function validateRegistry(registry) {
     die('label-registry.json families must be a non-empty array')
   }
 
+  const familyIds = new Set()
   for (const [familyIndex, family] of registry.families.entries()) {
     const where = `family[${familyIndex}]`
     assertObject(family, where)
@@ -244,6 +245,8 @@ function validateRegistry(registry) {
     if (typeof family.family !== 'string' || !slugPattern.test(family.family)) {
       die(`${where}.family must be a lowercase slug`)
     }
+    if (familyIds.has(family.family)) die(`duplicate family id ${family.family}`)
+    familyIds.add(family.family)
     if (family.prefix !== null && (typeof family.prefix !== 'string' || !slugPattern.test(family.prefix))) {
       die(`${where}.prefix must be null or a lowercase slug`)
     }
