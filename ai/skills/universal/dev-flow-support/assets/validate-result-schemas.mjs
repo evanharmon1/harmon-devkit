@@ -1567,6 +1567,16 @@ function checkAdjudicationEntries(document, errors) {
       }
       continue
     }
+    // The scaffolding checkpoint is the INTEGRATION stage's record
+    // (harmon-devkit#1272): the confidence stages carry their round-2
+    // checkpoint on the pass's own provenance, and nothing reads a
+    // checkpoint off a challenge/review entry, so one there is a field
+    // that looks like evidence and gates nothing.
+    if (entry.checkpoint !== undefined) {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].checkpoint: only stage integration records the scaffolding checkpoint`
+      )
+    }
     if (entry.reviewer_priority === null) {
       errors.push(
         `$adjudication.adjudications[finding_id=${entry.finding_id}].reviewer_priority: must not be null outside stage integration`

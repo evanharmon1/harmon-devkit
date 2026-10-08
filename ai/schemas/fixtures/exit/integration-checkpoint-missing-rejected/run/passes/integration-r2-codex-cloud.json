@@ -1,0 +1,51 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0202020202020202020202020202020202020202",
+  "produced_at": "2026-10-08T00:10:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "fixture",
+    "tier": "economy"
+  },
+  "run": {
+    "run_id": "run-integration-checkpoint-missing-rejected",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "build",
+        "bucket": "pass",
+        "run_id": "2",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "0202020202020202020202020202020202020202",
+      "cycle": 2,
+      "charged": 2,
+      "exempt": 0,
+      "attempt": 1,
+      "trigger_comment_id": "8002",
+      "exit_code": 10,
+      "accepted": {
+        "surface": "review",
+        "id": "7002",
+        "reviewed_commit": "0202020202020202020202020202020202020202"
+      }
+    },
+    "integration_round": 2,
+    "findings": [
+      {
+        "id": "integration-r2-codex-cloud-1",
+        "body": "finding 1 of integration round 2",
+        "source_id": "9020"
+      }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-10-08T00:10:00Z",
+    "verdict": "findings"
+  }
+}

@@ -4048,4 +4048,81 @@ done <<EOF
 $gate_flags
 EOF
 
+# harmon-devkit#1272: the gate runs the exit engine's integration exit over
+# --record. write_integration_cycle records one adjudicated integrator round
+# in the record: $1 round, $2 reviewed head, $3 Codex cycle ordinal, $4 the
+# finding's adjudicated priority, $5 its disposition, $6 its checkpoint JSON
+# (or "none" — round 1 owes none).
+write_integration_cycle() {
+    local round="$1" cycle_head="$2" cycle="$3" priority="$4" disposition="$5" checkpoint="$6"
+    jq -cn --arg head "$cycle_head" --argjson round "$round" --argjson cycle "$cycle" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:{head:$head, cycle:$cycle, attempt:1,
+                             trigger_comment_id:"1", exit_code:10,
+                             accepted:{surface:"review", id:"1", reviewed_commit:$head}},
+                integration_round:$round,
+                findings:[{id:("integration-r\($round)-codex-cloud-1"),
+                           body:"a cloud finding",source_id:"9\($round)"}],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:"findings"}}' \
+        >"${record_dir}/passes/integration-r${round}-codex-cloud.json"
+    jq -cn --arg head "$cycle_head" --argjson round "$round" --arg p "$priority" \
+        --arg d "$disposition" --arg cp "$checkpoint" '
+      {schema:2, run_id:"test-run", stage:"integration", round:$round,
+       reviewed_head:$head,
+       adjudications:[({finding_id:("integration-r\($round)-codex-cloud-1"),
+         reviewer_priority:null, adjudicated_priority:$p,
+         disposition:$d, reason:"adjudicated against the code",
+         evidence:"reproduced locally", override:null}
+         + (if $cp == "none" then {} else {checkpoint:($cp | fromjson)} end))]}' \
+        >"${record_dir}/adjudications/integration-r${round}.json"
+}
+cycle2_result="$(write_integrator_result cycle2-clean \
+    "$(jq -cn --arg head "$head_sha" '{head:$head, cycle:2, attempt:1,
+        trigger_comment_id:"1", exit_code:0,
+        accepted:{surface:"review", id:"1", reviewed_commit:$head}}')")"
+
+echo "==> #1272: a stage closed by converged, its P2s declined or filed without a push, passes"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
+write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$cycle2_result" --integration-cap 4
+assert_gate 0 pass ready
+
+echo "==> #1272: a self-feeding cycle settled by stop-and-file (P2 only) passes"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
+write_integration_cycle 2 "$head_sha" 2 P2 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
+run_gate_recheck_clean --integrator-result "$cycle2_result" --integration-cap 4
+assert_gate 0 pass ready
+
+echo "==> #1272: a tell cycle holding a confirmed P1 settled by filing keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
+write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
+run_gate_recheck_clean --integrator-result "$cycle2_result" --integration-cap 4
+assert_gate 1 fail integration-gating-findings
+
+echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
+write_defaults
+write_record_with_integration_entries 2
+write_integration_cycle 1 3333333333333333333333333333333333333333 1 P1 fix none
+write_integration_cycle 2 "$stale_head_sha" 2 P2 fix '{"attacks_remediation":true,"remedy":"retain"}'
+write_integration_cycle 3 "$head_sha" 3 P2 decline '{"attacks_remediation":false}'
+cycle3_result="$(write_integrator_result cycle3-clean \
+    "$(jq -cn --arg head "$head_sha" '{head:$head, cycle:3, attempt:1,
+        trigger_comment_id:"1", exit_code:0,
+        accepted:{surface:"review", id:"1", reviewed_commit:$head}}')")"
+run_gate_recheck_clean --integrator-result "$cycle3_result" --integration-cap 4
+assert_gate 2 indeterminate integration-exit-indeterminate
+grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
+    fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
+
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

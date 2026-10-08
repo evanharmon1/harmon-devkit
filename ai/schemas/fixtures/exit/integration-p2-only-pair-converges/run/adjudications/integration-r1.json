@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-integration-p2-only-pair-converges",
+  "stage": "integration",
+  "round": 1,
+  "reviewed_head": "0101010101010101010101010101010101010101",
+  "adjudications": [
+    {
+      "finding_id": "integration-r1-codex-cloud-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "adjudicated P2 for the fixture",
+      "evidence": "fixture evidence",
+      "override": null
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 2,
+  "run_id": "run-integration-late-human-p1-breaks-streak",
+  "stage": "integration",
+  "round": 2,
+  "reviewed_head": "0202020202020202020202020202020202020202",
+  "adjudications": [
+    {
+      "finding_id": "integration-r2-codex-cloud-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P2",
+      "disposition": "decline",
+      "reason": "adjudicated P2 for the fixture",
+      "evidence": "fixture evidence",
+      "override": null,
+      "checkpoint": {
+        "attacks_remediation": false
+      }
+    }
+  ]
+}
