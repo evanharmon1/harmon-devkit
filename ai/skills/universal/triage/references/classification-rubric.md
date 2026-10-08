@@ -40,8 +40,9 @@ Agent assistance does not change that decision; one human box on primarily
 agent work does not by itself require the label. Follow harmon-init's **Human
 work** paragraph in
 [docs/project-management.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/project-management.md).
-This label does not replace Impact, Risk, Complexity, or Tier. Agents may add
-it. Triage may remove it only for a non-collector without a `[HUMAN]` majority
+Count every checkbox line in the acceptance-criteria section at any indentation,
+including checked and untagged items in the total. This label does not replace
+Impact, Risk, Complexity, or Tier. Agents may add it. Triage may remove it only for a non-collector without a `[HUMAN]` majority
 whose remaining work the classifier judges agent-completable, through the guarded
 helper; every removal is reported (SKILL.md step 2e). Filing never removes it.
 Collectors keep `human` + `umbrella`.

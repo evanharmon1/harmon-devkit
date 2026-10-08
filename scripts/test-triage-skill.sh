@@ -3274,40 +3274,45 @@ cat >"$stub_dir/issues-open.json" <<'JSON'
   "body":"## Acceptance criteria\n\n- [x] [HUMAN] Approve access"},
  {"number":609,"title":"(agent): Implement legacy feature",
   "labels":[],"updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n- [ ] Implement feature\n- [x] Test feature"},
- {"number":610,"title":"(accounts): Complete human setup","labels":[],
-  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n- [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"},
- {"number":611,"title":"(agent): Implement nested feature","labels":[],
-  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n  - [ ] [CI] Implement feature\n  - [x] [CI] Test feature"},
- {"number":612,"title":"(accounts): Complete star parent setup","labels":[],
-  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n* [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"},
- {"number":613,"title":"(accounts): Complete plus parent setup","labels":[],
-  "updatedAt":"2026-01-01T00:00:00Z","assignees":[],
-  "body":"## Acceptance criteria\n\n+ [ ] [CI] Prepare setup\n  - [ ] [HUMAN] Approve access\n  - [x] [HUMAN] Choose account"}]
+  "body":"## Acceptance criteria\n\n- [ ] [HUMAN] Try by hand\n- [ ] Implement feature\n- [x] Test feature"}
+]
 JSON
-# Count the shared parser's marker spacing, including optional nested tasks.
-jq '. + [
-    {number:617,title:"(accounts): Approve spaced tasks",labels:[{name:"human"}],
+# One table expresses the any-indentation invariant and preserves marker grammar.
+human_counter_cases="$tmp/human-counter-cases.json"
+cat >"$human_counter_cases" <<'JSON'
+[
+ {"number":610,"case":"flush-left","human":2,
+  "lines":["- [ ] [CI] Test","- [ ] [HUMAN] Approve","- [x] [HUMAN] Choose"]},
+ {"number":611,"case":"two-space CI majority","human":1,
+  "lines":["- [ ] [HUMAN] Approve","  - [ ] [CI] Test","  - [x] [CI] Ship"]},
+ {"number":612,"case":"four-space","human":2,
+  "lines":["- [ ] [CI] Test","    - [ ] [HUMAN] Approve","    - [x] [HUMAN] Choose"]},
+ {"number":613,"case":"three-space plus parent","human":2,
+  "lines":["+ [ ] [CI] Test","   - [ ] [HUMAN] Approve","   - [x] [HUMAN] Choose"]},
+ {"number":617,"case":"tab indentation","human":2,
+  "lines":["- [ ] [CI] Test","\t- [ ] [HUMAN] Approve","\t- [x] [HUMAN] Choose"]},
+ {"number":618,"case":"mixed depth","human":2,
+  "lines":["- [ ] [CI] Test","    - [ ] [HUMAN] Approve","\t  - [x] [HUMAN] Choose"]},
+ {"number":619,"case":"one-space star parent","human":2,
+  "lines":["* [ ] [CI] Test"," - [ ] [HUMAN] Approve"," - [x] [HUMAN] Choose"]},
+ {"number":620,"case":"two-space HUMAN majority","human":2,
+  "lines":["- [ ] [CI] Test","  - [ ] [HUMAN] Approve","  - [x] [HUMAN] Choose"]},
+ {"number":621,"case":"multi-space marker separator","human":2,
+  "lines":["- [ ] [CI] Test","-   [ ] [HUMAN] Approve","  -   [x] [HUMAN] Choose"]},
+ {"number":622,"case":"tab marker separator","human":2,
+  "lines":["- [ ] [CI] Test","-\t[ ] [HUMAN] Approve","  -\t[x] [HUMAN] Choose"]}
+]
+JSON
+jq --slurpfile cases "$human_counter_cases" '. + [$cases[0][] |
+    {number, title:("(accounts): Verify " + .case), labels:[],
      updatedAt:"2026-01-01T00:00:00Z",assignees:[],
-     body:"## Acceptance criteria\n-   [ ] [HUMAN] Approve\n  -   [x] [HUMAN] Choose\n- [ ] [CI] Test"},
-    {number:618,title:"(accounts): Approve tab tasks",labels:[{name:"human"}],
-     updatedAt:"2026-01-01T00:00:00Z",assignees:[],
-     body:"## Acceptance criteria\n-\t[ ] [HUMAN] Approve\n  -\t[x] [HUMAN] Choose\n- [ ] [CI] Test"}]' \
+     body:("## Acceptance criteria\n" + (.lines | join("\n")))}]' \
     "$stub_dir/issues-open.json" >"$stub_dir/issues-open.next"
 mv "$stub_dir/issues-open.next" "$stub_dir/issues-open.json"
 [ "$(run "$scan" --repo "$repo" --manifest "$human_manifest" --all)" = 0 ] ||
     fail "human scan must pass: $(cat "$tmp/out")"
 human_scan="$tmp/human-scan.json"
 cp "$tmp/out" "$human_scan"
-for number in 617 618; do
-    jq -e --argjson n "$number" '.open[] | select(.number == $n)
-        | .human_work.human_criteria == 2 and .human_work.total_criteria == 3
-          and .human_work.recommendation == "human"' "$human_scan" >/dev/null ||
-        fail "multi-space/tab human tasks must count, including nested and checked ones"
-done
 jq -e '.open[] | select(.number == 601) | .human_work.recommendation == "human"
     and .human_work.human_criteria == 2 and .human_work.total_criteria == 2
     and (.flags | index("human-label-missing") != null)' "$human_scan" >/dev/null ||
@@ -3319,27 +3324,34 @@ jq -e '.open[] | select(.number == 609) | .human_work.recommendation == "review"
     and .human_work.human_criteria == 1 and .human_work.total_criteria == 3
     and (.flags | index("human-label-missing") == null)' "$human_scan" >/dev/null ||
     fail "one human box among two untagged boxes must not recommend human"
-nested_failures=0
-for number in 610 611 612 613; do
-    if [ "$number" != 611 ]; then
-        expected=human
-        human_count=2
-    else
+while IFS=$'\t' read -r number human_count case_name; do
+    expected=human
+    status=4
+    if [ "$human_count" -eq 1 ]; then
         expected=review
-        human_count=1
+        status=0
     fi
-    if ! jq -e --argjson n "$number" --arg expected "$expected" \
+    jq -e --argjson n "$number" --arg expected "$expected" \
         --argjson human_count "$human_count" '.open[] | select(.number == $n)
         | .human_work.recommendation == $expected
           and .human_work.total_criteria == 3
           and .human_work.human_criteria == $human_count
           and ((.flags | index("human-label-missing") != null) == ($expected == "human"))' \
-        "$human_scan" >/dev/null; then
-        echo "nested majority fixture $number failed: expected $expected with total 3" >&2
-        nested_failures=1
+        "$human_scan" >/dev/null || fail "any-indentation scan count: $case_name"
+    jq --argjson n "$number" '.[] | select(.number == $n)
+        | .labels += [{name:"human"}]' "$stub_dir/issues-open.json" \
+        >"$stub_dir/issue-$number.json"
+    : >"$GH_STUB_LOG"
+    [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue "$number" \
+        --manifest "$human_manifest" --remove human --execute)" = "$status" ] ||
+        fail "any-indentation apply guard: $case_name: $(cat "$tmp/out")"
+    if [ "$status" -eq 4 ]; then
+        grep -q '\[HUMAN\] majority' "$tmp/out" || fail "majority refusal: $case_name"
+        grep -q '^issue edit' "$GH_STUB_LOG" && fail "majority must retain human: $case_name"
+    else
+        grep -q "APPLIED remove 'human'" "$tmp/out" || fail "CI majority removal: $case_name"
     fi
-done
-[ "$nested_failures" = 0 ] || fail "nested criteria must count in both human majority directions"
+done < <(jq -r '.[] | [.number, .human, .case] | @tsv' "$human_counter_cases")
 jq -e '.open[] | select(.number == 603) | .human_work.collector
     and (.flags | index("human-removal-candidate") == null)' "$human_scan" >/dev/null ||
     fail "collector must not become a removal candidate"
@@ -3409,7 +3421,7 @@ done
 
 echo "==> human removal: live mechanical guards and permissions"
 # Recreate fixtures independently of overlays from the combined apply above.
-for number in 601 603 604 605 606 607 610 611 612 613 617 618; do
+for number in 601 603 604 605 606 607; do
     jq --argjson n "$number" '.[] | select(.number == $n)
         | .labels += [{name:"human"}] | .labels |= unique_by(.name)' \
         "$stub_dir/issues-open.json" >"$stub_dir/issue-$number.json"
@@ -3422,16 +3434,16 @@ for number in 603 605 606 607; do
     grep -q 'collector title' "$tmp/out" || fail "refusal must name collector guard"
     grep -q '^issue edit' "$GH_STUB_LOG" && fail "collector refusal must make no writes"
 done
-for number in 601 610 612 613 617 618; do
+for number in 601; do
     : >"$GH_STUB_LOG"
     [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue "$number" \
         --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
-        fail "human majority #$number must refuse removal (including nested criteria)"
+        fail "human-only #$number must refuse removal"
     grep -q '\[HUMAN\] majority' "$tmp/out" || fail "refusal must name majority guard"
     grep -q '^issue edit' "$GH_STUB_LOG" && fail "majority refusal must make no writes"
 done
-[ "$(run "$apply" label --repo "$repo" --issue 611 --manifest "$human_manifest" \
-    --remove human)" = 0 ] || fail "nested CI majority must allow removal"
+[ "$(run "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
+    --remove human)" = 0 ] || fail "dry-run removal must pass"
 grep -q "DRY-RUN would remove 'human'" "$tmp/out" || fail "dry-run must plan human removal"
 [ "$(run "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
     --add human --remove human)" = 2 ] || fail "contradictory human request must refuse"

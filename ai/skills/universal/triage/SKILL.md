@@ -135,9 +135,10 @@ Read `$SCRATCH/scan.json`. It contains everything precomputed:
   `completion_reasons` (machine-readable strings backing the
   `completion-candidate:*` flags below), and `flags`.
 - `human_work` on each open issue — whether it is `labelled`, a `collector`,
-  and the counts `human_criteria` / `total_criteria` (all acceptance-criteria
-  column-0 and two-space-nested task items, any list marker, including
-  checked and untagged items in the total).
+  and the counts `human_criteria` / `total_criteria`: every checkbox line in
+  the acceptance-criteria section counts at **any indentation** (leading spaces
+  and tabs are stripped before applying the shared checkbox grammar), including
+  checked and untagged items in the total.
   Its `recommendation` is `human` when `[HUMAN]` boxes are a majority of that total or for a
   collector, otherwise `review`: the classifier still decides from the work.
   `--all` includes fully classified issues so the human decision is not skipped.
@@ -351,8 +352,8 @@ it. This follows harmon-init's **Human work** paragraph in
 Read the body when the scan's counts and title do not settle it; that read spends
 the same budget as the other axes. One `[HUMAN]` box among mostly agent criteria
 does not by itself make the issue human work. Count all criteria, including
-checked ones; do not relabel agent delivery as human merely because only a manual
-follow-up remains.
+checked ones, at any indentation; do not relabel agent delivery as human merely
+because only a manual follow-up remains.
 
 For primarily human work without `human`, include `--add human` in the **same**
 apply call as 2a–2d, within the same `task triage -- --execute` run. A collector
@@ -438,7 +439,8 @@ finding — treat them as ambiguous and leave the issue unreported on this
 axis: a "done"/"delivered"-shaped comment (a comment is never trusted
 evidence, whoever posted it — including a comment on a merged PR that
 mentions the issue: `delivery` requires the PR's own title or body to name
-it); a nested or indented task item (criteria are flush-left); a merged PR sitting beside an unticked `[CI]`
+it); an indented task item as a completion signal (the human-work counter still
+counts every checkbox line at any indentation); a merged PR sitting beside an unticked `[CI]`
 or an untagged criterion (that is partial delivery, not completion); an
 issue with no acceptance criteria at all; a merged PR from a different
 repository; and a closing-keyword PR that merged while the issue stayed
