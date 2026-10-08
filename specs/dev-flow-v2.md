@@ -388,7 +388,7 @@ adjudicated rounds and `[convergence]`:
 | Outcome | Meaning | Orchestrator may |
 |---|---|---|
 | `continue` | no exit predicate satisfied; cap not reached | dispatch the next round — a fix round when any disposition changes code, otherwise another pass from the stage's confidence role on the unchanged head (a clean round under `min_rounds` changes nothing to fix) |
-| `converged` | **zero adjudicated P0/P1 of any class** (a universal precondition, not a predicate), an exit predicate satisfied, and `min_rounds` met | advance; or override **upward** (one more round) with a recorded reason |
+| `converged` | **zero adjudicated P0/P1 of any class** (a universal precondition, not a predicate), an exit predicate satisfied, and — for the `empty_round` exit only — `min_rounds` met (two consecutive zero-P0/P1 rounds converge regardless of the floor) | advance; or override **upward** (one more round) with a recorded reason |
 | `diverging` | adjudicated P0/P1 findings are feeding on earlier rounds' fixes, and the cap is not reached | dispatch a fix round **only** with a `delete` or `restructure` disposition on the `round:N` findings; otherwise the run stops with a blocker |
 | `capped` | cap reached | advance if zero adjudicated P0/P1 remain **and the final round reviewed the current head** (**capped-clean**); otherwise **escalate to a human** — no PR is opened, and no further round is dispatched whatever else holds. A P2 found by the final round is therefore `defer`red to integration rather than fixed pre-PR, since no round remains to review the fix |
 
@@ -983,7 +983,7 @@ absorbed by the issue that carries their criteria;
 
 - **Given** a challenger pass in challenge or a reviewer pass in review returns zero findings
 - **When** the orchestrator runs the exit script
-- **Then** the outcome is `converged` only if `min_rounds` is met, and the producing role's own recommendation is not consulted
+- **Then** the outcome is `converged` with reason `empty_round` only if `min_rounds` is met, or on the two-consecutive exit when the preceding round was also zero-P0/P1, and the producing role's own recommendation is not consulted
 
 ### Scenario: provenance is verified, not trusted
 
