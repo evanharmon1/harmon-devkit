@@ -658,14 +658,16 @@ The v2 shape is:
 
   Resolution precedence is normative: an explicit operator instruction from
   an attributable channel (never repository content) overrides labels (the
-  scoped `tier:<role>:*` and `rigor:*` overrides), which override the rigor
-  profile or configured defaults, which override the built-in fallback. An
-  unscoped `tier:<value>` label is the issue's stored Tier: with `tier:pinned`
-  and trusted provenance it is the pinned Tier, which sets the implementer only
-  and ranks above rigor; otherwise it is a cache of the derived Tier, which sets
-  the implementer only and ranks below rigor. Tier conflicts resolve
-  strongest-wins by `tier_order`. Strategy conflicts are ambiguous: an
-  interactive
+  scoped `tier:<role>:*`, `rigor:*`, and `strategy:*` overrides), which
+  override the rigor profile or configured defaults, which override the
+  built-in fallback. An unscoped `tier:<value>` label is the issue's stored
+  Tier: with `tier:pinned` and trusted provenance it is the pinned Tier, which
+  sets the implementer only and ranks above rigor; otherwise it is a cache of
+  the derived Tier, which sets the implementer only and ranks below rigor.
+  Conflicting scoped `tier:<role>:*` labels resolve strongest-wins by
+  `tier_order`; more than one unqualified `tier:<value>` label (with or without
+  `tier:pinned`) is ambiguous and passes no Tier. Strategy conflicts are
+  ambiguous: an interactive
   resolver asks, while unattended automation falls back to `default_strategy`
   with a warning. Labels remain advisory and never outrank an explicit
   instruction: an interactive session requires operator confirmation before

@@ -445,7 +445,7 @@
       "source": "inline",
       "writers": ["human", "agent", "tool:github-actions"],
       "writer_note": "agents, in the write that sets Risk or Complexity, and the GitHub Actions reconciler; humans may set one, and pin it with `tier:pinned`",
-      "readers": "humans and agents — the issue's derived (or pinned) Tier, an input to the implementer tier; models are classified in `agent-registry.json` (ADR 0006/0007)",
+      "readers": "humans and agents — readers recompute the derived Tier from Risk × Complexity, so the label is a cache (a stale value is ignored); with `tier:pinned` and trusted provenance, the label is the pinned Tier, which sets the implementer; models are classified in `agent-registry.json` (ADR 0006/0007)",
       "lifecycle": "durable",
       "lifecycle_note": "a materialized cache — rewritten whenever Risk or Complexity changes and by the scheduled reconciler (daily on personal-account repositories, monthly on organization ones), recomputed by readers when absent; never rewritten while `tier:pinned` is present",
       "trust_note": "provisioned; **read by agents** — a pin outranks the derived Tier and both rank below an operator instruction; resolved against `.devflow.toml`'s `tier_order`; arms nothing",
@@ -475,7 +475,12 @@
         },
         {
           "value": "adaptive",
-          "description": "Model tier: cheap preflight classifies, then chooses or escalates"
+          "description": "Model tier: cheap preflight classifies, then chooses or escalates",
+          "retired": true,
+          "writer_note": "nobody — retired 2026-10-01",
+          "readers": "humans — retired, see the derived Tier (`tier:<value>`)",
+          "trust_note": "retired — no rung on the Tier scale (ADR 2026-09-30 D8); never provisioned",
+          "lifecycle_note": "remove the label from each issue — it then resolves through its derived Tier — then use guarded `--prune`"
         },
         {
           "value": "pinned",

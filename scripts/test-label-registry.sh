@@ -515,8 +515,10 @@ check_tier() {
     [ "$(jq -c '.families[] | select(.family == "tier") | [.axis, .exclusive, .writers]' "$manifest")" = '["strategy",false,["human","agent","tool:github-actions"]]' ] ||
         fail "$manifest tier must stay a non-exclusive strategy-axis family writable by human, agent and tool:github-actions"
     got="$(jq -r '.families[] | select(.family == "tier") | [.values[] | select(.retired != true) | .value] | join(",")' "$manifest")"
-    [ "$got" = "local,economy,standard,frontier,apex,adaptive,pinned" ] ||
-        fail "$manifest live tier values [$got] != local,economy,standard,frontier,apex,adaptive,pinned"
+    [ "$got" = "local,economy,standard,frontier,apex,pinned" ] ||
+        fail "$manifest live tier values [$got] != local,economy,standard,frontier,apex,pinned"
+    [ "$(jq -c '.families[] | select(.family == "tier") | .values[] | select(.value == "adaptive") | .retired' "$manifest")" = "true" ] ||
+        fail "$manifest tier:adaptive must be marked retired"
     [ "$(jq -c '.families[] | select(.family == "tier") | .values[] | select(.value == "pinned") | .writers' "$manifest")" = '["human"]' ] ||
         fail "$manifest tier:pinned must be human-only"
     tier_notes="$(jq -r '.families[] | select(.family == "tier") | [.writer_note, .readers, .lifecycle_note] | .[]' "$manifest")"

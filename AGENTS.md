@@ -464,8 +464,11 @@ not authorized (attribution to *some* actor is not authorization).
 provenance end-to-end from its own trusted-actor configuration, re-read
 immediately before acting, and otherwise falls back to the config default
 with a warning. An agent never applies a `rigor:*`, `strategy:*`, or
-`tier:*` label to itself.
-**Any off-default resolution, and any off-profile role tier, is
+`tier:*` label to itself — except the derived classification Tier: an
+unqualified `tier:<value>` is a cache of Risk × Complexity (ADR 2026-09-30), so
+writing it records what the issue is, not how it is run. Choosing an
+execution-policy tier for oneself (`tier:<role>:*`, `tier:pinned`) stays
+forbidden. **Any off-default resolution, and any off-profile role tier, is
 disclosed in the PR body** — both are a visible line for the human reviewer,
 never something inferred from behavior.
 
