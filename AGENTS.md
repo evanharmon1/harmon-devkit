@@ -424,10 +424,13 @@ without a reviewer reading it is precisely what a human must be able to see.
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,
 `challenger_tier`, `reviewer_tier`, and `integrator_tier`; `[role.*]` supplies
-the role's baseline tier and ordered family/harness preferences. Unqualified
-`tier:<value>` input targets the implementer; `tier:<role>:<value>` targets
-one of those five roles. Resolve conflicts on `tier_order`, disclose every
-off-profile choice, and never silently change model family or vendor.
+the role's baseline tier and ordered family/harness preferences. Only an
+unqualified operator tier instruction targets the implementer;
+`tier:<role>:<value>` targets exactly one role. An unqualified `tier:<value>`
+label is not a role override — it is the issue's stored Tier (a cache of the
+derived Tier, or, with `tier:pinned`, the pinned Tier). Resolve conflicts on
+`tier_order`, disclose every off-profile choice, and never silently change
+model family or vendor.
 
 **When the change under review edits `.devflow.toml`, `agent-registry.json`,
 or the policy reader itself**, resolve every parameter from the merge-base
@@ -461,8 +464,11 @@ not authorized (attribution to *some* actor is not authorization).
 provenance end-to-end from its own trusted-actor configuration, re-read
 immediately before acting, and otherwise falls back to the config default
 with a warning. An agent never applies a `rigor:*`, `strategy:*`, or
-`tier:*` label to itself.
-**Any off-default resolution, and any off-profile role tier, is
+`tier:*` label to itself — except the derived classification Tier: an
+unqualified `tier:<value>` is a cache of Risk × Complexity (ADR 2026-09-30), so
+writing it records what the issue is, not how it is run. Choosing an
+execution-policy tier for oneself (`tier:<role>:*`, `tier:pinned`) stays
+forbidden. **Any off-default resolution, and any off-profile role tier, is
 disclosed in the PR body** — both are a visible line for the human reviewer,
 never something inferred from behavior.
 

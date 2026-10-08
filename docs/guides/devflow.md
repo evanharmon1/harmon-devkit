@@ -73,9 +73,11 @@ Each `[rigor.<level>]` profile points to:
 
 `rigor_order` is the only ranking of rigor names. The five `*_tier` fields use
 `tier_order`; role floors and other cross-field invariants are enforced by the
-reader. An unqualified `tier:<value>` override targets the implementer. A
-scoped `tier:<role>:<value>` override targets exactly one of the five roles.
-Every off-profile role choice is visible in the PR body.
+reader. Only an unqualified operator tier instruction targets the implementer;
+`tier:<role>:<value>` targets exactly one role. An unqualified `tier:<value>`
+label is not a role override — it is the issue's stored Tier (a cache of the
+derived Tier, or, with `tier:pinned`, the pinned Tier). Every off-profile role
+choice is visible in the PR body.
 
 ## Rounds and convergence
 

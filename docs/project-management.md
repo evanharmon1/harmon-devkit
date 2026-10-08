@@ -480,16 +480,19 @@ the taxonomy table below is generated from) and the starter set is created by
   more-or-less continuum, topologies have no rank between them, so a
   conflict is a resolution error rather than a silent pick.
 - **Tier** — which model-routing stratum works a specific **role** —
-  orchestrator, implementer, reviewer, challenger, or integrator — advisory,
-  human-written, and inert
-  until a consumer resolves it under its own trust model. An unqualified
-  `tier:<value>` refines the **implementer** role only; a scoped
-  `tier:orchestrator:<value>` / `tier:implementer:<value>` /
+  orchestrator, implementer, reviewer, challenger, or integrator — advisory
+  and inert until a consumer resolves it under its own trust model. An
+  unqualified `tier:<value>` label is the issue's stored **Tier**: a cache
+  of the Tier derived from Risk × Complexity, written by agents and the
+  reconciler, or, with `tier:pinned`, the Tier a human pinned; it is not a
+  role override. Only an unqualified operator tier instruction targets the
+  implementer. The scoped `tier:<role>:<value>` labels
+  (`tier:orchestrator:<value>` / `tier:implementer:<value>` /
   `tier:reviewer:<value>` / `tier:challenger:<value>` /
-  `tier:integrator:<value>` targets exactly the role it names. Absent any
-  override, all five roles come from the resolved rigor level. All 25
-  scoped values (5 roles × 5 concrete tiers) are **provisioned** like every
-  other tier value, not created on demand.
+  `tier:integrator:<value>`) target exactly the role they name and stay
+  human-written. Absent any override, all five roles come from the resolved
+  rigor level. All 25 scoped values (5 roles × 5 concrete tiers) are
+  **provisioned** like every other tier value, not created on demand.
 
 The prose above describes what each family *means*; the actual values — names,
 colors, writers, lifecycle — live in `label-registry.json` and appear in the
@@ -736,8 +739,10 @@ deliberately leaves it alone.
 | `domain:platform` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — split across this repo's own domains; no longer provisioned | re-label its issues to the repo-specific domains, then delete the live label |
 | `area:{ci,docs,deps,build,tests,tasks,release,devcontainer,pm,skills,gauntlet,templates,agents,security,scripts,shepherd,triage,track-work,standardize-repo,design,session-flow,foreman}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; area = solution space, domain = problem space, layer = stack slice |
 | `rigor:{cursory,light,standard,thorough,deep,forensic}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a rounds policy, five role tiers, and a breadth envelope; arms nothing | set when the default rigor is wrong for the change; survives the work |
-| `tier:{local,economy,standard,frontier,apex,adaptive}` | humans, at triage or planning — never an agent on itself | humans and agents — overrides the implementer tier; models are classified in `agent-registry.json` (ADR 0006/0007) | provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing | set when the default tier would be wrong; strongest-wins resolution per ADR 0006 |
-| `tier:<role>:<tier>` | humans, at triage or planning — never an agent on itself | humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>` which targets the implementer only | provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing | set when one role's tier should differ from the rigor's own profile; strongest-wins per role |
+| `tier:{local,economy,standard,frontier,apex}` | agents, in the write that sets Risk or Complexity, and the GitHub Actions reconciler; humans may set one, and pin it with `tier:pinned` | humans and agents — readers recompute the derived Tier from Risk × Complexity, so the label is a cache (a stale value is ignored); with `tier:pinned` and trusted provenance, the label is the pinned Tier, which sets the implementer; models are classified in `agent-registry.json` (ADR 0006/0007) | provisioned; **read by agents** — a pin outranks the derived Tier and both rank below an operator instruction; resolved against `.devflow.toml`'s `tier_order`; arms nothing | a materialized cache — rewritten whenever Risk or Complexity changes and by the scheduled reconciler (daily on personal-account repositories, monthly on organization ones), recomputed by readers when absent; never rewritten while `tier:pinned` is present |
+| `tier:adaptive` (**retired**) | nobody — retired 2026-10-01 | humans — retired, see the derived Tier (`tier:<value>`) | retired — no rung on the Tier scale (ADR 2026-09-30 D8); never provisioned | remove the label from each issue — it then resolves through its derived Tier — then use guarded `--prune` |
+| `tier:pinned` | humans only, from the GitHub UI, together with setting the Tier | agents and automation — a pinned Tier is never rewritten | provisioned; **provenance-checked** — an interactive session confirms a pin the operator has not authorized, and unattended automation honors one only after verifying who applied it (ADR 2026-09-30 D5) | added with the Tier value; removed to hand the Tier back to derivation; a human pinning a different tier replaces the existing Tier label first, since two tier values at once is a conflict for the reader to resolve, never one a writer creates |
+| `tier:<role>:<tier>` | humans, at triage or planning — never an agent on itself | humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>`, which is the issue's stored Tier rather than a role override | provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing | set when one role's tier should differ from the rigor's own profile; strongest-wins per role |
 | `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` (**retired**) | nobody — renamed to strategy:* | humans — retired, see `strategy:*` | retired — execution topology renamed to the `strategy` family; never provisioned | migrate each with guarded `--prune` and repeatable `--migrate method:<v>=strategy:<v>` |
 | `strategy:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage or planning — never an agent on itself | agents, when entering the Dev Loop — Foreman does not consume it yet (out of scope here) | provisioned; **read by agents** — selects an execution topology, arms nothing | set when the default strategy is wrong for the change; survives the work |
 | `suggest:<family>` | humans or agents, at planning | humans, the Agent queue view | provisioned from the registry (family level only); advisory — arms nothing | set at planning; survives the work and is never rewritten by a claim |
@@ -755,6 +760,7 @@ deliberately leaves it alone.
 | `type:<commit-type>` | a human, optionally | Foreman, to pick the unit's conventional-commit type | **not provisioned** — an optional override of the native issue `Type` | applied when the native type is absent or wrong |
 | `autorelease: pending`, `autorelease: tagged` | release-please | release-please | **tool-owned, auto-created**; note the space after the colon — not part of the `family:value` convention | pending on the open release PR, tagged once the release is cut |
 | `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix` | GitHub, at repo creation | humans | not provisioned, never deleted by setup | adopted; leave in place — inventory reporting and guarded pruning exclude it |
+
 <!-- label-taxonomy:end -->
 
 One nuance the table compresses: `claim:claude` in a repo with **no label

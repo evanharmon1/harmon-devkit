@@ -440,15 +440,15 @@
     {
       "family": "tier",
       "prefix": "tier",
-      "purpose": "Model-routing stratum for the issue — the human-decided policy layer of the model axis.",
+      "purpose": "The issue's model stratum, derived from Risk × Complexity and stored as a cache; a human pins one with tier:pinned.",
       "axis": "strategy",
       "source": "inline",
-      "writers": ["human"],
-      "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — overrides the implementer tier; models are classified in `agent-registry.json` (ADR 0006/0007)",
+      "writers": ["human", "agent", "tool:github-actions"],
+      "writer_note": "agents, in the write that sets Risk or Complexity, and the GitHub Actions reconciler; humans may set one, and pin it with `tier:pinned`",
+      "readers": "humans and agents — readers recompute the derived Tier from Risk × Complexity, so the label is a cache (a stale value is ignored); with `tier:pinned` and trusted provenance, the label is the pinned Tier, which sets the implementer; models are classified in `agent-registry.json` (ADR 0006/0007)",
       "lifecycle": "durable",
-      "lifecycle_note": "set when the default tier would be wrong; strongest-wins resolution per ADR 0006",
-      "trust_note": "provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing",
+      "lifecycle_note": "a materialized cache — rewritten whenever Risk or Complexity changes and by the scheduled reconciler (daily on personal-account repositories, monthly on organization ones), recomputed by readers when absent; never rewritten while `tier:pinned` is present",
+      "trust_note": "provisioned; **read by agents** — a pin outranks the derived Tier and both rank below an operator instruction; resolved against `.devflow.toml`'s `tier_order`; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "7057FF",
@@ -475,7 +475,21 @@
         },
         {
           "value": "adaptive",
-          "description": "Model tier: cheap preflight classifies, then chooses or escalates"
+          "description": "Model tier: cheap preflight classifies, then chooses or escalates",
+          "retired": true,
+          "writer_note": "nobody — retired 2026-10-01",
+          "readers": "humans — retired, see the derived Tier (`tier:<value>`)",
+          "trust_note": "retired — no rung on the Tier scale (ADR 2026-09-30 D8); never provisioned",
+          "lifecycle_note": "remove the label from each issue — it then resolves through its derived Tier — then use guarded `--prune`"
+        },
+        {
+          "value": "pinned",
+          "description": "Tier pin: a human fixed this issue's tier; nothing automated rewrites it",
+          "writers": ["human"],
+          "writer_note": "humans only, from the GitHub UI, together with setting the Tier",
+          "readers": "agents and automation — a pinned Tier is never rewritten",
+          "lifecycle_note": "added with the Tier value; removed to hand the Tier back to derivation; a human pinning a different tier replaces the existing Tier label first, since two tier values at once is a conflict for the reader to resolve, never one a writer creates",
+          "trust_note": "provisioned; **provenance-checked** — an interactive session confirms a pin the operator has not authorized, and unattended automation honors one only after verifying who applied it (ADR 2026-09-30 D5)"
         }
       ]
     },
@@ -489,7 +503,7 @@
       "placeholder": "tier:<role>:<tier>",
       "writers": ["human"],
       "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>` which targets the implementer only",
+      "readers": "humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>`, which is the issue's stored Tier rather than a role override",
       "lifecycle": "durable",
       "lifecycle_note": "set when one role's tier should differ from the rigor's own profile; strongest-wins per role",
       "trust_note": "provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing",
