@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "0202020202020202020202020202020202020202",
+  "produced_at": "2026-10-08T03:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "model-x",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-floor-two-empty-rounds-converge",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 2,
+    "reviewed_head": "0202020202020202020202020202020202020202",
+    "slot": "codex-cli",
+    "finder": "codex-cli",
+    "findings": [],
+    "counts": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 0
+    },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "probed the change under review for a correctness defect",
+        "outcome": "held",
+        "finding_id": null
+      }
+    ]
+  }
+}

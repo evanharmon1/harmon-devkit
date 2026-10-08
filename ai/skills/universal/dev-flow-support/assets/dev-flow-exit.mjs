@@ -1577,32 +1577,38 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
           if (base.rounds_counted >= minRounds) {
             return { ...base, outcome: "converged", reason: "empty_round", action: "advance" };
           }
-        } else {
-          // A NONEMPTY clean round (findings exist but none are gating)
-          // needs a SECOND CONSECUTIVE clean round to converge — AGENTS.md
-          // "ends when two consecutive rounds adjudicate to zero P0 and
-          // zero P1 findings", and explicitly NOT via min_rounds ("min_rounds
-          // only governs the empty-round shortcut"). Post-merge cloud
-          // review, confirmed: this branch previously let ANY round satisfy
-          // convergence the moment rounds_counted >= minRounds, so with the
-          // common min_rounds = 1, a single nonempty all-P2 round converged
-          // immediately — never checking whether an earlier round was also
-          // clean.
-          // Array-adjacent, not round-number-adjacent, was wrong: if an
-          // intervening round was excluded from `retained` (ancestry
-          // incomparable/unknown), the array's previous ELEMENT is an
-          // earlier, non-consecutive round — e.g. retained = [round 1,
-          // round 3] with round 2 excluded, where round 1 is clean but is
-          // not round 3's immediate predecessor. That still let round 3
-          // converge on a confirmation that never actually happened.
-          // Shepherd-stage cloud finding, confirmed: require the array
-          // neighbor's OWN round number to be exactly one less, not merely
-          // its array position.
-          const previous = currentIndex > 0 ? retained[currentIndex - 1] : null;
-          const previousClean = previous && previous.round === latest.round - 1 && previous.status === "complete" && gatingFindings(previous).length === 0;
-          if (previousClean) {
-            return { ...base, outcome: "converged", reason: "predicates_satisfied", action: "advance" };
-          }
+        }
+        // Every other clean round — nonempty, or empty but below the floor —
+        // converges on the two-consecutive rule. An empty round below
+        // min_rounds used to return `continue` here without consulting the
+        // previous round, so two consecutive clean rounds failed to converge
+        // whenever the floor exceeded 2 (harmon-devkit#1240 challenge round 2;
+        // AGENTS.md: "Those rounds may be empty", "min_rounds constrains the
+        // empty-round exit alone").
+        // A clean round that does not take the empty-round exit
+        // needs a SECOND CONSECUTIVE clean round to converge — AGENTS.md
+        // "ends when two consecutive rounds adjudicate to zero P0 and
+        // zero P1 findings", and explicitly NOT via min_rounds ("min_rounds
+        // only governs the empty-round shortcut"). Post-merge cloud
+        // review, confirmed: this branch previously let ANY round satisfy
+        // convergence the moment rounds_counted >= minRounds, so with the
+        // common min_rounds = 1, a single nonempty all-P2 round converged
+        // immediately — never checking whether an earlier round was also
+        // clean.
+        // Array-adjacent, not round-number-adjacent, was wrong: if an
+        // intervening round was excluded from `retained` (ancestry
+        // incomparable/unknown), the array's previous ELEMENT is an
+        // earlier, non-consecutive round — e.g. retained = [round 1,
+        // round 3] with round 2 excluded, where round 1 is clean but is
+        // not round 3's immediate predecessor. That still let round 3
+        // converge on a confirmation that never actually happened.
+        // Shepherd-stage cloud finding, confirmed: require the array
+        // neighbor's OWN round number to be exactly one less, not merely
+        // its array position.
+        const previous = currentIndex > 0 ? retained[currentIndex - 1] : null;
+        const previousClean = previous && previous.round === latest.round - 1 && previous.status === "complete" && gatingFindings(previous).length === 0;
+        if (previousClean) {
+          return { ...base, outcome: "converged", reason: "predicates_satisfied", action: "advance" };
         }
       }
     }

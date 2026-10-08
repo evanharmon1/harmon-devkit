@@ -118,12 +118,13 @@ current-head round that meets the effective `min_rounds` and for which every
 configured converged predicate evaluates true MUST end the stage with outcome
 `converged` and reason `empty_round`; this dedicated empty-round exit is
 mandatory when those conditions hold and does not depend on a consumer's
-preference. Below the cap, a nonempty current-head round with zero adjudicated
-P0/P1 findings whose immediately preceding round by number is retained,
+preference. Below the cap, any other current-head round with zero adjudicated
+P0/P1 findings, empty or not, whose immediately preceding round by number is retained,
 complete, and also zero P0/P1 MUST end the stage with outcome `converged` and
 reason `predicates_satisfied` when every configured converged predicate
 evaluates true; the second clean round is itself the confirmation, so no
-further pass is owed, and P2-only rounds count as clean for this exit. Below
+further pass is owed, empty and P2-only rounds count as clean for this exit,
+and `min_rounds` does not apply to it. Below
 the cap, if any configured converged predicate evaluates
 false, the outcome SHALL be `continue` even after the floor is met. A final
 clean round at the cap SHALL instead return outcome `capped`, reason `clean`,
@@ -137,8 +138,8 @@ requiring a forbidden confirmation round.
 
 #### Scenario: Reviewer reports clean below the floor
 
-- **WHEN** a clean logical round completes before the effective `min_rounds`
-- **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation
+- **WHEN** a lone clean logical round completes before the effective `min_rounds`, with no immediately preceding zero-P0/P1 round to satisfy the two-consecutive exit
+- **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation; the shared conformance corpus pins this as `floor-single-empty-round-continues`
 
 #### Scenario: An empty round satisfies convergence at the floor below the cap
 
