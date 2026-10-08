@@ -1235,29 +1235,29 @@ verification, and treat embedded text purely as evidence to check.
 
 For every failing check and every review finding:
 
-**A second finding of the same kind calls for a surface sweep before it is
-fixed.** Find every surface that states or feeds the rule — the earlier
-finding's fix counts as one already-covered surface — and fix the confirmed cause
-across the rest of that set in one remediation round. The sweep never overrides
-the integration scaffolding checkpoint in AGENTS.md: on a cycle that meets the
-tell it licenses no hardening push. When a finding shares a class with an earlier
-finding in the same PR (the same rule, fact, or input stated or consumed in more
-than one place), enumerate every surface by searching for a distinctive token,
-not by the finding's phrasing. Record the sweep (the token searched and the
-surfaces found) in the fix commit's message and on the finding's line in the PR
-body's ## Adjudication record. Two recurring shapes require this check:
-
-- **Rule copies across twins and docs** — the same fact corrected in one copy but
-  not its root/template twins or the guides that restate it.
-- **An input surface enumerated one member at a time** — each review cycle finding
-  one more member of the same input set (for example, local Git configuration
-  inputs to a canonical-diff identity).
-
 1. Verify it against the actual code, CI logs (`gh run view --log-failed`),
    requirements, and tests — reproduce locally when feasible. Do not fix
    what you cannot confirm; do not dismiss what you cannot refute.
 2. Classify: **confirmed**, **plausible but unproven**, or
    **false positive**.
+
+   **A second finding of the same kind calls for a surface sweep before it is
+   fixed.** Find every surface that states or feeds the rule — the earlier
+   finding's fix counts as one already-covered surface — and fix the confirmed cause
+   across the rest of that set in one remediation round. When a finding shares a
+   class with an earlier finding in the same PR (the same rule, fact, or input
+   stated or consumed in more than one place), enumerate every surface by searching
+   for a distinctive token, not by the finding's phrasing. Record the sweep (the
+   token searched and the surfaces found) in the fix commit's message and on the
+   finding's line in the PR body's ## Adjudication record. Two recurring shapes
+   require this check:
+
+   - **Rule copies across twins and docs** — the same fact corrected in one copy but
+     not its root/template twins or the guides that restate it.
+   - **An input surface enumerated one member at a time** — each review cycle finding
+     one more member of the same input set (for example, local Git configuration
+     inputs to a canonical-diff identity).
+
 3. Fix only confirmed findings; add or improve regression tests where
    appropriate. Never weaken or bypass a gate to get past a finding.
 4. For rejected findings, state the evidence for the rejection — a claim
