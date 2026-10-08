@@ -1826,6 +1826,336 @@
           }
         }
       }
+    },
+    {
+      "name": "policy-dangling-symlink-refuses-fallback",
+      "basis": "absent",
+      "policy_entry": "dangling-symlink",
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "policy_unreadable",
+            "subject": "policy"
+          }
+        ]
+      }
+    },
+    {
+      "name": "policy-directory-refuses-fallback",
+      "basis": "absent",
+      "policy_entry": "directory",
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "policy_unreadable",
+            "subject": "policy"
+          }
+        ]
+      }
+    },
+    {
+      "name": "honored-pin-partial-reports-pinned-cache",
+      "basis": "branch",
+      "pin": {
+        "tier": "apex",
+        "marker_trusted": true,
+        "value_trusted": true
+      },
+      "issue": {
+        "risk": "high"
+      },
+      "expect": {
+        "exit": 0,
+        "result": {
+          "issue_tier": {
+            "status": "indeterminate",
+            "cache": "pinned"
+          },
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "pinned"
+            }
+          },
+          "pin": {
+            "status": "honored"
+          }
+        }
+      }
+    },
+    {
+      "name": "honored-pin-off-scale-risk-reports-pinned-cache",
+      "basis": "branch",
+      "pin": {
+        "tier": "apex",
+        "marker_trusted": true,
+        "value_trusted": true
+      },
+      "issue": {
+        "risk": "unknown",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "result": {
+          "issue_tier": {
+            "status": "indeterminate",
+            "cache": "pinned"
+          },
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "pinned"
+            }
+          },
+          "pin": {
+            "status": "honored"
+          }
+        }
+      }
+    },
+    {
+      "name": "honored-pin-off-scale-complexity-reports-pinned-cache",
+      "basis": "branch",
+      "pin": {
+        "tier": "apex",
+        "marker_trusted": true,
+        "value_trusted": true
+      },
+      "issue": {
+        "risk": "high",
+        "complexity": "unknown"
+      },
+      "expect": {
+        "exit": 0,
+        "result": {
+          "issue_tier": {
+            "status": "indeterminate",
+            "cache": "pinned"
+          },
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "pinned"
+            }
+          },
+          "pin": {
+            "status": "honored"
+          }
+        }
+      }
+    },
+    {
+      "name": "honored-pin-no-matrix-reports-pinned-cache",
+      "basis": "branch",
+      "pin": {
+        "tier": "apex",
+        "marker_trusted": true,
+        "value_trusted": true
+      },
+      "issue": {
+        "risk": "high",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "result": {
+          "issue_tier": {
+            "status": "indeterminate",
+            "cache": "pinned"
+          },
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "pinned"
+            }
+          },
+          "pin": {
+            "status": "honored"
+          }
+        }
+      },
+      "config_replacements": [
+        [
+          "[tier.matrix]\nxs = { trivial = \"local\",    low = \"local\",    medium = \"economy\",  high = \"standard\", critical = \"frontier\" }\ns  = { trivial = \"local\",    low = \"economy\",  medium = \"standard\", high = \"standard\", critical = \"frontier\" }\nm  = { trivial = \"economy\",  low = \"standard\", medium = \"standard\", high = \"frontier\", critical = \"apex\" }\nl  = { trivial = \"standard\", low = \"standard\", medium = \"frontier\", high = \"frontier\", critical = \"apex\" }\nxl = { trivial = \"frontier\", low = \"frontier\", medium = \"frontier\", high = \"apex\",     critical = \"apex\" }",
+          ""
+        ]
+      ]
+    },
+    {
+      "name": "derived-tier-requires-compatible-harness",
+      "basis": "branch",
+      "config_replacements": [
+        ["\"claude\", \"gpt\", \"gemini\"", "\"gpt\", \"claude\""],
+        [
+          "harnesses = [\"claude-code\", \"codex-cli\", \"antigravity\"]",
+          "harnesses = [\"claude-code\"]"
+        ]
+      ],
+      "registry_replacements": [
+        [
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
+        ]
+      ],
+      "issue": {
+        "risk": "critical",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "warning_diagnostics": [
+          {
+            "code": "tier-unachievable",
+            "subject": "implementer"
+          }
+        ],
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "derived"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "derived-tier-achievable-with-later-compatible-harness",
+      "basis": "branch",
+      "config_replacements": [
+        ["\"claude\", \"gpt\", \"gemini\"", "\"gpt\", \"claude\""],
+        [
+          "harnesses = [\"claude-code\", \"codex-cli\", \"antigravity\"]",
+          "harnesses = [\"claude-code\", \"codex-cli\"]"
+        ]
+      ],
+      "registry_replacements": [
+        [
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
+        ]
+      ],
+      "issue": {
+        "risk": "critical",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "warning_diagnostics": [],
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "derived"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "derived-tier-achievable-with-unrestricted-harnesses",
+      "basis": "branch",
+      "config_replacements": [
+        ["\"claude\", \"gpt\", \"gemini\"", "\"gpt\", \"claude\""],
+        ["harnesses = [\"claude-code\", \"codex-cli\", \"antigravity\"]", ""]
+      ],
+      "registry_replacements": [
+        [
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
+        ]
+      ],
+      "issue": {
+        "risk": "critical",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "warning_diagnostics": [],
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "derived"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "derived-tier-achievable-with-broker-harness",
+      "basis": "branch",
+      "config_replacements": [
+        ["\"claude\", \"gpt\", \"gemini\"", "\"gpt\", \"claude\""],
+        [
+          "harnesses = [\"claude-code\", \"codex-cli\", \"antigravity\"]",
+          "harnesses = [\"opencode\"]"
+        ]
+      ],
+      "registry_replacements": [
+        [
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
+        ]
+      ],
+      "issue": {
+        "risk": "critical",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "warning_diagnostics": [],
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "derived"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "derived-tier-unachievable-when-pool-excludes-compatible-harness",
+      "basis": "branch",
+      "config_replacements": [
+        ["\"claude\", \"gpt\", \"gemini\"", "\"gpt\", \"claude\""],
+        [
+          "harnesses = [\"claude-code\", \"codex-cli\", \"antigravity\"]",
+          "harnesses = [\"claude-code\", \"codex-cli\"]"
+        ],
+        ["[stage.implement]", "[stage.implement]\npool = [\"claude-code\"]"]
+      ],
+      "registry_replacements": [
+        [
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
+          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
+        ]
+      ],
+      "issue": {
+        "risk": "critical",
+        "complexity": "m"
+      },
+      "expect": {
+        "exit": 0,
+        "warning_diagnostics": [
+          {
+            "code": "tier-unachievable",
+            "subject": "implementer"
+          }
+        ],
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "source": "derived"
+            }
+          }
+        }
+      }
     }
   ]
 }
