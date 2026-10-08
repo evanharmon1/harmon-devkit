@@ -509,6 +509,28 @@ check_foreman_colors() {
 check_foreman_colors label-registry.json
 [ "$template_mode" = 1 ] && check_foreman_colors template/label-registry.json
 
+# tier: agent- and reconciler-writable cache, human pin, tier-role human-only.
+check_tier() {
+    local manifest="$1"
+    [ "$(jq -c '.families[] | select(.family == "tier") | [.axis, .exclusive, .writers]' "$manifest")" = '["strategy",false,["human","agent","tool:github-actions"]]' ] ||
+        fail "$manifest tier must stay a non-exclusive strategy-axis family writable by human, agent and tool:github-actions"
+    got="$(jq -r '.families[] | select(.family == "tier") | [.values[] | select(.retired != true) | .value] | join(",")' "$manifest")"
+    [ "$got" = "local,economy,standard,frontier,apex,adaptive,pinned" ] ||
+        fail "$manifest live tier values [$got] != local,economy,standard,frontier,apex,adaptive,pinned"
+    [ "$(jq -c '.families[] | select(.family == "tier") | .values[] | select(.value == "pinned") | .writers' "$manifest")" = '["human"]' ] ||
+        fail "$manifest tier:pinned must be human-only"
+    tier_notes="$(jq -r '.families[] | select(.family == "tier") | [.writer_note, .readers, .lifecycle_note] | .[]' "$manifest")"
+    if grep -qi 'never an agent on itself' <<<"$tier_notes"; then
+        fail "$manifest tier family still says agents never write it — the derived Tier cache is agent-written (ADR 2026-09-30 D4)"
+    fi
+    for fam in tier-role rigor strategy; do
+        [ "$(jq -c --arg f "$fam" '.families[] | select(.family == $f) | .writers' "$manifest")" = '["human"]' ] ||
+            fail "$manifest family $fam must stay human-only — only the derived Tier cache is agent-written"
+    done
+}
+check_tier label-registry.json
+[ "$template_mode" = 1 ] && check_tier template/label-registry.json
+
 # ── 3. migration lockfile (template repo only) ─────────────────────────────
 # The reviewed provisioned set per layer: the pre-manifest inline vocabulary,
 # plus (root) the families hand-seeded on 2026-08-13 with their exact
@@ -552,6 +574,7 @@ tier:standard|7057FF|Model tier: reliable general-purpose coding model first
 tier:frontier|7057FF|Model tier: opus-class heavyweights; no warm-up on weaker models
 tier:apex|7057FF|Model tier: mythos-class leading edge (fable, sol)
 tier:adaptive|7057FF|Model tier: cheap preflight classifies, then chooses or escalates
+tier:pinned|7057FF|Tier pin: a human fixed this issue's tier; nothing automated rewrites it
 strategy:oneshot|BF3989|Strategy: single agent, no separate plan phase
 strategy:plan|BF3989|Strategy: agent plans then implements; no human plan gate
 strategy:plan-approved|BF3989|Strategy: plan requires human approval before implementation
