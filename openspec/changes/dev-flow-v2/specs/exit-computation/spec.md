@@ -106,8 +106,9 @@ outcome.
 ### Requirement: Convergence is gated by current-head cleanliness
 
 `converged` SHALL require zero adjudicated P0 or P1 findings of every class on
-a logical round that reviewed the current head, a configured convergence
-predicate, and the effective minimum rounds. The predicate catalog, its
+a logical round that reviewed the current head and a configured convergence
+predicate; the effective minimum rounds constrains only the `empty_round`
+exit, never the two-consecutive exit below. The predicate catalog, its
 parameters, evaluation domains, and the `any`/`all` composition grammar defined
 by `specs/dev-flow-v2.md` section **Convergence model v0** are normatively
 incorporated by reference. Every implementation SHALL implement and evaluate
