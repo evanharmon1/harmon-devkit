@@ -4783,6 +4783,11 @@ git -C "$carry_repo" replace --force "$carry_origin_head" "$carry_moved_head"
 [ -n "$(git -C "$carry_repo" replace -l)" ] ||
     fail "the replace-ref fixture was not created, so this case proves nothing"
 # Prove the replacement WOULD change the answer if it were honoured.
+# Ambient GIT_NO_REPLACE_OBJECTS would neutralise the replace ref and make both
+# diffs match, so unset it locally for this case and restore it afterward.
+orig_no_replace="${GIT_NO_REPLACE_OBJECTS+set}"
+orig_no_replace_val="${GIT_NO_REPLACE_OBJECTS-}"
+unset GIT_NO_REPLACE_OBJECTS
 replaced_id="$(git -C "$carry_repo" diff --full-index -U3 \
     "${carry_base_one}...${carry_origin_head}" | git -C "$carry_repo" hash-object -t blob --stdin)"
 true_id="$(git -C "$carry_repo" --no-replace-objects diff --full-index -U3 \
@@ -4792,6 +4797,9 @@ true_id="$(git -C "$carry_repo" --no-replace-objects diff --full-index -U3 \
 run_carry "$carry_merged_head"
 assert_carry 0 carried "replace ref ignored"
 git -C "$carry_repo" replace -d "$carry_origin_head"
+if [ "$orig_no_replace" = "set" ]; then
+    export GIT_NO_REPLACE_OBJECTS="$orig_no_replace_val"
+fi
 
 echo "==> a graft in a PLAIN repo is caught when --repo-dir is not the cwd"
 # Integration cycle 2, finding `integration-r2-claude-1` (confirmed P1,

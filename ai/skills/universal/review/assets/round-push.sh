@@ -71,7 +71,9 @@ set -euo pipefail
 # honor a replace ref — its whole job is verifying immutable, true
 # closure content — so this is exported once here rather than risking a
 # missed call site by threading --no-replace-objects through each one
-# individually.
+# individually. The gate target it executes below runs under
+# `env -u GIT_NO_REPLACE_OBJECTS` so the export does not leak into the
+# gate (harmon-devkit#1310).
 export GIT_NO_REPLACE_OBJECTS=1
 
 usage() {
@@ -1153,7 +1155,9 @@ transport_before="$(transport_fingerprint "$push_url")"
 # inherit this script's own stdout/stderr gives the same visibility a
 # caller running `task <target>` directly would already have, with
 # nothing captured left to leak or to clean up.
-if ! task "$required_target"; then
+# env -u GIT_NO_REPLACE_OBJECTS so the gate target never inherits this
+# script's replace-ref suppression (harmon-devkit#1310).
+if ! env -u GIT_NO_REPLACE_OBJECTS task "$required_target"; then
     refuse "required target '${required_target}' failed"
 fi
 
