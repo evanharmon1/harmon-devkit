@@ -1285,7 +1285,10 @@ dev-flow-exit.sh --run <record dir> --stage integration --policy <resolved .devf
 incomplete attempt, and a retry add none — separately from remediation
 pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
 confirmed P0/P1 from any reviewer, a late human review included, breaks the
-clean streak.
+clean streak. From a round with no completed cycle of its own (a cap-0 pass, a
+carry, an incomplete attempt), only adjudicated P0/P1 entries fold into the
+latest completed cycle, making it gating; its P2/P3 entries never change
+whether a cycle is clean or a tell.
 
 **The checkpoint is owed from cycle 2.** Every entry of an integration
 adjudication document from round 2 on carries `checkpoint`:

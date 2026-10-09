@@ -252,7 +252,10 @@ The exit surface SHALL compute an integration-stage exit from the integration
 adjudication documents and the integrator passes they adjudicate, on a path
 that cannot change any confidence-stage verdict. A completed cycle SHALL be a
 round whose integrator pass reports a non-carried Codex cycle with a terminal
-verdict; a carry, an incomplete attempt, and a retry SHALL add none. A cycle
+verdict; a carry, an incomplete attempt, and a retry SHALL add none. From a
+round with no completed cycle of its own, only adjudicated P0/P1 entries SHALL
+fold into the latest completed cycle; its P2/P3 entries SHALL NOT change
+whether a cycle is clean or a tell. A cycle
 SHALL be clean when it adjudicates to zero P0/P1, and a confirmed P0/P1 in any
 integration round, a late human review included, SHALL break the clean streak.
 Two consecutive clean cycles, counted across heads remediation pushes moved,

@@ -1746,12 +1746,12 @@ function computeIntegrationExit(rounds, integrationCap) {
     const latest = cycles.at(-1);
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
-      // attempt. Its entries fold into the latest completed cycle exactly as a
-      // same-ordinal re-dispatch does, so a P0/P1 found after a P2-only tell
-      // makes that cycle gating rather than leaving it a tell
-      // (#1272 review round 1). Before any completed cycle, it only breaks
-      // the streak.
-      if (latest) latest.entries.push(...entries);
+      // attempt. Only its adjudicated P0/P1 entries fold into the latest
+      // completed cycle, making it gating rather than a tell; its P2/P3
+      // entries never change whether a cycle is clean or a tell (#1272
+      // review rounds 1-2). Before any completed cycle, it only breaks the
+      // streak.
+      if (latest) latest.entries.push(...entries.filter(isGatingEntry));
       if (roundGating) {
         if (latest) latest.clean = false;
         streak = 0;

@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0303030303030303030303030303030303030303",
+  "produced_at": "2026-10-08T00:20:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "fixture",
+    "tier": "economy"
+  },
+  "run": {
+    "run_id": "run-integration-non-cycle-attacking-p2-does-not-make-a-tell",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "build",
+        "bucket": "pass",
+        "run_id": "4",
+        "required": true
+      }
+    ],
+    "codex_cycle": null,
+    "integration_round": 4,
+    "findings": [
+      {
+        "id": "integration-r4-human-1",
+        "body": "finding 1 of integration round 4",
+        "source_id": "9040"
+      }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-10-08T00:20:00Z",
+    "verdict": "findings"
+  }
+}
