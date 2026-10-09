@@ -59,9 +59,11 @@ explicit merge dependency in both lane briefs.
 
 Before tier resolution, bind `$repo` from the canonical target issue URL and
 retain the validated target remote name as `$remote` in that lane's checkout.
-Validate it with `gh repo view "$(git remote get-url "$remote")" --json
-nameWithOwner -q .nameWithOwner`, requiring the result to equal `$repo`, as
-`implement` step 1 does. A missing remote, failed lookup or mismatched target
+Validate it with `gh repo view "$(git remote get-url "$remote")" --json url
+-q .url`, requiring the result to equal `https://$host/$repo`
+(case-insensitively), where `$host` is the canonical issue URL's host, as
+`implement` step 1 does; `nameWithOwner` alone would accept a same-named
+mirror on another host. A missing remote, failed lookup or mismatched target
 is a blocker. This binding belongs to the target repository, which may differ
 from the writable fork remote; pass it unchanged to step 0.
 

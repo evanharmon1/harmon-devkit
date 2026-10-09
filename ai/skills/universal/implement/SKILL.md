@@ -72,9 +72,14 @@ right issue in the wrong repository — and every gate downstream passes, becaus
 the code it verifies is real code, just not this issue's:
 
 ```sh
-git remote -v          # find the remote whose URL is $repo
-gh repo view "$(git remote get-url <remote>)" --json nameWithOwner -q .nameWithOwner
+git remote -v          # find the remote whose URL is $repo on $host
+gh repo view "$(git remote get-url <remote>)" --json url -q .url
 ```
+
+The printed URL must equal `https://$host/$repo` (compare case-insensitively),
+where `$host` is the host of the canonical issue URL. Compare the URL, not
+`nameWithOwner`: a same-named mirror on another GitHub host has the same
+`nameWithOwner` and would otherwise pass.
 
 No remote matching `$repo` is a **hard stop**, exactly as in `/claim` §2.
 Do not "work here and move it later": ask the user for the matching checkout,
@@ -83,7 +88,7 @@ is not the current worktree, switch to it first.
 
 Keep the validated target remote's name in `$remote` for the shared tier
 procedure's step 0; it is the remote whose URL the lookup above confirmed as
-`$repo`, never a new URL-suffix match.
+`$repo` on `$host`, never a new URL-suffix match.
 
 Then confirm the claim exists — **read it, do not write it**:
 
