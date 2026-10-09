@@ -377,9 +377,18 @@ $other_content"
             echo "APPLIED report update to $repo#$target"
         fi
     else
-        # A new report issue must exist before its comments can.
-        local created
-        created="$(printf '%s\n' "$body" |
+        # A new report issue must exist before its comments can. With removal
+        # parts to post, it is created with a placeholder body, so no body
+        # ever points at comments that are not there yet; the real body is
+        # written once every part is posted.
+        local created create_body="$body"
+        [ "$removal_parts" -eq 0 ] || create_body="$(
+            printf '%s\n\n' "$MARKER"
+            printf '%s\n' "Rolling triage report — being written: this run's" \
+                "removal records are being posted as comments. If this text" \
+                "remains, the run failed partway and printed what it could not post."
+        )"
+        created="$(printf '%s\n' "$create_body" |
             gh issue create --repo "$repo" --title "$title" \
                 --body-file -)" || {
             dump_body
@@ -387,7 +396,16 @@ $other_content"
             die 1 "write failed: gh issue create in $repo"
         }
         echo "APPLIED report creation in $repo: $created"
-        post_removal_parts "$repo" "${created##*/}"
+        if [ "$removal_parts" -gt 0 ]; then
+            post_removal_parts "$repo" "${created##*/}"
+            printf '%s\n' "$body" |
+                gh issue edit "${created##*/}" --repo "$repo" \
+                    --body-file - >/dev/null || {
+                dump_body
+                die 1 "write failed: gh issue edit $repo#${created##*/}"
+            }
+            echo "APPLIED report body to $repo#${created##*/}"
+        fi
     fi
 }
 

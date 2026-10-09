@@ -3816,6 +3816,30 @@ grep -qE "issue (edit|create|comment)" "$GH_STUB_LOG" &&
 [ "$(grep -c 'Evidence: APPLIED remove.*cap-' "$tmp/out")" -eq 4000 ] ||
     fail "the refused run must print every removal record"
 
+echo "==> removal reports: a new report gets its real body only after its parts"
+cat >"$stub_dir/issues-open.json" <<'JSON'
+[{"number": 90, "body": "no marker", "author": {"login": "testowner"}}]
+JSON
+rm -f "$stub_dir/comments-321.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
+    --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 0 ] ||
+    fail "creating an overflowing report failed: $(tail -3 "$tmp/out")"
+order="$(grep -nE '^issue (create|comment 321|edit 321)' "$GH_STUB_LOG" |
+    sed -E 's/^[0-9]+:issue (create|comment|edit).*/\1/' | uniq | paste -sd ' ' -)"
+[ "$order" = "create comment edit" ] ||
+    fail "a new report must be created, then get its parts, then its body (got: $order)"
+[ "$(jq length "$stub_dir/comments-321.json")" -eq "$parts" ] ||
+    fail "every part goes to the new report"
+rm -f "$stub_dir/comments-321.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_COMMENT_FAIL_ON=1 "$report" sync \
+    --repo "$repo" --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 1 ] ||
+    fail "a failed part on a new report must exit 1"
+grep -q "^issue edit 321" "$GH_STUB_LOG" &&
+    fail "the real body must not be written when a part failed: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir/comments-321.json"
+
 echo "==> human removal: failed edit still reports a removal confirmed by re-read"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
     --repo "$repo" --issue 604 --manifest "$human_manifest" --remove human --execute)" = 1 ] ||
