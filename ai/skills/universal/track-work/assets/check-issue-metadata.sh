@@ -236,42 +236,41 @@ repo_api() {
 }
 
 normalize_github_remote() {
-    local _remote="$1" _slug _host _path
+    local _remote="$1" _host _path _rest _scheme_url=0
     case "$_remote" in
-    https://*/* | http://*/*)
-        _path="${_remote#*://}"
-        _host="${_path%%/*}"
-        _slug="${_path#*/}"
+    https://*/* | http://*/* | ssh://*/*)
+        _rest="${_remote#*://}"
+        _host="${_rest%%/*}"
+        _path="${_rest#*/}"
+        _scheme_url=1
         ;;
-    git@*:*)
-        _path="${_remote#git@}"
-        _host="${_path%%:*}"
-        _slug="${_path#*:}"
-        ;;
-    ssh://git@*/*)
-        _path="${_remote#ssh://git@}"
-        _host="${_path%%/*}"
-        _slug="${_path#*/}"
-        # GitHub's alternate SSH endpoint names the github.com repository.
-        case "$_host" in
-        ssh.github.com | ssh.github.com:443) _host=github.com ;;
-        esac
+    *://*) return 1 ;;
+    *:*)
+        _host="${_remote%%:*}"
+        _path="${_remote#*:}"
         ;;
     *) return 1 ;;
     esac
-    case "$_remote" in
-    https://* | http://* | ssh://*)
+    _host="${_host##*@}"
+    # IP-literal hosts are unsupported and fail closed.
+    case "$_host" in
+    *'['* | *']'*) return 1 ;;
+    esac
+    if [ "$_scheme_url" -eq 1 ]; then
         case "${_host##*:}" in
         '' | *[!0-9]*) ;;
         *) _host="${_host%:*}" ;;
         esac
-        ;;
-    esac
-    while [ "${_slug%/}" != "$_slug" ]; do
-        _slug="${_slug%/}"
+    fi
+    _host="$(printf '%s' "$_host" | tr '[:upper:]' '[:lower:]')"
+    _path="$(printf '%s' "$_path" | tr '[:upper:]' '[:lower:]')"
+    [ "$_host" != ssh.github.com ] || _host=github.com
+    while [ "${_path%/}" != "$_path" ]; do
+        _path="${_path%/}"
     done
-    _slug="${_slug%.git}"
-    printf '%s/%s\n' "$_host" "$_slug" | tr '[:upper:]' '[:lower:]'
+    _path="${_path%.git}"
+    [ -n "$_host" ] && [ -n "$_path" ] || return 1
+    printf '%s/%s\n' "$_host" "$_path"
 }
 
 bind_target_checkout() {

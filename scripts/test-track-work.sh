@@ -892,6 +892,7 @@ done
 
 echo "==> metadata: checkout binding compares host across plain, ported and trailing-slash remotes"
 for remote_url in 'https://ghe.example.com/testowner/testrepo.git' \
+    'https://user@ghe.example.com/testowner/testrepo.git' \
     'http://ghe.example.com/testowner/testrepo.git' \
     'git@ghe.example.com:testowner/testrepo.git' \
     'ssh://git@ghe.example.com/testowner/testrepo.git' \
@@ -925,7 +926,8 @@ for remote_url in 'https://github.com/testowner/testrepo.git' \
     'http://github.com/testowner/testrepo.git' 'git@github.com:testowner/testrepo.git' \
     'ssh://git@github.com/testowner/testrepo.git' \
     'ssh://git@ssh.github.com:443/testowner/testrepo.git' \
-    'ssh://git@ssh.github.com/testowner/testrepo.git'; do
+    'ssh://git@ssh.github.com/testowner/testrepo.git' \
+    'ssh://git@SSH.GITHUB.COM/testowner/testrepo.git'; do
     git -C "$metadata_host" remote set-url personal "$remote_url"
     for target in testowner/testrepo github.com/testowner/testrepo; do
         "$metadata" --required-axes --repo "$target" --repo-root "$metadata_host" \
