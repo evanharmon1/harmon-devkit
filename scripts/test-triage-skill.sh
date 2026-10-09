@@ -332,6 +332,13 @@ api\ repos/*)
         fi
     fi
     [ "${GH_STUB_EDIT_FAIL_AFTER_APPLY:-0}" = 0 ] || exit 1
+    # GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1: only the run's first edit lands
+    # and then reports failure; later edits (a restore, say) succeed.
+    if [ "${GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST:-0}" = 1 ] &&
+        [ ! -e "$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}" ]; then
+        : >"$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}"
+        exit 1
+    fi
     ;;
 "issue create")
     [ -t 0 ] || cat >/dev/null
@@ -2475,6 +2482,25 @@ rm -f "$stub_dir"/.label-reads-*
 # shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
 issue_fixture 60 $classified needs-triage
 
+echo "==> label: a failed label edit that landed still has a pinned Tier restored"
+# Same window, but gh reports the edit failed after it applied.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1 \
+    GH_STUB_LABELS_CHANGE_ON_READ=3 GH_STUB_LABELS_CHANGE_ADD="tier:pinned" \
+    "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
+    --complexity m --execute --manifest "$manifest" --policy "$policy")" = 1 ] ||
+    fail "a failed edit must exit 1: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --add-label tier:local --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "a failed edit that landed must still have its Tier restored: $(cat "$GH_STUB_LOG")"
+grep -q "tier:pinned is now on it" "$tmp/out" ||
+    fail "the failure must report the pin and the restore: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.edit-failed-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
 echo "==> label: a stale derived Tier is replaced, never stacked"
 [ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
     --manifest "$manifest" --policy "$policy")" = 0 ] ||
@@ -2793,7 +2819,7 @@ rm -f "$stub_dir/field-mutations.log"
     --impact high --risk high --complexity m --execute \
     --manifest "$manifest" --policy "$policy")" = 0 ] ||
     fail "org execute failed: $(cat "$tmp/out")"
-[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+[ "$(wc -l <"$stub_dir/field-mutations.log")" -eq 1 ] ||
     fail "every org axis write must be ONE setIssueFieldValue mutation"
 jq -e '.variables.issue == "I_70"
        and (.variables.fields | sort_by(.fieldId)) == [
@@ -2908,7 +2934,7 @@ rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* \
     fail "a pin set between org writes must refuse: $(cat "$tmp/out")"
 grep -q "tier:pinned was added to $repo#85 between triage's writes" "$tmp/out" ||
     fail "the refusal must name the pin: $(cat "$tmp/out")"
-[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+[ "$(wc -l <"$stub_dir/field-mutations.log")" -eq 1 ] ||
     fail "the field mutation before the pin was the one write made"
 grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
     fail "no label write may follow the pin: $(cat "$GH_STUB_LOG")"
@@ -2956,7 +2982,7 @@ rm -f "$stub_dir"/.field-reads-* "$stub_dir/field-mutations.log" \
     fail "a Risk cleared after the field mutation must refuse: $(cat "$tmp/out")"
 grep -q "a write it already made was reverted (field:risk=high)" "$tmp/out" ||
     fail "the refusal must name the reverted write: $(cat "$tmp/out")"
-[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+[ "$(wc -l <"$stub_dir/field-mutations.log")" -eq 1 ] ||
     fail "the field mutation was the one write made"
 grep -q -- "tier:" "$GH_STUB_LOG" && fail "no Tier write may follow a reverted Risk"
 grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&

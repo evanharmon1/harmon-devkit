@@ -1758,6 +1758,48 @@ cmd_label() {
         done
     fi
 
+    # undo_tier_if_pinned — run after a label edit that changed the Tier,
+    # whether it succeeded or failed (a failed edit can still land).
+    # before_mutation checked for tier:pinned on the read before the edit, but
+    # a pin added between that read and the edit is not seen there, and GitHub
+    # has no conditional label edit. So read once more: a pin now present
+    # means this call overrode a human's choice, and whatever Tier part of the
+    # edit is on the issue is undone. Returns 1 when a pin was found, 0
+    # otherwise; a pin added after this read is not seen.
+    undo_tier_if_pinned() {
+        [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ] || return 0
+        local post_edit restore=() readd=() t
+        post_edit="$(gh issue view "$issue" --repo "$repo" --json labels \
+            -q '.labels[].name')" ||
+            die 2 "write indeterminate: the label edit on $repo#$issue may" \
+                "have changed its Tier, but the read that checks for a" \
+                "tier:pinned added during it failed; check its Tier labels by hand"
+        in_list "tier:pinned" "$post_edit" || return 0
+        for t in "${tier_removes[@]+"${tier_removes[@]}"}"; do
+            in_list "$t" "$post_edit" || readd+=("$t")
+        done
+        [ "${#readd[@]}" -eq 0 ] || restore+=(--add-label "$(
+            IFS=,
+            echo "${readd[*]}"
+        )")
+        if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
+            restore+=(--remove-label "$tier_add")
+        fi
+        [ "${#restore[@]}" -gt 0 ] || return 1
+        gh issue edit "$issue" --repo "$repo" "${restore[@]}" \
+            >/dev/null </dev/null ||
+            die 1 "write failed: tier:pinned was added to $repo#$issue during" \
+                "triage's label edit, and restoring its Tier failed — fix by" \
+                "hand: ${restore[*]}"
+        for t in "${readd[@]+"${readd[@]}"}"; do
+            echo "RESTORED '$t' on $repo#$issue"
+        done
+        if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
+            echo "RESTORED removal of '$tier_add' from $repo#$issue"
+        fi
+        return 1
+    }
+
     # One label edit for every add and every replaced value; the needs-triage
     # removal stays a separate, last edit so a failed add leaves it visible.
     local args=()
@@ -1803,6 +1845,10 @@ cmd_label() {
                     echo "APPLIED remove 'human' from $repo#$issue (confirmed by re-read after failed edit)"
                 fi
             fi
+            undo_tier_if_pinned ||
+                die 1 "write failed: gh issue edit $repo#$issue; tier:pinned" \
+                    "is now on it, and any Tier change of this edit that" \
+                    "landed was undone"
             die 1 "write failed: gh issue edit $repo#$issue"
         fi
         for l in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
@@ -1822,47 +1868,10 @@ cmd_label() {
     for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
         echo "APPLIED remove '$l' from $repo#$issue"
     done
-    # before_mutation checked for tier:pinned on the read before the label
-    # edit, but a pin added between that read and the edit is not seen there,
-    # and GitHub has no conditional label edit. So when the edit changed the
-    # Tier, read once more: a pin now present means this call overrode a
-    # human's choice, and the Tier part of the edit is undone.
-    if [ "${#args[@]}" -gt 0 ] &&
-        { [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; }; then
-        local post_edit restore=() readd=() t
-        post_edit="$(gh issue view "$issue" --repo "$repo" --json labels \
-            -q '.labels[].name')" ||
-            die 2 "write indeterminate: the label edit applied to $repo#$issue" \
-                "but the read that checks for a tier:pinned added during it" \
-                "failed; check its Tier labels by hand"
-        if in_list "tier:pinned" "$post_edit"; then
-            for t in "${tier_removes[@]+"${tier_removes[@]}"}"; do
-                in_list "$t" "$post_edit" || readd+=("$t")
-            done
-            [ "${#readd[@]}" -eq 0 ] || restore+=(--add-label "$(
-                IFS=,
-                echo "${readd[*]}"
-            )")
-            if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
-                restore+=(--remove-label "$tier_add")
-            fi
-            if [ "${#restore[@]}" -gt 0 ]; then
-                gh issue edit "$issue" --repo "$repo" "${restore[@]}" \
-                    >/dev/null </dev/null ||
-                    die 1 "write failed: tier:pinned was added to $repo#$issue" \
-                        "during triage's label edit, and restoring its Tier" \
-                        "failed — fix by hand: ${restore[*]}"
-                for t in "${readd[@]+"${readd[@]}"}"; do
-                    echo "RESTORED '$t' on $repo#$issue"
-                done
-                if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
-                    echo "RESTORED removal of '$tier_add' from $repo#$issue"
-                fi
-            fi
-            die 4 "refused: tier:pinned was added to $repo#$issue during" \
-                "triage's label edit — its Tier change was undone and no" \
-                "further write was made"
-        fi
+    if [ "${#args[@]}" -gt 0 ] && ! undo_tier_if_pinned; then
+        die 4 "refused: tier:pinned was added to $repo#$issue during" \
+            "triage's label edit — its Tier change was undone and no" \
+            "further write was made"
     fi
     if [ "$nt_remove" -eq 1 ]; then
         before_mutation
