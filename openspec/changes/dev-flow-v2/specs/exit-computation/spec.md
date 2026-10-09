@@ -271,7 +271,9 @@ be indeterminate, which the gate's readiness-input projection (step 6)
 already enforces; the integration step SHALL fail when any integration
 adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
 defer (filing settles P2s only), SHALL stay indeterminate on any engine
-indeterminate, and SHALL otherwise pass.
+indeterminate, SHALL be indeterminate unless the record's latest integration
+pass is the gated result (same integration_round, codex_cycle.cycle and head),
+and SHALL otherwise pass.
 
 #### Scenario: Two P2-only cycles
 

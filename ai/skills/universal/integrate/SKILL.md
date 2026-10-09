@@ -1273,14 +1273,14 @@ For every failing check and every review finding:
 ### Integration exit: follow the engine, not memory
 
 Convergence is computed, never remembered (harmon-devkit#1272). After every
-adjudicated Codex cycle — `adjudications/integration-r<N>.json` written and
+integration adjudication — `adjudications/integration-r<N>.json` written and
 validated against its integrator pass — and before any remediation push, run
 
 ```sh
-dev-flow-exit.sh --run <record dir> --stage integration --policy <resolved .devflow.toml> --json
+"$support_dir/dev-flow-exit.sh" --run <record dir> --stage integration --policy <resolved .devflow.toml> --json
 ```
 
-(the sibling `dev-flow-support/assets/dev-flow-exit.sh`) and act on its
+(`$support_dir` resolved as at the top of this skill) and act on its
 `outcome`. It counts completed cycles — exempt included; a carry, an
 incomplete attempt, and a retry add none — separately from remediation
 pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
@@ -1331,7 +1331,10 @@ step 6 readiness-input projection; step 9f fails when any integration
 adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
 defer — filing settles P2s only (`integration-filed-gating-finding`); it stays
 indeterminate on any engine indeterminate (`integration-exit-indeterminate`);
-otherwise this condition passes.
+it is indeterminate unless the record's latest integration pass is the gated
+result — same integration_round, codex_cycle.cycle and head
+(`integration-record-unbound`) — so persist every integrator pass and its
+adjudication before gating; otherwise this condition passes.
 
 ## 4. Reply in-thread
 
