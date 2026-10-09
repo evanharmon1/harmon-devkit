@@ -112,8 +112,9 @@ the verification must be, and how much is unknown. Unknowns push the value up, b
 
 **Rate the difficulty, not the hours or the file count.** A mechanical change applied by one script across hundreds of
 files is as easy to understand as a change to one file, so rate the rule rather than the count. A one-line change in
-subtle concurrent code can be hard to verify, so it can rate higher than a long mechanical edit. An `xl` is a signal to
-split the issue; label it `xl` while it is still one issue.
+subtle concurrent code can be hard to verify, so it can rate higher than a long mechanical edit. Work that no automated check
+can prove — such as a visual change, prompt or model-output wording, or external-service behaviour — rates higher than
+its size alone suggests. An `xl` is a signal to split the issue; label it `xl` while it is still one issue.
 
 ### Complexity anchors
 
@@ -129,6 +130,8 @@ split the issue; label it `xl` while it is still one issue.
 
 - *"Change the default log level from info to warn in one config file."* → **xs**. One place, a known change, and one
   check proves it.
+- *"Adjust a prompt's wording to prevent tool hallucinations in an agent."* → **s**. A one-line edit, but no automated check
+  can prove model-output wording, rating it higher than its size alone suggests.
 - *"Add a retry policy to the payment client and thread idempotency keys through the client, the server, and the
   tests."* → **m**. Several components and real design choices, with fault-injection tests to write.
 - *"Move every service from the old deploy pipeline to the new one."* → **xl**. It spans many services, what each one
