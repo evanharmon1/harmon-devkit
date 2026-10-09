@@ -32,11 +32,10 @@
 #
 # Usage:
 #   gh-write-broker.sh trigger --repo OWNER/REPO --pr N
-#       Posts the literal, hardcoded comment body "@codex review" to the PR's
-#       top-level conversation and prints the created comment's {"id": N} —
-#       the one trigger the Codex-cycle helper's reserve/attach state machine
-#       expects. The body is not a parameter: there is no flag that changes
-#       what gets posted here.
+#       Requires a reserved cycle in the current checkout's git directory,
+#       re-checks the open draft PR and reserved head, posts the hardcoded
+#       body, and attaches the created comment. Prints its bare integer id.
+#       A failed attach reports the posted id for later reconciliation.
 #   gh-write-broker.sh trigger --finder SLUG --repo OWNER/REPO --pr N
 #       Posts the finder's trigger body (from the trusted registry at the
 #       PR's merge-base commit) to the PR. The body is resolved from the
@@ -69,7 +68,9 @@ Usage:
   gh-write-broker.sh request-review --finder SLUG --repo OWNER/REPO --pr N
   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
 
-trigger (no --finder) posts the hardcoded "@codex review" body.
+trigger (no --finder) requires a reserved cycle and an open draft on its head,
+then posts the hardcoded body, attaches it, and prints the bare integer id.
+A failed attach names the posted id for exactly-one reconciliation.
 trigger --finder posts the finder's trigger body from the trusted registry.
 request-review --finder requests the finder's reviewer from the trusted registry.
 reply posts a FILE's exact byte content to one inline thread.
@@ -154,7 +155,26 @@ trigger)
     [ -z "$comment_id" ] && [ -z "$body_file" ] ||
         refuse "trigger takes no --comment-id or --body-file — its body is hardcoded"
     if [ -z "$finder" ]; then
-        exec gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id
+        state=$(git rev-parse --git-path "integrate-codex/$repo/$pr.json") ||
+            refuse "cannot locate cycle state in the current checkout"
+        [ -f "$state" ] || refuse "cycle state is missing: $state"
+        jq -e --arg repo "$repo" --argjson pr "$pr" '
+            .phase == "reserved" and .repo == $repo and .pr == $pr and
+            (.head | type == "string" and length > 0)
+        ' "$state" >/dev/null || refuse "cycle state is not a matching reservation"
+        reserved_head=$(jq -r '.head' "$state")
+        pr_now=$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid) ||
+            refuse "cannot re-read the PR before posting"
+        jq -e --arg head "$reserved_head" '
+            .state == "OPEN" and .isDraft == true and .headRefOid == $head
+        ' <<<"$pr_now" >/dev/null || refuse "PR is not an open draft on the reserved head"
+        trigger_id=$(gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id)
+        if ! "$SCRIPT_DIR/check-codex-cloud-review.sh" attach --state "$state" \
+            --trigger-id "$trigger_id" >/dev/null; then
+            refuse "posted comment $trigger_id but attach failed; the next dispatch's exactly-one reconciliation can adopt it; do not post again"
+        fi
+        printf '%s\n' "$trigger_id"
+        exit 0
     fi
     profile=$(resolve_profile "$finder")
     mechanism=$(printf '%s' "$profile" | jq -r '.collection.trigger.mechanism')

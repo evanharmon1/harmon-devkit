@@ -255,16 +255,17 @@ rewritten or superseded: the integrator posts no trigger and reports
 `codex_cycle: null`, never re-capturing a head it was not dispatched for; the
 next dispatch — yours — names the new head. The integrator agent's §4 carries
 the recipe: for Codex, reserve and re-read in one Bash tool call, ending in
-`RESERVED <head>` on success; only then post the trigger as a separate literal
-command at `<project-root>/.claude/skills/integrate/assets/gh-write-broker.sh
-trigger --repo <owner/repo> --pr <n>`, with all values written out. Use the
-checkout's installed path, never the physically resolved skill directory, so
-the project hook can approve the exact command even when `.claude/skills` is
-a symlink. Read the id from the broker's `{"id": N}` output and immediately
-attach it in a third call with `--trigger-id <N>`. Trigger and attach run back
-to back; no printed id or a failed attach is a blocker, never a reason to post
-a second trigger. The same split holds for attempt 2 and zero-candidate
-reconciliation.
+`RESERVED <head>` on success; only then call the broker as one literal command:
+`<project-dir>/<skills-dir>/integrate/assets/gh-write-broker.sh trigger --repo <owner/repo> --pr <n>`.
+The broker requires a matching reserved cycle, re-reads the open draft PR and
+reserved head, posts, and attaches immediately. It prints a bare integer id;
+callers do not attach again. A failed attach names the posted id for the next
+dispatch's exactly-one reconciliation; report a blocker and never retry the
+post. `<project-dir>` is Claude Code's `CLAUDE_PROJECT_DIR`; `<skills-dir>` is
+the skills sync install location. The hook approves only the unresolved
+`<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh` path; other
+locations or a symlink at `.claude/skills` still work but prompt. The same
+two-call split holds for attempt 2 and zero-candidate reconciliation.
 
 The two mechanisms compose and do not overlap wastefully: `carry` is strictly
 stronger (content identity, local git, no API reconstruction) and strictly

@@ -299,8 +299,9 @@ state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")"
 write.** Both paths that post a trigger — the fresh-cycle sequence and the
 zero-candidate reconcile path below — run the same order: a reservation held
 (`reserve` exit 0 on the fresh-cycle path; already on disk on the reconcile
-path) → this read → post the trigger → `attach`. `reserve` makes **no GitHub
-write** — it reads the PR and writes local state only — but it may wait up to
+path) → this read → post the trigger → `attach` (the broker performs both
+post and attach for Codex). `reserve` makes **no GitHub write** — it reads the
+PR and writes local state only — but it may wait up to
 120s for a lagging head, so a read taken before it is not fresh; the read
 after it is the last thing before the post. It checks the same three fields
 §6 checks before a reply, for the same reason: `reserve` verifies only that
@@ -398,7 +399,7 @@ nothing to carry otherwise, and `carry` will say so.
 Three cases, mutually exclusive:
 
 - **No state file, or state for a different head.** This is a fresh cycle.
-  Run these three steps, each as its own Bash tool call:
+  Run these two steps, each as its own Bash tool call:
 
   **1. Reserve and re-read, posting nothing.**
 
@@ -424,30 +425,30 @@ Three cases, mutually exclusive:
   echo "RESERVED <head>"
   ```
 
-  **2. Post the trigger as one literal command**, only after step 1 printed
-  `RESERVED <head>`:
+  **2. Post and attach through one literal broker call**, only after step 1
+  printed `RESERVED <head>`:
 
   ```bash
-  <project-root>/.claude/skills/integrate/assets/gh-write-broker.sh trigger --repo <owner/repo> --pr <n>
+  <project-dir>/<skills-dir>/integrate/assets/gh-write-broker.sh trigger --repo <owner/repo> --pr <n>
   ```
 
-  Write out the project root (the `--repo-dir` / checkout root), repo, and PR
-  values literally; the placeholders above are not shell syntax to execute.
-  No variables, substitution, `|| exit`, redirection, or extra flags. The
-  project hook can approve only an exact command. Use that installed path,
-  never `"$skill_dir"`: a physically resolved skill directory differs when
-  `.claude/skills` is a symlink. The broker prints `{"id": N}`; read N from
-  that tool output.
+  Write out all values literally; the placeholders above are not shell syntax
+  to execute. No variables, substitution, `|| exit`, redirection, or extra
+  flags. `<project-dir>` is Claude Code's project directory
+  (`CLAUDE_PROJECT_DIR`); `<skills-dir>` is wherever skills sync installed the
+  integrate skill. The project hook approves only the unresolved
+  `<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh` path.
+  Skills installed elsewhere, or a symlink at `.claude/skills` (as in this
+  repository), still work but prompt.
 
-  **3. Attach immediately**, as its own Bash tool call, using that literal id:
-
-  ```bash
-  "$helper" attach --state "$state" --trigger-id <N>
-  ```
-
-  Steps 2 and 3 must run back to back. If step 2 printed no id, or step 3
-  fails, report a blocker (§5) and never post a second trigger: a trigger
-  whose attach never ran is the orphan harmon-devkit#1189 warned about.
+  The broker requires the matching reserved cycle, re-reads the PR's state,
+  draft status, and reserved head, then posts and attaches immediately. It
+  prints the bare integer comment id on success. There is no separate attach
+  call, and this call needs neither `$helper` nor `$state` from step 1.
+  On a non-zero exit, if the message names a posted id, report a blocker (§5):
+  the next dispatch's exactly-one reconciliation can attach it. Otherwise
+  report the refusal; nothing was posted. Never re-run step 2 to retry after
+  a post.
 
   **Any non-zero `reserve` means post no trigger.** Keep each call's exit
   status visible, exactly as above — captured in `reserve_exit`, never ended
@@ -518,7 +519,7 @@ Three cases, mutually exclusive:
   exists, so this path starts where the fresh-cycle one resumes after
   `reserve`: run the `pr_now` read and its three-field check above in one
   Bash tool call, ending with `echo "RESERVED <head>"` on success. Then run
-  steps 2 and 3 above back to back as separate calls, still without calling
+  step 2 above as a separate call, still without calling
   `reserve` (posting a second reservation is what `reserve` itself would
   refuse). **More than one** is an anomaly this brief did not anticipate —
   stop and report it rather than guessing which
@@ -544,10 +545,11 @@ and only moves off it when *this* call actually fails.
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
 PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
 **12 (retry)**, repeat the
-three-call reserve/read → literal trigger → attach procedure above, then
-`check`, once more with `--attempt 2` against the **same** state and head —
-this is the one bounded retry your brief expects; do not retry a second time. On **13 (escalate)**, **14**, **15**, or
-**2**,
+two-call reserve/read → literal broker trigger (including attach) procedure
+above, then `check`, once more with `--attempt 2` against the **same** state
+and head — this is the one bounded retry your brief expects; do not retry a
+second time.
+On **13 (escalate)**, **14**, **15**, or **2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.
 

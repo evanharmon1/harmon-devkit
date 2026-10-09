@@ -69,6 +69,22 @@ cat >"${bin_dir}/gh" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
+# Broker fixtures use the same gh log, with explicit read and post responses.
+if [ -f "$GH_FIXTURES/broker-mode" ]; then
+    if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
+        cat "$GH_FIXTURES/broker-pr.json"
+        exit 0
+    fi
+    if [ "${1:-}" = api ]; then
+        if [ -f "$GH_FIXTURES/broker-post-exit" ]; then
+            exit "$(cat "$GH_FIXTURES/broker-post-exit")"
+        fi
+        printf '9001\n'
+        exit 0
+    fi
+    exit 90
+fi
+
 # gh-ro pass-through cases: exit with a scripted code so propagation is
 # observable without any endpoint dispatch.
 if [ -f "$GH_FIXTURES/ro-exit" ]; then
@@ -3821,12 +3837,114 @@ wb_refuse_case "invalid pr" trigger --repo example/repo --pr abc
 wb_refuse_case "unknown subcommand" delete --repo example/repo --pr 493
 wb_refuse_case "no subcommand"
 
-echo "==> gh-write-broker trigger posts exactly the hardcoded body, nothing else"
-write_defaults
-printf '0\n' >"${fixtures}/ro-exit"
-"$ghwb" trigger --repo example/repo --pr 493 >/dev/null
+# Copy only the broker under test and stub its sibling attach boundary. This
+# checks the exact posted id and state handoff; the checker has its own suite.
+broker_dir="${test_tmp}/broker-assets"
+broker_repo="${test_tmp}/broker-repo"
+mkdir -p "$broker_dir" "$broker_repo"
+cp "$ghwb" "$broker_dir/gh-write-broker.sh"
+git init -q "$broker_repo"
+cat >"$broker_dir/check-codex-cloud-review.sh" <<'ATTACH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_FIXTURES/broker-attach.log"
+[ "$1" = attach ] && [ "$2" = --state ] && [ "$4" = --trigger-id ]
+[ ! -f "$GH_FIXTURES/broker-attach-fail" ] || exit 7
+jq --arg id "$5" '.phase = "attached" | .trigger_comment_id = $id' "$3" >"$3.tmp"
+mv "$3.tmp" "$3"
+ATTACH
+chmod +x "$broker_dir/check-codex-cloud-review.sh"
+broker_state="$(git -C "$broker_repo" rev-parse --git-path integrate-codex/example/repo/493.json)"
+broker_state="$broker_repo/$broker_state"
+mkdir -p "$(dirname "$broker_state")"
+
+broker_defaults() {
+    write_defaults
+    : >"$fixtures/broker-mode"
+    rm -f "$fixtures/broker-post-exit" "$fixtures/broker-attach-fail"
+    : >"$fixtures/broker-attach.log"
+    jq -n --arg head "$head_sha" \
+        '{phase:"reserved",repo:"example/repo",pr:493,head:$head}' >"$broker_state"
+    jq -n --arg head "$head_sha" \
+        '{state:"OPEN",isDraft:true,headRefOid:$head}' >"$fixtures/broker-pr.json"
+}
+
+run_broker() {
+    wb_rc=0
+    wb_out="$(cd "$broker_repo" && "$broker_dir/gh-write-broker.sh" trigger \
+        --repo example/repo --pr 493 2>&1)" || wb_rc=$?
+}
+
+broker_refused() {
+    run_broker
+    [ "$wb_rc" -eq 2 ] || fail "broker should refuse: $wb_rc: $wb_out"
+    grep -Fq refused <<<"$wb_out" || fail "broker refusal missing: $wb_out"
+    if grep -q '^api ' "$log"; then
+        fail "refused broker posted: $(cat "$log")"
+    fi
+    [ ! -s "$fixtures/broker-attach.log" ] || fail "refused broker attached"
+}
+
+echo "==> gh-write-broker refuses a missing reservation without posting"
+broker_defaults
+rm "$broker_state"
+broker_refused
+
+echo "==> gh-write-broker refuses an attached cycle without double posting"
+broker_defaults
+jq '.phase = "attached"' "$broker_state" >"$broker_state.tmp"
+mv "$broker_state.tmp" "$broker_state"
+broker_refused
+
+echo "==> gh-write-broker refuses a mismatched reservation or empty head"
+for broker_filter in '.repo = "other/repo"' '.pr = 494' '.head = ""'; do
+    broker_defaults
+    jq "$broker_filter" "$broker_state" >"$broker_state.tmp"
+    mv "$broker_state.tmp" "$broker_state"
+    broker_refused
+done
+
+echo "==> gh-write-broker refuses PR drift, a non-draft, or a closed PR"
+for broker_filter in '.headRefOid = "different"' '.isDraft = false' '.state = "CLOSED"'; do
+    broker_defaults
+    jq "$broker_filter" "$fixtures/broker-pr.json" >"$fixtures/broker-pr.json.tmp"
+    mv "$fixtures/broker-pr.json.tmp" "$fixtures/broker-pr.json"
+    broker_refused
+done
+
+echo "==> gh-write-broker posts once and immediately attaches the printed id"
+broker_defaults
+run_broker
+[ "$wb_rc" -eq 0 ] && [ "$wb_out" = 9001 ] || fail "broker happy path: $wb_rc: $wb_out"
+[ "$(grep -c '^api ' "$log")" -eq 1 ] || fail "broker did not post once"
 grep -Fxq "api repos/example/repo/issues/493/comments -f body=@codex review --jq .id" "$log" ||
     fail "gh-write-broker trigger forwarded unexpected arguments: $(cat "$log")"
+grep -Fxq 'attach --state .git/integrate-codex/example/repo/493.json --trigger-id 9001' \
+    "$fixtures/broker-attach.log" || fail "broker did not attach the posted id"
+jq -e '.phase == "attached" and .trigger_comment_id == "9001"' "$broker_state" >/dev/null ||
+    fail "broker state did not end attached"
+: >"$log"
+: >"$fixtures/broker-attach.log"
+broker_refused
+[ ! -s "$log" ] || fail "repeated broker posted again"
+
+echo "==> gh-write-broker reports the posted id if attach fails"
+broker_defaults
+: >"$fixtures/broker-attach-fail"
+run_broker
+[ "$wb_rc" -ne 0 ] || fail "broker swallowed attach failure"
+grep -Fq 'posted comment 9001 but attach failed' <<<"$wb_out" ||
+    fail "broker attach failure lost the posted id: $wb_out"
+[ "$(grep -c '^api ' "$log")" -eq 1 ] || fail "attach failure posted more than once"
+jq -e '.phase == "reserved"' "$broker_state" >/dev/null || fail "failed attach changed phase"
+
+echo "==> gh-write-broker propagates the post exit without attaching"
+broker_defaults
+printf '7\n' >"$fixtures/broker-post-exit"
+run_broker
+[ "$wb_rc" -eq 7 ] || fail "broker lost post exit: $wb_rc"
+[ ! -s "$fixtures/broker-attach.log" ] || fail "failed post still attached"
+rm -f "$fixtures/broker-mode"
 
 echo "==> gh-write-broker reply posts exactly the given file to exactly that comment's replies"
 write_defaults
@@ -3839,7 +3957,7 @@ echo "==> gh-write-broker propagates gh's own exit code"
 write_defaults
 printf '7\n' >"${fixtures}/ro-exit"
 set +e
-"$ghwb" trigger --repo example/repo --pr 493 >/dev/null 2>&1
+"$ghwb" reply --repo example/repo --pr 493 --comment-id 900 --body-file "$reply_body" >/dev/null 2>&1
 wb_rc=$?
 set -e
 [ "$wb_rc" -eq 7 ] ||
