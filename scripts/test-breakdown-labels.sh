@@ -1700,8 +1700,9 @@ jq '[.families[] | . as $family | .values[] |
     {name:(if $family.prefix == null then .value else ($family.prefix + ":" + .value) end),
      description:(.description // "")}] | unique_by(.name)' "$init_registry/label-registry.json" >"$init_registry/labels.json"
 if init_output="$(discover "$init_registry" 2>"$init_registry/error")" && jq -e '
+    . as $result |
     .mode == "registry" and .verified_semantics == true and
-    . as $result | all(["impact","risk","complexity"][]; . as $axis |
+    all(["impact","risk","complexity"][]; . as $axis |
       [$result.families[] | select(.family == $axis)] as $ratings |
       ($ratings | length) == 1 and $ratings[0].source == "classification-helper")
 ' <<<"$init_output" >/dev/null; then
@@ -1824,10 +1825,11 @@ fi
 touch "$init_registry/organization"
 cp "$organization/fields.json" "$init_registry/fields.json"
 if init_org_output="$(discover "$init_registry" 2>"$init_registry/error")" && jq -e '
+    . as $result |
     .owner_type == "Organization" and .classification.storage == "field" and
     (.issue_fields | keys) == ["complexity","impact","risk"] and
     .issue_fields == .classification.axes and
-    . as $result | all(["impact","risk","complexity"][]; . as $axis |
+    all(["impact","risk","complexity"][]; . as $axis |
       $result.issue_fields[$axis].provisioned and ($result.issue_fields[$axis].values | length) == 1) and
     ([.families[] | select(.family == "impact" or .family == "risk" or .family == "complexity")] | length) == 0
 ' <<<"$init_org_output" >/dev/null; then
