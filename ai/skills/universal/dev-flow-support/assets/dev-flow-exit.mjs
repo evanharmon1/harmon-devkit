@@ -1743,13 +1743,21 @@ function computeIntegrationExit(rounds, integrationCap) {
       ordinal = cc.cycle;
     }
     const completed = cc !== null && !cc.carried && (cc.exit_code === 0 || cc.exit_code === 10);
+    const latest = cycles.at(-1);
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
-      // attempt. Its own adjudications can still break the streak.
-      if (roundGating) streak = 0;
+      // attempt. Its entries fold into the latest completed cycle exactly as a
+      // same-ordinal re-dispatch does, so a P0/P1 found after a P2-only tell
+      // makes that cycle gating rather than leaving it a tell
+      // (#1272 review round 1). Before any completed cycle, it only breaks
+      // the streak.
+      if (latest) latest.entries.push(...entries);
+      if (roundGating) {
+        if (latest) latest.clean = false;
+        streak = 0;
+      }
       continue;
     }
-    const latest = cycles.at(-1);
     if (latest && cc.cycle === latest.cycle) {
       if (cc.head !== latest.head) {
         throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} on ${cc.head}, but that cycle reviewed ${latest.head}`, "cycle-regression");

@@ -262,8 +262,9 @@ every finding attacks an earlier remediation push SHALL return `diverging`. A
 remediation push after such a cycle without a recorded delete or restructure
 remedy SHALL make the trajectory indeterminate. The readiness gate SHALL read
 the integration record itself, never a verdict reason, and SHALL infer nothing
-about fix pushes: it SHALL be indeterminate while any integration pass in the
-record has findings and no adjudication, SHALL fail when any integration
+about fix pushes: an integration pass with findings and no adjudication SHALL
+be indeterminate, which the gate's readiness-input projection (step 6)
+already enforces; the integration step SHALL fail when any integration
 adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
 defer (filing settles P2s only), SHALL stay indeterminate on any engine
 indeterminate, and SHALL otherwise pass.

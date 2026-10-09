@@ -70,8 +70,7 @@
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
 #   behind-base-unknown, merge-state-stale,
-#   integration-exit-indeterminate,
-#   integration-awaiting-adjudication, usage                 (indeterminate)
+#   integration-exit-indeterminate, usage                    (indeterminate)
 #
 # `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
 # so a genuinely behind head never reaches the cache branch, and a cache that
@@ -1900,8 +1899,9 @@ fi
 # a tell cycle without a delete/restructure remedy, a cycle-ordinal hole, an
 # invalid record — is indeterminate. (b) Any integration adjudication entry
 # holding an adjudicated P0 or P1 whose disposition is file or defer fails:
-# filing settles P2s only. (a) Any integration pass with findings and no
-# adjudication is indeterminate. (d) Otherwise this step passes.
+# filing settles P2s only. (a) An integration pass with findings and no
+# adjudication never reaches this step: step 6's readiness-input projection
+# already refuses it. (d) Otherwise this step passes.
 exit_engine="$support_dir/dev-flow-exit.mjs"
 [ -f "$exit_engine" ] ||
     die "$exit_engine is missing — the dev-flow-support package must be vendored alongside this skill"
@@ -1917,17 +1917,12 @@ try {
   console.log(JSON.stringify({ ok: false, reason: err.message }));
   process.exit(0);
 }
-const { passes, adjudications } = loadRunDir(record);
+const { adjudications } = loadRunDir(record);
 const docs = adjudications.map((a) => a.doc).filter((d) => d?.stage === "integration");
-const adjudicated = new Set(docs.map((d) => d.round));
-const unadjudicated = passes
-  .filter((p) => p.envelope.role === "integrator" && (p.envelope.payload?.findings ?? []).length > 0)
-  .map((p) => p.envelope.payload.integration_round)
-  .filter((round) => !adjudicated.has(round));
 const filed = docs.flatMap((d) => d.adjudications)
   .filter((e) => ["P0", "P1"].includes(e.adjudicated_priority) && ["file", "defer"].includes(e.disposition))
   .map((e) => e.finding_id);
-console.log(JSON.stringify({ ok: true, unadjudicated, filed }));
+console.log(JSON.stringify({ ok: true, filed }));
 ' "$record_dir" "$integration_cap" "$validate_result_schemas" "$exit_engine" 2>/dev/null)" ||
     indeterminate integration-exit-indeterminate "the integration record could not be read over --record"
 jq -e '.ok' <<<"$integration_record" >/dev/null 2>&1 ||
@@ -1935,9 +1930,6 @@ jq -e '.ok' <<<"$integration_record" >/dev/null 2>&1 ||
 filed_gating="$(jq -r '.filed | join(", ")' <<<"$integration_record")"
 [ -z "$filed_gating" ] ||
     fail_condition integration-filed-gating-finding "integration adjudication files or defers a confirmed P0/P1 ($filed_gating) — filing settles P2s only; fix it and run a clean cycle, or escalate"
-unadjudicated_rounds="$(jq -r '.unadjudicated | map(tostring) | join(", ")' <<<"$integration_record")"
-[ -z "$unadjudicated_rounds" ] ||
-    indeterminate integration-awaiting-adjudication "integration round(s) $unadjudicated_rounds hold findings with no adjudication yet"
 
 # 9e. Every adjudicated round has its own issue evidence comment
 # (harmon-devkit#685: "every adjudicated round has a matching issue evidence

@@ -1,0 +1,46 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0303030303030303030303030303030303030303",
+  "produced_at": "2026-10-08T00:20:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "fixture",
+    "tier": "economy"
+  },
+  "run": {
+    "run_id": "run-integration-non-cycle-p1-after-tell-folds-and-fix-push-accepted",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "build",
+        "bucket": "pass",
+        "run_id": "4",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "0303030303030303030303030303030303030303",
+      "cycle": 3,
+      "charged": 3,
+      "exempt": 0,
+      "attempt": 1,
+      "trigger_comment_id": "8004",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "7004",
+        "reviewed_commit": "0303030303030303030303030303030303030303"
+      }
+    },
+    "integration_round": 4,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-10-08T00:20:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

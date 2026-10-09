@@ -1321,9 +1321,9 @@ the document without it.
   draft. Indeterminate is never a pass: fix the record or escalate.
 
 The readiness gate reads the integration record itself, never a verdict
-reason, and infers nothing about fix pushes. It is indeterminate while any
-integration pass in the record has findings and no adjudication
-(`integration-awaiting-adjudication`); it fails when any integration
+reason, and infers nothing about fix pushes. An integration pass with
+findings and no adjudication is already refused (indeterminate) by the gate's
+step 6 readiness-input projection; step 9f fails when any integration
 adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
 defer — filing settles P2s only (`integration-filed-gating-finding`); it stays
 indeterminate on any engine indeterminate (`integration-exit-indeterminate`);
