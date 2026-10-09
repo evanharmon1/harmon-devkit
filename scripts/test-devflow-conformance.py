@@ -41,6 +41,8 @@ V2_CASE_KEYS = {
     "name",
     "overrides",
     "pin",
+    "policy_entry",
+    "registry_replacements",
 }
 
 
@@ -306,9 +308,9 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
         if (
             not isinstance(expected_exit, int)
             or isinstance(expected_exit, bool)
-            or expected_exit not in (0, 1, 3)
+            or expected_exit not in (0, 1, 2, 3)
         ):
-            failures.append(f"{name}: expect.exit must be the integer 0, 1, or 3")
+            failures.append(f"{name}: expect.exit must be the integer 0, 1, 2, or 3")
             continue
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -317,8 +319,26 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                 branch_text = (
                     replace(source, case.get("config_replacements", []), name, "config_replacements")
                 )
-                if basis != "absent":
+                policy_entry = case.get("policy_entry")
+                if policy_entry is not None and basis != "absent":
+                    raise ValueError(f"{name}: policy_entry requires absent basis")
+                if policy_entry == "dangling-symlink":
+                    policy.symlink_to(tmp_path / "missing.toml")
+                elif policy_entry == "directory":
+                    policy.mkdir()
+                elif policy_entry is not None:
+                    raise ValueError(f"{name}: unsupported policy_entry {policy_entry!r}")
+                elif basis != "absent":
                     policy.write_text(branch_text)
+                registry = tmp_path / "registry.json"
+                registry.write_text(
+                    replace(
+                        (repo / "agent-registry.json").read_text(),
+                        case.get("registry_replacements", []),
+                        name,
+                        "registry_replacements",
+                    )
+                )
                 command = [
                     "node",
                     str(repo / "scripts" / "devflow-policy.mjs"),
@@ -326,7 +346,7 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                     "--policy",
                     str(policy),
                     "--registry",
-                    str(repo / "agent-registry.json"),
+                    str(registry),
                     "--taskfile-dir",
                     str(repo),
                     "--json",
@@ -372,6 +392,8 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                     for item in resolved["cross_validation"]["indeterminate"]
                     if "derived Tier" in item
                 )
+        elif result.returncode == 2 and "could not read/parse --policy:" in result.stderr:
+            errors.append({"code": "policy_unreadable", "subject": "policy"})
         elif "schema_version" in result.stderr and (
             "legacy" in result.stderr
             or "v1" in result.stderr
