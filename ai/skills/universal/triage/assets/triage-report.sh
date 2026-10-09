@@ -17,9 +17,11 @@
 # Size: the body is budgeted to 60,000 bytes, under GitHub's 65,536-character
 # limit. Other entries are truncated to fit; human-removal records are never
 # dropped, because they cannot be reconstructed once labels change. When they
-# alone exceed the budget they are split into parts: part 1 stays in the body
-# and parts 2..N are posted as comments on the report issue, each keyed by a
-# digest of the run's removal records so a re-run posts no part twice.
+# alone exceed the budget they are split into parts, all posted as comments
+# on the report issue before the body is written, and the body points at
+# them. Each part is keyed by a digest of the run's removal records, so a
+# re-run of the same entries file posts no part twice. More than 10 parts is
+# refused before any write, with the records printed.
 #
 # Identity and safety:
 #   - The report issue is identified by a stable HTML-comment marker in its
@@ -229,26 +231,34 @@ cmd_sync() {
     removal_content="$(awk -v wanted=1 "$partition" "$entries")"
     other_content="$(awk -v wanted=0 "$partition" "$entries")"
     removal_size="$(printf '%s' "$removal_content" | wc -c)"
-    # Removal records that do not fit in one body are kept whole by splitting
-    # them into parts of at most `budget` bytes: part 1 stays in the body,
-    # parts 2..N become comments on the report issue (post_removal_parts).
-    # Each comment is keyed by a digest of this run's removal records and its
-    # part number, so a re-run with the same records posts nothing twice and
-    # a failed post is completed by the next run.
-    removal_parts=1 removal_digest="" parts_dir=""
+    # Removal records that do not fit in one body never live in the body at
+    # all: they are split into parts of at most `budget` bytes, every part is
+    # posted as a comment on the report issue (post_removal_parts) before the
+    # body is written, and the body only points at them. Comments are
+    # append-only, so a later failed write cannot take a record back. Each
+    # comment is keyed by a digest of this run's removal records and its part
+    # number, so a re-run of the same entries file posts nothing twice.
+    # Parts are capped at max_parts: a larger run is refused before any write
+    # (its records are printed) rather than flooding the report issue.
+    removal_parts=0 removal_digest="" parts_dir=""
+    local max_parts=10
     if [ "$removal_size" -gt "$budget" ]; then
         parts_dir="$(mktemp -d)"
         trap 'rm -rf "$parts_dir"' EXIT
         removal_parts="$(printf '%s\n' "$removal_content" |
             split_parts "$budget" "$parts_dir")" ||
             die 2 "could not split the removal records into parts"
+        if [ "$removal_parts" -gt "$max_parts" ]; then
+            printf '%s\n' "$removal_content" >&2
+            die 2 "refused: this run's removal records need $removal_parts" \
+                "report comments, over the cap of $max_parts — they are" \
+                "printed above; nothing was written"
+        fi
         removal_digest="$(printf '%s' "$removal_content" | digest)" ||
             die 2 "could not digest the removal records"
-        removal_content="$(cat "$parts_dir/part-1")
+        removal_content="## Human removals
 
-## Human removals continued
-
-This run's removal records do not fit in one issue body. Parts 2–$removal_parts
+This run's removal records do not fit in one issue body. All $removal_parts parts
 are comments on this issue, each starting with
 \`<!-- harmon-triage-removals:$removal_digest:<part>/$removal_parts -->\`."
         removal_size="$(printf '%s' "$removal_content" | wc -c)"
@@ -311,7 +321,7 @@ $other_content"
         echo "DRY-RUN body follows:"
         printf '%s\n' "$body"
         local i
-        for ((i = 2; i <= removal_parts; i++)); do
+        for ((i = 1; i <= removal_parts; i++)); do
             echo "DRY-RUN would post removal part $i/$removal_parts as a comment; it follows:"
             removal_part_comment "$i"
         done
@@ -349,7 +359,7 @@ $other_content"
         # The removal parts go first: comments are append-only, so a later
         # failure cannot take back a part already posted, and the body that
         # points at them is written only once they exist.
-        post_removal_parts "$repo" "$target" 0
+        post_removal_parts "$repo" "$target"
         # Idempotency: identical findings must not churn the issue. The
         # timestamp line is generation metadata, so compare without it and
         # skip the edit when nothing else changed.
@@ -373,11 +383,11 @@ $other_content"
             gh issue create --repo "$repo" --title "$title" \
                 --body-file -)" || {
             dump_body
-            dump_parts_from 2
+            dump_parts_from 1
             die 1 "write failed: gh issue create in $repo"
         }
         echo "APPLIED report creation in $repo: $created"
-        post_removal_parts "$repo" "${created##*/}" 1
+        post_removal_parts "$repo" "${created##*/}"
     fi
 }
 
@@ -441,31 +451,28 @@ removal_part_comment() {
     cat "$parts_dir/part-$1"
 }
 
-# post_removal_parts REPO ISSUE BODY_WRITTEN — post removal parts 2..N as
-# comments on the report issue, skipping any a trusted author already posted
-# with the same marker (a re-run of the same entries file posts nothing twice,
-# and completes one that failed partway). On a failure, the parts not posted —
-# and the body, when it is not written yet (BODY_WRITTEN=0) — are printed.
+# post_removal_parts REPO ISSUE — post removal parts 1..N as comments on the
+# report issue, skipping any a trusted author already posted with the same
+# marker (a re-run of the same entries file posts nothing twice, and completes
+# one that failed partway). On a failure, the parts not posted are printed.
 post_removal_parts() {
-    local repo="$1" issue="$2" body_written="$3" existing i
-    [ "$removal_parts" -gt 1 ] || return 0
+    local repo="$1" issue="$2" existing i
+    [ "$removal_parts" -gt 0 ] || return 0
     if ! existing="$(gh api "repos/$repo/issues/$issue/comments" --paginate -q '
         .[] | select(.author_association == "OWNER"
                      or .author_association == "MEMBER"
                      or .author_association == "COLLABORATOR") | .body')"; then
-        [ "$body_written" -eq 1 ] || dump_body
-        dump_parts_from 2
+        dump_parts_from 1
         die 1 "write incomplete: could not list the comments of $repo#$issue," \
-            "so removal parts 2–$removal_parts were not posted"
+            "so its removal parts were not posted"
     fi
-    for ((i = 2; i <= removal_parts; i++)); do
+    for ((i = 1; i <= removal_parts; i++)); do
         if grep -qF "$(removal_part_marker "$i")" <<<"$existing"; then
             echo "removal part $i/$removal_parts is already on $repo#$issue"
             continue
         fi
         if ! removal_part_comment "$i" |
             gh issue comment "$issue" --repo "$repo" --body-file - >/dev/null; then
-            [ "$body_written" -eq 1 ] || dump_body
             dump_parts_from "$i"
             die 1 "write failed: removal part $i/$removal_parts on $repo#$issue;" \
                 "the records not posted are printed above"

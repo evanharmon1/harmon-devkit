@@ -3725,7 +3725,6 @@ for removal_count in 2 700; do
     [ "$first_section" = '## Human removals' ] || fail "removals must render first"
     grep -q '## Report truncated' "$tmp/out" || fail "other entries must be truncated"
     if [ "$removal_count" -eq 700 ]; then
-        grep -q 'noise: filler entry' "$tmp/out" && fail "over-budget removals leave no budget for other entries"
         grep -q 'Other findings after removals' "$tmp/out" && fail "remaining sections must be omitted"
         # Every write stays under GitHub's 65,536-character body limit: the
         # body, and each removal part posted as a comment.
@@ -3734,7 +3733,11 @@ for removal_count in 2 700; do
              w' "$tmp/out" >"$tmp/report-body"
         [ "$(wc -c <"$tmp/report-body")" -lt 65536 ] ||
             fail "the report body must stay under 65536 bytes (got $(wc -c <"$tmp/report-body"))"
-        grep -q 'DRY-RUN would post removal part 2/' "$tmp/out" ||
+        grep -q 'noise: filler entry' "$tmp/report-body" ||
+            fail "with removals in comments, the body keeps other entries"
+        grep -q 'Evidence: APPLIED remove' "$tmp/report-body" &&
+            fail "over-budget removal records must not live in the body"
+        grep -q 'DRY-RUN would post removal part 1/' "$tmp/out" ||
             fail "over-budget removals must continue in comments: $(head -5 "$tmp/out")"
         rm -f "$tmp"/report-part-*
         awk -v dir="$tmp" '/^DRY-RUN would post removal part / {n++; f = dir "/report-part-" n; next}
@@ -3755,9 +3758,9 @@ cat >"$stub_dir/issue-99.json" <<JSON
 JSON
 rm -f "$stub_dir/comments-99.json"
 parts="$(grep -c '^DRY-RUN would post removal part ' "$tmp/out")"
-[ "$parts" -ge 1 ] || fail "the 700-removal run must have comment parts"
-# The second comment fails: part 2 lands; parts 3.. and the body (written
-# only after its parts) do not, and every record not written is printed.
+[ "$parts" -ge 2 ] || fail "the 700-removal run must have comment parts"
+# The second comment fails: part 1 lands; parts 2.. and the body (written
+# only after its parts) do not, and every record not posted is printed.
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_COMMENT_FAIL_ON=2 "$report" sync \
     --repo "$repo" --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 1 ] ||
@@ -3766,10 +3769,8 @@ parts="$(grep -c '^DRY-RUN would post removal part ' "$tmp/out")"
     fail "only the part before the failure is posted"
 grep -q "issue edit 99" "$GH_STUB_LOG" &&
     fail "the body must wait until every part is posted: $(cat "$GH_STUB_LOG")"
-grep -q "removal parts 3–$((parts + 1)) were NOT posted" "$tmp/out" ||
+grep -q "removal parts 2–$parts were NOT posted" "$tmp/out" ||
     fail "the parts not posted must be printed: $(grep 'NOT' "$tmp/out")"
-grep -q "the report body was NOT written" "$tmp/out" ||
-    fail "the unwritten body must be printed"
 [ "$(grep -c 'Evidence: APPLIED remove.*retention-' "$tmp/out")" -ge \
     $((700 - $(jq -r '.[].body' "$stub_dir/comments-99.json" | grep -c 'retention-'))) ] ||
     fail "every record not posted must be in the printed output"
@@ -3777,18 +3778,15 @@ grep -q "the report body was NOT written" "$tmp/out" ||
 [ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
     --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 0 ] ||
     fail "the completing re-run failed: $(tail -3 "$tmp/out")"
-grep -q "removal part 2/$((parts + 1)) is already on $repo#99" "$tmp/out" ||
+grep -q "removal part 1/$parts is already on $repo#99" "$tmp/out" ||
     fail "a posted part must not be posted again: $(cat "$tmp/out")"
 [ "$(jq length "$stub_dir/comments-99.json")" -eq "$parts" ] ||
     fail "after the re-run every part is posted exactly once"
-# Every removal record is in the body (part 1, from the dry run above) or in
-# exactly one comment.
-in_body="$(grep -c 'Evidence: APPLIED remove.*retention-' "$tmp/report-body")"
+# Every removal record is in exactly one comment.
 in_comments="$(jq -r '.[].body' "$stub_dir/comments-99.json" |
     grep -c 'Evidence: APPLIED remove.*retention-')"
-[ "$in_body" -gt 0 ] || fail "part 1 of the removals belongs in the body"
-[ $((in_body + in_comments)) -eq 700 ] ||
-    fail "body and comments must hold all 700 removals once (got $in_body + $in_comments)"
+[ "$in_comments" -eq 700 ] ||
+    fail "the comments must hold all 700 removals once (got $in_comments)"
 [ "$(jq -r '.[].body' "$stub_dir/comments-99.json" | grep -c '^<!-- harmon-triage-removals:')" -eq "$parts" ] ||
     fail "every comment part must carry its marker"
 # A third run with the same records posts nothing.
@@ -3798,6 +3796,25 @@ in_comments="$(jq -r '.[].body' "$stub_dir/comments-99.json" |
 [ "$(jq length "$stub_dir/comments-99.json")" -eq "$parts" ] ||
     fail "a re-run with unchanged records must post no comment"
 rm -f "$stub_dir/comments-99.json"
+
+echo "==> removal reports: more than 10 comment parts is refused before any write"
+{
+    printf '## Human removals\n\n'
+    for ((i = 1; i <= 4000; i++)); do
+        printf '### #%d — human removed: retained evidence\n<!-- triage-entry:%d -->\n' "$i" "$i"
+        printf -- "- Evidence: APPLIED remove 'human' from %s#%d cap-%d %s\n\n" \
+            "$repo" "$i" "$i" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    done
+} >"$tmp/flood-entries.md"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
+    --entries-file "$tmp/flood-entries.md" --execute)" = 2 ] ||
+    fail "a run over the part cap must exit 2: $(tail -2 "$tmp/out")"
+grep -q "over the cap of 10" "$tmp/out" || fail "the refusal must name the cap"
+grep -qE "issue (edit|create|comment)" "$GH_STUB_LOG" &&
+    fail "a run over the part cap must write nothing: $(grep issue "$GH_STUB_LOG")"
+[ "$(grep -c 'Evidence: APPLIED remove.*cap-' "$tmp/out")" -eq 4000 ] ||
+    fail "the refused run must print every removal record"
 
 echo "==> human removal: failed edit still reports a removal confirmed by re-read"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
