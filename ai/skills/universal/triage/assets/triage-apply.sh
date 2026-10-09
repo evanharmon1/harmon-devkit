@@ -31,7 +31,9 @@
 #       never has a tier label written or removed. GitHub has no conditional
 #       label edit, so a pin added between the last read and the label edit
 #       is caught by a read after it: the Tier change is undone and the call
-#       exits 4. A pin added after that read is not seen.
+#       exits 4. A label change after that read is not seen — a pin added
+#       later, or a re-tier during the restore itself — and a restore edit
+#       that fails is reported for fixing by hand even if it landed.
 #     - needs-triage — DERIVED from the required set (work type, every active
 #       label axis, Impact, Risk, Complexity), never added or removed by
 #       judgement: added while any required axis is missing, removed once
@@ -1766,22 +1768,34 @@ cmd_label() {
     # means this call overrode a human's choice, and whatever Tier part of the
     # edit is on the issue is undone. Returns 1 when a pin was found, 0
     # otherwise; a pin added after this read is not seen.
+    # With `failed`, the edit itself reported failure: an unreadable result
+    # keeps the write-failure exit (1) rather than becoming exit 2.
     undo_tier_if_pinned() {
         [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ] || return 0
         local post_edit restore=() readd=() t
-        post_edit="$(gh issue view "$issue" --repo "$repo" --json labels \
-            -q '.labels[].name')" ||
+        if ! post_edit="$(gh issue view "$issue" --repo "$repo" --json labels \
+            -q '.labels[].name')"; then
+            [ "${1:-}" != failed ] ||
+                die 1 "write failed: gh issue edit $repo#$issue, and the read" \
+                    "that checks for a tier:pinned added during it failed too;" \
+                    "check its Tier labels by hand"
             die 2 "write indeterminate: the label edit on $repo#$issue may" \
                 "have changed its Tier, but the read that checks for a" \
                 "tier:pinned added during it failed; check its Tier labels by hand"
+        fi
         in_list "tier:pinned" "$post_edit" || return 0
         # The restore leaves the issue with the human's Tier: this call's
-        # added Tier goes, and a Tier it removed comes back only when no other
-        # tier:<value> is on the issue. A human who replaced the Tier before
-        # pinning (the documented pin workflow) keeps their choice alone.
+        # added Tier goes, and a Tier it removed comes back only when no
+        # tier:<value> appeared since the read before the edit (`current`).
+        # A human who replaced the Tier before pinning (the documented pin
+        # workflow) keeps their choice alone; a Tier that was already there
+        # is not mistaken for theirs.
         local human_tier
         human_tier="$(grep -E '^tier:[^:]+$' <<<"$post_edit" |
-            grep -vxF -e "tier:pinned" -e "${tier_add:-tier:pinned}" || true)"
+            grep -vxF -e "tier:pinned" -e "${tier_add:-tier:pinned}" |
+            while IFS= read -r t; do
+                in_list "$t" "$current" || echo "$t"
+            done || true)"
         if [ -z "$human_tier" ]; then
             for t in "${tier_removes[@]+"${tier_removes[@]}"}"; do
                 in_list "$t" "$post_edit" || readd+=("$t")
@@ -1859,7 +1873,7 @@ cmd_label() {
                     echo "APPLIED remove 'human' from $repo#$issue (confirmed by re-read after failed edit)"
                 fi
             fi
-            undo_tier_if_pinned ||
+            undo_tier_if_pinned failed ||
                 die 1 "write failed: gh issue edit $repo#$issue; tier:pinned" \
                     "is now on it, and any Tier change of this edit that" \
                     "landed was undone"

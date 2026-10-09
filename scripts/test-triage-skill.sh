@@ -236,6 +236,12 @@ api\ repos/*)
     fi
     ;;
 "issue view")
+    # GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT=1: once this run's first edit has
+    # failed (GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST), every later read fails.
+    if [ "${GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT:-0}" = 1 ] &&
+        [ -e "$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}" ]; then
+        exit 1
+    fi
     if [ "${GH_STUB_RECONCILIATION_READ_FAIL:-0}" = 1 ] &&
         grep -q -- '--json labels$' <<<"$*"; then
         exit 1
@@ -2521,6 +2527,40 @@ grep -q "tier:pinned is now on it" "$tmp/out" ||
     fail "the failure must report the pin and the restore: $(cat "$tmp/out")"
 rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.edit-failed-*
 # shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
+echo "==> label: a failed edit whose pin check cannot read keeps exit 1"
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1 \
+    GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT=1 "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 1 ] ||
+    fail "a failed edit with an unreadable pin check must exit 1: $(cat "$tmp/out")"
+grep -q "the read that checks for a tier:pinned added during it failed too" "$tmp/out" ||
+    fail "the failure must say the pin check could not read: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.edit-failed-*
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage
+
+echo "==> label: a Tier already on the issue is not taken for the pinner's"
+# Stacked Tiers: the derived one is present, so the edit only removes the
+# stale one. A pin during the edit must bring the stale one back, since the
+# remaining Tier was there before the edit, not set by the pinner.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:frontier tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned" "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin added during the label edit must refuse: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --add-label tier:local" "$GH_STUB_LOG" ||
+    fail "the stale Tier the call removed must come back: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086
 issue_fixture 60 $classified needs-triage
 
 echo "==> label: a stale derived Tier is replaced, never stacked"
