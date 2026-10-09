@@ -29,7 +29,14 @@ trap 'rm -rf "$scratch"' EXIT
 # A consumer runs the independent cases with the built-in policy fallback.
 fixture_dir="${repo_root:-$scratch/no-repository}/ai/schemas/fixtures/devflow-conformance"
 fixtures_available=0
-if [ -d "$fixture_dir" ]; then
+# Only the source-tree copy of this package owns the fixtures: a vendored copy
+# never reads a consumer's same-named directory, whatever it contains.
+source_tree=0
+if [ -n "$repo_root" ] && [ -d "$repo_root/ai/skills/universal/dev-flow-support" ] &&
+    [ "$(cd "$repo_root/ai/skills/universal/dev-flow-support" && pwd -P)" = "$package_dir" ]; then
+    source_tree=1
+fi
+if [ "$source_tree" -eq 1 ]; then
     for fixture in policy.toml agent-registry.json task-targets.json; do
         [ -f "$fixture_dir/$fixture" ] || {
             echo "test-tier-inputs: missing source-tree fixture: $fixture_dir/$fixture" >&2
@@ -37,10 +44,6 @@ if [ -d "$fixture_dir" ]; then
         }
     done
     fixtures_available=1
-elif [ -n "$repo_root" ] && [ -d "$repo_root/ai/skills/universal/dev-flow-support" ] &&
-    [ "$(cd "$repo_root/ai/skills/universal/dev-flow-support" && pwd -P)" = "$package_dir" ]; then
-    echo "test-tier-inputs: missing source-tree fixtures: $fixture_dir" >&2
-    exit 1
 fi
 base_policy="$fixture_dir/policy.toml"
 # An absent final file under an existing parent selects the built-in fallback;
