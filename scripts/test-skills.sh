@@ -10963,8 +10963,54 @@ done
 # end-to-end cases; it is wired here rather than as a separate Taskfile target.
 echo ""
 echo "== dev-flow-support tier-inputs.mjs (harmon-devkit#1248) =="
-expect_ok "tier-inputs.mjs: translation, ambiguous pin, and disclosure cases pass" \
-    "$repo/ai/skills/universal/dev-flow-support/assets/test-tier-inputs.sh"
+tier_full_rc=0
+tier_full_output="$(bash "$repo/ai/skills/universal/dev-flow-support/assets/test-tier-inputs.sh" 2>&1)" || tier_full_rc=$?
+if [ "$tier_full_rc" -eq 0 ] && ! grep -q '^skipped:' <<<"$tier_full_output"; then
+    ok "tier-inputs.mjs: translation, ambiguous pin, and disclosure cases pass without source-tree skips"
+else
+    bad "tier-inputs.mjs: source-tree suite failed or skipped fixture cases (exit $tier_full_rc)"
+    printf '%s\n' "$tier_full_output" >&2
+fi
+# Maintainer comment 5985296551: package tests run without source-tree fixtures
+# in an external vendored layout, but a missing corpus in the source is an error.
+tier_vendor_root="$TMPROOT/tier-vendored-consumer"
+tier_vendor_package="$tier_vendor_root/.claude/skills/dev-flow-support"
+mkdir -p "$tier_vendor_package"
+cp "$repo/ai/skills/universal/dev-flow-support/SKILL.md" "$tier_vendor_package/"
+cp -R "$repo/ai/skills/universal/dev-flow-support/assets" "$tier_vendor_package/"
+tier_vendor_rc=0
+tier_vendor_output="$(cd "$tier_vendor_root" && bash "$tier_vendor_package/assets/test-tier-inputs.sh" 2>&1)" || tier_vendor_rc=$?
+tier_full_pass="$(awk '/tier-inputs: [0-9]+ case\(s\) passed$/{print $3}' <<<"$tier_full_output")"
+tier_vendor_pass="$(awk '/tier-inputs: [0-9]+ case\(s\) passed$/{print $3}' <<<"$tier_vendor_output")"
+tier_vendor_skipped="$(awk '/^skipped: [0-9]+ case\(s\)/{print $2}' <<<"$tier_vendor_output")"
+if [ "$tier_vendor_rc" -eq 0 ] && [ "$tier_full_rc" -eq 0 ] &&
+    [ -n "$tier_full_pass" ] && [ -n "$tier_vendor_pass" ] && [ -n "$tier_vendor_skipped" ] &&
+    [ "$((tier_vendor_pass + tier_vendor_skipped))" -eq "$tier_full_pass" ] &&
+    [ "$(printf '%s\n' "$tier_vendor_output" | grep -c '^skipped:')" -eq 1 ] &&
+    grep -qE '^skipped: [1-9][0-9]* case\(s\) need source-tree fixtures \(ai/schemas/fixtures/devflow-conformance\), absent in this copy$' <<<"$tier_vendor_output" &&
+    grep -qF 'case(s) passed' <<<"$tier_vendor_output"; then
+    ok "tier-inputs.mjs: external vendored package passes and explicitly counts fixture skips"
+else
+    bad "tier-inputs.mjs: external vendored package failed or did not report fixture skips (exit $tier_vendor_rc)"
+    printf '%s\n' "$tier_vendor_output" >&2
+fi
+# The same package under the source path of a Git checkout must not silently
+# downgrade coverage when its source-only corpus is missing.
+tier_source_root="$TMPROOT/tier-source-missing-fixtures"
+tier_source_package="$tier_source_root/ai/skills/universal/dev-flow-support"
+mkdir -p "$(dirname "$tier_source_package")"
+git init -q -b main "$tier_source_root"
+cp -R "$tier_vendor_package" "$tier_source_package"
+tier_source_rc=0
+tier_source_output="$(bash "$tier_source_package/assets/test-tier-inputs.sh" 2>&1)" || tier_source_rc=$?
+if [ "$tier_source_rc" -ne 0 ] &&
+    grep -qF 'test-tier-inputs: missing source-tree fixtures:' <<<"$tier_source_output" &&
+    ! grep -q '^skipped:' <<<"$tier_source_output"; then
+    ok "tier-inputs.mjs: missing fixtures in its source layout fail instead of skipping"
+else
+    bad "tier-inputs.mjs: source-layout missing-fixture refusal failed (exit $tier_source_rc)"
+    printf '%s\n' "$tier_source_output" >&2
+fi
 # Review round 1, R1-2: the tier procedure holds the self-modification
 # boundary before it runs any branch copy, and both stage skills point at it.
 DFS_MD="$repo/ai/skills/universal/dev-flow-support/SKILL.md"
