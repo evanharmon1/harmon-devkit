@@ -34,50 +34,18 @@
       "required": ["base_sha", "policy", "dispatcher", "issues", "overlaps", "waves", "lanes"],
       "properties": {
         "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-        "policy": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["rigor", "rigor_source", "caps", "breadth", "strategy", "strategy_source", "role_tiers", "operator_pins"],
-          "properties": {
-            "rigor": { "type": "string", "minLength": 1 },
-            "rigor_source": { "type": "string", "minLength": 1 },
-            "caps": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["challenge", "review", "integration", "remediation", "min_rounds", "wall_clock_min"],
-              "properties": {
-                "challenge": { "type": "integer", "minimum": 0 },
-                "review": { "type": "integer", "minimum": 0 },
-                "integration": { "type": "integer", "minimum": 0 },
-                "remediation": { "type": "integer", "minimum": 0 },
-                "min_rounds": { "type": "integer", "minimum": 0 },
-                "wall_clock_min": { "type": "integer", "minimum": 1 }
-              }
-            },
-            "breadth": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["max_agent_runs", "max_parallel_agents"],
-              "properties": {
-                "max_agent_runs": { "type": "integer", "minimum": 1 },
-                "max_parallel_agents": { "type": "integer", "minimum": 1 }
-              }
-            },
-            "strategy": { "type": "string", "minLength": 1 },
-            "strategy_source": { "type": "string", "minLength": 1 },
-            "role_tiers": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["orchestrator", "implementer", "challenger", "reviewer", "integrator"],
-              "properties": {
-                "orchestrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
-                "implementer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
-                "challenger": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
-                "reviewer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
-                "integrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] }
-              }
-            },
-            "operator_pins": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "policy": { "$ref": "#/$defs/resolvedPolicy" },
+        "lane_profiles": {
+          "type": "array",
+          "$comment": "Optional complete resolved profiles keyed by lane name. When present, semantic validation requires exactly the planned lanes; older plans omit it.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lane", "policy"],
+            "properties": {
+              "lane": { "type": "string", "minLength": 1 },
+              "policy": { "$ref": "#/$defs/resolvedPolicy" }
+            }
           }
         },
         "dispatcher": {
@@ -177,6 +145,52 @@
             }
           }
         }
+      }
+    },
+    "resolvedPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rigor", "rigor_source", "caps", "breadth", "strategy", "strategy_source", "role_tiers", "operator_pins"],
+      "properties": {
+        "rigor": { "type": "string", "minLength": 1 },
+        "rigor_source": { "type": "string", "minLength": 1 },
+        "caps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["challenge", "review", "integration", "remediation", "min_rounds", "wall_clock_min"],
+          "properties": {
+            "challenge": { "type": "integer", "minimum": 0 },
+            "review": { "type": "integer", "minimum": 0 },
+            "integration": { "type": "integer", "minimum": 0 },
+            "remediation": { "type": "integer", "minimum": 0 },
+            "min_rounds": { "type": "integer", "minimum": 0 },
+            "wall_clock_min": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "breadth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_agent_runs", "max_parallel_agents"],
+          "properties": {
+            "max_agent_runs": { "type": "integer", "minimum": 1 },
+            "max_parallel_agents": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "strategy": { "type": "string", "minLength": 1 },
+        "strategy_source": { "type": "string", "minLength": 1 },
+        "role_tiers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["orchestrator", "implementer", "challenger", "reviewer", "integrator"],
+          "properties": {
+            "orchestrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+            "implementer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+            "challenger": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+            "reviewer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+            "integrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] }
+          }
+        },
+        "operator_pins": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     },
     "canonicalPath": {

@@ -2369,6 +2369,24 @@ function checkPlanCoherence(document, errors) {
   }
 
   const laneNames = lanes.map((lane) => lane.lane)
+  if (document.lane_profiles !== undefined) {
+    const profiles = document.lane_profiles
+    const profileNames = profiles.map((entry) => entry.lane)
+    for (const name of duplicates(profileNames)) errors.push(`$plan.lane_profiles: duplicate lane ${JSON.stringify(name)}`)
+    for (const name of profileNames) {
+      if (!laneNames.includes(name)) errors.push(`$plan.lane_profiles: unknown lane ${JSON.stringify(name)}`)
+    }
+    for (const name of laneNames) {
+      if (!profileNames.includes(name)) errors.push(`$plan.lane_profiles: missing profile for lane ${JSON.stringify(name)}`)
+    }
+    for (const [index, entry] of profiles.entries()) {
+      for (const stage of ['challenge', 'review']) {
+        if (entry.policy.caps.min_rounds > entry.policy.caps[stage]) {
+          errors.push(`$plan.lane_profiles[${index}].policy.caps: min_rounds exceeds ${stage} cap`)
+        }
+      }
+    }
+  }
   const laneBranches = lanes.map((lane) => lane.branch)
   const laneRuns = lanes.map((lane) => lane.run_id)
   for (const name of duplicates(laneNames)) errors.push(`$plan.lanes: duplicate lane ${JSON.stringify(name)}`)
