@@ -470,7 +470,9 @@ export function tierInputs(input = {}) {
           ),
         );
       }
-      if (fieldSet(axis)) value = fields[axis];
+      // An organization's option names keep its own capitalization (`High`,
+      // `XL`); compare them the way triage's field reader does, lowercased.
+      if (fieldSet(axis)) value = fields[axis].toLowerCase();
     } else if (fromLabels.length === 1) {
       value = fromLabels[0];
     } else if (fromLabels.length > 1) {

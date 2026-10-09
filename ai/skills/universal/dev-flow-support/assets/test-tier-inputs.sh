@@ -241,6 +241,7 @@ fixture_expect_warning "two strategy labels warn" \
 expect_args "operator tiers" '{"operator":{"tiers":{"implementer":"apex","reviewer":"frontier"}}}' \
     '["--tier-overrides=implementer=apex,reviewer=frontier"]'
 expect_args "org fields are the classification" '{"owner_type":"Organization","fields":{"risk":"low","complexity":"xl"}}' '["--risk=low","--complexity=xl"]'
+expect_args "org field options keep their own capitalization" '{"owner_type":"Organization","fields":{"risk":"High","complexity":"XL"}}' '["--risk=high","--complexity=xl"]'
 expect_args "a field wins over a disagreeing label" '{"owner_type":"Organization","labels":["risk:high"],"fields":{"risk":"low"}}' '["--risk=low"]'
 expect_warning "a disagreeing org label is named inert" '{"owner_type":"Organization","labels":["risk:high"],"fields":{"risk":"low"}}' risk-label-inert "risk:high"
 
