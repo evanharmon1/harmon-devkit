@@ -1320,11 +1320,14 @@ the document without it.
 - **`capped`** with gating findings is stop condition 2 — escalate, PR stays
   draft. Indeterminate is never a pass: fix the record or escalate.
 
-The readiness gate runs the same computation over `--record` and refuses
-promotion when the record cannot be read (`integration-exit-indeterminate`).
-The engine does not prove a P0/P1 was answered by a fix push; that stays with
-the gate's own conditions — every finding settled, a clean current-head
-cycle.
+The readiness gate runs the same computation over `--record` and promotes
+only on an eligible verdict: `converged`, `continue`/`last_cycle_clean`,
+`diverging`/`tell` (P2 only, settled by filing), `capped`/`disabled` (cap 0),
+or `continue`/`no_completed_cycle`. Every verdict holding a confirmed P0/P1
+fails — `integration-tell-escalation`, `integration-gating-findings`,
+`integration-capped` — and an unadjudicated round or an unreadable record is
+indeterminate (`integration-awaiting-adjudication`,
+`integration-exit-indeterminate`).
 
 ## 4. Reply in-thread
 

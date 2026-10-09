@@ -261,9 +261,10 @@ the scaffolding checkpoint, and a nonempty cycle at or after cycle 2 whose
 every finding attacks an earlier remediation push SHALL return `diverging`. A
 remediation push after such a cycle without a recorded delete or restructure
 remedy SHALL make the trajectory indeterminate. The readiness gate SHALL
-accept a stage closed by `converged` with its findings settled; whether a
-P0/P1 was answered by a fix push is left to its existing settlement and
-current-head conditions, not to the integration exit.
+promote only on a verdict without a confirmed P0/P1 — `converged`, `continue`
+with `last_cycle_clean` or `no_completed_cycle`, a P2-only `diverging`/`tell`,
+or the cap-0 `capped`/`disabled` — and SHALL fail every gating verdict and
+treat an unadjudicated round as indeterminate.
 
 #### Scenario: Two P2-only cycles
 

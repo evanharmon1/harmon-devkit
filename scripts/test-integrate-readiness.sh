@@ -4102,6 +4102,22 @@ write_integration_cycle 2 "$head_sha" 2 P2 file '{"attacks_remediation":true,"re
 run_gate_recheck_clean --integrator-result "$cycle2_result" --integration-cap 4
 assert_gate 0 pass ready
 
+echo "==> #1272: a tell cycle holding a confirmed P1 settled by filing keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
+write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
+run_gate_recheck_clean --integrator-result "$cycle2_result" --integration-cap 4
+assert_gate 1 fail integration-tell-escalation
+
+echo "==> #1272: a run capped with a confirmed P1 filed keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
+write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$cycle2_result" --integration-cap 2
+assert_gate 1 fail integration-capped
+
 echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
 write_defaults
 write_record_with_integration_entries 2

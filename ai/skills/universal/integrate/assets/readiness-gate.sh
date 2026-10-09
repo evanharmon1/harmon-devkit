@@ -63,13 +63,16 @@
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
-#   evidence-marker-missing, remediation-capped              (fail)
+#   evidence-marker-missing, remediation-capped,            (fail)
+#   integration-tell-escalation, integration-gating-findings,
+#   integration-capped                                       (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
 #   behind-base-unknown, merge-state-stale,
-#   integration-exit-indeterminate, usage                    (indeterminate)
+#   integration-exit-indeterminate,
+#   integration-awaiting-adjudication, usage                 (indeterminate)
 #
 # `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
 # so a genuinely behind head never reaches the cache branch, and a cache that
@@ -1896,8 +1899,15 @@ fi
 # over the same record, never re-derived here. A record the engine cannot read
 # — a remediation push after a tell cycle with no delete/restructure remedy
 # recorded, a cycle-ordinal sequence with a hole, a cycle missing its
-# checkpoint, an adjudication with no pass — is indeterminate. Every verdict
-# passes this step; settling findings is the conditions above.
+# checkpoint, an adjudication with no pass — is indeterminate. Otherwise only
+# the verdict's outcome/reason is read, against one table: promotion-eligible
+# verdicts pass, a verdict holding a confirmed P0/P1 fails (filing settles P2s
+# only), and a round still awaiting adjudication is indeterminate
+# (challenge-r4-codex-adversarial-1). Eligible: converged; continue with
+# last_cycle_clean; diverging/tell (a P2-only tell, settled by filing);
+# capped/disabled (cap 0 — the condition drops out); and continue with
+# no_completed_cycle (no cycle recorded, so the Codex current-head condition
+# above decides).
 exit_engine="$support_dir/dev-flow-exit.mjs"
 [ -f "$exit_engine" ] ||
     die "$exit_engine is missing — the dev-flow-support package must be vendored alongside this skill"
@@ -1917,6 +1927,25 @@ try {
 if ! jq -e '.ok' <<<"$integration_exit" >/dev/null 2>&1; then
     indeterminate integration-exit-indeterminate "the integration exit is indeterminate: $(jq -r '.reason // "unreadable engine output"' <<<"$integration_exit" 2>/dev/null)"
 fi
+integration_verdict="$(jq -r '"\(.outcome)/\(.reason)"' <<<"$integration_exit")"
+case "$integration_verdict" in
+converged/two_consecutive_clean | continue/last_cycle_clean | diverging/tell | capped/disabled | continue/no_completed_cycle) ;;
+diverging/tell_with_gating_findings)
+    fail_condition integration-tell-escalation "the integration exit is $integration_verdict: a self-feeding cycle holds a confirmed P0/P1 — an escalation that keeps the PR draft and leads with descoping"
+    ;;
+continue/gating_findings)
+    fail_condition integration-gating-findings "the integration exit is $integration_verdict: the clean streak is broken by a confirmed P0/P1 — fix it and run the next cycle"
+    ;;
+capped/cap_reached_with_gating_findings)
+    fail_condition integration-capped "the integration exit is $integration_verdict: the integration cap is spent with a confirmed P0/P1 open — escalate"
+    ;;
+continue/awaiting_adjudication)
+    indeterminate integration-awaiting-adjudication "the integration exit is $integration_verdict: the latest integrator round's findings are not adjudicated yet"
+    ;;
+*)
+    indeterminate integration-exit-indeterminate "the integration exit verdict $integration_verdict is not one this gate recognizes"
+    ;;
+esac
 
 # 9e. Every adjudicated round has its own issue evidence comment
 # (harmon-devkit#685: "every adjudicated round has a matching issue evidence
