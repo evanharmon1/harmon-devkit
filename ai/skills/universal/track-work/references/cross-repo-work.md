@@ -108,7 +108,7 @@ EOF
 
 Run the full, read-only pre-create gate from §5 against the **target checkout**:
 `<track-work-skill-dir>/assets/check-issue-metadata.sh` must receive
-`--repo <target-owner/target-repo>` and `--repo-root <target-checkout>`, so the
+`--repo <[host/]target-owner/target-repo>` and `--repo-root <target-checkout>`, so the
 target's owner type, manifest and provisioned vocabulary govern the draft.
 
 Only after that gate exits 0, follow SKILL.md's

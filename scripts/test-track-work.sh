@@ -618,6 +618,9 @@ cat >"$metadata_stub/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ -n "${METADATA_GH_LOG:-}" ]; then printf '%s\n' "$*" >>"$METADATA_GH_LOG"; fi
+if [ -n "${METADATA_GH_HOST_LOG:-}" ]; then
+    printf '%s|%s\n' "${GH_HOST-<unset>}" "$*" >>"$METADATA_GH_HOST_LOG"
+fi
 case "${1:-} ${2:-}" in
 "api repos/"*"/contents/")
     [ "${METADATA_ROOT_FAIL:-0}" = 0 ] || exit 1
@@ -772,6 +775,180 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
         "$valid_body" >/dev/null
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
+
+echo "==> metadata: host-qualified targets bind every direct gh read to their host"
+metadata_host="$tmp/metadata-host"
+mkdir -p "$metadata_host"
+git -C "$metadata_host" init -q
+git -C "$metadata_host" remote add personal https://ghe.example.com/testowner/testrepo.git
+git -C "$metadata_host" remote add organization git@ghe.example.com:testorg/testrepo.git
+cp "$metadata_repo/label-registry.json" "$metadata_host/label-registry.json"
+: >"$tmp/metadata-host-gh.log"
+for owner_kind in personal organization; do
+    host_args=(--work-type-label feature)
+    host_owner=testowner
+    if [ "$owner_kind" = organization ]; then
+        host_args=(--issue-type Task)
+        host_owner=testorg
+    fi
+    [ "$(METADATA_GH_LOG="$tmp/metadata-host-gh.log" run_metadata \
+        --repo "ghe.example.com/$host_owner/testrepo" --repo-root "$metadata_host" \
+        --owner-type "$owner_kind" --title 'Bind enterprise metadata reads' \
+        --body-file "$valid_body" --human-authored "${host_args[@]}")" = 0 ] ||
+        fail "host-qualified $owner_kind preflight must pass: $(cat "$tmp/metadata.out")"
+done
+# Remote discovery exercises both the raw manifest read and the authorized
+# root listing that proves a missing manifest's absence.
+for manifest_kind in present absent; do
+    remote_manifest=""
+    [ "$manifest_kind" != present ] || remote_manifest="$metadata_host/label-registry.json"
+    axis_contract="$(METADATA_GH_LOG="$tmp/metadata-host-gh.log" \
+        METADATA_REMOTE_MANIFEST="$remote_manifest" "$metadata" \
+        --required-axes --repo ghe.example.com/testowner/testrepo)" ||
+        fail "host-qualified remote discovery must handle $manifest_kind manifests"
+    jq -e '.axes | length > 0' <<<"$axis_contract" >/dev/null ||
+        fail "host-qualified discovery must emit axes"
+done
+awk '
+    $1 == "api" {
+        if ($2 !~ /^(repos\/(testowner|testorg)\/testrepo|orgs\/testorg\/issue-types)/ ||
+            $(NF-1) != "--hostname" || $NF != "ghe.example.com") exit 1
+        next
+    }
+    $1 == "label" && $2 == "list" {
+        if ($3 != "--repo" || $4 !~ /^ghe\.example\.com\/(testowner|testorg)\/testrepo$/) exit 1
+        next
+    }
+    { exit 1 }
+' "$tmp/metadata-host-gh.log" || fail "every enterprise gh read must carry its host"
+for expected_read in 'api repos/testowner/testrepo ' 'api orgs/testorg/issue-types ' \
+    'api repos/testowner/testrepo/contents/label-registry.json ' \
+    'api repos/testowner/testrepo/contents/ ' 'label list --repo ghe.example.com/'; do
+    grep -qF "$expected_read" "$tmp/metadata-host-gh.log" ||
+        fail "enterprise regression did not exercise $expected_read"
+done
+
+echo "==> metadata: bare targets preserve gh arguments without --hostname"
+: >"$tmp/metadata-bare-gh.log"
+[ "$(METADATA_GH_LOG="$tmp/metadata-bare-gh.log" run_personal \
+    'Preserve bare metadata reads' "$valid_body")" = 0 ] ||
+    fail "bare agent preflight must still pass"
+METADATA_GH_LOG="$tmp/metadata-bare-gh.log" \
+    "$metadata" --required-axes --repo testowner/testrepo >/dev/null ||
+    fail "bare remote axis discovery must still pass"
+if grep -q -- '--hostname' "$tmp/metadata-bare-gh.log"; then
+    fail "bare targets must not gain --hostname"
+fi
+grep -qx 'api repos/testowner/testrepo --jq .owner.type' "$tmp/metadata-bare-gh.log" ||
+    fail "bare owner lookup arguments must remain unchanged"
+grep -qx 'label list --repo testowner/testrepo --limit 1000 --json name -q .\[\].name' \
+    "$tmp/metadata-bare-gh.log" || fail "bare label arguments must remain unchanged"
+
+echo "==> metadata: qualified agent classification inherits its host with a bare repo"
+: >"$tmp/metadata-classification-host.log"
+for owner_kind in personal organization; do
+    host_owner=testowner
+    host_args=(--work-type-label feature --label impact:medium --label risk:low --label complexity:s)
+    if [ "$owner_kind" = organization ]; then
+        host_owner=testorg
+        host_args=(--issue-type Task --impact medium --risk low --complexity s)
+    fi
+    [ "$(GH_HOST=ambient.example.com METADATA_GH_HOST_LOG="$tmp/metadata-classification-host.log" \
+        run_metadata --repo "ghe.example.com/$host_owner/testrepo" --repo-root "$metadata_host" \
+        --owner-type "$owner_kind" --title 'Bind enterprise agent classification' \
+        --body-file "$valid_body" --agent-authored --label area:fixture \
+        --label layer:none --label domain:fixture --label ai-generated "${host_args[@]}")" = 0 ] ||
+        fail "qualified $owner_kind agent preflight must pass: $(cat "$tmp/metadata.out")"
+    grep -qxF "ghe.example.com|api repos/$host_owner/testrepo -q .owner.type" \
+        "$tmp/metadata-classification-host.log" || fail "classification helper must use bare repo on explicit host"
+    grep -qxF "ghe.example.com|label list --repo $host_owner/testrepo --limit 1000 --json name -q .[].name" \
+        "$tmp/metadata-classification-host.log" || fail "delegated label reads must inherit the explicit host"
+done
+grep -q '^ghe.example.com|api graphql ' "$tmp/metadata-classification-host.log" ||
+    fail "organization classification GraphQL must inherit the explicit host"
+# Direct calls remain independently host-qualified, without changing the
+# operator environment that the classification child temporarily overrides.
+grep -qxF 'ambient.example.com|api repos/testowner/testrepo --jq .owner.type --hostname ghe.example.com' \
+    "$tmp/metadata-classification-host.log" || fail "GH_HOST override must be scoped to the helper"
+
+echo "==> metadata: bare agent classification leaves unset or inherited GH_HOST untouched"
+for ambient_host in '<unset>' ambient.example.com; do
+    : >"$tmp/metadata-classification-bare.log"
+    _rc="$(
+        if [ "$ambient_host" = '<unset>' ]; then
+            unset GH_HOST
+        else
+            export GH_HOST="$ambient_host"
+        fi
+        METADATA_GH_HOST_LOG="$tmp/metadata-classification-bare.log" \
+            run_personal 'Preserve classification host environment' "$valid_body"
+    )"
+    [ "$_rc" = 0 ] || fail "bare agent preflight must preserve $ambient_host: $(cat "$tmp/metadata.out")"
+    grep -qxF "$ambient_host|api repos/testowner/testrepo -q .owner.type" \
+        "$tmp/metadata-classification-bare.log" || fail "bare classification helper must preserve $ambient_host"
+    awk -F '|' -v expected="$ambient_host" '$1 != expected { exit 1 }' \
+        "$tmp/metadata-classification-bare.log" || fail "bare target must not assign GH_HOST"
+done
+
+echo "==> metadata: checkout binding compares host across plain, ported and trailing-slash remotes"
+for remote_url in 'https://ghe.example.com/testowner/testrepo.git' \
+    'https://user@ghe.example.com/testowner/testrepo.git' \
+    'http://ghe.example.com/testowner/testrepo.git' \
+    'git@ghe.example.com:testowner/testrepo.git' \
+    'ssh://git@ghe.example.com/testowner/testrepo.git' \
+    'ssh://git@ghe.example.com:2222/testowner/testrepo.git' \
+    'https://ghe.example.com:8443/testowner/testrepo.git' \
+    'https://ghe.example.com/testowner/testrepo.git/' \
+    'https://ghe.example.com/testowner/testrepo/'; do
+    git -C "$metadata_host" remote set-url personal "$remote_url"
+    "$metadata" --required-axes --repo ghe.example.com/testowner/testrepo \
+        --repo-root "$metadata_host" >/dev/null || fail "enterprise remote must bind: $remote_url"
+    for target in testowner/testrepo github.com/testowner/testrepo other.example.com/testowner/testrepo; do
+        for mode in discovery filing; do
+            _rc=0
+            : >"$tmp/metadata-mismatch-gh.log"
+            if [ "$mode" = discovery ]; then
+                METADATA_GH_LOG="$tmp/metadata-mismatch-gh.log" "$metadata" \
+                    --required-axes --repo "$target" --repo-root "$metadata_host" \
+                    >"$tmp/metadata.out" 2>&1 || _rc=$?
+            else
+                _rc="$(METADATA_GH_LOG="$tmp/metadata-mismatch-gh.log" run_metadata \
+                    --repo "$target" --repo-root "$metadata_host" --owner-type personal \
+                    --title 'Refuse mismatched host' --body-file "$valid_body" --human-authored)"
+            fi
+            [ "$_rc" = 2 ] || fail "$mode must refuse host mismatch for $target ($remote_url)"
+            grep -q 'no GitHub remote matching' "$tmp/metadata.out" || fail "host mismatch must name binding refusal"
+            [ ! -s "$tmp/metadata-mismatch-gh.log" ] || fail "host mismatch must refuse before gh reads"
+        done
+    done
+done
+for remote_url in 'https://github.com/testowner/testrepo.git' \
+    'http://github.com/testowner/testrepo.git' 'git@github.com:testowner/testrepo.git' \
+    'ssh://git@github.com/testowner/testrepo.git' \
+    'ssh://git@ssh.github.com:443/testowner/testrepo.git' \
+    'ssh://git@ssh.github.com/testowner/testrepo.git' \
+    'ssh://git@SSH.GITHUB.COM/testowner/testrepo.git'; do
+    git -C "$metadata_host" remote set-url personal "$remote_url"
+    for target in testowner/testrepo github.com/testowner/testrepo; do
+        "$metadata" --required-axes --repo "$target" --repo-root "$metadata_host" \
+            >/dev/null || fail "GitHub remote alias must bind: $remote_url ($target)"
+    done
+done
+
+echo "==> metadata: both modes reject malformed repository shapes with usage status"
+for target in owner /owner/repo owner/repo/ /owner/repo/ host//owner/repo host/owner/repo/extra 'host/owner/re po'; do
+    for mode in discovery filing; do
+        _rc=0
+        if [ "$mode" = discovery ]; then
+            "$metadata" --required-axes --repo "$target" >"$tmp/metadata.out" 2>&1 || _rc=$?
+        else
+            _rc="$(run_metadata --repo "$target" --repo-root "$metadata_repo" \
+                --owner-type personal --title 'Refuse malformed target' --body-file "$valid_body" --human-authored)"
+        fi
+        [ "$_rc" = 2 ] || fail "$mode must refuse malformed repository $target"
+        grep -qF '[HOST/]OWNER/REPO' "$tmp/metadata.out" || fail "usage refusal must document optional host"
+    done
+done
 
 echo "==> metadata: required prefixes include custom axes and honor subset manifests"
 cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-axes.json"

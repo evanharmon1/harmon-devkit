@@ -13,7 +13,8 @@
 # Tier, the pin, the `adaptive` retirement, the absent-policy fallback)
 # answers here exactly as it does in harmon-init.
 #
-# The vendored inputs, all from harmon-init SOURCE_REV below:
+# The vendored inputs from harmon-init SOURCE_REV below (the registry stays
+# pinned to REGISTRY_SOURCE_REV; its later diff only removes label metadata):
 #   ai/skills/universal/dev-flow-support/assets/.devflow-conformance-v2.json
 #                                         ← .devflow-conformance-v2.json
 #   scripts/test-devflow-conformance.py   ← scripts/test-devflow-conformance.py
@@ -26,8 +27,8 @@
 # Each is checked against its recorded git blob id first, so a hand edit to
 # any of them fails here instead of quietly redefining the contract. To
 # re-vendor, copy the four files from a newer harmon-init revision and update
-# SOURCE_REV and the blob ids together. To confirm a harmon-init RELEASE
-# still carries these bytes (the human follow-up on harmon-init#1464):
+# SOURCE_REV (and REGISTRY_SOURCE_REV when applicable) and the blob ids
+# together. To confirm a harmon-init RELEASE still carries these bytes (the human follow-up on harmon-init#1464):
 #   for p in .devflow-conformance-v2.json scripts/test-devflow-conformance.py \
 #       .devflow.toml agent-registry.json; do
 #       git -C <harmon-init checkout> rev-parse "<tag>:$p"; done
@@ -45,9 +46,10 @@
 # Run via `task test:devflow-conformance`. Needs node, python3, and task.
 set -euo pipefail
 
-SOURCE_REV="81bbe78784c0b146e754e80030274ff95e10cf51"
-CORPUS_BLOB="76ab10e3436b91f501b58e4c76a4e0776782feb8"
-RUNNER_BLOB="9b8e67ed984cc7517ac1ffa16f97b2555c8e531a"
+SOURCE_REV="dd28801038c66b855284a975ebbbd4a9f2f16c00"
+REGISTRY_SOURCE_REV="81bbe78784c0b146e754e80030274ff95e10cf51"
+CORPUS_BLOB="751443a7898eab6f71fe8718f29b80784cdcc0f8"
+RUNNER_BLOB="79a194e5f5ffaced06e9b685733d1c3830dd9e03"
 POLICY_BLOB="7e36129a43e0ae73c8a8c878e6055fdab8a1e6ab"
 REGISTRY_BLOB="27844622efb4a7f8508729e6b413170b67bd7b3f"
 
@@ -73,7 +75,7 @@ done
 
 echo "==> vendored inputs match harmon-init ${SOURCE_REV:0:8}"
 check_blob() {
-    local file="$1" want="$2" got
+    local file="$1" want="$2" source_rev="${3:-$SOURCE_REV}" got
     if [ ! -f "$file" ]; then
         err "${file#"$repo_root"/} is missing"
         return 0
@@ -82,14 +84,14 @@ check_blob() {
     if [ "$got" = "$want" ]; then
         echo "  ✓ ${file#"$repo_root"/}"
     else
-        err "${file#"$repo_root"/} is blob $got, expected $want (harmon-init ${SOURCE_REV:0:8}) — re-vendor it, never hand-edit it"
+        err "${file#"$repo_root"/} is blob $got, expected $want (harmon-init ${source_rev:0:8}) — re-vendor it, never hand-edit it"
     fi
     return 0
 }
 check_blob "$corpus" "$CORPUS_BLOB"
 check_blob "$runner" "$RUNNER_BLOB"
 check_blob "$fixtures/policy.toml" "$POLICY_BLOB"
-check_blob "$fixtures/agent-registry.json" "$REGISTRY_BLOB"
+check_blob "$fixtures/agent-registry.json" "$REGISTRY_BLOB" "$REGISTRY_SOURCE_REV"
 [ "$fail" -eq 0 ] || exit 1
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/devflow-conformance.XXXXXX")"
