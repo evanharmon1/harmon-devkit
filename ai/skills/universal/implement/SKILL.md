@@ -63,7 +63,9 @@ Take the issue number or URL from the arguments; otherwise infer it from the
 current branch or the conversation. A URL pins the repository as well as the
 number — prefer it. Bind `$repo` from the target and pass `--repo "$repo"` on
 every `gh` command; a bare `#123` means *this* repo and nothing else
-(`track-work` §1). If the target is ambiguous, ask.
+(`track-work` §1). If the target is ambiguous, ask. Bind `$host` with it: the
+host of the issue URL, or, for a bare `#123`, the host of the canonical URL
+`gh issue view <n> --json url -q .url` returns. Never assume `github.com`.
 
 **Then bind the checkout to `$repo`, before anything else.** `/claim` only
 *reads* the code, so a mismatched checkout costs it accuracy; this skill
