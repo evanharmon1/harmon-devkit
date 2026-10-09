@@ -408,13 +408,12 @@ Three cases, mutually exclusive:
 - **No state file, or state for a different head.** This is a fresh cycle.
   Run these two steps, each as its own Bash tool call:
 
-  **1. Reserve and re-read, posting nothing.** Write out the repo and the
-  installed skill directory resolved in §2 in each call; shell variables do
-  not survive between Bash tool calls.
+  **1. Reserve and re-read, posting nothing.** Use the same project-installed
+  integrate assets as step 2; shell variables do not survive between calls.
 
   ```bash
   repo="<owner/repo>"
-  skill_dir="<installed integrate skill directory resolved in §2>"
+  skill_dir="<project-dir>/<skills-dir>/integrate"
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
   state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
@@ -460,11 +459,10 @@ Three cases, mutually exclusive:
   same checkout step 1 reserved in: the broker finds state through that
   checkout's git directory. There is no separate attach
   call, and this call needs neither `$helper` nor `$state` from step 1.
-  On exit 2, the broker refused before posting. On exit 3, a trigger exists
-  but could not be attached; report a blocker (§5) with its id. On any other
-  failure, do not re-run blindly: report it. The next dispatch's
-  reconciliation, or a re-run which now adopts rather than posts, can settle
-  the existing trigger.
+  On exit 2, the broker refused before posting. On exit 3, report a blocker
+  (§5) with the existing trigger's id; a re-run adopts it only while the
+  reservation and PR state still match. Report any other failure without
+  re-running blindly.
 
   **Any non-zero `reserve` means post no trigger.** Keep each call's exit
   status visible, exactly as above — captured in `reserve_exit`, never ended
@@ -499,67 +497,10 @@ Three cases, mutually exclusive:
   later decision — see "On 12 (retry)" below, made only after `check`
   itself asks for one, never pre-emptively here.)
 
-- **`st_head` equals this head and `st_phase` is `reserved`.** Interrupted
-  between reserve and attach — reconcile rather than reserve again (a second
-  `reserve` for this head dies regardless of attempt number while a
-  reservation sits unresolved). Find out whether the trigger was actually
-  posted before this process died:
-
-  ```sh
-  repo="<owner/repo>"
-  skill_dir="<installed integrate skill directory resolved in §2>"
-  helper="$skill_dir/assets/check-codex-cloud-review.sh"
-  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
-  my_id="$("$skill_dir"/assets/gh-ro.sh user --jq .id)" || exit
-  reserved_at="$(jq -r '.reserved_at' "$state")"
-  top_level="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp "repos/$repo/issues/<n>/comments")" || exit
-  candidates="$(jq -c --arg since "$reserved_at" --argjson my_id "$my_id" '
-      add | map(select(
-          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
-          and .created_at >= $since
-          and .user.id == $my_id))' <<<"$top_level")"
-  printf '%s\n' "$candidates"
-  ```
-
-  The author check matters here specifically: any PR commenter, or a
-  concurrent session, can post the exact trigger text, and without pinning
-  `.user.id` (the immutable numeric id — never `.login`, which can be
-  renamed) this reconciliation would adopt whichever one it finds first as
-  if you had posted it yourself (Codex cloud-review cycle on PR
-  harmon-devkit#758). Count the entries in the printed candidates to decide
-  which of three ways this goes.
-  **Exactly one** means that comment is the trigger this reservation already
-  posted — read its id N from the printed candidates and attach it directly
-  in a self-contained call, never call `reserve`:
-
-  ```bash
-  repo="<owner/repo>"
-  skill_dir="<installed integrate skill directory resolved in §2>"
-  helper="$skill_dir/assets/check-codex-cloud-review.sh"
-  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
-  "$helper" attach --state "$state" --trigger-id <N> || exit
-  ```
-
-  **Zero** means the process died before posting. The reservation already
-  exists, so this path starts where the fresh-cycle one resumes after
-  `reserve`: re-read the PR in this self-contained Bash tool call:
-
-  ```bash
-  repo="<owner/repo>"
-  skill_dir="<installed integrate skill directory resolved in §2>"
-  helper="$skill_dir/assets/check-codex-cloud-review.sh"
-  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
-  pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
-  jq -e --arg head "<head>" \
-      '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
-      <<<"$pr_now" >/dev/null || exit
-  echo "RESERVED <head>"
-  ```
-
-  Then run step 2 above as a separate call from the same checkout, without
-  calling `reserve` (a second reservation is what `reserve` would refuse).
-  **More than one** is an anomaly this brief did not anticipate — stop and
-  report it rather than guessing which one to attach.
+- **`st_head` equals this head and `st_phase` is `reserved`.** Run step 2
+  (the broker call) from the checkout that reserved. Read its exit codes as
+  above: 2 refuses before posting, 3 reports an existing trigger that could
+  not be attached, and other failures must be reported without blind retries.
 
 ```bash
 repo="<owner/repo>"

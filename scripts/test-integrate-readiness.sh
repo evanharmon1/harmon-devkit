@@ -3949,7 +3949,7 @@ broker_defaults
 : >"$fixtures/broker-attach-fail"
 run_broker
 [ "$wb_rc" -eq 3 ] || fail "broker attach failure should exit 3: $wb_rc"
-grep -Fq 'posted comment 9001 but attach failed' <<<"$wb_out" ||
+grep -Fq 'trigger comment 9001 exists but attach failed' <<<"$wb_out" ||
     fail "broker attach failure lost the posted id: $wb_out"
 [ "$(grep -c '^api repos/' "$log")" -eq 1 ] || fail "attach failure posted more than once"
 jq -e '.phase == "reserved"' "$broker_state" >/dev/null || fail "failed attach changed phase"

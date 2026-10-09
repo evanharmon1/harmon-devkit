@@ -42,8 +42,9 @@ call, then calls `<project-dir>/<skills-dir>/integrate/assets/gh-write-broker.sh
 trigger --repo <owner/repo> --pr <n>` as one literal command. The broker
 requires a matching reserved cycle, re-reads the open draft PR and reserved
 head, posts, and attaches; callers do not attach again. It prints a bare
-integer id. A failed attach reports the posted id for exactly-one
-reconciliation; never retry the post. `<project-dir>` is Claude Code's
+integer id. On exit 3, report the existing trigger's id; a re-run adopts it
+only while the reservation and PR state still match. `<project-dir>` is
+Claude Code's
 `CLAUDE_PROJECT_DIR`; `<skills-dir>` is the skills sync install location. The
 hook approves only the unresolved `<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh`
 path; other locations or a symlink at `.claude/skills` still work but prompt.

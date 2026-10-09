@@ -36,8 +36,8 @@
 #       re-checks the open draft PR and reserved head, posts the hardcoded
 #       body, and attaches the created comment. Prints its bare integer id.
 #       Adopts one matching post-reservation trigger instead of posting again;
-#       multiple matches are an anomaly. A failed attach exits 3 with the id
-#       for the next dispatch or a re-run to reconcile.
+#       multiple matches are an anomaly. Report exit 3 with the trigger id;
+#       a re-run adopts it only while reservation and PR state still match.
 #   gh-write-broker.sh trigger --finder SLUG --repo OWNER/REPO --pr N
 #       Posts the finder's trigger body (from the trusted registry at the
 #       PR's merge-base commit) to the PR. The body is resolved from the
@@ -74,7 +74,8 @@ Usage:
 trigger (no --finder) requires a reserved cycle and an open draft on its head,
 then posts the hardcoded body, attaches it, and prints the bare integer id.
 One matching post-reservation trigger is adopted; multiple matches are refused.
-A failed attach exits 3 with the id for the next dispatch or a re-run to reconcile.
+Report exit 3 with the trigger id; a re-run adopts it only while reservation
+and PR state still match.
 trigger --finder posts the finder's trigger body from the trusted registry.
 request-review --finder requests the finder's reviewer from the trusted registry.
 reply posts a FILE's exact byte content to one inline thread.
@@ -196,7 +197,7 @@ trigger)
         esac
         if ! "$SCRIPT_DIR/check-codex-cloud-review.sh" attach --state "$state" \
             --trigger-id "$trigger_id" >/dev/null; then
-            printf 'gh-write-broker: posted comment %s but attach failed; the next dispatch or a re-run can reconcile it\n' "$trigger_id" >&2
+            printf 'gh-write-broker: trigger comment %s exists but attach failed; report it; a re-run adopts it only while reservation and PR state still match\n' "$trigger_id" >&2
             exit 3
         fi
         printf '%s\n' "$trigger_id"
