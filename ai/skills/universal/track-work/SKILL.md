@@ -792,7 +792,7 @@ values or delegating authoring, read its local, read-only axis contract:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh --required-axes \
-  --repo <owner/repo> --repo-root <target-checkout>
+  --repo <[host/]owner/repo> --repo-root <target-checkout>
 ```
 
 Omit `--repo-root` to read the target's default-branch manifest remotely through
@@ -895,7 +895,7 @@ Run the combined gate immediately before creation. For a personal account:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh \
-  --repo <owner/repo> --repo-root <target-checkout> \
+  --repo <[host/]owner/repo> --repo-root <target-checkout> \
   --owner-type personal --title '<title>' --body-file <draft-file> \
   --work-type-label <work-type> --label <area:value> --label layer:none \
   --label <domain:value> --label impact:<value> --label risk:<value> \
