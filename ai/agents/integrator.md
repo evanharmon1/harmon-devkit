@@ -292,7 +292,8 @@ one retried, or a fresh one after this process died — finds what an earlier
 attempt already did rather than duplicating a trigger:
 
 ```sh
-state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")"
+repo="<owner/repo>"
+state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
 ```
 
 **Re-read the PR after the reservation and immediately before every trigger
@@ -353,6 +354,8 @@ you to read. Resuming is therefore a decision you make by reading the file
 directly, before your first external write of this cycle:
 
 ```sh
+repo="<owner/repo>"
+state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
 if [ -f "$state" ]; then
     st_head="$(jq -r '.head // empty' "$state")"
     st_phase="$(jq -r '.phase // empty' "$state")"
@@ -370,6 +373,10 @@ window plus a cap slot. `carry` answers that question from local git and
 writes no GitHub state:
 
 ```sh
+repo="<owner/repo>"
+skill_dir="<installed integrate skill directory resolved in §2>"
+helper="$skill_dir/assets/check-codex-cloud-review.sh"
+state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
 carry_exit=0
 carry_out="$("$helper" carry --state "$state" --head "<head>" \
     --run-id "<run id>" --repo-dir "$(git rev-parse --show-toplevel)")" || carry_exit=$?
@@ -401,9 +408,15 @@ Three cases, mutually exclusive:
 - **No state file, or state for a different head.** This is a fresh cycle.
   Run these two steps, each as its own Bash tool call:
 
-  **1. Reserve and re-read, posting nothing.**
+  **1. Reserve and re-read, posting nothing.** Write out the repo and the
+  installed skill directory resolved in §2 in each call; shell variables do
+  not survive between Bash tool calls.
 
   ```bash
+  repo="<owner/repo>"
+  skill_dir="<installed integrate skill directory resolved in §2>"
+  helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>")
@@ -443,12 +456,15 @@ Three cases, mutually exclusive:
 
   The broker requires the matching reserved cycle, re-reads the PR's state,
   draft status, and reserved head, then posts and attaches immediately. It
-  prints the bare integer comment id on success. There is no separate attach
+  prints the bare integer comment id on success. Step 2 must run from the
+  same checkout step 1 reserved in: the broker finds state through that
+  checkout's git directory. There is no separate attach
   call, and this call needs neither `$helper` nor `$state` from step 1.
-  On a non-zero exit, if the message names a posted id, report a blocker (§5):
-  the next dispatch's exactly-one reconciliation can attach it. Otherwise
-  report the refusal; nothing was posted. Never re-run step 2 to retry after
-  a post.
+  On exit 2, the broker refused before posting. On exit 3, a trigger exists
+  but could not be attached; report a blocker (§5) with its id. On any other
+  failure, do not re-run blindly: report it. The next dispatch's
+  reconciliation, or a re-run which now adopts rather than posts, can settle
+  the existing trigger.
 
   **Any non-zero `reserve` means post no trigger.** Keep each call's exit
   status visible, exactly as above — captured in `reserve_exit`, never ended
@@ -490,6 +506,10 @@ Three cases, mutually exclusive:
   posted before this process died:
 
   ```sh
+  repo="<owner/repo>"
+  skill_dir="<installed integrate skill directory resolved in §2>"
+  helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
   my_id="$("$skill_dir"/assets/gh-ro.sh user --jq .id)" || exit
   reserved_at="$(jq -r '.reserved_at' "$state")"
   top_level="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp "repos/$repo/issues/<n>/comments")" || exit
@@ -498,6 +518,7 @@ Three cases, mutually exclusive:
           ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
           and .created_at >= $since
           and .user.id == $my_id))' <<<"$top_level")"
+  printf '%s\n' "$candidates"
   ```
 
   The author check matters here specifically: any PR commenter, or a
@@ -505,27 +526,46 @@ Three cases, mutually exclusive:
   `.user.id` (the immutable numeric id — never `.login`, which can be
   renamed) this reconciliation would adopt whichever one it finds first as
   if you had posted it yourself (Codex cloud-review cycle on PR
-  harmon-devkit#758). `jq -r 'length' <<<"$candidates"` decides which of
-  three ways this goes.
+  harmon-devkit#758). Count the entries in the printed candidates to decide
+  which of three ways this goes.
   **Exactly one** means that comment is the trigger this reservation already
-  posted — attach it directly, never call `reserve`:
+  posted — read its id N from the printed candidates and attach it directly
+  in a self-contained call, never call `reserve`:
 
   ```bash
-  trigger_id="$(jq -r '.[0].id' <<<"$candidates")"
-  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
+  repo="<owner/repo>"
+  skill_dir="<installed integrate skill directory resolved in §2>"
+  helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
+  "$helper" attach --state "$state" --trigger-id <N> || exit
   ```
 
   **Zero** means the process died before posting. The reservation already
   exists, so this path starts where the fresh-cycle one resumes after
-  `reserve`: run the `pr_now` read and its three-field check above in one
-  Bash tool call, ending with `echo "RESERVED <head>"` on success. Then run
-  step 2 above as a separate call, still without calling
-  `reserve` (posting a second reservation is what `reserve` itself would
-  refuse). **More than one** is an anomaly this brief did not anticipate —
-  stop and report it rather than guessing which
-  one to attach.
+  `reserve`: re-read the PR in this self-contained Bash tool call:
+
+  ```bash
+  repo="<owner/repo>"
+  skill_dir="<installed integrate skill directory resolved in §2>"
+  helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
+  pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
+  jq -e --arg head "<head>" \
+      '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
+      <<<"$pr_now" >/dev/null || exit
+  echo "RESERVED <head>"
+  ```
+
+  Then run step 2 above as a separate call from the same checkout, without
+  calling `reserve` (a second reservation is what `reserve` would refuse).
+  **More than one** is an anomaly this brief did not anticipate — stop and
+  report it rather than guessing which one to attach.
 
 ```bash
+repo="<owner/repo>"
+skill_dir="<installed integrate skill directory resolved in §2>"
+helper="$skill_dir/assets/check-codex-cloud-review.sh"
+state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
 check_exit=0
 check_out="$("$helper" check --state "$state" --actor-id 199175422 \
     --run-id "<run id>")" || check_exit=$?
@@ -546,7 +586,7 @@ and only moves off it when *this* call actually fails.
 PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
 **12 (retry)**, repeat the
 two-call reserve/read → literal broker trigger (including attach) procedure
-above, then `check`, once more with `--attempt 2` against the **same** state
+above, including step 1's assignments, then `check`, once more with `--attempt 2` against the **same** state
 and head — this is the one bounded retry your brief expects; do not retry a
 second time.
 On **13 (escalate)**, **14**, **15**, or **2**,
@@ -607,6 +647,10 @@ instead (Codex cloud-review cycle on PR harmon-devkit#758). Keep polling
 brief's cap implies (10–15 minutes per attempt):
 
 ```sh
+repo="<owner/repo>"
+skill_dir="<installed integrate skill directory resolved in §2>"
+helper="$skill_dir/assets/check-codex-cloud-review.sh"
+state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
 window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if different
 consecutive_16=0
 while [ "$SECONDS" -lt "$window_end" ]; do

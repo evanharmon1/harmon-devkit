@@ -76,9 +76,22 @@ if [ -f "$GH_FIXTURES/broker-mode" ]; then
         exit 0
     fi
     if [ "${1:-}" = api ]; then
+        if [[ "$*" = *"--method GET"* ]]; then
+            if [[ "$*" = *" user" ]]; then
+                printf '77\n'
+            else
+                cat "$GH_FIXTURES/broker-comments.json"
+            fi
+            exit 0
+        fi
         if [ -f "$GH_FIXTURES/broker-post-exit" ]; then
             exit "$(cat "$GH_FIXTURES/broker-post-exit")"
         fi
+        jq --arg body "$4" '
+            .[0] += [{id:9001, body:($body | sub("^body="; "")),
+                      created_at:"2026-10-09T00:00:00Z", user:{id:77}}]
+        ' "$GH_FIXTURES/broker-comments.json" >"$GH_FIXTURES/broker-comments.json.tmp"
+        mv "$GH_FIXTURES/broker-comments.json.tmp" "$GH_FIXTURES/broker-comments.json"
         printf '9001\n'
         exit 0
     fi
@@ -3843,6 +3856,7 @@ broker_dir="${test_tmp}/broker-assets"
 broker_repo="${test_tmp}/broker-repo"
 mkdir -p "$broker_dir" "$broker_repo"
 cp "$ghwb" "$broker_dir/gh-write-broker.sh"
+cp "$ghro" "$broker_dir/gh-ro.sh"
 git init -q "$broker_repo"
 cat >"$broker_dir/check-codex-cloud-review.sh" <<'ATTACH'
 #!/usr/bin/env bash
@@ -3863,8 +3877,10 @@ broker_defaults() {
     : >"$fixtures/broker-mode"
     rm -f "$fixtures/broker-post-exit" "$fixtures/broker-attach-fail"
     : >"$fixtures/broker-attach.log"
+    printf '[[]]\n' >"$fixtures/broker-comments.json"
     jq -n --arg head "$head_sha" \
-        '{phase:"reserved",repo:"example/repo",pr:493,head:$head}' >"$broker_state"
+        '{phase:"reserved",repo:"example/repo",pr:493,head:$head,
+          reserved_at:"2026-10-09T00:00:00Z"}' >"$broker_state"
     jq -n --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head}' >"$fixtures/broker-pr.json"
 }
@@ -3879,7 +3895,7 @@ broker_refused() {
     run_broker
     [ "$wb_rc" -eq 2 ] || fail "broker should refuse: $wb_rc: $wb_out"
     grep -Fq refused <<<"$wb_out" || fail "broker refusal missing: $wb_out"
-    if grep -q '^api ' "$log"; then
+    if grep -q '^api repos/' "$log"; then
         fail "refused broker posted: $(cat "$log")"
     fi
     [ ! -s "$fixtures/broker-attach.log" ] || fail "refused broker attached"
@@ -3916,7 +3932,7 @@ echo "==> gh-write-broker posts once and immediately attaches the printed id"
 broker_defaults
 run_broker
 [ "$wb_rc" -eq 0 ] && [ "$wb_out" = 9001 ] || fail "broker happy path: $wb_rc: $wb_out"
-[ "$(grep -c '^api ' "$log")" -eq 1 ] || fail "broker did not post once"
+[ "$(grep -c '^api repos/' "$log")" -eq 1 ] || fail "broker did not post once"
 grep -Fxq "api repos/example/repo/issues/493/comments -f body=@codex review --jq .id" "$log" ||
     fail "gh-write-broker trigger forwarded unexpected arguments: $(cat "$log")"
 grep -Fxq 'attach --state .git/integrate-codex/example/repo/493.json --trigger-id 9001' \
@@ -3932,11 +3948,52 @@ echo "==> gh-write-broker reports the posted id if attach fails"
 broker_defaults
 : >"$fixtures/broker-attach-fail"
 run_broker
-[ "$wb_rc" -ne 0 ] || fail "broker swallowed attach failure"
+[ "$wb_rc" -eq 3 ] || fail "broker attach failure should exit 3: $wb_rc"
 grep -Fq 'posted comment 9001 but attach failed' <<<"$wb_out" ||
     fail "broker attach failure lost the posted id: $wb_out"
-[ "$(grep -c '^api ' "$log")" -eq 1 ] || fail "attach failure posted more than once"
+[ "$(grep -c '^api repos/' "$log")" -eq 1 ] || fail "attach failure posted more than once"
 jq -e '.phase == "reserved"' "$broker_state" >/dev/null || fail "failed attach changed phase"
+
+echo "==> gh-write-broker re-run adopts after a failed attach without another post"
+rm "$fixtures/broker-attach-fail"
+run_broker
+[ "$wb_rc" -eq 0 ] && [ "$wb_out" = 9001 ] || fail "broker failed adoption retry: $wb_rc: $wb_out"
+[ "$(grep -c '^api repos/' "$log")" -eq 1 ] || fail "retry posted a second trigger"
+jq -e '.phase == "attached" and .trigger_comment_id == "9001"' "$broker_state" >/dev/null ||
+    fail "retry did not attach the existing trigger"
+
+echo "==> gh-write-broker adopts one matching post-reservation actor trigger"
+broker_defaults
+jq -n --arg body "@codex review" '
+    [[{id:8001,body:("  " + $body + "\n"),created_at:"2026-10-09T00:00:00Z",user:{id:77}}]]
+' >"$fixtures/broker-comments.json"
+run_broker
+[ "$wb_rc" -eq 0 ] && [ "$wb_out" = 8001 ] || fail "broker did not adopt existing trigger: $wb_rc: $wb_out"
+if grep -q '^api repos/' "$log"; then
+    fail "adoption posted another trigger"
+fi
+jq -e '.phase == "attached" and .trigger_comment_id == "8001"' "$broker_state" >/dev/null ||
+    fail "adoption attached the wrong id"
+
+echo "==> gh-write-broker ignores another actor or a pre-reservation trigger"
+for broker_filter in '.[0][0].user.id = 78' '.[0][0].created_at = "2026-10-08T23:59:59Z"'; do
+    broker_defaults
+    jq -n --arg body "@codex review" '
+        [[{id:8001,body:$body,created_at:"2026-10-09T00:00:00Z",user:{id:77}}]]
+    ' | jq "$broker_filter" >"$fixtures/broker-comments.json"
+    run_broker
+    [ "$wb_rc" -eq 0 ] && [ "$wb_out" = 9001 ] || fail "broker adopted an ineligible trigger: $wb_rc: $wb_out"
+    [ "$(grep -c '^api repos/' "$log")" -eq 1 ] || fail "ignored trigger prevented posting"
+done
+
+echo "==> gh-write-broker refuses two matching comments across paginated pages"
+broker_defaults
+jq -n --arg body "@codex review" '
+    [[{id:8001,body:$body,created_at:"2026-10-09T00:00:00Z",user:{id:77}}],
+     [{id:8002,body:$body,created_at:"2026-10-09T00:00:01Z",user:{id:77}}]]
+' >"$fixtures/broker-comments.json"
+broker_refused
+grep -Fq anomaly <<<"$wb_out" || fail "multiple triggers did not report an anomaly"
 
 echo "==> gh-write-broker propagates the post exit without attaching"
 broker_defaults

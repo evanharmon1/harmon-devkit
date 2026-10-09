@@ -234,8 +234,9 @@ attested without a reviewer reading it is exactly the thing a human reader must
 be able to see.
 
 **A non-zero `reserve` means no trigger is posted** (harmon-devkit#1189). The
-sequence is `reserve` → the §2 `state,isDraft,headRefOid` read → post
-`@codex review` → `attach`, each call's exit status checked on its own — never
+sequence is `reserve` → the §2 `state,isDraft,headRefOid` read → the broker
+trigger, which posts or adopts and attaches; callers do not attach again.
+Check each call's exit status on its own — never
 `reserve … | jq`, whose status is the pipe's last command, so a refused
 reservation reads as success and the trigger is orphaned when `attach` fails.
 The zero-candidate reconcile path, whose reservation already exists, enters
@@ -260,8 +261,9 @@ the recipe: for Codex, reserve and re-read in one Bash tool call, ending in
 The broker requires a matching reserved cycle, re-reads the open draft PR and
 reserved head, posts, and attaches immediately. It prints a bare integer id;
 callers do not attach again. A failed attach names the posted id for the next
-dispatch's exactly-one reconciliation; report a blocker and never retry the
-post. `<project-dir>` is Claude Code's `CLAUDE_PROJECT_DIR`; `<skills-dir>` is
+dispatch's reconciliation or a re-run that adopts instead of posting; report
+a blocker on exit 3. Exit 2 refuses before posting; report other failures
+without blindly re-running. `<project-dir>` is Claude Code's `CLAUDE_PROJECT_DIR`; `<skills-dir>` is
 the skills sync install location. The hook approves only the unresolved
 `<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh` path; other
 locations or a symlink at `.claude/skills` still work but prompt. The same

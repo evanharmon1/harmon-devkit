@@ -35,7 +35,9 @@
 #       Requires a reserved cycle in the current checkout's git directory,
 #       re-checks the open draft PR and reserved head, posts the hardcoded
 #       body, and attaches the created comment. Prints its bare integer id.
-#       A failed attach reports the posted id for later reconciliation.
+#       Adopts one matching post-reservation trigger instead of posting again;
+#       multiple matches are an anomaly. A failed attach exits 3 with the id
+#       for the next dispatch or a re-run to reconcile.
 #   gh-write-broker.sh trigger --finder SLUG --repo OWNER/REPO --pr N
 #       Posts the finder's trigger body (from the trusted registry at the
 #       PR's merge-base commit) to the PR. The body is resolved from the
@@ -54,7 +56,8 @@
 # remainder to the shell). The file must exist and be non-empty; this script
 # never synthesizes or edits its content.
 #
-# Exit codes: 2 for a refusal or usage error; otherwise `gh api`'s own.
+# Exit codes: 2 for a refusal or usage error; 3 when a trigger exists but
+# attachment failed; otherwise `gh api`'s own.
 
 set -euo pipefail
 
@@ -70,7 +73,8 @@ Usage:
 
 trigger (no --finder) requires a reserved cycle and an open draft on its head,
 then posts the hardcoded body, attaches it, and prints the bare integer id.
-A failed attach names the posted id for exactly-one reconciliation.
+One matching post-reservation trigger is adopted; multiple matches are refused.
+A failed attach exits 3 with the id for the next dispatch or a re-run to reconcile.
 trigger --finder posts the finder's trigger body from the trusted registry.
 request-review --finder requests the finder's reviewer from the trusted registry.
 reply posts a FILE's exact byte content to one inline thread.
@@ -168,10 +172,32 @@ trigger)
         jq -e --arg head "$reserved_head" '
             .state == "OPEN" and .isDraft == true and .headRefOid == $head
         ' <<<"$pr_now" >/dev/null || refuse "PR is not an open draft on the reserved head"
-        trigger_id=$(gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id)
+        reserved_at=$(jq -er '.reserved_at | select(type == "string" and length > 0)' "$state") ||
+            refuse "reservation has no creation time"
+        my_id=$("$SCRIPT_DIR/gh-ro.sh" user --jq .id) ||
+            refuse "cannot read the authenticated actor id"
+        top_level=$("$SCRIPT_DIR/gh-ro.sh" --paginate --slurp "repos/$repo/issues/$pr/comments") ||
+            refuse "cannot read existing triggers"
+        candidates=$(jq -c --arg since "$reserved_at" --argjson my_id "$my_id" '
+            add | map(select(
+                ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
+                and .created_at >= $since
+                and .user.id == $my_id))' <<<"$top_level") ||
+            refuse "cannot classify existing triggers"
+        candidate_count=$(jq -r 'length' <<<"$candidates")
+        case "$candidate_count" in
+        0)
+            trigger_id=$(gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id)
+            ;;
+        1)
+            trigger_id=$(jq -r '.[0].id' <<<"$candidates")
+            ;;
+        *) refuse "anomaly: multiple matching triggers for this reservation" ;;
+        esac
         if ! "$SCRIPT_DIR/check-codex-cloud-review.sh" attach --state "$state" \
             --trigger-id "$trigger_id" >/dev/null; then
-            refuse "posted comment $trigger_id but attach failed; the next dispatch's exactly-one reconciliation can adopt it; do not post again"
+            printf 'gh-write-broker: posted comment %s but attach failed; the next dispatch or a re-run can reconcile it\n' "$trigger_id" >&2
+            exit 3
         fi
         printf '%s\n' "$trigger_id"
         exit 0
