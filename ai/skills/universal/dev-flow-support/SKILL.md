@@ -121,10 +121,11 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type,
    passed as `owner_type`:
-   `gh api --hostname "$host" "repos/$owner/$repo" --jq .owner.type` gives
-   `User` or `Organization`, where `$host`, `$owner` and `$repo` come from
-   the caller's validated remote (the binding step 0 uses), never a default
-   host or a URL-suffix match. (`gh repo view --json owner` has no `type`.)
+   `gh api --hostname "$host" "repos/$repo" --jq .owner.type` gives `User`
+   or `Organization`, where `$repo` (`owner/name`) and `$host` are the
+   canonical issue's, bound and validated by the caller (`/implement` step 1,
+   `/orchestrate` before tier resolution), never a default host or a
+   URL-suffix match. (`gh repo view --json owner` has no `type`.)
    The owner type is where Risk and Complexity are stored (triage's
    classification rubric). On a personal-account repository (`User`) they are
    the `risk:*`/`complexity:*` labels, and no `fields` are passed. On an
