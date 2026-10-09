@@ -215,6 +215,18 @@ api\ repos/*/issues/*/timeline)
     n="${n##*/}"
     emit "${GH_STUB_DIR:?}/timeline-${n:?}.json"
     ;;
+api\ repos/*/issues/*/comments)
+    # The report issue's comments: comments-<n>.json, [{author_association,
+    # body}], which `issue comment` appends to. Absent: no comments.
+    n="${2%/comments}"
+    n="${n##*/}"
+    f="${GH_STUB_DIR:?}/comments-$n.json"
+    if [ ! -f "$f" ]; then
+        f="$GH_STUB_DIR/.no-comments.json"
+        echo '[]' >"$f"
+    fi
+    emit "$f"
+    ;;
 api\ repos/*/issues/*)
     n="${2##*/}"
     v="GH_STUB_ASSOC_$n"
@@ -349,6 +361,19 @@ api\ repos/*)
 "issue create")
     [ -t 0 ] || cat >/dev/null
     printf '%s\n' "https://github.com/stub/stub/issues/321"
+    ;;
+"issue comment")
+    # GH_STUB_COMMENT_FAIL_ON=K: the K-th comment of the run fails, unposted.
+    body="$(cat)"
+    count_file="$GH_STUB_DIR/.comments-${GH_STUB_RUN_ID:-}"
+    count="$(cat "$count_file" 2>/dev/null || echo 0)"
+    count=$((count + 1))
+    echo "$count" >"$count_file"
+    [ "$count" != "${GH_STUB_COMMENT_FAIL_ON:-0}" ] || exit 1
+    f="${GH_STUB_DIR:?}/comments-$3.json"
+    [ -f "$f" ] || echo '[]' >"$f"
+    jq --arg b "$body" '. + [{author_association: "OWNER", body: $b}]' "$f" >"$f.next"
+    mv "$f.next" "$f"
     ;;
 *)
     echo "gh stub: unexpected call: $*" >&2
@@ -3702,8 +3727,68 @@ for removal_count in 2 700; do
     if [ "$removal_count" -eq 700 ]; then
         grep -q 'noise: filler entry' "$tmp/out" && fail "over-budget removals leave no budget for other entries"
         grep -q 'Other findings after removals' "$tmp/out" && fail "remaining sections must be omitted"
+        # Every write stays under GitHub's 65,536-character body limit: the
+        # body, and each removal part posted as a comment.
+        awk '/^DRY-RUN body follows:$/ {w = 1; next}
+             /^DRY-RUN would post removal part / {w = 0}
+             w' "$tmp/out" >"$tmp/report-body"
+        [ "$(wc -c <"$tmp/report-body")" -lt 65536 ] ||
+            fail "the report body must stay under 65536 bytes (got $(wc -c <"$tmp/report-body"))"
+        grep -q 'DRY-RUN would post removal part 2/' "$tmp/out" ||
+            fail "over-budget removals must continue in comments: $(head -5 "$tmp/out")"
+        rm -f "$tmp"/report-part-*
+        awk -v dir="$tmp" '/^DRY-RUN would post removal part / {n++; f = dir "/report-part-" n; next}
+             f {print > f}' "$tmp/out"
+        for part in "$tmp"/report-part-*; do
+            [ "$(wc -c <"$part")" -lt 65536 ] ||
+                fail "removal part $part must stay under 65536 bytes"
+        done
     fi
 done
+
+echo "==> removal reports: execute posts the parts once and completes a failed run"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 99, "body": "$marker", "author": {"login": "testowner"}}]
+JSON
+cat >"$stub_dir/issue-99.json" <<JSON
+{"labels": [], "title": "(triage): Track backlog findings", "body": "$marker\nold body"}
+JSON
+rm -f "$stub_dir/comments-99.json"
+parts="$(grep -c '^DRY-RUN would post removal part ' "$tmp/out")"
+[ "$parts" -ge 1 ] || fail "the 700-removal run must have comment parts"
+# The second comment fails: the body and part 2 land, the rest do not.
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_COMMENT_FAIL_ON=2 "$report" sync \
+    --repo "$repo" --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 1 ] ||
+    fail "a failed removal part must exit 1: $(tail -3 "$tmp/out")"
+grep -q "re-run to post the remaining parts" "$tmp/out" ||
+    fail "the failure must say a re-run completes it: $(tail -3 "$tmp/out")"
+[ "$(jq length "$stub_dir/comments-99.json")" -eq 1 ] ||
+    fail "only the part before the failure is posted"
+# The re-run posts exactly the missing parts.
+[ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
+    --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 0 ] ||
+    fail "the completing re-run failed: $(tail -3 "$tmp/out")"
+grep -q "removal part 2/$((parts + 1)) is already on $repo#99" "$tmp/out" ||
+    fail "a posted part must not be posted again: $(cat "$tmp/out")"
+[ "$(jq length "$stub_dir/comments-99.json")" -eq "$parts" ] ||
+    fail "after the re-run every part is posted exactly once"
+# Every removal record is in the body (part 1, from the dry run above) or in
+# exactly one comment.
+in_body="$(grep -c 'Evidence: APPLIED remove.*retention-' "$tmp/report-body")"
+in_comments="$(jq -r '.[].body' "$stub_dir/comments-99.json" |
+    grep -c 'Evidence: APPLIED remove.*retention-')"
+[ "$in_body" -gt 0 ] || fail "part 1 of the removals belongs in the body"
+[ $((in_body + in_comments)) -eq 700 ] ||
+    fail "body and comments must hold all 700 removals once (got $in_body + $in_comments)"
+[ "$(jq -r '.[].body' "$stub_dir/comments-99.json" | grep -c '^<!-- harmon-triage-removals:')" -eq "$parts" ] ||
+    fail "every comment part must carry its marker"
+# A third run with the same records posts nothing.
+[ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
+    --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 0 ] ||
+    fail "the idempotent re-run failed"
+[ "$(jq length "$stub_dir/comments-99.json")" -eq "$parts" ] ||
+    fail "a re-run with unchanged records must post no comment"
+rm -f "$stub_dir/comments-99.json"
 
 echo "==> human removal: failed edit still reports a removal confirmed by re-read"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \

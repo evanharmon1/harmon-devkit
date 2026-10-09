@@ -532,7 +532,9 @@ the entries file, no entry keys):
 
 Put all removal records, including unconfirmed outcomes, under `## Human removals`
 first in the entries file. The renderer preserves that section in full and budgets
-only the remaining sections for truncation, even when removals alone exceed the budget.
+only the remaining sections for truncation. When removals alone exceed the budget,
+it keeps the first part in the report body and posts the rest as comments on the
+report issue, each marked so a re-run never posts a part twice.
 Removal records are required entries even when no unresolved findings remain.
 If there are no findings or removal records at all, create the file empty (`: > entries.md`).
 
