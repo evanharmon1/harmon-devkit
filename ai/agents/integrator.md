@@ -398,7 +398,9 @@ nothing to carry otherwise, and `carry` will say so.
 Three cases, mutually exclusive:
 
 - **No state file, or state for a different head.** This is a fresh cycle.
-  Reserve, re-read the PR, trigger, and attach in sequence:
+  Run these three steps, each as its own Bash tool call:
+
+  **1. Reserve and re-read, posting nothing.**
 
   ```bash
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
@@ -419,9 +421,33 @@ Three cases, mutually exclusive:
   jq -e --arg head "<head>" \
       '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
       <<<"$pr_now" >/dev/null || exit
-  trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger --repo "$repo" --pr <n>)" || exit
-  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
+  echo "RESERVED <head>"
   ```
+
+  **2. Post the trigger as one literal command**, only after step 1 printed
+  `RESERVED <head>`:
+
+  ```bash
+  <project-root>/.claude/skills/integrate/assets/gh-write-broker.sh trigger --repo <owner/repo> --pr <n>
+  ```
+
+  Write out the project root (the `--repo-dir` / checkout root), repo, and PR
+  values literally; the placeholders above are not shell syntax to execute.
+  No variables, substitution, `|| exit`, redirection, or extra flags. The
+  project hook can approve only an exact command. Use that installed path,
+  never `"$skill_dir"`: a physically resolved skill directory differs when
+  `.claude/skills` is a symlink. The broker prints `{"id": N}`; read N from
+  that tool output.
+
+  **3. Attach immediately**, as its own Bash tool call, using that literal id:
+
+  ```bash
+  "$helper" attach --state "$state" --trigger-id <N>
+  ```
+
+  Steps 2 and 3 must run back to back. If step 2 printed no id, or step 3
+  fails, report a blocker (§5) and never post a second trigger: a trigger
+  whose attach never ran is the orphan harmon-devkit#1189 warned about.
 
   **Any non-zero `reserve` means post no trigger.** Keep each call's exit
   status visible, exactly as above — captured in `reserve_exit`, never ended
@@ -490,10 +516,12 @@ Three cases, mutually exclusive:
 
   **Zero** means the process died before posting. The reservation already
   exists, so this path starts where the fresh-cycle one resumes after
-  `reserve`: run the `pr_now` read and its three-field check above, then post
-  the trigger and attach it, still without calling `reserve` (posting a
-  second reservation is what `reserve` itself would refuse). **More than one** is an anomaly this
-  brief did not anticipate — stop and report it rather than guessing which
+  `reserve`: run the `pr_now` read and its three-field check above in one
+  Bash tool call, ending with `echo "RESERVED <head>"` on success. Then run
+  steps 2 and 3 above back to back as separate calls, still without calling
+  `reserve` (posting a second reservation is what `reserve` itself would
+  refuse). **More than one** is an anomaly this brief did not anticipate —
+  stop and report it rather than guessing which
   one to attach.
 
 ```bash
@@ -516,9 +544,9 @@ and only moves off it when *this* call actually fails.
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
 PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
 **12 (retry)**, repeat the
-reserve/read/trigger/attach/check sequence once more with `--attempt 2` against
-the **same** state and head — this is the one bounded retry your brief
-expects; do not retry a second time. On **13 (escalate)**, **14**, **15**, or
+three-call reserve/read → literal trigger → attach procedure above, then
+`check`, once more with `--attempt 2` against the **same** state and head —
+this is the one bounded retry your brief expects; do not retry a second time. On **13 (escalate)**, **14**, **15**, or
 **2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.

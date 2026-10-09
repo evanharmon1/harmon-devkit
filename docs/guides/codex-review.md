@@ -37,8 +37,14 @@ cycle per configured PR-side finder — `codex-cloud`, `coderabbit-cloud`, and
 `copilot-cloud` — through the same checker (`check-codex-cloud-review.sh
 --finder SLUG`), trigger broker (`gh-write-broker.sh trigger --finder SLUG` or
 `request-review --finder SLUG`), and readiness gate (per-finder exit_code 0
-condition). Each finder's trusted actor, trigger mechanism, surfaces, and
-verdict mode are resolved from the merge-base copy of `agent-registry.json`
+condition). For Codex, the integrator reserves and re-reads the PR in one Bash
+call, posts `<project-root>/.claude/skills/integrate/assets/gh-write-broker.sh
+trigger --repo <owner/repo> --pr <n>` as a separate literal command, then
+immediately attaches the id printed by the broker in a third call. Write out
+all values and use the checkout's installed path, rather than a physically
+resolved skill directory, so the project hook can approve the exact command
+when `.claude/skills` is a symlink. Each finder's trusted actor, trigger
+mechanism, surfaces, and verdict mode are resolved from the merge-base copy of `agent-registry.json`
 via `trusted-registry.sh` — never from the branch under review.
 
 **Codex is the shipped default and the only finder anything here assumes.**

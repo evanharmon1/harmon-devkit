@@ -254,7 +254,17 @@ again, report a blocker. Exit `2` naming a changed head means the PR head was
 rewritten or superseded: the integrator posts no trigger and reports
 `codex_cycle: null`, never re-capturing a head it was not dispatched for; the
 next dispatch — yours — names the new head. The integrator agent's §4 carries
-the recipe.
+the recipe: for Codex, reserve and re-read in one Bash tool call, ending in
+`RESERVED <head>` on success; only then post the trigger as a separate literal
+command at `<project-root>/.claude/skills/integrate/assets/gh-write-broker.sh
+trigger --repo <owner/repo> --pr <n>`, with all values written out. Use the
+checkout's installed path, never the physically resolved skill directory, so
+the project hook can approve the exact command even when `.claude/skills` is
+a symlink. Read the id from the broker's `{"id": N}` output and immediately
+attach it in a third call with `--trigger-id <N>`. Trigger and attach run back
+to back; no printed id or a failed attach is a blocker, never a reason to post
+a second trigger. The same split holds for attempt 2 and zero-candidate
+reconciliation.
 
 The two mechanisms compose and do not overlap wastefully: `carry` is strictly
 stronger (content identity, local git, no API reconstruction) and strictly
