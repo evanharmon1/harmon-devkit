@@ -120,7 +120,7 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type
-   (`gh repo view --json owner --jq .owner.type`: `User` or `Organization`),
+   (`gh api repos/<owner>/<repo> --jq .owner.type`: `User` or `Organization`; `gh repo view` does not expose it),
    passed as `owner_type`. The owner type is where Risk and Complexity are
    stored (triage's classification rubric). On a personal-account repository
    (`User`) they are the `risk:*`/`complexity:*` labels, and no `fields` are
