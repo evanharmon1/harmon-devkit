@@ -324,6 +324,10 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                     raise ValueError(f"{name}: policy_entry requires absent basis")
                 if policy_entry == "dangling-symlink":
                     policy.symlink_to(tmp_path / "missing.toml")
+                elif policy_entry == "dangling-parent-symlink":
+                    parent = tmp_path / "current"
+                    parent.symlink_to(tmp_path / "missing", target_is_directory=True)
+                    policy = parent / "policy.toml"
                 elif policy_entry == "directory":
                     policy.mkdir()
                 elif policy_entry is not None:

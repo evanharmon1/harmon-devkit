@@ -1842,6 +1842,20 @@
       }
     },
     {
+      "name": "policy-dangling-parent-symlink-refuses-fallback",
+      "basis": "absent",
+      "policy_entry": "dangling-parent-symlink",
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "policy_unreadable",
+            "subject": "policy"
+          }
+        ]
+      }
+    },
+    {
       "name": "policy-directory-refuses-fallback",
       "basis": "absent",
       "policy_entry": "directory",

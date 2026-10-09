@@ -49,7 +49,7 @@
 //   harmon-devkit#1248 and held to the same answers by the vendored
 //   conformance corpus `.devflow-conformance-v2.json` beside this file.
 
-import { lstatSync, readFileSync, existsSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -2352,6 +2352,17 @@ function cliResolve(args) {
         lstatSync(args.policy);
       } catch (statErr) {
         if (statErr?.code === "ENOENT") {
+          try {
+            // Fallback requires an absent final entry in a resolvable parent directory.
+            if (!statSync(realpathSync(path.dirname(args.policy))).isDirectory()) {
+              throw new PolicyError("parent is not a directory");
+            }
+          } catch (parentErr) {
+            console.error(
+              `devflow-policy: could not read/parse --policy: parent directory cannot be resolved: ${parentErr.message}`,
+            );
+            return 2;
+          }
           doc = null;
         } else {
           console.error(
