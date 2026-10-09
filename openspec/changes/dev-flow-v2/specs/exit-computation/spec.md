@@ -260,11 +260,13 @@ SHALL return `converged`. From cycle 2 every adjudication entry SHALL record
 the scaffolding checkpoint, and a nonempty cycle at or after cycle 2 whose
 every finding attacks an earlier remediation push SHALL return `diverging`. A
 remediation push after such a cycle without a recorded delete or restructure
-remedy SHALL make the trajectory indeterminate. The readiness gate SHALL
-promote only on a verdict without a confirmed P0/P1 — `converged`, `continue`
-with `last_cycle_clean` or `no_completed_cycle`, a P2-only `diverging`/`tell`,
-or the cap-0 `capped`/`disabled` — and SHALL fail every gating verdict and
-treat an unadjudicated round as indeterminate.
+remedy SHALL make the trajectory indeterminate. The readiness gate SHALL read
+the integration record itself, never a verdict reason, and SHALL infer nothing
+about fix pushes: it SHALL be indeterminate while any integration pass in the
+record has findings and no adjudication, SHALL fail when any integration
+adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
+defer (filing settles P2s only), SHALL stay indeterminate on any engine
+indeterminate, and SHALL otherwise pass.
 
 #### Scenario: Two P2-only cycles
 

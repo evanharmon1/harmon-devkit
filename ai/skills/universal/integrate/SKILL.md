@@ -1311,7 +1311,7 @@ the document without it.
   cycle without a recorded `delete` or `restructure` remedy.
   `tell_with_gating_findings` is an escalation that keeps the PR draft and
   leads with descoping — recommend removing the added surface first, with the
-  findings and provenance as evidence. Filing settles P2s only.
+  findings and provenance as evidence.
 - **`continue`** — `last_cycle_clean`: one terminal clean current-head cycle
   with every finding settled ends the stage through the readiness gate; a
   P2-only cycle whose findings are all declined or filed needs no second
@@ -1320,14 +1320,14 @@ the document without it.
 - **`capped`** with gating findings is stop condition 2 — escalate, PR stays
   draft. Indeterminate is never a pass: fix the record or escalate.
 
-The readiness gate runs the same computation over `--record` and promotes
-only on an eligible verdict: `converged`, `continue`/`last_cycle_clean`,
-`diverging`/`tell` (P2 only, settled by filing), `capped`/`disabled` (cap 0),
-or `continue`/`no_completed_cycle`. Every verdict holding a confirmed P0/P1
-fails — `integration-tell-escalation`, `integration-gating-findings`,
-`integration-capped` — and an unadjudicated round or an unreadable record is
-indeterminate (`integration-awaiting-adjudication`,
-`integration-exit-indeterminate`).
+The readiness gate reads the integration record itself, never a verdict
+reason, and infers nothing about fix pushes. It is indeterminate while any
+integration pass in the record has findings and no adjudication
+(`integration-awaiting-adjudication`); it fails when any integration
+adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
+defer — filing settles P2s only (`integration-filed-gating-finding`); it stays
+indeterminate on any engine indeterminate (`integration-exit-indeterminate`);
+otherwise this condition passes.
 
 ## 4. Reply in-thread
 

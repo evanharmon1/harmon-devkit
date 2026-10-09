@@ -64,8 +64,7 @@
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
 #   evidence-marker-missing, remediation-capped,            (fail)
-#   integration-tell-escalation, integration-gating-findings,
-#   integration-capped                                       (fail)
+#   integration-filed-gating-finding                         (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
@@ -1895,57 +1894,50 @@ if [ "$remediation_loops" -eq 0 ]; then
         fail_condition remediation-capped "the gated pass applies code-changing disposition(s) ($code_changing) but the record shows no integration -> implement -> integration remediation loop at all — a code change during integration always records one (harmon-devkit#685)"
 fi
 
-# 9f. The integration exit (harmon-devkit#1272), computed by the exit engine
-# over the same record, never re-derived here. A record the engine cannot read
-# — a remediation push after a tell cycle with no delete/restructure remedy
-# recorded, a cycle-ordinal sequence with a hole, a cycle missing its
-# checkpoint, an adjudication with no pass — is indeterminate. Otherwise only
-# the verdict's outcome/reason is read, against one table: promotion-eligible
-# verdicts pass, a verdict holding a confirmed P0/P1 fails (filing settles P2s
-# only), and a round still awaiting adjudication is indeterminate
-# (challenge-r4-codex-adversarial-1). Eligible: converged; continue with
-# last_cycle_clean; diverging/tell (a P2-only tell, settled by filing);
-# capped/disabled (cap 0 — the condition drops out); and continue with
-# no_completed_cycle (no cycle recorded, so the Codex current-head condition
-# above decides).
+# 9f. The integration record (harmon-devkit#1272), read directly — never a
+# verdict reason, never an inference about fix pushes (challenge-r5 replaced
+# the round-4 verdict allowlist). (c) Any engine indeterminate — a push after
+# a tell cycle without a delete/restructure remedy, a cycle-ordinal hole, an
+# invalid record — is indeterminate. (b) Any integration adjudication entry
+# holding an adjudicated P0 or P1 whose disposition is file or defer fails:
+# filing settles P2s only. (a) Any integration pass with findings and no
+# adjudication is indeterminate. (d) Otherwise this step passes.
 exit_engine="$support_dir/dev-flow-exit.mjs"
 [ -f "$exit_engine" ] ||
     die "$exit_engine is missing — the dev-flow-support package must be vendored alongside this skill"
 # The engine path goes LAST: the engine treats process.argv[1] as the script
 # it was invoked as and runs its own CLI when that resolves to itself.
-integration_exit="$(node --input-type=module -e '
+integration_record="$(node --input-type=module -e '
 const [record, cap, validator, engine] = process.argv.slice(1);
-const { integrationExitForRunDir, ExitIndeterminate } = await import(engine);
+const { integrationExitForRunDir, loadRunDir, ExitIndeterminate } = await import(engine);
 try {
-  const v = integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
-  console.log(JSON.stringify({ ok: true, outcome: v.outcome, reason: v.reason }));
+  integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
 } catch (err) {
   if (!(err instanceof ExitIndeterminate)) throw err;
   console.log(JSON.stringify({ ok: false, reason: err.message }));
-}' "$record_dir" "$integration_cap" "$validate_result_schemas" "$exit_engine" 2>/dev/null)" ||
-    indeterminate integration-exit-indeterminate "the integration exit engine could not run over --record"
-if ! jq -e '.ok' <<<"$integration_exit" >/dev/null 2>&1; then
-    indeterminate integration-exit-indeterminate "the integration exit is indeterminate: $(jq -r '.reason // "unreadable engine output"' <<<"$integration_exit" 2>/dev/null)"
-fi
-integration_verdict="$(jq -r '"\(.outcome)/\(.reason)"' <<<"$integration_exit")"
-case "$integration_verdict" in
-converged/two_consecutive_clean | continue/last_cycle_clean | diverging/tell | capped/disabled | continue/no_completed_cycle) ;;
-diverging/tell_with_gating_findings)
-    fail_condition integration-tell-escalation "the integration exit is $integration_verdict: a self-feeding cycle holds a confirmed P0/P1 — an escalation that keeps the PR draft and leads with descoping"
-    ;;
-continue/gating_findings)
-    fail_condition integration-gating-findings "the integration exit is $integration_verdict: the clean streak is broken by a confirmed P0/P1 — fix it and run the next cycle"
-    ;;
-capped/cap_reached_with_gating_findings)
-    fail_condition integration-capped "the integration exit is $integration_verdict: the integration cap is spent with a confirmed P0/P1 open — escalate"
-    ;;
-continue/awaiting_adjudication)
-    indeterminate integration-awaiting-adjudication "the integration exit is $integration_verdict: the latest integrator round's findings are not adjudicated yet"
-    ;;
-*)
-    indeterminate integration-exit-indeterminate "the integration exit verdict $integration_verdict is not one this gate recognizes"
-    ;;
-esac
+  process.exit(0);
+}
+const { passes, adjudications } = loadRunDir(record);
+const docs = adjudications.map((a) => a.doc).filter((d) => d?.stage === "integration");
+const adjudicated = new Set(docs.map((d) => d.round));
+const unadjudicated = passes
+  .filter((p) => p.envelope.role === "integrator" && (p.envelope.payload?.findings ?? []).length > 0)
+  .map((p) => p.envelope.payload.integration_round)
+  .filter((round) => !adjudicated.has(round));
+const filed = docs.flatMap((d) => d.adjudications)
+  .filter((e) => ["P0", "P1"].includes(e.adjudicated_priority) && ["file", "defer"].includes(e.disposition))
+  .map((e) => e.finding_id);
+console.log(JSON.stringify({ ok: true, unadjudicated, filed }));
+' "$record_dir" "$integration_cap" "$validate_result_schemas" "$exit_engine" 2>/dev/null)" ||
+    indeterminate integration-exit-indeterminate "the integration record could not be read over --record"
+jq -e '.ok' <<<"$integration_record" >/dev/null 2>&1 ||
+    indeterminate integration-exit-indeterminate "the integration exit is indeterminate: $(jq -r '.reason // "unreadable record output"' <<<"$integration_record" 2>/dev/null)"
+filed_gating="$(jq -r '.filed | join(", ")' <<<"$integration_record")"
+[ -z "$filed_gating" ] ||
+    fail_condition integration-filed-gating-finding "integration adjudication files or defers a confirmed P0/P1 ($filed_gating) — filing settles P2s only; fix it and run a clean cycle, or escalate"
+unadjudicated_rounds="$(jq -r '.unadjudicated | map(tostring) | join(", ")' <<<"$integration_record")"
+[ -z "$unadjudicated_rounds" ] ||
+    indeterminate integration-awaiting-adjudication "integration round(s) $unadjudicated_rounds hold findings with no adjudication yet"
 
 # 9e. Every adjudicated round has its own issue evidence comment
 # (harmon-devkit#685: "every adjudicated round has a matching issue evidence
