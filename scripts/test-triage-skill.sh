@@ -236,6 +236,12 @@ api\ repos/*)
     fi
     ;;
 "issue view")
+    # GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT=1: once this run's first edit has
+    # failed (GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST), every later read fails.
+    if [ "${GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT:-0}" = 1 ] &&
+        [ -e "$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}" ]; then
+        exit 1
+    fi
     if [ "${GH_STUB_RECONCILIATION_READ_FAIL:-0}" = 1 ] &&
         grep -q -- '--json labels$' <<<"$*"; then
         exit 1
@@ -332,6 +338,13 @@ api\ repos/*)
         fi
     fi
     [ "${GH_STUB_EDIT_FAIL_AFTER_APPLY:-0}" = 0 ] || exit 1
+    # GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1: only the run's first edit lands
+    # and then reports failure; later edits (a restore, say) succeed.
+    if [ "${GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST:-0}" = 1 ] &&
+        [ ! -e "$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}" ]; then
+        : >"$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}"
+        exit 1
+    fi
     ;;
 "issue create")
     [ -t 0 ] || cat >/dev/null
@@ -2448,6 +2461,108 @@ rm -f "$stub_dir"/.label-reads-*
 # shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
 issue_fixture 60 $classified needs-triage
 
+echo "==> label: a pin added during the label edit has its Tier restored (exit 4)"
+# Read 1 is the first read, read 2 the snapshot, and the label edit is the
+# first mutation, so read 3 is the post-edit check: the pin lands between the
+# last read before the edit and the edit itself.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned" "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin added during the label edit must refuse: $(cat "$tmp/out")"
+grep -q "tier:pinned was added to $repo#60 during triage's label edit" "$tmp/out" ||
+    fail "the refusal must name the issue and the pin: $(cat "$tmp/out")"
+grep -q -- "--add-label impact:high,risk:high,complexity:m,tier:frontier --remove-label tier:local" "$GH_STUB_LOG" ||
+    fail "the label edit must have replaced the Tier: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 60 --repo $repo --add-label tier:local --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "the Tier the call replaced must be restored: $(cat "$GH_STUB_LOG")"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "no write may follow the restore: $(cat "$GH_STUB_LOG")"
+grep -q "RESTORED 'tier:local' on $repo#60" "$tmp/out" ||
+    fail "the restore must be reported: $(cat "$tmp/out")"
+grep -q "NOTE: if 'tier:frontier' on $repo#60 was set by the person who pinned it" "$tmp/out" ||
+    fail "removing a Tier that may be the pinner's own must say so: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
+echo "==> label: a human who re-tiered before pinning keeps their Tier alone"
+# The documented pin workflow: replace the Tier, then add tier:pinned. The
+# restore drops this call's Tier and must not bring back the one it removed.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned tier:standard" "$apply" label \
+    --repo "$repo" --issue 60 --impact high --risk high --complexity m \
+    --execute --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin added during the label edit must refuse: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "only this call's Tier may be removed: $(cat "$GH_STUB_LOG")"
+grep -q -- "--add-label tier:local" "$GH_STUB_LOG" &&
+    fail "the replaced Tier must not return beside the human's: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
+echo "==> label: a failed label edit that landed still has a pinned Tier restored"
+# Same window, but gh reports the edit failed after it applied.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1 \
+    GH_STUB_LABELS_CHANGE_ON_READ=3 GH_STUB_LABELS_CHANGE_ADD="tier:pinned" \
+    "$apply" label --repo "$repo" --issue 60 --impact high --risk high \
+    --complexity m --execute --manifest "$manifest" --policy "$policy")" = 1 ] ||
+    fail "a failed edit must exit 1: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --add-label tier:local --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "a failed edit that landed must still have its Tier restored: $(cat "$GH_STUB_LOG")"
+grep -q "tier:pinned is now on it" "$tmp/out" ||
+    fail "the failure must report the pin and the restore: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.edit-failed-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
+echo "==> label: a failed edit whose pin check cannot read keeps exit 1"
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1 \
+    GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT=1 "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 1 ] ||
+    fail "a failed edit with an unreadable pin check must exit 1: $(cat "$tmp/out")"
+grep -q "the read that checks for a tier:pinned added during it failed too" "$tmp/out" ||
+    fail "the failure must say the pin check could not read: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.edit-failed-*
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage
+
+echo "==> label: a Tier already on the issue is not taken for the pinner's"
+# Stacked Tiers: the derived one is present, so the edit only removes the
+# stale one. A pin during the edit must bring the stale one back, since the
+# remaining Tier was there before the edit, not set by the pinner.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:frontier tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned" "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin added during the label edit must refuse: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --add-label tier:local" "$GH_STUB_LOG" ||
+    fail "the stale Tier the call removed must come back: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage
+
 echo "==> label: a stale derived Tier is replaced, never stacked"
 [ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
     --manifest "$manifest" --policy "$policy")" = 0 ] ||
@@ -2766,7 +2881,7 @@ rm -f "$stub_dir/field-mutations.log"
     --impact high --risk high --complexity m --execute \
     --manifest "$manifest" --policy "$policy")" = 0 ] ||
     fail "org execute failed: $(cat "$tmp/out")"
-[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+[ "$(wc -l <"$stub_dir/field-mutations.log")" -eq 1 ] ||
     fail "every org axis write must be ONE setIssueFieldValue mutation"
 jq -e '.variables.issue == "I_70"
        and (.variables.fields | sort_by(.fieldId)) == [
@@ -2881,7 +2996,7 @@ rm -f "$stub_dir"/.label-reads-* "$stub_dir"/.field-reads-* \
     fail "a pin set between org writes must refuse: $(cat "$tmp/out")"
 grep -q "tier:pinned was added to $repo#85 between triage's writes" "$tmp/out" ||
     fail "the refusal must name the pin: $(cat "$tmp/out")"
-[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+[ "$(wc -l <"$stub_dir/field-mutations.log")" -eq 1 ] ||
     fail "the field mutation before the pin was the one write made"
 grep -q -- "--add-label\|--remove-label" "$GH_STUB_LOG" &&
     fail "no label write may follow the pin: $(cat "$GH_STUB_LOG")"
@@ -2929,7 +3044,7 @@ rm -f "$stub_dir"/.field-reads-* "$stub_dir/field-mutations.log" \
     fail "a Risk cleared after the field mutation must refuse: $(cat "$tmp/out")"
 grep -q "a write it already made was reverted (field:risk=high)" "$tmp/out" ||
     fail "the refusal must name the reverted write: $(cat "$tmp/out")"
-[ "$(wc -l <"$stub_dir/field-mutations.log")" = 1 ] ||
+[ "$(wc -l <"$stub_dir/field-mutations.log")" -eq 1 ] ||
     fail "the field mutation was the one write made"
 grep -q -- "tier:" "$GH_STUB_LOG" && fail "no Tier write may follow a reverted Risk"
 grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
