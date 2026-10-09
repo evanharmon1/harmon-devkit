@@ -81,6 +81,10 @@ Do not "work here and move it later": ask the user for the matching checkout,
 or to confirm which repository they actually meant. Where the match exists but
 is not the current worktree, switch to it first.
 
+Keep the validated target remote's name in `$remote` for the shared tier
+procedure's step 0; it is the remote whose URL the lookup above confirmed as
+`$repo`, never a new URL-suffix match.
+
 Then confirm the claim exists — **read it, do not write it**:
 
 ```sh
@@ -220,7 +224,8 @@ resolution runs the full `dev-flow-support` procedure, **step 0 included**,
 like every other resolution: if the working tree (committed, staged,
 unstaged or untracked) differs from the merge base in a governing file, the
 merge-base helper and reader resolve it, not the branch's. Decide that with
-the procedure's `step0_probe` and the `$repo` bound in step 1; when it
+the procedure's `step0_probe "${remote:-}"`, passing the validated `$remote`
+bound against `$repo` in step 1; when it
 returns 2 (indeterminate), stop rather than resolving. Resolve the Tier with
 the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,

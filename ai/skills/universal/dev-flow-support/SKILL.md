@@ -66,20 +66,14 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      staged or untracked edit governs just as much:
 
      ```sh
-     # step0_probe — $repo is the target repository (owner/name) the calling
-     # skill already bound. Returns 0 and prints the governing files when step
-     # 0 applies, 1 when the working tree changes none of them, and 2 when the
-     # answer is INDETERMINATE: stop, never read "no output" as "no file".
+     # step0_probe — $remote is the target remote the calling skill already
+     # validated against $repo (owner/name). Pass its name as the argument.
+     # Returns 0 and prints the governing files when step 0 applies, 1 when
+     # the working tree changes none of them, and 2 when the answer is
+     # INDETERMINATE: stop, never read "no output" as "no file".
      step0_probe() {
-         local r url want remote="" default mb changed untracked files
-         want="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
-         [ -n "$want" ] || { echo "step 0 indeterminate: no target repository bound" >&2; return 2; }
-         for r in $(git remote); do
-             url="$(git remote get-url "$r" | tr '[:upper:]' '[:lower:]')" || continue
-             url="${url%/}"; url="${url%.git}"
-             case "$url" in */"$want" | *:"$want") remote="$r"; break ;; esac
-         done
-         [ -n "$remote" ] || { echo "step 0 indeterminate: no remote's URL matches $repo" >&2; return 2; }
+         local remote="${1:-}" default mb changed untracked files
+         [ -n "$remote" ] || { echo "step 0 indeterminate: no validated target remote bound" >&2; return 2; }
          default="$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null)" && [ -n "$default" ] ||
              { echo "step 0 indeterminate: $remote has no default branch (git remote set-head $remote --auto)" >&2; return 2; }
          mb="$(git merge-base HEAD "$default")" && [ -n "$mb" ] ||
@@ -91,12 +85,15 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
          [ -n "$files" ] || return 1
          printf '%s\n' "$files"
      }
-     rc=0; governing="$(step0_probe)" || rc=$?
+     rc=0; governing="$(step0_probe "${remote:-}")" || rc=$?
      ```
 
-     The remote is the one whose URL is `$repo` (the same match `/implement`
-     step 1 makes), and the default branch is that remote's
-     `refs/remotes/<remote>/HEAD`. Nothing is hard-coded to one remote name.
+     The caller passes its validated `$remote` binding: `/implement` binds
+     it in step 1; `/orchestrate` validates it for the lane's target checkout
+     before tier resolution. The probe never re-discovers it by URL suffix,
+     which could select a same-path mirror on another host. The default branch
+     is that remote's `refs/remotes/<remote>/HEAD`. Nothing is hard-coded to
+     one remote name.
      `git diff --name-only "$mb"` (no `...HEAD`) compares the merge base with
      the working tree, so committed, staged and unstaged edits all count, and
      `git ls-files --others --exclude-standard` adds untracked files.
@@ -150,10 +147,13 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    tier_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tier-resolve.XXXXXX")"
    # write the issue's inputs to "$tier_tmp/tier-input.json" (shape below)
    node "$support_dir/tier-inputs.mjs" --policy .devflow.toml \
-       --input "$tier_tmp/tier-input.json" >"$tier_tmp/tier-translation.json"
+       --input "$tier_tmp/tier-input.json" >"$tier_tmp/tier-translation.json" ||
+       { echo "tier resolution stopped: input translation failed" >&2; exit 2; }
+   node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' \
+       "$tier_tmp/tier-translation.json" >"$tier_tmp/args.txt" ||
+       { echo "tier resolution stopped: argument extraction failed" >&2; exit 2; }
    tier_args=()
-   while IFS= read -r a; do tier_args+=("$a"); done \
-       < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' "$tier_tmp/tier-translation.json")
+   while IFS= read -r a; do tier_args+=("$a"); done <"$tier_tmp/args.txt"
    node "$support_dir/devflow-policy.mjs" resolve --policy .devflow.toml \
        --registry agent-registry.json --taskfile-dir . \
        --json ${tier_args[@]+"${tier_args[@]}"} >"$tier_tmp/resolved.json"
@@ -164,7 +164,11 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    cross-validation is indeterminate and `resolve` always exits 3, which
    would hide the one exit 3 that matters: the derived Tier's. On the step-0
    path, `--taskfile-dir` is the merge-base closure instead.
-   The three working files live in `"$tier_tmp"`, a scratch directory
+   Translation and argument extraction must both succeed before `resolve`
+   runs. Either failure prints a message and stops the recipe; the file-backed
+   extraction preserves its exit status instead of losing it in process
+   substitution. Run this block in a shell where `exit 2` stops the resolution.
+   The working files live in `"$tier_tmp"`, a scratch directory
    outside the checkout, never in the worktree, where a commit could sweep
    them up.
 

@@ -57,6 +57,14 @@ record ownership, scope, dependencies, and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs.
 
+Before tier resolution, bind `$repo` from the canonical target issue URL and
+retain the validated target remote name as `$remote` in that lane's checkout.
+Validate it with `gh repo view "$(git remote get-url "$remote")" --json
+nameWithOwner -q .nameWithOwner`, requiring the result to equal `$repo`, as
+`implement` step 1 does. A missing remote, failed lookup or mismatched target
+is a blocker. This binding belongs to the target repository, which may differ
+from the writable fork remote; pass it unchanged to step 0.
+
 **Resolve each issue's Tier before you dispatch its lane, never by eye.**
 Follow `dev-flow-support`'s § "Resolving an issue's Tier":
 - Read the issue's `tier:<value>` label on every owner type, plus
@@ -80,8 +88,9 @@ staged, unstaged or untracked) differs from its merge base in
 `.devflow.toml`, `agent-registry.json`, or the reader,
 `toml-lite` or `tier-inputs.mjs` assets, the **merge-base** helper and reader
 resolve it instead of the branch's
-(the procedure's step 0). Decide that with the procedure's `step0_probe`
-for the lane's target repository; when it returns 2 (indeterminate), stop
+(the procedure's step 0). Decide that with `step0_probe "${remote:-}"`,
+passing the `$remote` validated against the lane's target `$repo` above;
+when it returns 2 (indeterminate), stop
 rather than dispatching. A merge base that predates `tier-inputs.mjs` needs
 an operator-pinned reader supplied outside the branch; without one the Tier
 is indeterminate, never resolved by the branch copy. On a `strategy:*`

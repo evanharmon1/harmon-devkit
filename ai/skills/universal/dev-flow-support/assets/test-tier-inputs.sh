@@ -19,15 +19,40 @@ set -euo pipefail
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 helper="$asset_dir/tier-inputs.mjs"
 reader="$asset_dir/devflow-policy.mjs"
-repo_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
-base_policy="$repo_root/ai/schemas/fixtures/devflow-conformance/policy.toml"
-fixture_dir_recipe="$repo_root/ai/schemas/fixtures/devflow-conformance"
+package_dir="$(cd "$asset_dir/.." && pwd -P)"
+repo_root="$(git -C "$asset_dir" rev-parse --show-toplevel 2>/dev/null || true)"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/tier-inputs.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
+# The conformance corpus belongs to the source repository, not this package.
+# A consumer runs the independent cases with the built-in policy fallback.
+fixture_dir="${repo_root:-$scratch/no-repository}/ai/schemas/fixtures/devflow-conformance"
+fixtures_available=0
+if [ -d "$fixture_dir" ]; then
+    for fixture in policy.toml agent-registry.json task-targets.json; do
+        [ -f "$fixture_dir/$fixture" ] || {
+            echo "test-tier-inputs: missing source-tree fixture: $fixture_dir/$fixture" >&2
+            exit 1
+        }
+    done
+    fixtures_available=1
+elif [ -n "$repo_root" ] && [ -d "$repo_root/ai/skills/universal/dev-flow-support" ] &&
+    [ "$(cd "$repo_root/ai/skills/universal/dev-flow-support" && pwd -P)" = "$package_dir" ]; then
+    echo "test-tier-inputs: missing source-tree fixtures: $fixture_dir" >&2
+    exit 1
+fi
+base_policy="$fixture_dir/policy.toml"
+# An absent final file under an existing parent selects the built-in fallback;
+# an absent parent is a malformed policy path and must not be used as fallback.
+[ "$fixtures_available" -eq 1 ] || base_policy="$scratch/absent-policy.toml"
+fixture_dir_recipe="$fixture_dir"
+# The failure recipes need only a working directory, even outside a Git repo.
+repo_root="${repo_root:-$package_dir}"
+
 failures=0
 pass=0
+skipped=0
 fail() {
     echo "  ✗ $*" >&2
     failures=$((failures + 1))
@@ -37,6 +62,18 @@ ok() {
     pass=$((pass + 1))
     return 0
 }
+
+# Each counted case has one assertion, matching ok/fail's pass accounting.
+need_fixtures() {
+    if [ "$fixtures_available" -eq 1 ]; then
+        return 0
+    fi
+    skipped=$((skipped + ${1:-1}))
+    return 1
+}
+fixture_expect_args() { if need_fixtures; then expect_args "$@"; fi; }
+fixture_expect_warning() { if need_fixtures; then expect_warning "$@"; fi; }
+fixture_expect_source() { if need_fixtures; then expect_source "$@"; fi; }
 
 # translate JSON → prints the helper's JSON output. The policy defaults to
 # the corpus base policy; TRANSLATE_POLICY overrides it (an absent path is the
@@ -146,13 +183,13 @@ expect_source() {
     if [ "$got" = "$want" ]; then ok; else fail "$name: inputs.$axis.source is $got, expected $want"; fi
 }
 expect_source "no strategy label: default" '{"labels":[]}' strategy default
-expect_source "an authorized strategy label: label" '{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}' strategy label
+fixture_expect_source "an authorized strategy label: label" '{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}' strategy label
 expect_source "an operator strategy: operator" '{"operator":{"strategy":"council"}}' strategy operator
-expect_source "two strategy labels: default (ambiguous)" \
+fixture_expect_source "two strategy labels: default (ambiguous)" \
     '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' strategy default
 expect_source "an unknown strategy label: default" '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' strategy default
 expect_source "no rigor label: default" '{"labels":[]}' rigor default
-expect_source "an authorized rigor label: label" '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"]}' rigor label
+fixture_expect_source "an authorized rigor label: label" '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"]}' rigor label
 expect_source "an operator rigor: operator" '{"operator":{"rigor":"light"}}' rigor operator
 
 echo "==> tier-inputs.mjs: extra-colon labels are counted, never dropped (integration remediation 1, thread 4176257550)"
@@ -186,13 +223,13 @@ expect_warning "role-label conflict is disclosed" \
     tier-role-label-conflict "frontier"
 expect_args "a leftover tier:<role>:adaptive reaches the reader to be named retired" \
     '{"labels":["tier:reviewer:adaptive"],"authorized_labels":["tier:reviewer:adaptive"]}' '["--tier-labels=reviewer=adaptive"]'
-expect_args "rigor-label conflict takes the strongest" \
+fixture_expect_args "rigor-label conflict takes the strongest" \
     '{"labels":["rigor:light","rigor:deep"],"authorized_labels":["rigor:light","rigor:deep"]}' '["--rigor","deep","--rigor-source=label"]'
 expect_args "operator rigor outranks a rigor label" \
     '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"],"operator":{"rigor":"light"}}' '["--rigor","light","--rigor-source=operator"]'
-expect_args "two strategy labels pass none" \
+fixture_expect_args "two strategy labels pass none" \
     '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' '[]'
-expect_warning "two strategy labels warn" \
+fixture_expect_warning "two strategy labels warn" \
     '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' strategy-label-ambiguous
 expect_args "operator tiers" '{"operator":{"tiers":{"implementer":"apex","reviewer":"frontier"}}}' \
     '["--tier-overrides=implementer=apex,reviewer=frontier"]'
@@ -214,7 +251,7 @@ expect_args "an unknown strategy label is dropped" \
     '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' '[]'
 expect_warning "an unknown strategy label warns" \
     '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' strategy-label-unknown "strategy:bogus"
-expect_args "an unknown strategy label does not make a known one ambiguous" \
+fixture_expect_args "an unknown strategy label does not make a known one ambiguous" \
     '{"labels":["strategy:bogus","strategy:council"],"authorized_labels":["strategy:bogus","strategy:council"]}' '["--strategy","council"]'
 expect_args "an unknown rigor label is dropped" '{"labels":["rigor:extreme"],"authorized_labels":["rigor:extreme"]}' '[]'
 expect_warning "an unknown rigor label warns" \
@@ -301,122 +338,126 @@ rc=0
 node "$reader" detect --policy "$base_policy" --risk high >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then ok; else fail "detect must refuse a resolve-only option (exit 2), got $rc"; fi
 
-echo "==> tier-inputs.mjs + devflow-policy.mjs: end to end over the corpus base policy"
-# e2e NAME INPUT IMPL_TIER IMPL_SOURCE [DISCLOSURE_SUBSTRING...]
-e2e() {
-    local name="$1" input="$2" want_tier="$3" want_source="$4"
-    shift 4
-    local tr="$scratch/$RANDOM-tr.json" res="$scratch/$RANDOM-res.json" lines rc=0
-    translate "$input" >"$tr"
-    local -a args=()
-    while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
-    node "$reader" resolve --policy "$base_policy" --json ${args[@]+"${args[@]}"} >"$res" || rc=$?
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
-        fail "$name: reader exited $rc"
-        return 0
-    fi
-    local got
-    got="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.roles.implementer.tier+" "+r.roles.implementer.source)' "$res")"
-    if [ "$got" != "$want_tier $want_source" ]; then
-        fail "$name: implementer resolved $got, expected $want_tier $want_source"
-        return 0
-    fi
-    lines="$(node "$helper" disclose --inputs "$tr" --resolved "$res")"
-    local s
-    for s in "$@"; do
-        grep -qF -- "$s" <<<"$lines" || {
-            fail "$name: disclosure lacks \"$s\":"$'\n'"$lines"
+# 18 corpus-policy resolution/disclosure assertions in this block.
+if need_fixtures 18; then
+    echo "==> tier-inputs.mjs + devflow-policy.mjs: end to end over the corpus base policy"
+    # e2e NAME INPUT IMPL_TIER IMPL_SOURCE [DISCLOSURE_SUBSTRING...]
+    e2e() {
+        local name="$1" input="$2" want_tier="$3" want_source="$4"
+        shift 4
+        local tr="$scratch/$RANDOM-tr.json" res="$scratch/$RANDOM-res.json" lines rc=0
+        translate "$input" >"$tr"
+        local -a args=()
+        while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
+        node "$reader" resolve --policy "$base_policy" --json ${args[@]+"${args[@]}"} >"$res" || rc=$?
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            fail "$name: reader exited $rc"
             return 0
-        }
+        fi
+        local got
+        got="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.roles.implementer.tier+" "+r.roles.implementer.source)' "$res")"
+        if [ "$got" != "$want_tier $want_source" ]; then
+            fail "$name: implementer resolved $got, expected $want_tier $want_source"
+            return 0
+        fi
+        lines="$(node "$helper" disclose --inputs "$tr" --resolved "$res")"
+        local s
+        for s in "$@"; do
+            grep -qF -- "$s" <<<"$lines" || {
+                fail "$name: disclosure lacks \"$s\":"$'\n'"$lines"
+                return 0
+            }
+        done
+        ok
+    }
+
+    trusted='"pin_provenance":{"marker_trusted":true,"value_trusted":true}'
+    e2e "derived Tier sets the implementer" '{"labels":["risk:critical","complexity:xl"]}' apex derived \
+        "source: derived" "issue Tier: derived apex"
+    e2e "pin beats a scoped label, and the label is disclosed as overridden" \
+        "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" economy pinned \
+        "source: pinned" "pin: honored" "overridden: tier:implementer:frontier"
+    e2e "pin-caused invariant break is named" \
+        "{\"labels\":[\"tier:pinned\",\"tier:apex\"],$trusted}" apex pinned \
+        "pin-caused invariant break: challenger"
+    e2e "without the pin, the scoped label beats the derived Tier" \
+        '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"],"authorized_labels":["tier:implementer:economy"]}' economy label \
+        "source: rigor" "issue Tier: derived apex"
+    e2e "an unauthorized scoped label leaves the derived Tier in charge, and says so" \
+        '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"]}' apex derived \
+        "source: derived" "warning [policy-label-unauthorized]" "tier:implementer:economy"
+    e2e "ambiguous pin resolves through the derived Tier" \
+        "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"risk:low\",\"complexity:xs\"],$trusted}" local derived \
+        "warning [pin-ambiguous]" "tier:apex" "tier:local" "source: derived"
+    e2e "untrusted pin resolves unpinned and says so" \
+        '{"labels":["tier:pinned","tier:apex","risk:low","complexity:xs"]}' local derived \
+        "pin: ignored (untrusted)" "warning [pin-untrusted]"
+    e2e "leftover tier:adaptive resolves as absent" '{"labels":["tier:adaptive"]}' standard rigor-profile \
+        "source: default" "warning [tier-retired]"
+    e2e "no classification resolves to the default profile" '{"labels":[]}' standard rigor-profile "source: default"
+    e2e "a stale strategy label no longer blocks resolution" \
+        '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
+        "warning [strategy-label-unknown]"
+
+    echo "==> disclosure lines match what the reader resolved (integration remediation 2)"
+    # disclose_lines INPUT — prints the PR-body disclosure lines for INPUT,
+    # resolved over the corpus base policy.
+    disclose_lines() {
+        local tr="$scratch/$RANDOM-dl-tr.json" res="$scratch/$RANDOM-dl-res.json"
+        translate "$1" >"$tr"
+        local -a args=()
+        while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
+        node "$reader" resolve --policy "$base_policy" --json ${args[@]+"${args[@]}"} >"$res" 2>/dev/null || true
+        node "$helper" disclose --inputs "$tr" --resolved "$res"
+    }
+    # Thread 4178249117: a REJECTED role label is disclosed once, as rejected,
+    # with the reader's reason — never also as "overridden" or as a second warning.
+    rejected_lines="$(disclose_lines '{"labels":["tier:reviewer:adaptive"],"authorized_labels":["tier:reviewer:adaptive"]}')"
+    if grep -qF "rejected: tier:reviewer:adaptive" <<<"$rejected_lines" &&
+        grep -qF "retired" <<<"$rejected_lines" &&
+        ! grep -qF "overridden:" <<<"$rejected_lines" &&
+        ! grep -qF "warning [tier-retired]" <<<"$rejected_lines"; then
+        ok
+    else
+        fail "a rejected role label must be disclosed once, as rejected, with the reason:"$'\n'"$rejected_lines"
+    fi
+    # A VALID label that lost to a stronger rung is still "overridden".
+    e2e "a valid scoped label beaten by a pin is still disclosed as overridden" \
+        "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" \
+        economy pinned "overridden: tier:implementer:frontier"
+    # Thread 4178249123: an ambiguous pin drops the pin rung only — an authorized
+    # scoped label still decides, and no line claims the derived Tier decided.
+    e2e "an ambiguous pin plus an authorized scoped label resolves the label" \
+        "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\",\"risk:critical\",\"complexity:xl\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}" \
+        economy label "warning [pin-ambiguous]" "the pin rung is dropped" "source: rigor"
+    ambiguous_lines="$(disclose_lines "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}")"
+    if grep -qF "resolves through its derived Tier" <<<"$ambiguous_lines"; then
+        fail "the ambiguous-pin disclosure must not claim the derived Tier decided:"$'\n'"$ambiguous_lines"
+    else
+        ok
+    fi
+
+    echo "==> disclose names the selection sources from the translation (thread 4178487553)"
+    for case_def in \
+        'label|{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}|Strategy: council (source: label)' \
+        'operator|{"operator":{"strategy":"council"}}|Strategy: council (source: operator)' \
+        'default|{"labels":[]}|Strategy: plan (source: default)' \
+        'ambiguous|{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}|ambiguous between plan, council'; do
+        case_name="${case_def%%|*}"
+        rest="${case_def#*|}"
+        case_input="${rest%|*}"
+        case_want="${rest##*|}"
+        case_lines="$(disclose_lines "$case_input")"
+        if grep -qF -- "$case_want" <<<"$case_lines"; then ok; else fail "disclose ($case_name) lacks \"$case_want\":"$'\n'"$case_lines"; fi
     done
-    ok
-}
 
-trusted='"pin_provenance":{"marker_trusted":true,"value_trusted":true}'
-e2e "derived Tier sets the implementer" '{"labels":["risk:critical","complexity:xl"]}' apex derived \
-    "source: derived" "issue Tier: derived apex"
-e2e "pin beats a scoped label, and the label is disclosed as overridden" \
-    "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" economy pinned \
-    "source: pinned" "pin: honored" "overridden: tier:implementer:frontier"
-e2e "pin-caused invariant break is named" \
-    "{\"labels\":[\"tier:pinned\",\"tier:apex\"],$trusted}" apex pinned \
-    "pin-caused invariant break: challenger"
-e2e "without the pin, the scoped label beats the derived Tier" \
-    '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"],"authorized_labels":["tier:implementer:economy"]}' economy label \
-    "source: rigor" "issue Tier: derived apex"
-e2e "an unauthorized scoped label leaves the derived Tier in charge, and says so" \
-    '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"]}' apex derived \
-    "source: derived" "warning [policy-label-unauthorized]" "tier:implementer:economy"
-e2e "ambiguous pin resolves through the derived Tier" \
-    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"risk:low\",\"complexity:xs\"],$trusted}" local derived \
-    "warning [pin-ambiguous]" "tier:apex" "tier:local" "source: derived"
-e2e "untrusted pin resolves unpinned and says so" \
-    '{"labels":["tier:pinned","tier:apex","risk:low","complexity:xs"]}' local derived \
-    "pin: ignored (untrusted)" "warning [pin-untrusted]"
-e2e "leftover tier:adaptive resolves as absent" '{"labels":["tier:adaptive"]}' standard rigor-profile \
-    "source: default" "warning [tier-retired]"
-e2e "no classification resolves to the default profile" '{"labels":[]}' standard rigor-profile "source: default"
-e2e "a stale strategy label no longer blocks resolution" \
-    '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
-    "warning [strategy-label-unknown]"
-
-echo "==> disclosure lines match what the reader resolved (integration remediation 2)"
-# disclose_lines INPUT — prints the PR-body disclosure lines for INPUT,
-# resolved over the corpus base policy.
-disclose_lines() {
-    local tr="$scratch/$RANDOM-dl-tr.json" res="$scratch/$RANDOM-dl-res.json"
-    translate "$1" >"$tr"
-    local -a args=()
-    while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
-    node "$reader" resolve --policy "$base_policy" --json ${args[@]+"${args[@]}"} >"$res" 2>/dev/null || true
-    node "$helper" disclose --inputs "$tr" --resolved "$res"
-}
-# Thread 4178249117: a REJECTED role label is disclosed once, as rejected,
-# with the reader's reason — never also as "overridden" or as a second warning.
-rejected_lines="$(disclose_lines '{"labels":["tier:reviewer:adaptive"],"authorized_labels":["tier:reviewer:adaptive"]}')"
-if grep -qF "rejected: tier:reviewer:adaptive" <<<"$rejected_lines" &&
-    grep -qF "retired" <<<"$rejected_lines" &&
-    ! grep -qF "overridden:" <<<"$rejected_lines" &&
-    ! grep -qF "warning [tier-retired]" <<<"$rejected_lines"; then
-    ok
-else
-    fail "a rejected role label must be disclosed once, as rejected, with the reason:"$'\n'"$rejected_lines"
 fi
-# A VALID label that lost to a stronger rung is still "overridden".
-e2e "a valid scoped label beaten by a pin is still disclosed as overridden" \
-    "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" \
-    economy pinned "overridden: tier:implementer:frontier"
-# Thread 4178249123: an ambiguous pin drops the pin rung only — an authorized
-# scoped label still decides, and no line claims the derived Tier decided.
-e2e "an ambiguous pin plus an authorized scoped label resolves the label" \
-    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\",\"risk:critical\",\"complexity:xl\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}" \
-    economy label "warning [pin-ambiguous]" "the pin rung is dropped" "source: rigor"
-ambiguous_lines="$(disclose_lines "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}")"
-if grep -qF "resolves through its derived Tier" <<<"$ambiguous_lines"; then
-    fail "the ambiguous-pin disclosure must not claim the derived Tier decided:"$'\n'"$ambiguous_lines"
-else
-    ok
-fi
-
-echo "==> disclose names the selection sources from the translation (thread 4178487553)"
-for case_def in \
-    'label|{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}|Strategy: council (source: label)' \
-    'operator|{"operator":{"strategy":"council"}}|Strategy: council (source: operator)' \
-    'default|{"labels":[]}|Strategy: plan (source: default)' \
-    'ambiguous|{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}|ambiguous between plan, council'; do
-    case_name="${case_def%%|*}"
-    rest="${case_def#*|}"
-    case_input="${rest%|*}"
-    case_want="${rest##*|}"
-    case_lines="$(disclose_lines "$case_input")"
-    if grep -qF -- "$case_want" <<<"$case_lines"; then ok; else fail "disclose ($case_name) lacks \"$case_want\":"$'\n'"$case_lines"; fi
-done
 
 echo "==> the documented step-0 trigger sees committed, staged, unstaged and untracked edits (thread 4178487547)"
 # The trigger command block is EXTRACTED from dev-flow-support/SKILL.md (the
 # first ```sh block after "When it applies"), so this tests the documented
 # text itself, not a copy that could drift from it.
-dfs_md="$repo_root/ai/skills/universal/dev-flow-support/SKILL.md"
+dfs_md="$asset_dir/../SKILL.md"
 trigger_cmd="$(awk '/When it applies:/{seen=1} seen && /```sh/{grab=1; next} grab && /```/{exit} grab{sub(/^[[:space:]]+/, ""); print}' "$dfs_md")"
 if [ -z "$trigger_cmd" ]; then
     fail "could not extract the step-0 trigger command from dev-flow-support/SKILL.md"
@@ -425,17 +466,17 @@ else
     git init -q -b main "$trig"
     git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m base
     mkdir -p "$trig/ai/skills/universal/dev-flow-support/assets/lib"
-    # The target repository is bound the way /implement step 1 binds it; the
-    # probe finds the remote by URL and reads that remote's default branch.
+    # The caller validates and binds the target remote; the probe consumes
+    # that binding and reads only that remote's default branch.
     git -C "$trig" remote add origin https://github.com/Acme/Widget.git
     git -C "$trig" update-ref refs/remotes/origin/main HEAD
     git -C "$trig" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     git -C "$trig" checkout -q -b topic
-    trig_repo="acme/widget"
+    trig_remote="origin"
     # run_trigger — defines the extracted step0_probe in $trig, runs the
     # documented call, and prints "rc=<n> <governing files>".
     run_trigger() {
-        (cd "$trig" && repo="$trig_repo" && eval "$trigger_cmd" && printf 'rc=%s %s' "$rc" "$(printf '%s' "$governing" | tr '\n' ' ')") 2>/dev/null
+        (cd "$trig" && remote="$trig_remote" && eval "$trigger_cmd" && printf 'rc=%s %s' "$rc" "$(printf '%s' "$governing" | tr '\n' ' ')") 2>/dev/null
     }
     # expect_trigger NAME applies|none|indeterminate [FILE] — the probe's rc is
     # 0, 1 or 2; for "applies", FILE must be among the governing files.
@@ -462,7 +503,16 @@ else
     expect_trigger "a committed .devflow.toml, remote named origin (thread 4178657188, case 1)" applies .devflow.toml
     # Case 2: the same branch with the remote renamed — still reported.
     git -C "$trig" remote rename origin upstream
+    trig_remote="upstream"
     expect_trigger "the same edit with the remote renamed (thread 4178657188, case 2)" applies .devflow.toml
+    # A first-listed remote on another host has the same owner/repo path,
+    # but its default branch is topic HEAD. Rediscovery by path would miss
+    # the committed policy edit; the validated binding must still report it.
+    git -C "$trig" remote add aaa-mirror https://mirror.example/Acme/Widget.git
+    git -C "$trig" update-ref refs/remotes/aaa-mirror/topic HEAD
+    git -C "$trig" symbolic-ref refs/remotes/aaa-mirror/HEAD refs/remotes/aaa-mirror/topic
+    if [ "$(git -C "$trig" remote | head -1)" = "aaa-mirror" ]; then ok; else fail "foreign-host mirror must be listed first"; fi
+    expect_trigger "first-listed same-path foreign-host mirror does not hide a committed policy" applies .devflow.toml
     # Case 3: no resolvable merge base — the remote's default branch is an
     # unrelated history — stops indeterminate instead of reporting nothing.
     orphan="$(git -C "$trig" -c user.email=t@example.invalid -c user.name=t commit-tree -m unrelated "$(git -C "$trig" mktree </dev/null)")"
@@ -471,9 +521,11 @@ else
     expect_trigger "no resolvable merge base (thread 4178657188, case 3)" indeterminate
     git -C "$trig" update-ref refs/remotes/upstream/main "$upstream_tip"
     # Every other lookup fails closed the same way.
-    trig_repo="other/repo"
-    expect_trigger "no remote whose URL matches the target repository" indeterminate
-    trig_repo="acme/widget"
+    trig_remote=""
+    expect_trigger "no validated target remote bound" indeterminate
+    trig_remote="missing-remote"
+    expect_trigger "a nonexistent bound remote" indeterminate
+    trig_remote="upstream"
     git -C "$trig" symbolic-ref --delete refs/remotes/upstream/HEAD
     expect_trigger "a remote with no default branch" indeterminate
     git -C "$trig" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/main
@@ -500,105 +552,155 @@ echo "==> the documented resolve recipe exits 0 (integration remediation 1, thre
 # (whose gate and finder targets this repository's Taskfile defines). Without
 # --taskfile-dir the gate-target check is indeterminate and resolve exits 3
 # whatever the issue says; the control below proves the flag is what clears it.
-recipe_dir="$scratch/recipe"
-mkdir -p "$recipe_dir"
-printf '%s' '{"labels":["risk:high","complexity:m"]}' >"$recipe_dir/tier-input.json"
-recipe_rc=0
-(
-    cd "$repo_root" || exit 99
-    node "$helper" --policy "$base_policy" --input "$recipe_dir/tier-input.json" >"$recipe_dir/tier-translation.json" || exit 98
-    tier_args=()
-    while IFS= read -r a; do tier_args+=("$a"); done \
-        < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).args) console.log(a)' "$recipe_dir/tier-translation.json")
-    node "$reader" resolve --policy "$base_policy" \
-        --registry "$fixture_dir_recipe/agent-registry.json" --taskfile-dir . \
-        --json ${tier_args[@]+"${tier_args[@]}"} >"$recipe_dir/resolved.json" 2>"$recipe_dir/resolve.err"
-) || recipe_rc=$?
-if [ "$recipe_rc" -eq 0 ]; then ok; else fail "the documented recipe must exit 0, got $recipe_rc: $(head -3 "$recipe_dir/resolve.err" 2>/dev/null)"; fi
-control_rc=0
-node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir_recipe/agent-registry.json" --json \
-    --risk=high --complexity=m >/dev/null 2>&1 || control_rc=$?
-if [ "$control_rc" -eq 3 ]; then ok; else fail "control: without --taskfile-dir resolve must exit 3 (indeterminate targets), got $control_rc"; fi
-
-echo "==> tier-inputs.mjs + devflow-policy.mjs: an ambiguous classification is indeterminate, never absent (review round 1, R1-1)"
-# Resolved WITH the fixture registry and task-target list, so cross-validation
-# is determinate and exit 3 can only come from the derived Tier.
-fixture_dir="$repo_root/ai/schemas/fixtures/devflow-conformance"
-# expect_indeterminate NAME INPUT — exit 3, issue_tier indeterminate, and the
-# reader's own indeterminate names the derived Tier.
-expect_indeterminate() {
-    local name="$1" input="$2" tr="$scratch/$RANDOM-ind-tr.json" res="$scratch/$RANDOM-ind-res.json" rc=0
-    translate "$input" >"$tr"
-    local -a args=()
-    while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
-    node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \
-        --task-targets "$fixture_dir/task-targets.json" --json ${args[@]+"${args[@]}"} >"$res" 2>/dev/null || rc=$?
-    if [ "$rc" -ne 3 ]; then
-        fail "$name: expected exit 3, got $rc"
-        return 0
+# Extract the documented recipe rather than maintaining another copy. Only
+# policy/registry paths are replaced with corpus fixtures; the shell control
+# flow is run verbatim, with errexit disabled by the checked subshell below.
+recipe_cmd="$(awk '/3\. \*\*Translate/{seen=1} seen && /```sh/{grab=1; next} grab && /```/{exit} grab{sub(/^   /, ""); print}' "$dfs_md")"
+recipe_cmd="${recipe_cmd//--policy .devflow.toml/--policy \"$base_policy\"}"
+recipe_cmd="${recipe_cmd//--registry agent-registry.json/--registry \"$fixture_dir_recipe\/agent-registry.json\"}"
+# run_recipe NAME INPUT MODE — mktemp uses the prepared fixture directory.
+# node delegates to real package assets and records every resolver call.
+# Extraction failure simulates a process that emits an argument then fails.
+run_recipe() {
+    local name="$1" input="$2" mode="$3" recipe_dir="$scratch/recipe-$1" recipe_rc=0
+    mkdir -p "$recipe_dir"
+    printf '%s' "$input" >"$recipe_dir/tier-input.json"
+    (
+        cd "$repo_root" || exit 99
+        support_dir="$asset_dir"
+        mktemp() { printf '%s\n' "$recipe_dir"; }
+        node() {
+            if [ "$1" = "$reader" ] && [ "${2:-}" = resolve ]; then
+                printf 'resolve\n' >>"$recipe_dir/resolve-called"
+            fi
+            if [ "$mode" = extraction-failure ] && [ "$1" = -e ]; then
+                printf '%s\n' --tier=apex
+                return 9
+            fi
+            command node "$@"
+        }
+        eval "$recipe_cmd"
+    ) >"$recipe_dir/stdout" 2>"$recipe_dir/stderr" || recipe_rc=$?
+    if [ "$mode" = success ]; then
+        if [ "$recipe_rc" -eq 0 ] && [ -f "$recipe_dir/resolve-called" ] &&
+            node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(r.roles.implementer.source === "derived" ? 0 : 1)' "$recipe_dir/resolved.json"; then
+            ok
+        else
+            fail "documented recipe ($name): expected derived resolution, got exit $recipe_rc: $(head -3 "$recipe_dir/stderr")"
+        fi
+    else
+        local message="input translation failed"
+        [ "$mode" != extraction-failure ] || message="argument extraction failed"
+        if [ "$recipe_rc" -eq 2 ] && [ ! -e "$recipe_dir/resolve-called" ] &&
+            grep -qF "$message" "$recipe_dir/stderr"; then
+            ok
+        else
+            fail "documented recipe ($name): must stop before resolve with $message, got exit $recipe_rc: $(head -3 "$recipe_dir/stderr")"
+        fi
     fi
-    if ! node -e '
+}
+if [ -z "$recipe_cmd" ]; then
+    fail "could not extract the tier-resolution recipe from dev-flow-support/SKILL.md"
+else
+    if need_fixtures; then run_recipe valid '{"labels":["risk:high","complexity:m"]}' success; fi
+    run_recipe malformed-operator '{"operator":{"tier":"apex"}}' translation-failure
+    run_recipe extraction-fails-after-partial-output '{"labels":["risk:high","complexity:m"]}' extraction-failure
+fi
+if need_fixtures; then
+    control_rc=0
+    node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir_recipe/agent-registry.json" --json \
+        --risk=high --complexity=m >/dev/null 2>&1 || control_rc=$?
+    if [ "$control_rc" -eq 3 ]; then ok; else fail "control: without --taskfile-dir resolve must exit 3 (indeterminate targets), got $control_rc"; fi
+
+fi
+
+# Ten corpus-policy/registry/target assertions (4 classification, 5 rung,
+# and 1 no-matrix case); the independent recipe failures above still run.
+if need_fixtures 10; then
+    echo "==> tier-inputs.mjs + devflow-policy.mjs: an ambiguous classification is indeterminate, never absent (review round 1, R1-1)"
+    # Resolved WITH the fixture registry and task-target list, so cross-validation
+    # is determinate and exit 3 can only come from the derived Tier.
+    # expect_indeterminate NAME INPUT — exit 3, issue_tier indeterminate, and the
+    # reader's own indeterminate names the derived Tier.
+    expect_indeterminate() {
+        local name="$1" input="$2" tr="$scratch/$RANDOM-ind-tr.json" res="$scratch/$RANDOM-ind-res.json" rc=0
+        translate "$input" >"$tr"
+        local -a args=()
+        while IFS= read -r a; do args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
+        node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \
+            --task-targets "$fixture_dir/task-targets.json" --json ${args[@]+"${args[@]}"} >"$res" 2>/dev/null || rc=$?
+        if [ "$rc" -ne 3 ]; then
+            fail "$name: expected exit 3, got $rc"
+            return 0
+        fi
+        if ! node -e '
 const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 const ok = r.issue_tier.status === "indeterminate" && r.cross_validation.indeterminate.some((i) => i.includes("derived Tier"));
 process.exit(ok ? 0 : 1);
 ' "$res"; then
-        fail "$name: issue_tier is not indeterminate on the derived Tier: $(head -c 400 "$res")"
-        return 0
-    fi
-    ok
-}
-expect_indeterminate "both axes conflicting" '{"labels":["risk:high","risk:low","complexity:s","complexity:xl"]}'
-expect_indeterminate "risk conflicting, complexity absent" '{"labels":["risk:high","risk:low"]}'
-expect_indeterminate "risk conflicting, complexity clean" '{"labels":["risk:high","risk:low","complexity:m"]}'
-expect_indeterminate "a mixed-validity ambiguous pin resolves through the (indeterminate) derived Tier" \
-    "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\",\"risk:high\",\"risk:low\"],$pin_trust}"
+            fail "$name: issue_tier is not indeterminate on the derived Tier: $(head -c 400 "$res")"
+            return 0
+        fi
+        ok
+    }
+    expect_indeterminate "both axes conflicting" '{"labels":["risk:high","risk:low","complexity:s","complexity:xl"]}'
+    expect_indeterminate "risk conflicting, complexity absent" '{"labels":["risk:high","risk:low"]}'
+    expect_indeterminate "risk conflicting, complexity clean" '{"labels":["risk:high","risk:low","complexity:m"]}'
+    expect_indeterminate "a mixed-validity ambiguous pin resolves through the (indeterminate) derived Tier" \
+        "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\",\"risk:high\",\"risk:low\"],$pin_trust}"
 
-echo "==> devflow-policy.mjs: with no [tier.matrix], exit 3 only when the derived rung decides (review round 2, R2-2)"
-no_matrix_policy="$scratch/no-matrix-r22.toml"
-awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' "$base_policy" >"$no_matrix_policy"
-# nm_resolve EXPECTED_RC EXPECTED_SOURCE NAME ARG... — resolve a classified
-# issue with no matrix and check the exit code and the implementer's source.
-nm_resolve() {
-    local want_rc="$1" want_source="$2" name="$3" rc=0
-    shift 3
-    node "$reader" resolve --policy "$no_matrix_policy" --registry "$fixture_dir/agent-registry.json" \
-        --task-targets "$fixture_dir/task-targets.json" --json --risk=high --complexity=m "$@" \
-        >"$scratch/nm-r22.json" 2>/dev/null || rc=$?
-    if [ "$rc" -ne "$want_rc" ]; then
-        fail "$name: expected exit $want_rc, got $rc"
-        return 0
-    fi
-    if node -e '
+    echo "==> devflow-policy.mjs: with no [tier.matrix], exit 3 only when the derived rung decides (review round 2, R2-2)"
+    no_matrix_policy="$scratch/no-matrix-r22.toml"
+    awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' "$base_policy" >"$no_matrix_policy"
+    # nm_resolve EXPECTED_RC EXPECTED_SOURCE NAME ARG... — resolve a classified
+    # issue with no matrix and check the exit code and the implementer's source.
+    nm_resolve() {
+        local want_rc="$1" want_source="$2" name="$3" rc=0
+        shift 3
+        node "$reader" resolve --policy "$no_matrix_policy" --registry "$fixture_dir/agent-registry.json" \
+            --task-targets "$fixture_dir/task-targets.json" --json --risk=high --complexity=m "$@" \
+            >"$scratch/nm-r22.json" 2>/dev/null || rc=$?
+        if [ "$rc" -ne "$want_rc" ]; then
+            fail "$name: expected exit $want_rc, got $rc"
+            return 0
+        fi
+        if node -e '
 const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 process.exit(r.issue_tier.status === "indeterminate" && r.roles.implementer.source === process.argv[2] ? 0 : 1);
 ' "$scratch/nm-r22.json" "$want_source"; then ok; else fail "$name: expected issue_tier indeterminate and implementer source $want_source"; fi
-}
-nm_resolve 3 rigor-profile "the derived rung decides: indeterminate, exit 3"
-nm_resolve 0 pinned "an honored pin decides: exit 0, issue_tier still indeterminate" \
-    --pinned-tier frontier --pin-marker-trusted --pin-value-trusted
-nm_resolve 0 label "a scoped implementer label decides: exit 0" --tier-labels implementer=economy
-nm_resolve 0 rigor-profile "a chosen rigor decides: exit 0" --rigor deep --rigor-source label
-# Control: a clean classification under the same inputs resolves determinately.
-rc=0
-node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \
-    --task-targets "$fixture_dir/task-targets.json" --json --risk=high --complexity=m >/dev/null 2>&1 || rc=$?
-if [ "$rc" -eq 0 ]; then ok; else fail "control: a clean classification must exit 0 with the fixture registry and targets, got $rc"; fi
-
-echo "==> devflow-policy.mjs: no [tier.matrix] means indeterminate, never a guess"
-no_matrix="$scratch/no-matrix.toml"
-awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' "$base_policy" >"$no_matrix"
-if grep -q '^\[tier\.matrix\]' "$no_matrix"; then
-    fail "could not strip [tier.matrix] from the base policy fixture"
-else
+    }
+    nm_resolve 3 rigor-profile "the derived rung decides: indeterminate, exit 3"
+    nm_resolve 0 pinned "an honored pin decides: exit 0, issue_tier still indeterminate" \
+        --pinned-tier frontier --pin-marker-trusted --pin-value-trusted
+    nm_resolve 0 label "a scoped implementer label decides: exit 0" --tier-labels implementer=economy
+    nm_resolve 0 rigor-profile "a chosen rigor decides: exit 0" --rigor deep --rigor-source label
+    # Control: a clean classification under the same inputs resolves determinately.
     rc=0
-    node "$reader" resolve --policy "$no_matrix" --json --risk=high --complexity=m >"$scratch/nm.json" 2>/dev/null || rc=$?
-    if [ "$rc" -ne 3 ]; then
-        fail "a classified issue under a policy with no [tier.matrix] must exit 3, got $rc"
-    elif ! grep -q 'derived Tier cannot be computed' "$scratch/nm.json"; then
-        fail "the indeterminate must name the derived Tier"
+    node "$reader" resolve --policy "$base_policy" --registry "$fixture_dir/agent-registry.json" \
+        --task-targets "$fixture_dir/task-targets.json" --json --risk=high --complexity=m >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then ok; else fail "control: a clean classification must exit 0 with the fixture registry and targets, got $rc"; fi
+
+    echo "==> devflow-policy.mjs: no [tier.matrix] means indeterminate, never a guess"
+    no_matrix="$scratch/no-matrix.toml"
+    awk '/^\[tier\.matrix\]/{skip=1; next} skip && /^\[/{skip=0} !skip' "$base_policy" >"$no_matrix"
+    if grep -q '^\[tier\.matrix\]' "$no_matrix"; then
+        fail "could not strip [tier.matrix] from the base policy fixture"
     else
-        ok
+        rc=0
+        node "$reader" resolve --policy "$no_matrix" --json --risk=high --complexity=m >"$scratch/nm.json" 2>/dev/null || rc=$?
+        if [ "$rc" -ne 3 ]; then
+            fail "a classified issue under a policy with no [tier.matrix] must exit 3, got $rc"
+        elif ! grep -q 'derived Tier cannot be computed' "$scratch/nm.json"; then
+            fail "the indeterminate must name the derived Tier"
+        else
+            ok
+        fi
     fi
+
+fi
+
+if [ "$skipped" -gt 0 ]; then
+    echo "skipped: $skipped case(s) need source-tree fixtures (ai/schemas/fixtures/devflow-conformance), absent in this copy"
 fi
 
 if [ "$failures" -ne 0 ]; then
