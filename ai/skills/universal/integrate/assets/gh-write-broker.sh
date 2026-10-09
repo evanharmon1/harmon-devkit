@@ -168,19 +168,15 @@ trigger)
             (.head | type == "string" and length > 0)
         ' "$state" >/dev/null || refuse "cycle state is not a matching reservation"
         reserved_head=$(jq -r '.head' "$state")
-        pr_now=$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid) ||
-            refuse "cannot re-read the PR before posting"
-        jq -e --arg head "$reserved_head" '
-            .state == "OPEN" and .isDraft == true and .headRefOid == $head
-        ' <<<"$pr_now" >/dev/null || refuse "PR is not an open draft on the reserved head"
         reserved_at=$(jq -er '.reserved_at | select(type == "string" and length > 0)' "$state") ||
             refuse "reservation has no creation time"
         my_id=$("$SCRIPT_DIR/gh-ro.sh" user --jq .id) ||
             refuse "cannot read the authenticated actor id"
+        valid_uint "$my_id" || refuse "invalid authenticated actor id"
         top_level=$("$SCRIPT_DIR/gh-ro.sh" --paginate --slurp "repos/$repo/issues/$pr/comments") ||
             refuse "cannot read existing triggers"
         candidates=$(jq -c --arg since "$reserved_at" --argjson my_id "$my_id" '
-            add | map(select(
+            (add // []) | map(select(
                 ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
                 and .created_at >= $since
                 and .user.id == $my_id))' <<<"$top_level") ||
@@ -188,6 +184,11 @@ trigger)
         candidate_count=$(jq -r 'length' <<<"$candidates")
         case "$candidate_count" in
         0)
+            pr_now=$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid) ||
+                refuse "cannot re-read the PR before posting"
+            jq -e --arg head "$reserved_head" '
+                .state == "OPEN" and .isDraft == true and .headRefOid == $head
+            ' <<<"$pr_now" >/dev/null || refuse "PR is not an open draft on the reserved head"
             trigger_id=$(gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id)
             ;;
         1)

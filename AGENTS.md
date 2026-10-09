@@ -629,9 +629,9 @@ PR is merged or closed and the stage is over), otherwise
 `reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then call the broker trigger, which posts or
-adopts the comment and attaches it; callers do not attach again. With only
-the legacy shepherd checker (an older pin with no broker), post the trigger
-yourself and `attach` it, as before. Run `check`,
+adopts the comment and attaches it; callers do not attach again. With an
+older integrate pin whose broker only posts and prints the id, or only the
+legacy shepherd checker, post the trigger and `attach` it as before. Run `check`,
 acting on its exit code (0 clean, 10 findings,
 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted,
 16 transient read, 2 indeterminate). `check` is run either way: on a carried

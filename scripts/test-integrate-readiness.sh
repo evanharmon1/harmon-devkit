@@ -78,9 +78,16 @@ if [ -f "$GH_FIXTURES/broker-mode" ]; then
     if [ "${1:-}" = api ]; then
         if [[ "$*" = *"--method GET"* ]]; then
             if [[ "$*" = *" user" ]]; then
-                printf '77\n'
+                if [ -f "$GH_FIXTURES/broker-actor-id" ]; then
+                    cat "$GH_FIXTURES/broker-actor-id"
+                else
+                    printf '77\n'
+                fi
             else
                 cat "$GH_FIXTURES/broker-comments.json"
+                if [ -f "$GH_FIXTURES/broker-pr-after-scan.json" ]; then
+                    cp "$GH_FIXTURES/broker-pr-after-scan.json" "$GH_FIXTURES/broker-pr.json"
+                fi
             fi
             exit 0
         fi
@@ -3876,6 +3883,7 @@ broker_defaults() {
     write_defaults
     : >"$fixtures/broker-mode"
     rm -f "$fixtures/broker-post-exit" "$fixtures/broker-attach-fail"
+    rm -f "$fixtures/broker-actor-id" "$fixtures/broker-pr-after-scan.json"
     : >"$fixtures/broker-attach.log"
     printf '[[]]\n' >"$fixtures/broker-comments.json"
     jq -n --arg head "$head_sha" \
@@ -3927,6 +3935,27 @@ for broker_filter in '.headRefOid = "different"' '.isDraft = false' '.state = "C
     mv "$fixtures/broker-pr.json.tmp" "$fixtures/broker-pr.json"
     broker_refused
 done
+
+echo "==> gh-write-broker refuses head drift or promotion during the comment scan"
+for broker_filter in '.headRefOid = "different"' '.isDraft = false'; do
+    broker_defaults
+    jq "$broker_filter" "$fixtures/broker-pr.json" >"$fixtures/broker-pr-after-scan.json"
+    broker_refused
+    tail -n 1 "$log" | grep -F 'pr view 493' >/dev/null || fail "broker did not re-read the PR after scanning"
+done
+
+echo "==> gh-write-broker refuses a nonnumeric actor id"
+broker_defaults
+printf 'not-a-number\n' >"$fixtures/broker-actor-id"
+broker_refused
+grep -Fq 'invalid authenticated actor id' <<<"$wb_out" || fail "invalid actor id was not refused"
+
+echo "==> gh-write-broker posts when the paginated comment result is empty"
+broker_defaults
+printf '[]\n' >"$fixtures/broker-comments.json"
+run_broker
+[ "$wb_rc" -eq 0 ] && [ "$wb_out" = 9001 ] || fail "empty comment result did not post: $wb_rc: $wb_out"
+[ "$(grep -c '^api repos/' "$log")" -eq 1 ] || fail "empty comment result did not post once"
 
 echo "==> gh-write-broker posts once and immediately attaches the printed id"
 broker_defaults
