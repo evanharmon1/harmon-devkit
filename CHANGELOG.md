@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.53.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.52.0...v0.53.0) (2026-10-09)
+
+
+### Features
+
+* **triage:** remove the human label when the work no longer qualifies ([#1314](https://github.com/evanharmon1/harmon-devkit/issues/1314)) ([df49f39](https://github.com/evanharmon1/harmon-devkit/commit/df49f39fc0acf7c57d32ee3069e009385f4e3977))
+
+
+### Bug Fixes
+
+* **breakdown:** restore unconditional family-id uniqueness in label discovery ([#1313](https://github.com/evanharmon1/harmon-devkit/issues/1313)) ([2222720](https://github.com/evanharmon1/harmon-devkit/commit/2222720f1e99302f1669e01f197728864d4161fe))
+* **dev-flow-exit:** count consecutive clean rounds across fix-moved heads ([#1311](https://github.com/evanharmon1/harmon-devkit/issues/1311)) ([c76829f](https://github.com/evanharmon1/harmon-devkit/commit/c76829f7912c29f2d5d835fdc6ab294f22ad7b39))
+* **dev-flow-support:** port policy path and tier evidence fixes ([#1319](https://github.com/evanharmon1/harmon-devkit/issues/1319)) ([3981759](https://github.com/evanharmon1/harmon-devkit/commit/3981759c4df622deda92cf59d281eb955418d492))
+* **dev-flow-support:** refuse a policy path through a dangling directory symlink ([#1323](https://github.com/evanharmon1/harmon-devkit/issues/1323)) ([83326d6](https://github.com/evanharmon1/harmon-devkit/commit/83326d61f08324a7a596082ecdbaf646dc390454))
+* **integrate:** guard the Codex trigger in the broker so it can be one literal command ([#1330](https://github.com/evanharmon1/harmon-devkit/issues/1330)) ([10c1670](https://github.com/evanharmon1/harmon-devkit/commit/10c1670efa2cbddb6d2a0fb803c0f600473f133e))
+* **integrate:** sweep the whole class once a second finding of the same kind appears ([#1318](https://github.com/evanharmon1/harmon-devkit/issues/1318)) ([b4fd749](https://github.com/evanharmon1/harmon-devkit/commit/b4fd7498af27771f140827b60c76ca8cdb6da291))
+* **labels:** say agents write the derived Tier in the tier family's registry entry ([#1316](https://github.com/evanharmon1/harmon-devkit/issues/1316)) ([0a8af12](https://github.com/evanharmon1/harmon-devkit/commit/0a8af12b300f240e75759e2fd7eab91ddd518a40))
+* **track-work:** accept a host-qualified repository in the metadata preflight ([#1324](https://github.com/evanharmon1/harmon-devkit/issues/1324)) ([2d1afd8](https://github.com/evanharmon1/harmon-devkit/commit/2d1afd8429a1c8b912563e3c9f393a0ed90a1c4b))
+* **track-work:** derive required axes from the manifest and validate the filing marker ([#1307](https://github.com/evanharmon1/harmon-devkit/issues/1307)) ([f2d3340](https://github.com/evanharmon1/harmon-devkit/commit/f2d3340d7f18ebc5a9428ddea7c09c2b652c3cc3))
+* **triage:** restore the Tier when tier:pinned lands during the label edit ([#1325](https://github.com/evanharmon1/harmon-devkit/issues/1325)) ([bf41964](https://github.com/evanharmon1/harmon-devkit/commit/bf41964a512beaa61ba51c6ff753af6a413abc66))
+* **triage:** say that work no automated check can prove rates higher Complexity ([#1320](https://github.com/evanharmon1/harmon-devkit/issues/1320)) ([dac11aa](https://github.com/evanharmon1/harmon-devkit/commit/dac11aaba7f045376b881d0dca74897fbeaa6692))
+
 ## [0.52.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.51.0...v0.52.0) (2026-10-07)
 
 
