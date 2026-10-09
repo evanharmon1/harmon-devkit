@@ -890,11 +890,15 @@ for ambient_host in '<unset>' ambient.example.com; do
         "$tmp/metadata-classification-bare.log" || fail "bare target must not assign GH_HOST"
 done
 
-echo "==> metadata: checkout binding compares host across supported remote forms"
+echo "==> metadata: checkout binding compares host across plain, ported and trailing-slash remotes"
 for remote_url in 'https://ghe.example.com/testowner/testrepo.git' \
     'http://ghe.example.com/testowner/testrepo.git' \
     'git@ghe.example.com:testowner/testrepo.git' \
-    'ssh://git@ghe.example.com/testowner/testrepo.git'; do
+    'ssh://git@ghe.example.com/testowner/testrepo.git' \
+    'ssh://git@ghe.example.com:2222/testowner/testrepo.git' \
+    'https://ghe.example.com:8443/testowner/testrepo.git' \
+    'https://ghe.example.com/testowner/testrepo.git/' \
+    'https://ghe.example.com/testowner/testrepo/'; do
     git -C "$metadata_host" remote set-url personal "$remote_url"
     "$metadata" --required-axes --repo ghe.example.com/testowner/testrepo \
         --repo-root "$metadata_host" >/dev/null || fail "enterprise remote must bind: $remote_url"

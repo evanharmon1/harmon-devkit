@@ -259,6 +259,17 @@ normalize_github_remote() {
         ;;
     *) return 1 ;;
     esac
+    case "$_remote" in
+    https://* | http://* | ssh://*)
+        case "${_host##*:}" in
+        '' | *[!0-9]*) ;;
+        *) _host="${_host%:*}" ;;
+        esac
+        ;;
+    esac
+    while [ "${_slug%/}" != "$_slug" ]; do
+        _slug="${_slug%/}"
+    done
     _slug="${_slug%.git}"
     printf '%s/%s\n' "$_host" "$_slug" | tr '[:upper:]' '[:lower:]'
 }
