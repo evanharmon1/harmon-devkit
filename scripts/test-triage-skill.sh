@@ -254,10 +254,6 @@ api\ repos/*)
         [ -e "$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}" ]; then
         exit 1
     fi
-    if [ "${GH_STUB_RECONCILIATION_READ_FAIL:-0}" = 1 ] &&
-        grep -q -- '--json labels$' <<<"$*"; then
-        exit 1
-    fi
     issue_src="${GH_STUB_DIR:?}/issue-${3:?}.json"
     [ -z "${GH_STUB_RUN_ID:-}" ] ||
         [ ! -f "$GH_STUB_DIR/.overlay-$GH_STUB_RUN_ID-$3.json" ] ||
@@ -3684,6 +3680,78 @@ grep -q "APPLIED add 'needs-triage'" "$tmp/out" || fail "first marker write must
 grep -q 'collector title' "$tmp/out" || fail "late refusal must name collector guard"
 grep -q -- '--remove-label human' "$GH_STUB_LOG" && fail "late collector drift must retain human"
 
+echo "==> human removal: guards broken during the label edit have 'human' re-added (exit 4)"
+# Read 1 is the first read, read 2 the snapshot, and the label edit is the
+# first mutation, so read 3 is the post-edit check: each change lands between
+# the last read before the edit and the edit itself.
+for change in 'labels:claim:gpt:claimed' 'labels:agent:legacy:claimed' \
+    'content:{"title":"(QA): Keep collector"}:collector title' \
+    'content:{"body":"## Acceptance criteria\n- [ ] [HUMAN] Approve\n- [x] [HUMAN] Choose\n- [ ] [CI] Test"}:[HUMAN] majority'; do
+    kind="${change%%:*}"
+    rest="${change#*:}"
+    why="${rest##*:}"
+    value="${rest%:*}"
+    knobs=(GH_STUB_LABELS_CHANGE_ON_READ=3 GH_STUB_LABELS_CHANGE_ADD="$value")
+    [ "$kind" = labels ] ||
+        knobs=(GH_STUB_CONTENT_CHANGE_ON_READ=3 GH_STUB_CONTENT_CHANGE_JSON="$value")
+    cp "$stub_dir/issue-604.json" "$stub_dir/issue-626.json"
+    rm -f "$stub_dir/.label-reads-626"
+    : >"$GH_STUB_LOG"
+    [ "$(run env TRIAGE_EXECUTE=1 "${knobs[@]}" "$apply" label --repo "$repo" \
+        --issue 626 --manifest "$human_manifest" --remove human --execute)" = 4 ] ||
+        fail "$why during the label edit must refuse: $(cat "$tmp/out")"
+    grep -q -- "--remove-label human" "$GH_STUB_LOG" ||
+        fail "the label edit must have removed human: $(cat "$GH_STUB_LOG")"
+    grep -qx "issue edit 626 --repo $repo --add-label human" "$GH_STUB_LOG" ||
+        fail "$why during the label edit must re-add human: $(cat "$GH_STUB_LOG")"
+    grep -q "RESTORED 'human' on $repo#626" "$tmp/out" ||
+        fail "the restore must be reported: $(cat "$tmp/out")"
+    grep -qF "removal guards for 'human' stopped holding on $repo#626 during triage's label edit ($why)" \
+        "$tmp/out" || fail "the refusal must name the issue and the guard: $(cat "$tmp/out")"
+done
+
+echo "==> human removal: a failed label edit that landed still has 'human' re-added"
+cp "$stub_dir/issue-604.json" "$stub_dir/issue-626.json"
+rm -f "$stub_dir/.label-reads-626" "$stub_dir"/.edit-failed-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1 \
+    GH_STUB_LABELS_CHANGE_ON_READ=3 GH_STUB_LABELS_CHANGE_ADD="claim:gpt" \
+    "$apply" label --repo "$repo" --issue 626 --manifest "$human_manifest" \
+    --remove human --execute)" = 1 ] ||
+    fail "a failed edit must keep exit 1: $(cat "$tmp/out")"
+grep -qx "issue edit 626 --repo $repo --add-label human" "$GH_STUB_LOG" ||
+    fail "a failed edit that landed must still re-add human: $(cat "$GH_STUB_LOG")"
+grep -q "RESTORED 'human' on $repo#626" "$tmp/out" ||
+    fail "the restore must be reported: $(cat "$tmp/out")"
+grep -qF "write failed: gh issue edit $repo#626; its removal of 'human' landed" "$tmp/out" ||
+    fail "the failure must report the removal and the restore: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.edit-failed-*
+
+echo "==> human removal: an unverifiable post-edit read is a write indeterminate (exit 2)"
+cp "$stub_dir/issue-604.json" "$stub_dir/issue-626.json"
+rm -f "$stub_dir/.label-reads-626"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_CONTENT_CHANGE_ON_READ=3 \
+    GH_STUB_CONTENT_CHANGE_JSON='{"body":null}' "$apply" label --repo "$repo" \
+    --issue 626 --manifest "$human_manifest" --remove human --execute)" = 2 ] ||
+    fail "an unverifiable post-edit read must exit 2: $(cat "$tmp/out")"
+grep -q "write indeterminate: 'human' was removed from $repo#626" "$tmp/out" ||
+    fail "the indeterminate result must name the issue: $(cat "$tmp/out")"
+grep -q -- "--add-label human" "$GH_STUB_LOG" &&
+    fail "an unverified read must not restore blindly: $(cat "$GH_STUB_LOG")"
+
+echo "==> human removal: guards still holding after the label edit restore nothing"
+cp "$stub_dir/issue-604.json" "$stub_dir/issue-626.json"
+rm -f "$stub_dir/.label-reads-626"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="area:ci" "$apply" label --repo "$repo" \
+    --issue 626 --manifest "$human_manifest" --remove human --execute)" = 0 ] ||
+    fail "an unrelated change during the label edit must still apply: $(cat "$tmp/out")"
+grep -q -- "--add-label human" "$GH_STUB_LOG" &&
+    fail "guards that still hold must not re-add human: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir/.label-reads-626"
+
 # The entries renderer already accepts keyed removal records. The classifier
 # supplies the reason and records actual apply output, then sync preserves both.
 [ "$(run env TRIAGE_EXECUTE=1 "$apply" label --repo "$repo" --issue 604 \
@@ -3867,8 +3935,8 @@ grep -q 'confirmed by re-read after failed edit' "$tmp/out" ||
 grep -q "APPLIED remove 'human'" "$tmp/out" && fail "retained human must never be reported removed"
 grep -q 'INDETERMINATE' "$tmp/out" && fail "successful re-read retaining human is determinate"
 
-[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL=1 GH_STUB_RECONCILIATION_READ_FAIL=1 \
-    "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY_FIRST=1 \
+    GH_STUB_VIEW_FAIL_AFTER_FAILED_EDIT=1 "$apply" label --repo "$repo" --issue 604 --manifest "$human_manifest" \
     --remove human --execute)" = 1 ] || fail "failed edit and re-read must retain exit 1"
 removal_evidence="$(grep "INDETERMINATE remove 'human'" "$tmp/out")"
 [ "$removal_evidence" = "INDETERMINATE remove 'human' from $repo#604 (edit failed; re-read failed)" ] ||
@@ -3892,6 +3960,7 @@ grep -q 'human removal unconfirmed' "$tmp/out" || fail "report must mark unknown
     --repo "$repo" --issue 604 --manifest "$human_manifest" --add area:ci --execute)" = 1 ] ||
     fail "edit failure without human removal must behave as before"
 grep -q 'APPLIED' "$tmp/out" && fail "other failed edits must not gain applied output"
-grep -q -- '--json labels$' "$GH_STUB_LOG" && fail "other failed edits must not gain a reconciliation read"
+grep -qE -- '--json labels(,title,body)?$' "$GH_STUB_LOG" &&
+    fail "other failed edits must not gain a reconciliation read"
 
 echo "All triage skill tests passed."
