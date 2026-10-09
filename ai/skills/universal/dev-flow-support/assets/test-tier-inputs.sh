@@ -557,7 +557,8 @@ echo "==> the documented resolve recipe exits 0 (integration remediation 1, thre
 # flow is run verbatim, with errexit disabled by the checked subshell below.
 recipe_cmd="$(awk '/3\. \*\*Translate/{seen=1} seen && /```sh/{grab=1; next} grab && /```/{exit} grab{sub(/^   /, ""); print}' "$dfs_md")"
 recipe_cmd="${recipe_cmd//--policy .devflow.toml/--policy \"$base_policy\"}"
-recipe_cmd="${recipe_cmd//--registry agent-registry.json/--registry \"$fixture_dir_recipe\/agent-registry.json\"}"
+recipe_registry="$fixture_dir_recipe/agent-registry.json"
+recipe_cmd="${recipe_cmd//--registry agent-registry.json/--registry \"$recipe_registry\"}"
 # run_recipe NAME INPUT MODE — mktemp uses the prepared fixture directory.
 # node delegates to real package assets and records every resolver call.
 # Extraction failure simulates a process that emits an argument then fails.
