@@ -2478,6 +2478,8 @@ grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
     fail "no write may follow the restore: $(cat "$GH_STUB_LOG")"
 grep -q "RESTORED 'tier:local' on $repo#60" "$tmp/out" ||
     fail "the restore must be reported: $(cat "$tmp/out")"
+grep -q "NOTE: if 'tier:frontier' on $repo#60 was set by the person who pinned it" "$tmp/out" ||
+    fail "removing a Tier that may be the pinner's own must say so: $(cat "$tmp/out")"
 rm -f "$stub_dir"/.label-reads-*
 # shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
 issue_fixture 60 $classified needs-triage

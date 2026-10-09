@@ -1805,6 +1805,11 @@ cmd_label() {
         done
         if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
             echo "RESTORED removal of '$tier_add' from $repo#$issue"
+            # A human who pinned the very Tier this call derived looks the
+            # same on the issue as this call's own write; say so rather than
+            # undo their choice silently.
+            echo "NOTE: if '$tier_add' on $repo#$issue was set by the person" \
+                "who pinned it, re-add it — triage cannot tell it from its own write" >&2
         fi
         return 1
     }
