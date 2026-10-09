@@ -3756,14 +3756,23 @@ JSON
 rm -f "$stub_dir/comments-99.json"
 parts="$(grep -c '^DRY-RUN would post removal part ' "$tmp/out")"
 [ "$parts" -ge 1 ] || fail "the 700-removal run must have comment parts"
-# The second comment fails: the body and part 2 land, the rest do not.
+# The second comment fails: part 2 lands; parts 3.. and the body (written
+# only after its parts) do not, and every record not written is printed.
+: >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_COMMENT_FAIL_ON=2 "$report" sync \
     --repo "$repo" --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 1 ] ||
     fail "a failed removal part must exit 1: $(tail -3 "$tmp/out")"
-grep -q "re-run to post the remaining parts" "$tmp/out" ||
-    fail "the failure must say a re-run completes it: $(tail -3 "$tmp/out")"
 [ "$(jq length "$stub_dir/comments-99.json")" -eq 1 ] ||
     fail "only the part before the failure is posted"
+grep -q "issue edit 99" "$GH_STUB_LOG" &&
+    fail "the body must wait until every part is posted: $(cat "$GH_STUB_LOG")"
+grep -q "removal parts 3–$((parts + 1)) were NOT posted" "$tmp/out" ||
+    fail "the parts not posted must be printed: $(grep 'NOT' "$tmp/out")"
+grep -q "the report body was NOT written" "$tmp/out" ||
+    fail "the unwritten body must be printed"
+[ "$(grep -c 'Evidence: APPLIED remove.*retention-' "$tmp/out")" -ge \
+    $((700 - $(jq -r '.[].body' "$stub_dir/comments-99.json" | grep -c 'retention-'))) ] ||
+    fail "every record not posted must be in the printed output"
 # The re-run posts exactly the missing parts.
 [ "$(run env TRIAGE_EXECUTE=1 "$report" sync --repo "$repo" \
     --entries-file "$tmp/oversized-removal-entries.md" --execute)" = 0 ] ||

@@ -346,6 +346,10 @@ $other_content"
         if [ "$is_bot" = "true" ]; then
             die 4 "refused: will not retitle bot-authored issue $repo#$target"
         fi
+        # The removal parts go first: comments are append-only, so a later
+        # failure cannot take back a part already posted, and the body that
+        # points at them is written only once they exist.
+        post_removal_parts "$repo" "$target" 0
         # Idempotency: identical findings must not churn the issue. The
         # timestamp line is generation metadata, so compare without it and
         # skip the edit when nothing else changed.
@@ -356,20 +360,45 @@ $other_content"
         else
             printf '%s\n' "$body" |
                 gh issue edit "$target" --repo "$repo" --title "$title" \
-                    --body-file - >/dev/null ||
+                    --body-file - >/dev/null || {
+                dump_body
                 die 1 "write failed: gh issue edit $repo#$target"
+            }
             echo "APPLIED report update to $repo#$target"
         fi
     else
+        # A new report issue must exist before its comments can.
         local created
         created="$(printf '%s\n' "$body" |
             gh issue create --repo "$repo" --title "$title" \
-                --body-file -)" ||
+                --body-file -)" || {
+            dump_body
+            dump_parts_from 2
             die 1 "write failed: gh issue create in $repo"
+        }
         echo "APPLIED report creation in $repo: $created"
-        target="${created##*/}"
+        post_removal_parts "$repo" "${created##*/}" 1
     fi
-    post_removal_parts "$repo" "$target"
+}
+
+# Removal records cannot be rebuilt once labels change, and a supervised run
+# discards its scratch entries file on exit. So whatever this run could not
+# write is printed to stderr, where the operator still has it.
+dump_body() {
+    echo "triage-report: the report body was NOT written; it follows so its" \
+        "removal records are not lost:" >&2
+    printf '%s\n' "$body" >&2
+}
+
+dump_parts_from() {
+    local i
+    [ "$removal_parts" -ge "$1" ] || return 0
+    echo "triage-report: removal parts $1–$removal_parts were NOT posted; they" \
+        "follow so they are not lost:" >&2
+    for ((i = $1; i <= removal_parts; i++)); do
+        removal_part_comment "$i" >&2
+        echo >&2
+    done
 }
 
 # split_parts BUDGET DIR — split stdin into DIR/part-1..N of at most BUDGET
@@ -412,27 +441,35 @@ removal_part_comment() {
     cat "$parts_dir/part-$1"
 }
 
-# post_removal_parts REPO ISSUE — post removal parts 2..N as comments on the
-# report issue, skipping any a trusted author already posted with the same
-# marker (a re-run with unchanged records, or one completing a failed run).
+# post_removal_parts REPO ISSUE BODY_WRITTEN — post removal parts 2..N as
+# comments on the report issue, skipping any a trusted author already posted
+# with the same marker (a re-run of the same entries file posts nothing twice,
+# and completes one that failed partway). On a failure, the parts not posted —
+# and the body, when it is not written yet (BODY_WRITTEN=0) — are printed.
 post_removal_parts() {
-    local repo="$1" issue="$2" existing i
+    local repo="$1" issue="$2" body_written="$3" existing i
     [ "$removal_parts" -gt 1 ] || return 0
-    existing="$(gh api "repos/$repo/issues/$issue/comments" --paginate -q '
+    if ! existing="$(gh api "repos/$repo/issues/$issue/comments" --paginate -q '
         .[] | select(.author_association == "OWNER"
                      or .author_association == "MEMBER"
-                     or .author_association == "COLLABORATOR") | .body')" ||
+                     or .author_association == "COLLABORATOR") | .body')"; then
+        [ "$body_written" -eq 1 ] || dump_body
+        dump_parts_from 2
         die 1 "write incomplete: could not list the comments of $repo#$issue," \
-            "so removal parts 2–$removal_parts were not posted; re-run to post them"
+            "so removal parts 2–$removal_parts were not posted"
+    fi
     for ((i = 2; i <= removal_parts; i++)); do
         if grep -qF "$(removal_part_marker "$i")" <<<"$existing"; then
             echo "removal part $i/$removal_parts is already on $repo#$issue"
             continue
         fi
-        removal_part_comment "$i" |
-            gh issue comment "$issue" --repo "$repo" --body-file - >/dev/null ||
+        if ! removal_part_comment "$i" |
+            gh issue comment "$issue" --repo "$repo" --body-file - >/dev/null; then
+            [ "$body_written" -eq 1 ] || dump_body
+            dump_parts_from "$i"
             die 1 "write failed: removal part $i/$removal_parts on $repo#$issue;" \
-                "re-run to post the remaining parts"
+                "the records not posted are printed above"
+        fi
         echo "APPLIED removal part $i/$removal_parts as a comment on $repo#$issue"
     done
 }
