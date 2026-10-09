@@ -1714,6 +1714,16 @@ function loadIntegrationRounds(runDir, validatorPath) {
   return [...byRound.values()].sort((x, y) => x.round - y.round);
 }
 
+// Any late round folded into an existing cycle — a round with no completed
+// cycle of its own, or a same-ordinal re-dispatch — contributes only its
+// adjudicated P0/P1 entries, which make the cycle gating; its P2/P3 entries
+// never change whether the cycle is clean or a tell (#1272 review rounds 1-3).
+function foldLateRound(cycle, entries) {
+  const gating = entries.filter(isGatingEntry);
+  cycle.entries.push(...gating);
+  if (gating.length > 0) cycle.clean = false;
+}
+
 function computeIntegrationExit(rounds, integrationCap) {
   const cycles = [];
   let streak = 0;
@@ -1746,16 +1756,10 @@ function computeIntegrationExit(rounds, integrationCap) {
     const latest = cycles.at(-1);
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
-      // attempt. Only its adjudicated P0/P1 entries fold into the latest
-      // completed cycle, making it gating rather than a tell; its P2/P3
-      // entries never change whether a cycle is clean or a tell (#1272
-      // review rounds 1-2). Before any completed cycle, it only breaks the
-      // streak.
-      if (latest) latest.entries.push(...entries.filter(isGatingEntry));
-      if (roundGating) {
-        if (latest) latest.clean = false;
-        streak = 0;
-      }
+      // attempt. It folds into the latest completed cycle; before any, it
+      // only breaks the streak.
+      if (latest) foldLateRound(latest, entries);
+      if (roundGating) streak = 0;
       continue;
     }
     if (latest && cc.cycle === latest.cycle) {
@@ -1763,11 +1767,8 @@ function computeIntegrationExit(rounds, integrationCap) {
         throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} on ${cc.head}, but that cycle reviewed ${latest.head}`, "cycle-regression");
       }
       latest.rounds.push(r.round);
-      latest.entries.push(...entries);
-      if (roundGating) {
-        latest.clean = false;
-        streak = 0;
-      }
+      foldLateRound(latest, entries);
+      if (roundGating) streak = 0;
       continue;
     }
     if (cc.cycle >= 2) {
