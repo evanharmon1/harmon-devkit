@@ -220,6 +220,7 @@ expect_args "an unknown rigor label is dropped" '{"labels":["rigor:extreme"],"au
 expect_warning "an unknown rigor label warns" \
     '{"labels":["rigor:extreme"],"authorized_labels":["rigor:extreme"]}' rigor-label-unknown "rigor:extreme"
 expect_args "an operator strategy is never filtered" '{"operator":{"strategy":"bogus"}}' '["--strategy","bogus"]'
+mkdir -p "$scratch/absent"
 TRANSLATE_POLICY="$scratch/absent/.devflow.toml"
 expect_args "absent policy: rigor:deep names nothing in the built-in fallback" \
     '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"]}' '[]'
@@ -230,6 +231,15 @@ expect_args "absent policy: strategy:council names nothing" \
 expect_args "absent policy: strategy:plan is the fallback's own strategy" \
     '{"labels":["strategy:plan"],"authorized_labels":["strategy:plan"]}' '["--strategy","plan"]'
 unset TRANSLATE_POLICY
+
+ln -s missing "$scratch/dangling-parent"
+rc=0
+printf '%s' '{"labels":[]}' | node "$helper" --policy "$scratch/dangling-parent/.devflow.toml" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then ok; else fail "a dangling policy parent must exit 2, got $rc"; fi
+ln -s missing.toml "$scratch/dangling-policy.toml"
+rc=0
+printf '%s' '{"labels":[]}' | node "$helper" --policy "$scratch/dangling-policy.toml" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then ok; else fail "a dangling final policy symlink must exit 2, got $rc"; fi
 
 echo "==> tier-inputs.mjs: execution-policy labels need verified provenance (challenge round 2, C2-1)"
 expect_args "an unauthorized rigor label is dropped" '{"labels":["rigor:deep"]}' '[]'
