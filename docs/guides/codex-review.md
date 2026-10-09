@@ -37,9 +37,19 @@ cycle per configured PR-side finder — `codex-cloud`, `coderabbit-cloud`, and
 `copilot-cloud` — through the same checker (`check-codex-cloud-review.sh
 --finder SLUG`), trigger broker (`gh-write-broker.sh trigger --finder SLUG` or
 `request-review --finder SLUG`), and readiness gate (per-finder exit_code 0
-condition). Each finder's trusted actor, trigger mechanism, surfaces, and
-verdict mode are resolved from the merge-base copy of `agent-registry.json`
-via `trusted-registry.sh` — never from the branch under review.
+condition). For Codex, the integrator reserves and re-reads the PR in one Bash
+call, then calls `<project-dir>/<skills-dir>/integrate/assets/gh-write-broker.sh
+trigger --repo <owner/repo> --pr <n>` as one literal command. The broker
+requires a matching reserved cycle, re-reads the open draft PR and reserved
+head, posts, and attaches; callers do not attach again. It prints a bare
+integer id. On exit 3, report the existing trigger's id; a re-run adopts it
+only while the reservation and PR state still match. `<project-dir>` is
+Claude Code's
+`CLAUDE_PROJECT_DIR`; `<skills-dir>` is the skills sync install location. The
+hook approves only the unresolved `<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh`
+path; other locations or a symlink at `.claude/skills` still work but prompt.
+Each finder's trusted actor, trigger mechanism, surfaces, and verdict mode
+are resolved from the merge-base copy of `agent-registry.json` via `trusted-registry.sh` — never from the branch under review.
 
 **Codex is the shipped default and the only finder anything here assumes.**
 Nothing installs a CodeRabbit or Copilot CLI, nothing enables either app, and
@@ -657,7 +667,7 @@ post no trigger** — check its status on its own, never through a pipe
 
 | `reserve` exit | What it means, and what the caller does |
 |---|---|
-| `0` | Reserved. Re-read the PR's `state,isDraft,headRefOid` (`reserve` makes no GitHub write, so that read is the last thing before the post), then post `@codex review` and `attach` it. |
+| `0` | Reserved. Re-read the PR's `state,isDraft,headRefOid` (`reserve` makes no GitHub write, so that read is the last thing before the post), then call the broker trigger, which posts and attaches it; do not attach again. |
 | `18` | Lagging head: after its bounded wait (`CODEX_RESERVE_HEAD_WAIT_SEC`, default 30s, at most 120s) GitHub still reports a predecessor of the requested head, and nothing was reserved. Re-run `reserve` once; if it exits `18` again, report a blocker. |
 | `2` | Refused. When the message names a head change (GitHub reports a head that is not a predecessor of the requested one, or one whose ancestry could not be read), never retry against the same head; the next cycle runs on the head a new dispatch names. Any other exit-2 refusal (a usage error, a closed PR, an unreadable PR) is handled on its own terms. |
 

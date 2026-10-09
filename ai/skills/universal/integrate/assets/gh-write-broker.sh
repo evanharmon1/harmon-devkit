@@ -32,11 +32,12 @@
 #
 # Usage:
 #   gh-write-broker.sh trigger --repo OWNER/REPO --pr N
-#       Posts the literal, hardcoded comment body "@codex review" to the PR's
-#       top-level conversation and prints the created comment's {"id": N} —
-#       the one trigger the Codex-cycle helper's reserve/attach state machine
-#       expects. The body is not a parameter: there is no flag that changes
-#       what gets posted here.
+#       Requires a reserved cycle in the current checkout's git directory,
+#       re-checks the open draft PR and reserved head, posts the hardcoded
+#       body, and attaches the created comment. Prints its bare integer id.
+#       Adopts one matching post-reservation trigger instead of posting again;
+#       multiple matches are an anomaly. Report exit 3 with the trigger id;
+#       a re-run adopts it only while reservation and PR state still match.
 #   gh-write-broker.sh trigger --finder SLUG --repo OWNER/REPO --pr N
 #       Posts the finder's trigger body (from the trusted registry at the
 #       PR's merge-base commit) to the PR. The body is resolved from the
@@ -55,7 +56,8 @@
 # remainder to the shell). The file must exist and be non-empty; this script
 # never synthesizes or edits its content.
 #
-# Exit codes: 2 for a refusal or usage error; otherwise `gh api`'s own.
+# Exit codes: 2 for a refusal or usage error; 3 when a trigger exists but
+# attachment failed; otherwise `gh api`'s own.
 
 set -euo pipefail
 
@@ -69,7 +71,11 @@ Usage:
   gh-write-broker.sh request-review --finder SLUG --repo OWNER/REPO --pr N
   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
 
-trigger (no --finder) posts the hardcoded "@codex review" body.
+trigger (no --finder) requires a reserved cycle and an open draft on its head,
+then posts the hardcoded body, attaches it, and prints the bare integer id.
+One matching post-reservation trigger is adopted; multiple matches are refused.
+Report exit 3 with the trigger id; a re-run adopts it only while reservation
+and PR state still match.
 trigger --finder posts the finder's trigger body from the trusted registry.
 request-review --finder requests the finder's reviewer from the trusted registry.
 reply posts a FILE's exact byte content to one inline thread.
@@ -154,7 +160,49 @@ trigger)
     [ -z "$comment_id" ] && [ -z "$body_file" ] ||
         refuse "trigger takes no --comment-id or --body-file — its body is hardcoded"
     if [ -z "$finder" ]; then
-        exec gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id
+        state=$(git rev-parse --git-path "integrate-codex/$repo/$pr.json") ||
+            refuse "cannot locate cycle state in the current checkout"
+        [ -f "$state" ] || refuse "cycle state is missing: $state"
+        jq -e --arg repo "$repo" --argjson pr "$pr" '
+            .phase == "reserved" and .repo == $repo and .pr == $pr and
+            (.head | type == "string" and length > 0)
+        ' "$state" >/dev/null || refuse "cycle state is not a matching reservation"
+        reserved_head=$(jq -r '.head' "$state")
+        reserved_at=$(jq -er '.reserved_at | select(type == "string" and length > 0)' "$state") ||
+            refuse "reservation has no creation time"
+        my_id=$("$SCRIPT_DIR/gh-ro.sh" user --jq .id) ||
+            refuse "cannot read the authenticated actor id"
+        valid_uint "$my_id" || refuse "invalid authenticated actor id"
+        top_level=$("$SCRIPT_DIR/gh-ro.sh" --paginate --slurp "repos/$repo/issues/$pr/comments") ||
+            refuse "cannot read existing triggers"
+        candidates=$(jq -c --arg since "$reserved_at" --argjson my_id "$my_id" '
+            (add // []) | map(select(
+                ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
+                and .created_at >= $since
+                and .user.id == $my_id))' <<<"$top_level") ||
+            refuse "cannot classify existing triggers"
+        candidate_count=$(jq -r 'length' <<<"$candidates")
+        case "$candidate_count" in
+        0)
+            pr_now=$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid) ||
+                refuse "cannot re-read the PR before posting"
+            jq -e --arg head "$reserved_head" '
+                .state == "OPEN" and .isDraft == true and .headRefOid == $head
+            ' <<<"$pr_now" >/dev/null || refuse "PR is not an open draft on the reserved head"
+            trigger_id=$(gh api "repos/$repo/issues/$pr/comments" -f body='@codex review' --jq .id)
+            ;;
+        1)
+            trigger_id=$(jq -r '.[0].id' <<<"$candidates")
+            ;;
+        *) refuse "anomaly: multiple matching triggers for this reservation" ;;
+        esac
+        if ! "$SCRIPT_DIR/check-codex-cloud-review.sh" attach --state "$state" \
+            --trigger-id "$trigger_id" >/dev/null; then
+            printf 'gh-write-broker: trigger comment %s exists but attach failed; report it; a re-run adopts it only while reservation and PR state still match\n' "$trigger_id" >&2
+            exit 3
+        fi
+        printf '%s\n' "$trigger_id"
+        exit 0
     fi
     profile=$(resolve_profile "$finder")
     mechanism=$(printf '%s' "$profile" | jq -r '.collection.trigger.mechanism')
