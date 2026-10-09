@@ -249,12 +249,17 @@ echo "==> tier-inputs.mjs: the owner type is the classification's storage mode (
 # omitted or null field leaves the axis unset whatever labels the issue
 # carries — a stale same-axis label must never select the derived Tier.
 for org_input in \
-    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"]}' \
     '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{}}' \
     '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":null,"complexity":null}}' \
     '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":"","complexity":""}}'; do
     expect_args "org: unset fields read no rating label ($org_input)" "$org_input" '[]'
 done
+# A field read that never completed is not "unset": with no fields object the
+# caller has nothing authoritative, so translation refuses (indeterminate).
+expect_usage_error_input "org: no fields object (a failed or skipped read) is refused" \
+    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"]}'
+expect_usage_error_input "org: even with no labels, the fields read is required" \
+    '{"owner_type":"Organization"}'
 expect_args "org: an unset field leaves only its own axis unset" \
     '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":"low","complexity":null}}' '["--risk=low"]'
 expect_warning "org: a label beside an unset field says the axis stays unset" \

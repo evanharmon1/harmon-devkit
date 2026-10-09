@@ -38,9 +38,11 @@
 //                 // the issue carries a risk:*/complexity:* label or a set
 //                 // field; omitted there, it is a usage error (exit 2).
 //     "fields":   { "risk": "high", "complexity": "m" },
-//                 // optional: org-repository issue fields, the storage of
-//                 // record there. An unset, omitted, null or "" field is an
-//                 // unset axis.
+//                 // org-repository issue fields, the storage of record
+//                 // there: REQUIRED with owner_type Organization, from a
+//                 // complete field read ({} when none is set), and absent
+//                 // with User. Within it, an unset, omitted, null or ""
+//                 // field is an unset axis.
 //     "operator": { "rigor": "deep", "strategy": "plan",
 //                   "tiers": { "implementer": "frontier" } },
 //                 // optional: attributable operator instructions only, never
@@ -186,6 +188,16 @@ export function tierInputs(input = {}) {
   // them for a personal one has mixed up the storage modes.
   if (ownerType === "User" && Object.keys(fields).length > 0) {
     throw new TierInputError("fields are organization-repository storage; on owner_type User, Risk and Complexity are the risk:*/complexity:* labels");
+  }
+  // On an organization the fields are the only storage, so an unset axis must
+  // come from a read that happened: `fields` is required ({} when none is
+  // set). A caller whose field read failed, was unavailable or was truncated
+  // has no fields object to pass and stops as indeterminate, rather than
+  // having a failed read pass as "unset".
+  if (ownerType === "Organization" && !Object.prototype.hasOwnProperty.call(input, "fields")) {
+    throw new TierInputError(
+      'owner_type Organization requires "fields" from a complete issue-field read ({} when none is set); if the read failed or was truncated, tier resolution is indeterminate',
+    );
   }
   const unknownOperator = Object.keys(operator).filter((k) => !OPERATOR_KEYS.includes(k));
   if (unknownOperator.length > 0) {
