@@ -2,7 +2,8 @@
 
 Defines deterministic receipt validation and confidence-stage exit computation
 from policy, role results, adjudications, repository history, and current-head
-state.
+state, and the integration stage's convergence exit from its adjudication
+record.
 
 ## ADDED Requirements
 
@@ -244,6 +245,50 @@ Legal stage skipping SHALL require the corresponding cap-zero policy.
 
 - **WHEN** challenge has cap zero but the trajectory includes challenge round 1
 - **THEN** receipt validation rejects the trajectory as inconsistent with its resolved policy
+
+### Requirement: Integration convergence is computed from the integration record
+
+The exit surface SHALL compute an integration-stage exit from the integration
+adjudication documents and the integrator passes they adjudicate, on a path
+that cannot change any confidence-stage verdict. A completed cycle SHALL be a
+round whose integrator pass reports a non-carried Codex cycle with a terminal
+verdict; a carry, an incomplete attempt, and a retry SHALL add none. Any late
+round folded into an existing cycle — a round with no completed cycle of its
+own, or a same-ordinal re-dispatch — SHALL contribute only its adjudicated
+P0/P1 entries; its P2/P3 entries SHALL NOT change whether the cycle is clean
+or a tell. A cycle
+SHALL be clean when it adjudicates to zero P0/P1, and a confirmed P0/P1 in any
+integration round, a late human review included, SHALL break the clean streak.
+Two consecutive clean cycles, counted across heads remediation pushes moved,
+SHALL return `converged`. From cycle 2 every adjudication entry SHALL record
+the scaffolding checkpoint, and a nonempty cycle at or after cycle 2 whose
+every finding attacks an earlier remediation push SHALL return `diverging`. A
+remediation push after such a cycle without a recorded delete or restructure
+remedy SHALL make the trajectory indeterminate. The readiness gate SHALL read
+the integration record itself, never a verdict reason, and SHALL infer nothing
+about fix pushes: an integration pass with findings and no adjudication SHALL
+be indeterminate, which the gate's readiness-input projection (step 6)
+already enforces; the integration step SHALL fail when any integration
+adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
+defer (filing settles P2s only), SHALL stay indeterminate on any engine
+indeterminate, SHALL be indeterminate unless the record's latest integration
+pass is the gated result (same integration_round, codex_cycle.cycle and head),
+and SHALL otherwise pass.
+
+#### Scenario: Two P2-only cycles
+
+- **WHEN** cycles 1 and 2 each adjudicate to P2 findings only
+- **THEN** the evaluator returns `converged`, reason `two_consecutive_clean`, and the remaining P2s are settled without a push
+
+#### Scenario: Every finding of cycle 2 attacks the cycle-1 fix
+
+- **WHEN** cycle 2 is nonempty and every entry records `checkpoint.attacks_remediation`
+- **THEN** the evaluator returns `diverging`, reason `tell`, or `tell_with_gating_findings` when it holds a confirmed P0/P1
+
+#### Scenario: A hardening push follows the tell
+
+- **WHEN** a later cycle reviews a head a remediation push moved after a tell cycle that recorded no delete or restructure remedy
+- **THEN** the evaluator is indeterminate and the readiness gate reports `integration-exit-indeterminate`
 
 ### Requirement: Exit tools expose a stable machine contract
 

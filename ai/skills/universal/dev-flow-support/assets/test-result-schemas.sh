@@ -1589,6 +1589,25 @@ usage_error_case \
     "--initiated-by without --run-id is a usage error" \
     implementer "$fixtures_dir/result.implementer.schema/valid/completed.json" --initiated-by human
 
+# harmon-devkit#1272 challenge round 1: stop-and-file is a
+# filing or a decline, never a fix push.
+cp "$fixtures_dir/adjudication.schema/valid/integration-checkpoint-round-2.json" "$test_tmp/remedy-fix.json"
+node -e '
+  const fs = require("node:fs");
+  const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  doc.adjudications[0].disposition = "fix";
+  doc.adjudications[0].checkpoint.remedy = "stop-and-file";
+  fs.writeFileSync(process.argv[1], JSON.stringify(doc));
+' "$test_tmp/remedy-fix.json"
+if out="$(node "$validator" adjudication "$test_tmp/remedy-fix.json" 2>&1)"; then
+    fail "a stop-and-file remedy on a fix disposition: expected rejection, validator accepted it"
+fi
+case "$out" in
+*"remedy stop-and-file requires disposition file or decline, found fix"*) ;;
+*) fail "a stop-and-file remedy on a fix disposition was rejected for the wrong reason: $out" ;;
+esac
+echo "PASS: a stop-and-file remedy on a fix disposition is rejected"
+
 # A malformed --pass file must fail immediately, naming the --pass file
 # itself, before the primary document's own cross-checks ever run.
 printf '%s' '{"payload":{"findings":[]}}' >"$test_tmp/malformed-pass.json"

@@ -1268,6 +1268,8 @@ For every failing check and every review finding:
    question. Record the sweep (the token searched, or a redacted label when the
    token is itself a secret, and the surfaces found) in the fix commit's
    message and on the finding's line in the PR body's `## Adjudication record`.
+   The sweep never overrides the checkpoint below: on a cycle that meets the
+   tell it licenses no hardening push.
    Two recurring shapes require this check:
 
    - **Rule copies across twins and docs** — the same fact corrected in one copy but
@@ -1281,6 +1283,72 @@ For every failing check and every review finding:
 4. For rejected findings, state the evidence for the rejection — a claim
    about a command or platform behavior is cheap to verify empirically
    before rejecting.
+
+### Integration exit: follow the engine, not memory
+
+Convergence is computed, never remembered (harmon-devkit#1272). After every
+integration adjudication — `adjudications/integration-r<N>.json` written and
+validated against its integrator pass — and before any remediation push, run
+
+```sh
+"$support_dir/dev-flow-exit.sh" --run <record dir> --stage integration --policy <resolved .devflow.toml> --json
+```
+
+(`$support_dir` resolved as at the top of this skill) and act on its
+`outcome`. It counts completed cycles — exempt included; a carry, an
+incomplete attempt, and a retry add none — separately from remediation
+pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
+confirmed P0/P1 from any reviewer, a late human review included, breaks the
+clean streak. Any late round folded into an existing cycle — a round with no
+completed cycle of its own (a cap-0 pass, a carry, an incomplete attempt), or
+a same-ordinal re-dispatch — contributes only its adjudicated P0/P1 entries,
+making the cycle gating; its P2/P3 entries never change whether the cycle is
+clean or a tell.
+
+**The checkpoint is owed from cycle 2.** Every entry of an integration
+adjudication document from round 2 on carries `checkpoint`:
+`attacks_remediation` (does the finding's subject exist only because an
+earlier remediation push of this stage added it?) and, when true, a `remedy` —
+`delete`, `restructure` to an invariant, `retain` (the entry's `reason` says
+why the change needs it), or `stop-and-file`. The schema and validator refuse
+the document without it.
+
+- **`converged`** (two consecutive clean cycles) is the fixing ceiling: make
+  no further remediation push for P2s. Settle every remaining finding without
+  a push — declined with evidence, or filed together in one follow-up issue —
+  reply in each affected thread, `settle` the non-inline ones, tick the
+  deferred entries, and go to the readiness gate.
+- **`diverging`** is the tell: every finding of a cycle at or after cycle 2
+  attacks an earlier remediation push. Stop the fix loop and offer the three
+  dispositions — **delete** the added surface, **restructure** it to an
+  invariant, or **stop and file** the unresolved P2s together as one
+  follow-up — recorded as the `remedy` on the table. Never another hardening
+  push; a `retain` on an individual finding does not license one. A push that
+  deletes or restructures is permitted within the remediation cap; the engine
+  refuses (indeterminate) a record where a remediation push follows a tell
+  cycle without a recorded `delete` or `restructure` remedy.
+  `tell_with_gating_findings` is an escalation that keeps the PR draft and
+  leads with descoping — recommend removing the added surface first, with the
+  findings and provenance as evidence.
+- **`continue`** — `last_cycle_clean`: one terminal clean current-head cycle
+  with every finding settled ends the stage through the readiness gate; a
+  P2-only cycle whose findings are all declined or filed needs no second
+  cycle. `gating_findings`: fix within the remediation cap, then the next
+  cycle.
+- **`capped`** with gating findings is stop condition 2 — escalate, PR stays
+  draft. Indeterminate is never a pass: fix the record or escalate.
+
+The readiness gate reads the integration record itself, never a verdict
+reason, and infers nothing about fix pushes. An integration pass with
+findings and no adjudication is already refused (indeterminate) by the gate's
+step 6 readiness-input projection; step 9f fails when any integration
+adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
+defer — filing settles P2s only (`integration-filed-gating-finding`); it stays
+indeterminate on any engine indeterminate (`integration-exit-indeterminate`);
+it is indeterminate unless the record's latest integration pass is the gated
+result — same integration_round, codex_cycle.cycle and head
+(`integration-record-unbound`) — so persist every integrator pass and its
+adjudication before gating; otherwise this condition passes.
 
 ## 4. Reply in-thread
 

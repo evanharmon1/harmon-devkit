@@ -565,8 +565,35 @@ write_defaults() {
 # (cap-0-equivalent, clean) case; a test that needs a different record or
 # integrator result appends its own "$@" override — the gate's flag parser
 # overwrites on repeat, so the last occurrence of either flag wins.
+# persist_gated_result — harmon-devkit#1272 (integration-r1-codex-cloud-1):
+# step 9f requires the record's latest integration pass to BE the gated
+# result. The orchestrator persists every integrator pass, so a case whose
+# record holds no integration pass gets the gated result (one carrying a
+# Codex cycle) persisted here, the same way ensure_issue_evidence_markers
+# completes the markers. Only a clean, schema-valid result is persisted; a case
+# ABOUT an unpersisted result sets
+# skip_persist_gated=1 for exactly one invocation. $@ = the run's own flags
+# (the last --integrator-result wins, as in the gate's parser).
+skip_persist_gated=0
+persist_gated_result() {
+    local result="${fixtures}/integrator-result-disabled.json" previous= arg round
+    for arg in "$@"; do
+        [ "$previous" != --integrator-result ] || result="$arg"
+        previous="$arg"
+    done
+    [ "$skip_persist_gated" -eq 0 ] || return 0
+    ! compgen -G "${record_dir}/passes/integration-r*.json" >/dev/null || return 0
+    jq -e '.payload.codex_cycle != null and (.payload.findings | length) == 0' "$result" >/dev/null 2>&1 || return 0
+    # A deliberately schema-invalid result is the gate's input validation to
+    # refuse, not a pass the orchestrator would ever have persisted.
+    node "$validator" envelope "$result" >/dev/null 2>&1 || return 0
+    round="$(jq -r '.payload.integration_round' "$result")"
+    cp "$result" "${record_dir}/passes/integration-r${round}-codex-cloud.json"
+}
+
 run_gate() {
     ensure_issue_evidence_markers
+    persist_gated_result "$@"
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
         --repo example/repo --pr 493 --head "$head_sha" \
@@ -581,6 +608,7 @@ run_gate() {
 
 run_audit() {
     ensure_issue_evidence_markers
+    persist_gated_result "$@"
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
         --repo example/repo --pr 493 --head "$head_sha" \
@@ -681,6 +709,72 @@ assert_gate() {
     actual_condition="$(gate_field condition 2>/dev/null || true)"
     [ "$actual_condition" = "$expected_condition" ] ||
         fail "expected condition $expected_condition, got '$actual_condition': $gate_out"
+}
+
+# harmon-devkit#1272: the gate runs the exit engine's integration exit over
+# --record. write_integration_cycle records one adjudicated integrator round
+# in the record: $1 round, $2 reviewed head, $3 Codex cycle ordinal, $4 the
+# finding's adjudicated priority, $5 its disposition, $6 its checkpoint JSON
+# (or "none" — round 1 owes none). $3 "none" records a pass with no Codex
+# cycle (cap 0, or a human finding between cycles); $7 overrides the cycle's
+# exit code (default 10); $8 "noadj" writes the pass without an adjudication.
+write_integration_cycle() {
+    local round="$1" cycle_head="$2" cycle="$3" priority="$4" disposition="$5" checkpoint="$6"
+    local exit_code="${7:-10}" adjudicate="${8:-adj}"
+    jq -cn --arg head "$cycle_head" --argjson round "$round" --arg cycle "$cycle" \
+        --argjson exit_code "$exit_code" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:(if $cycle == "none" then null else
+                  {head:$head, cycle:($cycle | tonumber), attempt:1,
+                   trigger_comment_id:"1", exit_code:$exit_code}
+                  + (if $exit_code == 10 then {accepted:{surface:"review", id:"1", reviewed_commit:$head}} else {} end)
+                  end),
+                integration_round:$round,
+                findings:[{id:("integration-r\($round)-codex-cloud-1"),
+                           body:"a cloud finding",source_id:"9\($round)"}],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:(if $exit_code == 10 or $cycle == "none" then "findings" else "pending" end)}}' \
+        >"${record_dir}/passes/integration-r${round}-codex-cloud.json"
+    [ "$adjudicate" = adj ] || return 0
+    jq -cn --arg head "$cycle_head" --argjson round "$round" --arg p "$priority" \
+        --arg d "$disposition" --arg cp "$checkpoint" '
+      {schema:2, run_id:"test-run", stage:"integration", round:$round,
+       reviewed_head:$head,
+       adjudications:[({finding_id:("integration-r\($round)-codex-cloud-1"),
+         reviewer_priority:null, adjudicated_priority:$p,
+         disposition:$d, reason:"adjudicated against the code",
+         evidence:"reproduced locally", override:null}
+         + (if $cp == "none" then {} else {checkpoint:($cp | fromjson)} end))]}' \
+        >"${record_dir}/adjudications/integration-r${round}.json"
+}
+cycle2_result="$(write_integrator_result cycle2-clean \
+    "$(jq -cn --arg head "$head_sha" '{head:$head, cycle:2, attempt:1,
+        trigger_comment_id:"1", exit_code:0,
+        accepted:{surface:"review", id:"1", reviewed_commit:$head}}')")"
+
+cycle3_result="$(write_integrator_result cycle3-clean \
+    "$(jq -cn --arg head "$head_sha" '{head:$head, cycle:3, attempt:1,
+        trigger_comment_id:"1", exit_code:0,
+        accepted:{surface:"review", id:"1", reviewed_commit:$head}}')")"
+# gated_round — the clean result being gated, as integration round $1 of Codex
+# cycle $2 on $head_sha, persisted as the record's latest pass (9f binds the
+# two: integration-r1-codex-cloud-1). Prints the result's path.
+gated_round() {
+    local round="$1" cycle="$2" out
+    out="$(write_integrator_result "gated-r${round}-c${cycle}" \
+        "$(jq -cn --arg head "$head_sha" --argjson cycle "$cycle" '{head:$head, cycle:$cycle,
+            attempt:1, trigger_comment_id:"1", exit_code:0,
+            accepted:{surface:"review", id:"1", reviewed_commit:$head}}')")"
+    jq --argjson round "$round" '.payload.integration_round = $round' "$out" >"${out}.next"
+    mv "${out}.next" "$out"
+    node "$validator" envelope "$out" >/dev/null ||
+        fail "gated_round $round $cycle: fixture failed schema validation"
+    cp "$out" "${record_dir}/passes/integration-r${round}-codex-cloud.json"
+    printf '%s' "$out"
 }
 
 echo "==> full pass (Codex cycle terminal-clean) prints a fingerprint, stable across two runs on identical data"
@@ -2794,6 +2888,11 @@ echo "==> codex_cycle.cycle within --integration-cap passes"
 write_defaults
 cycle_two="$(jq -c '.cycle = 2' <<<"$(codex_cycle_json 0)")"
 clean_result="$(write_integrator_result cap-cycle-ok "$cycle_two")"
+# 9f binds the gated result to the record's latest pass, so the record
+# holds cycle 1 before it (harmon-devkit#1272).
+write_integration_cycle 1 "$stale_head_sha" 1 P2 decline none
+jq '.payload.integration_round = 2' "$clean_result" >"${clean_result}.next" && mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "${record_dir}/passes/integration-r2-codex-cloud.json"
 run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 2
 assert_gate 0 pass ready
 
@@ -2817,6 +2916,12 @@ write_defaults
 # cap-mismatch — that is the whole bug #1326 fixes.
 split_ok="$(jq -c '.cycle = 3 | .charged = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
 clean_result="$(write_integrator_result cap-split-ok "$split_ok")"
+# 9f binds the gated result to the record's latest pass, so the record
+# holds cycles 1 and 2 before it (harmon-devkit#1272).
+write_integration_cycle 1 3333333333333333333333333333333333333333 1 P2 decline none
+write_integration_cycle 2 "$stale_head_sha" 2 P2 decline '{"attacks_remediation":false}'
+jq '.payload.integration_round = 3' "$clean_result" >"${clean_result}.next" && mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "${record_dir}/passes/integration-r3-codex-cloud.json"
 # A claimed split owes durable proof, so the checker state carries the same
 # counters a real run would have written — the result agreeing with itself is
 # not evidence.
@@ -3608,6 +3713,7 @@ grep -Fq 'late-red' <<<"$gate_out" ||
 echo "==> without GNU timeout the gate still runs, loudly unbounded"
 write_defaults
 clean_result="$(write_integrator_result timeout-fallback "$(codex_cycle_json 0)")"
+persist_gated_result --integrator-result "$clean_result"
 restricted_bin="${test_tmp}/restricted-bin"
 mkdir -p "$restricted_bin"
 # node, git, and gitleaks are required now (node for schema validation, git
@@ -4251,5 +4357,122 @@ while IFS= read -r gate_flag; do
 done <<EOF
 $gate_flags
 EOF
+
+echo "==> #1272: a stage closed by converged, its P2s declined or filed without a push, passes"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
+write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
+assert_gate 0 pass ready
+
+echo "==> #1272: a self-feeding cycle settled by stop-and-file (P2 only) passes"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
+write_integration_cycle 2 "$head_sha" 2 P2 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
+run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
+assert_gate 0 pass ready
+
+echo "==> #1272: a tell cycle holding a confirmed P1 settled by filing keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
+write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
+run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
+assert_gate 1 fail integration-filed-gating-finding
+
+echo "==> #1272: a run capped with a confirmed P1 filed keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
+write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 2
+assert_gate 1 fail integration-filed-gating-finding
+
+echo "==> #1272 r5: cap 0 with a filed human P1 keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$head_sha" none P1 file none
+run_gate
+assert_gate 1 fail integration-filed-gating-finding
+
+echo "==> #1272 r5: no completed cycle with a filed P1 keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$head_sha" 1 P1 file none 11
+run_gate_recheck_clean --integrator-result "$(gated_round 2 1)" --integration-cap 4
+assert_gate 1 fail integration-filed-gating-finding
+
+echo "==> #1272 r5: a converged stage (engine exit 20) with a filed P1 keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 2
+write_integration_cycle 1 3333333333333333333333333333333333333333 1 P1 file none
+write_integration_cycle 2 "$stale_head_sha" 2 P2 decline '{"attacks_remediation":false}'
+write_integration_cycle 3 "$head_sha" 3 P2 decline '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$(gated_round 4 3)" --integration-cap 4
+assert_gate 1 fail integration-filed-gating-finding
+
+echo "==> #1272 r5: a P2-only tell then a filed non-cycle human P1 keeps the PR draft"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
+write_integration_cycle 2 "$head_sha" 2 P2 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
+write_integration_cycle 3 "$head_sha" none P1 file '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$(gated_round 4 2)" --integration-cap 4
+assert_gate 1 fail integration-filed-gating-finding
+
+echo "==> #1272 r5: cap 0 with unadjudicated integration findings is indeterminate"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$head_sha" none P2 fix none 10 noadj
+run_gate
+# Step 6's readiness-input projection refuses the unadjudicated pass before
+# step 9f reads the record; either way the record cannot promote.
+assert_gate 2 indeterminate malformed-data
+grep -Fq "never adjudicated" <<<"$gate_out" ||
+    fail "#1272 r5: the unadjudicated integration pass was not named: $gate_out"
+
+echo "==> #1272 r5: a P1 fixed and followed by a clean cycle passes"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
+write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
+assert_gate 0 pass ready
+
+echo "==> #1272 integration-r1: a record missing the later cycles (a filed-P1 cycle 2) is unbound"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 decline none
+run_gate_recheck_clean --integrator-result "$cycle3_result" --integration-cap 4
+assert_gate 2 indeterminate integration-record-unbound
+
+echo "==> #1272 integration-r1: a cycle-3 result over a record with no integration pass is unbound"
+write_defaults
+skip_persist_gated=1
+run_gate_recheck_clean --integrator-result "$cycle3_result" --integration-cap 4
+skip_persist_gated=0
+assert_gate 2 indeterminate integration-record-unbound
+
+echo "==> #1272 integration-r1: a record holding a pass later than the gated one is unbound"
+write_defaults
+write_record_with_integration_entries 1
+write_integration_cycle 1 "$stale_head_sha" 1 P2 decline none
+gated_r2="$(gated_round 2 2)"
+jq '.payload.integration_round = 3' "$gated_r2" >"${record_dir}/passes/integration-r3-codex-cloud.json"
+run_gate_recheck_clean --integrator-result "$gated_r2" --integration-cap 4
+assert_gate 2 indeterminate integration-record-unbound
+
+echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
+write_defaults
+write_record_with_integration_entries 2
+write_integration_cycle 1 3333333333333333333333333333333333333333 1 P1 fix none
+write_integration_cycle 2 "$stale_head_sha" 2 P2 fix '{"attacks_remediation":true,"remedy":"retain"}'
+write_integration_cycle 3 "$head_sha" 3 P2 decline '{"attacks_remediation":false}'
+run_gate_recheck_clean --integrator-result "$(gated_round 4 3)" --integration-cap 4
+assert_gate 2 indeterminate integration-exit-indeterminate
+grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
+    fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
 
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

@@ -1,0 +1,21 @@
+{
+  "schema": 2,
+  "run_id": "run-integration-p1-then-two-clean-converges",
+  "stage": "integration",
+  "round": 3,
+  "reviewed_head": "0303030303030303030303030303030303030303",
+  "adjudications": [
+    {
+      "finding_id": "integration-r3-codex-cloud-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P2",
+      "disposition": "file",
+      "reason": "adjudicated P2 for the fixture",
+      "evidence": "fixture evidence",
+      "override": null,
+      "checkpoint": {
+        "attacks_remediation": false
+      }
+    }
+  ]
+}

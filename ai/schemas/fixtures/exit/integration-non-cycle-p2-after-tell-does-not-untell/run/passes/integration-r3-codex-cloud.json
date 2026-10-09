@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0202020202020202020202020202020202020202",
+  "produced_at": "2026-10-08T00:15:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "fixture",
+    "tier": "economy"
+  },
+  "run": {
+    "run_id": "run-integration-non-cycle-p2-after-tell-does-not-untell",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "build",
+        "bucket": "pass",
+        "run_id": "3",
+        "required": true
+      }
+    ],
+    "codex_cycle": null,
+    "integration_round": 3,
+    "findings": [
+      {
+        "id": "integration-r3-human-1",
+        "body": "finding 1 of integration round 3",
+        "source_id": "9030"
+      }
+    ],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-10-08T00:15:00Z",
+    "verdict": "findings"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "run_id": "run-integration-non-cycle-p1-after-tell-folds-and-fix-push-accepted",
+  "stage": "integration",
+  "round": 4,
+  "reviewed_head": "0303030303030303030303030303030303030303",
+  "adjudications": []
+}

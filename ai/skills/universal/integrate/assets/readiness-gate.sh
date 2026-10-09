@@ -63,12 +63,14 @@
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
-#   evidence-marker-missing, remediation-capped              (fail)
+#   evidence-marker-missing, remediation-capped,            (fail)
+#   integration-filed-gating-finding                         (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
 #   behind-base-unknown, merge-state-stale,
+#   integration-exit-indeterminate, integration-record-unbound,
 #   usage                                                    (indeterminate)
 #
 # `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
@@ -1891,6 +1893,62 @@ if [ "$remediation_loops" -eq 0 ]; then
     [ -z "$code_changing" ] ||
         fail_condition remediation-capped "the gated pass applies code-changing disposition(s) ($code_changing) but the record shows no integration -> implement -> integration remediation loop at all — a code change during integration always records one (harmon-devkit#685)"
 fi
+
+# 9f. The integration record (harmon-devkit#1272), read directly — never a
+# verdict reason, never an inference about fix pushes (challenge-r5 replaced
+# the round-4 verdict allowlist). (c) Any engine indeterminate — a push after
+# a tell cycle without a delete/restructure remedy, a cycle-ordinal hole, an
+# invalid record — is indeterminate. (b) Any integration adjudication entry
+# holding an adjudicated P0 or P1 whose disposition is file or defer fails:
+# filing settles P2s only. (a) An integration pass with findings and no
+# adjudication never reaches this step: step 6's readiness-input projection
+# already refuses it. (e) The record must END at the gated pass: its latest
+# integration pass carries the gated result's integration_round,
+# codex_cycle.cycle and head, so a record missing a later pass (and the
+# adjudication with it) cannot vouch for the gated head
+# (integration-r1-codex-cloud-1). Owed whenever the gated result carries a
+# Codex cycle or the record holds any integration pass; a cap-0 run with no
+# integration pass has nothing to bind. (d) Otherwise this step passes.
+exit_engine="$support_dir/dev-flow-exit.mjs"
+[ -f "$exit_engine" ] ||
+    die "$exit_engine is missing — the dev-flow-support package must be vendored alongside this skill"
+# The engine path goes LAST: the engine treats process.argv[1] as the script
+# it was invoked as and runs its own CLI when that resolves to itself.
+integration_record="$(node --input-type=module -e '
+const [record, cap, validator, gated, engine] = process.argv.slice(1);
+const { integrationExitForRunDir, loadRunDir, ExitIndeterminate } = await import(engine);
+try {
+  integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
+} catch (err) {
+  if (!(err instanceof ExitIndeterminate)) throw err;
+  console.log(JSON.stringify({ ok: false, reason: err.message }));
+  process.exit(0);
+}
+const { passes, adjudications } = loadRunDir(record);
+const result = JSON.parse((await import("node:fs")).readFileSync(gated, "utf8"));
+const bindOf = (envelope) => ({ round: envelope.payload?.integration_round ?? null, cycle: envelope.payload?.codex_cycle?.cycle ?? null, head: envelope.head ?? null });
+const latest = passes
+  .filter((p) => p.envelope.role === "integrator")
+  .map((p) => bindOf(p.envelope))
+  .sort((x, y) => x.round - y.round)
+  .at(-1) ?? null;
+const want = bindOf(result);
+const owed = want.cycle !== null || latest !== null;
+const bound = !owed || (latest !== null && latest.round === want.round && latest.cycle === want.cycle && latest.head === want.head);
+const docs = adjudications.map((a) => a.doc).filter((d) => d?.stage === "integration");
+const filed = docs.flatMap((d) => d.adjudications)
+  .filter((e) => ["P0", "P1"].includes(e.adjudicated_priority) && ["file", "defer"].includes(e.disposition))
+  .map((e) => e.finding_id);
+console.log(JSON.stringify({ ok: true, filed, bound, latest, want }));
+' "$record_dir" "$integration_cap" "$validate_result_schemas" "$integrator_result" "$exit_engine" 2>/dev/null)" ||
+    indeterminate integration-exit-indeterminate "the integration record could not be read over --record"
+jq -e '.ok' <<<"$integration_record" >/dev/null 2>&1 ||
+    indeterminate integration-exit-indeterminate "the integration exit is indeterminate: $(jq -r '.reason // "unreadable record output"' <<<"$integration_record" 2>/dev/null)"
+jq -e '.bound' <<<"$integration_record" >/dev/null 2>&1 ||
+    indeterminate integration-record-unbound "the record's latest integration pass $(jq -c '.latest' <<<"$integration_record") is not the gated result $(jq -c '.want' <<<"$integration_record") (integration_round, codex_cycle.cycle, head) — persist every integrator pass and its adjudication before gating"
+filed_gating="$(jq -r '.filed | join(", ")' <<<"$integration_record")"
+[ -z "$filed_gating" ] ||
+    fail_condition integration-filed-gating-finding "integration adjudication files or defers a confirmed P0/P1 ($filed_gating) — filing settles P2s only; fix it and run a clean cycle, or escalate"
 
 # 9e. Every adjudicated round has its own issue evidence comment
 # (harmon-devkit#685: "every adjudicated round has a matching issue evidence

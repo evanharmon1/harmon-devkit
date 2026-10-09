@@ -1,0 +1,5 @@
+{
+  "outcome": "capped",
+  "reason": "cap_reached_with_gating_findings",
+  "rounds_counted": 2
+}

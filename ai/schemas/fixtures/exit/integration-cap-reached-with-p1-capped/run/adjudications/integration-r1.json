@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-integration-cap-reached-with-p1-capped",
+  "stage": "integration",
+  "round": 1,
+  "reviewed_head": "0101010101010101010101010101010101010101",
+  "adjudications": [
+    {
+      "finding_id": "integration-r1-codex-cloud-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "adjudicated P1 for the fixture",
+      "evidence": "fixture evidence",
+      "override": null
+    }
+  ]
+}

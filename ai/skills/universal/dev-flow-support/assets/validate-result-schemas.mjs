@@ -1565,7 +1565,29 @@ function checkAdjudicationEntries(document, errors) {
           `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, or file)`
         )
       }
+      // The checkpoint remedy is what the finding's disposition DOES, never a
+      // label beside it (harmon-devkit#1272 challenge round 1):
+      // a `fix` recorded with remedy `delete` would license a hardening push
+      // after the tell. delete/restructure require that same disposition;
+      // stop-and-file requires the finding to be filed or declined.
+      const remedy = entry.checkpoint?.remedy
+      const remedyDispositions = { delete: ['delete'], restructure: ['restructure'], 'stop-and-file': ['file', 'decline'] }
+      if (remedyDispositions[remedy] && !remedyDispositions[remedy].includes(entry.disposition)) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].checkpoint.remedy: remedy ${remedy} requires disposition ${remedyDispositions[remedy].join(' or ')}, found ${entry.disposition}`
+        )
+      }
       continue
+    }
+    // The scaffolding checkpoint is the INTEGRATION stage's record
+    // (harmon-devkit#1272): the confidence stages carry their round-2
+    // checkpoint on the pass's own provenance, and nothing reads a
+    // checkpoint off a challenge/review entry, so one there is a field
+    // that looks like evidence and gates nothing.
+    if (entry.checkpoint !== undefined) {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].checkpoint: only stage integration records the scaffolding checkpoint`
+      )
     }
     if (entry.reviewer_priority === null) {
       errors.push(

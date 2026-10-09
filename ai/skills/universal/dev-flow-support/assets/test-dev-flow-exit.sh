@@ -974,6 +974,30 @@ node -e '
 rm -rf "${sparse_dir}"
 echo "OK: an off-map head-map walk is decided by --repo-root"
 
+echo "== harmon-devkit#1272: the tell guard ties a push remedy to the entry's disposition =="
+# The validator already refuses `fix` with remedy `delete`, so a corpus run
+# never reaches the engine's own guard; drive computeIntegrationExit directly
+# with the rounds it is handed after validation (#1272 challenge round 1).
+node --input-type=module -e '
+import { computeIntegrationExit, ExitIndeterminate } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
+import assert from "node:assert/strict";
+const head = (n) => String(n).repeat(40);
+const round = (n, h, cycle, entries) => ({
+  round: n,
+  pass: { envelope: { head: head(h), payload: { findings: entries.map((e) => ({ id: e.finding_id })), codex_cycle: { head: head(h), cycle, exit_code: entries.length ? 10 : 0 } } } },
+  adjudication: { doc: { adjudications: entries } },
+});
+const entry = (n, priority, disposition, checkpoint) => ({ finding_id: `integration-r${n}-codex-cloud-1`, adjudicated_priority: priority, disposition, ...(checkpoint ? { checkpoint } : {}) });
+const trajectory = (disposition) => [
+  round(1, 1, 1, [entry(1, "P1", "fix")]),
+  round(2, 2, 2, [entry(2, "P2", disposition, { attacks_remediation: true, remedy: "delete" })]),
+  round(3, 3, 3, []),
+];
+assert.throws(() => computeIntegrationExit(trajectory("fix"), 4), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
+assert.equal(computeIntegrationExit(trajectory("delete"), 4).outcome, "converged");
+console.log("tell-guard disposition check OK");
+'
+
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
 node ai/skills/universal/dev-flow-support/assets/lib/run-exit-fixtures.mjs

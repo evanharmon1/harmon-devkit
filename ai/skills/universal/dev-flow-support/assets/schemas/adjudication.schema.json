@@ -20,6 +20,20 @@
       }
     }
   },
+  "allOf": [
+    {
+      "$comment": "The integration-stage scaffolding checkpoint (harmon-devkit#1272, #1201; harmon-init AGENTS.md 'Integration owes the same checkpoint from Codex cycle 2 onward'): from integration round 2 every entry records whether its subject exists only because an earlier remediation push of this stage added it. Keyed on the document's round rather than the Codex cycle ordinal because the cycle lives on the integrator pass, not here; a round is never numbered below its cycle, so requiring it from round 2 covers every cycle from 2 and at worst asks round 2 of a still-cycle-1 stage to say `attacks_remediation: false`. dev-flow-exit.mjs --stage integration re-checks it against the cycle ordinal.",
+      "if": {
+        "properties": { "stage": { "const": "integration" }, "round": { "minimum": 2 } },
+        "required": ["stage", "round"]
+      },
+      "then": {
+        "properties": {
+          "adjudications": { "items": { "required": ["checkpoint"] } }
+        }
+      }
+    }
+  ],
   "required": ["schema", "run_id", "stage", "round", "reviewed_head", "adjudications"],
   "properties": {
     "schema": { "const": 2 },
@@ -100,6 +114,21 @@
           "required": ["reason"],
           "properties": {
             "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "checkpoint": {
+          "description": "Integration stage only (the validator rejects it at challenge/review, where the confidence stages' own round-2 checkpoint is carried by the pass's provenance instead). Required from integration round 2 (top-level allOf above). `attacks_remediation` answers the checkpoint question for this finding: does its subject exist only because an earlier remediation push of this integration stage added it? When true, `remedy` records the answer harmon-init AGENTS.md requires: `delete` the added surface, `restructure` it to an invariant, `retain` it (in scope; the entry's `reason` says why the change needs it), or `stop-and-file` (stop the fix loop and file the unresolved findings together as one follow-up). A cycle whose entries ALL say true is the tell — dev-flow-exit.mjs --stage integration reports it as `diverging` — and a remediation push after a tell cycle is accepted only when that cycle records a `delete` or `restructure` remedy and no `retain`.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attacks_remediation"],
+          "if": {
+            "properties": { "attacks_remediation": { "const": true } },
+            "required": ["attacks_remediation"]
+          },
+          "then": { "required": ["remedy"] },
+          "properties": {
+            "attacks_remediation": { "type": "boolean" },
+            "remedy": { "enum": ["delete", "restructure", "retain", "stop-and-file"] }
           }
         },
         "classification": {
