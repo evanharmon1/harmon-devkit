@@ -2448,6 +2448,33 @@ rm -f "$stub_dir"/.label-reads-*
 # shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
 issue_fixture 60 $classified needs-triage
 
+echo "==> label: a pin added during the label edit has its Tier restored (exit 4)"
+# Read 1 is the first read, read 2 the snapshot, and the label edit is the
+# first mutation, so read 3 is the post-edit check: the pin lands between the
+# last read before the edit and the edit itself.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned" "$apply" label --repo "$repo" \
+    --issue 60 --impact high --risk high --complexity m --execute \
+    --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin added during the label edit must refuse: $(cat "$tmp/out")"
+grep -q "tier:pinned was added to $repo#60 during triage's label edit" "$tmp/out" ||
+    fail "the refusal must name the issue and the pin: $(cat "$tmp/out")"
+grep -q -- "--add-label impact:high,risk:high,complexity:m,tier:frontier --remove-label tier:local" "$GH_STUB_LOG" ||
+    fail "the label edit must have replaced the Tier: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 60 --repo $repo --add-label tier:local --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "the Tier the call replaced must be restored: $(cat "$GH_STUB_LOG")"
+grep -q -- "--remove-label needs-triage" "$GH_STUB_LOG" &&
+    fail "no write may follow the restore: $(cat "$GH_STUB_LOG")"
+grep -q "RESTORED 'tier:local' on $repo#60" "$tmp/out" ||
+    fail "the restore must be reported: $(cat "$tmp/out")"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
 echo "==> label: a stale derived Tier is replaced, never stacked"
 [ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
     --manifest "$manifest" --policy "$policy")" = 0 ] ||

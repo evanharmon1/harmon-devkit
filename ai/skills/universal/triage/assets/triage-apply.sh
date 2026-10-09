@@ -28,7 +28,10 @@
 #       the vendored policy reader's answer (dev-flow-support's
 #       devflow-policy.mjs) — this script never re-implements the matrix and
 #       never lets a caller choose a Tier. An issue carrying `tier:pinned`
-#       never has a tier label written or removed.
+#       never has a tier label written or removed. GitHub has no conditional
+#       label edit, so a pin added between the last read and the label edit
+#       is caught by a read after it: the Tier change is undone and the call
+#       exits 4. A pin added after that read is not seen.
 #     - needs-triage — DERIVED from the required set (work type, every active
 #       label axis, Impact, Risk, Complexity), never added or removed by
 #       judgement: added while any required axis is missing, removed once
@@ -122,7 +125,9 @@
 #       2 = usage/environment error (bad flags, --execute without the env gate,
 #           could not verify something the gate needs)
 #       4 = refused: human-removal guard, never-list, allowlist, exclusive-axis conflict, a value
-#           off its scale or not provisioned, or a different value already set
+#           off its scale or not provisioned, or a different value already set,
+#           or a tier:pinned that appeared during the label edit (its Tier
+#           change undone)
 #       5 = refused: work-type label on an org repo, or native Type on a
 #           personal repo
 #       6 = refused: an explicit needs-triage add/remove that contradicts the
@@ -1817,6 +1822,48 @@ cmd_label() {
     for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
         echo "APPLIED remove '$l' from $repo#$issue"
     done
+    # before_mutation checked for tier:pinned on the read before the label
+    # edit, but a pin added between that read and the edit is not seen there,
+    # and GitHub has no conditional label edit. So when the edit changed the
+    # Tier, read once more: a pin now present means this call overrode a
+    # human's choice, and the Tier part of the edit is undone.
+    if [ "${#args[@]}" -gt 0 ] &&
+        { [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ]; }; then
+        local post_edit restore=() readd=() t
+        post_edit="$(gh issue view "$issue" --repo "$repo" --json labels \
+            -q '.labels[].name')" ||
+            die 2 "write indeterminate: the label edit applied to $repo#$issue" \
+                "but the read that checks for a tier:pinned added during it" \
+                "failed; check its Tier labels by hand"
+        if in_list "tier:pinned" "$post_edit"; then
+            for t in "${tier_removes[@]+"${tier_removes[@]}"}"; do
+                in_list "$t" "$post_edit" || readd+=("$t")
+            done
+            [ "${#readd[@]}" -eq 0 ] || restore+=(--add-label "$(
+                IFS=,
+                echo "${readd[*]}"
+            )")
+            if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
+                restore+=(--remove-label "$tier_add")
+            fi
+            if [ "${#restore[@]}" -gt 0 ]; then
+                gh issue edit "$issue" --repo "$repo" "${restore[@]}" \
+                    >/dev/null </dev/null ||
+                    die 1 "write failed: tier:pinned was added to $repo#$issue" \
+                        "during triage's label edit, and restoring its Tier" \
+                        "failed — fix by hand: ${restore[*]}"
+                for t in "${readd[@]+"${readd[@]}"}"; do
+                    echo "RESTORED '$t' on $repo#$issue"
+                done
+                if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
+                    echo "RESTORED removal of '$tier_add' from $repo#$issue"
+                fi
+            fi
+            die 4 "refused: tier:pinned was added to $repo#$issue during" \
+                "triage's label edit — its Tier change was undone and no" \
+                "further write was made"
+        fi
+    fi
     if [ "$nt_remove" -eq 1 ]; then
         before_mutation
         gh issue edit "$issue" --repo "$repo" --remove-label needs-triage \
