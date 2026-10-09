@@ -1859,8 +1859,9 @@ It reports `tier_matrix`, `issue_tier`, `pin`, `disclosures`, `warnings`,
 `[tier.matrix]`, a classified issue's `issue_tier` is indeterminate, never
 guessed. That makes the resolution exit 3 only when the derived rung would
 decide; an operator tier, an honored pin, a `tier:implementer:*` label or a
-chosen rigor still applies with exit 0. A missing `--policy` file takes the
-built-in fallback. This is the tier
+chosen rigor still applies with exit 0. A `--policy` path with no entry in an existing
+directory takes the built-in fallback; a dangling symlink, or a parent that is
+missing, dangling or not a directory, refuses with exit 2. This is the tier
 resolution of harmon-init#1475, ported rather than copied (the two readers are
 sibling forks; convergence is harmon-init#1484), so the contract is
 harmon-init's own corpus, vendored byte-identical with its runner:
