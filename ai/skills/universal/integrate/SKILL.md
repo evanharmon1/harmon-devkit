@@ -239,8 +239,8 @@ trigger, which posts or adopts and attaches; callers do not attach again.
 Check each call's exit status on its own — never
 `reserve … | jq`, whose status is the pipe's last command, so a refused
 reservation reads as success and the trigger is orphaned when `attach` fails.
-The zero-candidate reconcile path, whose reservation already exists, enters
-that same sequence at the read. `reserve` makes no GitHub write, so the read
+A resumed `reserved` cycle, whose reservation already exists, enters that
+same sequence at the broker call, which performs the read. `reserve` makes no GitHub write, so the read
 after it is the last thing before the post, exactly as §2 requires; it must
 show `OPEN`, a draft, and the dispatched head, and any mismatch there means no
 trigger (the reservation is left for the next dispatch to reconcile). The
@@ -267,7 +267,8 @@ without blindly re-running. `<project-dir>` is Claude Code's `CLAUDE_PROJECT_DIR
 the skills sync install location. The hook approves only the unresolved
 `<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh` path; other
 locations or a symlink at `.claude/skills` still work but prompt. The same
-two-call split holds for attempt 2 and zero-candidate reconciliation.
+two-call split holds for attempt 2, and a resumed `reserved` cycle runs only
+the broker call.
 
 The two mechanisms compose and do not overlap wastefully: `carry` is strictly
 stronger (content identity, local git, no API reconstruction) and strictly

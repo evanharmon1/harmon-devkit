@@ -297,10 +297,10 @@ state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
 ```
 
 **Re-read the PR after the reservation and immediately before every trigger
-write.** Both paths that post a trigger — the fresh-cycle sequence and the
-zero-candidate reconcile path below — run the same order: a reservation held
-(`reserve` exit 0 on the fresh-cycle path; already on disk on the reconcile
-path) → this read → post the trigger → `attach` (the broker performs both
+write.** Both paths that post a trigger — the fresh-cycle sequence and a
+resumed `reserved` cycle below — run the same order: a reservation held
+(`reserve` exit 0 on the fresh-cycle path; already on disk when resuming) →
+this read → post the trigger → `attach` (the broker performs both
 post and attach for Codex). `reserve` makes **no GitHub write** — it reads the
 PR and writes local state only — but it may wait up to
 120s for a lagging head, so a read taken before it is not fresh; the read
@@ -319,8 +319,7 @@ Require all three on that one read: `.state` is `OPEN`, `.isDraft` is `true`,
 and `.headRefOid` equals the head your brief named. Any mismatch means **post
 no trigger**: skip the rest of this section, report `codex_cycle: null` with
 the mismatch as a finding (§5), and leave the reservation untouched — the next
-dispatch's zero-candidate reconcile path runs this same read before it would
-post. Never substitute the head `pr_now` reports for the brief's. A head
+dispatch's broker call runs this same read before it would post. Never substitute the head `pr_now` reports for the brief's. A head
 GitHub has not caught up to yet is `reserve`'s question, not this read's: its
 bounded head wait answers it (exit codes below) before this read runs, so do
 not read the PR ahead of `reserve` to second-guess it. A
