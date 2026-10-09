@@ -1717,15 +1717,19 @@ function loadIntegrationRounds(runDir, validatorPath) {
   return [...byRound.values()].sort((x, y) => x.round - y.round);
 }
 
+// One invariant, used by the tell guard and by the gating clear alike: a
+// remediation push happened between two cycles exactly when the later one
+// reviewed a different head AND charged more. A same-head cycle, an exempt
+// base-merge cycle, and a carry all fail it — filing settles P2s only.
+function pushedSince(from, to) {
+  return to.head !== from.head && to.charged > from.charged;
+}
+
 function computeIntegrationExit(rounds, integrationCap) {
   const cycles = [];
   let streak = 0;
-  let gating = false;
-  // The head an open P0/P1 was raised on. Only a later clean cycle on a
-  // DIFFERENT head — a fix push — answers it: a clean cycle re-reading the
-  // same head means the finding was settled without a push, and filing
-  // settles P2s only (#1272 challenge round 1).
-  let gatingHead = null;
+  let gatingAt = null; // {head, charged} where an open P0/P1 was raised
+  let ordinal = 0;
   let awaiting = null;
   for (const r of rounds) {
     const findings = r.pass.envelope.payload?.findings ?? [];
@@ -1741,27 +1745,26 @@ function computeIntegrationExit(rounds, integrationCap) {
     const entries = r.adjudication ? r.adjudication.doc.adjudications : [];
     const roundGating = entries.some(isGatingEntry);
     const cc = r.pass.envelope.payload?.codex_cycle ?? null;
+    // Over EVERY pass carrying a cycle, completed or not: ordinals run 1, 2,
+    // 3, …; a carry or a retry repeats the current one, a new one is exactly
+    // the next, so no cycle is ever missing from the record.
+    if (cc !== null) {
+      if (cc.cycle !== ordinal && cc.cycle !== ordinal + 1) {
+        throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} after cycle ${ordinal} — cycle ordinals run 1, 2, 3, … with a carry or retry repeating the current one`, "cycle-sequence");
+      }
+      ordinal = cc.cycle;
+    }
     const completed = cc !== null && !cc.carried && (cc.exit_code === 0 || cc.exit_code === 10);
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
       // attempt. Its own adjudications can still break the streak.
       if (roundGating) {
         streak = 0;
-        gating = true;
-        gatingHead = r.pass.envelope.head;
+        gatingAt = { head: r.pass.envelope.head, charged: cycles.at(-1)?.charged ?? 0 };
       }
       continue;
     }
     const latest = cycles.at(-1);
-    if (latest && cc.cycle < latest.cycle) {
-      throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} after cycle ${latest.cycle} — cycle ordinals never go backwards`, "cycle-regression");
-    }
-    // A skipped ordinal is a missing cycle, so the cycles either side of it
-    // are not consecutive (#1272 challenge round 1). A carry keeps
-    // the ordinal and never reaches here.
-    if (latest && cc.cycle > latest.cycle + 1) {
-      throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} after cycle ${latest.cycle} — the record skips cycle ${latest.cycle + 1}`, "cycle-gap");
-    }
     if (latest && cc.cycle === latest.cycle) {
       if (cc.head !== latest.head) {
         throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} on ${cc.head}, but that cycle reviewed ${latest.head}`, "cycle-regression");
@@ -1771,8 +1774,7 @@ function computeIntegrationExit(rounds, integrationCap) {
       if (roundGating) {
         latest.clean = false;
         streak = 0;
-        gating = true;
-        gatingHead = latest.head;
+        gatingAt = latest;
       }
       continue;
     }
@@ -1791,26 +1793,21 @@ function computeIntegrationExit(rounds, integrationCap) {
       clean: !roundGating,
     };
     cycles.push(cycle);
-    if (!cycle.clean) {
+    if (!cycle.clean || (gatingAt && !pushedSince(gatingAt, cycle))) {
       streak = 0;
-      gating = true;
-      gatingHead = cycle.head;
-    } else if (gating && cycle.head === gatingHead) {
-      streak = 0;
+      if (!cycle.clean) gatingAt = cycle;
     } else {
       streak += 1;
-      gating = false;
-      gatingHead = null;
+      gatingAt = null;
     }
   }
+  const gating = gatingAt !== null;
 
   const isTell = (c) => c.cycle >= 2 && c.entries.length > 0 && c.entries.every((e) => e.checkpoint?.attacks_remediation === true);
   for (let i = 0; i + 1 < cycles.length; i++) {
     const tell = cycles[i];
     const next = cycles[i + 1];
-    // A next cycle on the same head followed no push; one whose charged count
-    // did not move was exempt — a base merge, not a remediation push.
-    if (!isTell(tell) || next.head === tell.head || next.charged === tell.charged) continue;
+    if (!isTell(tell) || !pushedSince(tell, next)) continue;
     // A push remedy counts only when the entry's disposition IS that remedy:
     // `fix` with remedy `delete` is a hardening push wearing a delete label
     // (#1272 challenge round 1; the validator refuses the pairing).

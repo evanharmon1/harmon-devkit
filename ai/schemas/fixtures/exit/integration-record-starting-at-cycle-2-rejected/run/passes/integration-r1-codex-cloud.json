@@ -10,7 +10,7 @@
     "tier": "economy"
   },
   "run": {
-    "run_id": "run-integration-filed-p1-same-head-clean-cycle-stays-gating",
+    "run_id": "run-integration-record-starting-at-cycle-2-rejected",
     "initiated_by": "human"
   },
   "payload": {
@@ -24,8 +24,8 @@
     ],
     "codex_cycle": {
       "head": "0101010101010101010101010101010101010101",
-      "cycle": 1,
-      "charged": 1,
+      "cycle": 2,
+      "charged": 2,
       "exempt": 0,
       "attempt": 1,
       "trigger_comment_id": "8001",

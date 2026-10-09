@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "run_id": "run-integration-incomplete-cycle-then-next-ordinal-accepted",
+  "stage": "integration",
+  "round": 3,
+  "reviewed_head": "0303030303030303030303030303030303030303",
+  "adjudications": []
+}

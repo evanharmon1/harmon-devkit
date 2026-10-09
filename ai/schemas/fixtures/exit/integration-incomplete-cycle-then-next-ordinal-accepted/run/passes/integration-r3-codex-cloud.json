@@ -2,15 +2,15 @@
   "schema": 2,
   "role": "integrator",
   "status": "completed",
-  "head": "0101010101010101010101010101010101010101",
-  "produced_at": "2026-10-08T00:10:00Z",
+  "head": "0303030303030303030303030303030303030303",
+  "produced_at": "2026-10-08T00:15:00Z",
   "producer": {
     "harness": "claude-code",
     "model": "fixture",
     "tier": "economy"
   },
   "run": {
-    "run_id": "run-integration-filed-p1-same-head-clean-cycle-stays-gating",
+    "run_id": "run-integration-incomplete-cycle-then-next-ordinal-accepted",
     "initiated_by": "human"
   },
   "payload": {
@@ -18,28 +18,28 @@
       {
         "name": "build",
         "bucket": "pass",
-        "run_id": "2",
+        "run_id": "3",
         "required": true
       }
     ],
     "codex_cycle": {
-      "head": "0101010101010101010101010101010101010101",
-      "cycle": 2,
-      "charged": 2,
+      "head": "0303030303030303030303030303030303030303",
+      "cycle": 3,
+      "charged": 3,
       "exempt": 0,
       "attempt": 1,
-      "trigger_comment_id": "8002",
+      "trigger_comment_id": "8003",
       "exit_code": 0,
       "accepted": {
         "surface": "review",
-        "id": "7002",
-        "reviewed_commit": "0101010101010101010101010101010101010101"
+        "id": "7003",
+        "reviewed_commit": "0303030303030303030303030303030303030303"
       }
     },
-    "integration_round": 2,
+    "integration_round": 3,
     "findings": [],
     "unanswered_thread_roots": [],
-    "settled_at": "2026-10-08T00:10:00Z",
+    "settled_at": "2026-10-08T00:15:00Z",
     "verdict": "clean",
     "applied_dispositions": []
   }
