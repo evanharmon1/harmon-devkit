@@ -503,6 +503,32 @@ assert_rc 0
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
     fail "a push whose gate target verified GIT_NO_REPLACE_OBJECTS is unset must land"
 
+echo "  -> a pre-push hook does not inherit GIT_NO_REPLACE_OBJECTS"
+root="$(new_fixture replace-objects-pre-push-env)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/.git/hooks"
+cat >"${root}/work/.git/hooks/pre-push" <<EOF
+#!/usr/bin/env bash
+printf "%s\n" "\${GIT_NO_REPLACE_OBJECTS-UNSET}" > "${test_tmp}/pre-push-env.txt"
+if [ "\${GIT_NO_REPLACE_OBJECTS-UNSET}" != "UNSET" ]; then
+    echo "pre-push hook inherited GIT_NO_REPLACE_OBJECTS (\${GIT_NO_REPLACE_OBJECTS})" >&2
+    exit 1
+fi
+EOF
+chmod +x "${root}/work/.git/hooks/pre-push"
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 0
+[ -f "${test_tmp}/pre-push-env.txt" ] ||
+    fail "the fixture pre-push hook did not execute to record its environment"
+[ "$(cat "${test_tmp}/pre-push-env.txt")" = "UNSET" ] ||
+    fail "pre-push hook inherited GIT_NO_REPLACE_OBJECTS: $(cat "${test_tmp}/pre-push-env.txt")"
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
+    fail "a push whose pre-push hook verified GIT_NO_REPLACE_OBJECTS is unset must land"
+
 # Structural, not behavioral: this file's only hermetic transport-faking
 # mechanism is the SSH GIT_SSH_COMMAND stub (every fixture's pushurl is
 # ssh://git@github.com/...), and http.* config has no bearing on an

@@ -72,8 +72,10 @@ set -euo pipefail
 # closure content — so this is exported once here rather than risking a
 # missed call site by threading --no-replace-objects through each one
 # individually. The gate target it executes below runs under
-# `env -u GIT_NO_REPLACE_OBJECTS` so the export does not leak into the
-# gate (harmon-devkit#1310).
+# `env -u GIT_NO_REPLACE_OBJECTS` and git push runs with
+# GIT_NO_REPLACE_OBJECTS unset so the export does not leak into the
+# gate or into pre-push hooks (harmon-devkit#1310,
+# challenge-r1-codex-adversarial-1).
 export GIT_NO_REPLACE_OBJECTS=1
 
 usage() {
@@ -1277,8 +1279,10 @@ resolve_push_url
 # raw-URL push (unlike a named-remote push) does not update it itself and
 # AGENTS.md's own "Git transport" guidance is explicit that leaving it
 # stale is the wrong tradeoff.
-if ! git_with_args push --no-follow-tags \
-    "$push_url" "${resolved}:refs/heads/${branch}" "$lease"; then
+# git push runs with GIT_NO_REPLACE_OBJECTS unset so pre-push hooks start clean
+# (harmon-devkit#1310, challenge-r1-codex-adversarial-1).
+if ! (unset GIT_NO_REPLACE_OBJECTS && git_with_args push --no-follow-tags \
+    "$push_url" "${resolved}:refs/heads/${branch}" "$lease"); then
     exit 4
 fi
 # The actual push above already succeeded; a failure here only means the
