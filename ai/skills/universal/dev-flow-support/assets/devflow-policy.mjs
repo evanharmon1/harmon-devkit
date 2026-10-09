@@ -37,8 +37,9 @@
 //     1  refused: a non-v2 operating shape, an undecodable merge base, an
 //        invalid v2 policy, or a hard cross-validation error
 //     2  usage error (including a malformed tier input), or a file could not
-//        be read or parsed. A --policy file that does not EXIST is not an
-//        error: it resolves the documented built-in fallback.
+//        be read or parsed. A --policy path with no entry in an existing
+//        directory resolves the built-in fallback. A dangling symlink, or a
+//        parent that is missing, dangling or not a directory, exits 2.
 //     3  resolved, but cross-validation was indeterminate, or the issue's
 //        derived Tier could not be computed where it decides the implementer
 //
@@ -49,7 +50,7 @@
 //   harmon-devkit#1248 and held to the same answers by the vendored
 //   conformance corpus `.devflow-conformance-v2.json` beside this file.
 
-import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -956,6 +957,53 @@ function authoredTierOf(roleEntry) {
   return roleEntry?.profile_tier ?? roleEntry?.tier;
 }
 
+const STAGE_ROLES = {
+  implement: "implementer",
+  challenge: "challenger",
+  review: "reviewer",
+  integration: "integrator",
+};
+
+// Capability is one tuple, including the intersection of role preferences
+// and an optional stage pool. Historical registries can omit model metadata;
+// callers that need affirmative model evidence set requireModel.
+function hasExecutableTuple({
+  role,
+  roleConfig,
+  tier,
+  pool,
+  harnessBySlug,
+  familyBySlug,
+  requireModel = false,
+}) {
+  if (!roleConfig) return false;
+  const preferences = roleConfig.harnesses ?? [];
+  const candidates =
+    pool ?? (preferences.length > 0 ? preferences : [...harnessBySlug.keys()]);
+  return roleConfig.families.some((familySlug) => {
+    const family = familyBySlug.get(familySlug);
+    if (!family) return false;
+    if (Array.isArray(family.models)) {
+      if (!family.models.some((model) => model.tier === tier)) return false;
+    } else if (requireModel) {
+      return false;
+    }
+    // The orchestrator is the driving session, not a registry-dispatched
+    // result-producing role (the existing exemption from eb199d03d).
+    if (role === "orchestrator") return true;
+    return candidates.some((slug) => {
+      const harness = harnessBySlug.get(slug);
+      if (!harness || (preferences.length > 0 && !preferences.includes(slug)))
+        return false;
+      return (
+        (!Array.isArray(harness.roles) || harness.roles.includes(role)) &&
+        (harness.family_constraint?.kind !== "fixed" ||
+          harness.family_constraint.family === familySlug)
+      );
+    });
+  });
+}
+
 export function crossValidate(resolved, registryDoc, taskTargets) {
   const errors = [];
 
@@ -1611,11 +1659,11 @@ function resolvePinInput(input, ladder, warnings) {
 // the stored Tier can never be read as current. The stored Tier is a cache
 // to compare against, never an input — not even when the inputs are absent.
 function resolveIssueTierInput(input, matrix, pin, warnings) {
-  // An honored pin is the issue's Tier whatever the classification says, so
-  // its cache state is `pinned` on every path — classified or not.
+  // The pin suppresses cache warnings; applyTierInputs records its cache
+  // state after the classification status has been decided.
   const pinned = pin.status === "honored";
   if (input === undefined || input === null) {
-    return { status: "absent", cache: pinned ? "pinned" : "absent" };
+    return { status: "absent", cache: "absent" };
   }
   if (typeof input !== "object" || Array.isArray(input)) {
     throw new PolicyError("issueTier must be { risk, complexity, tier }");
@@ -1652,8 +1700,7 @@ function resolveIssueTierInput(input, matrix, pin, warnings) {
       );
     }
     let cache = "unverifiable";
-    if (pinned) cache = "pinned";
-    else if (storedTier === null) cache = "absent";
+    if (storedTier === null) cache = "absent";
     return { status: "absent", ...base, cache };
   }
   let reason = null;
@@ -1669,9 +1716,7 @@ function resolveIssueTierInput(input, matrix, pin, warnings) {
   if (reason !== null) return { status: "indeterminate", ...base, reason };
   const tier = deriveTier(matrix, { risk, complexity });
   let cache = "absent";
-  if (pinned) {
-    cache = "pinned";
-  } else if (storedTier !== null) {
+  if (storedTier !== null && !pinned) {
     cache = storedTier === tier ? "match" : "stale";
     if (cache === "stale") {
       warnings.push(
@@ -1713,8 +1758,7 @@ function applyTierInputs(resolved, opts = {}) {
     const reason =
       "no .devflow.toml: the built-in fallback derives no Tier (ADR 2026-08-16 D5); the classification is recorded, not applied";
     let cache = "unverifiable";
-    if (pin.status === "honored") cache = "pinned";
-    else if (issue.stored_tier === null) cache = "absent";
+    if (issue.stored_tier === null) cache = "absent";
     issue = {
       status: "inert",
       risk: issue.risk,
@@ -1726,6 +1770,8 @@ function applyTierInputs(resolved, opts = {}) {
     };
     warnings.push(tierWarning("tier-inert-absent-policy", "issue_tier", reason));
   }
+  // An honored pin is the issue's Tier on every classification path.
+  if (pin.status === "honored") issue.cache = "pinned";
   const rigorChosen = requestedRigor !== undefined;
 
   const roles = {};
@@ -1799,18 +1845,28 @@ function applyTierInputs(resolved, opts = {}) {
 export function tierAchievabilityWarnings(resolved, registryDoc) {
   if (!registryDoc) return [];
   const familyBySlug = new Map((registryDoc.families || []).map((f) => [f.slug, f]));
+  const harnessBySlug = new Map((registryDoc.harnesses || []).map((h) => [h.slug, h]));
   const warnings = [];
   for (const [role, r] of Object.entries(resolved.roles)) {
     if (r.profile_tier === undefined || r.tier === r.profile_tier) continue;
     const families = r.families.map((slug) => familyBySlug.get(slug)).filter(Boolean);
     if (!families.some((family) => Array.isArray(family.models))) continue;
-    const achievable = families.some((family) => Array.isArray(family.models) && family.models.some((m) => m.tier === r.tier));
+    const stage = Object.keys(STAGE_ROLES).find((name) => STAGE_ROLES[name] === role);
+    const achievable = hasExecutableTuple({
+      role,
+      roleConfig: r,
+      tier: r.tier,
+      pool: resolved.stages[stage]?.pool,
+      harnessBySlug,
+      familyBySlug,
+      requireModel: true,
+    });
     if (!achievable) {
       warnings.push(
         tierWarning(
           "tier-unachievable",
           role,
-          `${role} tier "${r.tier}" (${r.source}) has no model in its declared families (${r.families.join(", ")})`,
+          `${role} tier "${r.tier}" (${r.source}) has no executable family/harness/model-tier tuple in its declared families (${r.families.join(", ")})`,
         ),
       );
     }
@@ -2290,14 +2346,37 @@ function cliResolve(args) {
   try {
     doc = loadTomlFile(args.policy);
   } catch (err) {
-    // An ABSENT policy file takes the documented built-in fallback
-    // (resolveAbsentPolicy; harmon-devkit#1248, matching harmon-init). Only
-    // ENOENT counts as absent: an unreadable or malformed file is still a
-    // refusal, never quietly replaced by defaults.
+    // Only a path with no directory entry takes the built-in fallback.
+    // ENOENT from reading can also mean an existing dangling symlink.
     if (err?.code === "ENOENT") {
-      doc = null;
-    } else {
-      console.error(`devflow-policy: could not read/parse --policy: ${err.message}`);
+      try {
+        lstatSync(args.policy);
+      } catch (statErr) {
+        if (statErr?.code === "ENOENT") {
+          try {
+            // Fallback requires an absent final entry in a resolvable parent directory.
+            if (!statSync(realpathSync(path.dirname(args.policy))).isDirectory()) {
+              throw new PolicyError("parent is not a directory");
+            }
+          } catch (parentErr) {
+            console.error(
+              `devflow-policy: could not read/parse --policy: parent directory cannot be resolved: ${parentErr.message}`,
+            );
+            return 2;
+          }
+          doc = null;
+        } else {
+          console.error(
+            `devflow-policy: could not inspect --policy: ${statErr.message}`,
+          );
+          return 2;
+        }
+      }
+    }
+    if (doc !== null) {
+      console.error(
+        `devflow-policy: could not read/parse --policy: ${err.message}`,
+      );
       return 2;
     }
   }

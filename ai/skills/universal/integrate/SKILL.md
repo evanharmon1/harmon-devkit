@@ -234,12 +234,13 @@ attested without a reviewer reading it is exactly the thing a human reader must
 be able to see.
 
 **A non-zero `reserve` means no trigger is posted** (harmon-devkit#1189). The
-sequence is `reserve` → the §2 `state,isDraft,headRefOid` read → post
-`@codex review` → `attach`, each call's exit status checked on its own — never
+sequence is `reserve` → the §2 `state,isDraft,headRefOid` read → the broker
+trigger, which posts or adopts and attaches; callers do not attach again.
+Check each call's exit status on its own — never
 `reserve … | jq`, whose status is the pipe's last command, so a refused
 reservation reads as success and the trigger is orphaned when `attach` fails.
-The zero-candidate reconcile path, whose reservation already exists, enters
-that same sequence at the read. `reserve` makes no GitHub write, so the read
+A resumed `reserved` cycle, whose reservation already exists, enters that
+same sequence at the broker call, which performs the read. `reserve` makes no GitHub write, so the read
 after it is the last thing before the post, exactly as §2 requires; it must
 show `OPEN`, a draft, and the dispatched head, and any mismatch there means no
 trigger (the reservation is left for the next dispatch to reconcile). The
@@ -254,7 +255,20 @@ again, report a blocker. Exit `2` naming a changed head means the PR head was
 rewritten or superseded: the integrator posts no trigger and reports
 `codex_cycle: null`, never re-capturing a head it was not dispatched for; the
 next dispatch — yours — names the new head. The integrator agent's §4 carries
-the recipe.
+the recipe: for Codex, reserve and re-read in one Bash tool call, ending in
+`RESERVED <head>` on success; only then call the broker as one literal command:
+`<project-dir>/<skills-dir>/integrate/assets/gh-write-broker.sh trigger --repo <owner/repo> --pr <n>`.
+The broker requires a matching reserved cycle, re-reads the open draft PR and
+reserved head, posts, and attaches immediately. It prints a bare integer id;
+callers do not attach again. A failed attach names the posted id for the next
+dispatch's reconciliation or a re-run that adopts instead of posting; report
+a blocker on exit 3. Exit 2 refuses before posting; report other failures
+without blindly re-running. `<project-dir>` is Claude Code's `CLAUDE_PROJECT_DIR`; `<skills-dir>` is
+the skills sync install location. The hook approves only the unresolved
+`<project-dir>/.claude/skills/integrate/assets/gh-write-broker.sh` path; other
+locations or a symlink at `.claude/skills` still work but prompt. The same
+two-call split holds for attempt 2, and a resumed `reserved` cycle runs only
+the broker call.
 
 The two mechanisms compose and do not overlap wastefully: `carry` is strictly
 stronger (content identity, local git, no API reconstruction) and strictly

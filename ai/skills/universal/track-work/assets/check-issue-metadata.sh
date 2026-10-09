@@ -11,7 +11,7 @@ title_module_dir="$asset_dir/../../issue-title-support/assets"
 
 help_text() {
     cat <<'EOF'
-Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
+Usage: check-issue-metadata.sh --repo [HOST/]OWNER/REPO --repo-root PATH
           --owner-type personal|organization
           --title TITLE --body-file PATH [--label LABEL]...
           [--work-type-label LABEL]
@@ -19,7 +19,7 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           [--inapplicable AXIS]...
           [--impact VALUE --risk VALUE --complexity VALUE]
 
-       check-issue-metadata.sh --required-axes --repo OWNER/REPO [--repo-root PATH]
+       check-issue-metadata.sh --required-axes --repo [HOST/]OWNER/REPO [--repo-root PATH]
 
        check-issue-metadata.sh --title-only --title TITLE [--previous-title PREV_TITLE]
 
@@ -102,11 +102,11 @@ load_required_axis_contract() {
     manifest="$repo_root/label-registry.json"
     if [ -z "$repo_root" ]; then
         manifest="$tmp/remote-label-registry.json"
-        if ! gh api "repos/$repo/contents/label-registry.json" \
+        if ! repo_api "repos/$repo_slug/contents/label-registry.json" \
             -H 'Accept: application/vnd.github.raw+json' >"$manifest" 2>"$tmp/manifest-read-error"; then
             if grep -qF '(HTTP 404)' "$tmp/manifest-read-error"; then
                 # Only an authorized Contents listing can prove absence.
-                gh api "repos/$repo/contents/" >"$tmp/root-contents" 2>/dev/null &&
+                repo_api "repos/$repo_slug/contents/" >"$tmp/root-contents" 2>/dev/null &&
                     jq -e 'type == "array" and
                       all(.[]; type == "object" and (.name | type == "string")) and
                       all(.[]; .name != "label-registry.json")' "$tmp/root-contents" >/dev/null ||
@@ -212,24 +212,70 @@ required_none_family() {
     awk -F '|' -v label="$1" 'tolower($1 ":none") == label { print $2; exit }' "$required_families"
 }
 
+# Keep the caller's --repo spelling for gh label/issue/repo; API paths use
+# owner/repo, with an explicit host only when the caller supplied one.
+parse_target_repo() {
+    grep -Eq '^([^/[:space:]]+/)?[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" ||
+        die "--repo must be [HOST/]OWNER/REPO (got '$repo')"
+    repo_host=""
+    repo_slug="$repo"
+    case "$repo" in
+    */*/*)
+        repo_host="${repo%%/*}"
+        repo_slug="${repo#*/}"
+        ;;
+    esac
+}
+
+repo_api() {
+    if [ -n "$repo_host" ]; then
+        gh api "$@" --hostname "$repo_host"
+    else
+        gh api "$@"
+    fi
+}
+
 normalize_github_remote() {
-    local _remote="$1" _slug
+    local _remote="$1" _host _path _rest _scheme_url=0
     case "$_remote" in
-    https://github.com/*) _slug="${_remote#https://github.com/}" ;;
-    http://github.com/*) _slug="${_remote#http://github.com/}" ;;
-    git@github.com:*) _slug="${_remote#git@github.com:}" ;;
-    ssh://git@github.com/*) _slug="${_remote#ssh://git@github.com/}" ;;
-    ssh://git@ssh.github.com:443/*) _slug="${_remote#ssh://git@ssh.github.com:443/}" ;;
-    ssh://git@ssh.github.com/*) _slug="${_remote#ssh://git@ssh.github.com/}" ;;
+    https://*/* | http://*/* | ssh://*/*)
+        _rest="${_remote#*://}"
+        _host="${_rest%%/*}"
+        _path="${_rest#*/}"
+        _scheme_url=1
+        ;;
+    *://*) return 1 ;;
+    *:*)
+        _host="${_remote%%:*}"
+        _path="${_remote#*:}"
+        ;;
     *) return 1 ;;
     esac
-    _slug="${_slug%.git}"
-    printf '%s\n' "$_slug" | tr '[:upper:]' '[:lower:]'
+    _host="${_host##*@}"
+    # IP-literal hosts are unsupported and fail closed.
+    case "$_host" in
+    *'['* | *']'*) return 1 ;;
+    esac
+    if [ "$_scheme_url" -eq 1 ]; then
+        case "${_host##*:}" in
+        '' | *[!0-9]*) ;;
+        *) _host="${_host%:*}" ;;
+        esac
+    fi
+    _host="$(printf '%s' "$_host" | tr '[:upper:]' '[:lower:]')"
+    _path="$(printf '%s' "$_path" | tr '[:upper:]' '[:lower:]')"
+    [ "$_host" != ssh.github.com ] || _host=github.com
+    while [ "${_path%/}" != "$_path" ]; do
+        _path="${_path%/}"
+    done
+    _path="${_path%.git}"
+    [ -n "$_host" ] && [ -n "$_path" ] || return 1
+    printf '%s/%s\n' "$_host" "$_path"
 }
 
 bind_target_checkout() {
     local target_repo repo_bound remote_names remote_name remote_url remote_repo
-    target_repo="$(printf '%s\n' "$repo" | tr '[:upper:]' '[:lower:]')"
+    target_repo="$(printf '%s\n' "${repo_host:-github.com}/$repo_slug" | tr '[:upper:]' '[:lower:]')"
     repo_bound=0
     remote_names="$(git -C "$repo_root" remote 2>/dev/null)" ||
         die "target repository root is not a readable Git checkout"
@@ -405,7 +451,7 @@ if [ "$required_axes_only" -eq 1 ]; then
     [ -z "$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] &&
         [ "$title_set" -eq 0 ] && [ "$previous_title_set" -eq 0 ] &&
         [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] || usage
-    grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" || usage
+    parse_target_repo
     if [ -n "$repo_root" ]; then
         [ -d "$repo_root" ] || die "target repository root is not a directory: $repo_root"
         repo_root="$(cd "$repo_root" && pwd -P)" || die "cannot resolve target repository root"
@@ -451,8 +497,7 @@ fi
 [ -n "$repo" ] && [ -n "$repo_root" ] && [ -n "$owner_type" ] &&
     [ "$title_set" -eq 1 ] &&
     [ -n "$body_file" ] && [ -n "$author_type" ] || usage
-grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" ||
-    die "--repo must be OWNER/REPO (got '$repo')"
+parse_target_repo
 case "$owner_type" in
 personal | organization) ;;
 *) die "--owner-type must be personal or organization" ;;
@@ -661,7 +706,7 @@ fi
 # evidence about the target. Resolve the repository owner's actual account kind
 # so a caller cannot make an organization repository accept a work-type label
 # (or make a personal repository attempt native Issue Type validation).
-actual_owner_type="$(gh api "repos/$repo" --jq '.owner.type' 2>/dev/null)" ||
+actual_owner_type="$(repo_api "repos/$repo_slug" --jq '.owner.type' 2>/dev/null)" ||
     die "could not read the target repository owner's account type"
 case "$actual_owner_type" in
 User) actual_owner_type="personal" ;;
@@ -692,8 +737,15 @@ if [ "$author_type" = agent ] || [ "$classification_requested" -eq 1 ]; then
     classification_helper="$asset_dir/../../triage/assets/triage-apply.sh"
     [ -x "$classification_helper" ] ||
         die "shared classification reader is missing; vendor the triage skill alongside track-work"
-    classification_json="$("$classification_helper" classification-axes --repo "$repo")" ||
-        die "could not read provisioned Impact, Risk and Complexity"
+    if [ -n "$repo_host" ]; then
+        # The shared helper takes owner/repo; GH_HOST binds its REST, GraphQL
+        # and label reads just as it does for breakdown's classification read.
+        classification_json="$(GH_HOST="$repo_host" "$classification_helper" classification-axes --repo "$repo_slug")" ||
+            die "could not read provisioned Impact, Risk and Complexity"
+    else
+        classification_json="$("$classification_helper" classification-axes --repo "$repo")" ||
+            die "could not read provisioned Impact, Risk and Complexity"
+    fi
     expected_storage=label
     [ "$owner_type" != organization ] || expected_storage=field
     expected_owner=User
@@ -1030,8 +1082,8 @@ organization)
     [ "$work_type_count" -eq 0 ] ||
         violation "organization repositories use native Issue Type and no work-type label"
     if grep -q '[^[:space:]]' <<<"$issue_type"; then
-        repo_owner="${repo%%/*}"
-        native_types="$(gh api "orgs/$repo_owner/issue-types" --jq '.[].name')" ||
+        repo_owner="${repo_slug%%/*}"
+        native_types="$(repo_api "orgs/$repo_owner/issue-types" --jq '.[].name')" ||
             die "could not read native Issue Types for organization $repo_owner"
         if ! printf '%s\n' "$native_types" | awk -v wanted="$issue_type" '
           BEGIN { wanted=tolower(wanted) }

@@ -298,7 +298,7 @@ not per-issue. Before executing any of the proposed GitHub writes, present:
   track-work's preflight and the shared helper. Missing vocabulary or an
   ambiguous rating is unresolved work to settle before approval. Obtain the
   required axes before proposing with track-work's read-only mode:
-  `check-issue-metadata.sh --required-axes --repo <owner/repo>`.
+  `check-issue-metadata.sh --required-axes --repo <[host/]owner/repo>`.
   This reads the default-branch manifest remotely. Wherever a target checkout
   is already in use, add `--repo-root <target-checkout>` for the local manifest
   and remote-binding check.
