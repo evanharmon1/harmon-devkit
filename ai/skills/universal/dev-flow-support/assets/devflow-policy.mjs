@@ -37,8 +37,9 @@
 //     1  refused: a non-v2 operating shape, an undecodable merge base, an
 //        invalid v2 policy, or a hard cross-validation error
 //     2  usage error (including a malformed tier input), or a file could not
-//        be read or parsed. A --policy file that does not EXIST is not an
-//        error: it resolves the documented built-in fallback.
+//        be read or parsed. A --policy path with no entry in an existing
+//        directory resolves the built-in fallback. A dangling symlink, or a
+//        parent that is missing, dangling or not a directory, exits 2.
 //     3  resolved, but cross-validation was indeterminate, or the issue's
 //        derived Tier could not be computed where it decides the implementer
 //

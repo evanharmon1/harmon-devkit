@@ -71,7 +71,8 @@
 // Values are passed with the `--opt=value` spelling, so a label value can
 // never be read by the reader as a flag of its own.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { parseToml } from "./lib/toml-lite.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -594,17 +595,28 @@ function readJson(source) {
 
 /**
  * The names a rigor:/strategy: label may select under the policy at `file`:
- * its [rigor.*] and [strategy.*] tables. A file that does not exist is the
- * built-in fallback, which supports only standard rigor and plan strategy
- * (devflow-policy.mjs resolveAbsentPolicy). A present file that cannot be
- * read or parsed throws — the caller reports it rather than guessing.
+ * its [rigor.*] and [strategy.*] tables. Only a path with no final entry in
+ * a resolvable directory takes the built-in fallback, which supports only
+ * standard rigor and plan strategy (devflow-policy.mjs resolveAbsentPolicy).
+ * A dangling symlink, an unresolvable or non-directory parent, or a file that
+ * cannot be read or parsed throws — the caller reports it rather than guessing.
  */
 export function policySummary(file) {
   let text;
   try {
     text = readFileSync(file, "utf8");
   } catch (err) {
-    if (err?.code === "ENOENT") return { rigors: ["standard"], strategies: ["plan"], rigor_order: ["standard"] };
+    if (err?.code === "ENOENT") {
+      try {
+        lstatSync(file);
+      } catch (statErr) {
+        if (statErr?.code !== "ENOENT") throw statErr;
+        if (!statSync(realpathSync(dirname(file))).isDirectory()) {
+          throw new Error("parent is not a directory");
+        }
+        return { rigors: ["standard"], strategies: ["plan"], rigor_order: ["standard"] };
+      }
+    }
     throw err;
   }
   const doc = parseToml(text);
