@@ -123,7 +123,7 @@ expect_args "trusted pin" \
     '["--pinned-tier=frontier","--pin-marker-trusted","--pin-value-trusted"]'
 expect_args "unverified pin passes no trust flags" '{"labels":["tier:pinned","tier:frontier"]}' '["--pinned-tier=frontier"]'
 expect_args "ambiguous pin passes no pinned Tier and keeps the classification" \
-    '{"labels":["tier:pinned","tier:frontier","tier:standard","risk:high","complexity:m"],"pin_provenance":{"marker_trusted":true,"value_trusted":true}}' \
+    '{"owner_type":"User","labels":["tier:pinned","tier:frontier","tier:standard","risk:high","complexity:m"],"pin_provenance":{"marker_trusted":true,"value_trusted":true}}' \
     '["--risk=high","--complexity=m"]'
 expect_warning "ambiguous pin names both values" \
     '{"labels":["tier:pinned","tier:frontier","tier:standard"]}' pin-ambiguous "tier:frontier" "tier:standard"
@@ -142,9 +142,9 @@ expect_args "a lone malformed pinned value is never forwarded" "{\"labels\":[\"t
 expect_warning "a lone malformed pinned value is named" "{\"labels\":[\"tier:pinned\",\"tier:APEX\"],$pin_trust}" pin-value-invalid "tier:APEX"
 expect_args "a malformed second stored Tier makes the cache ambiguous" '{"labels":["tier:apex","tier:APEX"]}' '[]'
 expect_warning "the mixed-validity stored Tier is named" '{"labels":["tier:apex","tier:APEX"]}' stored-tier-ambiguous "tier:apex" "tier:APEX"
-expect_args "an empty classification label passes the sentinel, never nothing" '{"labels":["risk:"]}' '["--risk=conflict"]'
+expect_args "an empty classification label passes the sentinel, never nothing" '{"owner_type":"User","labels":["risk:"]}' '["--risk=conflict"]'
 expect_args "an empty classification label beside a valid one is a conflict" \
-    '{"labels":["risk:high","risk:"]}' '["--risk=conflict"]'
+    '{"owner_type":"User","labels":["risk:high","risk:"]}' '["--risk=conflict"]'
 expect_warning "a malformed role-label rival is named in the conflict" \
     '{"labels":["tier:implementer:economy","tier:implementer:APEX"],"authorized_labels":["tier:implementer:economy","tier:implementer:APEX"]}' \
     tier-role-label-conflict "tier:implementer:APEX" "economy is the one passed"
@@ -172,10 +172,10 @@ expect_usage_error_input "a string document (thread 4176257533)" '"oops"'
 expect_usage_error_input "an unknown operator key (thread 4176257545)" '{"operator":{"rigour":"deep"}}'
 expect_usage_error_input "an unknown top-level key (thread 4176257545)" '{"labelz":["tier:apex"]}'
 expect_usage_error_input "a policy key inside the document" '{"policy":{"rigors":[],"strategies":[]}}'
-expect_usage_error_input "an unknown fields key (integration remediation 2, thread 4178249112)" '{"fields":{"rsk":"critical"}}'
-expect_args "the two known fields keys still apply" '{"fields":{"risk":"critical","complexity":"xl"}}' '["--risk=critical","--complexity=xl"]'
+expect_usage_error_input "an unknown fields key (integration remediation 2, thread 4178249112)" '{"owner_type":"Organization","fields":{"rsk":"critical"}}'
+expect_args "the two known fields keys still apply" '{"owner_type":"Organization","fields":{"risk":"critical","complexity":"xl"}}' '["--risk=critical","--complexity=xl"]'
 expect_warning "a non-slug classification value says it becomes the sentinel, not 'ignored'" \
-    '{"labels":["risk:HIGH"]}' label-value-invalid "--risk=conflict"
+    '{"owner_type":"User","labels":["risk:HIGH"]}' label-value-invalid "--risk=conflict"
 
 echo "==> tier-inputs.mjs: pin_provenance keys and types (integration remediation 3, thread 4178487551)"
 expect_usage_error_input "an unknown pin_provenance key" '{"pin_provenance":{"markerTrusted":true}}'
@@ -200,9 +200,9 @@ fixture_expect_source "an authorized rigor label: label" '{"labels":["rigor:deep
 expect_source "an operator rigor: operator" '{"operator":{"rigor":"light"}}' rigor operator
 
 echo "==> tier-inputs.mjs: extra-colon labels are counted, never dropped (integration remediation 1, thread 4176257550)"
-expect_args "an extra-colon Risk label is the off-scale sentinel" '{"labels":["risk:high:typo"]}' '["--risk=conflict"]'
+expect_args "an extra-colon Risk label is the off-scale sentinel" '{"owner_type":"User","labels":["risk:high:typo"]}' '["--risk=conflict"]'
 expect_args "an extra-colon Complexity label is the off-scale sentinel" \
-    '{"labels":["risk:high","complexity:m:typo"]}' '["--risk=high","--complexity=conflict"]'
+    '{"owner_type":"User","labels":["risk:high","complexity:m:typo"]}' '["--risk=high","--complexity=conflict"]'
 expect_args "an extra-colon Tier label makes a pin ambiguous" \
     "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:apex:old\"],$pin_trust}" '[]'
 expect_warning "the extra-colon ambiguous pin names both values" \
@@ -240,12 +240,41 @@ fixture_expect_warning "two strategy labels warn" \
     '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"]}' strategy-label-ambiguous
 expect_args "operator tiers" '{"operator":{"tiers":{"implementer":"apex","reviewer":"frontier"}}}' \
     '["--tier-overrides=implementer=apex,reviewer=frontier"]'
-expect_args "org fields are the classification" '{"fields":{"risk":"low","complexity":"xl"}}' '["--risk=low","--complexity=xl"]'
-expect_args "a field wins over a disagreeing label" '{"labels":["risk:high"],"fields":{"risk":"low"}}' '["--risk=low"]'
-expect_warning "a field/label disagreement warns" '{"labels":["risk:high"],"fields":{"risk":"low"}}' risk-field-label-mismatch
+expect_args "org fields are the classification" '{"owner_type":"Organization","fields":{"risk":"low","complexity":"xl"}}' '["--risk=low","--complexity=xl"]'
+expect_args "a field wins over a disagreeing label" '{"owner_type":"Organization","labels":["risk:high"],"fields":{"risk":"low"}}' '["--risk=low"]'
+expect_warning "a disagreeing org label is named inert" '{"owner_type":"Organization","labels":["risk:high"],"fields":{"risk":"low"}}' risk-label-inert "risk:high"
+
+echo "==> tier-inputs.mjs: the owner type is the classification's storage mode (harmon-devkit#1328)"
+# Organization: Risk and Complexity come ONLY from issue fields. An unset,
+# omitted or null field leaves the axis unset whatever labels the issue
+# carries — a stale same-axis label must never select the derived Tier.
+for org_input in \
+    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"]}' \
+    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{}}' \
+    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":null,"complexity":null}}' \
+    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":"","complexity":""}}'; do
+    expect_args "org: unset fields read no rating label ($org_input)" "$org_input" '[]'
+done
+expect_args "org: an unset field leaves only its own axis unset" \
+    '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":"low","complexity":null}}' '["--risk=low"]'
+expect_warning "org: a label beside an unset field says the axis stays unset" \
+    '{"owner_type":"Organization","labels":["complexity:xl"],"fields":{"complexity":null}}' complexity-label-inert "complexity:xl" "stays unset"
+expect_args "org: conflicting stale labels are inert too, never the sentinel" \
+    '{"owner_type":"Organization","labels":["risk:high","risk:low"],"fields":{"risk":"medium"}}' '["--risk=medium"]'
+# User: labels are the storage of record, exactly as before.
+expect_args "personal: labels are the classification" '{"owner_type":"User","labels":["risk:low","complexity:xl"]}' '["--risk=low","--complexity=xl"]'
+expect_usage_error_input "personal: issue fields are refused (they exist only on org repositories)" \
+    '{"owner_type":"User","labels":["risk:low"],"fields":{"risk":"high"}}'
+expect_usage_error_input "personal: even a null field is refused" '{"owner_type":"User","fields":{"risk":null}}'
+# No owner type: the storage mode is unknown, so a classification input is a
+# usage error rather than read from either source or silently dropped.
+expect_usage_error_input "no owner_type with a rating label" '{"labels":["risk:high","complexity:m"]}'
+expect_usage_error_input "no owner_type with a set field" '{"fields":{"risk":"high"}}'
+expect_args "no owner_type and no classification input still translates" '{"labels":["tier:standard"],"fields":{"risk":null}}' '["--stored-tier=standard"]'
+expect_usage_error_input "an unknown owner_type" '{"owner_type":"organization","labels":["risk:high"]}'
 expect_args "conflicting risk labels pass the off-scale sentinel (review round 1, R1-1)" \
-    '{"labels":["risk:high","risk:low","complexity:s"]}' '["--risk=conflict","--complexity=s"]'
-expect_args "a non-slug classification value passes the sentinel, never nothing" '{"labels":["risk:HIGH"]}' '["--risk=conflict"]'
+    '{"owner_type":"User","labels":["risk:high","risk:low","complexity:s"]}' '["--risk=conflict","--complexity=s"]'
+expect_args "a non-slug classification value passes the sentinel, never nothing" '{"owner_type":"User","labels":["risk:HIGH"]}' '["--risk=conflict"]'
 expect_args "a non-slug value never reaches the reader" '{"labels":["tier:--json"]}' '[]'
 if printf '%s' '{"labels":"tier:standard"}' | node "$helper" --policy "$base_policy" >/dev/null 2>&1; then
     fail "malformed input must exit non-zero"
@@ -295,7 +324,7 @@ expect_args "authorization is per label" \
     '{"labels":["rigor:deep","tier:implementer:apex"],"authorized_labels":["tier:implementer:apex"]}' '["--tier-labels=implementer=apex"]'
 expect_args "authorizing a label the issue does not carry adds nothing" '{"labels":[],"authorized_labels":["rigor:deep"]}' '[]'
 expect_args "classification and the stored Tier are never gated (ADR 2026-09-30 D3)" \
-    '{"labels":["risk:high","complexity:m","tier:frontier"]}' '["--risk=high","--complexity=m","--stored-tier=frontier"]'
+    '{"owner_type":"User","labels":["risk:high","complexity:m","tier:frontier"]}' '["--risk=high","--complexity=m","--stored-tier=frontier"]'
 if printf '%s' '{"labels":[],"authorized_labels":"rigor:deep"}' | node "$helper" --policy "$base_policy" >/dev/null 2>&1; then
     fail "a non-array authorized_labels must exit non-zero"
 else
@@ -345,8 +374,8 @@ rc=0
 node "$reader" detect --policy "$base_policy" --risk high >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then ok; else fail "detect must refuse a resolve-only option (exit 2), got $rc"; fi
 
-# 18 corpus-policy resolution/disclosure assertions in this block.
-if need_fixtures 18; then
+# 20 corpus-policy resolution/disclosure assertions in this block.
+if need_fixtures 20; then
     echo "==> tier-inputs.mjs + devflow-policy.mjs: end to end over the corpus base policy"
     # e2e NAME INPUT IMPL_TIER IMPL_SOURCE [DISCLOSURE_SUBSTRING...]
     e2e() {
@@ -379,7 +408,7 @@ if need_fixtures 18; then
     }
 
     trusted='"pin_provenance":{"marker_trusted":true,"value_trusted":true}'
-    e2e "derived Tier sets the implementer" '{"labels":["risk:critical","complexity:xl"]}' apex derived \
+    e2e "derived Tier sets the implementer" '{"owner_type":"User","labels":["risk:critical","complexity:xl"]}' apex derived \
         "source: derived" "issue Tier: derived apex"
     e2e "pin beats a scoped label, and the label is disclosed as overridden" \
         "{\"labels\":[\"tier:pinned\",\"tier:economy\",\"tier:implementer:frontier\"],\"authorized_labels\":[\"tier:implementer:frontier\"],$trusted}" economy pinned \
@@ -388,19 +417,27 @@ if need_fixtures 18; then
         "{\"labels\":[\"tier:pinned\",\"tier:apex\"],$trusted}" apex pinned \
         "pin-caused invariant break: challenger"
     e2e "without the pin, the scoped label beats the derived Tier" \
-        '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"],"authorized_labels":["tier:implementer:economy"]}' economy label \
+        '{"owner_type":"User","labels":["tier:implementer:economy","risk:critical","complexity:xl"],"authorized_labels":["tier:implementer:economy"]}' economy label \
         "source: rigor" "issue Tier: derived apex"
     e2e "an unauthorized scoped label leaves the derived Tier in charge, and says so" \
-        '{"labels":["tier:implementer:economy","risk:critical","complexity:xl"]}' apex derived \
+        '{"owner_type":"User","labels":["tier:implementer:economy","risk:critical","complexity:xl"]}' apex derived \
         "source: derived" "warning [policy-label-unauthorized]" "tier:implementer:economy"
     e2e "ambiguous pin resolves through the derived Tier" \
-        "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"risk:low\",\"complexity:xs\"],$trusted}" local derived \
+        "{\"owner_type\":\"User\",\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"risk:low\",\"complexity:xs\"],$trusted}" local derived \
         "warning [pin-ambiguous]" "tier:apex" "tier:local" "source: derived"
     e2e "untrusted pin resolves unpinned and says so" \
-        '{"labels":["tier:pinned","tier:apex","risk:low","complexity:xs"]}' local derived \
+        '{"owner_type":"User","labels":["tier:pinned","tier:apex","risk:low","complexity:xs"]}' local derived \
         "pin: ignored (untrusted)" "warning [pin-untrusted]"
     e2e "leftover tier:adaptive resolves as absent" '{"labels":["tier:adaptive"]}' standard rigor-profile \
         "source: default" "warning [tier-retired]"
+    # harmon-devkit#1328: on an organization issue a stale same-axis label
+    # never selects the derived Tier; only the fields do.
+    e2e "org: a stale rating label beside an unset field derives no Tier" \
+        '{"owner_type":"Organization","labels":["risk:critical","complexity:xl"],"fields":{"risk":null}}' standard rigor-profile \
+        "source: default" "warning [risk-label-inert]" "warning [complexity-label-inert]"
+    e2e "org: the fields derive the Tier over disagreeing labels" \
+        '{"owner_type":"Organization","labels":["risk:low","complexity:xs"],"fields":{"risk":"critical","complexity":"xl"}}' apex derived \
+        "source: derived" "issue Tier: derived apex"
     e2e "no classification resolves to the default profile" '{"labels":[]}' standard rigor-profile "source: default"
     e2e "a stale strategy label no longer blocks resolution" \
         '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
@@ -435,7 +472,7 @@ if need_fixtures 18; then
     # Thread 4178249123: an ambiguous pin drops the pin rung only — an authorized
     # scoped label still decides, and no line claims the derived Tier decided.
     e2e "an ambiguous pin plus an authorized scoped label resolves the label" \
-        "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\",\"risk:critical\",\"complexity:xl\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}" \
+        "{\"owner_type\":\"User\",\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\",\"risk:critical\",\"complexity:xl\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}" \
         economy label "warning [pin-ambiguous]" "the pin rung is dropped" "source: rigor"
     ambiguous_lines="$(disclose_lines "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:local\",\"tier:implementer:economy\"],\"authorized_labels\":[\"tier:implementer:economy\"],$trusted}")"
     if grep -qF "resolves through its derived Tier" <<<"$ambiguous_lines"; then
@@ -610,9 +647,9 @@ run_recipe() {
 if [ -z "$recipe_cmd" ]; then
     fail "could not extract the tier-resolution recipe from dev-flow-support/SKILL.md"
 else
-    if need_fixtures; then run_recipe valid '{"labels":["risk:high","complexity:m"]}' success; fi
+    if need_fixtures; then run_recipe valid '{"owner_type":"User","labels":["risk:high","complexity:m"]}' success; fi
     run_recipe malformed-operator '{"operator":{"tier":"apex"}}' translation-failure
-    run_recipe extraction-fails-after-partial-output '{"labels":["risk:high","complexity:m"]}' extraction-failure
+    run_recipe extraction-fails-after-partial-output '{"owner_type":"User","labels":["risk:high","complexity:m"]}' extraction-failure
 fi
 if need_fixtures; then
     control_rc=0
@@ -651,11 +688,11 @@ process.exit(ok ? 0 : 1);
         fi
         ok
     }
-    expect_indeterminate "both axes conflicting" '{"labels":["risk:high","risk:low","complexity:s","complexity:xl"]}'
-    expect_indeterminate "risk conflicting, complexity absent" '{"labels":["risk:high","risk:low"]}'
-    expect_indeterminate "risk conflicting, complexity clean" '{"labels":["risk:high","risk:low","complexity:m"]}'
+    expect_indeterminate "both axes conflicting" '{"owner_type":"User","labels":["risk:high","risk:low","complexity:s","complexity:xl"]}'
+    expect_indeterminate "risk conflicting, complexity absent" '{"owner_type":"User","labels":["risk:high","risk:low"]}'
+    expect_indeterminate "risk conflicting, complexity clean" '{"owner_type":"User","labels":["risk:high","risk:low","complexity:m"]}'
     expect_indeterminate "a mixed-validity ambiguous pin resolves through the (indeterminate) derived Tier" \
-        "{\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\",\"risk:high\",\"risk:low\"],$pin_trust}"
+        "{\"owner_type\":\"User\",\"labels\":[\"tier:pinned\",\"tier:apex\",\"tier:APEX\",\"risk:high\",\"risk:low\"],$pin_trust}"
 
     echo "==> devflow-policy.mjs: with no [tier.matrix], exit 3 only when the derived rung decides (review round 2, R2-2)"
     no_matrix_policy="$scratch/no-matrix-r22.toml"
