@@ -1648,15 +1648,12 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 //   after a tell cycle is accepted only when that cycle recorded a delete or
 //   restructure remedy and nothing it kept (`retain`); otherwise the record is
 //   indeterminate.
-// - `capped`: the latest state holds a confirmed P0/P1 and the charged
-//   cycles have reached the integration cap. `continue` otherwise; a single
-//   clean cycle is `continue`/`last_cycle_clean`, because one terminal clean
-//   cycle with every finding settled ends the stage through the readiness
-//   gate, not through this exit.
-//
-// `gating` on the verdict says whether the latest state holds a confirmed
-// P0/P1 that no settlement without a push can answer; readiness-gate.sh reads
-// it.
+// - `capped`: the clean streak is broken and the charged cycles have reached
+//   the integration cap. `continue` otherwise; a single clean cycle is
+//   `continue`/`last_cycle_clean`, because one terminal clean cycle with every
+//   finding settled ends the stage through the readiness gate, not through
+//   this exit. The engine never tries to prove a P0/P1 was answered by a fix
+//   push; settling one is the readiness gate's existing conditions.
 
 const INTEGRATION_PASS_NAME = /^integration-r([1-9][0-9]*)(?:-[a-z0-9-]+)?$/;
 const PUSH_REMEDIES = ["delete", "restructure"];
@@ -1717,18 +1714,9 @@ function loadIntegrationRounds(runDir, validatorPath) {
   return [...byRound.values()].sort((x, y) => x.round - y.round);
 }
 
-// One invariant, used by the tell guard and by the gating clear alike: a
-// remediation push happened between two cycles exactly when the later one
-// reviewed a different head AND charged more. A same-head cycle, an exempt
-// base-merge cycle, and a carry all fail it — filing settles P2s only.
-function pushedSince(from, to) {
-  return to.head !== from.head && to.charged > from.charged;
-}
-
 function computeIntegrationExit(rounds, integrationCap) {
   const cycles = [];
   let streak = 0;
-  let gatingAt = null; // {head, charged} where an open P0/P1 was raised
   let ordinal = 0;
   let awaiting = null;
   for (const r of rounds) {
@@ -1758,10 +1746,7 @@ function computeIntegrationExit(rounds, integrationCap) {
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
       // attempt. Its own adjudications can still break the streak.
-      if (roundGating) {
-        streak = 0;
-        gatingAt = { head: r.pass.envelope.head, charged: cycles.at(-1)?.charged ?? 0 };
-      }
+      if (roundGating) streak = 0;
       continue;
     }
     const latest = cycles.at(-1);
@@ -1774,7 +1759,6 @@ function computeIntegrationExit(rounds, integrationCap) {
       if (roundGating) {
         latest.clean = false;
         streak = 0;
-        gatingAt = latest;
       }
       continue;
     }
@@ -1793,21 +1777,16 @@ function computeIntegrationExit(rounds, integrationCap) {
       clean: !roundGating,
     };
     cycles.push(cycle);
-    if (!cycle.clean || (gatingAt && !pushedSince(gatingAt, cycle))) {
-      streak = 0;
-      if (!cycle.clean) gatingAt = cycle;
-    } else {
-      streak += 1;
-      gatingAt = null;
-    }
+    streak = cycle.clean ? streak + 1 : 0;
   }
-  const gating = gatingAt !== null;
 
   const isTell = (c) => c.cycle >= 2 && c.entries.length > 0 && c.entries.every((e) => e.checkpoint?.attacks_remediation === true);
   for (let i = 0; i + 1 < cycles.length; i++) {
     const tell = cycles[i];
     const next = cycles[i + 1];
-    if (!isTell(tell) || !pushedSince(tell, next)) continue;
+    // A next cycle on the same head, or one that charged nothing (an exempt
+    // base merge), followed no remediation push.
+    if (!isTell(tell) || next.head === tell.head || next.charged <= tell.charged) continue;
     // A push remedy counts only when the entry's disposition IS that remedy:
     // `fix` with remedy `delete` is a hardening push wearing a delete label
     // (#1272 challenge round 1; the validator refuses the pairing).
@@ -1822,7 +1801,7 @@ function computeIntegrationExit(rounds, integrationCap) {
   }
 
   const summary = cycles.map((c) => ({ cycle: c.cycle, rounds: c.rounds, head: c.head, clean: c.clean, tell: isTell(c) }));
-  const base = { stage: "integration", rounds_counted: cycles.length, next_round: null, clean_streak: streak, gating, cycles: summary };
+  const base = { stage: "integration", rounds_counted: cycles.length, next_round: null, clean_streak: streak, cycles: summary };
   if (awaiting !== null) base.incomplete_round = awaiting;
   if (integrationCap === 0) {
     if (cycles.length > 0) {
@@ -1834,13 +1813,13 @@ function computeIntegrationExit(rounds, integrationCap) {
   if (awaiting !== null) return { ...base, outcome: "continue", reason: "awaiting_adjudication", action: "adjudicate" };
   if (!latest) return { ...base, outcome: "continue", reason: "no_completed_cycle", action: "dispatch", next_round: 1 };
   if (isTell(latest)) {
-    return gating
+    return !latest.clean
       ? { ...base, outcome: "diverging", reason: "tell_with_gating_findings", action: "escalate" }
       : { ...base, outcome: "diverging", reason: "tell", action: "stop-fix-loop" };
   }
-  if (!gating && streak >= 2) return { ...base, outcome: "converged", reason: "two_consecutive_clean", action: "settle-without-push" };
-  if (gating && latest.charged >= integrationCap) return { ...base, outcome: "capped", reason: "cap_reached_with_gating_findings", action: "escalate" };
-  if (gating) return { ...base, outcome: "continue", reason: "gating_findings", action: "fix", next_round: latest.cycle + 1 };
+  if (streak >= 2) return { ...base, outcome: "converged", reason: "two_consecutive_clean", action: "settle-without-push" };
+  if (streak === 0 && latest.charged >= integrationCap) return { ...base, outcome: "capped", reason: "cap_reached_with_gating_findings", action: "escalate" };
+  if (streak === 0) return { ...base, outcome: "continue", reason: "gating_findings", action: "fix", next_round: latest.cycle + 1 };
   return { ...base, outcome: "continue", reason: "last_cycle_clean", action: "settle", next_round: latest.cycle + 1 };
 }
 

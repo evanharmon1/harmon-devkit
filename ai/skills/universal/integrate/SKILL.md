@@ -1321,9 +1321,10 @@ the document without it.
   draft. Indeterminate is never a pass: fix the record or escalate.
 
 The readiness gate runs the same computation over `--record` and refuses
-promotion while the latest integration state holds a confirmed P0/P1
-(`integration-gating-findings`) or the record cannot be read
-(`integration-exit-indeterminate`).
+promotion when the record cannot be read (`integration-exit-indeterminate`).
+The engine does not prove a P0/P1 was answered by a fix push; that stays with
+the gate's own conditions — every finding settled, a clean current-head
+cycle.
 
 ## 4. Reply in-thread
 

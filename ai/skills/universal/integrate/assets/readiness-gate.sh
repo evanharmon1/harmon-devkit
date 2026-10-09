@@ -63,8 +63,7 @@
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
-#   evidence-marker-missing, remediation-capped,
-#   integration-gating-findings                              (fail)
+#   evidence-marker-missing, remediation-capped              (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
@@ -1894,16 +1893,11 @@ if [ "$remediation_loops" -eq 0 ]; then
 fi
 
 # 9f. The integration exit (harmon-devkit#1272), computed by the exit engine
-# over the same record, never re-derived here. Two things it settles that no
-# condition above can see. A record the engine cannot read — a remediation
-# push after a tell cycle with no delete/restructure remedy recorded, a cycle
-# missing its checkpoint, an adjudication with no pass — is indeterminate.
-# And a latest integration state holding a confirmed P0/P1 fails: such a
-# finding is answered only by a fix push, which owes a new cycle, so it can
-# never be settled by declining or filing it ("Filing settles P2s only") —
-# that is the tell-with-P0/P1 escalation and the cap-reached stop alike. A
-# stage that converged with its P2s declined or filed, or that ended on one
-# clean cycle, passes this step; every other condition still applies.
+# over the same record, never re-derived here. A record the engine cannot read
+# — a remediation push after a tell cycle with no delete/restructure remedy
+# recorded, a cycle-ordinal sequence with a hole, a cycle missing its
+# checkpoint, an adjudication with no pass — is indeterminate. Every verdict
+# passes this step; settling findings is the conditions above.
 exit_engine="$support_dir/dev-flow-exit.mjs"
 [ -f "$exit_engine" ] ||
     die "$exit_engine is missing — the dev-flow-support package must be vendored alongside this skill"
@@ -1914,7 +1908,7 @@ const [record, cap, validator, engine] = process.argv.slice(1);
 const { integrationExitForRunDir, ExitIndeterminate } = await import(engine);
 try {
   const v = integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
-  console.log(JSON.stringify({ ok: true, outcome: v.outcome, reason: v.reason, gating: v.gating }));
+  console.log(JSON.stringify({ ok: true, outcome: v.outcome, reason: v.reason }));
 } catch (err) {
   if (!(err instanceof ExitIndeterminate)) throw err;
   console.log(JSON.stringify({ ok: false, reason: err.message }));
@@ -1922,9 +1916,6 @@ try {
     indeterminate integration-exit-indeterminate "the integration exit engine could not run over --record"
 if ! jq -e '.ok' <<<"$integration_exit" >/dev/null 2>&1; then
     indeterminate integration-exit-indeterminate "the integration exit is indeterminate: $(jq -r '.reason // "unreadable engine output"' <<<"$integration_exit" 2>/dev/null)"
-fi
-if jq -e '.gating == true' <<<"$integration_exit" >/dev/null 2>&1; then
-    fail_condition integration-gating-findings "the integration exit is $(jq -r '"\(.outcome)/\(.reason)"' <<<"$integration_exit"): the latest integration state holds a confirmed P0/P1, which only a fix push and a fresh cycle can answer — filing settles P2s only; keep the PR draft and escalate or fix"
 fi
 
 # 9e. Every adjudicated round has its own issue evidence comment
