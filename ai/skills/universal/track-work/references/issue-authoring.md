@@ -207,7 +207,7 @@ repository root rather than the installed skill directory:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh \
-  --repo <owner/repo> \
+  --repo <[host/]owner/repo> \
   --repo-root <target-checkout> \
   --owner-type personal \
   --title '(<free-form scope>): <imperative outcome>' \
