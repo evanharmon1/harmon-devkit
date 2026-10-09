@@ -1775,9 +1775,18 @@ cmd_label() {
                 "have changed its Tier, but the read that checks for a" \
                 "tier:pinned added during it failed; check its Tier labels by hand"
         in_list "tier:pinned" "$post_edit" || return 0
-        for t in "${tier_removes[@]+"${tier_removes[@]}"}"; do
-            in_list "$t" "$post_edit" || readd+=("$t")
-        done
+        # The restore leaves the issue with the human's Tier: this call's
+        # added Tier goes, and a Tier it removed comes back only when no other
+        # tier:<value> is on the issue. A human who replaced the Tier before
+        # pinning (the documented pin workflow) keeps their choice alone.
+        local human_tier
+        human_tier="$(grep -E '^tier:[^:]+$' <<<"$post_edit" |
+            grep -vxF -e "tier:pinned" -e "${tier_add:-tier:pinned}" || true)"
+        if [ -z "$human_tier" ]; then
+            for t in "${tier_removes[@]+"${tier_removes[@]}"}"; do
+                in_list "$t" "$post_edit" || readd+=("$t")
+            done
+        fi
         [ "${#readd[@]}" -eq 0 ] || restore+=(--add-label "$(
             IFS=,
             echo "${readd[*]}"

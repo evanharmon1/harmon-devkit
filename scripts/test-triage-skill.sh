@@ -2482,6 +2482,26 @@ rm -f "$stub_dir"/.label-reads-*
 # shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
 issue_fixture 60 $classified needs-triage
 
+echo "==> label: a human who re-tiered before pinning keeps their Tier alone"
+# The documented pin workflow: replace the Tier, then add tier:pinned. The
+# restore drops this call's Tier and must not bring back the one it removed.
+# shellcheck disable=SC2086
+issue_fixture 60 $classified needs-triage tier:local
+rm -f "$stub_dir"/.label-reads-*
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ=3 \
+    GH_STUB_LABELS_CHANGE_ADD="tier:pinned tier:standard" "$apply" label \
+    --repo "$repo" --issue 60 --impact high --risk high --complexity m \
+    --execute --manifest "$manifest" --policy "$policy")" = 4 ] ||
+    fail "a pin added during the label edit must refuse: $(cat "$tmp/out")"
+grep -qx "issue edit 60 --repo $repo --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "only this call's Tier may be removed: $(cat "$GH_STUB_LOG")"
+grep -q -- "--add-label tier:local" "$GH_STUB_LOG" &&
+    fail "the replaced Tier must not return beside the human's: $(cat "$GH_STUB_LOG")"
+rm -f "$stub_dir"/.label-reads-*
+# shellcheck disable=SC2086 # restore #60 (the knob edited its fixture)
+issue_fixture 60 $classified needs-triage
+
 echo "==> label: a failed label edit that landed still has a pinned Tier restored"
 # Same window, but gh reports the edit failed after it applied.
 # shellcheck disable=SC2086
