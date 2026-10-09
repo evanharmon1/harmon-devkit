@@ -37,6 +37,10 @@ if [ -n "$repo_root" ] && [ -d "$repo_root/ai/skills/universal/dev-flow-support"
     source_tree=1
 fi
 if [ "$source_tree" -eq 1 ]; then
+    [ -d "$fixture_dir" ] || {
+        echo "test-tier-inputs: missing source-tree fixtures: $fixture_dir" >&2
+        exit 1
+    }
     for fixture in policy.toml agent-registry.json task-targets.json; do
         [ -f "$fixture_dir/$fixture" ] || {
             echo "test-tier-inputs: missing source-tree fixture: $fixture_dir/$fixture" >&2
