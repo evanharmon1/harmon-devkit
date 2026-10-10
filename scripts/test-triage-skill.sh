@@ -254,6 +254,11 @@ api\ repos/*)
         [ -e "$GH_STUB_DIR/.edit-failed-${GH_STUB_RUN_ID:-}" ]; then
         exit 1
     fi
+    # GH_STUB_VIEW_FAIL_MATCH=RE: every read whose arguments match RE fails.
+    if [ -n "${GH_STUB_VIEW_FAIL_MATCH:-}" ] &&
+        grep -qE -- "$GH_STUB_VIEW_FAIL_MATCH" <<<"$*"; then
+        exit 1
+    fi
     issue_src="${GH_STUB_DIR:?}/issue-${3:?}.json"
     [ -z "${GH_STUB_RUN_ID:-}" ] ||
         [ ! -f "$GH_STUB_DIR/.overlay-$GH_STUB_RUN_ID-$3.json" ] ||
@@ -296,6 +301,12 @@ api\ repos/*)
     fi
     [ -t 0 ] || cat >/dev/null
     [ "${GH_STUB_EDIT_FAIL:-0}" = 0 ] || exit 1
+    # GH_STUB_EDIT_FAIL_MATCH=RE: every edit whose arguments match RE fails
+    # without applying (a restore edit, say, while the label edit lands).
+    if [ -n "${GH_STUB_EDIT_FAIL_MATCH:-}" ] &&
+        grep -qE -- "$GH_STUB_EDIT_FAIL_MATCH" <<<"$*"; then
+        exit 1
+    fi
     if [ "${GH_STUB_EDIT_FAIL_ON_REMOVE:-0}" = 1 ] &&
         grep -q -- '--remove-label' <<<"$*"; then
         exit 1
@@ -2584,6 +2595,55 @@ rm -f "$stub_dir"/.label-reads-*
 # shellcheck disable=SC2086
 issue_fixture 60 $classified needs-triage
 
+echo "==> human removal: a pin and a claim during one edit are both reconciled"
+# One call changes the Tier and removes human. Read 3 is the Tier check and
+# read 4 the human check; the pin and the claim land on read 3, so both see
+# them. Whichever reconciliation fails, the other still runs, and the most
+# severe outcome decides the exit.
+# shellcheck disable=SC2086
+issue_fixture 627 $classified needs-triage tier:local human
+jq '.title = "(agent): Implement dispatchable feature"
+    | .body = "## Acceptance criteria\n\n- [ ] [CI] Test feature"' \
+    "$stub_dir/issue-627.json" >"$tmp/issue-627.json"
+combined_run() {
+    cp "$tmp/issue-627.json" "$stub_dir/issue-627.json"
+    rm -f "$stub_dir/.label-reads-627"
+    : >"$GH_STUB_LOG"
+    run env TRIAGE_EXECUTE=1 GH_STUB_LABELS_CHANGE_ON_READ="$1" \
+        GH_STUB_LABELS_CHANGE_ADD="tier:pinned claim:gpt" "${@:2}" "$apply" label \
+        --repo "$repo" --issue 627 --impact high --risk high --complexity m \
+        --manifest "$human_manifest" --policy "$policy" --remove human --execute
+}
+# The Tier restore fails: exit 1, and human is still re-added.
+[ "$(combined_run 3 GH_STUB_EDIT_FAIL_MATCH='--remove-label tier:frontier$')" = 1 ] ||
+    fail "a failed Tier restore must exit 1: $(cat "$tmp/out")"
+grep -q -- "--remove-label tier:local,human" "$GH_STUB_LOG" ||
+    fail "the label edit must change the Tier and remove human: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 627 --repo $repo --add-label human" "$GH_STUB_LOG" ||
+    fail "a failed Tier restore must not skip the human re-add: $(cat "$GH_STUB_LOG")"
+grep -q "RESTORED 'human' on $repo#627" "$tmp/out" || fail "the human restore must be reported"
+grep -q "restoring its Tier failed — fix by hand" "$tmp/out" ||
+    fail "the Tier fix-by-hand line must be printed: $(cat "$tmp/out")"
+grep -q "removal guards for 'human' stopped holding on $repo#627" "$tmp/out" ||
+    fail "the human refusal must still be printed: $(cat "$tmp/out")"
+# The Tier check cannot read (it does not count as a read; the human check is
+# read 3): exit 2, and human is still re-added.
+[ "$(combined_run 3 GH_STUB_VIEW_FAIL_MATCH='--json labels -q')" = 2 ] ||
+    fail "an unreadable Tier check must exit 2: $(cat "$tmp/out")"
+grep -qx "issue edit 627 --repo $repo --add-label human" "$GH_STUB_LOG" ||
+    fail "an unreadable Tier check must not skip the human re-add: $(cat "$GH_STUB_LOG")"
+grep -q "tier:pinned added during it failed" "$tmp/out" ||
+    fail "the Tier indeterminate must be reported: $(cat "$tmp/out")"
+# The human re-add fails: exit 1, and the Tier is still restored.
+[ "$(combined_run 3 GH_STUB_EDIT_FAIL_MATCH='--add-label human$')" = 1 ] ||
+    fail "a failed human re-add must exit 1: $(cat "$tmp/out")"
+grep -qx "issue edit 627 --repo $repo --add-label tier:local --remove-label tier:frontier" "$GH_STUB_LOG" ||
+    fail "a failed human re-add must not skip the Tier restore: $(cat "$GH_STUB_LOG")"
+grep -q "fix by hand: --add-label human" "$tmp/out" ||
+    fail "the human fix-by-hand line must be printed: $(cat "$tmp/out")"
+grep -q "RESTORED 'tier:local' on $repo#627" "$tmp/out" || fail "the Tier restore must be reported"
+rm -f "$stub_dir/.label-reads-627"
+
 echo "==> label: a stale derived Tier is replaced, never stacked"
 [ "$(run "$apply" label --repo "$repo" --issue 62 --risk high \
     --manifest "$manifest" --policy "$policy")" = 0 ] ||
@@ -3727,7 +3787,7 @@ grep -qF "write failed: gh issue edit $repo#626; its removal of 'human' landed" 
     fail "the failure must report the removal and the restore: $(cat "$tmp/out")"
 rm -f "$stub_dir"/.edit-failed-*
 
-echo "==> human removal: an unverifiable post-edit read is a write indeterminate (exit 2)"
+echo "==> human removal: an unverifiable post-edit read re-adds human conservatively (exit 2)"
 cp "$stub_dir/issue-604.json" "$stub_dir/issue-626.json"
 rm -f "$stub_dir/.label-reads-626"
 : >"$GH_STUB_LOG"
@@ -3737,8 +3797,24 @@ rm -f "$stub_dir/.label-reads-626"
     fail "an unverifiable post-edit read must exit 2: $(cat "$tmp/out")"
 grep -q "write indeterminate: 'human' was removed from $repo#626" "$tmp/out" ||
     fail "the indeterminate result must name the issue: $(cat "$tmp/out")"
-grep -q -- "--add-label human" "$GH_STUB_LOG" &&
-    fail "an unverified read must not restore blindly: $(cat "$GH_STUB_LOG")"
+grep -qx "issue edit 626 --repo $repo --add-label human" "$GH_STUB_LOG" ||
+    fail "an unproven removal must re-add human: $(cat "$GH_STUB_LOG")"
+grep -q "'human' was re-added conservatively" "$tmp/out" ||
+    fail "the conservative re-add must be reported: $(cat "$tmp/out")"
+
+echo "==> human removal: a failed conservative re-add is a write failure (exit 1)"
+# needs-triage is already on the issue, so the label edit adds nothing and
+# only the re-add carries --add-label.
+jq '.labels += [{name:"needs-triage"}]' "$stub_dir/issue-604.json" >"$stub_dir/issue-626.json"
+rm -f "$stub_dir/.label-reads-626"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 GH_STUB_CONTENT_CHANGE_ON_READ=3 \
+    GH_STUB_CONTENT_CHANGE_JSON='{"body":null}' GH_STUB_EDIT_FAIL_MATCH='--add-label human$' \
+    "$apply" label --repo "$repo" --issue 626 --manifest "$human_manifest" \
+    --remove human --execute)" = 1 ] ||
+    fail "a failed conservative re-add must exit 1: $(cat "$tmp/out")"
+grep -q "fix by hand: --add-label human" "$tmp/out" ||
+    fail "a failed re-add must say how to fix it: $(cat "$tmp/out")"
 
 echo "==> human removal: guards still holding after the label edit restore nothing"
 cp "$stub_dir/issue-604.json" "$stub_dir/issue-626.json"
@@ -3941,6 +4017,8 @@ grep -q 'INDETERMINATE' "$tmp/out" && fail "successful re-read retaining human i
 removal_evidence="$(grep "INDETERMINATE remove 'human'" "$tmp/out")"
 [ "$removal_evidence" = "INDETERMINATE remove 'human' from $repo#604 (edit failed; re-read failed)" ] ||
     fail "unknown outcome must emit exact indeterminate evidence"
+grep -q "RESTORED 'human' on $repo#604" "$tmp/out" ||
+    fail "an unknown removal outcome must re-add human conservatively: $(cat "$tmp/out")"
 grep -q "APPLIED remove 'human'" "$tmp/out" && fail "unknown outcome is not confirmed"
 cat >"$tmp/indeterminate-human-removal-entries.md" <<MD
 ## Human removals
