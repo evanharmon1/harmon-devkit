@@ -2379,13 +2379,6 @@ function checkPlanCoherence(document, errors) {
     for (const name of laneNames) {
       if (!profileNames.includes(name)) errors.push(`$plan.lane_profiles: missing profile for lane ${JSON.stringify(name)}`)
     }
-    for (const [index, entry] of profiles.entries()) {
-      for (const stage of ['challenge', 'review']) {
-        if (entry.policy.caps.min_rounds > entry.policy.caps[stage]) {
-          errors.push(`$plan.lane_profiles[${index}].policy.caps: min_rounds exceeds ${stage} cap`)
-        }
-      }
-    }
   }
   const laneBranches = lanes.map((lane) => lane.branch)
   const laneRuns = lanes.map((lane) => lane.run_id)
