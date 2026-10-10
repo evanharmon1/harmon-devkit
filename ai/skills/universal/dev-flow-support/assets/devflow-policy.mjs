@@ -2721,6 +2721,26 @@ function tryDelegateToClosure(argv) {
       return 1;
     }
   }
+  // The same hazard for the explicit absent merge-base policy: a reader
+  // written before it (one that accepts any flag) would ignore
+  // --merge-base-policy-absent and let the branch's own policy govern, the
+  // one outcome the flag exists to prevent. Refuse rather than drop it.
+  const wantsAbsentBase = passthrough.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="));
+  if (wantsAbsentBase) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`devflow-policy: could not read the --closure reader to check its flag support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("merge-base-policy-absent")) {
+      console.error(
+        `devflow-policy: the --closure reader (${trustedScript}) predates --merge-base-policy-absent and would silently drop it, letting the branch policy govern — refusing`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`devflow-policy: could not exec the --closure reader: ${result.error.message}`);

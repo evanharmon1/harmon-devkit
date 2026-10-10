@@ -157,6 +157,66 @@ else
     err "absent-base resolve with a broken selected table exited $status: $(head -2 "$scratch/absent.err")"
 fi
 
+# Under the absent-base flag only --merge-base-registry governs: the branch's
+# own --registry must never satisfy governance cross-validation (Codex cloud
+# review cycle 1 on #1343, finding 4).
+echo "==> absent merge-base policy routes governance to --merge-base-registry only"
+make_repo "$scratch/route" "$support/devflow-policy.mjs"
+set +e
+(cd "$scratch/route" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --merge-base-policy-absent --registry agent-registry.json --taskfile-dir . --json \
+    >"$scratch/route-branch.json" 2>/dev/null)
+branch_only=$?
+(cd "$scratch/route" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --merge-base-policy-absent --registry agent-registry.json \
+    --merge-base-registry agent-registry.json --taskfile-dir . --json \
+    >/dev/null 2>/dev/null)
+with_base=$?
+set -e
+if [ "$branch_only" -eq 3 ] && grep -q 'no registry was supplied' "$scratch/route-branch.json" &&
+    [ "$with_base" -eq 0 ]; then
+    echo "  ✓ the branch registry never satisfies governance cross-validation"
+else
+    err "registry routing under the absent flag: branch-only exit $branch_only, with merge-base registry exit $with_base"
+fi
+
+# A --closure reader written before the flag (one that accepts any option)
+# would drop it and let the branch policy govern; delegation must refuse
+# instead (Codex cloud review cycle 1 on #1343, finding 1).
+echo "==> --closure refuses a reader that predates --merge-base-policy-absent"
+mkdir -p "$scratch/oldclosure"
+printf '%s\n' 'process.stdout.write("OLD-READER-RAN\n");' >"$scratch/oldclosure/devflow-policy.mjs"
+set +e
+node "$support/devflow-policy.mjs" resolve --closure "$scratch/oldclosure" --policy "$fixtures/policy.toml" \
+    --merge-base-policy-absent --json >"$scratch/oldclosure.out" 2>"$scratch/oldclosure.err"
+old_status=$?
+set -e
+if [ "$old_status" -eq 1 ] && grep -Fq 'predates --merge-base-policy-absent' "$scratch/oldclosure.err" &&
+    ! grep -Fq 'OLD-READER-RAN' "$scratch/oldclosure.out"; then
+    echo "  ✓ delegation refuses a reader that would drop the flag"
+else
+    err "--closure delegated --merge-base-policy-absent to a reader that predates it (exit $old_status)"
+fi
+
+# The library refuses an absent merge base that also supplies a merge-base
+# document, with otherwise valid v2 documents (finding 6).
+echo "==> library refuses an absent merge base together with mergeBaseDoc"
+if node --input-type=module - "$support/devflow-policy.mjs" "$support/lib/toml-lite.mjs" "$fixtures/policy.toml" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { resolvePolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
+const { parseToml } = await import(pathToFileURL(process.argv[3]));
+const doc = parseToml(readFileSync(process.argv[4], "utf8"));
+assert.doesNotThrow(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true }));
+assert.throws(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true, mergeBaseDoc: doc }), PolicyError);
+JS
+then
+    echo "  ✓ library refuses mergeBasePolicyAbsent with mergeBaseDoc"
+else
+    err "resolvePolicy accepted mergeBasePolicyAbsent together with a mergeBaseDoc"
+fi
+
 echo "==> conformance corpus against the vendored reader"
 make_repo "$scratch/repo" "$support/devflow-policy.mjs"
 if (cd "$scratch/repo" && python3 "$runner" --repo "$scratch/repo" --fixture "$corpus" --config "$scratch/repo/.devflow.toml"); then
