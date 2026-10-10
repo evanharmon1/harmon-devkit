@@ -39,8 +39,17 @@
 #       judgement: added while any required axis is missing, removed once
 #       every one is present.
 #     - human — added when completion is primarily a human's; explicit removal
-#       requires a live non-collector without a [HUMAN] majority. The classifier
-#       judges agent-completability; this helper enforces the mechanical guards.
+#       requires a live unclaimed non-collector without a [HUMAN] majority. The
+#       classifier judges agent-completability; this helper enforces the
+#       mechanical guards. GitHub has no conditional label edit, so a claim, a
+#       collector rename or a [HUMAN] majority landing between the last read
+#       and the label edit is caught by a read after it: `human` is re-added
+#       and the call exits 4 (1 when the edit itself failed). When that read
+#       or the re-evaluation fails, nothing proves the guards still hold, so
+#       `human` is re-added conservatively and the call exits 2 (1 when the
+#       edit failed). A change after that post-edit read is not seen. Every
+#       post-edit reconciliation (this one and the tier:pinned one) runs
+#       before the exit is decided; the most severe outcome wins (1 > 2 > 4).
 #   NEVER writes: the human Priority and Effort (fields or labels), foreman:*,
 #   rigor:*, tier:pinned, scoped tier:<role>:* (tier:implementer:* and the
 #   other roles), strategy:*, method:* (the retired prefix strategy:* replaces
@@ -125,11 +134,14 @@
 # Exit: 0 = applied, or dry-run resolved cleanly (including nothing to do)
 #       1 = the write failed
 #       2 = usage/environment error (bad flags, --execute without the env gate,
-#           could not verify something the gate needs)
+#           could not verify something the gate needs, or a write
+#           indeterminate: a post-edit re-check — tier:pinned, the
+#           human-removal guards — could not read the issue)
 #       4 = refused: human-removal guard, never-list, allowlist, exclusive-axis conflict, a value
 #           off its scale or not provisioned, or a different value already set,
 #           or a tier:pinned that appeared during the label edit (its Tier
-#           change undone)
+#           change undone), or human-removal guards that stopped holding
+#           during the label edit (`human` re-added)
 #       5 = refused: work-type label on an org repo, or native Type on a
 #           personal repo
 #       6 = refused: an explicit needs-triage add/remove that contradicts the
@@ -1092,15 +1104,54 @@ cmd_label() {
     fi
     local current="" issue_fields_json='{"id":null,"fields":{}}' issue_id=""
     local native_state=""
+    # human_issue_read — print the issue's live title, body and labels as
+    # validated JSON. Returns 1 when the read fails, 3 when its result cannot
+    # be verified. Every read the human-removal guards run on goes through it.
+    human_issue_read() {
+        local json
+        json="$(gh issue view "$issue" --repo "$repo" --json labels,title,body)" ||
+            return 1
+        jq -e '(.title | type == "string") and (.body | type == "string")
+            and (.labels | type == "array")
+            and all(.labels[]; .name | type == "string")' \
+            <<<"$json" >/dev/null || return 3
+        printf '%s\n' "$json"
+    }
+    # human_guard_refusal JSON — the human-removal guards, evaluated on one
+    # human_issue_read result: prints the first guard that refuses (claimed,
+    # collector title, an ambiguous section boundary, a [HUMAN] majority), or
+    # nothing when removal is allowed. Returns non-zero when the guards
+    # cannot be evaluated.
+    human_guard_refusal() {
+        local facts
+        if jq -e 'any(.labels[]; .name | test("^(claim:|agent:)"))' \
+            <<<"$1" >/dev/null; then
+            echo "claimed"
+            return 0
+        fi
+        facts="$(jq -L "$title_module_dir" --argjson known '[]' "$human_guard_jq"'
+            human_work(.; [.labels[].name])' <<<"$1")" || return 1
+        if [ "$(jq -r '.collector' <<<"$facts")" != false ]; then
+            echo "collector title"
+            return 0
+        fi
+        # Fail closed on ambiguous section boundaries, even inside code fences.
+        if ! jq -e '.body | split("\n")
+            | all(.[]; test("^ {1,3}#{1,6}([ \\t]|$)") | not)' \
+            <<<"$1" >/dev/null; then
+            echo "ambiguous section boundary: heading indented one to three spaces"
+            return 0
+        fi
+        jq -e '.human_criteria * 2 <= .total_criteria' <<<"$facts" >/dev/null ||
+            echo "[HUMAN] majority"
+    }
     read_state() {
         if [ "$human_remove" -eq 1 ]; then
-            human_issue_json="$(gh issue view "$issue" --repo "$repo" \
-                --json labels,title,body)" ||
+            local read_rc=0
+            human_issue_json="$(human_issue_read)" || read_rc=$?
+            [ "$read_rc" -ne 1 ] ||
                 die 2 "could not read live title/body/labels of $repo#$issue"
-            jq -e '(.title | type == "string") and (.body | type == "string")
-                and (.labels | type == "array")
-                and all(.labels[]; .name | type == "string")' \
-                <<<"$human_issue_json" >/dev/null ||
+            [ "$read_rc" -eq 0 ] ||
                 die 2 "could not verify live title/body/labels of $repo#$issue"
             current="$(jq -r '.labels[].name' <<<"$human_issue_json")"
         else
@@ -1127,21 +1178,14 @@ cmd_label() {
     plan_call() {
         # Recomputed from every snapshot, including reads between org mutations.
         if [ "$human_remove" -eq 1 ]; then
-            local human_facts
-            human_facts="$(jq -L "$title_module_dir" --argjson known '[]' "$human_guard_jq"'
-                human_work(.; [.labels[].name])' <<<"$human_issue_json")" ||
+            local human_why
+            human_why="$(human_guard_refusal "$human_issue_json")" ||
                 die 2 "could not evaluate human-removal guards for $repo#$issue"
-            [ "$(jq -r '.collector' <<<"$human_facts")" = false ] ||
-                die 4 "refused: removal of 'human' from $repo#$issue — collector title"
-            # Fail closed on ambiguous section boundaries, even inside code fences.
-            jq -e '.body | split("\n")
-                | all(.[]; test("^ {1,3}#{1,6}([ \\t]|$)") | not)' \
-                <<<"$human_issue_json" >/dev/null ||
-                die 4 "refused: removal of 'human' from $repo#$issue —" \
-                    "ambiguous section boundary: heading indented one to three spaces"
-            jq -e '.human_criteria * 2 <= .total_criteria' \
-                <<<"$human_facts" >/dev/null ||
-                die 4 "refused: removal of 'human' from $repo#$issue — [HUMAN] majority"
+            case "$human_why" in
+            "") ;;
+            claimed) die 4 "refused: $repo#$issue is claimed — report-only, no write" ;;
+            *) die 4 "refused: removal of 'human' from $repo#$issue — $human_why" ;;
+            esac
         fi
 
         effective_adds=()
@@ -1760,28 +1804,42 @@ cmd_label() {
         done
     fi
 
+    # The post-edit reconciliations below never exit themselves: each sets
+    # an outcome (0 nothing to report, 4 refused and undone, 2 indeterminate,
+    # 1 write failure) and its message, so every reconciliation runs before
+    # post_edit_finish decides the exit — a failure in one can never skip
+    # another's restore.
+    #
     # undo_tier_if_pinned — run after a label edit that changed the Tier,
     # whether it succeeded or failed (a failed edit can still land).
     # before_mutation checked for tier:pinned on the read before the edit, but
     # a pin added between that read and the edit is not seen there, and GitHub
     # has no conditional label edit. So read once more: a pin now present
     # means this call overrode a human's choice, and whatever Tier part of the
-    # edit is on the issue is undone. Returns 1 when a pin was found, 0
-    # otherwise; a pin added after this read is not seen.
-    # With `failed`, the edit itself reported failure: an unreadable result
-    # keeps the write-failure exit (1) rather than becoming exit 2.
+    # edit is on the issue is undone. Sets tier_outcome/tier_msg; a pin added
+    # after this read is not seen.
+    # With `failed`, the edit itself reported failure: every outcome keeps the
+    # write-failure exit (1) rather than becoming exit 2 or 4.
+    local tier_outcome=0 tier_msg=""
     undo_tier_if_pinned() {
+        tier_outcome=0
+        tier_msg=""
         [ -n "$tier_add" ] || [ "${#tier_removes[@]}" -gt 0 ] || return 0
         local post_edit restore=() readd=() t
         if ! post_edit="$(gh issue view "$issue" --repo "$repo" --json labels \
             -q '.labels[].name')"; then
-            [ "${1:-}" != failed ] ||
-                die 1 "write failed: gh issue edit $repo#$issue, and the read" \
-                    "that checks for a tier:pinned added during it failed too;" \
-                    "check its Tier labels by hand"
-            die 2 "write indeterminate: the label edit on $repo#$issue may" \
-                "have changed its Tier, but the read that checks for a" \
-                "tier:pinned added during it failed; check its Tier labels by hand"
+            if [ "${1:-}" = failed ]; then
+                tier_outcome=1
+                tier_msg="write failed: gh issue edit $repo#$issue, and the read"
+                tier_msg+=" that checks for a tier:pinned added during it failed too;"
+                tier_msg+=" check its Tier labels by hand"
+            else
+                tier_outcome=2
+                tier_msg="write indeterminate: the label edit on $repo#$issue may"
+                tier_msg+=" have changed its Tier, but the read that checks for a"
+                tier_msg+=" tier:pinned added during it failed; check its Tier labels by hand"
+            fi
+            return 0
         fi
         in_list "tier:pinned" "$post_edit" || return 0
         # The restore leaves the issue with the human's Tier: this call's
@@ -1808,24 +1866,151 @@ cmd_label() {
         if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
             restore+=(--remove-label "$tier_add")
         fi
-        [ "${#restore[@]}" -gt 0 ] || return 1
-        gh issue edit "$issue" --repo "$repo" "${restore[@]}" \
-            >/dev/null </dev/null ||
-            die 1 "write failed: tier:pinned was added to $repo#$issue during" \
-                "triage's label edit, and restoring its Tier failed — fix by" \
-                "hand: ${restore[*]}"
-        for t in "${readd[@]+"${readd[@]}"}"; do
-            echo "RESTORED '$t' on $repo#$issue"
-        done
-        if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
-            echo "RESTORED removal of '$tier_add' from $repo#$issue"
-            # A human who pinned the very Tier this call derived looks the
-            # same on the issue as this call's own write; say so rather than
-            # undo their choice silently.
-            echo "NOTE: if '$tier_add' on $repo#$issue was set by the person" \
-                "who pinned it, re-add it — triage cannot tell it from its own write" >&2
+        if [ "${#restore[@]}" -gt 0 ]; then
+            if ! gh issue edit "$issue" --repo "$repo" "${restore[@]}" \
+                >/dev/null </dev/null; then
+                tier_outcome=1
+                tier_msg="write failed: tier:pinned was added to $repo#$issue during"
+                tier_msg+=" triage's label edit, and restoring its Tier failed — fix by"
+                tier_msg+=" hand: ${restore[*]}"
+                return 0
+            fi
+            for t in "${readd[@]+"${readd[@]}"}"; do
+                echo "RESTORED '$t' on $repo#$issue"
+            done
+            if [ -n "$tier_add" ] && in_list "$tier_add" "$post_edit"; then
+                echo "RESTORED removal of '$tier_add' from $repo#$issue"
+                # A human who pinned the very Tier this call derived looks the
+                # same on the issue as this call's own write; say so rather
+                # than undo their choice silently.
+                echo "NOTE: if '$tier_add' on $repo#$issue was set by the person" \
+                    "who pinned it, re-add it — triage cannot tell it from its own write" >&2
+            fi
+        fi
+        if [ "${1:-}" = failed ]; then
+            tier_outcome=1
+            tier_msg="write failed: gh issue edit $repo#$issue; tier:pinned"
+            tier_msg+=" is now on it, and any Tier change of this edit that"
+            tier_msg+=" landed was undone"
+        else
+            tier_outcome=4
+            tier_msg="refused: tier:pinned was added to $repo#$issue during"
+            tier_msg+=" triage's label edit — its Tier change was undone and no"
+            tier_msg+=" further write was made"
+        fi
+    }
+
+    # undo_human_if_unguarded — run after a label edit that removed `human`,
+    # whether it succeeded or failed (a failed edit can still land). The
+    # removal guards held on the read before the edit (the snapshot, or
+    # before_mutation's), but a claim, a collector rename or a new [HUMAN]
+    # majority landing between that read and the edit is not seen there, and
+    # GitHub has no conditional label edit. So read title, body and labels
+    # once more and re-evaluate the same guards: if they no longer hold and
+    # `human` is gone, re-add it. When the read or the re-evaluation fails,
+    # nothing proves the guards still hold, so `human` is re-added
+    # conservatively. Sets human_outcome/human_msg; a change after this read
+    # is not seen.
+    # With `failed`, the edit itself reported failure: this read is also the
+    # one that tells whether the removal landed, and every outcome keeps the
+    # write-failure exit (1).
+    local human_outcome=0 human_msg=""
+    readd_human() {
+        if gh issue edit "$issue" --repo "$repo" --add-label human \
+            >/dev/null </dev/null; then
+            echo "RESTORED 'human' on $repo#$issue"
+            return 0
         fi
         return 1
+    }
+    # human_unproven WHAT — the read or re-evaluation (WHAT) failed: re-add
+    # `human` conservatively and set the outcome.
+    human_unproven() {
+        local base
+        if [ "${2:-}" = failed ]; then
+            base="write failed: gh issue edit $repo#$issue, and $1 failed too;"
+        else
+            base="write indeterminate: 'human' was removed from $repo#$issue, but $1 failed;"
+        fi
+        if readd_human; then
+            human_outcome=1
+            [ "${2:-}" = failed ] || human_outcome=2
+            human_msg="$base 'human' was re-added conservatively — check by hand"
+            human_msg+=" whether it should be removed"
+        else
+            human_outcome=1
+            human_msg="$base re-adding 'human' failed — fix by hand: --add-label human"
+        fi
+    }
+    undo_human_if_unguarded() {
+        human_outcome=0
+        human_msg=""
+        in_list human "$(printf '%s\n' "${label_change_removes[@]+"${label_change_removes[@]}"}")" ||
+            return 0
+        local post_edit read_rc=0 why
+        post_edit="$(human_issue_read)" || read_rc=$?
+        if [ "$read_rc" -ne 0 ]; then
+            [ "${1:-}" != failed ] ||
+                echo "INDETERMINATE remove 'human' from $repo#$issue (edit failed; re-read failed)"
+            human_unproven "the read that re-checks the removal guards for 'human'" "${1:-}"
+            return 0
+        fi
+        ! jq -e 'any(.labels[]; .name == "human")' <<<"$post_edit" >/dev/null ||
+            return 0
+        if [ "${1:-}" = failed ]; then
+            record_done "label-:human"
+            echo "APPLIED remove 'human' from $repo#$issue (confirmed by re-read after failed edit)"
+        fi
+        if ! why="$(human_guard_refusal "$post_edit")"; then
+            [ "${1:-}" != failed ] ||
+                echo "INDETERMINATE human-removal guards on $repo#$issue (edit failed; re-check failed)"
+            human_unproven "re-evaluating the removal guards for 'human'" "${1:-}"
+            return 0
+        fi
+        [ -n "$why" ] || return 0
+        if ! readd_human; then
+            human_outcome=1
+            human_msg="write failed: the removal guards for 'human' stopped holding"
+            human_msg+=" on $repo#$issue during triage's label edit ($why),"
+            human_msg+=" and re-adding 'human' failed — fix by hand: --add-label human"
+        elif [ "${1:-}" = failed ]; then
+            human_outcome=1
+            human_msg="write failed: gh issue edit $repo#$issue; its removal of 'human'"
+            human_msg+=" landed after the removal guards stopped holding ($why),"
+            human_msg+=" and 'human' was re-added"
+        else
+            human_outcome=4
+            human_msg="refused: the removal guards for 'human' stopped holding on"
+            human_msg+=" $repo#$issue during triage's label edit ($why) —"
+            human_msg+=" 'human' was re-added and no further write was made"
+        fi
+    }
+
+    # post_edit_finish CODE MSG [CODE MSG]... — decide the exit once every
+    # post-edit reconciliation has run. The most severe outcome wins (write
+    # failure 1 > indeterminate 2 > refusal 4 > 0; on a tie the earlier
+    # pair); every other non-zero outcome's message is printed first, so no
+    # restore or fix-by-hand instruction is lost. Returns when all are 0.
+    post_edit_finish() {
+        local pairs=("$@") i best=-1 best_rank=0 rank
+        for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+            case "${pairs[i]}" in
+            1) rank=3 ;;
+            2) rank=2 ;;
+            4) rank=1 ;;
+            *) rank=0 ;;
+            esac
+            if [ "$rank" -gt "$best_rank" ]; then
+                best="$i"
+                best_rank="$rank"
+            fi
+        done
+        [ "$best" -ge 0 ] || return 0
+        for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+            [ "$i" -eq "$best" ] || [ "${pairs[i]}" = 0 ] ||
+                echo "triage-apply: ${pairs[i + 1]}" >&2
+        done
+        die "${pairs[best]}" "${pairs[best + 1]}"
     }
 
     # One label edit for every add and every replaced value; the needs-triage
@@ -1859,25 +2044,11 @@ cmd_label() {
         if ! gh issue edit "$issue" --repo "$repo" "${args[@]}" >/dev/null </dev/null; then
             # A failed edit can still land. Report proven removals and unknown
             # outcomes separately, while retaining the failed call's exit.
-            if in_list human "$(printf '%s\n' "${label_change_removes[@]+"${label_change_removes[@]}"}")"; then
-                local failed_edit_labels
-                if ! failed_edit_labels="$(gh issue view "$issue" --repo "$repo" \
-                    --json labels)" ||
-                    ! jq -e '(.labels | type == "array")
-                        and all(.labels[]; .name | type == "string")' \
-                        <<<"$failed_edit_labels" >/dev/null; then
-                    echo "INDETERMINATE remove 'human' from $repo#$issue (edit failed; re-read failed)"
-                elif jq -e 'all(.labels[]; .name != "human")' \
-                    <<<"$failed_edit_labels" >/dev/null; then
-                    record_done "label-:human"
-                    echo "APPLIED remove 'human' from $repo#$issue (confirmed by re-read after failed edit)"
-                fi
-            fi
-            undo_tier_if_pinned failed ||
-                die 1 "write failed: gh issue edit $repo#$issue; tier:pinned" \
-                    "is now on it, and any Tier change of this edit that" \
-                    "landed was undone"
-            die 1 "write failed: gh issue edit $repo#$issue"
+            undo_tier_if_pinned failed
+            undo_human_if_unguarded failed
+            post_edit_finish "$tier_outcome" "$tier_msg" \
+                "$human_outcome" "$human_msg" \
+                1 "write failed: gh issue edit $repo#$issue"
         fi
         for l in "${label_change_adds[@]+"${label_change_adds[@]}"}"; do
             if [ "$l" = needs-triage ]; then
@@ -1896,10 +2067,12 @@ cmd_label() {
     for l in "${label_change_removes[@]+"${label_change_removes[@]}"}"; do
         echo "APPLIED remove '$l' from $repo#$issue"
     done
-    if [ "${#args[@]}" -gt 0 ] && ! undo_tier_if_pinned; then
-        die 4 "refused: tier:pinned was added to $repo#$issue during" \
-            "triage's label edit — its Tier change was undone and no" \
-            "further write was made"
+    if [ "${#args[@]}" -gt 0 ]; then
+        # Both post-edit checks run before the exit is decided, so a pin and
+        # a broken human-removal guard landing together are both undone.
+        undo_tier_if_pinned
+        undo_human_if_unguarded
+        post_edit_finish "$tier_outcome" "$tier_msg" "$human_outcome" "$human_msg"
     fi
     if [ "$nt_remove" -eq 1 ]; then
         before_mutation
