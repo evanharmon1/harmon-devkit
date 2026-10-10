@@ -217,6 +217,22 @@ else
     err "resolvePolicy accepted mergeBasePolicyAbsent together with a mergeBaseDoc"
 fi
 
+# The shared corpus's malformed --rigor-source case omits --rigor, so it would
+# still exit 2 through "--rigor-source requires --rigor" if the value check
+# vanished. Isolate the value check here (Codex cloud review cycle 2 on
+# #1343, finding 2; the canonical corpus fix is tracked in #1345).
+echo "==> malformed --rigor-source is refused by its own value check"
+set +e
+node "$support/devflow-policy.mjs" resolve --policy "$fixtures/policy.toml" \
+    --rigor standard --rigor-source bogus --json >/dev/null 2>"$scratch/rigor-source.err"
+rs_status=$?
+set -e
+if [ "$rs_status" -eq 2 ] && grep -Fq -- '--rigor-source must be "operator" or "label"' "$scratch/rigor-source.err"; then
+    echo "  ✓ --rigor-source bogus (with --rigor) exits 2 on the value check"
+else
+    err "--rigor standard --rigor-source bogus exited $rs_status: $(head -1 "$scratch/rigor-source.err")"
+fi
+
 echo "==> conformance corpus against the vendored reader"
 make_repo "$scratch/repo" "$support/devflow-policy.mjs"
 if (cd "$scratch/repo" && python3 "$runner" --repo "$scratch/repo" --fixture "$corpus" --config "$scratch/repo/.devflow.toml"); then
