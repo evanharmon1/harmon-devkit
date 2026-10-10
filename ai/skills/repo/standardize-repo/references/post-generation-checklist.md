@@ -486,17 +486,20 @@ matches `<project_type>`:
   into `devDependencies` and switch the generated `Taskfile.yml`'s `npx --yes`
   calls to `pnpm exec`. Review `lighthouserc.json` URLs once routes exist.
 
-  Build-script approvals + template-owned security floors already ship in
-  `pnpm-workspace.yaml` (`allowBuilds: esbuild, sharp`, plus `workerd` when
-  deploying to Workers). The `overrides` security-floor block is template-owned
-  and delimited by `# --- harmon-init security floors (template-owned; updated by
+  Build-script approvals + security floors ship in `pnpm-workspace.yaml`
+  (`allowBuilds: esbuild, sharp`, plus `workerd` when deploying to Workers). The
+  template-owned `overrides` security-floor block applies once the repo's
+  template baseline is harmon-init v5.5.1 (the release containing harmon-init#1604),
+  delimited by `# --- harmon-init security floors (template-owned; updated by
   copier update) ---` and `# --- end harmon-init security floors; repository-local
   floors go below this line ---` markers: every key is major-scoped (`pkg@<major>`,
   e.g. `devalue@5: '>=5.9.3 <6'`) and bounded below the next major (the block never
   crosses a major), with 0.x minor selectors scoped to tested minors
   (`esbuild@0.27`/`@0.28` → `'>=0.28.1 <0.29'`, `sharp@0.34`/`@0.35` → `'>=0.35.5 <0.36'`).
   Add repository-local floors below the end marker inside `overrides` in the same
-  shape, quoting scoped package keys (`'@scope/pkg@7': '>=7.0.1 <8'`). When a later
+  shape, quoting scoped package keys (`'@scope/pkg@7': '>=7.0.1 <8'`). On older
+  baselines, the template ships only the single `esbuild >=0.28.1` floor with no
+  markers, so local floors there go directly inside `overrides`. When a later
   template release floors a package you floored locally, delete the local entry.
   After a template update changes the block, run a non-frozen `pnpm install` and
   commit the updated `pnpm-lock.yaml` (avoids `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`

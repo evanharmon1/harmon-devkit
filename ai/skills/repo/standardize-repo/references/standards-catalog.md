@@ -1449,16 +1449,12 @@ picks from this palette:
 - A real web repo's `package.json` (sommerlawn-site) legitimately carries many
   extra deps (markdoc, mermaid, photoswipe, remark/rehype plugins, sitemap,
   astro-seo) and repository-local security floors or `auditConfig.ignoreCves`.
-  **Do not flag** project-specific dependencies or CVE-ignore entries — those are
-  app decisions. In `pnpm-workspace.yaml`, distinguish the template-owned
-  security-floor block (between `# --- harmon-init security floors … ---` and
-  `# --- end harmon-init security floors; repository-local floors go below this line ---`
-  markers) from repository-local floors below the end marker: editing or deleting
-  inside the template-owned block is drift that audit mode reports, while local
-  floors below the end marker are app decisions and are never flagged. Applies
-  once the repo's template baseline is harmon-init v5.5.1 (the release
-  containing harmon-init#1604); older baselines ship only the single
-  `overrides: esbuild >=0.28.1` floor.
+  **Do not flag** project-specific dependencies, repository-local floors below
+  the end marker in `pnpm-workspace.yaml`, or CVE-ignore entries — those are app
+  decisions. (Repository-local floors go below the `# --- end harmon-init security
+  floors; repository-local floors go below this line ---` marker once the repo's
+  template baseline is harmon-init v5.5.1 (the release containing harmon-init#1604),
+  or directly in `overrides` on older baselines.)
 
 ### 3.3 Drift from older template commits (recognition patterns for un-reconciled repos)
 
@@ -1507,6 +1503,13 @@ them:
   `npx --yes`-only `lint:markdown`/`format`:** pre-retro renders lack the
   destination-only secret helpers and the pinned-bin preference — `copier
   update` brings both in.
+- **Edits inside the template-owned security-floor block:** in
+  `pnpm-workspace.yaml`, the block between `# --- harmon-init security floors … ---`
+  and `# --- end harmon-init security floors; repository-local floors go below this line ---`
+  markers is template-owned; a repo that edits or deletes entries inside those
+  markers has un-reconciled drift that audit mode reports. Repository-local floors
+  belong below the end marker. Applies once the repo's template baseline is
+  harmon-init v5.5.1 (the release containing harmon-init#1604).
 - **Hand-rolled cross-major pnpm overrides block:** older or un-reconciled web
   repos (notably the four Astro consumers) accumulated large hand-rolled
   security-pin blocks in `pnpm-workspace.yaml` or `package.json` that crossed
