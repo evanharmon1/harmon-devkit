@@ -299,7 +299,9 @@ returns 2 (indeterminate), stop rather than resolving. Resolve the Tier with
 the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
   its `tier:<role>:*`, `rigor:*` and `strategy:*` labels, and its Risk and
-  Complexity.
+  Complexity, with the repository's owner type as `owner_type`: on an
+  organization repository Risk and Complexity come only from issue fields,
+  never a same-named label.
 - Translate them with `dev-flow-support/assets/tier-inputs.mjs --policy
   .devflow.toml`, then pass
   the flags to `dev-flow-support/assets/devflow-policy.mjs resolve`. The

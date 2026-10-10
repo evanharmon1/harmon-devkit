@@ -27,9 +27,22 @@
 //                 // policy-label-unauthorized warning. risk:*, complexity:*
 //                 // and the stored tier:<value> are never gated (ADR
 //                 // 2026-09-30 D3).
+//     "owner_type": "Organization",
+//                 // `User` or `Organization`: the repository owner's type,
+//                 // which picks where Risk and Complexity are stored
+//                 // (triage's classification rubric). `User`: the
+//                 // risk:*/complexity:* labels, and `fields` must be empty.
+//                 // `Organization`: the issue fields ONLY — a same-axis
+//                 // label is inert and never read, so an unset field leaves
+//                 // its axis unset (harmon-devkit#1328). Required whenever
+//                 // the issue carries a risk:*/complexity:* label or a set
+//                 // field; omitted there, it is a usage error (exit 2).
 //     "fields":   { "risk": "high", "complexity": "m" },
-//                 // optional: org-repository issue fields. A present field is
-//                 // the storage of record and wins over a same-axis label.
+//                 // org-repository issue fields, the storage of record
+//                 // there: REQUIRED with owner_type Organization, from a
+//                 // complete field read ({} when none is set), and absent
+//                 // with User. Within it, an unset, omitted, null or ""
+//                 // field is an unset axis.
 //     "operator": { "rigor": "deep", "strategy": "plan",
 //                   "tiers": { "implementer": "frontier" } },
 //                 // optional: attributable operator instructions only, never
@@ -63,10 +76,10 @@
 //   - rigor:* label conflicts resolve to the strongest on rigor_order; two
 //     different strategy:* labels are ambiguous and pass none (the policy
 //     default applies, with a warning).
-//   - risk:<v>/complexity:<v> labels (personal repositories) or fields (org
-//     repositories) become --risk/--complexity; two different values for one
-//     axis (or a non-slug value) pass the off-scale `conflict` sentinel, so
-//     the READER reports the derived Tier indeterminate — never "absent",
+//   - risk:<v>/complexity:<v> labels (owner_type User) or fields (owner_type
+//     Organization, never labels) become --risk/--complexity; two different
+//     values for one axis (or a non-slug value) pass the off-scale
+//     `conflict` sentinel, so the READER reports the derived Tier indeterminate — never "absent",
 //     which would silently resolve the default tier.
 // Values are passed with the `--opt=value` spelling, so a label value can
 // never be read by the reader as a flag of its own.
@@ -121,7 +134,12 @@ function strongest(values, ladder) {
 // resolve the default with exit 0 — the silent-loss shape the reader's own
 // option allowlist closes (integration remediation 1, thread 4176257545).
 // `policy` is the CLI-injected summary (from --policy), not an input key.
-export const INPUT_KEYS = Object.freeze(["labels", "authorized_labels", "fields", "operator", "pin_provenance"]);
+export const INPUT_KEYS = Object.freeze(["labels", "authorized_labels", "owner_type", "fields", "operator", "pin_provenance"]);
+// The repository owner types, spelled as GitHub's `owner.type` and triage's
+// `owner_type`. The owner type is the classification's storage mode: labels
+// on a personal-account repository, issue fields on an organization one
+// (harmon-devkit#1328).
+export const OWNER_TYPES = Object.freeze(["User", "Organization"]);
 export const OPERATOR_KEYS = Object.freeze(["rigor", "strategy", "tiers"]);
 // The classification issue fields; a misspelled `rsk` would otherwise read
 // as an unclassified issue (integration remediation 2, thread 4178249112).
@@ -142,6 +160,7 @@ export function tierInputs(input = {}) {
   const {
     labels = [],
     authorized_labels: authorizedLabels = [],
+    owner_type: ownerType,
     fields = {},
     operator = {},
     pin_provenance: provenance = {},
@@ -161,6 +180,24 @@ export function tierInputs(input = {}) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new TierInputError(`${name} must be an object`);
     }
+  }
+  if (ownerType !== undefined && !OWNER_TYPES.includes(ownerType)) {
+    throw new TierInputError(`owner_type must be one of ${OWNER_TYPES.join(", ")}, got ${JSON.stringify(ownerType)}`);
+  }
+  // Issue fields exist only on organization repositories; a caller passing
+  // them for a personal one has mixed up the storage modes.
+  if (ownerType === "User" && Object.hasOwn(input, "fields")) {
+    throw new TierInputError("fields are organization-repository storage; on owner_type User, Risk and Complexity are the risk:*/complexity:* labels");
+  }
+  // On an organization the fields are the only storage, so an unset axis must
+  // come from a read that happened: `fields` is required ({} when none is
+  // set). A caller whose field read failed, was unavailable or was truncated
+  // has no fields object to pass and stops as indeterminate, rather than
+  // having a failed read pass as "unset".
+  if (ownerType === "Organization" && !Object.hasOwn(input, "fields")) {
+    throw new TierInputError(
+      'owner_type Organization requires "fields" from a complete issue-field read ({} when none is set); if the read failed or was truncated, tier resolution is indeterminate',
+    );
   }
   const unknownOperator = Object.keys(operator).filter((k) => !OPERATOR_KEYS.includes(k));
   if (unknownOperator.length > 0) {
@@ -396,20 +433,46 @@ export function tierInputs(input = {}) {
   }
 
   // ── classification: Risk and Complexity ──────────────────────────────────
+  // The owner type is the storage mode, and each mode reads exactly one
+  // source (harmon-devkit#1328). On an organization repository Risk and
+  // Complexity live only in issue fields and a same-named label is inert:
+  // falling back to it when the field is unset would let a stale or
+  // untrusted label select the derived Tier, where the classification must
+  // read as incomplete. Without an owner type neither source can be read,
+  // so an issue that carries any classification input is a usage error
+  // (exit 2) rather than a warning: a silently unset axis would resolve the
+  // default tier with exit 0, the silent-loss shape the key allowlists close.
+  const fieldSet = (axis) => fields[axis] !== undefined && fields[axis] !== null && fields[axis] !== "";
+  for (const axis of FIELD_KEYS) {
+    if (fieldSet(axis) && typeof fields[axis] !== "string") throw new TierInputError(`fields.${axis} must be a string`);
+  }
   const classification = {};
-  for (const axis of ["risk", "complexity"]) {
-    const field = fields[axis];
+  if (ownerType === undefined) {
+    const unread = [
+      ...FIELD_KEYS.flatMap((axis) => uniq(axisLabels[axis]).map((v) => `${axis}:${v}`)),
+      ...FIELD_KEYS.filter(fieldSet).map((axis) => `the ${axis} field`),
+    ];
+    if (unread.length > 0) {
+      throw new TierInputError(
+        `owner_type is required to read the classification (${unread.join(", ")}): User reads the risk:*/complexity:* labels, Organization only the issue fields`,
+      );
+    }
+  }
+  for (const axis of ownerType === undefined ? [] : FIELD_KEYS) {
     const fromLabels = uniq(axisLabels[axis]);
     let value = null;
-    if (field !== undefined && field !== null && field !== "") {
-      if (typeof field !== "string") throw new TierInputError(`fields.${axis} must be a string`);
-      value = field;
-      const disagreeing = fromLabels.filter((v) => v !== field);
-      if (disagreeing.length > 0) {
+    if (ownerType === "Organization") {
+      if (fromLabels.length > 0) {
         warnings.push(
-          warning(`${axis}-field-label-mismatch`, `the ${axis} field (${field}) disagrees with ${disagreeing.map((v) => `${axis}:${v}`).join(", ")}; the field is the storage of record and is the value passed`),
+          warning(
+            `${axis}-label-inert`,
+            `${fromLabels.map((v) => `${axis}:${v}`).join(", ")} ${fromLabels.length === 1 ? "is" : "are"} inert on an organization repository and not read; ${axis === "risk" ? "Risk" : "Complexity"} comes only from its issue field${fieldSet(axis) ? "" : ", which is unset, so the axis stays unset"}`,
+          ),
         );
       }
+      // An organization's option names keep its own capitalization (`High`,
+      // `XL`); compare them the way triage's field reader does, lowercased.
+      if (fieldSet(axis)) value = fields[axis].toLowerCase();
     } else if (fromLabels.length === 1) {
       value = fromLabels[0];
     } else if (fromLabels.length > 1) {

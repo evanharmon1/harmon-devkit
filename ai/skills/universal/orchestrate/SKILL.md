@@ -71,7 +71,9 @@ from the writable fork remote; pass it unchanged to step 0.
 Follow `dev-flow-support`'s § "Resolving an issue's Tier":
 - Read the issue's `tier:<value>` label on every owner type, plus
   `tier:pinned`, its `tier:<role>:*`/`rigor:*`/`strategy:*` labels, and its
-  Risk and Complexity.
+  Risk and Complexity, with the repository's owner type as `owner_type`: on
+  an organization repository Risk and Complexity come only from issue
+  fields, never a same-named label.
 - Translate them with `dev-flow-support/assets/tier-inputs.mjs --policy
   .devflow.toml`, which
   reconciles label conflicts *before* the reader runs. A `tier:pinned` with
