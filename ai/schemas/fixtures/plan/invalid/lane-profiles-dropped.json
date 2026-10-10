@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "a44e617bffa5ba426d9da78a3b2da69c4efceaa7afc58145cbeabe01879699b4",
+      "digest": "9d8f25bb79e72c9b416df85ce472565bc1776cd3f9fd5364cea394bb928b95ca",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -145,10 +145,10 @@
               "rigor_source": "default_rigor; implementer derived from issue Risk × Complexity",
               "caps": {
                 "challenge": 5,
-                "review": 6,
+                "review": 5,
                 "integration": 6,
                 "remediation": 6,
-                "min_rounds": 6,
+                "min_rounds": 1,
                 "wall_clock_min": 480
               },
               "breadth": {
@@ -195,6 +195,143 @@
               },
               "operator_pins": []
             }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 1,
+      "prev_digest": "9d8f25bb79e72c9b416df85ce472565bc1776cd3f9fd5364cea394bb928b95ca",
+      "digest": "9a3f3a16b183afd5778a58258eb77eea4416a3ca0f043abcf4f06a30d1836f22",
+      "at": "2026-09-13T17:01:00Z",
+      "reason": "next plan revision",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "explicit operator input",
+          "caps": {
+            "challenge": 5,
+            "review": 5,
+            "integration": 6,
+            "remediation": 6,
+            "min_rounds": 1,
+            "wall_clock_min": 480
+          },
+          "breadth": {
+            "max_agent_runs": 20,
+            "max_parallel_agents": 4
+          },
+          "strategy": "plan",
+          "strategy_source": "default_strategy",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": [
+            "Implementer: Codex CLI gpt-5.6-sol @ medium"
+          ]
+        },
+        "dispatcher": {
+          "kind": "interactive",
+          "parallel_cap": 4,
+          "foreman_max_parallel": null
+        },
+        "issues": [
+          {
+            "number": 935,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/935",
+            "verdict": "valid",
+            "candidate_files": [
+              "orchestrate/SKILL.md",
+              "plan.schema.json"
+            ],
+            "blocked_by": []
+          },
+          {
+            "number": 936,
+            "title": "Add fences",
+            "url": "https://github.com/example/repo/issues/936",
+            "verdict": "partial",
+            "candidate_files": [
+              "orchestrate/SKILL.md",
+              "lane-brief.md"
+            ],
+            "blocked_by": [
+              935
+            ]
+          },
+          {
+            "number": 937,
+            "title": "Already delivered",
+            "url": "https://github.com/example/repo/issues/937",
+            "verdict": "done",
+            "candidate_files": [],
+            "blocked_by": []
+          }
+        ],
+        "overlaps": [
+          {
+            "issue_a": 935,
+            "issue_b": 936,
+            "paths": [
+              "orchestrate/SKILL.md"
+            ],
+            "resolution": "serialize",
+            "merge_dependency": {
+              "before": 935,
+              "after": 936
+            }
+          }
+        ],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              935
+            ]
+          },
+          {
+            "number": 2,
+            "issues": [
+              936
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "planning",
+            "issue": 935,
+            "wave": 1,
+            "branch": "935-plan",
+            "run_id": "run-935-plan",
+            "fence": [
+              {
+                "path": "orchestrate/SKILL.md",
+                "note": "Planning section only"
+              },
+              "plan.schema.json"
+            ],
+            "expansions": []
+          },
+          {
+            "lane": "fences",
+            "issue": 936,
+            "wave": 2,
+            "branch": "936-fences",
+            "run_id": "run-936-fences",
+            "fence": [
+              {
+                "path": "orchestrate/SKILL.md",
+                "note": "Serialized ownership after issue 935"
+              },
+              "lane-brief.md"
+            ],
+            "expansions": []
           }
         ]
       }

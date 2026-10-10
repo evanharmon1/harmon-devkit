@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "a44e617bffa5ba426d9da78a3b2da69c4efceaa7afc58145cbeabe01879699b4",
+      "digest": "4018a4794dced5763e398e03c14e0043ea68a6e56b4cdb6d40e2c5b3c2d46ba0",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -144,8 +144,8 @@
               "rigor": "deep",
               "rigor_source": "default_rigor; implementer derived from issue Risk × Complexity",
               "caps": {
-                "challenge": 5,
-                "review": 6,
+                "challenge": 6,
+                "review": 5,
                 "integration": 6,
                 "remediation": 6,
                 "min_rounds": 6,

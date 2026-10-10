@@ -174,7 +174,9 @@ Build and publish the plan in this order:
    profile as `{lane, policy}` in `plan.lane_profiles` in the validated
    revision before dispatch, including its caps, breadth, all five role tiers, sources and
    operator pins. `plan.policy` is the slate baseline; `lane_profiles` is a
-   complete projection, not a partial override. When the array is present it
+   complete projection, not a partial override.
+   A recorded lane profile is immutable for its run; changing it requires a new run.
+   When the array is present it
    must cover every planned lane and name no unknown lane. On resume, read
    the last validated revision's lane profile for the lane brief and stage
    gates; never substitute the slate's global role tiers. Older plans without
