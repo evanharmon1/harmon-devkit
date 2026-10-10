@@ -186,7 +186,7 @@ export function tierInputs(input = {}) {
   }
   // Issue fields exist only on organization repositories; a caller passing
   // them for a personal one has mixed up the storage modes.
-  if (ownerType === "User" && Object.keys(fields).length > 0) {
+  if (ownerType === "User" && Object.hasOwn(input, "fields")) {
     throw new TierInputError("fields are organization-repository storage; on owner_type User, Risk and Complexity are the risk:*/complexity:* labels");
   }
   // On an organization the fields are the only storage, so an unset axis must
@@ -194,7 +194,7 @@ export function tierInputs(input = {}) {
   // set). A caller whose field read failed, was unavailable or was truncated
   // has no fields object to pass and stops as indeterminate, rather than
   // having a failed read pass as "unset".
-  if (ownerType === "Organization" && !Object.prototype.hasOwnProperty.call(input, "fields")) {
+  if (ownerType === "Organization" && !Object.hasOwn(input, "fields")) {
     throw new TierInputError(
       'owner_type Organization requires "fields" from a complete issue-field read ({} when none is set); if the read failed or was truncated, tier resolution is indeterminate',
     );

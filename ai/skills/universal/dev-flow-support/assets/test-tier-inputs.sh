@@ -272,6 +272,7 @@ expect_args "personal: labels are the classification" '{"owner_type":"User","lab
 expect_usage_error_input "personal: issue fields are refused (they exist only on org repositories)" \
     '{"owner_type":"User","labels":["risk:low"],"fields":{"risk":"high"}}'
 expect_usage_error_input "personal: even a null field is refused" '{"owner_type":"User","fields":{"risk":null}}'
+expect_usage_error_input "personal: even an empty fields object is refused" '{"owner_type":"User","labels":["risk:low"],"fields":{}}'
 # No owner type: the storage mode is unknown, so a classification input is a
 # usage error rather than read from either source or silently dropped.
 expect_usage_error_input "no owner_type with a rating label" '{"labels":["risk:high","complexity:m"]}'
