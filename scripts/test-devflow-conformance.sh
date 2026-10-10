@@ -46,10 +46,10 @@
 # Run via `task test:devflow-conformance`. Needs node, python3, and task.
 set -euo pipefail
 
-SOURCE_REV="dd28801038c66b855284a975ebbbd4a9f2f16c00"
+SOURCE_REV="3fd05eb6a2740c818e2c5a56bd46491505e889b6"
 REGISTRY_SOURCE_REV="81bbe78784c0b146e754e80030274ff95e10cf51"
-CORPUS_BLOB="751443a7898eab6f71fe8718f29b80784cdcc0f8"
-RUNNER_BLOB="79a194e5f5ffaced06e9b685733d1c3830dd9e03"
+CORPUS_BLOB="13b4a79bfc2684416d83575d28f028bae7820f8c"
+RUNNER_BLOB="9dee6a66350ed50fbe8689500115f64a5d06827a"
 POLICY_BLOB="7e36129a43e0ae73c8a8c878e6055fdab8a1e6ab"
 REGISTRY_BLOB="27844622efb4a7f8508729e6b413170b67bd7b3f"
 
@@ -114,6 +114,124 @@ for (const t of targets) lines.push(`  "${t}":`, "    desc: conformance stub", "
 process.stdout.write(lines.join("\n") + "\n");
 ' "$fixtures/task-targets.json" >"$dir/Taskfile.yml"
 }
+
+# The corpus drives the CLI, whose usage pre-check runs before the library.
+# Keep the canonical library invariant covered for non-CLI consumers too.
+echo "==> absent merge-base policy requires a branch policy in the library"
+if node --input-type=module - "$support/devflow-policy.mjs" <<'JS'
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { resolvePolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
+for (const doc of [null, undefined]) {
+    assert.throws(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true }), PolicyError);
+}
+JS
+then
+    echo "  ✓ library refuses an absent branch policy"
+else
+    err "resolvePolicy accepted an absent merge-base policy without a branch policy"
+fi
+
+# With the absent-base flag the candidate is validated under the requested
+# selections, as on the present-base path: a broken selected table is an
+# ordinary invalid-policy exit 1 with a reader diagnostic, never an uncaught
+# exception (review round 1, harmon-devkit#1264 port).
+echo "==> absent merge-base policy validates the candidate under the requested rigor"
+make_repo "$scratch/absent" "$support/devflow-policy.mjs"
+# The built-in fallback accepts only rigor "standard", so the candidate's
+# default must differ from it for the selected table to go unchecked.
+sed -e 's/^default_rigor    = "standard"$/default_rigor    = "thorough"/' \
+    -e 's/^rounds            = "standard"$/rounds            = "no-such-rounds"/' \
+    "$fixtures/policy.toml" >"$scratch/absent/.devflow.toml"
+set +e
+(cd "$scratch/absent" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --merge-base-policy-absent --merge-base-registry agent-registry.json \
+    --registry agent-registry.json \
+    --taskfile-dir . --rigor standard --json >/dev/null 2>"$scratch/absent.err")
+status=$?
+set -e
+if [ "$status" -eq 1 ] && grep -q '^devflow-policy: ' "$scratch/absent.err" &&
+    ! grep -q '^    at ' "$scratch/absent.err"; then
+    echo "  ✓ broken selected table is an invalid-policy exit 1"
+else
+    err "absent-base resolve with a broken selected table exited $status: $(head -2 "$scratch/absent.err")"
+fi
+
+# Under the absent-base flag only --merge-base-registry governs: the branch's
+# own --registry must never satisfy governance cross-validation (Codex cloud
+# review cycle 1 on #1343, finding 4).
+echo "==> absent merge-base policy routes governance to --merge-base-registry only"
+make_repo "$scratch/route" "$support/devflow-policy.mjs"
+set +e
+(cd "$scratch/route" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --merge-base-policy-absent --registry agent-registry.json --taskfile-dir . --json \
+    >"$scratch/route-branch.json" 2>/dev/null)
+branch_only=$?
+(cd "$scratch/route" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --merge-base-policy-absent --registry agent-registry.json \
+    --merge-base-registry agent-registry.json --taskfile-dir . --json \
+    >/dev/null 2>/dev/null)
+with_base=$?
+set -e
+if [ "$branch_only" -eq 3 ] && grep -q 'no registry was supplied' "$scratch/route-branch.json" &&
+    [ "$with_base" -eq 0 ]; then
+    echo "  ✓ the branch registry never satisfies governance cross-validation"
+else
+    err "registry routing under the absent flag: branch-only exit $branch_only, with merge-base registry exit $with_base"
+fi
+
+# A --closure reader written before the flag (one that accepts any option)
+# would drop it and let the branch policy govern; delegation must refuse
+# instead (Codex cloud review cycle 1 on #1343, finding 1).
+echo "==> --closure refuses a reader that predates --merge-base-policy-absent"
+mkdir -p "$scratch/oldclosure"
+printf '%s\n' 'process.stdout.write("OLD-READER-RAN\n");' >"$scratch/oldclosure/devflow-policy.mjs"
+set +e
+node "$support/devflow-policy.mjs" resolve --closure "$scratch/oldclosure" --policy "$fixtures/policy.toml" \
+    --merge-base-policy-absent --json >"$scratch/oldclosure.out" 2>"$scratch/oldclosure.err"
+old_status=$?
+set -e
+if [ "$old_status" -eq 1 ] && grep -Fq 'predates --merge-base-policy-absent' "$scratch/oldclosure.err" &&
+    ! grep -Fq 'OLD-READER-RAN' "$scratch/oldclosure.out"; then
+    echo "  ✓ delegation refuses a reader that would drop the flag"
+else
+    err "--closure delegated --merge-base-policy-absent to a reader that predates it (exit $old_status)"
+fi
+
+# The library refuses an absent merge base that also supplies a merge-base
+# document, with otherwise valid v2 documents (finding 6).
+echo "==> library refuses an absent merge base together with mergeBaseDoc"
+if node --input-type=module - "$support/devflow-policy.mjs" "$support/lib/toml-lite.mjs" "$fixtures/policy.toml" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { resolvePolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
+const { parseToml } = await import(pathToFileURL(process.argv[3]));
+const doc = parseToml(readFileSync(process.argv[4], "utf8"));
+assert.doesNotThrow(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true }));
+assert.throws(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true, mergeBaseDoc: doc }), PolicyError);
+JS
+then
+    echo "  ✓ library refuses mergeBasePolicyAbsent with mergeBaseDoc"
+else
+    err "resolvePolicy accepted mergeBasePolicyAbsent together with a mergeBaseDoc"
+fi
+
+# The shared corpus's malformed --rigor-source case omits --rigor, so it would
+# still exit 2 through "--rigor-source requires --rigor" if the value check
+# vanished. Isolate the value check here (Codex cloud review cycle 2 on
+# #1343, finding 2; the canonical corpus fix is tracked in #1345).
+echo "==> malformed --rigor-source is refused by its own value check"
+set +e
+node "$support/devflow-policy.mjs" resolve --policy "$fixtures/policy.toml" \
+    --rigor standard --rigor-source bogus --json >/dev/null 2>"$scratch/rigor-source.err"
+rs_status=$?
+set -e
+if [ "$rs_status" -eq 2 ] && grep -Fq -- '--rigor-source must be "operator" or "label"' "$scratch/rigor-source.err"; then
+    echo "  ✓ --rigor-source bogus (with --rigor) exits 2 on the value check"
+else
+    err "--rigor standard --rigor-source bogus exited $rs_status: $(head -1 "$scratch/rigor-source.err")"
+fi
 
 echo "==> conformance corpus against the vendored reader"
 make_repo "$scratch/repo" "$support/devflow-policy.mjs"

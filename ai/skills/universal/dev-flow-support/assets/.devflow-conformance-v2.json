@@ -811,7 +811,7 @@
       "basis": "branch",
       "overrides": ["tier=adaptive"],
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "error_diagnostics": [
           {
             "code": "tier_retired",
@@ -2009,10 +2009,8 @@
         ]
       ],
       "registry_replacements": [
-        [
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
-        ]
+        ["\"display_name\": \"Fable\",", "\"display_name\": \"Fable\","],
+        ["\"tier\": \"apex\"", "\"tier\": \"frontier\""]
       ],
       "issue": {
         "risk": "critical",
@@ -2047,10 +2045,8 @@
         ]
       ],
       "registry_replacements": [
-        [
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
-        ]
+        ["\"display_name\": \"Fable\",", "\"display_name\": \"Fable\","],
+        ["\"tier\": \"apex\"", "\"tier\": \"frontier\""]
       ],
       "issue": {
         "risk": "critical",
@@ -2077,10 +2073,8 @@
         ["harnesses = [\"claude-code\", \"codex-cli\", \"antigravity\"]", ""]
       ],
       "registry_replacements": [
-        [
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
-        ]
+        ["\"display_name\": \"Fable\",", "\"display_name\": \"Fable\","],
+        ["\"tier\": \"apex\"", "\"tier\": \"frontier\""]
       ],
       "issue": {
         "risk": "critical",
@@ -2110,10 +2104,8 @@
         ]
       ],
       "registry_replacements": [
-        [
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
-        ]
+        ["\"display_name\": \"Fable\",", "\"display_name\": \"Fable\","],
+        ["\"tier\": \"apex\"", "\"tier\": \"frontier\""]
       ],
       "issue": {
         "risk": "critical",
@@ -2144,10 +2136,8 @@
         ["[stage.implement]", "[stage.implement]\npool = [\"claude-code\"]"]
       ],
       "registry_replacements": [
-        [
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"apex\" }",
-          "{ \"slug\": \"fable\", \"display_name\": \"Fable\", \"tier\": \"frontier\" }"
-        ]
+        ["\"display_name\": \"Fable\",", "\"display_name\": \"Fable\","],
+        ["\"tier\": \"apex\"", "\"tier\": \"frontier\""]
       ],
       "issue": {
         "risk": "critical",
@@ -2169,6 +2159,133 @@
             }
           }
         }
+      }
+    },
+    {
+      "name": "policy-adoption-with-absent-merge-base-uses-builtins",
+      "basis": "merge-base-absent",
+      "config_replacements": [
+        ["default_rigor    = \"standard\"", "default_rigor    = \"deep\""],
+        ["default_strategy = \"plan\"", "default_strategy = \"council\""]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_source": "built-in-fallback",
+          "selections": {
+            "rigor": {
+              "value": "standard",
+              "source": "builtin"
+            },
+            "strategy": {
+              "value": "plan",
+              "source": "builtin"
+            }
+          },
+          "tiers": {
+            "implementer": {
+              "value": "standard",
+              "source": "profile"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "missing-merge-base-file-is-not-explicit-absence",
+      "basis": "merge-base-missing",
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "policy_unreadable",
+            "subject": "merge-base-policy"
+          }
+        ]
+      }
+    },
+    {
+      "name": "absent-merge-base-flag-conflicts-with-file",
+      "basis": "merge-base",
+      "cli_options": ["--merge-base-policy-absent"],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "merge_base_conflict",
+            "subject": "merge-base-policy-absent"
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-tier-overrides-is-usage",
+      "basis": "branch",
+      "cli_options": ["--tier-overrides", "implementer=bogus"],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "usage",
+            "subject": "tier-overrides"
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-rigor-source-is-usage",
+      "basis": "branch",
+      "cli_options": ["--rigor-source", "bogus"],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "usage",
+            "subject": "rigor-source"
+          }
+        ]
+      }
+    },
+    {
+      "name": "rigor-source-without-rigor-is-usage",
+      "basis": "branch",
+      "cli_options": ["--rigor-source", "operator"],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "usage",
+            "subject": "rigor-source"
+          }
+        ]
+      }
+    },
+    {
+      "name": "absent-merge-base-still-validates-branch-candidate",
+      "basis": "merge-base-absent",
+      "config_replacements": [["schema_version = 2", "schema_version = 1"]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [
+          {
+            "code": "migration_required",
+            "subject": "schema_version"
+          }
+        ]
+      }
+    },
+    {
+      "name": "absent-merge-base-requires-existing-branch-policy",
+      "basis": "absent",
+      "cli_options": ["--merge-base-policy-absent"],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "branch_policy_required",
+            "subject": "merge-base-policy-absent"
+          }
+        ]
       }
     }
   ]

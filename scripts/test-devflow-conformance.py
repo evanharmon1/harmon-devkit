@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ EXPECT_KEYS = {"error_diagnostics", "exit", "result", "warning_diagnostics"}
 V2_CASE_KEYS = {
     "authorized_labels",
     "basis",
+    "cli_options",
     "config_replacements",
     "expect",
     "issue",
@@ -230,11 +232,15 @@ def v2_case_inputs(name: str, case: dict) -> tuple[dict, list[str]]:
             flags.append("--pin-marker-trusted")
         if pin["value_trusted"]:
             flags.append("--pin-value-trusted")
+    cli_options = case.get("cli_options", [])
+    if not isinstance(cli_options, list) or not all(isinstance(value, str) for value in cli_options):
+        raise ValueError(f"{name}: cli_options must be an array of strings")
+    flags.extend(cli_options)
     return {axis: source for axis, (_, source) in selections.items()}, flags
 
 
 def v2_normalize(resolved: dict, sources: dict, basis: str) -> dict:
-    default_source = "builtin" if basis == "absent" else "default"
+    default_source = "builtin" if basis in {"absent", "merge-base-absent"} else "default"
     issue = resolved["issue_tier"]
     return {
         "config_schema_version": 2,
@@ -288,8 +294,8 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
             )
             continue
         basis = case.get("basis")
-        if basis not in {"absent", "branch", "merge-base"}:
-            failures.append(f"{name}: basis must be absent, branch, or merge-base")
+        if basis not in {"absent", "branch", "merge-base", "merge-base-absent", "merge-base-missing"}:
+            failures.append(f"{name}: unsupported basis {basis!r}")
             continue
         try:
             sources, flags = v2_case_inputs(name, case)
@@ -355,16 +361,21 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                     str(repo),
                     "--json",
                 ]
-                if basis == "merge-base":
-                    merge_base = tmp_path / "merge-base.toml"
-                    merge_base.write_text(
-                        replace(
-                            source,
-                            case.get("merge_base_replacements", []),
-                            name,
-                            "merge_base_replacements",
-                        )
+                if basis == "merge-base-absent":
+                    command.extend(
+                        ["--merge-base-policy-absent", "--merge-base-registry", str(repo / "agent-registry.json")]
                     )
+                elif basis in {"merge-base", "merge-base-missing"}:
+                    merge_base = tmp_path / "merge-base.toml"
+                    if basis == "merge-base":
+                        merge_base.write_text(
+                            replace(
+                                source,
+                                case.get("merge_base_replacements", []),
+                                name,
+                                "merge_base_replacements",
+                            )
+                        )
                     command.extend(
                         [
                             "--merge-base-policy",
@@ -398,6 +409,16 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                 )
         elif result.returncode == 2 and "could not read/parse --policy:" in result.stderr:
             errors.append({"code": "policy_unreadable", "subject": "policy"})
+        elif result.returncode == 2 and "could not read/parse --merge-base-policy:" in result.stderr:
+            errors.append({"code": "policy_unreadable", "subject": "merge-base-policy"})
+        elif result.returncode == 2 and "--merge-base-policy-absent cannot be combined with --merge-base-policy" in result.stderr:
+            errors.append({"code": "merge_base_conflict", "subject": "merge-base-policy-absent"})
+        elif result.returncode == 2 and "--merge-base-policy-absent requires an existing --policy file" in result.stderr:
+            errors.append({"code": "branch_policy_required", "subject": "merge-base-policy-absent"})
+        elif result.returncode == 2 and "operator tier instruction" in result.stderr and "must be one of" in result.stderr:
+            errors.append({"code": "usage", "subject": "tier-overrides"})
+        elif result.returncode == 2 and (option := re.search(r"--([a-z-]+)", result.stderr)):
+            errors.append({"code": "usage", "subject": option.group(1)})
         elif "schema_version" in result.stderr and (
             "legacy" in result.stderr
             or "v1" in result.stderr

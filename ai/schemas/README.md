@@ -1974,6 +1974,20 @@ consumer operates under." `ai/schemas/fixtures/exit/merge-base-legacy-to-v2/`,
 `merge-base-v1-to-v2/`, and `merge-base-decoder-unreachable-from-operating-path/`
 are the fixtures for this.
 
+**An absent merge-base policy has an explicit form.** For a branch that
+adds `.devflow.toml`, use `resolve --policy <branch v2 file>
+--merge-base-policy-absent`. This requires an existing `--policy` file and
+cannot be combined with `--merge-base-policy`. The candidate is validated
+independently; the built-in fallback governs, with only `--merge-base-registry`
+supplying any governing registry. A missing file supplied to
+`--merge-base-policy` still exits 2; it never means explicit absence.
+Invalid flag combinations (including `--rigor-source` without `--rigor`) and
+malformed operator `--tier-overrides` / `--rigor-source` values also exit with
+usage status 2, distinct from invalid policy status 1. Successful resolution
+exits 0; exit 3 means resolved but indeterminate (cross-validation could not
+finish because no registry or no gate-target list was supplied, or the derived
+Tier could not be computed where it decides the implementer tier).
+
 **The decoder's scope is an invariant, not a field list.** On a migration
 diff, *every* merge-base-protected value — defaults, rounds, breadth,
 convergence, gates, roles, stages, strategy, `tier_order` — resolves from
