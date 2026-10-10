@@ -486,12 +486,24 @@ matches `<project_type>`:
   into `devDependencies` and switch the generated `Taskfile.yml`'s `npx --yes`
   calls to `pnpm exec`. Review `lighthouserc.json` URLs once routes exist.
 
-  Build-script approvals + the esbuild security floor already ship in
+  Build-script approvals + template-owned security floors already ship in
   `pnpm-workspace.yaml` (`allowBuilds: esbuild, sharp`, plus `workerd` when
-  deploying to Workers; `overrides: esbuild >=0.28.1`) — add any other packages
-  your deps need to `allowBuilds` (a pnpm 11+ setting — it replaced pnpm 10's
-  `onlyBuiltDependencies`, so the shipped file needs pnpm 11+), not the
-  `package.json` `pnpm` field (pnpm 10+ ignores it).
+  deploying to Workers). The `overrides` security-floor block is template-owned
+  and delimited by `# --- harmon-init security floors (template-owned; updated by
+  copier update) ---` and `# --- end harmon-init security floors; repository-local
+  floors go below this line ---` markers: every key is major-scoped (`pkg@<major>`,
+  e.g. `devalue@5: '>=5.9.3 <6'`) and bounded below the next major (the block never
+  crosses a major), with 0.x minor selectors scoped to tested minors
+  (`esbuild@0.27`/`@0.28` → `'>=0.28.1 <0.29'`, `sharp@0.34`/`@0.35` → `'>=0.35.5 <0.36'`).
+  Add repository-local floors below the end marker inside `overrides` in the same
+  shape, quoting scoped package keys (`'@scope/pkg@7': '>=7.0.1 <8'`). When a later
+  template release floors a package you floored locally, delete the local entry.
+  After a template update changes the block, run a non-frozen `pnpm install` and
+  commit the updated `pnpm-lock.yaml` (avoids `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`
+  on frozen CI installs). Add any other packages your deps need to `allowBuilds`
+  (a pnpm 11+ setting — it replaced pnpm 10's `onlyBuiltDependencies`, so the
+  shipped file needs pnpm 11+), not the `package.json` `pnpm` field (pnpm 10+
+  ignores it).
 
   > **Cloudflare Workers deploy:** bootstrap the Worker **once** before PR
   > previews work. A preview (`wrangler versions upload`) requires the Worker to

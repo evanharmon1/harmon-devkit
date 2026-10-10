@@ -740,7 +740,14 @@ install the Renovate GitHub App on the repo. Conventions:
   (`groupName: null`) and `minimumReleaseAge: 0 days` (ships near-daily; grouping
   - the 3-day gate kept the whole batch perpetually pending). Rule ordered AFTER
   the group rules so the override wins.
-- npm `overrides` deptype disabled (avoids `EOVERRIDE`).
+- **npm overrides depTypes disabled:** matches `"overrides"`, `"pnpm.overrides"`,
+  and `"pnpm-workspace.overrides"` (avoids `EOVERRIDE` when Renovate updates
+  transitive overrides via `npm install`, and prevents Renovate from proposing
+  cross-major widenings — e.g. `undici@7 → ^8` — for the template-owned
+  major-bounded security floors in `pnpm-workspace.yaml`, which Renovate reads
+  under `pnpm-workspace.overrides`). Applies once the repo's template baseline is
+  harmon-init v5.5.1 (the release containing harmon-init#1604); older
+  baselines match only `"overrides"`.
 - `dependencyDashboard: true`; weekly schedule `before 9am on Monday`,
   `timezone: America/Chicago`.
 
@@ -1441,9 +1448,17 @@ picks from this palette:
   marketing sites — e.g. sommerlawn-site uses `@astrojs/alpinejs` + `alpinejs`).
 - A real web repo's `package.json` (sommerlawn-site) legitimately carries many
   extra deps (markdoc, mermaid, photoswipe, remark/rehype plugins, sitemap,
-  astro-seo) and a large `pnpm.overrides` security-pin block + `auditConfig
-  .ignoreCves`. **Do not flag** project-specific dependencies, overrides, or
-  CVE-ignore entries — those are app decisions.
+  astro-seo) and repository-local security floors or `auditConfig.ignoreCves`.
+  **Do not flag** project-specific dependencies or CVE-ignore entries — those are
+  app decisions. In `pnpm-workspace.yaml`, distinguish the template-owned
+  security-floor block (between `# --- harmon-init security floors … ---` and
+  `# --- end harmon-init security floors; repository-local floors go below this line ---`
+  markers) from repository-local floors below the end marker: editing or deleting
+  inside the template-owned block is drift that audit mode reports, while local
+  floors below the end marker are app decisions and are never flagged. Applies
+  once the repo's template baseline is harmon-init v5.5.1 (the release
+  containing harmon-init#1604); older baselines ship only the single
+  `overrides: esbuild >=0.28.1` floor.
 
 ### 3.3 Drift from older template commits (recognition patterns for un-reconciled repos)
 
@@ -1492,6 +1507,14 @@ them:
   `npx --yes`-only `lint:markdown`/`format`:** pre-retro renders lack the
   destination-only secret helpers and the pinned-bin preference — `copier
   update` brings both in.
+- **Hand-rolled cross-major pnpm overrides block:** older or un-reconciled web
+  repos (notably the four Astro consumers) accumulated large hand-rolled
+  security-pin blocks in `pnpm-workspace.yaml` or `package.json` that crossed
+  major boundaries (for example, unscoped `brace-expansion` 1/2→5 paired with a
+  `minimatch@3→10` companion). The current template replaces these with the
+  template-owned, major-bounded security-floor block (and tested 0.x minors)
+  between the markers; `copier update` brings in the bounded block and local
+  floors belong below the end marker without cross-major widening.
 
 When auditing: distinguish "**legit conditional/stack difference**" (3.1, 3.2 —
 leave alone) from "**template-version lag**" (3.3 — candidate for an update toward
