@@ -46,10 +46,10 @@
 # Run via `task test:devflow-conformance`. Needs node, python3, and task.
 set -euo pipefail
 
-SOURCE_REV="dd28801038c66b855284a975ebbbd4a9f2f16c00"
+SOURCE_REV="3fd05eb6a2740c818e2c5a56bd46491505e889b6"
 REGISTRY_SOURCE_REV="81bbe78784c0b146e754e80030274ff95e10cf51"
-CORPUS_BLOB="751443a7898eab6f71fe8718f29b80784cdcc0f8"
-RUNNER_BLOB="79a194e5f5ffaced06e9b685733d1c3830dd9e03"
+CORPUS_BLOB="13b4a79bfc2684416d83575d28f028bae7820f8c"
+RUNNER_BLOB="9dee6a66350ed50fbe8689500115f64a5d06827a"
 POLICY_BLOB="7e36129a43e0ae73c8a8c878e6055fdab8a1e6ab"
 REGISTRY_BLOB="27844622efb4a7f8508729e6b413170b67bd7b3f"
 
@@ -114,6 +114,23 @@ for (const t of targets) lines.push(`  "${t}":`, "    desc: conformance stub", "
 process.stdout.write(lines.join("\n") + "\n");
 ' "$fixtures/task-targets.json" >"$dir/Taskfile.yml"
 }
+
+# The corpus drives the CLI, whose usage pre-check runs before the library.
+# Keep the canonical library invariant covered for non-CLI consumers too.
+echo "==> absent merge-base policy requires a branch policy in the library"
+if node --input-type=module - "$support/devflow-policy.mjs" <<'JS'
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { resolvePolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
+for (const doc of [null, undefined]) {
+    assert.throws(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true }), PolicyError);
+}
+JS
+then
+    echo "  ✓ library refuses an absent branch policy"
+else
+    err "resolvePolicy accepted an absent merge-base policy without a branch policy"
+fi
 
 echo "==> conformance corpus against the vendored reader"
 make_repo "$scratch/repo" "$support/devflow-policy.mjs"

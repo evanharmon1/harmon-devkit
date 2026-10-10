@@ -1908,12 +1908,27 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *     via decodeHistoricalPolicy(). `doc` is still required to be v2 (the
  *     operating-path gate applies regardless of whether the merge-base
  *     rule also applies).
+ *   - mergeBasePolicyAbsent: explicit absent merge-base policy; validate
+ *     the candidate independently, then govern with the built-in fallback.
  */
 export function resolvePolicy(doc, opts = {}) {
   return applyTierInputs(resolveGoverningPolicy(doc, opts), opts);
 }
 
 function resolveGoverningPolicy(doc, opts) {
+  if (opts.mergeBasePolicyAbsent && opts.mergeBaseDoc) {
+    throw new PolicyError("an absent merge-base policy cannot also supply mergeBaseDoc");
+  }
+  if (opts.mergeBasePolicyAbsent) {
+    // The absent-base state exists only for a branch that adds a policy, so
+    // every caller (CLI and library) must supply that branch policy.
+    if (doc === null || doc === undefined) {
+      throw new PolicyError("an absent merge-base policy requires a branch policy (a branch that adds it)");
+    }
+    requireOperatingV2(doc);
+    resolveV2(doc, {});
+    return resolveAbsentPolicy(opts);
+  }
   if (doc === null || doc === undefined) {
     if (!opts.mergeBaseDoc) return resolveAbsentPolicy(opts);
     // The branch deleted .devflow.toml while the merge base still has one:
@@ -2044,12 +2059,12 @@ function extractRepeatable(argv, flag) {
 //     flags are pure booleans that never take a value (challenge round 1,
 //     C1-1: `--pin-marker-trusted false` must not read as trusted).
 const LEGACY_OPTIONS = new Set(["policy", "registry", "merge-base-policy", "merge-base-registry", "task-targets", "taskfile-dir", "rigor", "strategy"]);
-const BOOLEAN_OPTIONS = new Set(["json", "pin-marker-trusted", "pin-value-trusted"]);
+const BOOLEAN_OPTIONS = new Set(["json", "merge-base-policy-absent", "pin-marker-trusted", "pin-value-trusted"]);
 const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labels", "risk", "complexity", "stored-tier", "pinned-tier"]);
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
 const COMMAND_OPTIONS = {
   detect: new Set(["policy", "json"]),
-  resolve: new Set([...LEGACY_OPTIONS, "json", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+  resolve: new Set([...LEGACY_OPTIONS, "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
 };
 
 function parseArgs(argv, allowed) {
@@ -2109,8 +2124,8 @@ function parseArgs(argv, allowed) {
 }
 
 // `--tier-overrides implementer=frontier,reviewer=apex` → { implementer:
-// "frontier", reviewer: "apex" }. Values are validated by applyTierInputs;
-// only the map's own syntax is checked here.
+// "frontier", reviewer: "apex" }. Operator values are checked here so malformed
+// instructions report usage status 2; label values retain library diagnostics.
 function parseTierMapOption(value, option) {
   const result = {};
   for (const entry of value.split(",")) {
@@ -2131,12 +2146,22 @@ function parseTierMapOption(value, option) {
     }
     result[role] = tier;
   }
-  return result;
+  return option === "tier-overrides"
+    ? normalizeTierMap(result, "operator", BUILTIN_TIER_ORDER, [])
+    : result;
 }
 
 function tierInputsFromArgs(args) {
   const inputs = {};
-  if (args["rigor-source"] !== undefined) inputs.rigorSource = args["rigor-source"];
+  if (args["rigor-source"] !== undefined) {
+    if (!["operator", "label"].includes(args["rigor-source"])) {
+      throw new PolicyError('--rigor-source must be "operator" or "label"');
+    }
+    if (args.rigor === undefined) {
+      throw new PolicyError("--rigor-source requires --rigor");
+    }
+    inputs.rigorSource = args["rigor-source"];
+  }
   if (args["tier-overrides"] !== undefined) {
     inputs.tierOverrides = parseTierMapOption(args["tier-overrides"], "tier-overrides");
   }
@@ -2382,6 +2407,13 @@ function cliResolve(args) {
   }
 
   let mergeBaseDoc = null;
+  const mergeBasePolicyAbsent = args["merge-base-policy-absent"] === true;
+  if (mergeBasePolicyAbsent && doc === null) {
+    console.error(
+      "devflow-policy: --merge-base-policy-absent requires an existing --policy file (a branch that adds .devflow.toml)",
+    );
+    return 2;
+  }
   if (args["merge-base-policy"]) {
     try {
       mergeBaseDoc = loadTomlFile(args["merge-base-policy"]);
@@ -2397,6 +2429,7 @@ function cliResolve(args) {
       rigor: args.rigor,
       strategy: args.strategy,
       mergeBaseDoc,
+      mergeBasePolicyAbsent,
       ...tierInputsFromArgs(args),
     });
   } catch (err) {
@@ -2433,7 +2466,8 @@ function cliResolve(args) {
   // Applied before cross-validation on purpose: an added slug the registry
   // does not know, or one whose surface or stage affinity forbids it here,
   // must fail the same way a configured one would.
-  const registryPath = mergeBaseDoc ? args["merge-base-registry"] : args.registry;
+  const usesMergeBase = mergeBaseDoc !== null || mergeBasePolicyAbsent;
+  const registryPath = usesMergeBase ? args["merge-base-registry"] : args.registry;
   let registryDoc = null;
   if (registryPath) {
     try {
@@ -2486,7 +2520,7 @@ function cliResolve(args) {
   // fixtures exist to prove safe. A caller that wants this to gate CI can
   // check branch_cross_validation.errors itself.
   let branchCrossValidation = null;
-  if (mergeBaseDoc && doc && args.registry) {
+  if (usesMergeBase && doc && args.registry) {
     let branchRegistryDoc;
     try {
       branchRegistryDoc = JSON.parse(readFileSync(args.registry, "utf8"));
@@ -2718,7 +2752,12 @@ function main() {
     args = parseArgs(selectFinders.rest, COMMAND_OPTIONS[cmd]);
     // Validate the tier inputs' own syntax up front, so a malformed one is a
     // usage error (exit 2) rather than a policy refusal (exit 1).
-    if (cmd === "resolve") tierInputsFromArgs(args);
+    if (cmd === "resolve") {
+      if (args["merge-base-policy"] && args["merge-base-policy-absent"]) {
+        throw new PolicyError("--merge-base-policy-absent cannot be combined with --merge-base-policy");
+      }
+      tierInputsFromArgs(args);
+    }
   } catch (err) {
     if (err instanceof PolicyError) {
       console.error(`devflow-policy: ${err.message}`);
