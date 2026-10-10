@@ -11027,7 +11027,7 @@ done
 IMPL_MD="$repo/ai/skills/universal/implement/SKILL.md"
 ORCH_MD="$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "dev-flow-support: the resolve recipe passes --taskfile-dir . (thread 4176257539)" \
-    grep -qF -- "--registry agent-registry.json --taskfile-dir ." "$DFS_MD"
+    grep -qF -- '${reg_args[@]+"${reg_args[@]}"} --taskfile-dir .' "$DFS_MD"
 expect_ok "dev-flow-support: step 0 takes its target list from the merge-base closure (thread 4176257539)" \
     grep -qF -- "path, \`--taskfile-dir\` is the merge-base closure" "$DFS_MD"
 expect_ok "dev-flow-support: first adoption uses an operator-pinned external reader (thread 4176257542)" \
@@ -11046,6 +11046,86 @@ expect_ok "orchestrate: first adoption takes an operator-pinned reader (thread 4
     grep -qF "operator-pinned reader supplied outside the branch" "$ORCH_MD"
 expect_ok "orchestrate: an interactive orchestrator asks on a strategy conflict (thread 4176257540)" \
     grep -qF "interactive orchestrator asks the operator" "$ORCH_MD"
+# harmon-devkit#1265: policy comes from the branch built from the fetched base.
+expect_ok "implement: loop-entry resolution follows fetch and branch setup" \
+    python3 -c 'import pathlib,sys
+s=pathlib.Path(sys.argv[1]).read_text()
+assert s.index("git fetch --prune") < s.index("git switch -c") < s.index("**Resolve and announce the policy profile at loop entry**")
+assert "after the fetch and branch creation or checkout" in s
+assert "An orchestrated lane takes the resolved profile from its brief" in s' "$IMPL_MD"
+expect_ok "orchestrate: dispatch persists complete lane profiles and resume reads them" \
+    sh -c 'grep -qF "plan.lane_profiles" "$1" &&
+        grep -qF "On resume, read" "$1" &&
+        grep -qF "Older plans without" "$1"' sh "$ORCH_MD"
+# Run the actual documented recipe, so the test cannot mask drift in its flags.
+registry_recipe_root="$TMPROOT/registry-recipe"
+mkdir -p "$registry_recipe_root/scratch"
+git init -q "$registry_recipe_root"
+# Cross-validation still requires the fallback gate targets in the Taskfile.
+cat >"$registry_recipe_root/Taskfile.yml" <<'TASKFILE'
+version: '3'
+tasks:
+  verify:
+    desc: Fallback gate target
+    cmds: ['true']
+  check:
+    desc: Fallback gate target
+    cmds: ['true']
+  security:secrets:
+    desc: Fallback gate target
+    cmds: ['true']
+  security:
+    desc: Fallback gate target
+    cmds: ['true']
+TASKFILE
+printf '%s\n' '{}' >"$registry_recipe_root/input.json"
+python3 - "$DFS_MD" "$registry_recipe_root/recipe.sh" <<'PYRECIPE'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+start = text.index('   tier_tmp="$(mktemp -d')
+end = text.index('   ```', start)
+recipe = '\n'.join(line[3:] for line in text[start:end].splitlines())
+recipe = recipe.replace('# write the issue\'s inputs to', 'cp input.json \"$tier_tmp/tier-input.json\"\n# write the issue\'s inputs to')
+pathlib.Path(sys.argv[2]).write_text(recipe + '\n')
+PYRECIPE
+# The recipe's input-writing comment is its caller-owned precondition.
+expect_ok "dev-flow-support: documented recipe reaches fallback without policy or registry" \
+    bash -eu -c '
+        cd "$1"
+        export support_dir="$2" TMPDIR="$1/scratch"
+        recipe_rc=0
+        bash -eu recipe.sh || recipe_rc=$?
+        # Exit 3 proves this is resolved-but-indeterminate, never the old exit 2.
+        [ "$recipe_rc" -eq 3 ]
+        python3 -c '\''import json,pathlib
+files=list(pathlib.Path("scratch").glob("*/resolved.json"))
+assert len(files)==1
+r=json.loads(files[0].read_text())
+assert r["source"]=="built-in-fallback"
+assert r["cross_validation"]["errors"]==[]
+assert r["cross_validation"]["indeterminate"]==["indeterminate: no registry was supplied — finders/pools/families/harnesses could not be checked"]'\''
+    ' bash "$registry_recipe_root" "$repo/ai/skills/universal/dev-flow-support/assets"
+# Control: with the registry present, the documented recipe still supplies it.
+# Capture resolver argv only; translation and argument extraction remain real.
+printf '%s\n' '{}' >"$registry_recipe_root/agent-registry.json"
+expect_ok "dev-flow-support: documented recipe passes an existing registry" \
+    bash -eu -c '
+        cd "$1"
+        export support_dir="$2" TMPDIR="$1/scratch" argv_log="$1/resolver-argv.txt"
+        node() {
+            if [ "${2:-}" = resolve ]; then
+                printf "%s\n" "$@" >"$argv_log"
+                return 0
+            fi
+            command node "$@"
+        }
+        export -f node
+        bash -eu recipe.sh
+        python3 -c '\''import pathlib
+args=pathlib.Path("resolver-argv.txt").read_text().splitlines()
+assert args.count("--registry")==1
+assert args[args.index("--registry")+1]=="agent-registry.json"'\''
+    ' bash "$registry_recipe_root" "$repo/ai/skills/universal/dev-flow-support/assets"
 # Integration remediation 2 (PR #1263).
 expect_ok "dev-flow-support: step 0 is one invariant over every resolution (thread 4178249115)" \
     grep -qF "Invariant: every tier resolution runs this whole procedure, step 0" "$DFS_MD"

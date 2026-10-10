@@ -412,8 +412,8 @@ grep -F -- 'if [ "$git_arg_count" -gt 0 ]; then' "$helper" >/dev/null ||
 echo "  -> the gate's own output is never captured to a file that could leak or leave a stray temp file"
 grep -F -- 'gate_log' "$helper" >/dev/null &&
     fail "a captured gate log is exactly what let a failing gate's output — which can legitimately contain credentials — get replayed into a refusal message, and it was never registered for cleanup either (Codex cloud review, confirmed both); the gate must inherit this script's own stdout/stderr instead"
-grep -F -- 'if ! task "$required_target"; then' "$helper" >/dev/null ||
-    fail "the required target must run with its output inherited, not redirected to a capture file"
+grep -F -- 'if ! env -u GIT_NO_REPLACE_OBJECTS task "$required_target"; then' "$helper" >/dev/null ||
+    fail "the required target must run with its output inherited and GIT_NO_REPLACE_OBJECTS unset"
 
 echo "  -> the write is bound to the validated push URL, not a fresh remote-name resolution"
 grep -F -- 'git_with_args push --no-follow-tags \' "$helper" >/dev/null &&
@@ -473,6 +473,61 @@ printf '%s' "$err" | grep -Fi "transport override" >/dev/null ||
     fail "a gate that installs core.sshCommand during its own execution must be refused before the push — git would use that override, ignoring the validated hostname entirely, regardless of \$push_url (Codex cloud review, confirmed: core.sshCommand is a repository-local config value, not a tracked file, so the worktree-cleanliness check never sees it): $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a push whose gate installed an SSH transport override must not land"
+
+echo "  -> the gate target does not inherit GIT_NO_REPLACE_OBJECTS"
+root="$(new_fixture replace-objects-gate-env)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+cat >"${root}/work/Taskfile.yml" <<EOF
+version: '3'
+tasks:
+  fixture-verify:
+    cmds:
+      - sh -c 'printf "%s\n" "\${GIT_NO_REPLACE_OBJECTS-UNSET}" > "${test_tmp}/gate-env.txt"'
+      - sh -c 'test -z "\${GIT_NO_REPLACE_OBJECTS:-}"'
+  fixture-check:
+    cmds:
+      - echo fixture-check ok
+EOF
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: fixture-verify asserts GIT_NO_REPLACE_OBJECTS is unset"
+code_sha="$(git -C "${root}/work" rev-parse HEAD)"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 0
+[ -f "${test_tmp}/gate-env.txt" ] ||
+    fail "the stub gate did not execute to record its environment"
+[ "$(cat "${test_tmp}/gate-env.txt")" = "UNSET" ] ||
+    fail "gate target inherited GIT_NO_REPLACE_OBJECTS: $(cat "${test_tmp}/gate-env.txt")"
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
+    fail "a push whose gate target verified GIT_NO_REPLACE_OBJECTS is unset must land"
+
+echo "  -> a pre-push hook does not inherit GIT_NO_REPLACE_OBJECTS"
+root="$(new_fixture replace-objects-pre-push-env)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/.git/hooks"
+cat >"${root}/work/.git/hooks/pre-push" <<EOF
+#!/usr/bin/env bash
+printf "%s\n" "\${GIT_NO_REPLACE_OBJECTS-UNSET}" > "${test_tmp}/pre-push-env.txt"
+if [ "\${GIT_NO_REPLACE_OBJECTS-UNSET}" != "UNSET" ]; then
+    echo "pre-push hook inherited GIT_NO_REPLACE_OBJECTS (\${GIT_NO_REPLACE_OBJECTS})" >&2
+    exit 1
+fi
+EOF
+chmod +x "${root}/work/.git/hooks/pre-push"
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 0
+[ -f "${test_tmp}/pre-push-env.txt" ] ||
+    fail "the fixture pre-push hook did not execute to record its environment"
+[ "$(cat "${test_tmp}/pre-push-env.txt")" = "UNSET" ] ||
+    fail "pre-push hook inherited GIT_NO_REPLACE_OBJECTS: $(cat "${test_tmp}/pre-push-env.txt")"
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
+    fail "a push whose pre-push hook verified GIT_NO_REPLACE_OBJECTS is unset must land"
 
 # Structural, not behavioral: this file's only hermetic transport-faking
 # mechanism is the SSH GIT_SSH_COMMAND stub (every fixture's pushurl is
