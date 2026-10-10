@@ -4020,18 +4020,21 @@ removal_evidence="$(grep "INDETERMINATE remove 'human'" "$tmp/out")"
 grep -q "RESTORED 'human' on $repo#604" "$tmp/out" ||
     fail "an unknown removal outcome must re-add human conservatively: $(cat "$tmp/out")"
 grep -q "APPLIED remove 'human'" "$tmp/out" && fail "unknown outcome is not confirmed"
+# RESTORED supersedes the INDETERMINATE removal (SKILL.md step 2): the entry
+# is `human kept`, carrying both lines as evidence, never a removal.
+restored_evidence="$(grep "RESTORED 'human'" "$tmp/out")"
 cat >"$tmp/indeterminate-human-removal-entries.md" <<MD
-## Human removals
-
-### #604 — human removal unconfirmed: edit and re-read failed
+### #604 — human kept: the removal could not be confirmed, so human was re-added
 <!-- triage-entry:604 -->
-- Evidence: $removal_evidence
-- Outcome: unconfirmed; inspect live labels before deciding whether to retry.
+- Evidence: $removal_evidence; $restored_evidence
+- Outcome: kept; inspect live labels before deciding whether to retry.
 MD
 [ "$(run "$report" sync --repo "$repo" --entries-file "$tmp/indeterminate-human-removal-entries.md")" = 0 ] ||
-    fail "unknown removal outcome must reach report"
-grep -q "INDETERMINATE remove 'human'" "$tmp/out" || fail "report must retain unknown outcome evidence"
-grep -q 'human removal unconfirmed' "$tmp/out" || fail "report must mark unknown removal unconfirmed"
+    fail "a restored removal must reach the report"
+grep -q "INDETERMINATE remove 'human'" "$tmp/out" || fail "report must retain the unknown-outcome evidence"
+grep -q "RESTORED 'human'" "$tmp/out" || fail "report must retain the restore evidence"
+grep -q 'human kept' "$tmp/out" || fail "a restored removal is reported as human kept"
+grep -q 'human removal unconfirmed' "$tmp/out" && fail "a restored removal is never reported as an unconfirmed removal"
 
 : >"$GH_STUB_LOG"
 [ "$(run env TRIAGE_EXECUTE=1 GH_STUB_EDIT_FAIL_AFTER_APPLY=1 "$apply" label \
