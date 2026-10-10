@@ -1926,7 +1926,15 @@ function resolveGoverningPolicy(doc, opts) {
       throw new PolicyError("an absent merge-base policy requires a branch policy (a branch that adds it)");
     }
     requireOperatingV2(doc);
-    resolveV2(doc, {});
+    // Validate the candidate exactly as the present-base path below does
+    // (resolveV2(doc, opts)), under the requested selections. This reader
+    // later resolves the branch under those selections again for
+    // branch_cross_validation, so a candidate checked only under its own
+    // defaults let a broken selected table escape as an uncaught exception
+    // instead of the usual invalid-policy exit. (harmon-init's reader
+    // validates the whole catalog instead; harmon-init#1484 tracks the
+    // convergence.)
+    resolveV2(doc, opts);
     return resolveAbsentPolicy(opts);
   }
   if (doc === null || doc === undefined) {

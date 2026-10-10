@@ -132,6 +132,31 @@ else
     err "resolvePolicy accepted an absent merge-base policy without a branch policy"
 fi
 
+# With the absent-base flag the candidate is validated under the requested
+# selections, as on the present-base path: a broken selected table is an
+# ordinary invalid-policy exit 1 with a reader diagnostic, never an uncaught
+# exception (review round 1, harmon-devkit#1264 port).
+echo "==> absent merge-base policy validates the candidate under the requested rigor"
+make_repo "$scratch/absent" "$support/devflow-policy.mjs"
+# The built-in fallback accepts only rigor "standard", so the candidate's
+# default must differ from it for the selected table to go unchecked.
+sed -e 's/^default_rigor    = "standard"$/default_rigor    = "thorough"/' \
+    -e 's/^rounds            = "standard"$/rounds            = "no-such-rounds"/' \
+    "$fixtures/policy.toml" >"$scratch/absent/.devflow.toml"
+set +e
+(cd "$scratch/absent" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --merge-base-policy-absent --merge-base-registry agent-registry.json \
+    --registry agent-registry.json \
+    --taskfile-dir . --rigor standard --json >/dev/null 2>"$scratch/absent.err")
+status=$?
+set -e
+if [ "$status" -eq 1 ] && grep -q '^devflow-policy: ' "$scratch/absent.err" &&
+    ! grep -q '^    at ' "$scratch/absent.err"; then
+    echo "  ✓ broken selected table is an invalid-policy exit 1"
+else
+    err "absent-base resolve with a broken selected table exited $status: $(head -2 "$scratch/absent.err")"
+fi
+
 echo "==> conformance corpus against the vendored reader"
 make_repo "$scratch/repo" "$support/devflow-policy.mjs"
 if (cd "$scratch/repo" && python3 "$runner" --repo "$scratch/repo" --fixture "$corpus" --config "$scratch/repo/.devflow.toml"); then
