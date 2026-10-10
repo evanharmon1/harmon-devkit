@@ -383,7 +383,11 @@ Report **every** removal, using the apply output as evidence and your judgement
 as its reason: category `human removed` after `APPLIED remove 'human'`, or `human
 removal planned` after `DRY-RUN would remove 'human'`. After `INDETERMINATE remove
 'human'`, report `human removal unconfirmed`, preserving the unknown outcome and
-its evidence; do not count it as confirmed removal. If the helper refuses,
+its evidence; do not count it as confirmed removal. After the label edit the
+helper re-checks the guards; a `RESTORED 'human'` line supersedes any earlier
+`APPLIED remove 'human'` for that issue (the guards stopped holding, or the
+re-check could not be read, so `human` was put back): report `human kept` with
+the helper's message, never a removal. If the helper refuses,
 report `human kept` with the refusal. If inspection shows the work still needs a
 human, keep the label and report why; never turn a scan candidate straight into a
 removal. If it no longer carries the label at apply time, do not claim a removal.
