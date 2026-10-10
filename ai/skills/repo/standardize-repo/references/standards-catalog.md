@@ -1503,13 +1503,6 @@ them:
   `npx --yes`-only `lint:markdown`/`format`:** pre-retro renders lack the
   destination-only secret helpers and the pinned-bin preference — `copier
   update` brings both in.
-- **Edits inside the template-owned security-floor block:** in
-  `pnpm-workspace.yaml`, the block between `# --- harmon-init security floors … ---`
-  and `# --- end harmon-init security floors; repository-local floors go below this line ---`
-  markers is template-owned; a repo that edits or deletes entries inside those
-  markers has un-reconciled drift that audit mode reports. Repository-local floors
-  belong below the end marker. Applies once the repo's template baseline is
-  harmon-init v5.5.1 (the release containing harmon-init#1604).
 - **Hand-rolled cross-major pnpm overrides block:** older or un-reconciled web
   repos (notably the four Astro consumers) accumulated large hand-rolled
   security-pin blocks in `pnpm-workspace.yaml` or `package.json` that crossed
@@ -1521,4 +1514,6 @@ them:
 
 When auditing: distinguish "**legit conditional/stack difference**" (3.1, 3.2 —
 leave alone) from "**template-version lag**" (3.3 — candidate for an update toward
-the current convention, but not a correctness bug).
+the current convention, but not a correctness bug). Template-owned content that
+differs from the template at the repo's own baseline (`_commit`) is drift — a
+regression to restore — not lag; lag is only what a newer template changed.

@@ -497,9 +497,9 @@ matches `<project_type>`:
   crosses a major), with 0.x minor selectors scoped to tested minors
   (`esbuild@0.27`/`@0.28` → `'>=0.28.1 <0.29'`, `sharp@0.34`/`@0.35` → `'>=0.35.5 <0.36'`).
   Add repository-local floors below the end marker inside `overrides` in the same
-  shape, quoting scoped package keys (`'@scope/pkg@7': '>=7.0.1 <8'`). On older
-  baselines, the template ships only the single `esbuild >=0.28.1` floor with no
-  markers, so local floors there go directly inside `overrides`. When a later
+  shape, quoting scoped package keys (`'@scope/pkg@7': '>=7.0.1 <8'`). Before
+  harmon-init v5.5.1 there are no markers, so local floors go directly inside
+  `overrides`. When a later
   template release floors a package you floored locally, delete the local entry.
   After a template update changes the block, run a non-frozen `pnpm install` and
   commit the updated `pnpm-lock.yaml` (avoids `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`
