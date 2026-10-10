@@ -63,7 +63,9 @@ Take the issue number or URL from the arguments; otherwise infer it from the
 current branch or the conversation. A URL pins the repository as well as the
 number — prefer it. Bind `$repo` from the target and pass `--repo "$repo"` on
 every `gh` command; a bare `#123` means *this* repo and nothing else
-(`track-work` §1). If the target is ambiguous, ask.
+(`track-work` §1). If the target is ambiguous, ask. Bind `$host` with it: the
+host of the issue URL, or, for a bare `#123`, the host of the canonical URL
+`gh issue view <n> --json url -q .url` returns. Never assume `github.com`.
 
 **Then bind the checkout to `$repo`, before anything else.** `/claim` only
 *reads* the code, so a mismatched checkout costs it accuracy; this skill
@@ -72,14 +74,23 @@ right issue in the wrong repository — and every gate downstream passes, becaus
 the code it verifies is real code, just not this issue's:
 
 ```sh
-git remote -v          # find the remote whose URL is $repo
-gh repo view "$(git remote get-url <remote>)" --json nameWithOwner -q .nameWithOwner
+git remote -v          # find the remote whose URL is $repo on $host
+gh repo view "$(git remote get-url <remote>)" --json url -q .url
 ```
+
+The printed URL must equal `https://$host/$repo` (compare case-insensitively),
+where `$host` is the host of the canonical issue URL. Compare the URL, not
+`nameWithOwner`: a same-named mirror on another GitHub host has the same
+`nameWithOwner` and would otherwise pass.
 
 No remote matching `$repo` is a **hard stop**, exactly as in `/claim` §2.
 Do not "work here and move it later": ask the user for the matching checkout,
 or to confirm which repository they actually meant. Where the match exists but
 is not the current worktree, switch to it first.
+
+Keep the validated target remote's name in `$remote` for the shared tier
+procedure's step 0; it is the remote whose URL the lookup above confirmed as
+`$repo` on `$host`, never a new URL-suffix match.
 
 Then confirm the claim exists — **read it, do not write it**:
 
@@ -220,7 +231,8 @@ resolution runs the full `dev-flow-support` procedure, **step 0 included**,
 like every other resolution: if the working tree (committed, staged,
 unstaged or untracked) differs from the merge base in a governing file, the
 merge-base helper and reader resolve it, not the branch's. Decide that with
-the procedure's `step0_probe` and the `$repo` bound in step 1; when it
+the procedure's `step0_probe "${remote:-}"`, passing the validated `$remote`
+bound against `$repo` in step 1; when it
 returns 2 (indeterminate), stop rather than resolving. Resolve the Tier with
 the policy, not by eye:
 - Read the issue's `tier:<value>` label (on every owner type), `tier:pinned`,
