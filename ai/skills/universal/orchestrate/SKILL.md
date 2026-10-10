@@ -172,6 +172,20 @@ Build and publish the plan in this order:
    accepted expansion is a recomputation reason: before the lane edits the
    expanded path, publish a complete new revision through the candidate,
    validate, rename, and canonical-readback sequence in step 7.
+   **Persist lane profiles at dispatch.** Write each lane's complete resolved
+   profile as `{lane, policy}` in `plan.lane_profiles` in the validated
+   revision before dispatch, including its caps, breadth, all five role tiers, sources and
+   operator pins. `plan.policy` is the slate baseline; `lane_profiles` is a
+   complete projection, not a partial override.
+   A recorded lane profile is immutable for its run; changing it requires a new run.
+   When the array is present it
+   must cover every planned lane and name no unknown lane. On resume, read
+   the last validated revision's lane profile for the lane brief and stage
+   gates; never substitute the slate's global role tiers. Older plans without
+   the array remain valid: before resuming dispatch, resolve every lane through
+   the full tier procedure (step 0 included) and append a validated revision
+   containing `lane_profiles`. Do not infer past lane refinements from the
+   global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Emit and validate.** Write the closed record and validate it with
    `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,

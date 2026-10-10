@@ -168,16 +168,30 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
        { echo "tier resolution stopped: argument extraction failed" >&2; exit 2; }
    tier_args=()
    while IFS= read -r a; do tier_args+=("$a"); done <"$tier_tmp/args.txt"
+   reg_args=()
+   if [ -f agent-registry.json ]; then reg_args=(--registry agent-registry.json); fi
    node "$support_dir/devflow-policy.mjs" resolve --policy .devflow.toml \
-       --registry agent-registry.json --taskfile-dir . \
+       ${reg_args[@]+"${reg_args[@]}"} --taskfile-dir . \
        --json ${tier_args[@]+"${tier_args[@]}"} >"$tier_tmp/resolved.json"
    ```
+
+   Pass `--registry agent-registry.json` only when that file exists; when both
+   policy and registry are absent this ordinary recipe reaches the built-in
+   fallback. This guard does not apply to step 0: that path deliberately passes
+   the materialized merge-base registry from its trusted closure.
 
    Run it from the repository root. `--taskfile-dir .` hands the reader this
    checkout's gate-target list. Without it (or `--task-targets`),
    cross-validation is indeterminate and `resolve` always exits 3, which
    would hide the one exit 3 that matters: the derived Tier's. On the step-0
    path, `--taskfile-dir` is the merge-base closure instead.
+   **Fallback invariant:** when resolution succeeds without `agent-registry.json`,
+   registry cross-validation leaves `resolve` at exit 3. The caller accepts that
+   status as the absent-policy fallback only when `source` is `built-in-fallback`,
+   `cross_validation.errors` is empty, and `cross_validation.indeterminate` holds
+   exactly one entry: `indeterminate: no registry was supplied — finders/pools/families/harnesses could not be checked`.
+   Any other indeterminate entry, especially the derived Tier's, still stops
+   resolution exactly as before. Exit 3 alone is never fallback evidence.
    Translation and argument extraction must both succeed before `resolve`
    runs. Either failure prints a message and stops the recipe; the file-backed
    extraction preserves its exit status instead of losing it in process
