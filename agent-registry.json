@@ -16,16 +16,37 @@
       "arming": false
     }
   },
+  "effort_ladder": ["minimal", "low", "medium", "high", "xhigh", "max"],
   "families": [
     {
       "slug": "claude",
       "display_name": "Claude",
       "legacy_claim_labels": ["agent:claude-code"],
       "models": [
-        { "slug": "fable", "display_name": "Fable", "tier": "apex" },
-        { "slug": "opus", "display_name": "Opus", "tier": "frontier" },
-        { "slug": "sonnet", "display_name": "Sonnet", "tier": "standard" },
-        { "slug": "haiku", "display_name": "Haiku", "tier": "economy" }
+        {
+          "slug": "fable",
+          "display_name": "Fable",
+          "tier": "apex",
+          "versions": [{ "slug": "5.1", "display_name": "Fable 5.1", "retired": false }]
+        },
+        {
+          "slug": "opus",
+          "display_name": "Opus",
+          "tier": "frontier",
+          "versions": [{ "slug": "5.5", "display_name": "Opus 5.5", "retired": false }]
+        },
+        {
+          "slug": "sonnet",
+          "display_name": "Sonnet",
+          "tier": "standard",
+          "versions": [{ "slug": "5.5", "display_name": "Sonnet 5.5", "retired": false }]
+        },
+        {
+          "slug": "haiku",
+          "display_name": "Haiku",
+          "tier": "economy",
+          "versions": [{ "slug": "5.5", "display_name": "Haiku 5.5", "retired": false }]
+        }
       ]
     },
     {
@@ -33,18 +54,52 @@
       "display_name": "GPT",
       "legacy_claim_labels": ["agent:codex"],
       "models": [
-        { "slug": "astra", "display_name": "Astra", "cli_ids": { "codex-cli": "gpt-6-astra" }, "tier": "apex" },
-        { "slug": "sol", "display_name": "Sol", "cli_ids": { "codex-cli": "gpt-5.6-sol" }, "tier": "frontier" },
-        { "slug": "terra", "display_name": "Terra", "cli_ids": { "codex-cli": "gpt-5.6-terra" }, "tier": "standard" },
-        { "slug": "luna", "display_name": "Luna", "cli_ids": { "codex-cli": "gpt-5.6-luna" }, "tier": "economy" }
+        {
+          "slug": "astra",
+          "display_name": "Astra",
+          "cli_ids": { "codex-cli": "gpt-6-astra" },
+          "tier": "apex",
+          "versions": [{ "slug": "6.1", "display_name": "Astra 6.1", "retired": false }]
+        },
+        {
+          "slug": "sol",
+          "display_name": "Sol",
+          "cli_ids": { "codex-cli": "gpt-5.6-sol" },
+          "tier": "frontier",
+          "versions": [{ "slug": "6.1", "display_name": "Sol 6.1", "retired": false }]
+        },
+        {
+          "slug": "terra",
+          "display_name": "Terra",
+          "cli_ids": { "codex-cli": "gpt-5.6-terra" },
+          "tier": "standard",
+          "versions": [{ "slug": "6.1", "display_name": "Terra 6.1", "retired": false }]
+        },
+        {
+          "slug": "luna",
+          "display_name": "Luna",
+          "cli_ids": { "codex-cli": "gpt-5.6-luna" },
+          "tier": "economy",
+          "versions": [{ "slug": "6.1", "display_name": "Luna 6.1", "retired": false }]
+        }
       ]
     },
     {
       "slug": "mai",
       "display_name": "MAI",
       "models": [
-        { "slug": "code-1-1-flash", "display_name": "Code-1.1-Flash", "tier": "economy" },
-        { "slug": "thinking-1", "display_name": "Thinking-1", "tier": "standard" }
+        {
+          "slug": "code-flash",
+          "display_name": "Code Flash",
+          "tier": "economy",
+          "versions": [{ "slug": "1.1", "display_name": "Code-1.1-Flash", "retired": false }]
+        },
+        {
+          "slug": "thinking",
+          "display_name": "Thinking",
+          "tier": "standard",
+          "versions": [{ "slug": "1", "display_name": "Thinking-1", "retired": false }]
+        }
       ]
     },
     {
@@ -52,58 +107,166 @@
       "display_name": "Qwen",
       "legacy_claim_labels": ["agent:qwen-code"],
       "models": [
-        { "slug": "max", "display_name": "3.8 Max", "cli_ids": { "claude-code-qwen": "qwen3.8-max" }, "tier": "frontier" },
-        { "slug": "coder-plus", "display_name": "3 Coder Plus", "cli_ids": { "claude-code-qwen": "qwen3-coder-plus" }, "tier": "standard", "default": true },
-        { "slug": "coder", "display_name": "3 Coder", "tier": "economy" },
-        { "slug": "flash", "display_name": "3.8 Flash", "cli_ids": { "claude-code-qwen": "qwen3.8-flash" }, "tier": "economy", "default": true },
-        { "slug": "coder-next", "display_name": "3 Coder Next", "tier": "standard" },
-        { "slug": "coder-30b", "display_name": "3 Coder 30B", "tier": "local" }
+        {
+          "slug": "max",
+          "display_name": "Max",
+          "cli_ids": { "claude-code-qwen": "qwen3.8-max" },
+          "tier": "frontier",
+          "versions": [{ "slug": "3.8", "display_name": "3.8 Max", "retired": false }]
+        },
+        {
+          "slug": "coder-plus",
+          "display_name": "Coder Plus",
+          "cli_ids": { "claude-code-qwen": "qwen3-coder-plus" },
+          "tier": "standard",
+          "default": true,
+          "versions": [{ "slug": "3", "display_name": "3 Coder Plus", "retired": false }]
+        },
+        {
+          "slug": "coder",
+          "display_name": "Coder",
+          "tier": "economy",
+          "versions": [{ "slug": "3", "display_name": "3 Coder", "retired": false }]
+        },
+        {
+          "slug": "flash",
+          "display_name": "Flash",
+          "cli_ids": { "claude-code-qwen": "qwen3.8-flash" },
+          "tier": "economy",
+          "default": true,
+          "versions": [{ "slug": "3.8", "display_name": "3.8 Flash", "retired": false }]
+        },
+        {
+          "slug": "coder-next",
+          "display_name": "Coder Next",
+          "tier": "standard",
+          "versions": [{ "slug": "3", "display_name": "3 Coder Next", "retired": false }]
+        },
+        {
+          "slug": "coder-30b",
+          "display_name": "Coder 30B",
+          "tier": "local",
+          "versions": [{ "slug": "3", "display_name": "3 Coder 30B", "retired": false }]
+        }
       ]
     },
     {
       "slug": "deepseek",
       "display_name": "DeepSeek",
       "models": [
-        { "slug": "v4-1-flash", "display_name": "V4.1 Flash", "cli_ids": { "claude-code-deepseek": "deepseek-flash" }, "tier": "standard" }
+        {
+          "slug": "flash",
+          "display_name": "Flash",
+          "cli_ids": { "claude-code-deepseek": "deepseek-flash" },
+          "tier": "standard",
+          "default": true,
+          "versions": [
+            { "slug": "4.1", "display_name": "V4.1 Flash", "retired": false },
+            { "slug": "4", "display_name": "V4 Flash", "retired": true, "tier": "economy" }
+          ]
+        }
       ]
     },
     {
       "slug": "glm",
       "display_name": "GLM",
       "models": [
-        { "slug": "5-3", "display_name": "5.3", "cli_ids": { "claude-code-glm": "glm-5.3" }, "tier": "standard" },
-        { "slug": "5-3-flash", "display_name": "5.3 Flash", "cli_ids": { "claude-code-glm": "glm-5.3-flash" }, "tier": "economy" }
+        {
+          "slug": "glm",
+          "display_name": "GLM",
+          "cli_ids": { "claude-code-glm": "glm-5.3" },
+          "tier": "standard",
+          "default": true,
+          "versions": [
+            { "slug": "5.3", "display_name": "5.3", "retired": false },
+            { "slug": "5.2", "display_name": "5.2", "retired": true }
+          ]
+        },
+        {
+          "slug": "flash",
+          "display_name": "Flash",
+          "cli_ids": { "claude-code-glm": "glm-5.3-flash" },
+          "tier": "economy",
+          "default": true,
+          "versions": [
+            { "slug": "5.3", "display_name": "5.3 Flash", "retired": false },
+            { "slug": "4.7", "display_name": "4.7 Flash", "retired": true }
+          ]
+        }
       ]
     },
     {
       "slug": "kimi",
       "display_name": "Kimi",
       "legacy_claim_labels": ["agent:kimi-k2"],
-      "models": [{ "slug": "k3", "display_name": "K3", "tier": "standard" }]
+      "models": [
+        {
+          "slug": "k",
+          "display_name": "K",
+          "tier": "standard",
+          "versions": [{ "slug": "3", "display_name": "K3", "retired": false }]
+        }
+      ]
     },
     {
       "slug": "minimax",
       "display_name": "MiniMax",
-      "models": [{ "slug": "m3", "display_name": "M3", "tier": "standard" }]
+      "models": [
+        {
+          "slug": "m",
+          "display_name": "M",
+          "tier": "standard",
+          "versions": [{ "slug": "3", "display_name": "M3", "retired": false }]
+        }
+      ]
     },
     {
       "slug": "gemini",
       "display_name": "Gemini",
       "legacy_claim_labels": ["agent:gemini-cli"],
       "models": [
-        { "slug": "3-1-pro", "display_name": "3.1 Pro", "tier": "frontier" },
-        { "slug": "3-8-flash", "display_name": "3.8 Flash", "tier": "frontier", "default": true },
-        { "slug": "3-7-flash", "display_name": "3.7 Flash", "tier": "standard", "default": true },
-        { "slug": "3-6-flash", "display_name": "3.6 Flash", "tier": "standard" },
-        { "slug": "3-5-flash-lite", "display_name": "3.5 Flash-Lite", "tier": "economy" }
+        {
+          "slug": "pro",
+          "display_name": "Pro",
+          "tier": "frontier",
+          "versions": [{ "slug": "3.1", "display_name": "3.1 Pro", "retired": false }]
+        },
+        {
+          "slug": "flash",
+          "display_name": "Flash",
+          "tier": "frontier",
+          "default": true,
+          "versions": [
+            { "slug": "3.8", "display_name": "3.8 Flash", "retired": false },
+            { "slug": "3.7", "display_name": "3.7 Flash", "retired": true, "tier": "standard" },
+            { "slug": "3.6", "display_name": "3.6 Flash", "retired": true, "tier": "standard" }
+          ]
+        },
+        {
+          "slug": "flash-lite",
+          "display_name": "Flash-Lite",
+          "tier": "economy",
+          "versions": [{ "slug": "3.5", "display_name": "3.5 Flash-Lite", "retired": false }]
+        }
       ]
     },
     {
       "slug": "mistral",
       "display_name": "Mistral",
       "models": [
-        { "slug": "medium-3-5", "display_name": "Medium 3.5", "tier": "frontier" },
-        { "slug": "small-4", "display_name": "Small 4", "tier": "standard" }
+        {
+          "slug": "medium",
+          "display_name": "Medium",
+          "tier": "frontier",
+          "versions": [{ "slug": "3.5", "display_name": "Medium 3.5", "retired": false }]
+        },
+        {
+          "slug": "small",
+          "display_name": "Small",
+          "tier": "standard",
+          "default": true,
+          "versions": [{ "slug": "4", "display_name": "Small 4", "retired": false }]
+        }
       ]
     }
   ],
@@ -119,7 +282,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": ["low", "medium", "high", "xhigh", "max"]
     },
     {
       "slug": "claude-code-action",
@@ -132,7 +296,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": ["low", "medium", "high", "xhigh", "max"]
     },
     {
       "slug": "claude-code-deepseek",
@@ -145,7 +310,8 @@
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": []
     },
     {
       "slug": "claude-code-glm",
@@ -158,7 +324,8 @@
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": []
     },
     {
       "slug": "claude-code-kimi",
@@ -171,7 +338,8 @@
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": []
     },
     {
       "slug": "claude-code-minimax",
@@ -184,7 +352,8 @@
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": []
     },
     {
       "slug": "claude-code-qwen",
@@ -197,7 +366,8 @@
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": []
     },
     {
       "slug": "claude-code-qwen-local",
@@ -210,7 +380,8 @@
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": []
     },
     {
       "slug": "codex-cli",
@@ -223,7 +394,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer", "challenger", "reviewer"],
-      "can_restrict_writes": true
+      "can_restrict_writes": true,
+      "efforts": ["minimal", "low", "medium", "high", "xhigh"]
     },
     {
       "slug": "copilot-cli",
@@ -236,7 +408,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "qwen-code",
@@ -249,7 +422,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "antigravity",
@@ -262,7 +436,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "opencode",
@@ -275,7 +450,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "pi",
@@ -288,7 +464,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "oh-my-pi",
@@ -301,7 +478,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "goose",
@@ -314,7 +492,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     },
     {
       "slug": "cline",
@@ -327,7 +506,8 @@
       },
       "provider_rewired": false,
       "roles": ["implementer"],
-      "can_restrict_writes": false
+      "can_restrict_writes": false,
+      "efforts": []
     }
   ],
   "foreman_adapters": [

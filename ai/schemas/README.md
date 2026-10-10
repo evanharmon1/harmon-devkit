@@ -2360,7 +2360,12 @@ challenge`/`task review` round — see AGENTS.md's shepherd section):
   `models[]` for any of a role's families carries no evidence either way
   and is unrestricted, not an error; only once at least one declared
   family DOES carry model-tier data does an unachievable tier become
-  checkable).
+  checkable). Each `models[]` entry is a model **line** with a `versions`
+  list (harmon-devkit#1268, mirroring harmon-init#1516), and the reader
+  resolves a model's tier through that line: the line `tier` is its single
+  current version's tier, and the registry validator allows a version's own
+  `tier` only on a retired version. A version override is therefore
+  history, and it never decides whether a tier is achievable.
 - **A single stray older-shape marker alongside `schema_version = 2` is
   `mixed`, not silently accepted as v2** — review round 3 closed the
   complete-old-shape-alongside-v2 case; a lone marker (e.g. `default_method`

@@ -31,27 +31,21 @@ const registry = JSON.parse(await readFile(process.argv[2], 'utf8'))
 const expectedInventory = {
     claude: ['fable|Fable|apex', 'opus|Opus|frontier', 'sonnet|Sonnet|standard', 'haiku|Haiku|economy'],
     gpt: ['astra|Astra|apex', 'sol|Sol|frontier', 'terra|Terra|standard', 'luna|Luna|economy'],
-    mai: ['code-1-1-flash|Code-1.1-Flash|economy', 'thinking-1|Thinking-1|standard'],
+    mai: ['code-flash|Code Flash|economy', 'thinking|Thinking|standard'],
     qwen: [
-        'max|3.8 Max|frontier',
-        'coder-plus|3 Coder Plus|standard',
-        'coder|3 Coder|economy',
-        'flash|3.8 Flash|economy',
-        'coder-next|3 Coder Next|standard',
-        'coder-30b|3 Coder 30B|local'
+        'max|Max|frontier',
+        'coder-plus|Coder Plus|standard',
+        'coder|Coder|economy',
+        'flash|Flash|economy',
+        'coder-next|Coder Next|standard',
+        'coder-30b|Coder 30B|local'
     ],
-    deepseek: ['v4-1-flash|V4.1 Flash|standard'],
-    glm: ['5-3|5.3|standard', '5-3-flash|5.3 Flash|economy'],
-    kimi: ['k3|K3|standard'],
-    minimax: ['m3|M3|standard'],
-    gemini: [
-        '3-1-pro|3.1 Pro|frontier',
-        '3-8-flash|3.8 Flash|frontier',
-        '3-7-flash|3.7 Flash|standard',
-        '3-6-flash|3.6 Flash|standard',
-        '3-5-flash-lite|3.5 Flash-Lite|economy'
-    ],
-    mistral: ['medium-3-5|Medium 3.5|frontier', 'small-4|Small 4|standard']
+    deepseek: ['flash|Flash|standard'],
+    glm: ['glm|GLM|standard', 'flash|Flash|economy'],
+    kimi: ['k|K|standard'],
+    minimax: ['m|M|standard'],
+    gemini: ['pro|Pro|frontier', 'flash|Flash|frontier', 'flash-lite|Flash-Lite|economy'],
+    mistral: ['medium|Medium|frontier', 'small|Small|standard']
 }
 const actualInventory = Object.fromEntries(
     registry.families.map((entry) => [
@@ -61,6 +55,71 @@ const actualInventory = Object.fromEntries(
 )
 deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory must match the 2026-09 refresh')
 
+// Model lines carry their releases newest first (#1268, mirroring
+// harmon-init#1516). Each entry is `slug|display_name`, plus `|retired` and a
+// historical tier on a retired version. For every line both registries list,
+// this data is harmon-init's at REGISTRY_PARITY_REV below: refresh it from
+// there rather than editing one side.
+const expectedVersions = {
+    'claude/fable': ['5.1|Fable 5.1'],
+    'claude/opus': ['5.5|Opus 5.5'],
+    'claude/sonnet': ['5.5|Sonnet 5.5'],
+    'claude/haiku': ['5.5|Haiku 5.5'],
+    'gpt/astra': ['6.1|Astra 6.1'],
+    'gpt/sol': ['6.1|Sol 6.1'],
+    'gpt/terra': ['6.1|Terra 6.1'],
+    'gpt/luna': ['6.1|Luna 6.1'],
+    'mai/code-flash': ['1.1|Code-1.1-Flash'],
+    'mai/thinking': ['1|Thinking-1'],
+    'qwen/max': ['3.8|3.8 Max'],
+    'qwen/coder-plus': ['3|3 Coder Plus'],
+    'qwen/coder': ['3|3 Coder'],
+    'qwen/flash': ['3.8|3.8 Flash'],
+    'qwen/coder-next': ['3|3 Coder Next'],
+    'qwen/coder-30b': ['3|3 Coder 30B'],
+    'deepseek/flash': ['4.1|V4.1 Flash', '4|V4 Flash|retired|economy'],
+    'glm/glm': ['5.3|5.3', '5.2|5.2|retired'],
+    'glm/flash': ['5.3|5.3 Flash', '4.7|4.7 Flash|retired'],
+    'kimi/k': ['3|K3'],
+    'minimax/m': ['3|M3'],
+    'gemini/pro': ['3.1|3.1 Pro'],
+    'gemini/flash': ['3.8|3.8 Flash', '3.7|3.7 Flash|retired|standard', '3.6|3.6 Flash|retired|standard'],
+    'gemini/flash-lite': ['3.5|3.5 Flash-Lite'],
+    'mistral/medium': ['3.5|Medium 3.5'],
+    'mistral/small': ['4|Small 4']
+}
+const actualVersions = Object.fromEntries(
+    registry.families.flatMap((entry) =>
+        entry.models.map(({ slug, versions }) => [
+            `${entry.slug}/${slug}`,
+            versions.map((version) =>
+                [
+                    version.slug,
+                    version.display_name,
+                    ...(version.retired ? ['retired'] : []),
+                    ...(version.tier ? [version.tier] : [])
+                ].join('|')
+            )
+        ])
+    )
+)
+deepStrictEqual(actualVersions, expectedVersions, "model line versions must match harmon-init's")
+
+// Effort is a harness property (#1268): the ladder and each harness's accepted
+// levels match harmon-init's. Only the Claude Code pair and codex-cli are
+// verified; every other harness records [] until its effort control is.
+deepStrictEqual(registry.effort_ladder, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const verifiedEfforts = {
+    'claude-code': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'claude-code-action': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh']
+}
+deepStrictEqual(
+    Object.fromEntries(registry.harnesses.map(({ slug, efforts }) => [slug, efforts])),
+    Object.fromEntries(registry.harnesses.map(({ slug }) => [slug, verifiedEfforts[slug] ?? []])),
+    "harness efforts must match harmon-init's"
+)
+
 const expectedCliIds = {
     'gpt/astra': { 'codex-cli': 'gpt-6-astra' },
     'gpt/sol': { 'codex-cli': 'gpt-5.6-sol' },
@@ -69,9 +128,9 @@ const expectedCliIds = {
     'qwen/max': { 'claude-code-qwen': 'qwen3.8-max' },
     'qwen/coder-plus': { 'claude-code-qwen': 'qwen3-coder-plus' },
     'qwen/flash': { 'claude-code-qwen': 'qwen3.8-flash' },
-    'deepseek/v4-1-flash': { 'claude-code-deepseek': 'deepseek-flash' },
-    'glm/5-3': { 'claude-code-glm': 'glm-5.3' },
-    'glm/5-3-flash': { 'claude-code-glm': 'glm-5.3-flash' }
+    'deepseek/flash': { 'claude-code-deepseek': 'deepseek-flash' },
+    'glm/glm': { 'claude-code-glm': 'glm-5.3' },
+    'glm/flash': { 'claude-code-glm': 'glm-5.3-flash' }
 }
 const actualCliIds = Object.fromEntries(
     registry.families.flatMap((entry) =>
@@ -84,6 +143,165 @@ deepStrictEqual(actualCliIds, expectedCliIds, 'harness-facing model IDs must mat
 
 console.log('PASS: shipped model inventory includes the 2026-09 refresh')
 NODE
+
+# Registry shape parity with harmon-init (#1268). harmon-devkit keeps its own
+# registry and schema: harmon-init lists model lines devkit does not (deepseek
+# pro, for one), and devkit's schema has fields harmon-init's lacks (cli_ids,
+# the suggest namespace, finder collection profiles). So the two files are not
+# compared byte for byte. What must match is the model-line, versions, and
+# per-harness efforts shape. Below is that shape, with descriptions stripped,
+# exactly as harmon-init's agent-registry.schema.json declares it at
+# REGISTRY_PARITY_REV. The test runs offline: when harmon-init changes this
+# shape, refresh the literal from that revision (the same projection run over
+# its schema) and move the pin, never edit one side to suit the other.
+REGISTRY_PARITY_REV="d361a514acef49b59887f8030c4662ec89e393cf"
+check_shape_parity() {
+    node --input-type=module - "$1" "$REGISTRY_PARITY_REV" <<'NODE'
+import { readFile } from 'node:fs/promises'
+import { deepStrictEqual } from 'node:assert/strict'
+
+const [schemaPath, parityRev] = process.argv.slice(2)
+const schema = JSON.parse(await readFile(schemaPath, 'utf8'))
+const strip = (value) =>
+    JSON.parse(
+        JSON.stringify(value, (key, entry) => (key === 'description' || key === '$comment' ? undefined : entry))
+    )
+// cli_ids is devkit's own optional model field; every other model property is shared.
+const model = structuredClone(schema.$defs.model)
+delete model.properties.cli_ids
+const actualShape = strip({
+    required: schema.required,
+    effort_ladder: schema.properties.effort_ladder,
+    effort: schema.$defs.effort,
+    model,
+    modelVersion: schema.$defs.modelVersion,
+    harness_required: schema.$defs.harness.required,
+    harness_efforts: schema.$defs.harness.properties.efforts
+})
+const expectedShape = {
+    "required": [
+        "$schema",
+        "schema_version",
+        "labels",
+        "effort_ladder",
+        "families",
+        "harnesses",
+        "foreman_adapters",
+        "roles",
+        "finders"
+    ],
+    "effort_ladder": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+            "$ref": "#/$defs/effort"
+        }
+    },
+    "effort": {
+        "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+        ]
+    },
+    "model": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "slug",
+            "display_name",
+            "tier",
+            "versions"
+        ],
+        "properties": {
+            "slug": {
+                "$ref": "#/$defs/slug"
+            },
+            "display_name": {
+                "type": "string",
+                "minLength": 1
+            },
+            "tier": {
+                "enum": [
+                    "local",
+                    "economy",
+                    "standard",
+                    "frontier",
+                    "apex"
+                ]
+            },
+            "default": {
+                "type": "boolean"
+            },
+            "versions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "$ref": "#/$defs/modelVersion"
+                }
+            }
+        }
+    },
+    "modelVersion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "slug",
+            "display_name",
+            "retired"
+        ],
+        "properties": {
+            "slug": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+            },
+            "display_name": {
+                "type": "string",
+                "minLength": 1
+            },
+            "retired": {
+                "type": "boolean"
+            },
+            "tier": {
+                "enum": [
+                    "local",
+                    "economy",
+                    "standard",
+                    "frontier",
+                    "apex"
+                ]
+            }
+        }
+    },
+    "harness_required": [
+        "slug",
+        "display_name",
+        "product",
+        "family_constraint",
+        "model_resolution",
+        "provider_rewired",
+        "roles",
+        "can_restrict_writes",
+        "efforts"
+    ],
+    "harness_efforts": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+            "$ref": "#/$defs/effort"
+        }
+    }
+}
+deepStrictEqual(actualShape, expectedShape, `registry line/versions/efforts shape must match harmon-init at ${parityRev}`)
+console.log(`PASS: registry line/versions/efforts shape matches harmon-init at ${parityRev}`)
+NODE
+}
+check_shape_parity "$schema"
 
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
@@ -419,6 +637,62 @@ switch (mutation) {
   case 'tier-rung-multi-default':
     modelOf('qwen', 'coder-next').default = true
     break
+  // ── model lines and versions (#1268, mirroring harmon-init#1516) ───────
+  case 'line-missing-versions':
+    delete modelOf('claude', 'opus').versions
+    break
+  case 'line-slug-embeds-version':
+    modelOf('claude', 'opus').slug = 'opus-5'
+    break
+  case 'line-slug-embeds-prefixed-version':
+    modelOf('deepseek', 'flash').slug = 'v4-flash'
+    break
+  case 'version-slug-bad-shape':
+    modelOf('claude', 'opus').versions[0].slug = '5_5'
+    break
+  case 'duplicate-version-slug':
+    modelOf('gemini', 'flash').versions[2].slug = '3.7'
+    break
+  case 'two-current-versions':
+    modelOf('glm', 'glm').versions[1].retired = false
+    break
+  case 'no-current-version':
+    modelOf('claude', 'opus').versions[0].retired = true
+    break
+  case 'current-version-not-first':
+    modelOf('gemini', 'flash').versions.reverse()
+    break
+  case 'versions-not-newest-first': {
+    // 3.8, 3.6, 3.7 — current first, but the retired tail is out of order.
+    const versions = modelOf('gemini', 'flash').versions
+    versions.splice(1, 2, versions[2], versions[1])
+    break
+  }
+  case 'current-version-tier-override':
+    modelOf('claude', 'opus').versions[0].tier = 'apex'
+    break
+  // ── reasoning efforts (#1268, mirroring harmon-init#1516) ──────────────
+  case 'effort-ladder-missing':
+    delete registry.effort_ladder
+    break
+  case 'effort-ladder-out-of-order':
+    registry.effort_ladder = ['low', 'minimal', 'medium', 'high', 'xhigh', 'max']
+    break
+  case 'effort-ladder-unknown-level':
+    registry.effort_ladder.push('turbo')
+    break
+  case 'harness-missing-efforts':
+    delete harness('codex-cli').efforts
+    break
+  case 'harness-effort-off-ladder':
+    registry.effort_ladder = registry.effort_ladder.filter((effort) => effort !== 'max')
+    break
+  case 'harness-efforts-out-of-order':
+    harness('codex-cli').efforts.reverse()
+    break
+  case 'harness-duplicate-effort':
+    harness('codex-cli').efforts.push('high')
+    break
   default:
     throw new Error(`unknown mutation: ${mutation}`)
 }
@@ -451,6 +725,32 @@ const finder = (slug) => registry.finders.find((entry) => entry.slug === slug)
 switch (mutation) {
   case 'allowlist-missing':
     delete registry.trusted_orchestrator_actor_ids
+    break
+  case 'versions-newest-first': {
+    // 3.8, 3.7, 3.6 — stated explicitly so the case does not lean on the data.
+    const flash = registry.families
+      .find((entry) => entry.slug === 'gemini')
+      .models.find((entry) => entry.slug === 'flash')
+    const bySlug = new Map(flash.versions.map((version) => [version.slug, version]))
+    flash.versions = ['3.8', '3.7', '3.6'].map((slug) => bySlug.get(slug))
+    break
+  }
+  case 'versions-numeric-order': {
+    // 3.10 is newer than 3.9: components compare as numbers, not strings.
+    const opus = registry.families
+      .find((entry) => entry.slug === 'claude')
+      .models.find((entry) => entry.slug === 'opus')
+    opus.versions = [
+      { slug: '3.10', display_name: 'Opus 3.10', retired: false },
+      { slug: '3.9', display_name: 'Opus 3.9', retired: true }
+    ]
+    break
+  }
+  case 'effort-ladder-subset':
+    registry.effort_ladder = registry.effort_ladder.filter((effort) => effort !== 'minimal')
+    harness('codex-cli').efforts = harness('codex-cli').efforts.filter(
+      (effort) => effort !== 'minimal'
+    )
     break
   case 'review-role-without-write-restriction':
     harness('codex-cli').can_restrict_writes = false
@@ -760,6 +1060,57 @@ rejects "a multi-model family-tier rung with no default" \
 rejects "a multi-model family-tier rung with two defaults" \
     'tier-rung-multi-default' \
     'at most one may be default'
+rejects "a model line without a versions list" \
+    'line-missing-versions' \
+    'missing required property versions'
+rejects "a line slug with a bare version segment" \
+    'line-slug-embeds-version' \
+    'embeds a version in its slug (segment 5)'
+rejects "a line slug with a prefixed version segment" \
+    'line-slug-embeds-prefixed-version' \
+    'embeds a version in its slug (segment v4)'
+rejects "a version slug outside the dotted-segment shape" \
+    'version-slug-bad-shape' \
+    'must be lowercase alphanumeric segments separated by . or -'
+rejects "duplicate version slugs within one line" \
+    'duplicate-version-slug' \
+    'has duplicate version slug: 3.7'
+rejects "two current versions on one line" \
+    'two-current-versions' \
+    'has 2 current (non-retired) versions'
+rejects "a line with no current version" \
+    'no-current-version' \
+    'has 0 current (non-retired) versions'
+rejects "a current version listed after a retired one" \
+    'current-version-not-first' \
+    'the current one leads'
+rejects "versions that are not newest first (3.8, 3.6, 3.7)" \
+    'versions-not-newest-first' \
+    'lists version 3.7 after 3.6 — versions must be newest first'
+rejects "a tier override on a current version" \
+    'current-version-tier-override' \
+    'only a retired version may carry its own tier'
+rejects "a registry with no effort_ladder" \
+    'effort-ladder-missing' \
+    'missing required property effort_ladder'
+rejects "an effort_ladder out of canonical order" \
+    'effort-ladder-out-of-order' \
+    'effort_ladder ["low","minimal","medium","high","xhigh","max"] is out of order'
+rejects "an effort_ladder level outside the closed vocabulary" \
+    'effort-ladder-unknown-level' \
+    'must be one of'
+rejects "a harness with no efforts list" \
+    'harness-missing-efforts' \
+    'missing required property efforts'
+rejects "a harness effort that is not on the ladder" \
+    'harness-effort-off-ladder' \
+    'harness claude-code declares effort(s) max that are not on effort_ladder'
+rejects "harness efforts out of ladder order" \
+    'harness-efforts-out-of-order' \
+    'harness codex-cli efforts ["xhigh","high","medium","low","minimal"] are out of ladder order'
+rejects "a repeated harness effort" \
+    'harness-duplicate-effort' \
+    'items must be unique'
 accepts "a review role on a harness without write restriction" \
     'review-role-without-write-restriction'
 
@@ -818,6 +1169,12 @@ NODE
 echo "PASS: the shipped registry populates trusted_orchestrator_actor_ids with integer ids"
 accepts "a registry with no trusted_orchestrator_actor_ids at all (schema-legal; consumers fail closed at the revision in effect)" \
     'allowlist-missing'
+accepts "versions listed newest first (3.8, 3.7, 3.6)" \
+    'versions-newest-first'
+accepts "numeric version components compared as numbers (3.10 before 3.9)" \
+    'versions-numeric-order'
+accepts "an effort_ladder that omits a level but keeps canonical order" \
+    'effort-ladder-subset'
 rejects "an empty trusted_orchestrator_actor_ids allowlist" \
     'allowlist-empty' \
     'trusted_orchestrator_actor_ids: must contain at least 1 item(s)'
@@ -1058,5 +1415,23 @@ for (const requiredRole of ['orchestrator', 'implementer', 'challenger', 'review
 
 process.exit(failures === 0 ? 0 : 1)
 NODE
+
+# The parity check must catch a drifted shape, not only bless the shipped one.
+node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
+import { readFile, writeFile } from 'node:fs/promises'
+
+const [inputPath, outputPath] = process.argv.slice(2)
+const schema = JSON.parse(await readFile(inputPath, 'utf8'))
+delete schema.$defs.harness.properties.efforts.uniqueItems
+await writeFile(outputPath, `${JSON.stringify(schema, null, 2)}\n`)
+NODE
+if output="$(check_shape_parity "$mutated_schema" 2>&1)"; then
+    fail "shape parity accepted a schema whose harness efforts drop uniqueItems"
+fi
+case "$output" in
+*"shape must match harmon-init at $REGISTRY_PARITY_REV"*) ;;
+*) fail "shape parity failed for the wrong reason: $output" ;;
+esac
+echo "PASS: shape parity rejects a schema that drifts from harmon-init"
 
 echo "agent registry mutation tests OK"

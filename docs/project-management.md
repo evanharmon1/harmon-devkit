@@ -805,18 +805,18 @@ with no adapter behind it is a false capability that can strand armed work.
 
 #### Model families
 
-| Family | Name | Models |
+| Family | Name | Model lines (current version) |
 | --- | --- | --- |
-| `claude` | Claude | `fable`, `opus`, `sonnet`, `haiku` |
-| `gpt` | GPT | `astra`, `sol`, `terra`, `luna` |
-| `mai` | MAI | `code-1-1-flash`, `thinking-1` |
-| `qwen` | Qwen | `max`, `coder-plus`, `coder`, `flash`, `coder-next`, `coder-30b` |
-| `deepseek` | DeepSeek | `v4-1-flash` |
-| `glm` | GLM | `5-3`, `5-3-flash` |
-| `kimi` | Kimi | `k3` |
-| `minimax` | MiniMax | `m3` |
-| `gemini` | Gemini | `3-1-pro`, `3-8-flash`, `3-7-flash`, `3-6-flash`, `3-5-flash-lite` |
-| `mistral` | Mistral | `medium-3-5`, `small-4` |
+| `claude` | Claude | `fable` 5.1, `opus` 5.5, `sonnet` 5.5, `haiku` 5.5 |
+| `gpt` | GPT | `astra` 6.1, `sol` 6.1, `terra` 6.1, `luna` 6.1 |
+| `mai` | MAI | `code-flash` 1.1, `thinking` 1 |
+| `qwen` | Qwen | `max` 3.8, `coder-plus` 3, `coder` 3, `flash` 3.8, `coder-next` 3, `coder-30b` 3 |
+| `deepseek` | DeepSeek | `flash` 4.1 (retired 4) |
+| `glm` | GLM | `glm` 5.3 (retired 5.2), `flash` 5.3 (retired 4.7) |
+| `kimi` | Kimi | `k` 3 |
+| `minimax` | MiniMax | `m` 3 |
+| `gemini` | Gemini | `pro` 3.1, `flash` 3.8 (retired 3.7, 3.6), `flash-lite` 3.5 |
+| `mistral` | Mistral | `medium` 3.5, `small` 4 |
 
 `Model selected by` values:
 
@@ -827,25 +827,27 @@ with no adapter behind it is a false capability that can strand armed work.
 
 #### Harnesses
 
-| Harness | Product | Family | Foreman adapter | Model selected by |
-| --- | --- | --- | --- | --- |
-| `claude-code` | Claude Code CLI | `claude` | `foreman:claude` — production, dispatchable | `runner-config` |
-| `claude-code-action` | claude-code-action | `claude` | — | `workflow-config` |
-| `claude-code-deepseek` | Claude Code provider wrapper | `deepseek` | `claude-code-deepseek` — production, not dispatchable, no label | `provider-wrapper` |
-| `claude-code-glm` | Claude Code provider wrapper | `glm` | `claude-code-glm` — production, not dispatchable, no label | `provider-wrapper` |
-| `claude-code-kimi` | Claude Code provider wrapper | `kimi` | `claude-code-kimi` — production, not dispatchable, no label | `provider-wrapper` |
-| `claude-code-minimax` | Claude Code provider wrapper | `minimax` | — | `provider-wrapper` |
-| `claude-code-qwen` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` |
-| `claude-code-qwen-local` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` |
-| `codex-cli` | OpenAI Codex CLI | `gpt` | `codex-cli` — production, not dispatchable, no label | `runner-config` |
-| `copilot-cli` | GitHub Copilot CLI | any (multi-provider; default `mai`) | — | `harness-runtime` |
-| `qwen-code` | Qwen Code CLI | `qwen` | — | `runner-config` |
-| `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` |
-| `opencode` | OpenCode | any (multi-provider) | — | `harness-runtime` |
-| `pi` | Pi | any (multi-provider) | — | `harness-runtime` |
-| `oh-my-pi` | Oh My Pi | any (multi-provider) | — | `harness-runtime` |
-| `goose` | Block Goose | any (multi-provider) | — | `harness-runtime` |
-| `cline` | Cline | any (multi-provider) | — | `harness-runtime` |
+Effort ladder: `minimal` < `low` < `medium` < `high` < `xhigh` < `max`.
+
+| Harness | Product | Family | Foreman adapter | Model selected by | Efforts |
+| --- | --- | --- | --- | --- | --- |
+| `claude-code` | Claude Code CLI | `claude` | `foreman:claude` — production, dispatchable | `runner-config` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `claude-code-action` | claude-code-action | `claude` | — | `workflow-config` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `claude-code-deepseek` | Claude Code provider wrapper | `deepseek` | `claude-code-deepseek` — production, not dispatchable, no label | `provider-wrapper` | — |
+| `claude-code-glm` | Claude Code provider wrapper | `glm` | `claude-code-glm` — production, not dispatchable, no label | `provider-wrapper` | — |
+| `claude-code-kimi` | Claude Code provider wrapper | `kimi` | `claude-code-kimi` — production, not dispatchable, no label | `provider-wrapper` | — |
+| `claude-code-minimax` | Claude Code provider wrapper | `minimax` | — | `provider-wrapper` | — |
+| `claude-code-qwen` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` | — |
+| `claude-code-qwen-local` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` | — |
+| `codex-cli` | OpenAI Codex CLI | `gpt` | `codex-cli` — production, not dispatchable, no label | `runner-config` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `copilot-cli` | GitHub Copilot CLI | any (multi-provider; default `mai`) | — | `harness-runtime` | — |
+| `qwen-code` | Qwen Code CLI | `qwen` | — | `runner-config` | — |
+| `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` | — |
+| `opencode` | OpenCode | any (multi-provider) | — | `harness-runtime` | — |
+| `pi` | Pi | any (multi-provider) | — | `harness-runtime` | — |
+| `oh-my-pi` | Oh My Pi | any (multi-provider) | — | `harness-runtime` | — |
+| `goose` | Block Goose | any (multi-provider) | — | `harness-runtime` | — |
+| `cline` | Cline | any (multi-provider) | — | `harness-runtime` | — |
 <!-- registry-tables:end -->
 
 ## Claiming — making an agent's work visible while it happens
