@@ -702,11 +702,15 @@ exit the cap is no longer the only thing standing between you and a loop that
 feeds on itself, so the check has to happen where it first can. At round 2,
 for every finding, say on the adjudication table whether its subject exists
 only because an **earlier round of this same stage** added it. A finding that
-does gets adjudicated with one of three dispositions written out: **delete**
+does gets adjudicated with one of four dispositions written out: **delete**
 the scaffolding (which moots the finding — see below), **restructure it to
-invariants** (deletion by abstraction — see below), or state that it is in
-scope and why the change genuinely needs it. What is not allowed is hardening
-round-1's scaffolding by reflex and letting round 3 attack the result.
+invariants** (deletion by abstraction — see below), **split the mechanism out**
+(the mechanism is still wanted, so it leaves the change as its own follow-up
+with its own budget — see
+[specs/dev-flow-v2.md § "The split strategy"](specs/dev-flow-v2.md#the-split-strategy)),
+or state that it is in scope and why the change genuinely needs it. What is not
+allowed is hardening round-1's scaffolding by reflex and letting round 3 attack
+the result.
 
 **Deleting the added code is a legitimate way to converge.** When a
 round's findings are about scaffolding rather than the change, weigh removing
