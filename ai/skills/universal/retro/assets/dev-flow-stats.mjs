@@ -3225,6 +3225,15 @@ function renderTrajectory(run) {
         ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
         : 0,
       has_adjudication: Boolean(r.payload.adjudication),
+      ...(r.payload.adjudication?.adjudications?.length > 0
+        ? { adjudications: r.payload.adjudication.adjudications.map((entry) => ({
+          finding_id: entry.finding_id,
+          reviewer_priority: entry.reviewer_priority,
+          adjudicated_priority: entry.adjudicated_priority,
+          disposition: entry.disposition,
+          override: entry.override,
+        })) }
+        : {}),
       ...(Array.isArray(r.payload.findingAttributions) && r.payload.findingAttributions.length > 0
         ? { finding_attributions: r.payload.findingAttributions }
         : {}),
@@ -3282,6 +3291,9 @@ function renderTrajectoryTable(trajectory) {
   lines.push("rounds:");
   for (const r of trajectory.rounds) {
     lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
+    for (const entry of r.adjudications ?? []) {
+      lines.push(`    ${entry.finding_id}: reviewer=${entry.reviewer_priority ?? "not-applicable"} adjudicated=${entry.adjudicated_priority} disposition=${entry.disposition}${entry.override ? ` override: ${entry.override.reason}` : ""}`);
+    }
   }
   lines.push("integration: not measured from local evidence");
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
