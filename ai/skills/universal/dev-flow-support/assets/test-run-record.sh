@@ -80,7 +80,7 @@ expect_refused() {
 }
 
 no_candidates() {
-    if find "$state" -name '*.candidate.*' | grep -q .; then
+    if [ -n "$(find "$state" -name '*.candidate.*')" ]; then
         fail "$1: a candidate file was left behind"
     fi
 }

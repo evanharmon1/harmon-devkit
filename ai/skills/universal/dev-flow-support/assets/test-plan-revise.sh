@@ -224,5 +224,5 @@ expect_refused "slate held by another session" "slate s7 is locked by session al
     pr "$repo7" bob s7 --new-base "$moved" --at 2026-01-01T02:00:00Z
 pass "plan writes take the slate lock and refuse while another session holds the work"
 
-if find "$tmp" -name '*.candidate.*' | grep -q .; then fail "a candidate file was left behind"; fi
+[ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
 echo "test-plan-revise: all cases passed"
