@@ -59,8 +59,6 @@ import {
   unlinkSync,
   writeFileSync,
   linkSync,
-  openSync,
-  closeSync,
 } from 'node:fs'
 import { hostname } from 'node:os'
 import { dirname, join, relative, resolve, sep } from 'node:path'
@@ -158,14 +156,20 @@ export function withMutex(target, fn, { timeoutMs = 15000 } = {}) {
   const stamp = JSON.stringify({ pid: process.pid, host: hostname(), nonce: randomBytes(8).toString('hex') })
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    // The stamp is written whole and linked into place, so the mutex is either
+    // absent or carries a complete, attributable owner.
+    const temporary = `${lock}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
+    writeFileSync(temporary, stamp)
+    let acquired = false
     try {
-      const fd = openSync(lock, 'wx')
-      writeFileSync(fd, stamp)
-      closeSync(fd)
-      break
+      linkSync(temporary, lock)
+      acquired = true
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
+    } finally {
+      unlinkSync(temporary)
     }
+    if (acquired) break
     let observed = null
     try {
       observed = readFileSync(lock, 'utf8')
@@ -381,9 +385,7 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
   mkdirSync(dir, { recursive: true })
   const plan = currentPlan(root, slate)
   const planned = plan === null ? null : normalizeScope({ issues: plan.issues.map((issue) => issue.number) }).issues
-  if (planned !== null && issues !== undefined && canonicalJson(normalizeScope({ issues }).issues) !== canonicalJson(planned)) {
-    throw new Refusal(`--issues ${issues.join(',')} disagrees with slate ${slate}'s plan (${planned.join(',')}); the plan is the scope`)
-  }
+  const outside = (reserved) => (planned ?? []).filter((n) => !reserved.includes(n))
   return withMutex(registry, () => {
     const held = existsSync(file) ? readLock(file) : null
     if (held !== null && held.session !== session) {
@@ -392,10 +394,19 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
     if (held !== null && milestone !== undefined && held.milestone !== null && held.milestone !== milestone) {
       throw new Refusal(`slate ${slate} is locked for milestone ${held.milestone}, not ${milestone}`)
     }
+    // The reservation is taken before the plan is published (--issues), and
+    // the canonical plan must stay inside it; a slate with no lock yet falls
+    // back to the plan's own issue set.
     const scope = normalizeScope({
       milestone: held?.milestone ?? milestone,
-      issues: planned ?? (issues !== undefined ? issues : held?.issues),
+      issues: issues !== undefined ? issues : (held?.issues ?? planned),
     })
+    const unreserved = outside(scope.issues)
+    if (unreserved.length > 0) {
+      throw new Refusal(
+        `slate ${slate}'s plan names issue(s) ${unreserved.join(', ')} outside the reserved scope (${scope.issues.join(',')}); reserve them with \`lock acquire --issues\` before publishing the plan`,
+      )
+    }
     if (scope.milestone === null && scope.issues.length === 0) {
       throw new Refusal(
         `slate ${slate} has no lock yet and no scope to record: pass --milestone and/or --issues, or write its plan.json first`,
@@ -424,7 +435,9 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
     const temporary = `${file}.tmp.${process.pid}`
     writeFileSync(temporary, `${JSON.stringify(lock, null, 2)}\n`)
     renameSync(temporary, file)
-    return lock
+    // `created` (never written to disk) tells a caller this invocation made the
+    // lock, so it can release exactly that lock if its own write is refused.
+    return held === null ? { ...lock, created: true } : lock
   })
 }
 
@@ -586,8 +599,15 @@ function recordWrite(command, args) {
   const runId = requireId('run-id', args['run-id'])
   args.at = resolveAt(args.at)
   assertRunOwner(root, slate, runId)
-  acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
-  bindRunToSlate(root, slate, runId)
+  const lock = acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
+  try {
+    bindRunToSlate(root, slate, runId)
+  } catch (error) {
+    // A refused bind (another slate won the run, or the run is not this
+    // slate's) must not leave behind a lock this invocation created.
+    if (lock.created === true) releaseSlateLock({ root, slate, session })
+    throw error
+  }
   const canonical = join(root, 'runs', runId, 'run.json')
   const summary = withMutex(canonical, () => {
     const record = readJson(canonical, 'run record')

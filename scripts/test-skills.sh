@@ -11185,12 +11185,19 @@ expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad
     grep -qF 'Everything you need in order to resume lives under the Git common directory,' "$ORCH_MD"
 expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
     grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the run-record operations' "$ORCH_MD"
-expect_ok "orchestrate: /integrate stays the promotion authority (#1296 challenge r2 -6)" \
-    grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"
+expect_ok "orchestrate: the session that owns integration decides and records promotion (#1296 integration r1 -2)" \
+    grep -qF 'Promotion is decided out of the readiness gate by the session that owns' "$ORCH_MD"
+if grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"; then
+    bad "orchestrate: still names /integrate the promotion authority in an orchestrated run (#1296 integration r1 -2)"
+else
+    ok "orchestrate: no longer names /integrate the promotion authority in an orchestrated run (#1296 integration r1 -2)"
+fi
 expect_ok "orchestrate: a run belongs to exactly one slate (#1296 challenge r2 -4)" \
     grep -qF 'A run belongs to exactly one slate.' "$ORCH_MD"
-expect_ok "orchestrate: the slate lock is taken with --milestone at plan publication (#1296 review r1 -3)" \
-    grep -qF 'adding `--milestone <n>` for a milestone-backed' "$ORCH_MD"
+expect_ok "orchestrate: the slate lock is taken with --milestone (#1296 review r1 -3)" \
+    grep -qF 'adding `--milestone <n>` for a' "$ORCH_MD"
+expect_ok "orchestrate: the slate lock is reserved before plan.json is written (#1296 integration r1 -4)" \
+    grep -qF 'Before writing `plan.json` at all, take the' "$ORCH_MD"
 expect_ok "orchestrate: the lane scratch dir is for throwaway files only (#1296 review r1 -4)" \
     grep -qF 'for throwaway files only — nothing needed to resume lives there' "$ORCH_MD"
 expect_ok "orchestrate: no entry lands after a run ends, whatever its outcome (#1296 review r2 -3)" \

@@ -139,6 +139,16 @@ pass "a run write for a slate with no plan is refused"
 pass "before a plan exists, the lock records the given milestone and issue set"
 
 write_plan s1 11:run-a 12:run-b 13:run-c 14:run-d
+cp "$run" "$tmp/run-a-unplanned.json"
+expect_refused "plan outside the reservation" "names issue(s) 13, 14 outside the reserved scope" \
+    rr alice transition --run-id run-a --stage claim --exit kicked --at 2026-01-01T00:01:00Z
+cmp -s "$run" "$tmp/run-a-unplanned.json" || fail "a write under an unreserved plan changed run.json"
+pass "a canonical plan naming issues outside the reserved scope refuses every write"
+
+(cd "$repo" && node "$writer" lock acquire --slate s1 --session alice --issues 11,12,13,14) >/dev/null
+[ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "widening the reservation did not record the new issue set"
+pass "lock acquire --issues widens the reservation, keeping the recorded milestone"
+
 new_run run-z
 cp "$state/runs/run-z/run.json" "$tmp/run-z.json"
 expect_refused "run outside the plan" "run run-z is not a lane in any revision of slate s1's plan" \
@@ -146,9 +156,10 @@ expect_refused "run outside the plan" "run run-z is not a lane in any revision o
 cmp -s "$state/runs/run-z/run.json" "$tmp/run-z.json" || fail "a refused foreign run changed its record"
 pass "a write naming a run that is not a lane of the locked slate's plan is refused, record unchanged"
 
-expect_refused "issues disagreeing with the plan" "disagrees with slate s1's plan" \
+expect_refused "reservation narrower than the plan" "names issue(s) 12, 13, 14 outside the reserved scope" \
     bash -c "cd '$repo' && node '$writer' lock acquire --slate s1 --session alice --issues 11"
-pass "--issues that disagree with the plan are refused"
+[ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "a refused narrowing changed the lock"
+pass "--issues that would leave plan issues unreserved are refused"
 
 # -- transitions -----------------------------------------------------------
 rr alice transition --run-id run-a --stage claim --exit "resolved" --at 2026-01-01T00:01:00Z >/dev/null
@@ -157,8 +168,6 @@ rr alice transition --run-id run-a --stage claim --exit "resolved" --at 2026-01-
 [ "$(jq -c '.receipts' "$run")" = '[{"kind":"transition","stage":"claim","entered_at":"2026-01-01T00:01:00Z"}]' ] ||
     fail "transition did not append its matching receipt"
 pass "transition appends the stage and its receipt, and closes the previous exit"
-[ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "lock scope not re-derived from the plan: $(lock_scope s1)"
-pass "every write re-derives the lock's issue set from the plan"
 
 cp "$run" "$tmp/before.json"
 expect_refused "edge outside the allowed set" "not a valid transition from claim" \
@@ -224,6 +233,22 @@ printf 'not json\n' >"$state/slates/s7/plan.json"
 rr alice intervention --run-id run-a --kind other --note "unaffected" --at 2026-01-01T00:03:40Z >/dev/null ||
     fail "an unrelated or malformed plan.json elsewhere blocked the owning slate"
 pass "an unrelated, even malformed, plan.json elsewhere does not block the owner"
+
+write_plan s10 18:run-q
+new_run run-u
+expect_refused "refused bind on a fresh slate" "run run-u is not a lane in any revision of slate s10's plan" \
+    bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
+[ ! -e "$state/locks/s10.json" ] || fail "a refused bind left the slate lock this invocation created"
+[ ! -e "$state/runs/run-u/owner-slate" ] || fail "a refused bind recorded an owner"
+(cd "$repo" && node "$writer" lock acquire --slate s10 --session carol) >/dev/null
+expect_refused "refused bind with a pre-existing lock" "run run-u is not a lane in any revision of slate s10's plan" \
+    bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
+[ -e "$state/locks/s10.json" ] || fail "a refused bind released a lock it did not create"
+(cd "$repo" && node "$writer" lock release --slate s10 --session carol) >/dev/null
+pass "a refused bind releases only a slate lock this invocation created"
+
+[ -z "$(find "$state" -name '*.wlock*')" ] || fail "a mutex or its temp stamp file was left behind"
+pass "the write mutex leaves neither a lock nor a temp stamp behind"
 
 write_plan s8 17:run-t
 new_run run-t

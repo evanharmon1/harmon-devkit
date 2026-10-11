@@ -186,16 +186,19 @@ Build and publish the plan in this order:
    the full tier procedure (step 0 included) and append a validated revision
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
-6. **Emit and validate.** Write the closed record and validate it with
+6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
+   slate lock with its explicit issue set:
+   `dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
+   --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
+   milestone-backed slate (the milestone exists only in the lock). A second
+   orchestrator naming the same work is refused here, before it can publish a
+   plan or dispatch anything. Then write the closed record and validate it with
    `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
-   a graph/projection mismatch, an ownership error, or a cap violation.
-   Once the plan validates, and before any dispatch, take the slate lock:
-   `dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
-   --session <session>`, adding `--milestone <n>` for a milestone-backed
-   slate. The plan supplies the issue set; the milestone exists only in the
-   lock. A second orchestrator naming the same work is then refused before it
-   dispatches anything, not at its first record write.
+   a graph/projection mismatch, an ownership error, or a cap violation. Both
+   writers refuse while the canonical plan names an issue outside the
+   reservation, so a later revision that adds issues widens the reservation
+   with `lock acquire --issues` first.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -245,8 +248,10 @@ it supports, never a hand edit:
 - `bind-pr`;
 - `close`.
 
-`/integrate` is the promotion authority. It may record a promotion with
-`run-record.mjs promote` as its mechanism.
+Promotion is decided out of the readiness gate by the session that owns
+integration — the orchestrator in an orchestrated run, the `/integrate`
+session in a solo run — and that session records it with `run-record.mjs
+promote`.
 
 A run belongs to exactly one slate. Its first helper write needs the run to be
 a lane in some revision of that slate's plan, and records the slate in
@@ -278,9 +283,10 @@ Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
 with the slate's milestone and issue set. While another session holds the
 same slate, the same milestone, or any of the same issues — under any slate
-id — every write is refused. Take it at plan publication (§ Planning step 6),
-with `--milestone` when the slate is milestone-backed, because an implicit
-lock taken at a first write records no milestone. Release it when the slate
+id — every write is refused. Take it before publishing the plan (§ Planning
+step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
+implicit lock taken at a first write records no milestone, and a plan
+published before its reservation can overwrite another session's plan. Release it when the slate
 ends. `--force
 --reason` breaking a dead session's lock is an operator decision; name it in
 the handoff.
