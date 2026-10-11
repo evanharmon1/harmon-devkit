@@ -830,7 +830,25 @@ mkdir -p "$ebin"
 envelope_stub() {
     local filter="${1:-.}"
     {
-        printf '#!/usr/bin/env bash\necho "STUB-ARGV: $*" >&2\ncat <<'"'"'PAYLOAD'"'"'\n'
+        # The real CLI's argv contract: -p takes the NEXT word as the prompt,
+        # so anything flag-shaped there is the "Invalid command format" the
+        # live CLI reported (challenge-r2-codex-adversarial-1).
+        cat <<'STUBHEAD'
+#!/usr/bin/env bash
+echo "STUB-ARGV: $*" >&2
+while [ $# -gt 0 ]; do
+    if [ "$1" = -p ]; then
+        case "${2-}" in
+        '' | -*)
+            echo "error: Invalid command format." >&2
+            exit 1
+            ;;
+        esac
+    fi
+    shift
+done
+STUBHEAD
+        printf "cat <<'PAYLOAD'\n"
         jq -n --arg head "$ehead" '{stage: "challenge", round: 1, reviewed_head: $head,
             finder: "copilot-adversarial", slot: "copilot-adversarial", findings: [],
             counts: {P0: 0, P1: 0, P2: 0, P3: 0},
@@ -857,7 +875,7 @@ out="$(envelope_finder env 2>"$tmp/eerr")" || fail "valid finder envelope failed
 jq -e '.role == "challenger" and
     .producer == {harness: "copilot-cli", model: "claude-sonnet-5-5", tier: "frontier"}' "$epass" >/dev/null ||
     fail "the finder envelope is not bound as captured: $(cat "$epass")"
-grep -q 'STUB-ARGV: -p --model claude-sonnet-5-5 ' "$tmp/eerr" ||
+grep -q 'STUB-ARGV: --model claude-sonnet-5-5 -p ' "$tmp/eerr" ||
     fail "the vendor invocation was not pinned to --model: $(cat "$tmp/eerr")"
 
 echo "==> envelope: the finder prompt carries the binding and the payload schema"
@@ -865,7 +883,7 @@ out="$(envelope_finder env FINDER_REVIEW_DRY_RUN=1 2>/dev/null)" || fail "envelo
 grep -Fq 'The result.challenger JSON Schema:' <<<"$out" && grep -Fq '"attack_scenarios"' <<<"$out" ||
     fail "the payload schema is not in the prompt"
 grep -Fq 'challenge-r1-copilot-adversarial-1' <<<"$out" || fail "the id binding is not in the prompt"
-grep -Fq 'command: copilot -p --model claude-sonnet-5-5' <<<"$out" || fail "dry run does not show the model pin: $out"
+grep -Fq 'command: copilot --model claude-sonnet-5-5 -p' <<<"$out" || fail "dry run does not show the model pin: $out"
 
 echo "==> envelope: a model chosen through FINDER_REVIEW_COPILOT_ARGS is refused"
 rc=0
@@ -879,6 +897,16 @@ rc=0
 rc=0
 (cd "$ework" && PATH="$ebin:$PATH" ./scripts/finder-review.sh challenge copilot --model m --base main) >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "--model without --envelope exited $rc, want 2"
+
+echo "==> envelope: a refused finder keeps its own refusal, not an envelope-input one"
+# challenge-r2-codex-adversarial-3: the per-tool case runs before envelope
+# preparation, so coderabbit's #809 explanation is what the caller sees.
+rc=0
+(cd "$ework" && PATH="$ebin:$PATH" ./scripts/finder-review.sh challenge coderabbit --model m --envelope \
+    --run-id run-941 --head "$ehead" --stage challenge --round 1 --slot coderabbit-adversarial \
+    --producer "$eproducer" --tier frontier --record-dir "$erecord" --base main) >/dev/null 2>"$tmp/eerr" || rc=$?
+[ "$rc" -eq 2 ] && grep -Fq 'harmon-devkit#809' "$tmp/eerr" ||
+    fail "coderabbit in envelope mode did not get its own refusal (rc $rc): $(cat "$tmp/eerr")"
 
 echo "==> envelope: a finder payload bound to another head publishes nothing"
 envelope_stub '.reviewed_head = "0000000000000000000000000000000000000000"'

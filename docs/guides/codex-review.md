@@ -373,11 +373,9 @@ task challenge -- --model gpt-5.6-sol --envelope \
   --base main
 ```
 
-`--producer` is input validation, not attestation: the runner checks it
-against its own bytes, so compute it from a runner the candidate branch does
-not control — the merge base's whenever the change edits a runner. The value
-above, taken from the working tree, is right only for a branch that leaves the
-runner alone.
+`--producer` is input validation, not an authority: the runner checks it
+against its own bytes and nothing more. A pass becomes evidence only when the
+supervising orchestrator validates it and appends its receipt.
 
 `task challenge:copilot` / `task review:copilot` take the same flags plus
 `--model <model>`, which is pinned into the vendor invocation (a model in

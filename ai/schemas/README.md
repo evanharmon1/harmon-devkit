@@ -61,16 +61,12 @@ it is the chain around the file, and none of it is the lane's prose:
   trusted run state and captured revisions and appended its `{kind: "pass"}`
   receipt. A pass with no receipt is an orphan and is never evidence.
 
-The runner's `--producer` check is **input validation, not attestation**. The
+The runner's `--producer` check is **input validation, not an authority**. The
 runner compares the value against an identity it derives from its own bytes,
-so it only catches a caller invoking a runner other than the one it named —
-and only when that expected value comes from somewhere the candidate branch
-does not control. Computed from the candidate checkout, as a lane would, it
+so it only catches a caller invoking a runner other than the one it named; it
 proves nothing about a modified runner, and the identity is not recorded in
-the envelope at all. A change that edits a runner is therefore reviewed with
-the merge base's runner, not its own: a branch may not supply the code that
-produces its own review evidence (the same boundary `AGENTS.md` § "Rigor and
-Strategy" draws for the policy files).
+the envelope. What makes a pass evidence is the supervising orchestrator
+validating it and appending its receipt.
 
 That is the same model `--receipts` strict mode enforces at cross-boundary call
 sites (#821), and it keeps decision record 0009's rule intact — briefs carry a

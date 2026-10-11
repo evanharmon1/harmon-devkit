@@ -192,12 +192,13 @@ actual_target="$(printf '%s' "$finder_entry" | jq -r '.invocation.target')"
     echo "Reconcile $registry with the Taskfile rather than guessing which one is right." >&2
     exit 2
 }
-[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$script_dir/finder-review.sh" "$slug" "${TOOL}-cli"
 
 case "$TOOL" in
 copilot)
     bin="${FINDER_REVIEW_COPILOT_BIN:-copilot}"
     default_args="-p"
+    # The registry harness entry for this CLI, recorded as producer.harness.
+    harness_slug=copilot-cli
     install_hint="Install the GitHub Copilot CLI (npm install -g @github/copilot), authenticate it, then re-run."
     ;;
 coderabbit)
@@ -226,6 +227,9 @@ coderabbit)
     exit 2
     ;;
 esac
+# After the per-tool case, so a finder this runner refuses (coderabbit, #809;
+# an unknown CLI) gets that refusal rather than an envelope-input one.
+[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$script_dir/finder-review.sh" "$slug" "$harness_slug"
 if ! command -v "$bin" >/dev/null 2>&1; then
     echo "$TOOL CLI ('$bin') not found. $install_hint" >&2
     echo "See docs/guides/codex-review.md. Refusing rather than skipping: a finder that" >&2
@@ -374,7 +378,10 @@ if [ "$envelope_mode" = true ]; then
             ;;
         esac
     done
-    args+=(--model "$producer_model")
+    # Prepended, never appended: the flag list ends in the prompt-taking
+    # flag (-p), which must be immediately followed by the prompt — appended,
+    # `-p` consumed `--model` as its prompt and the CLI refused the command.
+    args=(--model "$producer_model" ${args[@]+"${args[@]}"})
 fi
 if [ "$dry_run" = 1 ]; then
     printf 'finder: %s\ncommand: %s %s\n' "$slug" "$bin" "${args[*]}"
