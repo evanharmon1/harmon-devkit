@@ -198,14 +198,25 @@ if (mode === 'docs-tables') {
     '',
     '#### Model families',
     '',
-    '| Family | Name | Models |',
+    '| Family | Name | Model lines (current version) |',
     '| --- | --- | --- |'
   )
+  // A model entry is a line (harmon-init#1516): render its slug with the current
+  // version, then any retired ones, so the table answers both "which claim
+  // label" (the line slug) and "which release" (the version).
   for (const family of registry.families ?? []) {
     const slug = cell(family.slug, 'family slug')
     const name = cell(family.display_name, `family '${slug}' display_name`)
     const models = (family.models ?? [])
-      .map((model) => code(cell(model.slug, `family '${slug}' model slug`)))
+      .map((model) => {
+        const line = cell(model.slug, `family '${slug}' model slug`)
+        const version = (entry) => cell(entry.slug, `family '${slug}' line '${line}' version slug`)
+        const versions = model.versions ?? []
+        const current = versions.filter((entry) => entry.retired !== true).map(version)
+        const retired = versions.filter((entry) => entry.retired === true).map(version)
+        const history = retired.length ? ` (retired ${retired.join(', ')})` : ''
+        return `${[code(line), ...current].join(' ')}${history}`
+      })
       .join(', ')
     lines.push(`| ${code(slug)} | ${name} | ${models || '—'} |`)
   }
@@ -228,8 +239,10 @@ if (mode === 'docs-tables') {
     '',
     '#### Harnesses',
     '',
-    '| Harness | Product | Family | Foreman adapter | Model selected by |',
-    '| --- | --- | --- | --- | --- |'
+    `Effort ladder: ${(registry.effort_ladder ?? []).map((effort) => code(cell(effort, 'effort_ladder entry'))).join(' < ') || '—'}.`,
+    '',
+    '| Harness | Product | Family | Foreman adapter | Model selected by | Efforts |',
+    '| --- | --- | --- | --- | --- | --- |'
   )
   for (const harness of registry.harnesses ?? []) {
     const slug = cell(harness.slug, 'harness slug')
@@ -256,7 +269,13 @@ if (mode === 'docs-tables') {
         .join('; ') || '—'
     const resolution = harness.model_resolution ?? {}
     const owner = code(cell(resolution.owner, `harness '${slug}' model_resolution.owner`))
-    lines.push(`| ${code(slug)} | ${product} | ${family} | ${adapterCell} | ${owner} |`)
+    const efforts =
+      (harness.efforts ?? [])
+        .map((effort) => code(cell(effort, `harness '${slug}' effort`)))
+        .join(', ') || '—'
+    lines.push(
+      `| ${code(slug)} | ${product} | ${family} | ${adapterCell} | ${owner} | ${efforts} |`
+    )
   }
 }
 
