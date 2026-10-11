@@ -281,8 +281,7 @@ fi
 . "$script_dir/lib/readonly-sandbox.sh"
 trap 'sandbox_cleanup; review_envelope_cleanup' EXIT
 mkdir -p "$envelope_record_dir/passes"
-raw_payload="$(mktemp "$envelope_record_dir/passes/.codex-raw.XXXXXX")"
-envelope_temps+=("$raw_payload")
+review_envelope_temp raw_payload codex-raw || exit 1
 sandbox_create "$envelope_head" 0 >/dev/null || {
     echo "could not build the immutable review checkout at $envelope_head; no review ran" >&2
     exit 1

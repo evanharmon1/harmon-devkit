@@ -560,8 +560,7 @@ if [ "$envelope_mode" = true ]; then
     # stdout is the payload, captured privately; only the published path is
     # printed, once the pass has been bound, validated and linked into place.
     mkdir -p "$envelope_record_dir/passes"
-    raw_payload="$(mktemp "$envelope_record_dir/passes/.finder-raw.XXXXXX")"
-    envelope_temps+=("$raw_payload")
+    review_envelope_temp raw_payload finder-raw || exit 1
     sandbox_exec "$bin" "${args[@]}" "$instructions" >"$raw_payload" || finder_status=$?
 else
     sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?

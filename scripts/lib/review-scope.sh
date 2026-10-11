@@ -804,13 +804,11 @@ review_envelope_publish() {
         echo "could not create $passes_dir" >&2
         exit 1
     }
-    tmp_payload="$(mktemp "$passes_dir/.payload.XXXXXX")" &&
-        tmp_envelope="$(mktemp "$passes_dir/.envelope.XXXXXX")" &&
-        tmp_ids="$(mktemp "$passes_dir/.known-ids.XXXXXX")" || {
-        echo "could not create temporary files in $passes_dir" >&2
-        exit 1
-    }
-    envelope_temps+=("$tmp_payload" "$tmp_envelope" "$tmp_ids")
+    # Each temporary is registered for cleanup the moment it exists, so a
+    # later mktemp failing cannot strand an earlier one.
+    review_envelope_temp tmp_payload payload || exit 1
+    review_envelope_temp tmp_envelope envelope || exit 1
+    review_envelope_temp tmp_ids known-ids || exit 1
 
     # Exactly one JSON object, bound to what the caller captured. jq -s reads
     # the whole stream, so trailing prose or a second document fails here.
@@ -889,6 +887,19 @@ review_envelope_known_ids() {
 }
 
 envelope_temps=()
+# review_envelope_temp VAR NAME — create a dot-file temporary inside passes/
+# (never a `.json` name, so no reader mistakes it for a pass), register it for
+# cleanup, and assign its path to VAR. Runs in the caller's shell rather than
+# a command substitution, which could not append to `envelope_temps`.
+review_envelope_temp() {
+    local tmp
+    tmp="$(mktemp "$envelope_record_dir/passes/.$2.XXXXXX")" || {
+        echo "could not create a temporary file in $envelope_record_dir/passes" >&2
+        return 1
+    }
+    envelope_temps+=("$tmp")
+    printf -v "$1" '%s' "$tmp"
+}
 review_envelope_cleanup() {
     [ "${#envelope_temps[@]}" -eq 0 ] || rm -f -- "${envelope_temps[@]}"
 }
