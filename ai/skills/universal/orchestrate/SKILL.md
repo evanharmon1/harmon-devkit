@@ -483,6 +483,31 @@ produce evidence and did not; when the condition fails and the skill
 path is available for the lane's topology, the routing failed and the
 lane must be re-run before the PR is promoted.
 
+**The implementer record is confirmed at PR open, and written here when the
+lane cannot write it.** When a lane's draft PR opens, the four implementer
+values (`model-family`, `model`, `model-version`, `model-effort`; harmon-devkit#1262)
+must name the model that actually ran that lane — the family, model line,
+version and effort this dispatch attested, never a value read back from the
+lane's own output, the issue, or the branch. A lane whose harness writes labels
+records them itself through `/implement` step 8; confirm it with the implement
+skill's `assets/record-implementer.sh check --repo <repo> --pr <n> --registry
+<default-branch registry snapshot> --harness <lane harness>`. **The orchestrator
+writes on behalf of a lane whose harness cannot write labels** — an Antigravity
+lane, or any lane briefed not to touch GitHub — by running the same asset's
+`apply` with the lane's PR, its issue, and the dispatch-attested values; the
+same applies whenever the orchestrator itself opened the lane's draft PR.
+`apply` validates the values against the registry first and refuses
+an unknown value rather than guessing one; a refusal is a blocker to report,
+not a value to fill in. A harness whose registry entry declares no `efforts`
+(an Antigravity lane) records family, model and version only and leaves
+`model-effort` unset — pass no `--effort` and never invent one — while a
+harness that declares efforts still owes one from its list. On an
+organization the issue takes the issue fields; on a personal account,
+labels; the PR takes labels on both; and on the issue the last implementer
+wins, which also clears an earlier implementer's effort when this one
+records none. Like `claim:*`, the record is never a routing input — nothing here or in
+any dispatch reads it back to choose a model.
+
 The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. **Invariant: the ready report is sent
 only for a `POST-PROMOTION-CLOSED` event that names the promotion event id

@@ -11101,15 +11101,15 @@ expect_ok "dev-flow-support: documented recipe reaches fallback without policy o
         export support_dir="$2" TMPDIR="$1/scratch"
         recipe_rc=0
         bash -eu recipe.sh || recipe_rc=$?
-        # Exit 3 proves this is resolved-but-indeterminate, never the old exit 2.
-        [ "$recipe_rc" -eq 3 ]
+        # Neither file is requested: the built-in fallback is determinate.
+        [ "$recipe_rc" -eq 0 ]
         python3 -c '\''import json,pathlib
 files=list(pathlib.Path("scratch").glob("*/resolved.json"))
 assert len(files)==1
 r=json.loads(files[0].read_text())
 assert r["source"]=="built-in-fallback"
 assert r["cross_validation"]["errors"]==[]
-assert r["cross_validation"]["indeterminate"]==["indeterminate: no registry was supplied — finders/pools/families/harnesses could not be checked"]'\''
+assert r["cross_validation"]["indeterminate"]==[]'\''
     ' bash "$registry_recipe_root" "$repo/ai/skills/universal/dev-flow-support/assets"
 # Control: with the registry present, the documented recipe still supplies it.
 # Capture resolver argv only; translation and argument extraction remain real.

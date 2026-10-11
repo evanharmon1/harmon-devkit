@@ -1908,6 +1908,36 @@ that loops indefinitely:
    included, which can wait minutes for a human — re-run `check` and
    promote only out of the fresh pass, never out of a remembered one.
 
+   **Re-check the implementer record before the gate** (harmon-devkit#1262).
+   The PR must carry exactly one `model-family:*`, `model:*` and
+   `model-version:*` label and at most one `model-effort:*`, and the
+   re-check is **existence-only**: each value must still exist in the agent
+   registry. A version retired since the draft opened does not block — the
+   record states what ran, and retired versions stay provisioned so history
+   keeps its values — but a value that no longer exists at all does. A
+   missing effort blocks only when `--harness` names a harness that declares
+   efforts; an implementer whose harness declares none records no effort. Run the implement skill's asset —
+   resolved from `.agents/skills/implement`, then `.claude/skills/implement`,
+   then `ai/skills/universal/implement` — with the registry read from the
+   fetched default branch, never from the PR's branch:
+
+   ```sh
+   "$implement_dir"/assets/record-implementer.sh check \
+     --repo "$repo" --pr <n> --registry <default-branch agent-registry.json> \
+     --harness <implementer harness slug, when known>
+   ```
+
+   Run it immediately before `readiness-gate.sh check`, and again whenever
+   that gate is re-run, so `gh pr ready` still follows the gate pass
+   directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
+   nonexistent values) and exit 2 (an unreadable registry or label read) both
+   leave the PR draft with a blocker naming the record; never write or
+   "fix" a value here from anything but the implementer's attested values,
+   which `/implement` step 8 (or the orchestrator, for a harness that cannot
+   write labels) records. The issue's record is not checked: the last
+   implementer wins there, so a later implementer may have legitimately
+   replaced it, while the PR is the exact per-change record.
+
    Before promotion, identify required workflows and review apps that react only
    to `pull_request.ready_for_review`. Promotion can notify CODEOWNERS and other
    requested reviewers immediately, so it cannot be used as an automation

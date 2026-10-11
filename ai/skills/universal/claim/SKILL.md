@@ -513,6 +513,18 @@ Never approve or run a silently inferred or substituted target.
   a not-yet-migrated consumer without inventing a harness-to-label mapping.
   Do not create labels here; the registry/provisioning owns that vocabulary.
 
+  **Not to be confused with the implementer record.** `model-family:*`,
+  `model:*`, `model-version:*` and `model-effort:*` (issue fields `Model
+  family`, `Model`, `Model version` and `Model effort` on an organization's
+  issues) name **the model that implemented the work**, not the session that
+  claimed it: a claim by a Claude orchestrator that dispatches a Gemini lane
+  carries `claim:claude` and, once the lane's draft PR opens, the Gemini
+  implementer values. `/claim` never writes them — `/implement` (or the
+  orchestrator, for a harness that cannot write labels) records them when the
+  draft PR opens. They are a record of fact, never a routing input, and claim
+  release never removes them: `claim:*` comes off when the claim ends, the
+  implementer record stays until the next implementer replaces it.
+
   Carry `target_label` and `existing_label` into the record and helper
   invocation. The helper adds `target_label` only when its snapshot confirms it
   absent. When `existing_label` is already the same-family marker, pass that

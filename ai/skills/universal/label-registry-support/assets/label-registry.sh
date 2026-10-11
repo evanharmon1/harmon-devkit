@@ -128,10 +128,15 @@ validate() {
         and all(.values[]; value_valid($family))
         and (if (.retired // false) then (.provision | not) else true end)
         and (if .source == "agent-registry" then
-               (.registry_set | IN("suggest", "claim", "foreman-adapters", "tier-roles"))
+               (.registry_set | IN("suggest", "claim", "foreman-adapters", "tier-roles",
+                                   "model-family", "model", "model-version",
+                                   "model-effort"))
                and (.prefix == ({suggest:"suggest", claim:"claim",
                                  "foreman-adapters":"foreman",
-                                 "tier-roles":null}[.registry_set]))
+                                 "tier-roles":null,
+                                 "model-family":"model-family", model:"model",
+                                 "model-version":"model-version",
+                                 "model-effort":"model-effort"}[.registry_set]))
                and (.values | length == 0)
                and ((.retired // false) or (.provision and has("color")))
                and has("placeholder")

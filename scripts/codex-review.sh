@@ -52,7 +52,7 @@ review | challenge) shift ;;
     ;;
 esac
 
-review_model="gpt-5.6-sol"
+review_model="gpt-6.1-sol"
 review_reasoning="high"
 model_set=false
 reasoning_set=false

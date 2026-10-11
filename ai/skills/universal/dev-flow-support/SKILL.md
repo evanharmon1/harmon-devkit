@@ -187,13 +187,10 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    cross-validation is indeterminate and `resolve` always exits 3, which
    would hide the one exit 3 that matters: the derived Tier's. On the step-0
    path, `--taskfile-dir` is the merge-base closure instead.
-   **Fallback invariant:** when resolution succeeds without `agent-registry.json`,
-   registry cross-validation leaves `resolve` at exit 3. The caller accepts that
-   status as the absent-policy fallback only when `source` is `built-in-fallback`,
-   `cross_validation.errors` is empty, and `cross_validation.indeterminate` holds
-   exactly one entry: `indeterminate: no registry was supplied — finders/pools/families/harnesses could not be checked`.
-   Any other indeterminate entry, especially the derived Tier's, still stops
-   resolution exactly as before. Exit 3 alone is never fallback evidence.
+   With neither a policy file nor a requested registry, the built-in fallback
+   is determinate and `resolve` exits 0 when the other checks complete.
+   Any indeterminate entry, especially the derived Tier's, still stops
+   resolution exactly as before. Exit 3 always stops this recipe.
    Translation and argument extraction must both succeed before `resolve`
    runs. Either failure prints a message and stops the recipe; the file-backed
    extraction preserves its exit status instead of losing it in process
