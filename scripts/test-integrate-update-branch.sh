@@ -173,7 +173,7 @@ echo "==> a PR that is not open is refused, without a PUT"
 reset
 pr_json "$head_sha" main CLOSED >"${fixtures}/pr-1.json"
 run_default
-expect "closed PR" 10 "not open"
+expect "closed PR" 16 "not open"
 no_put "closed PR"
 
 echo "==> a PR that is ready for review is refused unless the maintainer asked"
@@ -217,8 +217,13 @@ classify() {
 }
 classify "expected-head refusal" "gh: expected head sha didn't match current head ref. (HTTP 422)" 12 "stale-head"
 classify "merge conflict" "gh: merge conflict between base and head (HTTP 422)" 11 "conflict"
-classify "permission refusal" "gh: Resource not accessible by integration (HTTP 403)" 10 "refused"
-classify "ruleset refusal" "gh: Repository rule violations found (HTTP 422)" 10 "refused"
+# Only a recognized merge refusal falls back (10, 11); every other 4xx is 16.
+classify "ruleset refusal" "gh: Repository rule violations found (HTTP 422)" 10 "ruleset"
+classify "merge-commit rule" "gh: This branch must not contain merge commits. (HTTP 422)" 10 "ruleset"
+classify "permission refusal" "gh: Resource not accessible by integration (HTTP 403)" 16 "no fallback"
+classify "rate limit" "gh: API rate limit exceeded for user ID 1. (HTTP 403)" 16 "no fallback"
+classify "authentication failure" "gh: Bad credentials (HTTP 401)" 16 "no fallback"
+classify "unknown 422" "gh: Validation Failed (HTTP 422)" 16 "no fallback"
 classify "server error" "gh: Server Error (HTTP 502)" 13 "indeterminate"
 classify "transport error" "error connecting to api.github.com" 13 "do not request again"
 
@@ -258,6 +263,37 @@ run_helper --repo o/r --pr 7 --head "$head_sha" --base main --wait 2 --interval 
 elapsed=$(($(date +%s) - started))
 expect "slow read" 13 "do not request again"
 [ "$elapsed" -lt 15 ] || fail "slow read: the wait ran ${elapsed}s past a 2s deadline"
+
+echo "==> a promotion while the merge ran is reported"
+# Challenge round 3: the draft check repeats after the request.
+reset
+pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
+run_default
+expect "promoted mid-call" 15 "promoted while update-branch ran"
+[ -z "$out" ] || fail "promoted mid-call printed '$out'"
+reset
+pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
+run_default --maintainer-requested
+expect "promoted mid-call, maintainer-requested" 0 ""
+
+echo "==> no timeout tool on PATH fails closed before any GitHub call"
+# Challenge round 3: without timeout/gtimeout a read cannot be cut short, so
+# the helper refuses to run rather than wait without a bound. The PATH holds
+# only the tools the helper needs before that check, plus the gh stub.
+reset
+nt_bin="${test_tmp}/no-timeout-bin"
+mkdir -p "$nt_bin"
+ln -sf "${bin_dir}/gh" "${nt_bin}/gh"
+for tool in bash jq grep cat tr date sleep mktemp rm head; do
+    ln -sf "$(command -v "$tool")" "${nt_bin}/${tool}"
+done
+rc=0
+out="$(PATH="$nt_bin" GH_LOG="$log" GH_FIXTURES="$fixtures" \
+    "$(command -v bash)" "$helper" --repo o/r --pr 7 --head "$head_sha" --base main \
+    --wait 0 --interval 0 2>"${test_tmp}/stderr")" || rc=$?
+err="$(cat "${test_tmp}/stderr")"
+expect "no timeout tool" 13 "neither timeout nor gtimeout"
+[ ! -s "$log" ] || fail "no timeout tool reached gh: $(cat "$log")"
 
 echo "==> a retarget while the merge ran stops"
 reset

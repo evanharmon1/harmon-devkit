@@ -38,15 +38,18 @@
 #   longer a draft has been handed to a human, and is caught up only when the
 #   maintainer asks (SKILL.md § "Base reconciliation"): --maintainer-requested
 #   records that request and is the only way past the draft check (exit 15).
+#   The check runs again on every re-read after the request, so a promotion
+#   that lands while GitHub merges is reported too (15) — the merge may
+#   already have happened, which the caller reports rather than acts on.
 #
 #   --head and --base are what the readiness gate captured (`headRefOid`,
 #   `baseRefName`). --wait bounds step 3 by wall clock (default 180): the
 #   deadline is fixed when the wait starts, and each re-read is cut short at
 #   the time left, so a slow read cannot stretch it. --interval is the pause
-#   between re-reads (default 5). Reads are bounded with GNU `timeout` (or
-#   `gtimeout` on macOS); without either, as everywhere else in this script,
-#   a single read cannot be cut short, and the deadline is enforced only
-#   between reads.
+#   between re-reads (default 5). Every gh call is bounded with GNU `timeout`
+#   (or `gtimeout` on macOS). Without either the helper fails closed (13)
+#   before any GitHub call: an unbounded read could stretch the wait without
+#   limit.
 #
 # On success prints the new head OID (bare 40-hex) on stdout. A PR GitHub
 # reports already level prints the captured head unchanged. Diagnostics go to
@@ -55,9 +58,9 @@
 # Exit codes:
 #    0  caught up (or already level) — fast-forward to the printed OID
 #    2  usage error, or a refusal by this helper (any rebase mode)
-#   10  refused by GitHub — a ruleset, missing permission, a fork without
-#       maintainer edits, a PR that is not open. Take the local-merge
-#       fallback, or for a fork stop and ask for maintainer edits.
+#   10  ruleset refusal — GitHub answered that a repository rule rejects the
+#       merge (a "rule violation", or a rule against merge commits). Only
+#       this and 11 take the local-merge fallback.
 #   11  conflict — the base does not merge cleanly. Local-merge fallback.
 #   12  stale head — the head is not the one captured (expected_head_sha
 #       refused, or a re-read shows another head), or it moved to a head that
@@ -68,8 +71,14 @@
 #       and report, never request again.
 #   14  retarget — `baseRefName` is not the captured base. `base-retargeted`
 #       applies; nothing is merged against the new base.
-#   15  not a draft — the PR is ready for review and --maintainer-requested
-#       was not passed. Report its drift; never act on it unasked.
+#   15  not a draft — the PR is ready for review, before the request or
+#       after it, and --maintainer-requested was not passed. Report its
+#       drift; never act on it unasked.
+#   16  refused, not a merge refusal — any other 4xx: rate limiting, an
+#       authentication or permission failure, a fork without maintainer edits,
+#       a 422 whose message is not a known merge refusal, or a PR that is not
+#       open. Never the fallback: stop and report (for a fork, ask for
+#       maintainer edits).
 
 set -euo pipefail
 
@@ -83,8 +92,9 @@ Catches a behind PR up to its base with GitHub update-branch in merge mode,
 guarded by --head as expected_head_sha. Prints the new head OID.
 Rebase is refused. A non-draft PR is refused unless --maintainer-requested
 says the maintainer asked for this catch-up. Exit codes: 0 caught up,
-2 usage, 10 refused, 11 conflict, 12 stale head, 13 indeterminate,
-14 retarget, 15 not a draft.
+2 usage, 10 ruleset refusal, 11 conflict, 12 stale head,
+13 indeterminate (including no timeout/gtimeout on PATH), 14 retarget,
+15 not a draft, 16 refused otherwise.
 EOF
     exit 2
 }
@@ -163,17 +173,15 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v gtimeout >/dev/null 2>&1; then
     timeout_bin=gtimeout
 fi
+# Fail closed: the wall-clock bound depends on cutting a read short.
+[ -n "$timeout_bin" ] ||
+    finish indeterminate 13 "neither timeout nor gtimeout is on PATH (GNU coreutils; gtimeout on macOS) — no GitHub call was made"
 
-# run_gh_for SECONDS ARGS... — gh, cut short after SECONDS where a timeout
-# binary exists.
+# run_gh_for SECONDS ARGS... — gh, cut short after SECONDS.
 run_gh_for() {
     limit=$1
     shift
-    if [ -n "$timeout_bin" ]; then
-        "$timeout_bin" -k 1 "$limit" gh "$@"
-    else
-        gh "$@"
-    fi
+    "$timeout_bin" -k 1 "$limit" gh "$@"
 }
 
 run_gh() {
@@ -196,7 +204,7 @@ before="$(read_pr)" ||
 state="$(field "$before" state)" ||
     finish indeterminate 13 "PR read carries no state"
 [ "$state" = OPEN ] ||
-    finish refused 10 "PR #${pr} is ${state}, not open"
+    finish refused 16 "PR #${pr} is ${state}, not open"
 # Not `jq -e`: it fails on a false value, which is the one this check needs.
 is_draft="$(jq -r '.isDraft | if type == "boolean" then tostring else error("no isDraft") end' <<<"$before")" ||
     finish indeterminate 13 "PR read carries no isDraft"
@@ -241,10 +249,13 @@ if [ "$put_rc" -ne 0 ]; then
     *conflict*)
         finish conflict 11 "the base does not merge cleanly — take the local-merge fallback: ${response}"
         ;;
+    *"rule violation"* | *"merge commit"*)
+        finish ruleset 10 "a repository rule rejects the merge — take the local-merge fallback: ${response}"
+        ;;
     esac
     case "$status_code" in
     4??)
-        finish refused 10 "GitHub refused update-branch (HTTP ${status_code}): ${response}"
+        finish refused 16 "GitHub refused update-branch (HTTP ${status_code}) for a reason that is not a known merge refusal — stop and report, no fallback: ${response}"
         ;;
     esac
     # A 5xx, a timeout or a transport error leaves the request's fate unknown.
@@ -266,6 +277,10 @@ while :; do
             finish indeterminate 13 "PR read carries no baseRefName"
         [ "$after_base" = "$base" ] ||
             finish retarget 14 "the PR base changed to ${after_base} while update-branch ran — base-retargeted applies"
+        after_draft="$(jq -r '.isDraft | if type == "boolean" then tostring else error("no isDraft") end' <<<"$after")" ||
+            finish indeterminate 13 "PR read carries no isDraft"
+        [ "$after_draft" = true ] || [ "$maintainer_requested" = 1 ] ||
+            finish not-draft 15 "PR #${pr} was promoted while update-branch ran (head now ${new_head}) — report it; the merge may already have happened"
         [ "$new_head" = "$head" ] || break
     else
         new_head="$head"

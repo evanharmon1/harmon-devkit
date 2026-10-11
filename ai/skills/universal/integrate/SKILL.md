@@ -1703,7 +1703,7 @@ new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
 
 The helper's exits are the invariant, stated once (0 caught up, printing the
 new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
-retarget; 15 not a draft):
+retarget; 15 not a draft; 16 refused for any other reason):
 
 - **Merge mode, guarded by the expected head.** It re-reads `baseRefName`
   first and stops on a retarget (14): `base-retargeted` applies and nothing is
@@ -1711,7 +1711,11 @@ retarget; 15 not a draft):
   processes the request is the same window a local merge has, an accepted
   residual (harmon-init ADR 2026-10-11) that the gate's base re-check
   catches. The same re-read refuses a PR that is no longer a draft (15)
-  unless `--maintainer-requested` is passed (below). It then sends REST `PUT …/pulls/<n>/update-branch` with the
+  unless `--maintainer-requested` is passed (below). Every re-read after the
+  request repeats that check, so a promotion that lands while GitHub merges
+  also exits 15: the merge may already have happened, an accepted residual
+  window like the retarget one, which the caller reports rather than acts
+  on. It then sends REST `PUT …/pulls/<n>/update-branch` with the
   captured head as `expected_head_sha`. That endpoint takes no other field and
   always merges. Rebase exists only as GraphQL `updateMethod` or
   `gh pr update-branch --rebase`; it rewrites pushed history, and the helper
@@ -1765,7 +1769,10 @@ take it, each detected from the helper's exit rather than predicted:
 - a base merge that must ship in the same push as a fix (the last-push rule
   below).
 
-A fork PR that does not allow edits by maintainers is not a fallback case:
+Every other refusal (16: rate limiting, an authentication or permission
+failure, a 422 that is not a known merge refusal, a PR that is not open)
+stops with a report and never falls back. A fork PR that does not allow
+edits by maintainers is one of them, not a fallback case:
 the integration identity cannot push a local merge to that branch either, so
 stop and ask for maintainer edits rather than spending a round. A conflict
 resolution is authored work, so the fallback is exempt from nothing: it
