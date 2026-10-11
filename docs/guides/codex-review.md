@@ -359,11 +359,13 @@ background runs.
 
 ### Envelope mode (dev-flow v2 runs)
 
-Inside an orchestrated dev-flow v2 run, `/review` invokes the same tasks with
-`--envelope`, and the runner then produces the stage's evidence itself rather
-than prose for an agent to transcribe. Every harness that can run the task gets
-the same binding, so a Codex or other non-Claude lane leaves a real `passes/`
-record:
+Inside an orchestrated dev-flow v2 run, a confidence pass is normally
+assembled by `/review`'s `challenger`/`reviewer` role agent from the task's
+ordinary output — and for every Codex finder today, that is the only producer
+that works (see the fail-closed note below). `--envelope` is an additional
+mode in which the runner produces the pass itself, binding, validating and
+publishing it with no role agent, so any harness that can run the task can use
+it for a finder whose runner publishes:
 
 ```bash
 task challenge -- --model gpt-5.6-sol --envelope \
@@ -373,8 +375,12 @@ task challenge -- --model gpt-5.6-sol --envelope \
 ```
 
 Envelope mode drives Codex through the same `codex exec review` invocation as
-an ordinary run, never plain `codex exec`, which let a command the model
-marked as escalated leave its sandbox. The review subcommand enforces no
+an ordinary run, never plain `codex exec`. The review subcommand's
+command-running session records `approval_policy: never` (its outer banner
+prints `approval: on-request`, which is not what governs the commands), while
+plain `codex exec` runs its commands on-request, and a command the model
+marked as escalated left the sandbox with no prompt — which is why it was
+rejected. The review subcommand enforces no
 output schema, so the payload schema is requested in the prompt and the
 runner accepts only exactly one JSON object (bare, or alone in one fenced
 block); anything else publishes nothing. A pass becomes evidence only when the
@@ -385,10 +391,9 @@ supervising orchestrator validates it and appends its receipt.
 JSON, so a Codex envelope run publishes no pass — never a false one. A
 schema-enforcing, approval-never Codex path is
 [harmon-devkit#1365](https://github.com/evanharmon1/harmon-devkit/issues/1365);
-until it lands, Codex passes go through the `challenger`/`reviewer` role-agent
-wrapper. Note too that local Codex review passes, ordinary and envelope alike,
-run with `approval: on-request` on that CLI, not approval-never
-([harmon-devkit#1366](https://github.com/evanharmon1/harmon-devkit/issues/1366)).
+until it lands, Codex passes stay with the `challenger`/`reviewer` role agents.
+How local Codex review passes are approved is tracked in
+[harmon-devkit#1366](https://github.com/evanharmon1/harmon-devkit/issues/1366).
 
 `task challenge:copilot` / `task review:copilot` take the same flags plus
 `--model <model>`, which is pinned into the vendor invocation (a model in

@@ -207,50 +207,51 @@ entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
 [ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||
     fail "review skill does not fail topology before dispatch"
-# harmon-devkit#941: the finder runner in envelope mode produces the envelope
-# on every harness; the role agents are optional isolation around the same
-# invocation and never assemble JSON themselves.
 for role in challenger reviewer; do
     agent="ai/agents/$role.md"
-    agent_flat="$(tr '\n' ' ' <"$agent" | tr -s '[:space:]' ' ')"
-    grep -Fq "result.$role" "$agent" ||
-        fail "$role does not name its result envelope"
-    grep -Fq -- '--envelope' "$agent" ||
-        fail "$role does not delegate envelope production to the runner's --envelope mode"
-    for text in 'never assemble, edit, or re-wrap its JSON' \
-        'that is the caller'"'"'s step' 'it is not the envelope authority'; do
-        case "$agent_flat" in
-        *"$text"*) ;;
-        *) fail "$role is missing the delegation clause: $text" ;;
-        esac
-    done
-    grep -Eq '"(schema|role|producer|payload)"[[:space:]]*:' "$agent" &&
-        fail "$role carries hand-built envelope JSON"
+    grep -Fq "ai/schemas/result.$role.schema.json" "$agent" ||
+        fail "$role does not name its result schema"
     grep -Fq 'Resolving the assets' "$agent" ||
         fail "$role does not reference the named dev-flow-support asset resolution rule"
     grep -Fq 'DEV_FLOW_SUPPORT' "$agent" ||
-        fail "$role does not resolve \$DEV_FLOW_SUPPORT before re-validating"
+        fail "$role does not resolve \$DEV_FLOW_SUPPORT before validating"
+    grep -Fq 'validate-result-schemas.mjs" envelope ... --receipt' "$agent" ||
+        fail "$role does not validate its full result envelope before handoff"
+    grep -Fq 'validated finding records' "$agent" ||
+        fail "$role cannot compare finding provenance across rounds"
+    # harmon-devkit#941 challenge round 5 (maintainer decision): the role
+    # agents keep ASSEMBLING the pass — envelope mode fails closed for Codex
+    # (#1365), so delegating to it left the default stages with no producer.
+    grep -Fq -- '--envelope' "$agent" &&
+        fail "$role delegates to envelope mode; the role agents assemble passes (#1365)"
 done
+# Envelope mode is an additional producer where it publishes, never a
+# replacement for the role agents, and the caller still owns the receipt.
 skill_flat="$(tr '\n' ' ' <"$skill" | tr -s '[:space:]' ' ')"
-for text in 'The finder invocation in envelope mode is the dispatched role, on every harness.' \
+for text in 'The role agents assemble the pass for every `labelled-text` finder' \
+    'Envelope mode is an additional producer, where it publishes.' \
+    'Codex envelope mode currently fails closed' 'harmon-devkit#1365' \
     'Append the pass receipt, then verify.' 'never writes `run.json`' \
     '{"kind": "pass", "file": "<stage>-r<round>-<slot>"}' 'is an **orphan**' \
     'never delete or overwrite that file' 'a pre-existing destination is a refusal, never an overwrite'; do
     case "$skill_flat" in
     *"$text"*) ;;
-    *) fail "review skill is missing the harness-neutral dispatch contract: $text" ;;
+    *) fail "review skill is missing the dispatch contract: $text" ;;
     esac
 done
 case "$skill_flat" in
-*'A harness that cannot enforce that binding makes the finder unavailable'*)
-    fail "review skill still makes a finder unavailable on a harness without a role-agent runtime"
+*'The finder invocation in envelope mode is the dispatched role'*)
+    fail "review skill still makes envelope mode the only producer"
     ;;
 esac
 implement_flat="$(tr '\n' ' ' <ai/skills/universal/implement/SKILL.md | tr -s '[:space:]' ' ')"
-case "$implement_flat" in
-*'Lacking a Skill tool or a subagent runtime is **not** a reason to fall back to the inline procedure'*) ;;
-*) fail "implement skill does not route a Skill-tool-less harness with a run identity through /review" ;;
-esac
+for text in 'role agents assemble the pass for every `labelled-text` finder' \
+    'a lane never receipts or adjudicates its own'; do
+    case "$implement_flat" in
+    *"$text"*) ;;
+    *) fail "implement skill is missing the producer/receipt contract: $text" ;;
+    esac
+done
 dev_flow_support_skill="ai/skills/universal/dev-flow-support/SKILL.md"
 grep -Fq 'Resolving the assets from an agent file' "$dev_flow_support_skill" ||
     fail "dev-flow-support skill is missing the agent-file asset resolution section"

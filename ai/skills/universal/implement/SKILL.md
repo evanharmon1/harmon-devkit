@@ -382,14 +382,14 @@ confidence stages in this step only**: where the harness exposes the Skill tool,
 `review` through it; where it does not (a subagent, Codex, another harness),
 read `.agents/skills/review/SKILL.md` (or `.claude/skills/review/SKILL.md`)
 and follow it — it carries the adjudication ledger, durable round
-accounting. Lacking a Skill tool or a subagent runtime is **not** a reason to
-fall back to the inline procedure when an active run identity exists: `/review`
-runs each finder through its task in `--envelope` mode, which any harness that
-can run the task can do, and that is what produces the `passes/` evidence. In
-an orchestrated run the lane may **produce** passes that way, but receipt
-authority and adjudication stay with the supervising orchestrator: it
-validates each pass and appends its receipt, and a lane never receipts or
-adjudicates its own.
+accounting. Its `challenger`/`reviewer` role agents assemble the pass for
+every `labelled-text` finder, all of the Codex finders included; a finder
+whose runner publishes in `--envelope` mode can also be run directly by a
+harness without a subagent runtime (not Codex on today's CLI,
+harmon-devkit#1365). In an orchestrated run, receipt authority and
+adjudication stay with the supervising orchestrator whichever producer filled
+a slot: it validates each pass and appends its receipt, and a lane never
+receipts or adjudicates its own.
 It returns to this skill for security and draft publication; it
 does not open a PR or run integration. In the fork topology this
 skill supports where `origin` is the writable fork rather than the target,

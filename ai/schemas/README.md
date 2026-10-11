@@ -29,9 +29,12 @@ top-level documents, never as an envelope's `payload`.
 
 ## Finder-produced envelopes
 
-A confidence-stage pass is produced by the finder **runner** in `--envelope`
-mode (`scripts/codex-review.sh`, `scripts/finder-review.sh`;
-harmon-devkit#941), not by whichever agent happened to call it. The runner asks
+A confidence-stage pass for a `labelled-text` finder — all of the Codex
+finders today — is assembled by the `challenger`/`reviewer` role agent from the
+finder's badged output. A local-CLI finder **runner** in `--envelope` mode
+(`scripts/codex-review.sh`, `scripts/finder-review.sh`; harmon-devkit#941) is
+an additional producer for a finder whose runner can publish, and needs no
+role agent, so any harness that can run the task can use it. The runner asks
 the finder for the role's payload, with the payload schema in its prompt
 (neither CLI's review path enforces a schema), accepts only exactly one JSON
 object back, binds it to the captured run, head,
@@ -46,10 +49,11 @@ refusal, never an overwrite, and a timed-out original still running beside its
 retry cannot replace evidence the retry published. The runner never writes
 `run.json`.
 
-**What this does not make trustworthy, and what does.** The lane that runs the
-runner can still forge: it can edit or replace the runner, feed it a false
-binding, or hand-write a document and run the validator over it. Moving
-assembly into a script removes none of that, and does not claim to. What bounds
+**What this does not make trustworthy, and what does.** Whoever produces the
+pass can still forge: a lane can edit or replace the runner, feed it a false
+binding, or hand-write a document and run the validator over it, and a role
+agent's assembly is its own text. Neither producer removes that, and envelope
+mode does not claim to. What bounds
 it is the chain around the file, and none of it is the lane's prose:
 
 - **receipt validation** binds run identity, head, role, stage, round, slot and
@@ -68,18 +72,16 @@ supervising orchestrator validating it and appending its receipt.
 
 **Codex envelope mode currently fails closed.** `codex exec review` (Codex CLI
 0.162.1) answers in review prose and ignores the in-prompt payload schema, so
-the runner refuses every Codex reply and publishes no pass. Until
+the runner refuses every Codex reply and publishes no pass. Codex passes stay
+with the `challenger`/`reviewer` role agents until
 [harmon-devkit#1365](https://github.com/evanharmon1/harmon-devkit/issues/1365)
-delivers a schema-enforcing, approval-never path, Codex passes go through the
-`challenger`/`reviewer` role-agent wrapper.
+delivers a schema-enforcing, approval-never path.
 
 That is the same model `--receipts` strict mode enforces at cross-boundary call
 sites (#821), and it keeps decision record 0009's rule intact — briefs carry a
-schema-bound envelope, **results are schema-bound** — while changing only which
-executable produces the envelope. A Claude `challenger`/`reviewer` agent is
-optional process isolation around the same invocation; it was never the source
-of the trust, and a harness without a subagent runtime loses nothing by not
-having one.
+schema-bound envelope, **results are schema-bound** — whichever producer
+assembled the envelope. Neither the role agent nor the runner is the source of
+the trust; the receipt chain is.
 
 ## Brief envelope and Markdown body
 
