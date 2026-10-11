@@ -58,7 +58,7 @@
     "adjudicationEntry": {
       "type": "object",
       "additionalProperties": false,
-      "$comment": "The if/then below publishes the split contract's no-data-loss rule as a SCHEMA keyword rather than leaving it to this repository's semantic validator alone (challenge round 2, confirmed): `disposition` and `reference` are siblings of one entry, so a standard draft-2020-12 validator — Foreman's Python at a pinned tag included — can and must enforce it too, otherwise the published schema accepts a split that filed nothing while only ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs rejects it. The script keeps its own check, which additionally constrains the reference TYPE and value shape.",
+      "$comment": "The if/then below publishes the split contract's no-data-loss rule as a SCHEMA keyword rather than leaving it to this repository's semantic validator alone (challenge round 2, confirmed): `disposition` and `reference` are siblings of one entry, so a standard draft-2020-12 validator — Foreman's Python at a pinned tag included — can and must enforce it too, otherwise the published schema accepts a split that filed nothing while only ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs rejects it. Both the schema and script constrain the reference type and bare-or-qualified positive issue value.",
       "if": {
         "properties": { "disposition": { "const": "split" } },
         "required": ["disposition"]
@@ -67,7 +67,10 @@
         "required": ["reference"],
         "properties": {
           "reference": {
-            "properties": { "type": { "const": "issue_number" } }
+            "properties": {
+              "type": { "const": "issue_number" },
+              "value": { "pattern": "^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)$" }
+            }
           }
         }
       },
