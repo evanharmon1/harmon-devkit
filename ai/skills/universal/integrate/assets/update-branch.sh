@@ -35,8 +35,13 @@
 #       [--wait SECONDS] [--interval SECONDS]
 #
 #   --head and --base are what the readiness gate captured (`headRefOid`,
-#   `baseRefName`). --wait bounds step 3 (default 180); --interval is the
-#   re-read period (default 5).
+#   `baseRefName`). --wait bounds step 3 by wall clock (default 180): the
+#   deadline is fixed when the wait starts, and each re-read is cut short at
+#   the time left, so a slow read cannot stretch it. --interval is the pause
+#   between re-reads (default 5). Reads are bounded with GNU `timeout` (or
+#   `gtimeout` on macOS); without either, as everywhere else in this script,
+#   a single read cannot be cut short, and the deadline is enforced only
+#   between reads.
 #
 # On success prints the new head OID (bare 40-hex) on stdout. A PR GitHub
 # reports already level prints the captured head unchanged. Diagnostics go to
@@ -145,16 +150,25 @@ elif command -v gtimeout >/dev/null 2>&1; then
     timeout_bin=gtimeout
 fi
 
-run_gh() {
+# run_gh_for SECONDS ARGS... — gh, cut short after SECONDS where a timeout
+# binary exists.
+run_gh_for() {
+    limit=$1
+    shift
     if [ -n "$timeout_bin" ]; then
-        "$timeout_bin" -k 1 60 gh "$@"
+        "$timeout_bin" -k 1 "$limit" gh "$@"
     else
         gh "$@"
     fi
 }
 
+run_gh() {
+    run_gh_for 60 "$@"
+}
+
+# read_pr [SECONDS] — the PR's head and base, bounded by SECONDS (default 60).
 read_pr() {
-    run_gh pr view "$pr" --repo "$repo" --json state,headRefOid,baseRefName,baseRefOid
+    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,headRefOid,baseRefName,baseRefOid
 }
 
 # field JSON NAME — a required string field, or non-zero.
@@ -219,10 +233,16 @@ if [ "$put_rc" -ne 0 ]; then
 fi
 
 # ---- 3. bounded wait for the head to move -----------------------------------
-waited=0
+# An absolute deadline, not a sum of sleeps: the time a read takes counts, and
+# each read is capped at what is left (at least 1s, so the first read runs
+# even with --wait 0, and at most the usual 60s).
+deadline=$(($(date +%s) + wait_sec))
 new_head="$head"
 while :; do
-    if after="$(read_pr)" && new_head="$(field "$after" headRefOid)"; then
+    budget=$((deadline - $(date +%s)))
+    [ "$budget" -ge 1 ] || budget=1
+    [ "$budget" -le 60 ] || budget=60
+    if after="$(read_pr "$budget")" && new_head="$(field "$after" headRefOid)"; then
         after_base="$(field "$after" baseRefName)" ||
             finish indeterminate 13 "PR read carries no baseRefName"
         [ "$after_base" = "$base" ] ||
@@ -231,12 +251,12 @@ while :; do
     else
         new_head="$head"
     fi
-    [ "$waited" -lt "$wait_sec" ] ||
+    remaining=$((deadline - $(date +%s)))
+    [ "$remaining" -gt 0 ] ||
         finish indeterminate 13 "the head was still ${head} after ${wait_sec}s — the request may still be pending; stop and report, do not request again"
-    sleep "$interval_sec"
-    waited=$((waited + interval_sec))
-    # A zero interval would otherwise spin forever on an unmoved head.
-    [ "$interval_sec" -gt 0 ] || waited=$((wait_sec))
+    pause=$interval_sec
+    [ "$pause" -le "$remaining" ] || pause=$remaining
+    sleep "$pause"
 done
 valid_sha "$new_head" ||
     finish indeterminate 13 "the PR head ${new_head} is not a commit SHA"

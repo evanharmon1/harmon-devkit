@@ -45,6 +45,11 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     [ ! -f "$GH_FIXTURES/pr-count" ] || count="$(cat "$GH_FIXTURES/pr-count")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$GH_FIXTURES/pr-count"
+    # A slow read after the first: exec, so the helper's timeout signals the
+    # sleep itself and no orphan holds the command substitution's pipe open.
+    if [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/pr-slow" ]; then
+        exec sleep "$(cat "$GH_FIXTURES/pr-slow")"
+    fi
     n=$count
     while [ "$n" -gt 1 ] && [ ! -f "$GH_FIXTURES/pr-$n.json" ]; do
         n=$((n - 1))
@@ -108,6 +113,7 @@ expect() {
     *"$3"*) ;;
     *) fail "$1: stderr lacks '$3': $err" ;;
     esac
+    return 0
 }
 
 no_put() {
@@ -218,6 +224,19 @@ run_helper --repo o/r --pr 7 --head "$head_sha" --base main --wait 5 --interval 
 expect "late move" 0 ""
 [ "$out" = "$new_sha" ] || fail "late move printed '$out'"
 
+echo "==> the wait is bounded by wall clock even when a read is slow"
+# P2 of challenge round 1: the wait used to be a sum of sleeps, so one read
+# that hung added its whole duration on top. The second read hangs for 30s and
+# would then report the moved head; a deadline that holds cuts it short at the
+# time left and reports indeterminate well before that.
+reset
+printf '30\n' >"${fixtures}/pr-slow"
+started=$(date +%s)
+run_helper --repo o/r --pr 7 --head "$head_sha" --base main --wait 2 --interval 0
+elapsed=$(($(date +%s) - started))
+expect "slow read" 13 "do not request again"
+[ "$elapsed" -lt 15 ] || fail "slow read: the wait ran ${elapsed}s past a 2s deadline"
+
 echo "==> a retarget while the merge ran stops"
 reset
 pr_json "$new_sha" release >"${fixtures}/pr-2.json"
@@ -255,7 +274,9 @@ skill_flat="$(tr '\n' ' ' <"$skill_md" | tr -s ' ')"
 for needle in \
     'Bash(${CLAUDE_SKILL_DIR}/assets/update-branch.sh:*)' \
     'assets/update-branch.sh --repo <repo> --pr <n>' \
-    'A server-side catch-up spends no remediation round.'; do
+    'A server-side catch-up spends no remediation round.' \
+    'neither of them the run record' \
+    '`- Base catch-up: <captured head> → <new head> (update-branch)`'; do
     case "$skill_flat" in
     *"$needle"*) ;;
     *) fail "SKILL.md lost: $needle" ;;

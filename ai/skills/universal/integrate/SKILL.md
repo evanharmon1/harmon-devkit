@@ -1739,10 +1739,17 @@ Then, in order:
 the `remediation` cap bounds the stage's fix pushes: charging it would let a
 busy base exhaust the budget without one fix pushed. It is still a head move,
 so step 3's carry or cycle is owed, charged to `integration` or
-`integration_exempt` exactly as any cycle is. The ledger names it a catch-up
-(`update-branch → CI → carry`), not a remediation push, and the remediation
-counter does not advance; the run record keeps the requested and resulting
-`headRefOid`.
+`integration_exempt` exactly as any cycle is. The remediation counter does not
+advance. The evidence is the head pair: the captured head the request named and
+the head the helper printed. It lives in two places, neither of them the run
+record, whose schema is closed and has no field for it:
+
+- the stage ledger names the step a catch-up (`update-branch → CI → carry`),
+  not a remediation push, with both OIDs;
+- the PR body records the same pair as one line under `## Integration`
+  (create the heading if the body has none), in the body edit the stage
+  already makes: `- Base catch-up: <captured head> → <new head>
+  (update-branch)`.
 
 **Fallback — a local merge, as an ordinary remediation round.** Only these
 take it, each detected from the helper's exit rather than predicted:
