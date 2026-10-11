@@ -365,7 +365,9 @@ ordinary output — and for every Codex finder today, that is the only producer
 that works (see the fail-closed note below). `--envelope` is an additional
 mode in which the runner produces the pass itself, binding, validating and
 publishing it with no role agent, so any harness that can run the task can use
-it for a finder whose runner publishes:
+it for a finder whose runner publishes. The flag shape, shown for the Codex
+finder — which on today's CLI **fails closed** and publishes no pass (below,
+harmon-devkit#1365):
 
 ```bash
 task challenge -- --model gpt-5.6-sol --envelope \
