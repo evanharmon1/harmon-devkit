@@ -777,6 +777,99 @@ gated_round() {
     printf '%s' "$out"
 }
 
+# #1070: the orchestrator may gate its live checker state directly. Deliberately
+# invoke without run_gate's default integrator result or pass persistence.
+run_checker_gate() {
+    ensure_issue_evidence_markers
+    set +e
+    gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$recheck_gate" check \
+        --repo example/repo --pr 493 --head "$head_sha" \
+        --record "$record_dir" --integration-cap 1 --remediation-cap 4 \
+        --codex-recheck "$recheck_state" "$@" 2>&1)"
+    gate_rc=$?
+    set -e
+    check_watchdog "$gate_rc" run_checker_gate "$gate_out"
+}
+
+write_checker_defaults() {
+    write_defaults
+    jq -cn --arg head "$head_sha" \
+        '{repo:"example/repo",pr:493,head:$head,run_id:"test-run",
+          cycle:1,charged_cycles:1,exempt_cycles:0}' >"$recheck_state"
+}
+
+echo "==> #1070: live checker evidence needs no recording pass and names its source"
+write_checker_defaults
+run_checker_gate
+assert_gate 0 pass ready
+[ "$(gate_field cycle_evidence | jq -r '.kind')" = checker-state ] ||
+    fail "checker-only verdict must name checker-state evidence: $gate_out"
+[ "$(gate_field cycle_evidence | jq -r '.path')" = "$recheck_state" ] ||
+    fail "checker-only verdict must name the state file: $gate_out"
+[ "$(gate_field cycle_evidence | jq -r '.cycle')" = 1 ] ||
+    fail "checker-only verdict must record its cycle: $gate_out"
+! compgen -G "${record_dir}/passes/integration-*.json" >/dev/null ||
+    fail "checker-only test accidentally supplied an integrator pass"
+
+echo "==> #1070: non-clean checker evidence remains indeterminate"
+for checker_exit in 2 10 11 12 13 14; do
+    write_checker_defaults
+    export RECHECK_FAKE_EXIT="$checker_exit"
+    run_checker_gate
+    unset RECHECK_FAKE_EXIT
+    assert_gate 2 indeterminate codex-stale
+done
+
+echo "==> #1070: checker identity and cycle spend cannot be bypassed"
+write_checker_defaults
+jq --arg head "$moved_sha" '.head = $head' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate codex-stale
+write_checker_defaults
+jq '.cycle = 2 | .charged_cycles = 2' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate codex-cap-mismatch
+write_checker_defaults
+run_checker_gate --integration-cap 0
+assert_gate 2 indeterminate codex-cap-mismatch
+write_checker_defaults
+jq '.charged_cycles = -1' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate malformed-data
+
+echo "==> #1070: direct evidence still reads live CI, thread replies and deferred record"
+write_checker_defaults
+printf '%s\n' '[{"total_count":1,"check_runs":[{"name":"build","status":"in_progress","conclusion":null}]}]' >"${fixtures}/check-runs.pages.json"
+run_checker_gate
+assert_gate 1 fail checks-pending
+write_checker_defaults
+printf '%s\n' '[[{"id":20,"body":"review finding","user":{"id":9,"login":"reviewer"}}]]' >"${fixtures}/inline.pages.json"
+run_checker_gate
+assert_gate 1 fail threads-unanswered
+write_checker_defaults
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", stage:"review", round:1,
+      reviewed_head:$head,
+      adjudications:[{finding_id:"review-r1-codex-cli-1",
+        reviewer_priority:"P2", adjudicated_priority:"P2",
+        disposition:"defer", reason:"carrying to integration",
+        evidence:"needs a second look", override:null}]}' \
+    >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass review-r1-codex-cli-1
+run_checker_gate
+assert_gate 1 fail deferred-unsettled
+
+echo "==> #1070: a supplied malformed integrator result never falls back to checker evidence"
+write_checker_defaults
+printf '%s\n' '{}' >"${fixtures}/bad-result.json"
+run_checker_gate --integrator-result "${fixtures}/bad-result.json"
+assert_gate 2 indeterminate codex-indeterminate
+write_defaults
+jq -cn --arg head "$head_sha" '{repo:"example/repo",pr:493,head:$head}' >"$recheck_state"
+
 echo "==> full pass (Codex cycle terminal-clean) prints a fingerprint, stable across two runs on identical data"
 write_defaults
 clean_result="$(write_integrator_result clean "$(codex_cycle_json 0)")"
