@@ -770,20 +770,21 @@ compute_fingerprint() {
 # path, or freshness confirmation for a supplied codex_cycle.exit_code 0.
 # Supplied non-clean and null cycles retain their own handling below.
 recheck_codex_freshness() {
+    local recheck_state_input="${checker_state_snapshot:-$codex_recheck_state}"
     [ -n "$codex_recheck_state" ] ||
         indeterminate codex-stale "no --codex-recheck was given to confirm current-head Codex evidence against live GitHub state"
     [ -x "$codex_checker" ] ||
         die "$codex_checker is missing or not executable — cannot honor --codex-recheck"
-    [ -f "$codex_recheck_state" ] ||
+    [ -f "$recheck_state_input" ] ||
         indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot confirm live Codex evidence"
-    state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
-    state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
-    state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
+    state_repo="$(jq -r '.repo // empty' "$recheck_state_input" 2>/dev/null)"
+    state_pr="$(jq -r '.pr // empty' "$recheck_state_input" 2>/dev/null)"
+    state_head="$(jq -r '.head // empty' "$recheck_state_input" 2>/dev/null)"
     # harmon-init#752: a cycle can attest a LATER head than its own, so the
     # state's head legitimately differs from the gated one — but only when the
     # state itself says so. The claim is the state's, never the caller's, and
     # the checker re-derives the identity behind it on the very next line.
-    state_attests="$(jq -r '.carry.attests_head // empty' "$codex_recheck_state" 2>/dev/null)"
+    state_attests="$(jq -r '.carry.attests_head // empty' "$recheck_state_input" 2>/dev/null)"
     [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] &&
         { [ "$state_head" = "$head" ] || [ "$state_attests" = "$head" ]; } ||
         indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}${state_attests:+ (attesting $state_attests)}, not the gated $repo#$pr@$head"
@@ -793,7 +794,7 @@ recheck_codex_freshness() {
     # run can replace the shared same-head state, so without the run id this
     # call would happily validate a foreign run's cycle. `active_run_id` is
     # read from --record's run.json well before this runs.
-    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
+    codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
         codex_recheck_exit=$?
     # harmon-devkit#508: exit 16 means the checker could not READ the evidence,
     # not that the cached clean result went stale. This is the exact shape the
@@ -820,7 +821,7 @@ recheck_codex_freshness() {
         # run can replace the shared same-head state, and an unscoped retry
         # would accept that foreign run's cycle and settlements instead of
         # refusing the ownership mismatch.
-        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
+        codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
             indeterminate codex-transient-read "live Codex check could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating unknown evidence as stale: $codex_recheck_output"
@@ -843,7 +844,7 @@ recheck_codex_freshness() {
         fail_condition codex-quota-exhausted "live Codex check came back quota-exhausted (check-codex-cloud-review.sh exited 15): the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115): $codex_recheck_output"
     fi
     if [ "$codex_recheck_exit" -eq 10 ]; then
-        indeterminate codex-stale "live Codex check reports findings — adjudicate them before gating (check-codex-cloud-review.sh exited 10): $codex_recheck_output"
+        fail_condition codex-not-clean "live Codex check reports findings — adjudicate them before gating (check-codex-cloud-review.sh exited 10): $codex_recheck_output"
     fi
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
@@ -1447,6 +1448,10 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
 if [ -z "$integrator_result" ]; then
+    jq -e '.stage_transitions[-1].stage == "integration" and
+      ([.finder_selection[]? | select(.stage == "integration")] | length == 0)' \
+        "$run_json" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "the active stage is not integration or the run selected integration finders; dispatch an integrator and supply --integrator-result"
     # The clean-run fast path has no integration work to adjudicate and
     # exactly one configured finder. Anything else needs an integrator.
     for checker_pass in "$record_dir"/passes/*.json; do
@@ -1593,27 +1598,32 @@ else
     # No synthetic integrator envelope: the checker owns verdict collection,
     # and its state owns cycle spend. Live checks, threads and settlements are
     # evaluated by this gate in both paths.
+    [ -f "$script_dir/trusted-registry.sh" ] ||
+        indeterminate checker-fast-path-unavailable "trusted-registry.sh is missing; cannot confirm the checker finder profile"
+    # shellcheck source=trusted-registry.sh
+    . "$script_dir/trusted-registry.sh"
+    checker_profile_dir="$(mktemp -d "${TMPDIR:-/tmp}/readiness-gate-profile.XXXXXX")" ||
+        indeterminate checker-fast-path-unavailable "cannot create a temporary directory for checker evidence"
+    trap 'rm -rf "$checker_profile_dir" 2>/dev/null || :' EXIT
+    checker_state_snapshot="$checker_profile_dir/state.json"
+    cp "$codex_recheck_state" "$checker_state_snapshot" ||
+        indeterminate codex-stale "cannot snapshot --codex-recheck for live evidence"
+    jq -e '.phase == "attached" or .phase == "terminal"' "$checker_state_snapshot" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker evidence is not attached or terminal"
+    # Both the checker and cycle construction use this private snapshot;
+    # a concurrent reservation cannot replace the state between those reads.
     recheck_codex_freshness
-    jq -e --argjson bot "$codex_actor_id" '
-      .finder == null or
-      (.finder.slug == "codex-cloud" and
-       (.finder.actor_id | tostring) == ($bot | tostring))
-      ' "$codex_recheck_state" >/dev/null 2>&1 ||
-        indeterminate checker-fast-path-unavailable "checker state does not name the Codex finder; dispatch an integrator and supply --integrator-result"
-    if ! jq -e '.finder == null' "$codex_recheck_state" >/dev/null 2>&1; then
-        [ -f "$script_dir/trusted-registry.sh" ] ||
-            indeterminate checker-fast-path-unavailable "trusted-registry.sh is missing; cannot confirm the checker finder profile"
-        # shellcheck source=trusted-registry.sh
-        . "$script_dir/trusted-registry.sh"
-        checker_profile_dir="$(mktemp -d "${TMPDIR:-/tmp}/readiness-gate-profile.XXXXXX")" ||
-            indeterminate checker-fast-path-unavailable "cannot create a temporary directory for the trusted finder profile"
-        trap 'rm -rf "$checker_profile_dir" 2>/dev/null || :' EXIT
-        resolve_trusted_registry "$repo" "$pr" "$checker_profile_dir/registry.json" ||
-            indeterminate checker-fast-path-unavailable "cannot resolve the trusted registry for checker evidence"
-        resolve_finder_profile "$checker_profile_dir/registry.json" codex-cloud \
-            "$checker_profile_dir/profile.json" ||
-            indeterminate checker-fast-path-unavailable "cannot resolve the trusted Codex finder profile"
-        jq -e --slurpfile trusted "$checker_profile_dir/profile.json" '
+    resolve_trusted_registry "$repo" "$pr" "$checker_profile_dir/registry.json" ||
+        indeterminate checker-fast-path-unavailable "cannot resolve the trusted registry for checker evidence"
+    resolve_finder_profile "$checker_profile_dir/registry.json" codex-cloud \
+        "$checker_profile_dir/profile.json" ||
+        indeterminate checker-fast-path-unavailable "cannot resolve the trusted Codex finder profile"
+    # Fixed legacy defaults of check-codex-cloud-review.sh, not caller state.
+    cat >"$checker_profile_dir/legacy.json" <<'LEGACY'
+{"slug":"codex-cloud","actor_id":"199175422","actor_login":"chatgpt-codex-connector[bot]","trigger_mechanism":"review-comment","trigger_body":"@codex review","reviewer_login":null,"surfaces":["reaction","comment","review","inline"],"head_binding":"reviewed-commit-line","verdict_mode":"clean-sentence","clean_verdict":"codex review: didn't find any major issues.","actionable_pattern":null,"severity_marker":"\\bp[0-9]+\\b","metadata_line":"^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$","about_summary":"about codex","heading":"^#{1,6}[^a-z0-9]*codex review$","carrier_sentence":"here are some automated review suggestions for this pull request.","success_reaction":"+1","pending_reaction":"eyes"}
+LEGACY
+    jq -e --slurpfile trusted "$checker_profile_dir/profile.json" \
+        --slurpfile legacy "$checker_profile_dir/legacy.json" '
           ($trusted[0] | {
             slug:.slug, actor_id:(.trusted_actor_id | tostring), actor_login:.trusted_actor_login,
             trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
@@ -1630,10 +1640,12 @@ else
             carrier_sentence:.collection.terminal_signals.carrier_sentence,
             success_reaction:.collection.terminal_signals.success_reaction,
             pending_reaction:.collection.terminal_signals.pending_reaction
-          }) as $expected | .finder == $expected
-          ' "$codex_recheck_state" >/dev/null 2>&1 ||
-            indeterminate checker-fast-path-unavailable "checker finder profile differs from the trusted Codex reserve profile; dispatch an integrator and supply --integrator-result"
-    fi
+          }) as $expected |
+          ($expected.surfaces | index("comment") != null) and
+          ($expected.surfaces | index("review") != null) and
+          (if .finder == null then $expected == $legacy[0] else .finder == $expected end)
+          ' "$checker_state_snapshot" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker finder profile differs from the trusted Codex reserve profile; dispatch an integrator and supply --integrator-result"
     codex_cycle="$(jq -ce --arg head "$head" '
       def uint: type == "number" and . >= 0 and . == floor;
       select(has("charged_cycles") and has("exempt_cycles"))
@@ -1644,12 +1656,13 @@ else
          charged:.charged_cycles, exempt:.exempt_cycles}
         + (if $state.carry != null then
              {carried:($state.carry + {origin_head:$state.head})} else {} end)
-      ' "$codex_recheck_state" 2>/dev/null)" ||
+      ' "$checker_state_snapshot" 2>/dev/null)" ||
         indeterminate malformed-data "checker state carries invalid cycle counters"
     jq -e '.charged_cycles == 1 and .exempt_cycles == 0 and (.settled // []) == []' \
-        "$codex_recheck_state" >/dev/null 2>&1 ||
+        "$checker_state_snapshot" >/dev/null 2>&1 ||
         indeterminate checker-fast-path-unavailable "checker evidence is not exactly one clean charged cycle with zero exempt cycles and no settlements; dispatch an integrator and supply --integrator-result"
 fi
+cycle_state_file="${checker_state_snapshot:-$codex_recheck_state}"
 if [ "$codex_cycle" != null ]; then
     cycle_head="$(jq -er '.head | select(type == "string")' \
         <<<"$codex_cycle" 2>/dev/null)" ||
@@ -1721,11 +1734,11 @@ if [ "$codex_cycle" != null ]; then
             # charged column into the exempt one and walk past both ceilings.
             # Where the durable checker state is supplied, it is the record of
             # what was actually reserved, and the reported split must match it.
-            if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+            if [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ]; then
                 state_charged="$(jq -er '.charged_cycles | select(type == "number")' \
-                    "$codex_recheck_state" 2>/dev/null)" || state_charged=
+                    "$cycle_state_file" 2>/dev/null)" || state_charged=
                 state_exempt="$(jq -er '.exempt_cycles | select(type == "number")' \
-                    "$codex_recheck_state" 2>/dev/null)" || state_exempt=
+                    "$cycle_state_file" 2>/dev/null)" || state_exempt=
                 # A result that CLAIMS a split owes durable proof of it. State
                 # written before these counters existed carries neither — but a
                 # producer old enough to have written that state also omits the
@@ -1768,16 +1781,16 @@ if [ "$codex_cycle" != null ]; then
     # the state does not record, and it may not omit one the state does: the
     # disclosure exists precisely so a head attested without a reviewer reading
     # it is visible, and a disclosure that can be dropped discloses nothing.
-    if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+    if [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ]; then
         state_attests_head="$(jq -r '.carry.attests_head // empty' \
-            "$codex_recheck_state" 2>/dev/null)" || state_attests_head=
+            "$cycle_state_file" 2>/dev/null)" || state_attests_head=
         if [ "$state_attests_head" = "$head" ]; then
             jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1 ||
                 indeterminate codex-carried-unproven "the checker state records that $head is attested by a cycle for an earlier commit, but codex_cycle discloses no carried record — a result that omits the carry asserts a reviewer read this head when none did"
         fi
     fi
     if jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1; then
-        [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ] ||
+        [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ] ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but no --codex-recheck state was supplied to confirm it against — a carry means no reviewer read this head, so the claim cannot rest on the result alone"
         # Challenge round 2, finding `challenge-r2-codex-adversarial-3`
         # (confirmed P2): spot-checking two fields let a schema-valid result
@@ -1794,13 +1807,13 @@ if [ "$codex_cycle" != null ]; then
             <<<"$codex_cycle" 2>/dev/null)" ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict with no origin_head"
         state_cycle_head="$(jq -er '.head | select(type == "string")' \
-            "$codex_recheck_state" 2>/dev/null)" || state_cycle_head=
+            "$cycle_state_file" 2>/dev/null)" || state_cycle_head=
         jq -e --argjson cycle "$codex_cycle" \
             '(.carry // null) as $state
              | ($cycle.carried | del(.origin_head)) as $claimed
              | ($state != null) and ($state == $claimed)' \
-            "$codex_recheck_state" >/dev/null 2>&1 ||
-            indeterminate codex-carried-unproven "codex_cycle's carried record does not match the checker state's byte for byte — claimed $(jq -c '.carried | del(.origin_head)' <<<"$codex_cycle"), recorded $(jq -c '.carry // null' "$codex_recheck_state")"
+            "$cycle_state_file" >/dev/null 2>&1 ||
+            indeterminate codex-carried-unproven "codex_cycle's carried record does not match the checker state's byte for byte — claimed $(jq -c '.carried | del(.origin_head)' <<<"$codex_cycle"), recorded $(jq -c '.carry // null' "$cycle_state_file")"
         [ "$cycle_carried_origin" = "$state_cycle_head" ] ||
             indeterminate codex-carried-unproven "codex_cycle says the verdict was carried from $cycle_carried_origin but the checker state's cycle is ${state_cycle_head:-none}"
     fi

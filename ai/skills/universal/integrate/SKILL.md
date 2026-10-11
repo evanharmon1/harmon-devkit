@@ -932,17 +932,22 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
-  Checker-only evidence is a **clean-run fast path** with six conditions:
+  Checker-only evidence is a **clean-run fast path**: the active stage must
+  be integration, with no run-level integration `finder_selection`;
   the record holds no integrator pass; it holds no integration adjudication;
   every top-level PR comment and every non-empty review body is authored by
   Codex bot `199175422` or is exactly `@codex review` after whitespace
   trimming; resolved `policy.json` names exactly `codex-cloud` in
   `stages.integration.finders`; the live checker attests exactly one
   terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
-  the PR has no inline review comments. The state's `finder` is null or matches
+  the PR has no inline review comments. The state must be attached or terminal; a private snapshot supplies both
+  the freshness check and cycle construction. The state's `finder` matches
   the trusted registry's `codex-cloud` reserve profile field by field, including
   actor `199175422`; `trusted-registry.sh` resolves it from the PR base commit
-  on GitHub, never a caller-supplied registry. Carry remains admissible, retaining the
+  on GitHub, never a caller-supplied registry. Null `finder` is accepted only
+  when that trusted profile equals the fixed legacy defaults. Trusted surfaces
+  must include `comment` and `review`. Live checker exit 10 fails as
+  `codex-not-clean`, including in audit mode. Carry remains admissible, retaining the
   reviewed cycle's state; any exempt cycle requires integrator evidence.
   The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
   state without these counters is refused.

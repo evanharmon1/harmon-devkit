@@ -657,6 +657,10 @@ chmod +x "${recheck_dir}/readiness-gate.sh"
 # cases that only need one fixed answer.
 cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'STUB'
 #!/bin/sh
+if [ -n "${RECHECK_MUTATE_STATE:-}" ]; then
+    jq '.phase = "reserved" | .charged_cycles = 2' "$RECHECK_MUTATE_STATE" >"$RECHECK_MUTATE_STATE.next"
+    mv "$RECHECK_MUTATE_STATE.next" "$RECHECK_MUTATE_STATE"
+fi
 if [ -n "${RECHECK_FAKE_EXITS:-}" ]; then
     counter="${RECHECK_CALL_COUNTER:-/dev/null}"
     n=0
@@ -807,15 +811,15 @@ write_checker_defaults() {
     # The sibling checker stub independently supplies terminal-clean.
     jq -cn --arg head "$head_sha" \
         '{version:2,repo:"example/repo",pr:493,head:$head,attempt:1,
-          phase:"reserved",reserved_at:"2026-01-01T00:00:00Z",
-          trigger_comment_id:null,requested_at:null,
+          phase:"attached",reserved_at:"2026-01-01T00:00:00Z",
+          trigger_comment_id:"1",requested_at:"2026-01-01T00:01:00Z",
           previous_trigger_comment_id:null,first_trigger_comment_id:null,
           requires_full_window:false,timeout_min:15,settled:[],finder:null,
           charge:"charged",charge_reason:"first cycle",
           charged_cycles:1,exempt_cycles:0,run_id:"test-run",base_sha:null}' >"$recheck_state"
 }
 
-echo "==> R4: real reserve payload without cycle passes a clean quiet PR"
+echo "==> R4/I1: real attached payload without cycle passes a clean quiet PR"
 write_checker_defaults
 jq -e 'has("cycle") | not' "$recheck_state" >/dev/null ||
     fail "real checker state must not invent a cycle field"
@@ -829,6 +833,39 @@ assert_gate 0 pass ready
     fail "checker-only verdict must record its cycle: $gate_out"
 ! compgen -G "${record_dir}/passes/integration-*.json" >/dev/null ||
     fail "checker-only test accidentally supplied an integrator pass"
+
+echo "==> I1: integration finder selections require an integrator"
+write_checker_defaults
+jq '.finder_selection = [{stage:"integration",configured:["codex-cloud"],requested:["coderabbit-cloud"],effective:["codex-cloud","coderabbit-cloud"]}]' \
+    "$record_dir/run.json" >"$record_dir/run.next"
+mv "$record_dir/run.next" "$record_dir/run.json"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
+
+echo "==> I1: the active run stage must be integration"
+write_checker_defaults
+jq '.stage_transitions[-1].exit = "fix" | .stage_transitions += [{stage:"implement",entered_at:"2026-01-01T03:00:00Z"}]' "$record_dir/run.json" >"$record_dir/run.next"
+mv "$record_dir/run.next" "$record_dir/run.json"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
+
+echo "==> I1: a reservation cannot supply checker-only evidence"
+write_checker_defaults
+jq '.phase = "reserved"' "$recheck_state" >"$recheck_state.next"
+mv "$recheck_state.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
+
+echo "==> I1: concurrent original-state replacement cannot alter the checked snapshot"
+write_checker_defaults
+export RECHECK_MUTATE_STATE="$recheck_state"
+run_checker_gate
+unset RECHECK_MUTATE_STATE
+assert_gate 0 pass ready
+jq -e '.phase == "reserved" and .charged_cycles == 2' "$recheck_state" >/dev/null ||
+    fail "snapshot regression did not replace the original state"
+[ "$(gate_field cycle_evidence | jq -r '.cycle')" = 1 ] ||
+    fail "gate constructed its cycle from the concurrently replaced state"
 
 echo "==> R5: a real Codex finder profile qualifies; other finder actors do not"
 write_checker_defaults
@@ -854,6 +891,25 @@ jq --argjson finder "$checker_finder_profile" '.finder = $finder' \
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 0 pass ready
+echo "==> I1: trusted profile must inspect both comment and review surfaces"
+for omitted_surface in comment review; do
+    write_checker_defaults
+    jq --arg omit "$omitted_surface" '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) -= [$omit]' \
+        "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+    reduced_profile="$(jq -c --arg omit "$omitted_surface" '.surfaces -= [$omit]' <<<"$checker_finder_profile")"
+    jq --argjson finder "$reduced_profile" '.finder = $finder' "$recheck_state" >"$recheck_state.next"
+    mv "$recheck_state.next" "$recheck_state"
+    run_checker_gate
+    assert_gate 2 indeterminate checker-fast-path-unavailable
+done
+
+echo "==> I1: null finder requires trusted legacy defaults"
+write_checker_defaults
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.success_reaction) = "hooray"' \
+    "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
+
 for changed_classifier in '.success_reaction = "eyes"' '.surfaces = ["reaction"]'; do
     write_checker_defaults
     tampered_profile="$(jq -c "$changed_classifier" <<<"$checker_finder_profile")"
@@ -950,7 +1006,7 @@ rm "${record_dir}/policy.json"
 run_checker_gate
 assert_gate 2 indeterminate checker-fast-path-unavailable
 
-for checker_exit in 2 10 11 12 13 14; do
+for checker_exit in 2 11 12 13 14; do
     write_checker_defaults
     export RECHECK_FAKE_EXIT="$checker_exit"
     run_checker_gate
@@ -3062,7 +3118,7 @@ assert_gate 2 indeterminate codex-transient-read
 [ "$(cat "${test_tmp}/recheck-calls")" = "2" ] ||
     fail "the retry must be bounded at one, saw $(cat "${test_tmp}/recheck-calls") call(s)"
 
-echo "==> harmon-devkit#508: a recheck that genuinely no longer confirms the clean result is still codex-stale"
+echo "==> I1: live findings positively fail as codex-not-clean"
 # The inverse guard: the retry above must not swallow a real staleness signal.
 write_defaults
 saved_gate="$gate"
@@ -3072,7 +3128,7 @@ run_gate --codex-recheck "$recheck_state" \
     --integrator-result "$clean_recheck" --integration-cap 1
 unset RECHECK_FAKE_EXIT
 gate="$saved_gate"
-assert_gate 2 indeterminate codex-stale
+assert_gate 1 fail codex-not-clean
 
 echo "==> a missing --integrator-result file is refused as a usage error, never a pass"
 write_defaults
@@ -3749,6 +3805,18 @@ write_promoted_pr_view() {
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
           headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' >"${fixtures}/pr-view.json"
 }
+
+echo "==> I1: audit live checker findings fail, rather than leaving promotion indeterminate"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=10
+run_audit --codex-recheck "$recheck_state" --integrator-result "$clean_recheck" --integration-cap 1
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 1 fail codex-not-clean
 
 echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
 write_defaults
