@@ -2,7 +2,7 @@
 # Watch orchestrated lanes and emit stable, one-line transition events:
 #   AGENT <lane>: <from> -> <to>
 #   SENTINEL <lane>: <value>[ (pane only)]
-#   BRANCH <lane>: <branch> head=<sha8> (cloud lanes)
+#   BRANCH <lane>: <branch> head=<sha8> | deleted (cloud lanes; 404 is retired)
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
 #   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
@@ -1178,17 +1178,29 @@ observe_pr() {
 }
 
 observe_branch() {
-    local lane=$1 repo=$2 branch=$3 payload head previous
-    payload="$(bounded "$timeout_seconds" gh api "repos/$repo/git/ref/heads/$branch")" || return 1
-    head="$(jq -er --arg ref "refs/heads/$branch" '
+    local lane=$1 repo=$2 branch=$3 response status payload head previous value rc=0
+    response="$(bounded "$timeout_seconds" gh api --include "repos/$repo/git/ref/heads/$branch")" || rc=$?
+    status="$(awk 'NR == 1 && /^HTTP\// {print $2}' <<<"$response")"
+    if [ "$status" = 404 ]; then
+        value="$branch deleted"
+    else
+        [ "$rc" -eq 0 ] && [ "$status" = 200 ] || return 1
+        payload="$(awk 'body {print} /^\r?$/ {body=1}' <<<"$response")"
+        head="$(jq -er --arg ref "refs/heads/$branch" '
       select(.ref == $ref and .object.type == "commit") | .object.sha
       | select(type == "string" and test("^[0-9A-Fa-f]{40,64}$"))
     ' <<<"$payload")" || return 1
+        value="$branch head=$head"
+    fi
     previous="$(state_get BRANCH "$lane" || true)"
-    if [ "$previous" != "$branch head=$head" ]; then
-        state_set BRANCH "$lane" "$branch head=$head"
+    if [ "$previous" != "$value" ]; then
+        state_set BRANCH "$lane" "$value"
         persist_state
-        echo "BRANCH $lane: $branch head=${head:0:8}"
+        if [ "$status" = 404 ]; then
+            echo "BRANCH $lane: deleted"
+        else
+            echo "BRANCH $lane: $branch head=${head:0:8}"
+        fi
     fi
 }
 

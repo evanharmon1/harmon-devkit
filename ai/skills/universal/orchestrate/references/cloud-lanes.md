@@ -1,8 +1,8 @@
 # Cloud lanes
 
-Use this mode only on the operator's explicit request. Never choose or recommend
-cloud lanes unprompted. Launch in a new Herdr tab by default, with a pane as an
-option; the tab hosts the launch command, not an attached cloud agent. Change
+Use this mode only on the operator's explicit request. Never choose cloud lanes
+unprompted or recommend them. The launch uses a new Herdr tab unless the operator
+chooses a pane; the tab hosts the launch command, not an attached cloud agent. Change
 nothing in the vendored Herdr skill.
 
 ## Preconditions and launch
@@ -15,12 +15,27 @@ at the current branch. Otherwise the platform uploads the repository instead;
 that is outside this mode. Claims are unchanged: the orchestrator claims before
 launch, and the lane never claims or refreshes the claim.
 
-Render the cloud variant in `assets/lane-brief.md` into a file. Keep the resolved
-policy, run identity, ownership fence and issue facts, but replace local
-worktree/report and PR-owning procedures with that variant. The platform chooses
-the lane's `claude/*` branch; do not promise a pre-provisioned local branch or
-apply the ordinary brief's branch-bound claim refresh to it. Record the existing
-claim handoff and then the learned branch without transferring claim ownership.
+Render `assets/cloud-lane-brief.md` into a file using the launch-time fields
+below. The `brief` validator governs local PR-owning lane briefs; cloud briefs
+use this render check instead: require every catalog field in the template,
+substitute once, refuse any unreplaced `{{…}}`, require all four sections, and
+refuse local report-file instructions or a literal Codex trigger. The template
+test exercises that check. Do not fabricate a branch, worktree, report sentinel
+or branch-bound claim envelope: the platform chooses the `claude/*` branch.
+
+| Field | Launch-time source |
+| --- | --- |
+| `{{lane-name}}` | Lane plan |
+| `{{run-id}}` | Active run |
+| `{{issue-url}}` | Canonical claimed issue URL |
+| `{{deadline}}` | Run start plus resolved wall-clock ceiling |
+| `{{policy-projection}}` | Resolved policy, including caps and role tiers |
+| `{{file-scope-fence}}` | Lane ownership plan |
+| `{{verified-facts-and-rulings}}` | Verified issue facts and attributed rulings |
+| `{{gate-commands}}` | Repository gate commands |
+| `{{gate-bounds-override}}` | Repository gate bounds, including tier |
+| `{{cloud-report-path}}` | Fence-authorized pushed report path |
+| `{{github-rest-read-path}}` | Environment's provided REST read command |
 
 Launch from the target checkout in a new Herdr tab using the lane-launch section's
 editor environment. In its terminal, or under a pseudo-terminal, run:
@@ -64,15 +79,18 @@ bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state \
 ```
 
 The final `:cloud` selects GitHub-only observation: `BRANCH` reports pushed-head
-changes, `PR` reports the matching PR and its head, and the usual post-promotion
+changes or a deduplicated `BRANCH <lane>: deleted` on a 404, `PR` reports the matching PR and its head, and the usual post-promotion
 activity monitoring remains in force. No local worktree, report file or Herdr
 agent read is used. A branch observation proves a push, not a passed gate: read
 the lane's report and verify the exact head before proceeding. The lane reports
 through its pushed branch, then the PR body section or comment when a PR exists;
-never through `.lane-report.md`. Record each lane's session URL, learned branch,
-and PR URL/number (pending until created) in the run's registered evidence
-comment, updating the run record's PR binding when the orchestrator opens it.
-Keep these together on resume; do not add undeclared fields to `run.json`.
+never through `.lane-report.md`. In `run.json`, append an `interventions[]`
+note with `kind: asked` and `at` at launch naming the lane and session URL.
+When the branch is learned, append another such note naming the lane, branch
+and full head. Refresh the orchestrator's claim record to that branch with the
+claim transaction; the lane never claims or refreshes it. Once the orchestrator
+opens the draft, record the ordinary `pr` and `pr_bindings` entries. Read these
+existing run surfaces together on resume.
 
 `claude --teleport <session-id>` in a local terminal of the same repository
 copies the session's branch and conversation into the local checkout. This take
@@ -81,8 +99,10 @@ back path is **untested**; do not describe it as a verified recovery procedure.
 ## Environment and review handoff
 
 The web environment's GitHub proxy refuses GraphQL, so commands such as
-`gh issue view` fail. Under the agent posture, raw `gh api` is denied too: the
-lane uses `/usr/local/bin/gh-api-read` for REST reads. The orchestrator performs
+`gh issue view` fail. Where the environment installs the agent posture (as
+harmon-init's remote bootstrap does), raw `gh api` is denied too and
+`/usr/local/bin/gh-api-read` supplies REST reads. Otherwise the brief names
+whatever REST read path the environment provides. The orchestrator performs
 claim, acceptance-criterion updates and integration with its own credentials.
 A cloud VM never holds a Codex login; never ask the lane to log in to Codex.
 

@@ -303,7 +303,7 @@ table before their intended sections.
 | `{{blocked-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
 
-Every lane brief MUST carry the active run identity so the lane worker can
+Every local PR-owning lane brief MUST carry the active run identity so the lane worker can
 route confidence stages through `/review` and publish a draft with v2 evidence;
 the supervising orchestrator then invokes `/integrate` and retains every
 finding disposition, PR-body edit, thread reply, readiness decision, and
@@ -323,7 +323,7 @@ the exact confirmed fixes in its recorded disposition and verifies the returned
 gate/publication evidence. The post-draft handoff remains separate and transfers
 integration to the supervising orchestrator.
 
-Render `assets/lane-brief.md` for every end-to-end, PR-owning implementation lane
+Render `assets/lane-brief.md` for every local end-to-end, PR-owning implementation lane
 instead of hand-authoring a brief. Council proposal and synthesis implementers,
 and bounded remediation implementers, use their schema-bound role briefs and
 return the artifact or fix their dispatch requested; they do not receive this
@@ -366,7 +366,7 @@ As a render-time completeness check, scan the entire rendered file and refuse
 dispatch if any unreplaced `{{name}}` token remains. This is the renderer's
 check, not content validation of the opaque body; the `brief` validator checks
 double-brace tokens only inside the envelope block.
-Validate the rendered brief before dispatch and refuse dispatch on any failure:
+For local PR-owning lanes, validate the rendered brief before dispatch and refuse dispatch on any failure:
 `node dev-flow-support/assets/validate-result-schemas.mjs brief "$brief_path"`.
 Place the per-attempt report under the common Git directory, or install and
 verify its worktree exclusion before dispatch; an assertion that it is excluded
@@ -560,8 +560,10 @@ this asset is for a single bounded wait.
 
 ### Cloud lanes
 
-Cloud lanes are used only on the operator’s explicit request. Never choose or recommend cloud lanes unprompted;
-local Herdr agents remain the default. See
+Cloud lanes are used only on the operator’s explicit request.
+Never choose cloud lanes unprompted or recommend them. Local Herdr agents remain
+the default. Render `assets/cloud-lane-brief.md`, checked by its own render check
+in the cloud reference; the `brief` validator governs local PR-owning lanes. See
 [Cloud lanes](references/cloud-lanes.md) for launch, messaging, GitHub watching,
 environment limits, and the orchestrator-owned review and PR handoff. This mode
 replaces local worktree, agent-settle, and report-file handling for that lane;
