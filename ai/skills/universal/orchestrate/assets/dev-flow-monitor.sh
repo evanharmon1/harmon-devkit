@@ -10,6 +10,8 @@ usage() {
 Usage:
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
+  dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID --nonce NONCE \
+    [--repo-root DIR]
   dev-flow-monitor.sh activate --active-state FILE --run-id ID --branch BRANCH \
     --expected-generation N --registry-revision SHA --writer feature-owner \
     [--repo-root DIR]
@@ -26,6 +28,10 @@ Usage:
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
     --active-state FILE --run-id ID --branch BRANCH --generation N \
     [--repo-root DIR]
+
+`orchestrator-dir` prints the orchestrator's own per-run, per-attempt
+working directory (dispatch files, rulings, watcher state):
+<git-common-dir>/dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<nonce>.
 
 The state file is durable monitor state.  A reservation is written before an
 external action.  The observed file must be JSON with status landed, absent, or
@@ -227,6 +233,8 @@ generation=""
 expected_generation=""
 assembly_plan=""
 max_agent_runs=""
+slate_id=""
+nonce=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -294,6 +302,14 @@ while [ "$#" -gt 0 ]; do
         branch="${2:-}"
         shift 2
         ;;
+    --slate-id)
+        slate_id="${2:-}"
+        shift 2
+        ;;
+    --nonce)
+        nonce="${2:-}"
+        shift 2
+        ;;
     --generation)
         generation="${2:-}"
         shift 2
@@ -338,6 +354,23 @@ active_path() {
     branch_key="$(printf '%s' "$branch" | sha256_stream)"
     printf '%s/dev-flow-v2/active/%s.json\n' "$common_dir" "$branch_key"
 }
+
+orchestrator_dir() {
+    local common_dir value
+    validate_run_id
+    for value in "$slate_id" "$nonce"; do
+        [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$value" != "." ] && [ "$value" != ".." ] ||
+            die "slate id or nonce is missing or unsafe"
+    done
+    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+        die "could not resolve git common directory"
+    printf '%s/dev-flow-v2/slates/%s/orchestrator/%s/%s\n' "$common_dir" "$slate_id" "$run_id" "$nonce"
+}
+
+if [ "$command_name" = "orchestrator-dir" ]; then
+    orchestrator_dir
+    exit 0
+fi
 
 if [ "$command_name" = "active-path" ]; then
     [ -n "$branch" ] || die "branch is required"

@@ -248,5 +248,22 @@ grep -q "not trusted" <<<"$output" ||
     fail "zero in allowlist should be malformed; got: $output"
 pass "allowlist containing zero correctly rejected as malformed"
 
+# ── Test 10: orchestrator-dir resolves under the common directory ──
+echo ""
+echo "--- orchestrator-dir names the per-run, per-attempt directory ---"
+setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+git -C "$FIXTURE_REPO" worktree add -q "$FIXTURE_REPO-lane" -b lane-dir
+common="$(git -C "$FIXTURE_REPO" rev-parse --path-format=absolute --git-common-dir)"
+dir="$("$MONITOR" orchestrator-dir --slate-id epic-1 --run-id run-x --nonce a1 --repo-root "$FIXTURE_REPO-lane")"
+[ "$dir" = "$common/dev-flow-v2/slates/epic-1/orchestrator/run-x/a1" ] ||
+    fail "orchestrator-dir from a linked worktree: got $dir"
+if "$MONITOR" orchestrator-dir --slate-id ../x --run-id run-x --nonce a1 --repo-root "$FIXTURE_REPO" 2>/dev/null; then
+    fail "orchestrator-dir accepted an unsafe slate id"
+fi
+if "$MONITOR" orchestrator-dir --slate-id epic-1 --run-id run-x --repo-root "$FIXTURE_REPO" 2>/dev/null; then
+    fail "orchestrator-dir accepted a missing nonce"
+fi
+pass "orchestrator-dir resolves the common directory and refuses unsafe or missing keys"
+
 echo ""
 echo "=== All dev-flow-monitor trust contract tests passed ==="
