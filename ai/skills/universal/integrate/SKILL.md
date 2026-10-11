@@ -930,17 +930,20 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
-  Checker-only evidence is a **clean-run fast path**: the record must hold
-  no integrator pass and no integration adjudication, resolved
-  `policy.json` must name exactly `codex-cloud` in
-  `stages.integration.finders`, and the PR must carry no badged top-level
-  comment or review body from any actor other than Codex bot `199175422`.
-  A leading-token P0–P3 badge counts whether answered or not; unbadged
-  protocol messages do not. The live checker owns Codex findings.
-  If any condition is absent, the gate is indeterminate with
-  `checker-fast-path-unavailable`: dispatch an integrator and supply
-  `--integrator-result` to classify and settle integration work. The fast
-  path does not match replies or derive integration dispositions.
+  Checker-only evidence is a **clean-run fast path** with five conditions:
+  the record holds no integrator pass; it holds no integration adjudication;
+  every top-level PR comment and every non-empty review body is authored by
+  Codex bot `199175422` or is exactly `@codex review` after whitespace
+  trimming; resolved `policy.json` names exactly `codex-cloud` in
+  `stages.integration.finders`; and the live checker attests one terminal-clean
+  charged cycle with empty `settled[]` (`cycle == 1` for legacy state).
+  No authenticated-actor exemption applies: the orchestrator and maintainer
+  may share an account. Inline thread replies retain their usual checks.
+  If any condition is absent, the gate is indeterminate: dispatch an integrator
+  and supply `--integrator-result` to classify and settle integration work.
+  Conversation or cycle-work preconditions use `checker-fast-path-unavailable`;
+  existing live-checker and counter-validation errors remain explicit.
+  The fast path does not detect badges, match replies or derive dispositions.
 - **For dispatched integration, retain the integrator agent
   (`ai/agents/integrator.md`) and its validated result.** It settles checks and
   lists unanswered threads at every cap, and drives the current-head Codex

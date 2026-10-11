@@ -182,8 +182,9 @@ STATE_FILE, or both. Without an integrator result, the checker must return
 terminal-clean for this repo/PR/head and active run; its cycle spend is checked
 against the resolved caps and the pass verdict names that state as evidence.
 Checker-only is a clean-run fast path: no integrator pass or integration
-adjudication, no badged non-Codex top-level/review body, and record policy.json
-resolving integration finders to codex-cloud alone. Otherwise dispatch an
+adjudication, only Codex bodies or exact review triggers on top-level/review surfaces,
+record policy.json resolving integration finders to codex-cloud alone, and
+one clean charged checker cycle without settlements. Otherwise dispatch an
 integrator and supply --integrator-result. The gate reads checks, thread
 replies and deferred settlements live in either path. No recording-pass
 envelope is fabricated. A cap-0 run still needs an
@@ -1453,17 +1454,18 @@ if [ -z "$integrator_result" ]; then
     jq -e '.stages.integration.finders == ["codex-cloud"]' \
         "$record_dir/policy.json" >/dev/null 2>&1 ||
         indeterminate checker-fast-path-unavailable "resolved integration finders are not proven to be codex-cloud alone; dispatch an integrator and supply --integrator-result"
-    # Reuse the fingerprint reads. A leading P0-P3 token marks a finding
-    # regardless of replies; unbadged protocol prose does not. Codex's own
-    # bodies remain the live checker's responsibility.
+    # Closed allowlist: do not parse finding prose or exempt the caller.
+    # Empty review bodies carry no prose; every top-level comment counts.
     non_codex_findings="$(jq -cn --argjson top "$fp_top" --argjson reviews "$fp_reviews" \
         --argjson bot "$codex_actor_id" '
-      [((($top | add // [])[]), (($reviews | add // [])[])) |
+      [((($top | add // [])[]),
+        (($reviews | add // [])[] | select((.body // "") != ""))) |
         select(.user.id != $bot) |
-        select((.body // "") | test("(?im)^\\s*(?:#{1,6}\\s*|[-*+]\\s*)?(?:\\*\\*|\\[|!\\[)?P[0-3]\\b"))]
-    ')" || indeterminate malformed-data "non-Codex review bodies could not be classified"
+        select(((.body // "") | gsub("^\\s+|\\s+$"; "")) != "@codex review")]
+    ')" || indeterminate malformed-data "PR comment and review bodies could not be classified"
     [ "$(jq 'length' <<<"$non_codex_findings")" -eq 0 ] ||
-        indeterminate checker-fast-path-unavailable "the PR carries badged non-Codex comments or review bodies; dispatch an integrator and supply --integrator-result"
+        indeterminate checker-fast-path-unavailable "the PR carries bodies outside Codex comments and exact review triggers; dispatch an integrator and supply --integrator-result"
+
 fi
 if [ -n "$integrator_result" ]; then
     # The run's known finding universe, so the validator's
@@ -1592,6 +1594,9 @@ else
              {carried:($state.carry + {origin_head:$state.head})} else {} end)
       ' "$codex_recheck_state" 2>/dev/null)" ||
         indeterminate malformed-data "checker state carries invalid cycle counters"
+    jq -e '(.charged_cycles // .cycle) == 1 and (.settled // []) == []' \
+        "$codex_recheck_state" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker evidence is not one clean charged cycle without settlements; dispatch an integrator and supply --integrator-result"
 fi
 if [ "$codex_cycle" != null ]; then
     cycle_head="$(jq -er '.head | select(type == "string")' \

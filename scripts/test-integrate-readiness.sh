@@ -834,33 +834,41 @@ jq -cn --arg head "$head_sha" '{schema:2,run_id:"test-run",stage:"integration",r
 run_checker_gate
 assert_gate 2 indeterminate checker-fast-path-unavailable
 
-echo "==> R2: badged non-Codex bodies refuse even with a reply"
+echo "==> R3: every non-allowlisted body requires the integrator path"
 for surface in top reviews; do
-    for finding_body in '[P1] Incorrect head binding' '### **P2** Review concern' '- P3 Cosmetic finding'; do
+    for finding_body in \
+        '[P1] control: plain badge' \
+        '**[P1]** rollback drops the users table' \
+        '1. [P0] data loss on retry' \
+        '> [P1] quoted concern' \
+        'Severity: P1 - this breaks the migration' \
+        '⚠️ P1 rollback is unsafe' \
+        '- **[P2]** list bold bracket' \
+        'Please do not promote: this deletes production data on rollback.' \
+        'Adjudicated an earlier head; gate evidence recorded' \
+        '@codex review extra words'; do
         write_checker_defaults
+        # The caller/maintainer account is deliberately not exempt.
         jq -cn --arg body "$finding_body" '[[{id:50,body:$body,state:"COMMENTED",
-          html_url:"https://github.com/example/repo/pull/493#issuecomment-50",
-          user:{id:9,login:"reviewer"}}]]' >"${fixtures}/${surface}.pages.json"
-        run_checker_gate
-        assert_gate 2 indeterminate checker-fast-path-unavailable
-        jq -cn --arg head "$head_sha" '[[{id:51,user:{id:1,login:"pr-author"},
-          body:("Adjudicated decline at " + $head + " — https://github.com/example/repo/pull/493#issuecomment-50")}]]' \
-            >"${fixtures}/reply.json"
-        jq -s '.[0][0] += .[1][0] | .[0]' "${fixtures}/top.pages.json" "${fixtures}/reply.json" \
-            >"${fixtures}/top.next"
-        mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
+          user:{id:1,login:"pr-author"}}]]' >"${fixtures}/${surface}.pages.json"
         run_checker_gate
         assert_gate 2 indeterminate checker-fast-path-unavailable
     done
 done
 
-echo "==> R2: unbadged protocol prose and Codex bodies are left to their owners"
+echo "==> R3: only Codex bodies and exact trimmed triggers qualify"
 write_checker_defaults
-printf '%s\n' '[[{"id":50,"body":"Adjudicated an earlier head; gate evidence recorded","user":{"id":1}},
+printf '%s\n' '[[{"id":50,"body":"  @codex review\n","user":{"id":1}},
   {"id":51,"body":"[P1] Codex body classified by the live checker","user":{"id":199175422}}]]' >"${fixtures}/top.pages.json"
-printf '%s\n' '[[{"id":60,"body":"Review completed","user":{"id":9}}]]' >"${fixtures}/reviews.pages.json"
+printf '%s\n' '[[{"id":60,"body":"","user":{"id":9}},
+  {"id":61,"body":"@codex review","user":{"id":9}},
+  {"id":62,"body":"Codex verdict","user":{"id":199175422}}]]' >"${fixtures}/reviews.pages.json"
 run_checker_gate
 assert_gate 0 pass ready
+write_checker_defaults
+printf '%s\n' '[[{"id":50,"body":"","user":{"id":1}}]]' >"${fixtures}/top.pages.json"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
 
 echo "==> R2: only resolved codex-cloud alone qualifies"
 for finders in '[]' '["coderabbit-cloud"]' '["codex-cloud","coderabbit-cloud"]'; do
@@ -894,7 +902,22 @@ write_checker_defaults
 jq '.cycle = 2 | .charged_cycles = 2' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
-assert_gate 2 indeterminate codex-cap-mismatch
+assert_gate 2 indeterminate checker-fast-path-unavailable
+write_checker_defaults
+jq '.settled = [{comment_id:50}]' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
+write_checker_defaults
+jq 'del(.charged_cycles,.exempt_cycles) | .cycle = 2' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
+write_checker_defaults
+jq 'del(.charged_cycles,.exempt_cycles)' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 0 pass ready
 write_checker_defaults
 run_checker_gate --integration-cap 0
 assert_gate 2 indeterminate codex-cap-mismatch
