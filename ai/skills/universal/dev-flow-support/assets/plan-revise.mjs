@@ -190,10 +190,11 @@ function baseMove(args) {
   const at = resolveAt(args.at)
   const canonical = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}: ${canonical}`)
+  // Validated before the lock is taken, so a broken plan leaves no lock.
+  validateFile('plan', canonical, `existing ${canonical}`)
   acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
 
   return withMutex(canonical, () => {
-    validateFile('plan', canonical, `existing ${canonical}`)
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)

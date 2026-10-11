@@ -190,6 +190,12 @@ Build and publish the plan in this order:
    `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
    a graph/projection mismatch, an ownership error, or a cap violation.
+   Once the plan validates, and before any dispatch, take the slate lock:
+   `dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
+   --session <session>`, adding `--milestone <n>` for a milestone-backed
+   slate. The plan supplies the issue set; the milestone exists only in the
+   lock. A second orchestrator naming the same work is then refused before it
+   dispatches anything, not at its first record write.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -271,7 +277,10 @@ Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
 with the slate's milestone and issue set. While another session holds the
 same slate, the same milestone, or any of the same issues — under any slate
-id — every write is refused. Release it when the slate ends. `--force
+id — every write is refused. Take it at plan publication (§ Planning step 6),
+with `--milestone` when the slate is milestone-backed, because an implicit
+lock taken at a first write records no milestone. Release it when the slate
+ends. `--force
 --reason` breaking a dead session's lock is an operator decision; name it in
 the handoff.
 
@@ -340,7 +349,7 @@ table before their intended sections.
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
 | `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true`. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
-| `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad; never the scratchpad root |
+| `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad, for throwaway files only — nothing needed to resume lives there; never the scratchpad root |
 | `{{repo-tier}}` | `light`, `standard`, or `heavy` — resolved by the base template's strongest-signal-wins procedure, never by matching a row's description |
 | `{{gate-bounds-override}}` | Repository's own measured gate bounds, or `None — use the base template's table.` |
 | `{{gate-commands}}` | The repository's actual gate invocations, one per line |

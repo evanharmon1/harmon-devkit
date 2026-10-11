@@ -11189,6 +11189,10 @@ expect_ok "orchestrate: /integrate stays the promotion authority (#1296 challeng
     grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"
 expect_ok "orchestrate: a run belongs to exactly one slate (#1296 challenge r2 -4)" \
     grep -qF 'A run belongs to exactly one slate.' "$ORCH_MD"
+expect_ok "orchestrate: the slate lock is taken with --milestone at plan publication (#1296 review r1 -3)" \
+    grep -qF 'adding `--milestone <n>` for a milestone-backed' "$ORCH_MD"
+expect_ok "orchestrate: the lane scratch dir is for throwaway files only (#1296 review r1 -4)" \
+    grep -qF 'for throwaway files only — nothing needed to resume lives there' "$ORCH_MD"
 expect_ok "orchestrate: the run-record fields run-record.mjs does not write keep their named writers (#1296)" \
     grep -qF 'record keeps its existing writers:' "$ORCH_MD"
 if grep -qF 'Write the run record only through' "$ORCH_MD"; then

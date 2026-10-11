@@ -26,12 +26,14 @@
 // was; a readback failure after the rename leaves the new content in place
 // and is reported as a blocker. The validator owns the
 // lifecycle rules (allowed edges, chronology, chains, projections); this
-// writer adds the one it cannot see: once the run is promoted, no entry may
-// be dated after `promotion.promoted_at` (the validator does not bound
-// `pr_bindings[].bound_at`).
+// writer adds the one it cannot see: once the run has ended — promoted,
+// capped, escalated or abandoned — every write but an archiving `close` is
+// refused, so nothing is recorded after the run's terminal outcome (the
+// validator does not bound `pr_bindings[].bound_at`).
 //
-// `--exit` on `transition` and `promote` records how the stage being left
-// ended; it is required when that entry has no exit yet. `close` records a
+// `--exit` records how the stage being left ended: `transition` requires it
+// when that entry has no exit yet, and `promote` defaults it to
+// `ready-for-review: promoted at <head>`. `close` records a
 // non-promotion terminal outcome (if the run is still open) and then moves
 // the run's orchestrator files from
 // `slates/<slate>/orchestrator/<run-id>/` into `runs/<run-id>/orchestrator/`.
@@ -447,13 +449,15 @@ function appendChain(entries, fields, content) {
   return [...entries, { seq: entries.length, ...picked, prev_digest: prev, digest: chainDigest(picked, prev) }]
 }
 
+// guardTimestamp — every new entry: the run must still be open (any terminal
+// outcome, promotion included, ends it) and the entry no earlier than
+// started_at.
 function guardTimestamp(record, at) {
+  if (record.outcome !== null) {
+    throw new Refusal(`run already ended with outcome ${record.outcome}; no entry is written after a run ends`)
+  }
   if (typeof record.started_at === 'string' && isBefore(at, record.started_at)) {
     throw new Refusal(`${at} is before the run's started_at ${record.started_at}`)
-  }
-  const promotedAt = record.promotion?.promoted_at
-  if (typeof promotedAt === 'string' && isBefore(promotedAt, at)) {
-    throw new Refusal(`${at} is after promotion.promoted_at ${promotedAt}; nothing in the run is dated after its promotion`)
   }
 }
 

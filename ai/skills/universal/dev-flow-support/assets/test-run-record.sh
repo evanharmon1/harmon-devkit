@@ -7,7 +7,8 @@
 # Git environment is scrubbed first so a hook-exported GIT_DIR can never point
 # it at a real clone's dev-flow-v2 tree.
 #
-# Run from scripts/test-skills.sh (task test:skills) and task test:run-record.
+# Run by task test:run-record (part of task test); scripts/test-skills.sh only
+# checks that wiring.
 set -euo pipefail
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
@@ -243,16 +244,17 @@ rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01
     "ready-for-review:2026-01-01T00:10:00Z:1" ] || fail "promotion not recorded"
 pass "promotion records the promotion, the outcome chain and the projection"
 
-expect_refused "intervention after promotion" "after promotion.promoted_at" \
+expect_refused "intervention after promotion" "run already ended with outcome ready-for-review" \
     rr alice intervention --run-id run-a --kind other --note late --at 2026-01-01T00:11:00Z
-expect_refused "pr binding after promotion" "after promotion.promoted_at" \
+expect_refused "pr binding after promotion" "run already ended with outcome ready-for-review" \
     rr alice bind-pr --run-id run-a --number 43 --url https://example.test/pr/43 --at 2026-01-01T00:11:00Z
 expect_refused "transition after promotion" "run already ended" \
     rr alice transition --run-id run-a --stage implement --at 2026-01-01T00:11:00Z
 pass "every entry dated after the promotion is refused"
 
-rr alice intervention --run-id run-a --kind asked --note "backfilled answer" --at 2026-01-01T00:09:00Z >/dev/null
-pass "a backfilled intervention dated before the promotion is still accepted"
+expect_refused "backfill after promotion" "run already ended with outcome ready-for-review" \
+    rr alice intervention --run-id run-a --kind asked --note "backfilled answer" --at 2026-01-01T00:09:00Z
+pass "once promoted, even a backfill dated before the promotion is refused: an ended run takes no entries"
 
 # -- lock contention ---------------------------------------------------------
 expect_refused "same slate, other session" "locked by session alice" \
@@ -305,6 +307,14 @@ rmdir "$state/runs/run-b/orchestrator/a1"
 rr alice close --run-id run-b >/dev/null
 [ -f "$state/runs/run-b/orchestrator/a1/dispatch.md" ] || fail "retried close did not archive"
 pass "closing an open run records its outcome, refuses to overwrite an archive, and archives on retry"
+
+cp "$state/runs/run-b/run.json" "$tmp/run-b-closed.json"
+expect_refused "intervention after abandon" "run already ended with outcome abandoned" \
+    rr alice intervention --run-id run-b --kind other --note late --at 2026-01-01T00:03:00Z
+expect_refused "pr binding after abandon" "run already ended with outcome abandoned" \
+    rr alice bind-pr --run-id run-b --number 45 --url https://example.test/pr/45 --at 2026-01-01T00:03:00Z
+cmp -s "$state/runs/run-b/run.json" "$tmp/run-b-closed.json" || fail "a write after a non-promotion close changed run.json"
+pass "after a non-promotion close, every write is refused and the record is unchanged"
 
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane

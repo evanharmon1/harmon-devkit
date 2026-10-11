@@ -8,7 +8,8 @@
 # fixture repository with the Git environment scrubbed, so the writer never
 # reads, locks or writes a real clone's dev-flow-v2 tree.
 #
-# Run from scripts/test-skills.sh (task test:skills) and task test:plan-revise.
+# Run by task test:plan-revise (part of task test); scripts/test-skills.sh only
+# checks that wiring.
 set -euo pipefail
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
@@ -74,17 +75,18 @@ commit_touching() {
     git -C "$repo" rev-parse HEAD
 }
 
-# write_plan REPO SLATE BLOCKER [FENCE_C] — revision 0 for issues #1 (wave 1,
-# lane a, fence a.txt), #2 (wave 1, lane b, fence b.txt) and #3 (wave 2,
-# lane c, fence FENCE_C, default c/**). BLOCKER is #3's blocked_by list as
-# JSON (e.g. [] or [1]).
+# write_plan REPO SLATE BLOCKER [FENCE_C] [OVERLAP] — revision 0 for issues
+# #1 (wave 1, lane a, fence a.txt), #2 (wave 1, lane b, fence b.txt) and #3
+# (wave 2, lane c, fence FENCE_C, default c/**). BLOCKER is #3's blocked_by
+# list as JSON (e.g. [] or [1]). OVERLAP "A-B" gives issues A and B a shared
+# candidate file and a serialized overlap with merge dependency A before B.
 write_plan() {
     local repo="$1" slate="$2" blocked="$3"
     local base dir
     base="$(git -C "$repo" rev-parse HEAD)"
     dir="$repo/.git/dev-flow-v2/slates/$slate"
     mkdir -p "$dir"
-    PLAN_BASE="$base" PLAN_SLATE="$slate" PLAN_BLOCKED="$blocked" PLAN_WRITER="$writer" PLAN_FENCE_C="${4:-c/**}" node --input-type=module -e '
+    PLAN_BASE="$base" PLAN_SLATE="$slate" PLAN_BLOCKED="$blocked" PLAN_WRITER="$writer" PLAN_FENCE_C="${4:-c/**}" PLAN_OVERLAP="${5:-}" node --input-type=module -e '
       const { chainDigest } = await import(process.env.PLAN_WRITER)
       const policy = {
         rigor: "deep", rigor_source: "default",
@@ -110,6 +112,12 @@ write_plan() {
         overlaps: [],
         waves: [{ number: 1, issues: [1, 2] }, { number: 2, issues: [3] }],
         lanes: [lane("a", 1, 1, ["a.txt"]), lane("b", 2, 1, ["b.txt"]), lane("c", 3, 2, [process.env.PLAN_FENCE_C])],
+      }
+      if (process.env.PLAN_OVERLAP) {
+        const [before, after] = process.env.PLAN_OVERLAP.split("-").map(Number)
+        for (const number of [before, after]) plan.issues[number - 1].candidate_files.push("shared.txt")
+        plan.overlaps.push({ issue_a: before, issue_b: after, paths: ["shared.txt"], resolution: "serialize",
+          merge_dependency: { before, after } })
       }
       const at = "2026-01-01T00:00:00Z", reason = "initial plan"
       const digest = chainDigest({ seq: 0, plan, at, reason }, "genesis")
@@ -230,6 +238,27 @@ PLAN_REVISER="$reviser" node --input-type=module -e '
 ' || fail "? and * do not match an emoji or a line break as fence-check.sh does"
 pass "? and * match any single code point, line breaks included, as in fence-check.sh"
 
+# -- merge dependencies and overlaps ------------------------------------------
+repo12="$(new_repo mergedep)"
+write_plan "$repo12" s12 '[]' 'c/**' 1-3
+plan12="$repo12/.git/dev-flow-v2/slates/s12/plan.json"
+cp "$plan12" "$tmp/mergedep-plan.json"
+moved="$(commit_touching "$repo12" a.txt)"
+expect_refused "merge-dependency release" "done issue #1 releases dependent #3 (merge dependency)" \
+    pr "$repo12" alice s12 --new-base "$moved" --done 1 --at 2026-01-01T01:00:00Z
+cmp -s "$plan12" "$tmp/mergedep-plan.json" || fail "a refused merge-dependency release changed plan.json"
+pass "a done issue that releases a merge-dependent issue is refused, naming the dependent"
+
+repo13="$(new_repo prune)"
+write_plan "$repo13" s13 '[]' 'c/**' 2-3
+plan13="$repo13/.git/dev-flow-v2/slates/s13/plan.json"
+[ "$(jq '.revisions[0].plan.overlaps | length' "$plan13")" = "1" ] || fail "fixture overlap missing"
+moved="$(commit_touching "$repo13" c/one.txt)"
+pr "$repo13" alice s13 --new-base "$moved" --done 3 --at 2026-01-01T01:00:00Z >/dev/null
+node "$validator" plan "$plan13" >/dev/null || fail "plan with a pruned overlap does not validate"
+[ "$(jq -c '.revisions[-1].plan.overlaps' "$plan13")" = "[]" ] || fail "the done issue's overlap was not pruned"
+pass "an overlap with a done issue is pruned when its dependent side is the done one"
+
 # -- dependent release -------------------------------------------------------
 repo3="$(new_repo dependent)"
 write_plan "$repo3" s3 '[1]'
@@ -262,6 +291,7 @@ moved="$(commit_touching "$repo5" unrelated.txt)"
 expect_refused "broken chain" "tampered" \
     pr "$repo5" alice s5 --new-base "$moved" --at 2026-01-01T01:00:00Z
 cmp -s "$plan5" "$tmp/broken.json" || fail "a broken chain was rewritten"
+[ ! -e "$repo5/.git/dev-flow-v2/locks/s5.json" ] || fail "a refused broken-chain plan left the slate locked"
 pass "a plan whose revision chain is broken is refused"
 
 # -- non-descendant base -----------------------------------------------------------
