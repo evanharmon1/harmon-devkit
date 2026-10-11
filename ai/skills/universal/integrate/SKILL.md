@@ -939,8 +939,10 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   trimming; resolved `policy.json` names exactly `codex-cloud` in
   `stages.integration.finders`; the live checker attests exactly one
   terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
-  the PR has no inline review comments. The state's `finder` is null or names
-  `codex-cloud` with actor `199175422`. Carry remains admissible, retaining the
+  the PR has no inline review comments. The state's `finder` is null or matches
+  the trusted registry's `codex-cloud` reserve profile field by field, including
+  actor `199175422`; `trusted-registry.sh` resolves it from the PR base commit
+  on GitHub, never a caller-supplied registry. Carry remains admissible, retaining the
   reviewed cycle's state; any exempt cycle requires integrator evidence.
   The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
   state without these counters is refused.

@@ -112,6 +112,10 @@ if [ -f "$GH_FIXTURES/ro-exit" ]; then
 fi
 
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
+    if [[ "$*" = *"--json baseRefOid --jq .baseRefOid"* ]]; then
+        jq -r '.baseRefOid' "$GH_FIXTURES/pr-view.json"
+        exit 0
+    fi
     if [ -f "$GH_FIXTURES/fail-closing-references" ] &&
         [[ "$*" = *closingIssuesReferences* ]]; then
         exit 94
@@ -164,6 +168,7 @@ if [ -f "$GH_FIXTURES/fail-endpoint" ] &&
 fi
 
 case "$endpoint" in
+repos/*/contents/agent-registry.json*) file=registry.b64 ;;
 user) file=user.json ;;
 graphql) file=threads.pages.json ;;
 repos/*/pulls/*/comments*) file=inline.pages.json ;;
@@ -640,6 +645,7 @@ mkdir -p "$recheck_dir" "${recheck_root}/dev-flow-support"
 ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
     "${recheck_root}/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
+cp "${assets}/trusted-registry.sh" "${recheck_dir}/trusted-registry.sh"
 chmod +x "${recheck_dir}/readiness-gate.sh"
 # Challenge round 3, finding `challenge-r3-codex-adversarial-13` (confirmed
 # P2): a constant-exit stub cannot express a SEQUENCE, so the #508 recheck
@@ -793,6 +799,7 @@ run_checker_gate() {
 
 write_checker_defaults() {
     write_defaults
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
     jq -cn '{rigor:{level:"standard",source:"test"},
       rounds:{challenge:4,review:4,integration:1,remediation:4,min_rounds:1},
       stages:{integration:{finders:["codex-cloud"]}}}' >"${record_dir}/policy.json"
@@ -847,6 +854,15 @@ jq --argjson finder "$checker_finder_profile" '.finder = $finder' \
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 0 pass ready
+for changed_classifier in '.success_reaction = "eyes"' '.surfaces = ["reaction"]'; do
+    write_checker_defaults
+    tampered_profile="$(jq -c "$changed_classifier" <<<"$checker_finder_profile")"
+    jq --argjson finder "$tampered_profile" '.finder = $finder' \
+        "$recheck_state" >"${recheck_state}.next"
+    mv "${recheck_state}.next" "$recheck_state"
+    run_checker_gate
+    assert_gate 2 indeterminate checker-fast-path-unavailable
+done
 for finder_slug in copilot-cloud codex-cloud; do
     write_checker_defaults
     jq --argjson finder "$checker_finder_profile" --arg slug "$finder_slug" \

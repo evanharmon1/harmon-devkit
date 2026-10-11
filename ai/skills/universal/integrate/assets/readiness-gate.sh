@@ -192,7 +192,8 @@ adjudication, only Codex bodies or exact review triggers on top-level/review sur
 record policy.json resolving integration finders to codex-cloud alone, and
 exactly one clean charged checker cycle, zero exempt cycles and no settlements,
 and no inline review
-comments. The state's finder must be null or codex-cloud with actor 199175422.
+comments. The state's finder must be null or match the trusted registry's
+codex-cloud reserve profile field by field, including actor 199175422.
 Cycle spend comes from charged_cycles + exempt_cycles; state without
 these counters is refused. Carry retains the reviewed cycle's state.
 Otherwise dispatch an
@@ -1599,6 +1600,40 @@ else
        (.finder.actor_id | tostring) == ($bot | tostring))
       ' "$codex_recheck_state" >/dev/null 2>&1 ||
         indeterminate checker-fast-path-unavailable "checker state does not name the Codex finder; dispatch an integrator and supply --integrator-result"
+    if ! jq -e '.finder == null' "$codex_recheck_state" >/dev/null 2>&1; then
+        [ -f "$script_dir/trusted-registry.sh" ] ||
+            indeterminate checker-fast-path-unavailable "trusted-registry.sh is missing; cannot confirm the checker finder profile"
+        # shellcheck source=trusted-registry.sh
+        . "$script_dir/trusted-registry.sh"
+        checker_profile_dir="$(mktemp -d "${TMPDIR:-/tmp}/readiness-gate-profile.XXXXXX")" ||
+            indeterminate checker-fast-path-unavailable "cannot create a temporary directory for the trusted finder profile"
+        trap 'rm -rf "$checker_profile_dir" 2>/dev/null || :' EXIT
+        resolve_trusted_registry "$repo" "$pr" "$checker_profile_dir/registry.json" ||
+            indeterminate checker-fast-path-unavailable "cannot resolve the trusted registry for checker evidence"
+        resolve_finder_profile "$checker_profile_dir/registry.json" codex-cloud \
+            "$checker_profile_dir/profile.json" ||
+            indeterminate checker-fast-path-unavailable "cannot resolve the trusted Codex finder profile"
+        jq -e --slurpfile trusted "$checker_profile_dir/profile.json" '
+          ($trusted[0] | {
+            slug:.slug, actor_id:(.trusted_actor_id | tostring), actor_login:.trusted_actor_login,
+            trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+            reviewer_login:.collection.trigger.reviewer_login,
+            surfaces:.collection.terminal_signals.surfaces,
+            head_binding:.collection.terminal_signals.head_binding,
+            verdict_mode:.collection.terminal_signals.verdict_mode,
+            clean_verdict:.collection.terminal_signals.clean_verdict,
+            actionable_pattern:.collection.terminal_signals.actionable_pattern,
+            severity_marker:.collection.terminal_signals.severity_marker,
+            metadata_line:.collection.terminal_signals.metadata_line,
+            about_summary:.collection.terminal_signals.about_summary,
+            heading:.collection.terminal_signals.heading,
+            carrier_sentence:.collection.terminal_signals.carrier_sentence,
+            success_reaction:.collection.terminal_signals.success_reaction,
+            pending_reaction:.collection.terminal_signals.pending_reaction
+          }) as $expected | .finder == $expected
+          ' "$codex_recheck_state" >/dev/null 2>&1 ||
+            indeterminate checker-fast-path-unavailable "checker finder profile differs from the trusted Codex reserve profile; dispatch an integrator and supply --integrator-result"
+    fi
     codex_cycle="$(jq -ce --arg head "$head" '
       def uint: type == "number" and . >= 0 and . == floor;
       select(has("charged_cycles") and has("exempt_cycles"))
