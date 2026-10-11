@@ -357,6 +357,39 @@ equivalents: `/codex:review` and
 allowed after the flags), plus `/codex:status` / `/codex:result` for
 background runs.
 
+### Envelope mode (dev-flow v2 runs)
+
+Inside an orchestrated dev-flow v2 run, `/review` invokes the same tasks with
+`--envelope`, and the runner then produces the stage's evidence itself rather
+than prose for an agent to transcribe. Every harness that can run the task gets
+the same binding, so a Codex or other non-Claude lane leaves a real `passes/`
+record:
+
+```bash
+task challenge -- --model gpt-5.6-sol --envelope \
+  --run-id <run> --head "$(git rev-parse HEAD)" --stage challenge --round 1 \
+  --slot codex-adversarial --tier frontier --record-dir <run-record-dir> \
+  --producer "codex-review.sh@$(git hash-object scripts/codex-review.sh)" \
+  --base main
+```
+
+`task challenge:copilot` / `task review:copilot` take the same flags plus
+`--model <model>`, which is pinned into the vendor invocation (a model in
+`FINDER_REVIEW_COPILOT_ARGS` is refused there). The envelope flags come
+**before** the target and focus text, and envelope mode accepts only a
+branch-scoped `--base` whose merge base is the default branch's.
+
+On success the runner's stdout is exactly one line — the published
+`passes/<stage>-r<round>-<slot>.json`, a path the caller can also derive from
+the flags it passed — and Codex's own narration goes to stderr (`task`'s
+grouped output interleaves the two, so parse the script's stdout, not the
+task's). Every refusal exits non-zero with nothing published under a `.json`
+name. The runner never writes `run.json`: appending the pass receipt is the
+caller's step, and a pass nobody receipted is an orphan that counts for
+nothing. A destination that already exists is refused rather than overwritten.
+The contract is `/review` § "Dispatch and receipt"; the trust argument is
+`ai/schemas/README.md` § "Finder-produced envelopes".
+
 ### Duration and backgrounding
 
 A round is **minutes, not seconds** — 5–15 is ordinary and passing ten is not

@@ -4,12 +4,12 @@
 //
 // It decodes MACHINE-SHAPED output only — a GitHub review and its comments.
 // A local-CLI finder's free text is deliberately NOT decoded here, and that is
-// a boundary rather than a gap: `/review`'s own contract already says "the
-// registry invocation is the role's evidence source, not itself a result
-// envelope: the dispatched role binds that output to the supplied run, scope,
-// round, slot, and producer identity and returns `result.challenger` or
-// `result.reviewer`". Reading that text is the ROLE's job, with the judgement
-// a parser does not have.
+// a boundary rather than a gap: `/review`'s own contract runs a local finder
+// through its runner's ENVELOPE MODE (`scripts/codex-review.sh` /
+// `scripts/finder-review.sh --envelope`, harmon-devkit#941), which asks the
+// finder for the role's payload schema instead of badged prose and binds,
+// validates and publishes the result itself. Free text is never the input
+// there either: nothing anywhere parses it into findings.
 //
 // An earlier revision did decode it, and could not converge. Loosening the
 // rule turned narration into findings ("Reviewing branch changes against
@@ -395,9 +395,9 @@ function pushFinding(text, sourceLabel, location, sourceId) {
 if (finder.raw_shape === 'labelled-text') {
   die(
     `finder '${opts.finder}' produces free text (raw_shape labelled-text), which this decoder does not read. ` +
-      `That output is the dispatched role's evidence source under /review's own contract — the role binds it to ` +
-      `the run, scope, round, slot and producer identity and returns the result envelope, applying this finder's ` +
-      `severity_map itself. Only machine-shaped output (github-review-json) is decoded here.`
+      `Run it through its runner's envelope mode instead (--envelope, per /review § "Dispatch and receipt"), ` +
+      `which asks the finder for the result payload schema and binds, validates and publishes the pass itself. ` +
+      `Only machine-shaped output (github-review-json) is decoded here.`
   )
 } else if (finder.raw_shape === 'github-review-json') {
   // The PR-side shape: one review plus the inline comments attributed to it.

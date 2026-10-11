@@ -147,7 +147,10 @@ the captured base/head plus access to the source and diff it must review. For a
 committed round, require every source and diff read to resolve from those
 captured Git revisions, never mutable worktree bytes. For an orchestrated
 `codex-cli` pass, give `scripts/codex-review.sh` the resolved values as leading
-`--model <model> --reasoning <level>` arguments. Pass each dispatch the
+`--model <model> --reasoning <level>` arguments; give every other local-CLI
+finder (`scripts/finder-review.sh`) its resolved model as `--model <model>`,
+which the runner pins into the vendor invocation and records in the envelope.
+Pass each dispatch the
 remaining whole-run wall-clock budget and bound the caller's supervision and
 wait by that deadline. On expiry, stop waiting, follow the orchestrator's
 capped-run handling, and reject any late result; this grants no authority to
@@ -155,7 +158,10 @@ terminate a process. Give every pass the run identity, policy, and finder slot.
 Include the complete
 validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
-`repeat-of` or `supersedes`; an empty list is explicit in round 1.
+`repeat-of` or `supersedes`; an empty list is explicit in round 1. An
+envelope-mode runner takes no such input yet — carrying them across rounds is
+harmon-devkit#955 — so until it does, its findings assert `original`/`new`
+and the verification pass below is what corrects provenance and fingerprints.
 
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
@@ -180,12 +186,12 @@ selects.** A `github-review-json` finder — the PR-side cloud reviews — has a
 machine-readable payload, so `assets/normalize-finder-findings.mjs` decodes it
 mechanically and fails closed on anything it cannot decode. A `labelled-text`
 finder — every local CLI pass, Codex's included — has only free text, so that
-program refuses it by design: its output is the dispatched
-`challenger`/`reviewer` role's evidence source, and the role reads the badges
-against that same `severity_map` and returns the decoded findings inside its
-own `result.challenger`/`result.reviewer` envelope (below). Routing a
-`labelled-text` pass into the normalizer is a defect rather than a fallback —
-it would report every local finder unavailable.
+program refuses it by design. Its runner's **envelope mode** (below) is the
+decoder instead: it asks the finder for the role's payload schema rather than
+badged prose, and refuses anything that does not bind and validate, so local
+free text is never guessed into findings. Routing a `labelled-text` pass into
+the normalizer is a defect rather than a fallback — it would report every
+local finder unavailable.
 
 **Per-run finder selection.** An attributable operator instruction for this run
 may add finders to a stage's configured set, or name the set it wants; it may
@@ -216,17 +222,41 @@ a reviewer cannot otherwise tell a wider review from the configured one.
 Confidence finders and fallbacks spend the independent rounds envelope and
 never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.
-The registry invocation is the role's evidence source, not itself a result
-envelope: the dispatched role binds that output to the supplied run, scope,
-round, slot, and producer identity and returns `result.challenger` or
-`result.reviewer`. A harness that cannot enforce that binding makes the finder
-unavailable; the orchestrator never fabricates runtime-attested envelope data.
-Reject a result until `dev-flow-support/assets/validate-result-schemas.mjs envelope` validates
-it and its run, base, head, stage, round, finder, and previously seen ids match
-the captured scope. Persist each immutable accepted result in `passes/` before
-using it. A finder failure is retried by its configured fallback and the
-substitution is recorded; exhausted coverage is a blocker, never a smaller
-round disguised as complete.
+**The finder invocation in envelope mode is the dispatched role, on every
+harness.** Run the slot's registry task with `--envelope` and the captured
+binding as leading flags — `--run-id`, `--head`, `--stage`, `--round`,
+`--slot`, `--tier` (the resolved challenger or reviewer tier), `--record-dir`,
+and `--producer` set to the identity you expect, `<runner>@<git blob sha of
+the runner>` — then the branch-scoped `--base <ref>`. The runner refuses a
+`--producer` that is not its own identity, a head that is not `HEAD`, a run id
+`run.json` does not bind, and a base whose merge base is not the default
+branch's; it binds the finder's structured answer to the captured run, head,
+stage, round, finder and slot, wraps it with its own producer identity,
+validates the whole envelope with
+`dev-flow-support/assets/validate-result-schemas.mjs envelope --receipt`, and
+publishes exactly one immutable file, `passes/<stage>-r<round>-<slot>.json`,
+through a no-clobber hard link: a pre-existing destination is a refusal, never
+an overwrite. It prints that path and nothing else on stdout, and it **never
+writes `run.json`**. Any harness that can run the task therefore gets the same
+binding; the Claude `challenger`/`reviewer` agents are optional process
+isolation around the same invocation, never an envelope authority of their
+own, and the orchestrator never fabricates envelope data.
+
+**Append the pass receipt, then verify.** Receipt authority stays with you,
+the caller: after the runner exits 0, re-validate the printed file with the
+same `envelope --receipt` call against the captured run, then append
+`{"kind": "pass", "file": "<stage>-r<round>-<slot>"}` (the filename without
+`.json`) to `run.json`'s `receipts`, and only then enter verification below. A
+pass you have not receipted is an **orphan**: it is never evidence, the exit
+computation rejects it, and its finding ids reserve nothing. A runner that
+exited non-zero published nothing under a `.json` name. A retry refused
+because its destination already exists means an earlier attempt — typically
+one you stopped waiting on — published after all; never delete or overwrite
+that file to make room. Validate it and receipt it as this slot's pass if it
+binds the captured scope, or record the slot as failed; either way the decision
+and the receipt are yours, not the runner's. A finder failure is retried by
+its configured fallback and the substitution is recorded; exhausted coverage
+is a blocker, never a smaller round disguised as complete.
 
 ## Verify, adjudicate, publish, exit
 

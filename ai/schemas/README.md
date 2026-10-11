@@ -27,6 +27,50 @@ agent file under `ai/agents/` (see the spec's "Roles and authority" table) — s
 `adjudication.schema.json` and `run.schema.json` are validated as complete
 top-level documents, never as an envelope's `payload`.
 
+## Finder-produced envelopes
+
+A confidence-stage pass is produced by the finder **runner** in `--envelope`
+mode (`scripts/codex-review.sh`, `scripts/finder-review.sh`;
+harmon-devkit#941), not by whichever agent happened to call it. The runner asks
+the finder for the role's payload (Codex through `--output-schema`, a general
+agent CLI with the schema in its prompt), binds it to the captured run, head,
+stage, round, finder and slot, wraps it in the envelope with its **own**
+producer identity — the runner's filename plus the Git blob SHA of its bytes,
+which must equal the `--producer` the caller expected — validates the whole
+document with `validate-result-schemas.mjs envelope --receipt`, and publishes
+exactly one file, `passes/<stage>-r<round>-<slot>.json`, by hard-linking a
+fully written temporary into place. `link(2)` fails on an existing
+destination, so publication is atomic and no-clobber: a pre-existing pass is a
+refusal, never an overwrite, and a timed-out original still running beside its
+retry cannot replace evidence the retry published. The runner never writes
+`run.json`.
+
+**What this does not make trustworthy, and what does.** The lane that runs the
+runner can still forge: it can edit or replace the runner, feed it a false
+binding, or hand-write a document and run the validator over it. Moving
+assembly into a script removes none of that, and does not claim to. What bounds
+it is the chain around the file, and none of it is the lane's prose:
+
+- the **producer identity** names the exact runner bytes, so a pass from a
+  modified runner is attributable to those bytes rather than passing as the
+  one the caller expected;
+- **receipt validation** binds run identity, head, role, stage, round, slot and
+  previously used finding ids, and runs again on the caller's side and in the
+  exit computation, not only inside the runner;
+- **immutability** means a published pass cannot be rewritten at its path;
+- and **receipt authority stays with the caller**: a pass counts only once the
+  orchestrator has validated it against trusted run state and captured
+  revisions and appended its `{kind: "pass"}` receipt. A pass with no receipt
+  is an orphan and is never evidence.
+
+That is the same model `--receipts` strict mode enforces at cross-boundary call
+sites (#821), and it keeps decision record 0009's rule intact — briefs carry a
+schema-bound envelope, **results are schema-bound** — while changing only which
+executable produces the envelope. A Claude `challenger`/`reviewer` agent is
+optional process isolation around the same invocation; it was never the source
+of the trust, and a harness without a subagent runtime loses nothing by not
+having one.
+
 ## Brief envelope and Markdown body
 
 Rendered lane briefs keep their human-facing format. Between the existing
@@ -2148,7 +2192,13 @@ from timestamps): an ordered list of
 naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
 preceding `"transition"` receipt into its own `payload.stage`, is rejected
 and contributes no pass or finding — logged in the verdict's `diagnostics[]`,
-never silently. `run.json` may also carry `slot_failures: [{stage, round,
+never silently. Such a receipt-less pass is an **orphan**: a runner in
+envelope mode publishes the file and returns, and the caller appends the
+receipt, so an orphan is what a pass the caller has not yet accepted — or a
+late answer from an attempt it stopped waiting on — looks like. It is never
+evidence, it reserves no finding ids for the next runner, and it is never
+deleted or overwritten to make room for a retry; adopting or ignoring it is
+the caller's decision ("Finder-produced envelopes" above). `run.json` may also carry `slot_failures: [{stage, round,
 slot, reason: "finder_unavailable"|"breadth_exhausted", head?}]`, recording a
 primary slot that never got filled after its retry and configured
 `finder_fallbacks` chain (`finder_unavailable`) or because the fallback chain

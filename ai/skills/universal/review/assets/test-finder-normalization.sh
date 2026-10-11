@@ -42,10 +42,10 @@ run_fixture() {
 }
 
 echo "==> every MACHINE-SHAPED finder has a raw-output conformance fixture"
-# Only github-review-json is decoded here. A local-CLI finder's free text is
-# the dispatched role's evidence source under /review's own contract, so it has
-# no fixture in this corpus and the decoder refuses it outright (asserted
-# below) rather than half-parsing it.
+# Only github-review-json is decoded here. A local-CLI finder runs through its
+# runner's envelope mode under /review's own contract, so its free text has no
+# fixture in this corpus and the decoder refuses it outright (asserted below)
+# rather than half-parsing it.
 missing=0
 while IFS= read -r slug; do
     [ -d "$fixtures/$slug" ] || {
@@ -72,7 +72,7 @@ while IFS= read -r slug; do
     set -e
     [ "$status" -eq 2 ] ||
         fail "$slug free text was decoded rather than refused (exit $status)"
-    grep -Fq "the dispatched role's evidence source" "$tmp/free-text-$slug.err" ||
+    grep -Fq "runner's envelope mode" "$tmp/free-text-$slug.err" ||
         fail "$slug refusal did not name where that output is read instead"
 done < <(jq -r '.finders[] | select(.raw_shape == "labelled-text") | .slug' "$registry")
 
