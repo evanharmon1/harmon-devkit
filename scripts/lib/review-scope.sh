@@ -806,13 +806,19 @@ review_envelope_bind_scope() {
         "the captured range ${envelope_merge_base}..${envelope_head} changes no files." \
         "Envelope mode reviews a branch's commits; there is nothing to review."
     # Envelope mode resolves its inputs (the registry, and through the caller
-    # the policy) from THIS checkout, so a change that edits them would choose
-    # the values governing its own pass — the merge-base rule in AGENTS.md
-    # § "Rigor and Strategy" (integration-r1-codex-cloud-1). Such a change is
+    # the policy and the policy READER that interprets it) from THIS checkout,
+    # so a change that edits them would choose the values — or the code —
+    # governing its own pass: the merge-base rule in AGENTS.md § "Rigor and
+    # Strategy" (integration-r1-codex-cloud-1). The reader's closure is the
+    # same one the orchestrate step-0 probe guards: devflow-policy.mjs and the
+    # two modules it loads (integration-r2-codex-cloud-2). Such a change is
     # refused here and reviewed through the role agents instead.
     local governing
     governing="$(git diff --no-ext-diff --name-only "$envelope_merge_base" "$envelope_head" -- \
-        agent-registry.json .devflow.toml)" || {
+        agent-registry.json .devflow.toml \
+        ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs \
+        ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs \
+        ai/skills/universal/dev-flow-support/assets/tier-inputs.mjs)" || {
         echo "could not check the captured range for governing-file edits" >&2
         exit 2
     }

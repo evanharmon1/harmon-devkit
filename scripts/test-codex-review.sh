@@ -1023,10 +1023,12 @@ wait "$orig_pid" || rc=$?
     fail "the late original replaced the retry's pass"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
 
-echo "==> envelope: a change to agent-registry.json or .devflow.toml is refused"
+echo "==> envelope: a change to agent-registry.json, .devflow.toml or the policy reader is refused"
 # integration-r1-codex-cloud-1: envelope mode reads those files from this
-# checkout, so a branch editing them would govern its own pass.
-for governing in agent-registry.json .devflow.toml; do
+# checkout, so a branch editing them would govern its own pass. The policy
+# reader is the same exposure in code form (integration-r2-codex-cloud-2).
+for governing in agent-registry.json .devflow.toml \
+    ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs; do
     reset_record
     git -C "$ewd" checkout -q -b governing-edit
     printf '\n' >>"${ewd}/${governing}"
