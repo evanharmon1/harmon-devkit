@@ -1057,7 +1057,7 @@ assert_nothing_published "grafts"
 # A replace ref substituting the head with a decoy must not change what is
 # reviewed: the manifest still names the real change, never the decoy's.
 reset_record
-decoy="$(git -C "$ewd" commit-tree -p "$env_base" -m decoy \
+decoy="$(git_t -C "$ewd" commit-tree -p "$env_base" -m decoy \
     "$(printf '100644 blob %s\tdecoy.txt\n' "$(echo decoy | git -C "$ewd" hash-object -w --stdin)" | git -C "$ewd" mktree)")"
 git -C "$ewd" replace "$env_head" "$decoy"
 payload "${env_root}/p.json" challenge 1 codex-adversarial
