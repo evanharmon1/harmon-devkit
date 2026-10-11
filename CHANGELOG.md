@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.55.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.54.0...v0.55.0) (2026-10-11)
+
+
+### Features
+
+* **agent-registry:** mirror model lines with versions and per-harness effort levels ([#1355](https://github.com/evanharmon1/harmon-devkit/issues/1355)) ([341f7db](https://github.com/evanharmon1/harmon-devkit/commit/341f7db2a6c898d91916e11cf2df7b1029b66233))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** make the absent policy and registry fallback determinate ([#1361](https://github.com/evanharmon1/harmon-devkit/issues/1361)) ([e4d7f7a](https://github.com/evanharmon1/harmon-devkit/commit/e4d7f7ae11bad7429312e63d8dd5aae0fe7abd98))
+* **gemini:** keep Gemini Code Assist on request and stop its PR-open reviews ([#1354](https://github.com/evanharmon1/harmon-devkit/issues/1354)) ([87ba690](https://github.com/evanharmon1/harmon-devkit/commit/87ba690aa5dcd4398c3c75f002f2d993392ff546))
+* **standardize-repo:** describe the template-owned pnpm security-floor block and the widened Renovate rule ([#1352](https://github.com/evanharmon1/harmon-devkit/issues/1352)) ([033bc92](https://github.com/evanharmon1/harmon-devkit/commit/033bc92102e3f671ba81cc1c9baa83e630851680)), closes [#1346](https://github.com/evanharmon1/harmon-devkit/issues/1346)
+
 ## [0.54.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.53.0...v0.54.0) (2026-10-10)
 
 
