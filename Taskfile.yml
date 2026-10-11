@@ -395,6 +395,8 @@ tasks:
       - test:schema-parity
       - test:dev-flow-stats
       - test:dev-flow-exit
+      - test:run-record
+      - test:plan-revise
       - test:devflow-conformance
       - test:dev-flow-monitor
       - test:render-dev-flow
@@ -437,6 +439,16 @@ tasks:
     desc: Behavioral test for the Dev flow v2 policy reader and exit-computation engine against fixture policies
     cmds:
       - ./ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh
+
+  test:run-record:
+    desc: Behavioral test for the Dev flow v2 run-record writer and slate lock, on fixture repositories only
+    cmds:
+      - ./ai/skills/universal/dev-flow-support/assets/test-run-record.sh
+
+  test:plan-revise:
+    desc: Behavioral test for the Dev flow v2 plan-revision writer (base moves), on fixture repositories only
+    cmds:
+      - ./ai/skills/universal/dev-flow-support/assets/test-plan-revise.sh
 
   test:devflow-conformance:
     desc: Run harmon-init's vendored .devflow.toml v2 conformance corpus against the vendored policy reader (blob-pinned inputs + a pin-mutation control)
