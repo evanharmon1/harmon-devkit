@@ -45,6 +45,7 @@ V2_CASE_KEYS = {
     "pin",
     "policy_entry",
     "registry_replacements",
+    "registry_entry",
 }
 
 
@@ -245,6 +246,7 @@ def v2_normalize(resolved: dict, sources: dict, basis: str) -> dict:
     return {
         "config_schema_version": 2,
         "config_source": resolved["source"],
+        "cross_validation": resolved["cross_validation"],
         "selections": {
             "rigor": {
                 "value": resolved["rigor"]["level"],
@@ -341,30 +343,34 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                 elif basis != "absent":
                     policy.write_text(branch_text)
                 registry = tmp_path / "registry.json"
-                registry.write_text(
-                    replace(
-                        (repo / "agent-registry.json").read_text(),
-                        case.get("registry_replacements", []),
-                        name,
-                        "registry_replacements",
+                registry_entry = case.get("registry_entry", "present")
+                if registry_entry not in {"present", "omitted", "missing"}:
+                    raise ValueError(f"{name}: unsupported registry_entry {registry_entry!r}")
+                if registry_entry != "present" and case.get("registry_replacements"):
+                    raise ValueError(f"{name}: registry_replacements requires a present registry")
+                if registry_entry == "present":
+                    registry.write_text(
+                        replace(
+                            (repo / "agent-registry.json").read_text(),
+                            case.get("registry_replacements", []),
+                            name,
+                            "registry_replacements",
+                        )
                     )
-                )
                 command = [
                     "node",
                     str(repo / "scripts" / "devflow-policy.mjs"),
                     "resolve",
                     "--policy",
                     str(policy),
-                    "--registry",
-                    str(registry),
                     "--taskfile-dir",
                     str(repo),
                     "--json",
                 ]
+                if registry_entry != "omitted":
+                    command.extend(["--registry", str(registry)])
                 if basis == "merge-base-absent":
-                    command.extend(
-                        ["--merge-base-policy-absent", "--merge-base-registry", str(repo / "agent-registry.json")]
-                    )
+                    command.append("--merge-base-policy-absent")
                 elif basis in {"merge-base", "merge-base-missing"}:
                     merge_base = tmp_path / "merge-base.toml"
                     if basis == "merge-base":
@@ -380,10 +386,14 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                         [
                             "--merge-base-policy",
                             str(merge_base),
-                            "--merge-base-registry",
-                            str(repo / "agent-registry.json"),
                         ]
                     )
+                if (
+                    basis in {"merge-base", "merge-base-absent", "merge-base-missing"}
+                    and registry_entry != "omitted"
+                ):
+                    governing_registry = repo / "agent-registry.json" if registry_entry == "present" else registry
+                    command.extend(["--merge-base-registry", str(governing_registry)])
                 command.extend(flags)
                 result = subprocess.run(command, capture_output=True, text=True)
         except (OSError, ValueError) as exc:
@@ -407,6 +417,13 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                     for item in resolved["cross_validation"]["indeterminate"]
                     if "derived Tier" in item
                 )
+                errors.extend(
+                    {"code": "indeterminate", "subject": "registry"}
+                    for item in resolved["cross_validation"]["indeterminate"]
+                    if "no registry was supplied" in item
+                )
+        elif result.returncode == 2 and "could not read/parse --registry:" in result.stderr:
+            errors.append({"code": "registry_unreadable", "subject": "registry"})
         elif result.returncode == 2 and "could not read/parse --policy:" in result.stderr:
             errors.append({"code": "policy_unreadable", "subject": "policy"})
         elif result.returncode == 2 and "could not read/parse --merge-base-policy:" in result.stderr:

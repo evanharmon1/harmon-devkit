@@ -2287,6 +2287,88 @@
           }
         ]
       }
+    },
+    {
+      "name": "absent-policy-and-omitted-registry-is-determinate",
+      "basis": "absent",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "config_source": "built-in-fallback",
+          "selections": {
+            "rigor": {
+              "value": "standard",
+              "source": "builtin"
+            },
+            "strategy": {
+              "value": "plan",
+              "source": "builtin"
+            }
+          },
+          "cross_validation": {
+            "errors": [],
+            "indeterminate": []
+          }
+        }
+      },
+      "registry_entry": "omitted"
+    },
+    {
+      "name": "present-policy-and-omitted-registry-is-indeterminate",
+      "basis": "branch",
+      "registry_entry": "omitted",
+      "expect": {
+        "exit": 3,
+        "error_diagnostics": [
+          {
+            "code": "indeterminate",
+            "subject": "registry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "absent-policy-and-requested-missing-registry-is-unreadable",
+      "basis": "absent",
+      "registry_entry": "missing",
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "registry_unreadable",
+            "subject": "registry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "present-policy-and-requested-missing-registry-is-unreadable",
+      "basis": "branch",
+      "registry_entry": "missing",
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "registry_unreadable",
+            "subject": "registry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "absent-merge-base-and-omitted-registry-is-indeterminate",
+      "basis": "merge-base-absent",
+      "registry_entry": "omitted",
+      "expect": {
+        "exit": 3,
+        "error_diagnostics": [
+          {
+            "code": "indeterminate",
+            "subject": "registry"
+          }
+        ]
+      }
     }
   ]
 }
