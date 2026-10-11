@@ -24,6 +24,8 @@
 //   - a done issue releases a dependent — a live issue lists it in
 //     `blocked_by`, or an overlap's merge dependency names it as `before` —
 //     because releasing it is a wave/queue decision;
+//   - a live fence or candidate pattern holds `[`, `{` or `?` — such a
+//     pattern is never interpreted here, so any move needs judgment;
 //   - the new base does not descend from the old one, or nothing moved.
 // The existing plan is validated before anything else, so a broken chain is
 // refused too. Both writers take the slate lock (see run-record.mjs).
@@ -64,13 +66,15 @@ function resolveCommit(value, label) {
   }
 }
 
-// Fence matching mirrors orchestrate/assets/fence-check.sh: per path
-// component, literal first; a component holding `*` or `?` is a glob within
-// that component, and a `**` component matches any number of components.
+// Fence matching covers the subset of orchestrate/assets/fence-check.sh this
+// helper interprets: per path component, literal first; a component holding
+// `*` is a wildcard within that component, and a `**` component matches any
+// number of components. Patterns holding `[`, `{` or `?` never get here (see
+// reviseForBaseMove).
 function componentMatches(part, pattern) {
   if (part === pattern) return true
-  if (!/[*?]/.test(pattern)) return false
-  const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
+  if (!pattern.includes('*')) return false
+  const source = pattern.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*')
   return new RegExp(`^${source}$`).test(part)
 }
 
@@ -112,6 +116,15 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
     const dependency = overlap.merge_dependency
     if (dependency && doneSet.has(dependency.before) && !doneSet.has(dependency.after)) {
       refusals.push(`done issue #${dependency.before} releases dependent #${dependency.after} (merge dependency)`)
+    }
+  }
+  // Only literal paths, `*` and `**` are matched here. A pattern holding `[`,
+  // `{` or `?` is not interpreted at all: when anything moved, it makes the
+  // move need judgment instead of being matched by a second glob engine.
+  if (changed.length > 0) {
+    const liveLanes = plan.lanes.filter((lane) => !doneSet.has(lane.issue))
+    for (const pattern of [...liveLanes.flatMap(fencePaths), ...live.flatMap((issue) => issue.candidate_files ?? [])]) {
+      if (/[[{?]/.test(pattern)) refusals.push(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
     }
   }
   for (const lane of plan.lanes.filter((lane) => !doneSet.has(lane.issue))) {

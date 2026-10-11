@@ -74,16 +74,17 @@ commit_touching() {
     git -C "$repo" rev-parse HEAD
 }
 
-# write_plan REPO SLATE BLOCKER — revision 0 for issues #1 (wave 1, lane a,
-# fence a.txt), #2 (wave 1, lane b, fence b.txt) and #3 (wave 2, lane c,
-# fence c/**). BLOCKER is #3's blocked_by list as JSON (e.g. [] or [1]).
+# write_plan REPO SLATE BLOCKER [FENCE_C] — revision 0 for issues #1 (wave 1,
+# lane a, fence a.txt), #2 (wave 1, lane b, fence b.txt) and #3 (wave 2,
+# lane c, fence FENCE_C, default c/**). BLOCKER is #3's blocked_by list as
+# JSON (e.g. [] or [1]).
 write_plan() {
     local repo="$1" slate="$2" blocked="$3"
     local base dir
     base="$(git -C "$repo" rev-parse HEAD)"
     dir="$repo/.git/dev-flow-v2/slates/$slate"
     mkdir -p "$dir"
-    PLAN_BASE="$base" PLAN_SLATE="$slate" PLAN_BLOCKED="$blocked" PLAN_WRITER="$writer" node --input-type=module -e '
+    PLAN_BASE="$base" PLAN_SLATE="$slate" PLAN_BLOCKED="$blocked" PLAN_WRITER="$writer" PLAN_FENCE_C="${4:-c/**}" node --input-type=module -e '
       const { chainDigest } = await import(process.env.PLAN_WRITER)
       const policy = {
         rigor: "deep", rigor_source: "default",
@@ -108,7 +109,7 @@ write_plan() {
         issues: [issue(1, ["a.txt"]), issue(2, ["b.txt"]), issue(3, ["c/one.txt"], JSON.parse(process.env.PLAN_BLOCKED))],
         overlaps: [],
         waves: [{ number: 1, issues: [1, 2] }, { number: 2, issues: [3] }],
-        lanes: [lane("a", 1, 1, ["a.txt"]), lane("b", 2, 1, ["b.txt"]), lane("c", 3, 2, ["c/**"])],
+        lanes: [lane("a", 1, 1, ["a.txt"]), lane("b", 2, 1, ["b.txt"]), lane("c", 3, 2, [process.env.PLAN_FENCE_C])],
       }
       const at = "2026-01-01T00:00:00Z", reason = "initial plan"
       const digest = chainDigest({ seq: 0, plan, at, reason }, "genesis")
@@ -142,6 +143,21 @@ current="$(jq -c '.revisions[-1]' "$plan")"
 [ "$(jq -c '.plan.waves' <<<"$current")" = '[{"number":1,"issues":[2]},{"number":2,"issues":[3]}]' ] || fail "waves not revised"
 pass "a disjoint base move bumps base_sha, retires the done issue's lane and extends the chain"
 
+# The done issue's run left the current revision but is still s1's: it can be
+# written and closed under s1 (a run belongs to the slate whose plan history
+# names it).
+mkdir -p "$repo/.git/dev-flow-v2/runs/run-1"
+jq -n '{schema: 2, run_id: "run-1", initiated_by: "human", started_at: "2026-01-01T00:00:00Z",
+  stage_transitions: [{stage: "kickoff", entered_at: "2026-01-01T00:00:00Z"}], interventions: [],
+  outcome: null, pr: null, evidence_comments: [], evidence_registrations: [], pr_bindings: [],
+  outcome_transitions: [], settlements: [], promotion: null, receipts: []}' >"$repo/.git/dev-flow-v2/runs/run-1/run.json"
+(cd "$repo" && node "$writer" transition --slate s1 --session alice --run-id run-1 --stage claim --exit k --at 2026-01-01T01:01:00Z) >/dev/null ||
+    fail "a run dropped by --done could not be written under its own slate"
+(cd "$repo" && node "$writer" close --slate s1 --session alice --run-id run-1 --outcome abandoned --exit merged --at 2026-01-01T01:02:00Z) >/dev/null ||
+    fail "a run dropped by --done could not be closed under its own slate"
+[ "$(jq -r '.outcome' "$repo/.git/dev-flow-v2/runs/run-1/run.json")" = "abandoned" ] || fail "close outcome not recorded"
+pass "a run dropped from the current revision by --done is still written and closed under its own slate"
+
 # -- fence-touching base move ------------------------------------------------
 cp "$plan" "$tmp/disjoint-plan.json"
 touching="$(commit_touching "$repo" c/two.txt)"
@@ -163,6 +179,17 @@ node "$validator" plan "$plan" >/dev/null || fail "second revision does not vali
 [ "$(jq -r '.revisions | length' "$plan")" = "3" ] || fail "second revision not appended"
 [ "$(jq -r '.revisions[2].prev_digest' "$plan")" = "$(jq -r '.revisions[1].digest' "$plan")" ] || fail "second revision not chained"
 pass "a later base move chains onto the previous revision"
+
+# -- patterns this helper does not interpret ------------------------------------
+repo8="$(new_repo bracket)"
+write_plan "$repo8" s8 '[]' 'src/[ab]*.js'
+plan8="$repo8/.git/dev-flow-v2/slates/s8/plan.json"
+cp "$plan8" "$tmp/bracket-plan.json"
+moved="$(commit_touching "$repo8" src/a1.js)"
+expect_refused "bracket fence" "pattern needs orchestrator judgment (not matched here): src/[ab]*.js" \
+    pr "$repo8" alice s8 --new-base "$moved" --at 2026-01-01T01:00:00Z
+cmp -s "$plan8" "$tmp/bracket-plan.json" || fail "a refused bracket move changed plan.json"
+pass "a fence pattern holding [, { or ? makes a base move refuse instead of being matched"
 
 # -- dependent release -------------------------------------------------------
 repo3="$(new_repo dependent)"

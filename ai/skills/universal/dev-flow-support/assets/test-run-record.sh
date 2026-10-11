@@ -105,7 +105,7 @@ lock_scope() {
 }
 
 # -- runs are written only as lanes of the locked slate's plan ---------------
-expect_refused "write without a plan" "has no plan.json" \
+expect_refused "write without a plan" "is not a lane in any revision of slate s1's plan" \
     rr alice transition --run-id run-a --stage claim --exit kicked --at 2026-01-01T00:01:00Z
 pass "a run write for a slate with no plan is refused"
 
@@ -116,7 +116,7 @@ pass "before a plan exists, the lock records the given milestone and issue set"
 write_plan s1 11:run-a 12:run-b 13:run-c 14:run-d
 new_run run-z
 cp "$state/runs/run-z/run.json" "$tmp/run-z.json"
-expect_refused "run outside the plan" "run run-z is not a lane of slate s1" \
+expect_refused "run outside the plan" "run run-z is not a lane in any revision of slate s1's plan" \
     rr alice transition --run-id run-z --stage claim --exit kicked --at 2026-01-01T00:01:00Z
 cmp -s "$state/runs/run-z/run.json" "$tmp/run-z.json" || fail "a refused foreign run changed its record"
 pass "a write naming a run that is not a lane of the locked slate's plan is refused, record unchanged"
@@ -172,6 +172,14 @@ walk() {
 
 walk run-a
 [ "$(jq -r '.stage_transitions[-1].stage' "$run")" = "integration" ] || fail "walk to integration failed"
+
+write_plan s6 16:run-a
+cp "$run" "$tmp/run-a.json"
+expect_refused "run named by a second slate" "run run-a is also a lane of slate(s) s6" \
+    rr alice intervention --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z
+cmp -s "$run" "$tmp/run-a.json" || fail "a refused foreign-slate write changed run.json"
+rm -r "$state/slates/s6"
+pass "a run named by a second slate's plan is refused: a run belongs to exactly one slate"
 
 # -- interventions and ruling digests -------------------------------------
 mkdir -p "$state/slates/s1/orchestrator/run-a/a1"

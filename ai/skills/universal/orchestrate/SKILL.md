@@ -231,16 +231,20 @@ throwaway work only.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
 
-Use `dev-flow-support/assets/run-record.mjs` for the five run-record
-operations it supports, never a hand edit:
+Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
+it supports, never a hand edit:
 
 - `transition`, which also appends the matching transition receipt;
 - `intervention`;
 - `bind-pr`;
-- `promote`;
 - `close`.
 
-The run must be a lane of the slate's current `plan.json`. Each write builds
+`/integrate` is the promotion authority. It may record a promotion with
+`run-record.mjs promote` as its mechanism.
+
+A run belongs to exactly one slate. A write under a slate is allowed only when
+the run appears as a lane in some revision of that slate's plan, and in no
+revision of any other slate's plan under the same common directory. Each write builds
 a candidate, validates it with `validate-result-schemas.mjs run --receipts`
 plus every adjudication document in the run directory, renames it over
 `run.json` and validates the readback. A refused edge, a promotion dated

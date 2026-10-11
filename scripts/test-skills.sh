@@ -11184,7 +11184,11 @@ expect_ok "orchestrate: names the per-slate orchestrator directory keyed by run 
 expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad (#1296)" \
     grep -qF 'Everything you need in order to resume lives under the Git common directory,' "$ORCH_MD"
 expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
-    grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the five run-record' "$ORCH_MD"
+    grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the run-record operations' "$ORCH_MD"
+expect_ok "orchestrate: /integrate stays the promotion authority (#1296 challenge r2 -6)" \
+    grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"
+expect_ok "orchestrate: a run belongs to exactly one slate (#1296 challenge r2 -4)" \
+    grep -qF 'A run belongs to exactly one slate.' "$ORCH_MD"
 expect_ok "orchestrate: the run-record fields run-record.mjs does not write keep their named writers (#1296)" \
     grep -qF 'record keeps its existing writers:' "$ORCH_MD"
 if grep -qF 'Write the run record only through' "$ORCH_MD"; then
