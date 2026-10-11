@@ -930,15 +930,18 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
-  Checker-only evidence is a **clean-run fast path** with five conditions:
+  Checker-only evidence is a **clean-run fast path** with six conditions:
   the record holds no integrator pass; it holds no integration adjudication;
   every top-level PR comment and every non-empty review body is authored by
   Codex bot `199175422` or is exactly `@codex review` after whitespace
   trimming; resolved `policy.json` names exactly `codex-cloud` in
   `stages.integration.finders`; and the live checker attests one terminal-clean
-  charged cycle with empty `settled[]` (`cycle == 1` for legacy state).
+  charged cycle with empty `settled[]`; and the PR has no inline review
+  comments. The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
+  state without these counters is refused.
   No authenticated-actor exemption applies: the orchestrator and maintainer
-  may share an account. Inline thread replies retain their usual checks.
+  may share an account. Inline comments require the dispatched-integrator path,
+  even when their threads have replies.
   If any condition is absent, the gate is indeterminate: dispatch an integrator
   and supply `--integrator-result` to classify and settle integration work.
   Conversation or cycle-work preconditions use `checker-fast-path-unavailable`;

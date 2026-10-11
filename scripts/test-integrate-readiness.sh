@@ -796,13 +796,22 @@ write_checker_defaults() {
     jq -cn '{rigor:{level:"standard",source:"test"},
       rounds:{challenge:4,review:4,integration:1,remediation:4,min_rounds:1},
       stages:{integration:{finders:["codex-cloud"]}}}' >"${record_dir}/policy.json"
+    # The reserve payload's real shape, not a synthetic cycle field.
+    # The sibling checker stub independently supplies terminal-clean.
     jq -cn --arg head "$head_sha" \
-        '{repo:"example/repo",pr:493,head:$head,run_id:"test-run",
-          cycle:1,charged_cycles:1,exempt_cycles:0}' >"$recheck_state"
+        '{version:2,repo:"example/repo",pr:493,head:$head,attempt:1,
+          phase:"reserved",reserved_at:"2026-01-01T00:00:00Z",
+          trigger_comment_id:null,requested_at:null,
+          previous_trigger_comment_id:null,first_trigger_comment_id:null,
+          requires_full_window:false,timeout_min:15,settled:[],finder:null,
+          charge:"charged",charge_reason:"first cycle",
+          charged_cycles:1,exempt_cycles:0,run_id:"test-run",base_sha:null}' >"$recheck_state"
 }
 
-echo "==> #1070: live checker evidence needs no recording pass and names its source"
+echo "==> R4: real reserve payload without cycle passes a clean quiet PR"
 write_checker_defaults
+jq -e 'has("cycle") | not' "$recheck_state" >/dev/null ||
+    fail "real checker state must not invent a cycle field"
 run_checker_gate
 assert_gate 0 pass ready
 [ "$(gate_field cycle_evidence | jq -r '.kind')" = checker-state ] ||
@@ -899,7 +908,7 @@ mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 2 indeterminate codex-stale
 write_checker_defaults
-jq '.cycle = 2 | .charged_cycles = 2' "$recheck_state" >"${recheck_state}.next"
+jq '.charged_cycles = 2' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 2 indeterminate checker-fast-path-unavailable
@@ -909,15 +918,15 @@ mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 2 indeterminate checker-fast-path-unavailable
 write_checker_defaults
-jq 'del(.charged_cycles,.exempt_cycles) | .cycle = 2' "$recheck_state" >"${recheck_state}.next"
-mv "${recheck_state}.next" "$recheck_state"
-run_checker_gate
-assert_gate 2 indeterminate checker-fast-path-unavailable
-write_checker_defaults
 jq 'del(.charged_cycles,.exempt_cycles)' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
-assert_gate 0 pass ready
+assert_gate 2 indeterminate malformed-data
+write_checker_defaults
+jq 'del(.exempt_cycles)' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 2 indeterminate malformed-data
 write_checker_defaults
 run_checker_gate --integration-cap 0
 assert_gate 2 indeterminate codex-cap-mismatch
@@ -926,6 +935,24 @@ jq '.charged_cycles = -1' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 2 indeterminate malformed-data
+
+echo "==> R4 REPRO-A/B: answered human and Codex inline findings need an integrator"
+for reviewer_id in 9 199175422; do
+    write_checker_defaults
+    jq -cn --argjson reviewer "$reviewer_id" '[[
+      {id:20,body:"[P1] rollback loses data",path:"example.sh",
+       user:{id:$reviewer,login:"reviewer"},
+       created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"},
+      {id:21,in_reply_to_id:20,body:(if $reviewer == 9 then "ack" else
+          "Declined: verified against this head; no defect." end),
+       user:{id:1,login:"pr-author"},
+       created_at:"2026-01-01T00:01:00Z",updated_at:"2026-01-01T00:01:00Z"}
+    ]]' >"${fixtures}/inline.pages.json"
+    # Empty review prose, no top-level finding, one charged cycle and no
+    # settled entries: the inline surface alone must close the fast path.
+    run_checker_gate
+    assert_gate 2 indeterminate checker-fast-path-unavailable
+done
 
 echo "==> #1070: direct evidence still reads live CI, thread replies and deferred record"
 write_checker_defaults
