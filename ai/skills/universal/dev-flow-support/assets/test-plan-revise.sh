@@ -217,6 +217,19 @@ expect_refused "diff.relative from a subdirectory" "lane c (#3) fence: c/two.txt
     bash -c "cd '$repo11/sub' && node '$reviser' base-move --slate s11 --session alice --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
 pass "diff.relative=true and a subdirectory cwd do not hide moved paths"
 
+expect_refused "GIT_LITERAL_PATHSPECS" "lane c (#3) fence: c/two.txt" \
+    bash -c "cd '$repo11/sub' && GIT_LITERAL_PATHSPECS=1 node '$reviser' base-move --slate s11 --session alice --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
+pass "GIT_LITERAL_PATHSPECS=1 does not hide moved paths"
+
+PLAN_REVISER="$reviser" node --input-type=module -e '
+  const { pathMatches } = await import(process.env.PLAN_REVISER)
+  const cases = [["a\u{1F600}.js", "a?.js"], ["n\nx.txt", "n*.txt"], ["d/a\u{1F600}\nb.js", "d/a*.js"]]
+  for (const [path, pattern] of cases) {
+    if (!pathMatches(path, pattern)) { console.error(`no match: ${JSON.stringify(path)} vs ${pattern}`); process.exit(1) }
+  }
+' || fail "? and * do not match an emoji or a line break as fence-check.sh does"
+pass "? and * match any single code point, line breaks included, as in fence-check.sh"
+
 # -- dependent release -------------------------------------------------------
 repo3="$(new_repo dependent)"
 write_plan "$repo3" s3 '[1]'

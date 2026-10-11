@@ -56,6 +56,7 @@ import {
   rmdirSync,
   unlinkSync,
   writeFileSync,
+  linkSync,
   openSync,
   closeSync,
 } from 'node:fs'
@@ -298,28 +299,51 @@ export function currentPlan(root, slate) {
   return plan
 }
 
+// readRunOwner — the run's recorded owning slate, or null before its first
+// helper write. The record is created whole (temp file, then link), so an
+// empty or partial one is never written here and is refused as malformed.
+function readRunOwner(root, runId) {
+  const ownerFile = join(root, 'runs', runId, 'owner-slate')
+  if (!existsSync(ownerFile)) return null
+  const owner = readFileSync(ownerFile, 'utf8').trim()
+  if (!SAFE_ID.test(owner) || owner === '.' || owner === '..') {
+    throw new Refusal(`owner record ${ownerFile} is empty or malformed; inspect it before writing this run`)
+  }
+  return owner
+}
+
+// assertRunOwner — refuse a run another slate owns. Runs before the slate
+// lock is taken, so a refused write leaves no lock behind.
+export function assertRunOwner(root, slate, runId) {
+  const owner = readRunOwner(root, runId)
+  if (owner !== null && owner !== slate) throw new Refusal(`run ${runId} is owned by slate ${owner}, not ${slate}; refusing`)
+}
+
 // bindRunToSlate — a run's owning slate is recorded once, at its first helper
-// write, in `runs/<run-id>/owner-slate` (created no-clobber). That first
-// write requires the run to be a lane in some revision of this slate's plan;
-// every later write only requires the locked slate to equal the recorded
-// owner, so a run retired from the current revision still writes and closes.
+// write, in `runs/<run-id>/owner-slate`. That first write requires the run to
+// be a lane in some revision of this slate's plan; every later write only
+// requires the locked slate to equal the recorded owner, so a run retired from
+// the current revision still writes and closes.
 export function bindRunToSlate(root, slate, runId) {
   const ownerFile = join(root, 'runs', runId, 'owner-slate')
-  if (!existsSync(ownerFile)) {
+  if (readRunOwner(root, runId) === null) {
     const file = join(root, 'slates', slate, 'plan.json')
     const revisions = existsSync(file) ? readJson(file, 'plan').revisions : []
     if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
       throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
     }
     mkdirSync(dirname(ownerFile), { recursive: true })
+    const temporary = `${ownerFile}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
+    writeFileSync(temporary, `${slate}\n`)
     try {
-      writeFileSync(ownerFile, `${slate}\n`, { flag: 'wx' })
+      linkSync(temporary, ownerFile)
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
+    } finally {
+      unlinkSync(temporary)
     }
   }
-  const owner = readFileSync(ownerFile, 'utf8').trim()
-  if (owner !== slate) throw new Refusal(`run ${runId} is owned by slate ${owner}, not ${slate}; refusing`)
+  assertRunOwner(root, slate, runId)
 }
 
 function normalizeScope({ milestone, issues }) {
@@ -548,6 +572,7 @@ function recordWrite(command, args) {
   const session = requireId('session', args.session)
   const runId = requireId('run-id', args['run-id'])
   args.at = resolveAt(args.at)
+  assertRunOwner(root, slate, runId)
   acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
   bindRunToSlate(root, slate, runId)
   const canonical = join(root, 'runs', runId, 'run.json')

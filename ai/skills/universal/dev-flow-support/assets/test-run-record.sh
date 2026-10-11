@@ -179,7 +179,20 @@ cp "$run" "$tmp/run-a.json"
 expect_refused "run owned by another slate" "run run-a is owned by slate s1, not s6" \
     bash -c "cd '$repo' && node '$writer' intervention --slate s6 --session alice --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z"
 cmp -s "$run" "$tmp/run-a.json" || fail "a refused foreign-slate write changed run.json"
-pass "a second slate cannot write a run another slate owns, even when its plan names it"
+[ ! -e "$state/locks/s6.json" ] || fail "a refused foreign-ownership write left slate s6 locked"
+pass "a second slate cannot write a run another slate owns, and the refusal takes no lock"
+
+[ -z "$(find "$state/runs" -name 'owner-slate.tmp.*')" ] || fail "an owner-slate temp file was left behind"
+cp "$state/runs/run-a/owner-slate" "$tmp/owner-slate"
+: >"$state/runs/run-a/owner-slate"
+expect_refused "empty owner record" "is empty or malformed" \
+    rr alice intervention --run-id run-a --kind other --note x --at 2026-01-01T00:03:35Z
+printf 's1\n../x' >"$state/runs/run-a/owner-slate"
+expect_refused "partial owner record" "is empty or malformed" \
+    rr alice intervention --run-id run-a --kind other --note x --at 2026-01-01T00:03:35Z
+cp "$tmp/owner-slate" "$state/runs/run-a/owner-slate"
+cmp -s "$run" "$tmp/run-a.json" || fail "a refused malformed-owner write changed run.json"
+pass "an empty or partial owner record is refused as malformed; the normal path leaves no temp file"
 
 mkdir -p "$state/slates/s7"
 printf 'not json\n' >"$state/slates/s7/plan.json"

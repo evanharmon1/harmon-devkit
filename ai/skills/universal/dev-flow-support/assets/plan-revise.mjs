@@ -76,7 +76,8 @@ function componentMatches(part, pattern) {
   if (part === pattern) return true
   if (!/[*?]/.test(pattern)) return false
   const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
-  return new RegExp(`^${source}$`).test(part)
+  // s and u: `?`/`*` match any code point, line breaks included, as bash case does.
+  return new RegExp(`^${source}$`, 'su').test(part)
 }
 
 function matchParts(pattern, path, pi = 0, qi = 0) {
@@ -206,7 +207,7 @@ function baseMove(args) {
       throw new Refusal(`new base ${newBase} does not descend from the plan base ${oldBase}`)
     }
     if (isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
-    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase, '--', ':/']).split('\0').filter(Boolean)
+    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase]).split('\0').filter(Boolean)
     const plan = reviseForBaseMove(last.plan, { newBase, done, changed })
     const seq = document.revisions.length
     const entry = { seq, prev_digest: last.digest, at, reason: args.reason, plan }
