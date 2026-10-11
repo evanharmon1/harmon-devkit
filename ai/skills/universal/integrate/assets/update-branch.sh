@@ -21,7 +21,11 @@
 # Provenance (step 4). Parents alone are not enough: a writer with push access
 # can push a merge commit with the same two parents and a different tree
 # (harmon-init#1630). The new head must therefore satisfy all of:
-#   - exactly two parents: the captured head, then the base tip read in step 1;
+#   - exactly two parents: the captured head first, then the base tip read
+#     from refs/heads/<base> in step 1 — or, where the base advanced during
+#     the request, a descendant of that tip still reachable from the base
+#     branch. Not the PR's `baseRefOid`: GitHub keeps that at the base as of
+#     the last head update, so it is stale exactly when a catch-up is needed;
 #   - committer `GitHub <noreply@github.com>`;
 #   - `verification.verified == true`. GitHub signs the commits it creates with
 #     its web-flow key, and a signature that verifies for that committer
@@ -220,10 +224,24 @@ current_head="$(field "$before" headRefOid)" ||
     finish indeterminate 13 "PR read carries no headRefOid"
 [ "$current_head" = "$head" ] ||
     finish stale-head 12 "the PR head is ${current_head}, not the captured ${head} — a newer push; re-run the gate"
-base_oid="$(field "$before" baseRefOid)" ||
-    finish indeterminate 13 "PR read carries no baseRefOid"
+# The base tip from the branch itself, never the PR's baseRefOid (see the
+# provenance note above). Ref encoding as readiness-gate.sh does it.
+encoded_base="$(jq -rn --arg s "$base" '$s | @uri | gsub("%2F"; "/")')"
+read_base_tip() {
+    run_gh api --method GET "repos/${repo}/git/ref/heads/${encoded_base}" |
+        jq -er '.object.sha | select(type == "string")'
+}
+base_oid="$(read_base_tip)" ||
+    finish indeterminate 13 "cannot read the tip of ${base} from refs/heads/${base}"
 valid_sha "$base_oid" ||
-    finish indeterminate 13 "PR read carries a malformed baseRefOid"
+    finish indeterminate 13 "the tip of ${base} is not a commit SHA"
+
+# compare_status FROM TO — GitHub's compare status of TO against FROM
+# (`ahead` means TO descends from FROM).
+compare_status() {
+    run_gh api --method GET "repos/${repo}/compare/${1}...${2}" |
+        jq -er '.status | select(type == "string")'
+}
 
 # ---- 2. the request: merge mode, guarded by the expected head ---------------
 # gh api prints the error body on stdout and `gh: <message> (HTTP n)` on
@@ -305,10 +323,30 @@ valid_sha "$new_head" ||
 # ---- 4. provenance: is the new head GitHub's catch-up? ----------------------
 commit="$(run_gh api --method GET "repos/${repo}/commits/${new_head}")" ||
     finish indeterminate 13 "cannot read commit ${new_head} to establish its provenance"
-jq -e --arg h "$head" --arg b "$base_oid" '
-    [.parents[]?.sha] == [$h, $b]
-' <<<"$commit" >/dev/null ||
-    finish stale-head 12 "the head moved to ${new_head}, whose parents are not ${head} then ${base_oid} — not this catch-up; a newer push, re-run the gate"
+parents="$(jq -r '[.parents[]?.sha] | if length == 2 then join(" ") else empty end' <<<"$commit")" ||
+    finish indeterminate 13 "cannot read the parents of ${new_head}"
+first_parent=${parents%% *}
+second_parent=${parents#* }
+[ -n "$parents" ] && [ "$first_parent" = "$head" ] && valid_sha "$second_parent" ||
+    finish stale-head 12 "the head moved to ${new_head}, which is not a two-parent merge whose first parent is ${head} — not this catch-up; a newer push, re-run the gate"
+if [ "$second_parent" != "$base_oid" ]; then
+    # The base advanced while GitHub merged: the second parent must descend
+    # from the tip read before the request and still be on the base branch.
+    descent="$(compare_status "$base_oid" "$second_parent")" ||
+        finish indeterminate 13 "cannot compare ${base_oid}...${second_parent} to place the merged base"
+    [ "$descent" = ahead ] ||
+        finish stale-head 12 "the head moved to ${new_head}, whose second parent ${second_parent} does not descend from the ${base} tip ${base_oid} — not this catch-up; a newer push, re-run the gate"
+    tip_now="$(read_base_tip)" ||
+        finish indeterminate 13 "cannot re-read the tip of ${base} to place the merged base"
+    valid_sha "$tip_now" ||
+        finish indeterminate 13 "the tip of ${base} is not a commit SHA"
+    containment="$(compare_status "$second_parent" "$tip_now")" ||
+        finish indeterminate 13 "cannot compare ${second_parent}...${tip_now} to place the merged base"
+    case "$containment" in
+    identical | ahead) ;;
+    *) finish stale-head 12 "the head moved to ${new_head}, whose second parent ${second_parent} is not on ${base} — not this catch-up; a newer push, re-run the gate" ;;
+    esac
+fi
 jq -e '
     .commit.committer.name == "GitHub"
     and .commit.committer.email == "noreply@github.com"

@@ -1721,8 +1721,11 @@ retarget; 15 not a draft; 16 refused for any other reason):
   `gh pr update-branch --rebase`; it rewrites pushed history, and the helper
   refuses every spelling of it.
 - **The catch-up head is defined by what it is.** It is a merge commit whose
-  parents are exactly the captured head, then the base tip read before the
-  request, committed by `GitHub <noreply@github.com>` under a signature that
+  parents are exactly the captured head, then the base tip read from the base
+  branch itself (`refs/heads/<base>`, never the PR's `baseRefOid`, which
+  stays at the base of the last head update) before the request, or a
+  descendant of that tip still on the base branch where the base advanced
+  during the request, committed by `GitHub <noreply@github.com>` under a signature that
   verifies. Parents alone are not enough: a writer with push access can push
   the same two parents over a different tree, and GitHub's web-flow signature
   binds the tree as well. Any other head (a concurrent push, an

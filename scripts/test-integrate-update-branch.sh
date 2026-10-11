@@ -31,6 +31,10 @@ head_sha=1111111111111111111111111111111111111111
 base_oid=2222222222222222222222222222222222222222
 new_sha=3333333333333333333333333333333333333333
 other_sha=4444444444444444444444444444444444444444
+# The PR's baseRefOid, deliberately stale: GitHub keeps it at the base of the
+# last head update, so the helper must read the tip from refs/heads/<base>.
+stale_base_oid=5555555555555555555555555555555555555555
+advanced_sha=6666666666666666666666666666666666666666
 
 # The stub serves `pr view` from pr-<n>.json for the n-th read (falling back to
 # the highest-numbered fixture at or below n), the PUT from put-out/put-err/
@@ -63,8 +67,32 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = PUT ]; then
     exit "$(cat "$GH_FIXTURES/put-exit" 2>/dev/null || echo 0)"
 fi
 if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = GET ]; then
-    [ -f "$GH_FIXTURES/commit.json" ] || exit 1
-    cat "$GH_FIXTURES/commit.json"
+    case "${4:-}" in
+    */git/ref/heads/*)
+        # ref.json for the first read of the branch tip, ref-2.json (when
+        # present) for later ones.
+        [ ! -f "$GH_FIXTURES/ref-exit" ] || exit "$(cat "$GH_FIXTURES/ref-exit")"
+        reads=0
+        [ ! -f "$GH_FIXTURES/ref-count" ] || reads="$(cat "$GH_FIXTURES/ref-count")"
+        reads=$((reads + 1))
+        printf '%s\n' "$reads" >"$GH_FIXTURES/ref-count"
+        if [ "$reads" -ge 2 ] && [ -f "$GH_FIXTURES/ref-2.json" ]; then
+            cat "$GH_FIXTURES/ref-2.json"
+        else
+            cat "$GH_FIXTURES/ref.json"
+        fi
+        ;;
+    */compare/*)
+        # compare-<from>...<to>.json; an unscripted comparison fails.
+        f="$GH_FIXTURES/compare-${4##*/compare/}.json"
+        [ -f "$f" ] || exit 1
+        cat "$f"
+        ;;
+    *)
+        [ -f "$GH_FIXTURES/commit.json" ] || exit 1
+        cat "$GH_FIXTURES/commit.json"
+        ;;
+    esac
     exit 0
 fi
 exit 90
@@ -73,7 +101,7 @@ chmod +x "${bin_dir}/gh"
 
 pr_json() {
     # $1 head, $2 baseRefName, $3 state (default OPEN), $4 isDraft (default true)
-    jq -cn --arg h "$1" --arg b "$2" --arg o "$base_oid" --arg s "${3:-OPEN}" \
+    jq -cn --arg h "$1" --arg b "$2" --arg o "$stale_base_oid" --arg s "${3:-OPEN}" \
         --argjson d "${4:-true}" \
         '{state:$s,isDraft:$d,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
 }
@@ -94,6 +122,16 @@ reset() {
     pr_json "$new_sha" main >"${fixtures}/pr-2.json"
     printf '%s\n' '{"message":"Updating pull request branch.","url":"https://github.com/o/r/pull/7"}' >"${fixtures}/put-out"
     commit_json "$head_sha" "$base_oid" GitHub true >"${fixtures}/commit.json"
+    ref_json "$base_oid" >"${fixtures}/ref.json"
+}
+
+ref_json() {
+    jq -cn --arg s "$1" '{ref:"refs/heads/main",object:{sha:$s,type:"commit"}}'
+}
+
+compare_json() {
+    # $1 from, $2 to, $3 status
+    jq -cn --arg s "$3" '{status:$s}' >"${fixtures}/compare-${1}...${2}.json"
 }
 
 run_helper() {
@@ -303,6 +341,37 @@ pr_json "$new_sha" release >"${fixtures}/pr-2.json"
 run_default
 expect "retarget during" 14 "base-retargeted"
 
+echo "==> the base tip comes from the branch, not the PR's stale baseRefOid"
+# Integration cycle 1 (P1, observed on PR #1377): baseRefOid stays at the base
+# of the last head update. Every fixture's PR carries a stale baseRefOid; this
+# one asserts the merge against the branch tip is accepted and the tip was read
+# from refs/heads/<base> before the PUT.
+reset
+run_default
+expect "stale baseRefOid" 0 ""
+[ "$out" = "$new_sha" ] || fail "stale baseRefOid printed '$out'"
+ref_line="$(grep -n 'git/ref/heads/main' "$log" | head -n 1 | cut -d: -f1)"
+put_line="$(grep -n -- '--method PUT' "$log" | head -n 1 | cut -d: -f1)"
+[ -n "$ref_line" ] && [ -n "$put_line" ] && [ "$ref_line" -lt "$put_line" ] ||
+    fail "the base tip was not read from refs/heads/main before the PUT: $(cat "$log")"
+
+echo "==> a base that advanced during the request is accepted"
+reset
+commit_json "$head_sha" "$advanced_sha" GitHub true >"${fixtures}/commit.json"
+compare_json "$base_oid" "$advanced_sha" ahead
+ref_json "$advanced_sha" >"${fixtures}/ref-2.json"
+compare_json "$advanced_sha" "$advanced_sha" identical
+run_default
+expect "base advanced during the request" 0 ""
+[ "$out" = "$new_sha" ] || fail "base advanced during the request printed '$out'"
+
+echo "==> an unreadable base tip is indeterminate, without a PUT"
+reset
+printf '1\n' >"${fixtures}/ref-exit"
+run_default
+expect "unreadable base tip" 13 "cannot read the tip of main"
+no_put "unreadable base tip"
+
 echo "==> a head that is not GitHub's catch-up is a newer push"
 reset
 commit_json "$other_sha" "$base_oid" GitHub true >"${fixtures}/commit.json"
@@ -310,8 +379,20 @@ run_default
 expect "wrong first parent" 12 "not this catch-up"
 reset
 commit_json "$head_sha" "$other_sha" GitHub true >"${fixtures}/commit.json"
+compare_json "$base_oid" "$other_sha" diverged
 run_default
-expect "base tip moved" 12 "not this catch-up"
+expect "second parent unrelated to the base" 12 "does not descend"
+reset
+commit_json "$head_sha" "$advanced_sha" GitHub true >"${fixtures}/commit.json"
+compare_json "$base_oid" "$advanced_sha" ahead
+ref_json "$base_oid" >"${fixtures}/ref-2.json"
+compare_json "$advanced_sha" "$base_oid" behind
+run_default
+expect "descendant no longer on the base" 12 "is not on main"
+reset
+commit_json "$head_sha" "$other_sha" GitHub true >"${fixtures}/commit.json"
+run_default
+expect "uncomparable second parent" 13 "cannot compare"
 reset
 jq -c '.parents = [{sha:"'"$head_sha"'"}]' "${fixtures}/commit.json" >"${fixtures}/c" && mv "${fixtures}/c" "${fixtures}/commit.json"
 run_default
