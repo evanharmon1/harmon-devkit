@@ -59,7 +59,7 @@ new_run() {
       stage_transitions: [{stage: "kickoff", entered_at: "2026-01-01T00:00:00Z"}],
       interventions: [], outcome: null, pr: null,
       evidence_comments: [], evidence_registrations: [], pr_bindings: [],
-      outcome_transitions: [], settlements: [], promotion: null
+      outcome_transitions: [], settlements: [], promotion: null, receipts: []
     }' >"$state/runs/$run_id/run.json"
 }
 
@@ -88,21 +88,52 @@ no_candidates() {
 run="$state/runs/run-a/run.json"
 new_run run-a
 
-# -- slate lock: first write needs a scope --------------------------------
-expect_refused "first write without scope" "no scope to record" \
+# write_plan SLATE ISSUE:RUN... — the minimal plan shape the writer reads:
+# the latest revision's issue numbers and lane run ids.
+write_plan() {
+    local slate="$1"
+    shift
+    mkdir -p "$state/slates/$slate"
+    printf '%s\n' "$@" | jq -R 'split(":") | {issue: (.[0]|tonumber), run: .[1]}' | jq -s '{
+      schema: 1, slate_id: "'"$slate"'",
+      revisions: [{plan: {issues: map({number: .issue}), lanes: map(select(.run != "") | {run_id: .run, issue})}}]
+    }' >"$state/slates/$slate/plan.json"
+}
+
+lock_scope() {
+    jq -r '.session + ":" + (.milestone|tostring) + ":" + (.issues|map(tostring)|join(","))' "$state/locks/$1.json"
+}
+
+# -- runs are written only as lanes of the locked slate's plan ---------------
+expect_refused "write without a plan" "has no plan.json" \
     rr alice transition --run-id run-a --stage claim --exit kicked --at 2026-01-01T00:01:00Z
-pass "first write without a scope or plan is refused"
+pass "a run write for a slate with no plan is refused"
 
 (cd "$repo" && node "$writer" lock acquire --slate s1 --session alice --milestone 7 --issues 11,12) >/dev/null
-[ "$(jq -r '.session + ":" + (.milestone|tostring) + ":" + (.issues|map(tostring)|join(","))' "$state/locks/s1.json")" = "alice:7:11,12" ] ||
-    fail "lock does not record session, milestone and issue set"
-pass "lock records the session, milestone and issue set"
+[ "$(lock_scope s1)" = "alice:7:11,12" ] || fail "lock does not record session, milestone and issue set"
+pass "before a plan exists, the lock records the given milestone and issue set"
+
+write_plan s1 11:run-a 12:run-b 13:run-c 14:run-d
+new_run run-z
+cp "$state/runs/run-z/run.json" "$tmp/run-z.json"
+expect_refused "run outside the plan" "run run-z is not a lane of slate s1" \
+    rr alice transition --run-id run-z --stage claim --exit kicked --at 2026-01-01T00:01:00Z
+cmp -s "$state/runs/run-z/run.json" "$tmp/run-z.json" || fail "a refused foreign run changed its record"
+pass "a write naming a run that is not a lane of the locked slate's plan is refused, record unchanged"
+
+expect_refused "issues disagreeing with the plan" "disagrees with slate s1's plan" \
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s1 --session alice --issues 11"
+pass "--issues that disagree with the plan are refused"
 
 # -- transitions -----------------------------------------------------------
 rr alice transition --run-id run-a --stage claim --exit "resolved" --at 2026-01-01T00:01:00Z >/dev/null
 [ "$(jq -r '.stage_transitions | map(.stage) | join(",")' "$run")" = "kickoff,claim" ] || fail "claim transition not recorded"
 [ "$(jq -r '.stage_transitions[0].exit' "$run")" = "resolved" ] || fail "previous stage exit not recorded"
-pass "transition appends the stage and closes the previous exit"
+[ "$(jq -c '.receipts' "$run")" = '[{"kind":"transition","stage":"claim","entered_at":"2026-01-01T00:01:00Z"}]' ] ||
+    fail "transition did not append its matching receipt"
+pass "transition appends the stage and its receipt, and closes the previous exit"
+[ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "lock scope not re-derived from the plan: $(lock_scope s1)"
+pass "every write re-derives the lock's issue set from the plan"
 
 cp "$run" "$tmp/before.json"
 expect_refused "edge outside the allowed set" "not a valid transition from claim" \
@@ -115,9 +146,31 @@ expect_refused "missing exit" "--exit is required" \
     rr alice transition --run-id run-a --stage implement --at 2026-01-01T00:02:00Z
 pass "a transition that leaves a stage without an exit is refused"
 
-for step in "implement:claimed" "verify:implemented" "security:verified" "integration:secure"; do
-    rr alice transition --run-id run-a --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:03:00Z >/dev/null
-done
+# adjudicate RUN DISPOSITION — a challenge round-1 adjudication document.
+adjudicate() {
+    mkdir -p "$state/runs/$1/adjudications"
+    jq -n --arg id "$1" --arg d "$2" '{
+      schema: 2, run_id: $id, stage: "challenge", round: 1,
+      reviewed_head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      adjudications: [{finding_id: "challenge-r1-codex-adversarial-1", reviewer_priority: "P2",
+        adjudicated_priority: "P2", disposition: $d, reason: "r", evidence: "e", override: null}]
+    }' >"$state/runs/$1/adjudications/challenge-r1.json"
+}
+
+# walk RUN [DISPOSITION] — claim → … → integration, adjudicating challenge
+# round 1 with DISPOSITION when one is given.
+walk() {
+    local run_id="$1" disposition="${2:-}" step
+    for step in "implement:claimed" "verify:implemented" "challenge:verified"; do
+        rr alice transition --run-id "$run_id" --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:03:00Z >/dev/null
+    done
+    [ -z "$disposition" ] || adjudicate "$run_id" "$disposition"
+    for step in "security:converged" "integration:secure"; do
+        rr alice transition --run-id "$run_id" --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:03:00Z >/dev/null
+    done
+}
+
+walk run-a
 [ "$(jq -r '.stage_transitions[-1].stage' "$run")" = "integration" ] || fail "walk to integration failed"
 
 # -- interventions and ruling digests -------------------------------------
@@ -142,6 +195,17 @@ out="$(rr alice bind-pr --run-id run-a --number 42 --url https://example.test/pr
 pass "a PR binding extends the chain and sets the projection; a repeat is a no-op"
 
 # -- promotion ---------------------------------------------------------------
+new_run run-c
+(cd "$repo" && node "$writer" transition --slate s1 --session alice --run-id run-c --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
+walk run-c defer
+node "$asset_dir/validate-result-schemas.mjs" run "$state/runs/run-c/run.json" --receipts "$state/runs/run-c/run.json" \
+    --adjudication "$state/runs/run-c/adjudications/challenge-r1.json" >/dev/null ||
+    fail "strict validation with the challenge adjudication fails after the writer's transitions"
+pass "transitions written after an adjudication keep strict --receipts validation passing"
+rr alice bind-pr --run-id run-c --number 44 --url https://example.test/pr/44 --at 2026-01-01T00:05:00Z >/dev/null
+expect_refused "promotion over an unsettled deferred finding" "has no settlement" \
+    rr alice promote --run-id run-c --head "$(printf '%040d' 0 | tr 0 a)" --fingerprint fp --at 2026-01-01T00:10:00Z
+pass "a promotion over an unsettled deferred finding is refused"
 head_sha="$(printf '%040d' 0 | tr 0 a)"
 expect_refused "promotion before last transition" "must not be before the last stage_transitions entry" \
     rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:02:30Z
@@ -168,12 +232,15 @@ expect_refused "same slate, other session" "locked by session alice" \
     rr bob intervention --run-id run-a --kind other --note x --at 2026-01-01T00:09:30Z
 expect_refused "same milestone, other slate" "milestone 7 is already locked by session alice" \
     bash -c "cd '$repo' && node '$writer' lock acquire --slate s2 --session bob --milestone 7 --issues 99"
-expect_refused "shared issue, other slate" "issue(s) 12 are already locked by session alice" \
+expect_refused "shared issue, other slate" "issue(s) 12, 13 are already locked by session alice" \
     bash -c "cd '$repo' && node '$writer' lock acquire --slate s3 --session bob --issues 12,13"
-(cd "$repo" && node "$writer" lock acquire --slate s4 --session bob --milestone 8 --issues 13) >/dev/null
+write_plan s5 12:run-x
+expect_refused "plans sharing an issue" "issue(s) 12 are already locked by session alice" \
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s5 --session bob"
+(cd "$repo" && node "$writer" lock acquire --slate s4 --session bob --milestone 8 --issues 15) >/dev/null
 expect_refused "release by non-holder" "only that session may release it" \
     bash -c "cd '$repo' && node '$writer' lock release --slate s1 --session bob"
-pass "the slate lock refuses another session by slate id, milestone and issue set"
+pass "the slate lock refuses another session by slate id, milestone and issue set, whatever flags it passes"
 
 # -- run validated before writing ---------------------------------------------
 new_run run-b
@@ -214,9 +281,9 @@ pass "closing an open run records its outcome, refuses to overwrite an archive, 
 
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane
-new_run run-c
-(cd "$tmp/lane" && node "$writer" transition --slate s1 --session alice --run-id run-c --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
-[ "$(jq -r '.stage_transitions[-1].stage' "$state/runs/run-c/run.json")" = "claim" ] ||
+new_run run-d
+(cd "$tmp/lane" && node "$writer" transition --slate s1 --session alice --run-id run-d --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
+[ "$(jq -r '.stage_transitions[-1].stage' "$state/runs/run-d/run.json")" = "claim" ] ||
     fail "a linked worktree did not write the common directory's record"
 pass "a linked worktree writes the common directory's record"
 

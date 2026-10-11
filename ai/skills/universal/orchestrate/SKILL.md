@@ -231,14 +231,34 @@ throwaway work only.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
 
-Write the run record only through `dev-flow-support/assets/run-record.mjs`
-(`transition`, `intervention`, `bind-pr`, `promote`, `close`), never by hand.
-Each write builds a candidate, validates it with `validate-result-schemas.mjs
-run`, renames it over `run.json` and validates the readback, so a refused
-edge, a promotion dated before the last transition, or an entry dated after
-the promotion never lands. Point an intervention that rests on a ruling file
-at it with `--ruling FILE`: the note records the file's SHA-256, so a later
-edit to the ruling is detectable. `close` records a non-promotion outcome if
+Use `dev-flow-support/assets/run-record.mjs` for the five run-record
+operations it supports, never a hand edit:
+
+- `transition`, which also appends the matching transition receipt;
+- `intervention`;
+- `bind-pr`;
+- `promote`;
+- `close`.
+
+The run must be a lane of the slate's current `plan.json`. Each write builds
+a candidate, validates it with `validate-result-schemas.mjs run --receipts`
+plus every adjudication document in the run directory, renames it over
+`run.json` and validates the readback. A refused edge, a promotion dated
+before the last transition, a promotion over an unsettled deferred finding,
+or an entry dated after the promotion therefore never lands. The rest of the
+record keeps its existing writers:
+
+- the kickoff record — this skill, at activation;
+- pass receipts, evidence registrations, splits and stage-advance
+  transitions — `/review`'s own write recipe;
+- settlements — `/integrate`.
+
+Each of those writers runs the same candidate, validate, rename and readback
+sequence. Point an intervention that rests on a ruling file at it with
+`--ruling FILE`: the note records the file's SHA-256. That digest identifies
+the bytes you relied on. It does not protect them: the note lives in a
+lane-writable record and nothing verifies it automatically, so an edit is
+caught only by someone who re-hashes the file and compares. `close` records a non-promotion outcome if
 the run is still open, then moves the run's orchestrator directory into
 `runs/<run-id>/orchestrator/`, so a stale dispatch file can never mislead a
 later session. Files under `.git/` never show in `git status`.
@@ -255,8 +275,8 @@ Durable means *this clone*: the common directory survives restarts, `/clear`
 and worktree removal, but not a fresh clone, a rebuilt devcontainer without a
 persistent volume, or an ephemeral cloud session. GitHub evidence stays the
 cross-machine record. Every worktree shares the directory, so a lane *can*
-edit these files; the recorded ruling digests make such an edit detectable
-after the fact.
+edit these files; re-hashing a ruling file against its recorded digest is the
+only check that an edit happened.
 
 ## Lane briefs
 

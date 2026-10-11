@@ -13,11 +13,16 @@
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock status  --slate ID
 //
-// Every record write takes the slate lock (acquiring it on first use), then,
-// under a short-lived per-file mutex, builds the complete candidate beside
-// run.json, validates it with `validate-result-schemas.mjs run`, renames it
-// over run.json, and validates the canonical readback. Any failure leaves
-// the canonical record as it was and exits non-zero. The validator owns the
+// Every record write requires --run-id to be a lane run_id in the slate's
+// plan.json and takes the slate lock (acquiring it on first use, its scope
+// always derived from that plan). Then, under a short-lived per-file mutex,
+// it builds the complete candidate beside run.json, validates it with
+// `validate-result-schemas.mjs run --receipts <candidate>` plus every
+// `adjudications/*.json` in the run directory (or `--no-adjudications` when
+// there are none), renames it over run.json, and validates the canonical
+// readback the same way. A refusal before the rename leaves run.json as it
+// was; a readback failure after the rename leaves the new content in place
+// and is reported as a blocker. The validator owns the
 // lifecycle rules (allowed edges, chronology, chains, projections); this
 // writer adds the one it cannot see: once the run is promoted, no entry may
 // be dated after `promotion.promoted_at` (the validator does not bound
@@ -214,9 +219,30 @@ export function readJson(file, label) {
   }
 }
 
+// A run record is always validated in strict mode: its own receipts bind the
+// stages, and every adjudication document beside it is supplied (or the
+// confirmed-zero flag when there is none) — the review skill's recipe for
+// every run.json replacement. The candidate sits beside run.json, so both
+// share one run directory.
+function contextArgs(kind, file) {
+  if (kind !== 'run') return []
+  const directory = join(dirname(file), 'adjudications')
+  const documents = existsSync(directory)
+    ? readdirSync(directory)
+        .filter((name) => name.endsWith('.json'))
+        .sort()
+    : []
+  const adjudications =
+    documents.length === 0 ? ['--no-adjudications'] : documents.flatMap((name) => ['--adjudication', join(directory, name)])
+  return ['--receipts', file, ...adjudications]
+}
+
 function runValidator(kind, file) {
   try {
-    execFileSync(process.execPath, [VALIDATOR, kind, file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    execFileSync(process.execPath, [VALIDATOR, kind, file, ...contextArgs(kind, file)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     return null
   } catch (error) {
     return `${error.stderr || ''}${error.stdout || ''}`.trim() || `validator exited ${error.status}`
@@ -260,14 +286,14 @@ function lockPaths(root, slate) {
   return { dir, file: join(dir, `${slate}.json`), registry: join(dir, 'registry') }
 }
 
-export function planIssues(root, slate) {
-  const plan = join(root, 'slates', slate, 'plan.json')
-  if (!existsSync(plan)) return null
-  const document = readJson(plan, 'plan')
-  const last = Array.isArray(document.revisions) ? document.revisions.at(-1) : null
-  const issues = last?.plan?.issues
-  if (!Array.isArray(issues)) throw new Refusal(`plan has no readable issue list: ${plan}`)
-  return issues.map((issue) => issue.number)
+// currentPlan — the slate's latest plan revision, or null when no plan exists.
+export function currentPlan(root, slate) {
+  const file = join(root, 'slates', slate, 'plan.json')
+  if (!existsSync(file)) return null
+  const document = readJson(file, 'plan')
+  const plan = Array.isArray(document.revisions) ? document.revisions.at(-1)?.plan : null
+  if (!Array.isArray(plan?.issues) || !Array.isArray(plan?.lanes)) throw new Refusal(`plan has no readable issues and lanes: ${file}`)
+  return plan
 }
 
 function normalizeScope({ milestone, issues }) {
@@ -283,33 +309,40 @@ function readLock(file) {
   return lock
 }
 
+// acquireSlateLock — the lock's issue set is the plan's whenever a plan
+// exists, re-derived on every acquisition; --issues is accepted only before
+// there is a plan, or when it equals the plan's set. The milestone is
+// recorded from --milestone (the plan schema carries none) and never changes
+// once recorded. Every acquisition that records a new or changed scope is
+// checked against every other session's lock.
 export function acquireSlateLock({ root, slate, session, milestone, issues }) {
   const { dir, file, registry } = lockPaths(root, slate)
   mkdirSync(dir, { recursive: true })
+  const plan = currentPlan(root, slate)
+  const planned = plan === null ? null : normalizeScope({ issues: plan.issues.map((issue) => issue.number) }).issues
+  if (planned !== null && issues !== undefined && canonicalJson(normalizeScope({ issues }).issues) !== canonicalJson(planned)) {
+    throw new Refusal(`--issues ${issues.join(',')} disagrees with slate ${slate}'s plan (${planned.join(',')}); the plan is the scope`)
+  }
   return withMutex(registry, () => {
-    if (existsSync(file)) {
-      const held = readLock(file)
-      if (held.session !== session) {
-        throw new Refusal(`slate ${slate} is locked by session ${held.session} (since ${held.acquired_at}); refusing`)
-      }
-      const requested = milestone !== undefined || issues !== undefined ? normalizeScope({ milestone, issues }) : null
-      if (
-        requested !== null &&
-        canonicalJson(requested) !== canonicalJson({ milestone: held.milestone ?? null, issues: held.issues })
-      ) {
-        throw new Refusal(
-          `slate ${slate} is already locked by this session with a different scope (milestone ${held.milestone}, issues ${held.issues.join(',')}); release it before changing scope`,
-        )
-      }
-      return held
+    const held = existsSync(file) ? readLock(file) : null
+    if (held !== null && held.session !== session) {
+      throw new Refusal(`slate ${slate} is locked by session ${held.session} (since ${held.acquired_at}); refusing`)
     }
-    const derived = issues ?? planIssues(root, slate)
-    if (milestone === undefined && (derived === null || derived.length === 0)) {
+    if (held !== null && milestone !== undefined && held.milestone !== null && held.milestone !== milestone) {
+      throw new Refusal(`slate ${slate} is locked for milestone ${held.milestone}, not ${milestone}`)
+    }
+    const scope = normalizeScope({
+      milestone: held?.milestone ?? milestone,
+      issues: planned ?? (issues !== undefined ? issues : held?.issues),
+    })
+    if (scope.milestone === null && scope.issues.length === 0) {
       throw new Refusal(
         `slate ${slate} has no lock yet and no scope to record: pass --milestone and/or --issues, or write its plan.json first`,
       )
     }
-    const scope = normalizeScope({ milestone, issues: derived ?? [] })
+    if (held !== null && canonicalJson(scope) === canonicalJson({ milestone: held.milestone ?? null, issues: held.issues })) {
+      return held
+    }
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.json') || name === `${slate}.json`) continue
       const other = readLock(join(dir, name))
@@ -326,7 +359,7 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
         )
       }
     }
-    const lock = { schema: 1, slate_id: slate, session, ...scope, acquired_at: resolveAt(undefined) }
+    const lock = { schema: 1, slate_id: slate, session, ...scope, acquired_at: held?.acquired_at ?? resolveAt(undefined) }
     const temporary = `${file}.tmp.${process.pid}`
     writeFileSync(temporary, `${JSON.stringify(lock, null, 2)}\n`)
     renameSync(temporary, file)
@@ -410,6 +443,9 @@ const MUTATORS = {
     guardTimestamp(record, args.at)
     closeLastExit(record, args.exit, { required: true })
     record.stage_transitions.push({ stage, entered_at: args.at })
+    // dev-flow-exit reads the active stage from the receipts sequence, so the
+    // transition and its receipt land in the same candidate.
+    record.receipts = [...(record.receipts ?? []), { kind: 'transition', stage, entered_at: args.at }]
     return `transition → ${stage}`
   },
   intervention(record, args, context) {
@@ -486,6 +522,11 @@ function recordWrite(command, args) {
   const session = requireId('session', args.session)
   const runId = requireId('run-id', args['run-id'])
   args.at = resolveAt(args.at)
+  const plan = currentPlan(root, slate)
+  if (plan === null) throw new Refusal(`slate ${slate} has no plan.json; a run is written only as a lane of its slate's plan`)
+  if (!plan.lanes.some((lane) => lane.run_id === runId)) {
+    throw new Refusal(`run ${runId} is not a lane of slate ${slate}'s current plan; refusing to write it under this slate's lock`)
+  }
   acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
   const canonical = join(root, 'runs', runId, 'run.json')
   const summary = withMutex(canonical, () => {

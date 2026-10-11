@@ -11183,8 +11183,20 @@ expect_ok "orchestrate: names the per-slate orchestrator directory keyed by run 
     grep -qF 'dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/' "$ORCH_MD"
 expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad (#1296)" \
     grep -qF 'Everything you need in order to resume lives under the Git common directory,' "$ORCH_MD"
-expect_ok "orchestrate: run records are written only through run-record.mjs (#1296)" \
-    grep -qF 'Write the run record only through `dev-flow-support/assets/run-record.mjs`' "$ORCH_MD"
+expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
+    grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the five run-record' "$ORCH_MD"
+expect_ok "orchestrate: the run-record fields run-record.mjs does not write keep their named writers (#1296)" \
+    grep -qF 'record keeps its existing writers:' "$ORCH_MD"
+if grep -qF 'Write the run record only through' "$ORCH_MD"; then
+    bad "orchestrate: still claims every run-record write goes through run-record.mjs (#1296 challenge r1 -4)"
+else
+    ok "orchestrate: no longer claims every run-record write goes through run-record.mjs (#1296 challenge r1 -4)"
+fi
+if grep -qF 'make such an edit detectable' "$ORCH_MD"; then
+    bad "orchestrate: overclaims ruling-digest edit detection (#1296 challenge r1 -10)"
+else
+    ok "orchestrate: states the ruling digest guarantee without overclaiming (#1296 challenge r1 -10)"
+fi
 expect_ok "orchestrate: base moves go through plan-revise.mjs (#1296)" \
     grep -qF '`dev-flow-support/assets/plan-revise.mjs base-move`' "$ORCH_MD"
 expect_ok "dev-flow-support: lists the run-record writer (#1296)" \
