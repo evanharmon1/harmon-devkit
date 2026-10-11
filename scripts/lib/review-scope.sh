@@ -687,6 +687,25 @@ review_envelope_prepare() {
         echo "envelope mode requires jq and node" >&2
         exit 2
     }
+    # Every git call from here on — the HEAD check, the merge base, the
+    # manifest, the diff, the snapshot — reads the REAL objects: refs/replace
+    # could otherwise substitute what a SHA names on the proof path
+    # (integration-r1-codex-cloud-3). Exported, as round-push.sh does, so no
+    # call site can be missed. Grafts are the older form of the same override
+    # and no flag disables them, so their presence is a refusal; the path is
+    # resolved absolute because grafts live in the COMMON directory, which a
+    # linked worktree's --git-dir does not name.
+    export GIT_NO_REPLACE_OBJECTS=1
+    local grafts
+    if ! grafts="$(git rev-parse --path-format=absolute --git-path info/grafts 2>/dev/null)" ||
+        [ -z "$grafts" ]; then
+        echo "cannot resolve where this checkout keeps info/grafts; refusing rather than trusting overridden history" >&2
+        exit 1
+    fi
+    [ ! -e "$grafts" ] || {
+        echo "$grafts exists, so commit history here is overridden and no SHA is authoritative; refusing envelope mode" >&2
+        exit 1
+    }
     [ -d "$envelope_record_dir" ] && [ -f "$envelope_record_dir/run.json" ] || {
         echo "--record-dir must name an existing run record directory containing run.json" >&2
         exit 2
@@ -786,6 +805,21 @@ review_envelope_bind_scope() {
     [ -n "$manifest" ] || refuse_empty_scope \
         "the captured range ${envelope_merge_base}..${envelope_head} changes no files." \
         "Envelope mode reviews a branch's commits; there is nothing to review."
+    # Envelope mode resolves its inputs (the registry, and through the caller
+    # the policy) from THIS checkout, so a change that edits them would choose
+    # the values governing its own pass — the merge-base rule in AGENTS.md
+    # § "Rigor and Strategy" (integration-r1-codex-cloud-1). Such a change is
+    # refused here and reviewed through the role agents instead.
+    local governing
+    governing="$(git diff --no-ext-diff --name-only "$envelope_merge_base" "$envelope_head" -- \
+        agent-registry.json .devflow.toml)" || {
+        echo "could not check the captured range for governing-file edits" >&2
+        exit 2
+    }
+    [ -z "$governing" ] || {
+        echo "the captured range edits $(printf '%s' "$governing" | tr '\n' ' ')— envelope mode resolves its inputs from this checkout, so it cannot review a change to them; use the role agents" >&2
+        exit 1
+    }
 }
 
 # review_envelope_extract RAW — print the one JSON object a finder answered

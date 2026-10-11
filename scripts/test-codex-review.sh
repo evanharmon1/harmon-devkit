@@ -1023,6 +1023,51 @@ wait "$orig_pid" || rc=$?
     fail "the late original replaced the retry's pass"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
 
+echo "==> envelope: a change to agent-registry.json or .devflow.toml is refused"
+# integration-r1-codex-cloud-1: envelope mode reads those files from this
+# checkout, so a branch editing them would govern its own pass.
+for governing in agent-registry.json .devflow.toml; do
+    reset_record
+    git -C "$ewd" checkout -q -b governing-edit
+    printf '\n' >>"${ewd}/${governing}"
+    git -C "$ewd" add "$governing"
+    git_t -C "$ewd" commit -q -m "edit $governing"
+    rc=0
+    STUB_PAYLOAD="${env_root}/p.json" ENV_HEAD="$(git -C "$ewd" rev-parse HEAD)" \
+        envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+    git -C "$ewd" checkout -q feature
+    git -C "$ewd" branch -q -D governing-edit
+    [ "$rc" -eq 1 ] && grep -q "cannot review a change to them" "${env_root}/err" ||
+        fail "an edit to $governing was not refused (rc $rc): $(cat "${env_root}/err")"
+    assert_nothing_published "$governing edit"
+done
+
+echo "==> envelope: grafts are refused and replace refs are ignored on the proof path"
+# integration-r1-codex-cloud-3. A graft file is a refusal outright.
+reset_record
+grafts="$(git -C "$ewd" rev-parse --path-format=absolute --git-path info/grafts)"
+mkdir -p "$(dirname "$grafts")"
+printf '%s\n' "$env_head" >"$grafts"
+rc=0
+STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+rm -f "$grafts"
+[ "$rc" -eq 1 ] && grep -q "info/grafts exists" "${env_root}/err" ||
+    fail "a graft file did not refuse envelope mode (rc $rc): $(cat "${env_root}/err")"
+assert_nothing_published "grafts"
+# A replace ref substituting the head with a decoy must not change what is
+# reviewed: the manifest still names the real change, never the decoy's.
+reset_record
+decoy="$(git -C "$ewd" commit-tree -p "$env_base" -m decoy \
+    "$(printf '100644 blob %s\tdecoy.txt\n' "$(echo decoy | git -C "$ewd" hash-object -w --stdin)" | git -C "$ewd" mktree)")"
+git -C "$ewd" replace "$env_head" "$decoy"
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+rc=0
+STUB_PAYLOAD="${env_root}/p.json" STUB_PROMPT="${env_root}/prompt" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+git -C "$ewd" replace -d "$env_head" >/dev/null
+[ "$rc" -eq 0 ] || fail "envelope mode failed under a replace ref (rc $rc): $(cat "${env_root}/err")"
+grep -q 'feature.txt' "${env_root}/prompt" && ! grep -q 'decoy.txt' "${env_root}/prompt" ||
+    fail "a replace ref changed the reviewed manifest"
+
 echo "==> envelope: a receipted pass whose file is missing fails closed"
 # review-r1-codex-verification-1: its ids are reserved, so dropping it from
 # the known-ids set would let this pass reuse one.
@@ -1094,6 +1139,6 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
     --run-id run-941 --initiated-by human --receipt >/dev/null ||
     fail "the adjudication does not validate against the runner's pass"
 
-echo "codex-review envelope mode OK (18 cases)"
+echo "codex-review envelope mode OK (20 cases)"
 
 echo "codex-review + codex-gate guards OK (38 cases)"
