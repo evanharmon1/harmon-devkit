@@ -633,6 +633,9 @@ exit_condition() {
 behind_base_ref=
 behind_by=
 behind_base_oid=
+# The remedy every behind-base message names (harmon-devkit#1360): the
+# server-side catch-up is the default, the local merge only its fallback.
+behind_remedy="catch up with update-branch.sh (GitHub update-branch in merge mode, guarded by the expected head) by default; fall back to a local merge under the full round gate only on a conflict or a ruleset refusal (SKILL.md, 'Base reconciliation')"
 establish_behind() {
     establish_scalars="$1"
     establish_phase="$2"
@@ -861,7 +864,7 @@ if [ "$command_name" = behind ]; then
             '{status:"level",behind_by:0,base:$base,head:$head}'
         exit 0
     fi
-    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — reconcile before spending the reserved cycle"
+    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}, before spending the reserved cycle"
     exit 1
 fi
 
@@ -1227,7 +1230,7 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 establish_behind "$scalars" "before evaluating"
 if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
-        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
+        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}; then CI, and carry or one fresh current-head cycle"
 fi
 # AUDIT needs a THIRD answer, because the two obvious ones are both wrong.
 # Failing routes §2's unexplained-promotion flow to its undo path and reverses
@@ -2088,7 +2091,7 @@ recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")"
 establish_behind "$recheck" "immediately before the verdict"
 if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
-        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
+        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — ${behind_remedy}; then re-run"
 else
     # Assign, never merely set: a retarget to a level base (or a rewritten
     # base) between the two comparisons would otherwise leave the earlier
@@ -2164,7 +2167,7 @@ assert_closing_linkage "$final" "final snapshot"
 jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
 jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null ||
-    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; reconcile and re-run"
+    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; ${behind_remedy}; then re-run"
 [ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
 # Same three-way handling as the recheck above — writing only the DIRTY arm

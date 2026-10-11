@@ -9,7 +9,7 @@ description: >-
   .devflow.toml's review policy). Use when a draft PR exists and the dev loop
   calls for integrating it to ready-for-review. Invoke as /integrate [PR # or
   URL].
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/update-branch.sh:*)
 ---
 
 # Integrate
@@ -1654,11 +1654,12 @@ is optional in addition, never a substitute for per-thread replies.
 
 The gate decides *whether* the head is behind and *against what*; this states
 the properties any reconciliation must satisfy. It deliberately does not
-restate the mechanism — `readiness-gate.sh` computes the base, the count and
-the condition, its failure message names all three, and a second hand-rolled
-recipe here would be one more thing to keep correct (an earlier draft of this
-section shipped a local `git rev-list` range that counted **ahead**, not
-behind).
+restate the mechanism. Two executables carry it: `readiness-gate.sh` computes
+the base, the count and the condition, and its failure message names all
+three; `assets/update-branch.sh` performs the standard catch-up below. A
+second hand-rolled recipe here would be one more thing to keep correct (an
+earlier draft of this section shipped a local `git rev-list` range that
+counted **ahead**, not behind).
 
 **Direction.** Merging the PR's own base branch **into** the feature branch is
 permitted, and is sometimes required before the gate can pass. Merging the
@@ -1685,27 +1686,96 @@ evanharmon1/harmon-init#1311 the base moved five times in one session and the
 branch was merged three times; two were mid-stage reactions that re-reviewed
 source which had not changed and found nothing.
 
-**Reconciliation is an ordinary remediation round.** It is not a special
-operation exempt from anything: it passes the round gate and the secret scan,
-it pushes the gated SHA, it spends remediation budget, and it counts against
-every cap that governs any other round. Two consequences follow rather than
-needing their own procedure:
+**Standard path — GitHub update-branch, on the server.** When the base merges
+cleanly, GitHub makes the merge commit and the agent pushes nothing. A
+catch-up adds no authored bytes, so it is not a push and owes no round gate
+and no secret scan. CI on the merged head is its gate, and the readiness gate
+already refuses to promote without green checks on that exact `headRefOid`
+(harmon-init ADR 2026-10-11, harmon-devkit#1360). Run it through the helper,
+never `gh pr update-branch` or a raw call:
 
-- With no remediation budget left, reconciliation is the **blocked stop** with
-  a report naming the unreconciled base — never a push anyway, and never a
-  promotion on a behind head. **The last remediation push is reserved the same
-  way the last cycle is**: before making a push that may be the final one,
-  preflight `behind` and fold the base merge into that same push. Deferring it
-  spends the last round on the fix alone and then needs a round that no longer
-  exists — with `remediation = 1`, a behind head and one confirmed finding,
-  merging and fixing together costs one round while doing them in sequence
-  costs two and ends blocked.
-- The merge moves the head, so it owes a fresh current-head cycle exactly as
-  any head move does. **The last permitted cycle is therefore reserved for the
-  reconciled head**: before dispatching it, run
+```sh
+new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
+  --head <captured headRefOid> --base <captured baseRefName>)"
+```
+
+The helper's exits are the invariant, stated once (0 caught up, printing the
+new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
+retarget):
+
+- **Merge mode, guarded by the expected head.** It re-reads `baseRefName`
+  first and stops on a retarget (14): `base-retargeted` applies and nothing is
+  requested. It then sends REST `PUT …/pulls/<n>/update-branch` with the
+  captured head as `expected_head_sha`. That endpoint takes no other field and
+  always merges. Rebase exists only as GraphQL `updateMethod` or
+  `gh pr update-branch --rebase`; it rewrites pushed history, and the helper
+  refuses every spelling of it.
+- **The catch-up head is defined by what it is.** It is a merge commit whose
+  parents are exactly the captured head, then the base tip read before the
+  request, committed by `GitHub <noreply@github.com>` under a signature that
+  verifies. Parents alone are not enough: a writer with push access can push
+  the same two parents over a different tree, and GitHub's web-flow signature
+  binds the tree as well. Any other head (a concurrent push, an
+  `expected_head_sha` refusal, a merge GitHub did not make) is a newer push
+  under the gate's "no newer push" condition (12): re-read the PR and re-run
+  the gate. It is never a reason to fall back to a local merge.
+- **A head still unmoved when the bounded wait ends is indeterminate** (13),
+  as is a request whose outcome is unknown. Stop and report; never request
+  again, because the first request may still be pending.
+
+Then, in order:
+
+1. Fast-forward every local checkout of the branch to the printed OID from an
+   explicit fetch, never the configured upstream (which can be stale or point
+   at the wrong remote): `git fetch <head remote> <headRefName>`, then
+   `git merge --ff-only <new head>`, and confirm `git rev-parse HEAD` equals
+   it before any further local commit.
+2. Let CI run on the new head.
+3. Where Codex cloud review is on **and** the resolved `integration` cap is
+   positive, ask `carry` whether the clean verdict attests the new head, or
+   run the ordinary current-head cycle. Otherwise neither is owed.
+
+**A server-side catch-up spends no remediation round.** It is not a fix, and
+the `remediation` cap bounds the stage's fix pushes: charging it would let a
+busy base exhaust the budget without one fix pushed. It is still a head move,
+so step 3's carry or cycle is owed, charged to `integration` or
+`integration_exempt` exactly as any cycle is. The ledger names it a catch-up
+(`update-branch → CI → carry`), not a remediation push, and the remediation
+counter does not advance; the run record keeps the requested and resulting
+`headRefOid`.
+
+**Fallback — a local merge, as an ordinary remediation round.** Only these
+take it, each detected from the helper's exit rather than predicted:
+
+- a genuine merge refusal — a conflict (11), or a ruleset that rejects
+  GitHub-made merge commits (10);
+- a base merge that must ship in the same push as a fix (the last-push rule
+  below).
+
+A fork PR that does not allow edits by maintainers is not a fallback case:
+the integration identity cannot push a local merge to that branch either, so
+stop and ask for maintainer edits rather than spending a round. A conflict
+resolution is authored work, so the fallback is exempt from nothing: it
+passes the round gate and the secret scan, pushes the gated SHA, spends
+remediation budget, and counts against every cap that governs any other
+round. Two consequences follow rather than needing their own procedure:
+
+- With no remediation budget left, a fallback reconciliation is the
+  **blocked stop** with a report naming the unreconciled base — never a push
+  anyway, and never a promotion on a behind head. **The last remediation push
+  is reserved the same way the last cycle is**: before making a push that may
+  be the final one, preflight `behind` and, if it reports behind, fold the
+  base merge into that same push. That push is the fallback's second trigger.
+  A fix push followed by a catch-up moves the head twice and owes two cycles
+  where one push owes one; on the last permitted cycle the second does not
+  exist.
+- Either path moves the head, so it owes the carry-or-cycle of step 3 exactly
+  as any head move does. **The last permitted cycle is therefore reserved for
+  the reconciled head**: before dispatching it, run
   `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
   (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
-  behind, reconcile first and spend that cycle on the merged head. Use the
+  behind, reconcile first (update-branch, or the fallback) and spend that
+  cycle on the merged head. Use the
   subcommand rather than a compare call of your own: ref encoding and the
   fail-closed handling of an unreadable comparison live there and are tested
   there, and an indeterminate answer must not be read as "level". Waiting for the gate
@@ -1716,6 +1786,11 @@ needing their own procedure:
   cycle is spent remains an escalation — the point of the reservation is that
   it should not happen. Where the resolved integration cap is 0 no cloud cycle
   is owed at all and the gate's Codex condition drops out, as everywhere else.
+
+**A promoted PR is caught up only when the maintainer asks.** Then it is
+updated in place, through the same helper, which neither needs nor changes
+draft state, and its promotion is never undone. Otherwise its drift is
+reported, never acted on (§ "Unexplained promotion").
 
 **A PR the gate can establish is behind is never reported ready** — under any
 cap, at any round, however clean everything else is. That is the property all
@@ -1751,8 +1826,9 @@ that loops indefinitely:
    neither `UNKNOWN` nor — with the graph reporting 0 — still `BEHIND`, both
    of which are *unknown-for-now* and re-polled rather than promoted on
    (conflicts and an out-of-date head are yours to resolve — see "Base
-   reconciliation" at the end of step 5; a merge with the base plus
-   re-verification is a round), and no findings remain
+   reconciliation" at the end of step 5; a server-side update-branch is a
+   catch-up that spends no round, while the local-merge fallback is a round),
+   and no findings remain
    unresolved — including the low-priority ones deferred into this stage,
    which count as resolved once their box is ticked with the outcome. A
    finding carried in the PR body has no inline thread to answer, so its

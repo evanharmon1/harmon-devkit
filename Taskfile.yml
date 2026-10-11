@@ -88,6 +88,7 @@ tasks:
       - task: test:integrate-codex
       - task: test:integrate-marker
       - task: test:integrate-readiness
+      - task: test:integrate-update-branch
       - task: test:round-push
       - task: test:lint-hygiene
       - task: test:release-title
@@ -608,6 +609,11 @@ tasks:
     desc: Unit-test the integration readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
       - ./scripts/test-integrate-readiness.sh
+
+  test:integrate-update-branch:
+    desc: Unit-test the guarded server-side catch-up helper update-branch.sh (offline, stubbed gh)
+    cmds:
+      - ./scripts/test-integrate-update-branch.sh
 
   test:round-push:
     desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)

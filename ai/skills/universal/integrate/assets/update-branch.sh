@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# update-branch.sh — catch a behind PR up to its base on the server, guarded.
+#
+# SKILL.md § "Base reconciliation" makes GitHub update-branch the standard way
+# to catch a PR up (harmon-devkit#1360, harmon-init ADR 2026-10-11): GitHub
+# merges the PR's own base into its branch, CI runs on the merged head, and the
+# agent pushes nothing. This is the one write that path needs, and the agent
+# posture allows only GET through raw `gh api`, so it lives here, validated to
+# do exactly one thing:
+#
+#   1. re-read the PR and require the head and base the gate captured: a head
+#      that moved is a newer push, a base that changed is a retarget;
+#   2. send REST `PUT repos/OWNER/REPO/pulls/N/update-branch` with the captured
+#      head as `expected_head_sha`. That endpoint takes no other field and
+#      always merges. Rebase exists only as GraphQL `updateMethod` or
+#      `gh pr update-branch --rebase`; neither is reachable from here, and a
+#      rebase flag is refused by name because it rewrites pushed history;
+#   3. wait, bounded, for the head to move;
+#   4. accept the new head as the catch-up only when GitHub provably made it.
+#
+# Provenance (step 4). Parents alone are not enough: a writer with push access
+# can push a merge commit with the same two parents and a different tree
+# (harmon-init#1630). The new head must therefore satisfy all of:
+#   - exactly two parents: the captured head, then the base tip read in step 1;
+#   - committer `GitHub <noreply@github.com>`;
+#   - `verification.verified == true`. GitHub signs the commits it creates with
+#     its web-flow key, and a signature that verifies for that committer
+#     cannot be produced by anyone else, so it binds the tree as well as the
+#     parents. No local trial merge is needed.
+# A head that moves but fails any of these is not a catch-up: it is a newer
+# push under the readiness gate's "no newer push" condition (exit 12).
+#
+# Usage:
+#   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
+#       [--wait SECONDS] [--interval SECONDS]
+#
+#   --head and --base are what the readiness gate captured (`headRefOid`,
+#   `baseRefName`). --wait bounds step 3 (default 180); --interval is the
+#   re-read period (default 5).
+#
+# On success prints the new head OID (bare 40-hex) on stdout. A PR GitHub
+# reports already level prints the captured head unchanged. Diagnostics go to
+# stderr as `update-branch: <token>: <detail>`.
+#
+# Exit codes:
+#    0  caught up (or already level) — fast-forward to the printed OID
+#    2  usage error, or a refusal by this helper (any rebase mode)
+#   10  refused by GitHub — a ruleset, missing permission, a fork without
+#       maintainer edits, a PR that is not open. Take the local-merge
+#       fallback, or for a fork stop and ask for maintainer edits.
+#   11  conflict — the base does not merge cleanly. Local-merge fallback.
+#   12  stale head — the head is not the one captured (expected_head_sha
+#       refused, or a re-read shows another head), or it moved to a head that
+#       is not GitHub's catch-up. A newer push: re-read the PR and re-run the
+#       gate. Never a reason to fall back to a local merge.
+#   13  indeterminate — the head was still unmoved when the wait ended, or a
+#       response could not be read. The request may still be pending: stop
+#       and report, never request again.
+#   14  retarget — `baseRefName` is not the captured base. `base-retargeted`
+#       applies; nothing is merged against the new base.
+
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
+      [--wait SECONDS] [--interval SECONDS]
+
+Catches a behind PR up to its base with GitHub update-branch in merge mode,
+guarded by --head as expected_head_sha. Prints the new head OID.
+Rebase is refused. Exit codes: 0 caught up, 2 usage, 10 refused, 11 conflict,
+12 stale head, 13 indeterminate, 14 retarget.
+EOF
+    exit 2
+}
+
+refuse() {
+    printf 'update-branch: refused: %s\n' "$*" >&2
+    exit 2
+}
+
+# finish TOKEN CODE DETAIL — report a non-zero outcome and exit with CODE.
+finish() {
+    printf 'update-branch: %s: %s\n' "$1" "$3" >&2
+    exit "$2"
+}
+
+command -v gh >/dev/null 2>&1 || refuse "gh is required"
+command -v jq >/dev/null 2>&1 || refuse "jq is required"
+
+valid_repo() {
+    grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' <<<"$1"
+}
+
+valid_uint() {
+    grep -Eq '^[0-9]+$' <<<"$1"
+}
+
+valid_sha() {
+    grep -Eq '^[0-9a-f]{40}$' <<<"$1"
+}
+
+repo=
+pr=
+head=
+base=
+wait_sec=180
+interval_sec=5
+
+[ "$#" -gt 0 ] || usage
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --rebase | --update-method | --update-method=* | --method | --method=*)
+        refuse "$1: update-branch runs in merge mode only — a rebase rewrites pushed history"
+        ;;
+    --repo | --pr | --head | --base | --wait | --interval)
+        [ "$#" -ge 2 ] || usage
+        case "$1" in
+        --repo) repo=$2 ;;
+        --pr) pr=$2 ;;
+        --head) head=$2 ;;
+        --base) base=$2 ;;
+        --wait) wait_sec=$2 ;;
+        --interval) interval_sec=$2 ;;
+        esac
+        shift 2
+        ;;
+    -h | --help) usage ;;
+    *) refuse "unrecognised argument: $1" ;;
+    esac
+done
+
+valid_repo "$repo" || refuse "--repo must be OWNER/REPO"
+grep -Eq '^[1-9][0-9]*$' <<<"$pr" || refuse "--pr must be a positive integer"
+valid_sha "$head" || refuse "--head must be a 40-hex commit SHA"
+[ -n "$base" ] || refuse "--base is required (the baseRefName the gate captured)"
+valid_uint "$wait_sec" || refuse "--wait must be a non-negative integer"
+valid_uint "$interval_sec" || refuse "--interval must be a non-negative integer"
+
+timeout_bin=
+if command -v timeout >/dev/null 2>&1; then
+    timeout_bin=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin=gtimeout
+fi
+
+run_gh() {
+    if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" -k 1 60 gh "$@"
+    else
+        gh "$@"
+    fi
+}
+
+read_pr() {
+    run_gh pr view "$pr" --repo "$repo" --json state,headRefOid,baseRefName,baseRefOid
+}
+
+# field JSON NAME — a required string field, or non-zero.
+field() {
+    jq -er --arg k "$2" '.[$k] | select(type == "string")' <<<"$1"
+}
+
+# ---- 1. re-read: the head and base must still be the captured ones ----------
+before="$(read_pr)" ||
+    finish indeterminate 13 "cannot read PR #${pr} before requesting update-branch"
+state="$(field "$before" state)" ||
+    finish indeterminate 13 "PR read carries no state"
+[ "$state" = OPEN ] ||
+    finish refused 10 "PR #${pr} is ${state}, not open"
+current_base="$(field "$before" baseRefName)" ||
+    finish indeterminate 13 "PR read carries no baseRefName"
+[ "$current_base" = "$base" ] ||
+    finish retarget 14 "the PR base is ${current_base}, not the captured ${base} — base-retargeted applies"
+current_head="$(field "$before" headRefOid)" ||
+    finish indeterminate 13 "PR read carries no headRefOid"
+[ "$current_head" = "$head" ] ||
+    finish stale-head 12 "the PR head is ${current_head}, not the captured ${head} — a newer push; re-run the gate"
+base_oid="$(field "$before" baseRefOid)" ||
+    finish indeterminate 13 "PR read carries no baseRefOid"
+valid_sha "$base_oid" ||
+    finish indeterminate 13 "PR read carries a malformed baseRefOid"
+
+# ---- 2. the request: merge mode, guarded by the expected head ---------------
+# gh api prints the error body on stdout and `gh: <message> (HTTP n)` on
+# stderr, so both are kept for the classification below.
+response_dir="$(mktemp -d -t update-branch-XXXXXX)"
+trap 'rm -rf "$response_dir"' EXIT
+put_rc=0
+run_gh api --method PUT "repos/${repo}/pulls/${pr}/update-branch" \
+    -f "expected_head_sha=${head}" \
+    >"${response_dir}/out" 2>"${response_dir}/err" || put_rc=$?
+
+if [ "$put_rc" -ne 0 ]; then
+    response="$(cat "${response_dir}/out" "${response_dir}/err" | tr '\n' ' ')"
+    lower="$(tr '[:upper:]' '[:lower:]' <<<"$response")"
+    status_code="$(grep -Eo 'HTTP [0-9]{3}' <<<"$response" | head -n 1 | tr -dc '0-9')" || status_code=
+    case "$lower" in
+    *"expected head sha"* | *"expected_head_sha"*)
+        finish stale-head 12 "GitHub refused the expected head ${head} — a newer push; re-run the gate: ${response}"
+        ;;
+    *"no new commits"*)
+        printf 'update-branch: level: GitHub reports no new commits on %s\n' "$base" >&2
+        printf '%s\n' "$head"
+        exit 0
+        ;;
+    *conflict*)
+        finish conflict 11 "the base does not merge cleanly — take the local-merge fallback: ${response}"
+        ;;
+    esac
+    case "$status_code" in
+    4??)
+        finish refused 10 "GitHub refused update-branch (HTTP ${status_code}): ${response}"
+        ;;
+    esac
+    # A 5xx, a timeout or a transport error leaves the request's fate unknown.
+    finish indeterminate 13 "update-branch request did not complete (exit ${put_rc}) — it may still be pending; do not request again: ${response}"
+fi
+
+# ---- 3. bounded wait for the head to move -----------------------------------
+waited=0
+new_head="$head"
+while :; do
+    if after="$(read_pr)" && new_head="$(field "$after" headRefOid)"; then
+        after_base="$(field "$after" baseRefName)" ||
+            finish indeterminate 13 "PR read carries no baseRefName"
+        [ "$after_base" = "$base" ] ||
+            finish retarget 14 "the PR base changed to ${after_base} while update-branch ran — base-retargeted applies"
+        [ "$new_head" = "$head" ] || break
+    else
+        new_head="$head"
+    fi
+    [ "$waited" -lt "$wait_sec" ] ||
+        finish indeterminate 13 "the head was still ${head} after ${wait_sec}s — the request may still be pending; stop and report, do not request again"
+    sleep "$interval_sec"
+    waited=$((waited + interval_sec))
+    # A zero interval would otherwise spin forever on an unmoved head.
+    [ "$interval_sec" -gt 0 ] || waited=$((wait_sec))
+done
+valid_sha "$new_head" ||
+    finish indeterminate 13 "the PR head ${new_head} is not a commit SHA"
+
+# ---- 4. provenance: is the new head GitHub's catch-up? ----------------------
+commit="$(run_gh api --method GET "repos/${repo}/commits/${new_head}")" ||
+    finish indeterminate 13 "cannot read commit ${new_head} to establish its provenance"
+jq -e --arg h "$head" --arg b "$base_oid" '
+    [.parents[]?.sha] == [$h, $b]
+' <<<"$commit" >/dev/null ||
+    finish stale-head 12 "the head moved to ${new_head}, whose parents are not ${head} then ${base_oid} — not this catch-up; a newer push, re-run the gate"
+jq -e '
+    .commit.committer.name == "GitHub"
+    and .commit.committer.email == "noreply@github.com"
+    and .commit.verification.verified == true
+' <<<"$commit" >/dev/null ||
+    finish stale-head 12 "the head moved to ${new_head} with the catch-up's parents, but GitHub did not make it (committer or signature) — treat it as a newer push and re-run the gate"
+
+printf '%s\n' "$new_head"
