@@ -373,7 +373,7 @@ write_default_record() {
          number:493,url:"https://github.com/example/repo/pull/493",
          bound_at:"2026-01-01T00:00:00Z"}]}' \
         >"${record_dir}/run.json"
-    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json "${record_dir}/policy.json"
 }
 
 write_record_with_integration_entries() {
@@ -793,6 +793,9 @@ run_checker_gate() {
 
 write_checker_defaults() {
     write_defaults
+    jq -cn '{rigor:{level:"standard",source:"test"},
+      rounds:{challenge:4,review:4,integration:1,remediation:4,min_rounds:1},
+      stages:{integration:{finders:["codex-cloud"]}}}' >"${record_dir}/policy.json"
     jq -cn --arg head "$head_sha" \
         '{repo:"example/repo",pr:493,head:$head,run_id:"test-run",
           cycle:1,charged_cycles:1,exempt_cycles:0}' >"$recheck_state"
@@ -815,61 +818,63 @@ echo "==> #1070: non-clean checker evidence remains indeterminate"
 write_checker_defaults
 recorded_result="$(gated_round 1 1)"
 run_checker_gate
-assert_gate 2 indeterminate integrator-result-required
+assert_gate 2 indeterminate checker-fast-path-unavailable
 write_checker_defaults
 recorded_result="$(gated_round 1 1)"
 jq '.payload.verdict = "pending"' "$recorded_result" >"${recorded_result}.next"
 mv "${recorded_result}.next" "$recorded_result"
 cp "$recorded_result" "${record_dir}/passes/integration-r1-codex-cloud.json"
 run_checker_gate
-assert_gate 2 indeterminate integrator-result-required
+assert_gate 2 indeterminate checker-fast-path-unavailable
 
-echo "==> R1: checker-only refuses unanswered human findings and binds replies"
-for finding_body in '[P1] Incorrect head binding' 'A race remains in the gate'; do
-    write_checker_defaults
-    jq -cn --arg body "$finding_body" '[[{id:50,body:$body,
-      html_url:"https://github.com/example/repo/pull/493#issuecomment-50",
-      user:{id:9,login:"reviewer"},created_at:"2026-01-01T01:00:00Z",
-      updated_at:"2026-01-01T01:00:00Z"}]]' >"${fixtures}/top.pages.json"
-    run_checker_gate
-    assert_gate 1 fail unresolved-review-findings
-    jq --arg head "$head_sha" '.[0] += [{id:51,user:{id:1,login:"pr-author"},
-      body:("Adjudicated decline at " + $head + " — https://github.com/example/repo/pull/493#issuecomment-50"),
-      created_at:"2026-01-01T01:01:00Z",updated_at:"2026-01-01T01:01:00Z"}]' \
-        "${fixtures}/top.pages.json" >"${fixtures}/top.next"
-    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
-    run_checker_gate
-    assert_gate 0 pass ready
-    jq --arg old "$head_sha" --arg moved "$moved_sha" '.[0][1].body |= sub($old; $moved)' \
-        "${fixtures}/top.pages.json" >"${fixtures}/top.next"
-    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
-    run_checker_gate
-    assert_gate 1 fail unresolved-review-findings
-    jq --arg old "$head_sha" --arg moved "$moved_sha" '.[0][1].body |= sub($moved; $old)' \
-        "${fixtures}/top.pages.json" >"${fixtures}/top.next"
-    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
-    jq '.[0][0].updated_at = "2026-01-01T01:02:00Z"' "${fixtures}/top.pages.json" >"${fixtures}/top.next"
-    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
-    run_checker_gate
-    assert_gate 1 fail unresolved-review-findings
-done
-write_checker_defaults
-jq -cn '[[{id:60,body:"[P2] Review-body concern",state:"COMMENTED",
-  html_url:"https://github.com/example/repo/pull/493#pullrequestreview-60",
-  user:{id:9,login:"reviewer"},submitted_at:"2026-01-01T01:00:00Z"}]]' \
-    >"${fixtures}/reviews.pages.json"
-run_checker_gate
-assert_gate 1 fail unresolved-review-findings
-
-echo "==> R1: checker-only derives remediation dispositions from the record"
+echo "==> R2: any integration adjudication requires the integrator path"
 write_checker_defaults
 jq -cn --arg head "$head_sha" '{schema:2,run_id:"test-run",stage:"integration",round:1,
-  reviewed_head:$head,adjudications:[{finding_id:"integration-r1-human-1",
-  reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"fix",
-  reason:"fixed",evidence:"verified fix",override:null}]}' \
-    >"${record_dir}/adjudications/integration-r1.json"
+  reviewed_head:$head,adjudications:[]}' >"${record_dir}/adjudications/integration-r1.json"
 run_checker_gate
-assert_gate 1 fail remediation-capped
+assert_gate 2 indeterminate checker-fast-path-unavailable
+
+echo "==> R2: badged non-Codex bodies refuse even with a reply"
+for surface in top reviews; do
+    for finding_body in '[P1] Incorrect head binding' '### **P2** Review concern' '- P3 Cosmetic finding'; do
+        write_checker_defaults
+        jq -cn --arg body "$finding_body" '[[{id:50,body:$body,state:"COMMENTED",
+          html_url:"https://github.com/example/repo/pull/493#issuecomment-50",
+          user:{id:9,login:"reviewer"}}]]' >"${fixtures}/${surface}.pages.json"
+        run_checker_gate
+        assert_gate 2 indeterminate checker-fast-path-unavailable
+        jq -cn --arg head "$head_sha" '[[{id:51,user:{id:1,login:"pr-author"},
+          body:("Adjudicated decline at " + $head + " — https://github.com/example/repo/pull/493#issuecomment-50")}]]' \
+            >"${fixtures}/reply.json"
+        jq -s '.[0][0] += .[1][0] | .[0]' "${fixtures}/top.pages.json" "${fixtures}/reply.json" \
+            >"${fixtures}/top.next"
+        mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
+        run_checker_gate
+        assert_gate 2 indeterminate checker-fast-path-unavailable
+    done
+done
+
+echo "==> R2: unbadged protocol prose and Codex bodies are left to their owners"
+write_checker_defaults
+printf '%s\n' '[[{"id":50,"body":"Adjudicated an earlier head; gate evidence recorded","user":{"id":1}},
+  {"id":51,"body":"[P1] Codex body classified by the live checker","user":{"id":199175422}}]]' >"${fixtures}/top.pages.json"
+printf '%s\n' '[[{"id":60,"body":"Review completed","user":{"id":9}}]]' >"${fixtures}/reviews.pages.json"
+run_checker_gate
+assert_gate 0 pass ready
+
+echo "==> R2: only resolved codex-cloud alone qualifies"
+for finders in '[]' '["coderabbit-cloud"]' '["codex-cloud","coderabbit-cloud"]'; do
+    write_checker_defaults
+    jq --argjson finders "$finders" '.stages.integration.finders = $finders' \
+        "${record_dir}/policy.json" >"${record_dir}/policy.next"
+    mv "${record_dir}/policy.next" "${record_dir}/policy.json"
+    run_checker_gate
+    assert_gate 2 indeterminate checker-fast-path-unavailable
+done
+write_checker_defaults
+rm "${record_dir}/policy.json"
+run_checker_gate
+assert_gate 2 indeterminate checker-fast-path-unavailable
 
 for checker_exit in 2 10 11 12 13 14; do
     write_checker_defaults

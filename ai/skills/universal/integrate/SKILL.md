@@ -930,17 +930,17 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
-  Checker-only evidence is admissible only while the run record holds **no
-  integrator pass**; once one exists, supply `--integrator-result`. The direct
-  path also checks non-Codex review bodies and conversation comments. It
-  conservatively requires a disposition for nonempty prose, including
-  unbadged concerns. Record a top-level reply beginning `Adjudicated` followed by a space that
-  names the source's exact permalink and the current head, after the source's
-  latest edit. A settlement explanation uses the same recorded reply; a
-  settlement alone cannot bind a live source's edited text to this head.
-  The exact `@codex review` command and those linked disposition replies are
-  protocol messages. Integration adjudications feed the remediation budget
-  checks directly on this path.
+  Checker-only evidence is a **clean-run fast path**: the record must hold
+  no integrator pass and no integration adjudication, resolved
+  `policy.json` must name exactly `codex-cloud` in
+  `stages.integration.finders`, and the PR must carry no badged top-level
+  comment or review body from any actor other than Codex bot `199175422`.
+  A leading-token P0–P3 badge counts whether answered or not; unbadged
+  protocol messages do not. The live checker owns Codex findings.
+  If any condition is absent, the gate is indeterminate with
+  `checker-fast-path-unavailable`: dispatch an integrator and supply
+  `--integrator-result` to classify and settle integration work. The fast
+  path does not match replies or derive integration dispositions.
 - **For dispatched integration, retain the integrator agent
   (`ai/agents/integrator.md`) and its validated result.** It settles checks and
   lists unanswered threads at every cap, and drives the current-head Codex

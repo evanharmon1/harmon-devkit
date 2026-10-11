@@ -181,8 +181,12 @@ settlements[] from for the applied-disposition check below.
 STATE_FILE, or both. Without an integrator result, the checker must return
 terminal-clean for this repo/PR/head and active run; its cycle spend is checked
 against the resolved caps and the pass verdict names that state as evidence.
-The gate reads checks, thread replies and deferred settlements live in either
-path. No recording-pass envelope is fabricated. A cap-0 run still needs an
+Checker-only is a clean-run fast path: no integrator pass or integration
+adjudication, no badged non-Codex top-level/review body, and record policy.json
+resolving integration finders to codex-cloud alone. Otherwise dispatch an
+integrator and supply --integrator-result. The gate reads checks, thread
+replies and deferred settlements live in either path. No recording-pass
+envelope is fabricated. A cap-0 run still needs an
 integrator result with null codex_cycle: checker evidence never waives a cycle.
 --integrator-result FILE is the dispatched integrator agent's schema-valid
 result.envelope (role integrator) for this exact head. When supplied, it is
@@ -1407,9 +1411,9 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
 # unresolved until a human resolves them.
 fetch_fingerprint_surfaces
 
-# 9. The current-head Codex cloud-review cycle — evaluated from the
-# dispatched integrator agent's own schema-valid result, run AFTER the
-# fingerprint surfaces are captured, deliberately: activity the agent's own
+# 9. The current-head Codex cloud-review cycle — from a schema-valid
+# integrator result or, on the clean-run fast path, live checker state.
+# Evaluated AFTER the fingerprint surfaces are captured, deliberately: activity the agent's own
 # fresh evidence collection already classified sits inside the baseline
 # fingerprint, and activity landing after that pass sits outside it, where
 # the post-promotion compare flags it. Classification belongs to the agent
@@ -1429,53 +1433,37 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
     indeterminate malformed-data "run.json carries no run_id"
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
-checker_dispositions='[]'
 if [ -z "$integrator_result" ]; then
-    # R1: these evidence paths are exclusive. A recorded integrator pass
-    # carries obligations that a clean Codex state alone cannot discharge.
+    # The clean-run fast path has no integration work to adjudicate and
+    # exactly one configured finder. Anything else needs an integrator.
     for checker_pass in "$record_dir"/passes/*.json; do
         [ -f "$checker_pass" ] || continue
         checker_role="$(jq -er '.role' "$checker_pass")" ||
             indeterminate malformed-data "cannot read recorded pass $checker_pass"
         [ "$checker_role" != integrator ] ||
-            indeterminate integrator-result-required "the record holds an integrator pass; supply --integrator-result rather than switching to checker-only evidence"
+            indeterminate checker-fast-path-unavailable "the record holds an integrator pass; dispatch an integrator and supply --integrator-result"
     done
     for checker_adj in "$record_dir"/adjudications/*.json; do
         [ -f "$checker_adj" ] || continue
-        checker_dispositions="$(jq -cs '.[0] + (.[1] | if .stage == "integration" then .adjudications else [] end)' \
-            <(printf '%s' "$checker_dispositions") "$checker_adj")" ||
-            indeterminate malformed-data "cannot read integration adjudications"
-
+        checker_stage="$(jq -er '.stage' "$checker_adj")" ||
+            indeterminate malformed-data "cannot read adjudication $checker_adj"
+        [ "$checker_stage" != integration ] ||
+            indeterminate checker-fast-path-unavailable "the record holds an integration adjudication; dispatch an integrator and supply --integrator-result"
     done
-    # Reuse the fingerprint reads. A reply must explicitly name BOTH the
-    # source permalink and this head, and postdate the source's latest edit.
-    # Review bodies are review-shaped by their surface. Without an integrator
-    # classifying prose, nonempty conversation comments are conservatively
-    # owed a disposition too; only the exact review command and explicitly
-    # linked current-head disposition replies are protocol, not findings.
+    jq -e '.stages.integration.finders == ["codex-cloud"]' \
+        "$record_dir/policy.json" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "resolved integration finders are not proven to be codex-cloud alone; dispatch an integrator and supply --integrator-result"
+    # Reuse the fingerprint reads. A leading P0-P3 token marks a finding
+    # regardless of replies; unbadged protocol prose does not. Codex's own
+    # bodies remain the live checker's responsibility.
     non_codex_findings="$(jq -cn --argjson top "$fp_top" --argjson reviews "$fp_reviews" \
-        --arg me "$me" --arg head "$head" --argjson bot "$codex_actor_id" '
-      def badged: .body | test("(?im)^\\s*(?:#{1,6}\\s*|[-*+]\\s*)?(?:\\*\\*|\\[|!\\[)?P[0-3]\\b");
-      ($top | add // []) as $comments |
-      [($comments[] | . + {surface:"comment"}),
-       (($reviews | add // [])[] | . + {surface:"review"})] |
-      map(select(.user.id != $bot and (.body // "" | length) > 0) |
-        select(.surface == "review" or
-          ((.body | test("^\\s*@codex review\\s*$")) | not)) |
-        select(.surface == "review" or .user.login != $me or
-          (((.body | startswith("Adjudicated ") and contains($head) and test("https://[^[:space:]]+[/#](?:issuecomment-|pullrequestreview-)[0-9]+")) and (badged | not)) | not)) |
-        . as $source |
-        select(any($comments[];
-          .user.login == $me and .id != $source.id and
-          (.body | type) == "string" and
-          ($source.html_url | type) == "string" and ($source.html_url | length) > 0 and
-          (.body | startswith("Adjudicated ") and contains($source.html_url) and contains($head)) and
-          (.created_at | type) == "string" and
-          (($source.updated_at // $source.submitted_at // $source.created_at) | type) == "string" and
-          .created_at >= ($source.updated_at // $source.submitted_at // $source.created_at)) | not))
-    ')" || indeterminate malformed-data "non-Codex review findings could not be classified"
+        --argjson bot "$codex_actor_id" '
+      [((($top | add // [])[]), (($reviews | add // [])[])) |
+        select(.user.id != $bot) |
+        select((.body // "") | test("(?im)^\\s*(?:#{1,6}\\s*|[-*+]\\s*)?(?:\\*\\*|\\[|!\\[)?P[0-3]\\b"))]
+    ')" || indeterminate malformed-data "non-Codex review bodies could not be classified"
     [ "$(jq 'length' <<<"$non_codex_findings")" -eq 0 ] ||
-        fail_condition unresolved-review-findings "non-Codex findings lack a current-head recorded reply: $(jq -c 'map({surface,id})' <<<"$non_codex_findings")"
+        indeterminate checker-fast-path-unavailable "the PR carries badged non-Codex comments or review bodies; dispatch an integrator and supply --integrator-result"
 fi
 if [ -n "$integrator_result" ]; then
     # The run's known finding universe, so the validator's
@@ -1774,7 +1762,7 @@ fi
 # condition is genuinely waived for this pass; that is a statement about
 # codex_cycle specifically, not about the pass as a whole.
 
-applied_dispositions="$checker_dispositions"
+applied_dispositions='[]'
 if [ -n "$integrator_result" ]; then
     # 8b. Per-finder cloud conditions (#804). finder_cycles[] carries every
     # configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud,
