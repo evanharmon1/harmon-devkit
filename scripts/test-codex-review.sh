@@ -97,7 +97,7 @@ run() {
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
 grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex exec review not invoked: $out"
-grep -q -- "--model gpt-5.6-sol" <<<"$out" || fail "review model is not pinned to gpt-5.6-sol: $out"
+grep -q -- "--model gpt-6.1-sol" <<<"$out" || fail "review model is not pinned to gpt-6.1-sol: $out"
 grep -q -- "--config model_reasoning_effort=high" <<<"$out" || fail "review reasoning is not pinned high: $out"
 grep -q "base branch 'origin/develop'" <<<"$out" || fail "remote-qualified fallback base missing: $out"
 grep -q "ADVERSARIAL" <<<"$out" || fail "challenge mode instructions missing: $out"
