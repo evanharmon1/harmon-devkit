@@ -130,8 +130,8 @@ Git directory with `git rev-parse --git-common-dir`; a linked worktree's `.git`
 path is a file and is never the shared-state root. Planning is orchestrator
 judgement written down, not a new autonomous planner: the schema, validator,
 and append-only recompute rule make its deterministic parts checkable.
-A second writer of the same `plan.json` is a blocker, not a race to lock
-against.
+A second writer of the same `plan.json` is a blocker: the slate lock in
+§ "Durable orchestrator state" refuses it, by slate id and by the work itself.
 
 Build and publish the plan in this order:
 
@@ -205,6 +205,58 @@ Build and publish the plan in this order:
    candidate with the `plan` kind, rename it over the canonical record, then
    validate the canonical readback. Either validation or rename failure is a
    blocker; dispatch and merge-queue mutation remain paused.
+   The mechanical half of a base move — bump `base_sha`, retire done issues
+   and their lanes, extend the chain — is
+   `dev-flow-support/assets/plan-revise.mjs base-move`, which runs exactly
+   that sequence. It refuses, naming the paths or issues, whenever the move
+   needs judgment: the new commits touch a live lane's fence or candidate
+   files, or a done issue releases a dependent. Fence expansions, overlap
+   choices and wave changes stay yours; write them as a complete revision.
+
+## Durable orchestrator state
+
+Everything you need in order to resume lives under the Git common directory,
+never in the session scratchpad. A scratchpad does not survive a session
+restart, and one that was wiped mid-slate took every dispatch file, ruling
+and watcher script with it (harmon-devkit#1296). The scratchpad is for
+throwaway work only.
+
+- **Run records:** `<git-common-dir>/dev-flow-v2/runs/<run-id>/run.json`,
+  beside `monitor.json`.
+- **Slate plan:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json`.
+- **Your own working files** — dispatch files, rendered briefs, ruling files,
+  watcher state:
+  `<git-common-dir>/dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/`,
+  keyed by run id and attempt nonce the way lane reports are.
+  `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
+  --nonce NONCE` prints the path.
+
+Write the run record only through `dev-flow-support/assets/run-record.mjs`
+(`transition`, `intervention`, `bind-pr`, `promote`, `close`), never by hand.
+Each write builds a candidate, validates it with `validate-result-schemas.mjs
+run`, renames it over `run.json` and validates the readback, so a refused
+edge, a promotion dated before the last transition, or an entry dated after
+the promotion never lands. Point an intervention that rests on a ruling file
+at it with `--ruling FILE`: the note records the file's SHA-256, so a later
+edit to the ruling is detectable. `close` records a non-promotion outcome if
+the run is still open, then moves the run's orchestrator directory into
+`runs/<run-id>/orchestrator/`, so a stale dispatch file can never mislead a
+later session. Files under `.git/` never show in `git status`.
+
+Both writers take the **slate lock** (`run-record.mjs lock
+acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
+with the slate's milestone and issue set. While another session holds the
+same slate, the same milestone, or any of the same issues — under any slate
+id — every write is refused. Release it when the slate ends. `--force
+--reason` breaking a dead session's lock is an operator decision; name it in
+the handoff.
+
+Durable means *this clone*: the common directory survives restarts, `/clear`
+and worktree removal, but not a fresh clone, a rebuilt devcontainer without a
+persistent volume, or an ephemeral cloud session. GitHub evidence stays the
+cross-machine record. Every worktree shares the directory, so a lane *can*
+edit these files; the recorded ruling digests make such an edit detectable
+after the fact.
 
 ## Lane briefs
 
