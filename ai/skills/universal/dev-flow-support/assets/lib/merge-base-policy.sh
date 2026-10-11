@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# dev-flow-capability: merge-base-absent-v1
+# (The marker trusted callers select a governing copy by — dev-flow-support
+# SKILL.md, step 0, "First adoption". Keep the line exact.)
+#
 # merge-base-policy.sh — decide which governing-policy argument a trusted
 # caller passes to a merge-base policy reader it runs directly (harmon-devkit#1345).
 #

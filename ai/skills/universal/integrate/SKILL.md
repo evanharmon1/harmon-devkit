@@ -368,22 +368,11 @@ done
 reader_dir="$(dirname "$reader")"
 git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
 
-# trusted_copy COPY PIN [ARG...] — dev-flow-support step 0's First adoption
-# rule, implemented once for every governing copy this skill runs: COPY (the
-# merge base's) when it exists and names every --flag in ARGs, else PIN (the
-# operator's, supplied outside the candidate branch), else nothing, and the
-# caller stops as indeterminate. Never the branch's copy.
-trusted_copy() {
-    local copy="$1" pin="$2" arg
-    shift 2
-    [ -f "$copy" ] || { printf '%s' "$pin"; return; }
-    for arg in "$@"; do
-        case "$arg" in
-        --*) grep -Fq -- "$arg" "$copy" || { printf '%s' "$pin"; return; } ;;
-        esac
-    done
-    printf '%s' "$copy"
-}
+# trusted_copy COPY PIN picks every governing copy this skill runs. Define it
+# exactly as dev-flow-support's step 0 recipe does: that is the First adoption
+# rule's one implementation (the merge base's copy if it declares the
+# capability marker, else the pin under the same check, else nothing, and the
+# caller stops as indeterminate).
 
 # The merge base may have NO .devflow.toml (a branch that adds it). Ask, never
 # infer it from a failed `git show`: the shared helper looks it up with a
@@ -1366,7 +1355,7 @@ the same arguments in every merge-base state:
 # recipe above; $record_dir is the run's record directory.
 exit_args=(--run "$record_dir" --stage integration --policy .devflow.toml
     ${mb_policy[@]+"${mb_policy[@]}"} --json)
-mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}" "${exit_args[@]}")"
+mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"
 [ -n "$mb_engine" ] || exit 1   # indeterminate
 node "$mb_engine" "${exit_args[@]}"
 ```

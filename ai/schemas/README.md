@@ -2032,7 +2032,12 @@ operator-pinned engine, or stops), because carrying the merge-base argument
 into a branch engine constrains nothing. The engine reads `--policy` through the reader's own
 `readBranchPolicy`, so a missing file with no merge-base argument is the
 built-in fallback in both, and the two resolve one governing policy whether
-the merge base's state is `present`, `absent` or `none`.
+the merge base's state is `present`, `absent` or `none`. A copy of the engine or the helper
+is selected by its **capability marker**, the exact line
+`dev-flow-capability: merge-base-absent-v1` in its source, never by which flag
+names it mentions: the merge base's copy if it declares the marker, else an
+operator pin that declares it, else the caller stops (`dev-flow-support`
+step 0, "First adoption", and its `trusted_copy`).
 
 **The decoder's scope is an invariant, not a field list.** On a migration
 diff, *every* merge-base-protected value — defaults, rounds, breadth,

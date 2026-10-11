@@ -289,23 +289,33 @@ cmp -s "$fixtures/policy.toml" "$mbrepo/.devflow.toml" &&
     git checkout -q branch
 ) >/dev/null 2>&1 || err "could not build the merge-base scratch repository"
 
+# trusted_copy is the First adoption rule's one implementation, defined in
+# dev-flow-support's step 0 recipe; both mirrors below run it verbatim.
+step0_recipe="$repo_root/ai/skills/universal/dev-flow-support/SKILL.md"
+int_recipe="$repo_root/ai/skills/universal/integrate/SKILL.md"
+trusted_copy_src="$(sed -n '/^ *trusted_copy() {$/,/^ *}$/p' "$step0_recipe" | sed 's/^     //')"
+[ -n "$trusted_copy_src" ] || err "dev-flow-support/SKILL.md defines no trusted_copy"
+eval "$trusted_copy_src"
+if [ "$(grep -c '^ *trusted_copy() {$' "$step0_recipe")" -eq 1 ] &&
+    ! grep -q '^ *trusted_copy() {$' "$int_recipe"; then
+    echo "  ✓ trusted_copy is defined once, in step 0, and /integrate defines it from there"
+else
+    err "trusted_copy must be defined exactly once, in dev-flow-support's step 0"
+fi
+
 # run_caller BASE READER — the recipes' caller; prints the reader's stdout.
-# The helper is a governing file: it runs the merge base's copy, else the
-# operator pin in $pinned_mb_helper, else stops as indeterminate (status 2).
+# The helper is a governing file: trusted_copy picks the merge base's copy or
+# the operator pin in $pinned_mb_helper, else it stops as indeterminate (2).
 run_caller() {
     local base="$1" reader="$2" rel=scripts/lib/merge-base-policy.sh mb_helper mb_state
-    rm -f "$scratch/mb-devflow.toml"
-    if git cat-file -e "${base}:${rel}" 2>/dev/null; then
-        mkdir -p "$scratch/mb-closure/scripts/lib"
-        git show "${base}:${rel}" >"$scratch/mb-closure/$rel" || return 2
-        mb_helper="$scratch/mb-closure/$rel"
-    else
-        mb_helper="${pinned_mb_helper:-}"
-        [ -n "$mb_helper" ] || {
-            echo "merge-base helper: the merge base predates it and no operator pin was supplied — indeterminate" >&2
-            return 2
-        }
-    fi
+    rm -f "$scratch/mb-devflow.toml" "$scratch/mb-closure/$rel"
+    mkdir -p "$scratch/mb-closure/scripts/lib"
+    git show "${base}:${rel}" >"$scratch/mb-closure/$rel" 2>/dev/null || rm -f "$scratch/mb-closure/$rel"
+    mb_helper="$(trusted_copy "$scratch/mb-closure/$rel" "${pinned_mb_helper:-}")"
+    [ -n "$mb_helper" ] || {
+        echo "merge-base helper: neither the merge base's copy nor a pin declares the capability — indeterminate" >&2
+        return 2
+    }
     mb_state="$(bash "$mb_helper" "$base" "$reader" "$scratch/mb-devflow.toml" .devflow.toml)" || return 1
     case "$mb_state" in
     present) mb_policy=(--merge-base-policy "$scratch/mb-devflow.toml") ;;
@@ -482,16 +492,10 @@ done
 (cd "$mbrepo" && git checkout -q branch) || err "could not restore the scratch checkout"
 
 # The integration chain — integrate's merge-base recipe, then its integration
-# exit — resolves ONE governing policy in every merge-base state
-# (harmon-devkit#1345, challenge rounds 2 and 3). run_integrate_chain mirrors
-# the recipe and runs its trusted_copy verbatim, lifted from integrate/SKILL.md,
-# so the selection rule under test is the one the skill ships.
+# exit — resolves ONE governing policy in every merge-base state, and
+# trusted_copy picks each governing copy by its capability marker alone
+# (harmon-devkit#1345, challenge rounds 2-3, review round 3).
 echo "==> the integration chain resolves one governing policy"
-int_recipe="$repo_root/ai/skills/universal/integrate/SKILL.md"
-trusted_copy_src="$(sed -n '/^trusted_copy() {$/,/^}$/p' "$int_recipe")"
-[ -n "$trusted_copy_src" ] || err "integrate/SKILL.md defines no trusted_copy"
-eval "$trusted_copy_src"
-
 exrepo="$scratch/exrepo"
 exfix="$repo_root/ai/schemas/fixtures/exit/integration-cap-reached-with-p1-capped"
 assets_rel=ai/skills/universal/dev-flow-support/assets
@@ -503,6 +507,25 @@ cp -R "$support/." "$exrepo/$assets_rel/"
 sed -e 's/^integration = 2$/integration = 5/' "$exfix/policy.toml" >"$scratch/branch-cap5.toml"
 cmp -s "$exfix/policy.toml" "$scratch/branch-cap5.toml" &&
     err "the cap-5 edit changed nothing — update the sed alongside the fixture policy"
+# Stale copies name every flag the recipe passes but lack the marker, so a
+# selector that judged by flag names would pick them. Each announces itself.
+node -e '
+const fs = require("fs");
+const lines = fs.readFileSync(process.argv[1], "utf8").split("\n")
+  .filter((l) => !l.includes("dev-flow-capability: merge-base-absent-v1"));
+lines.splice(1, 0, "process.stderr.write(\"STALE-ENGINE-RAN\\n\");");
+fs.writeFileSync(process.argv[2], lines.join("\n"));
+' "$support/dev-flow-exit.mjs" "$scratch/stale-engine.mjs"
+printf '%s\n' '// --run --stage --policy --json --merge-base-policy --merge-base-policy-absent' \
+    'process.stdout.write("STALE-PIN-RAN\n");' >"$scratch/stale-pin.mjs"
+stale_out="$(node "$scratch/stale-engine.mjs" 2>&1 || true)"
+if grep -Fq -- '--merge-base-policy-absent' "$scratch/stale-engine.mjs" &&
+    ! grep -Fq 'dev-flow-capability' "$scratch/stale-engine.mjs" &&
+    grep -Fq STALE-ENGINE-RAN <<<"$stale_out"; then
+    echo "  ✓ the stale engine names every flag, lacks the marker, and announces itself"
+else
+    err "could not build the stale engine control"
+fi
 (
     export GIT_CONFIG_GLOBAL="$scratch/gitconfig" GIT_CONFIG_NOSYSTEM=1
     cd "$exrepo"
@@ -510,16 +533,20 @@ cmp -s "$exfix/policy.toml" "$scratch/branch-cap5.toml" &&
     git add -A
     git commit -q -m "chore: merge base without a policy"
     git tag mbnone
-    git checkout -q -b old-engine
-    printf '%s\n' '// --run --stage --policy --json --merge-base-policy' \
-        'process.stdout.write("OLD-ENGINE-RAN\n");' >"$assets_rel/dev-flow-exit.mjs"
-    git commit -q -am "chore: merge base whose engine predates the absent flag"
-    git tag oldengine
+    git checkout -q -b stale-none
+    cp "$scratch/stale-engine.mjs" "$assets_rel/dev-flow-exit.mjs"
+    git commit -q -am "chore: merge base whose engine lacks the capability"
+    git tag stalenone
     git checkout -q mbnone
     cp "$exfix/policy.toml" .devflow.toml
     git add .devflow.toml
     git commit -q -m "chore: merge base with a policy"
     git tag mbpresent
+    git checkout -q -b stale-present
+    cp "$scratch/stale-engine.mjs" "$assets_rel/dev-flow-exit.mjs"
+    git commit -q -am "chore: merge base with a policy and an engine lacking the capability"
+    git tag stalepresent
+    git checkout -q mbpresent
     printf '%s\n' 'process.stdout.write(JSON.stringify({ outcome: "converged" }) + "\n");' \
         'process.exitCode = 20;' >"$assets_rel/dev-flow-exit.mjs"
     git commit -q -am "fix: a branch whose engine always converges"
@@ -561,7 +588,7 @@ run_integrate_chain() {
         --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} --json >"$scratch/chain-reader.json" 2>/dev/null
     exit_args=(--run "$exfix/run" --stage integration --policy .devflow.toml
         ${mb_policy[@]+"${mb_policy[@]}"} --json)
-    mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}" "${exit_args[@]}")"
+    mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"
     [ -n "$mb_engine" ] || return 90
     node "$mb_engine" "${exit_args[@]}" >"$scratch/chain-exit.json"
 }
@@ -574,24 +601,46 @@ process.stdout.write(String(eval(process.argv[2])));
 ' "$1" "$2" 2>/dev/null || true
 }
 
-# The three-state table: state, checkout, branch policy, the cap the reader
-# must resolve, and the verdict the engine must reach under that same cap.
-while read -r state rev policy cap verdict; do
+# The table: case, merge base (checkout), branch policy ("-" none), engine pin
+# ("-" none, good, stale), the cap the reader must resolve, and the verdict the
+# engine must reach under it ("stop": indeterminate, and no engine runs). A
+# stale copy never runs, whichever side supplies it.
+while read -r name rev policy pin cap verdict; do
+    case "$pin" in
+    good) pin_path="$support/dev-flow-exit.mjs" ;;
+    stale) pin_path="$scratch/stale-pin.mjs" ;;
+    *) pin_path="" ;;
+    esac
     set +e
-    (cd "$exrepo" && at "$rev" "$policy" && run_integrate_chain "$rev") 2>"$scratch/chain.err"
+    (cd "$exrepo" && at "$rev" "$policy" && pinned_mb_engine="$pin_path" run_integrate_chain "$rev") \
+        2>"$scratch/chain.err"
     st=$?
     set -e
     got_cap="$(json_field "$scratch/chain-reader.json" r.rounds.integration)"
     got_verdict="$(json_field "$scratch/chain-exit.json" r.outcome)"
-    if [ "$got_cap" = "$cap" ] && [ "$got_verdict" = "$verdict" ]; then
-        echo "  ✓ $state: the reader resolves integration cap $cap and the engine decides under it ($verdict)"
+    ran_stale=no
+    grep -Fqs -e STALE-ENGINE-RAN -e STALE-PIN-RAN "$scratch/chain.err" "$scratch/chain-exit.json" && ran_stale=yes
+    if [ "$verdict" = stop ]; then
+        if [ "$st" -eq 90 ] && [ ! -e "$scratch/chain-exit.json" ] && [ "$ran_stale" = no ]; then
+            echo "  ✓ $name: stops as indeterminate, and no engine runs"
+        else
+            err "$name: exit $st (want 90), stale ran: $ran_stale"
+        fi
+    elif [ "$got_cap" = "$cap" ] && [ "$got_verdict" = "$verdict" ] && [ "$ran_stale" = no ]; then
+        echo "  ✓ $name: the reader resolves integration cap $cap and the engine decides under it ($verdict)"
     else
-        err "$state: reader cap '$got_cap' (want $cap), engine '$got_verdict' exit $st (want $verdict): $(head -2 "$scratch/chain.err")"
+        err "$name: reader cap '$got_cap' (want $cap), engine '$got_verdict' exit $st (want $verdict), stale ran: $ran_stale: $(head -2 "$scratch/chain.err")"
     fi
 done <<EOF
-present mbpresent $scratch/branch-cap5.toml 2 capped
-absent mbnone $exfix/policy.toml 4 continue
-none mbnone - 4 continue
+present mbpresent $scratch/branch-cap5.toml - 2 capped
+absent mbnone $exfix/policy.toml - 4 continue
+none mbnone - - 4 continue
+branch-deletes-policy mbpresent - - 2 capped
+stale-copy-and-stale-pin stalenone $exfix/policy.toml stale - stop
+stale-copy-no-pin stalenone - - - stop
+stale-copy-good-pin-absent stalenone $exfix/policy.toml good 4 continue
+stale-copy-good-pin-none stalenone - good 4 continue
+stale-copy-good-pin-branch-deletes-policy stalepresent - good 2 capped
 EOF
 
 # A branch engine that always converges must not change the verdict.
@@ -607,31 +656,11 @@ if [ "$ctl" -eq 20 ] && [ "$(json_field "$scratch/exit-ctl.json" r.outcome)" = c
 else
     err "rogue engine: control exit $ctl, chain exit $st: $(head -2 "$scratch/chain.err")"
 fi
-
-# A merge-base engine too old for a flag the recipe passes: the pin runs when
-# supplied, otherwise the recipe stops and the old engine never runs.
-set +e
-(cd "$exrepo" && at oldengine "$exfix/policy.toml" && run_integrate_chain oldengine) >"$scratch/old-nopin.out" 2>&1
-st=$?
-(cd "$exrepo" && at oldengine "$exfix/policy.toml" &&
-    pinned_mb_engine="$support/dev-flow-exit.mjs" run_integrate_chain oldengine) >"$scratch/old-pin.out" 2>&1
-pst=$?
-set -e
-if [ "$st" -eq 90 ] && ! grep -Fq OLD-ENGINE-RAN "$scratch/old-nopin.out" "$scratch/chain-exit.json" 2>/dev/null; then
-    echo "  ✓ a too-old merge-base engine with no pin stops before it runs"
-else
-    err "too-old engine without a pin: exit $st (want 90, engine not run)"
-fi
-if [ "$pst" -eq 0 ] && [ "$(json_field "$scratch/chain-exit.json" r.outcome)" = continue ]; then
-    echo "  ✓ a too-old merge-base engine with a pin runs the pin"
-else
-    err "too-old engine with a pin: exit $pst: $(head -2 "$scratch/old-pin.out")"
-fi
 (cd "$exrepo" && at mbpresent) || err "could not restore the chain scratch checkout"
 
 if grep -Fq 'node "$mb_engine"' "$int_recipe" && grep -Fq '${pinned_mb_engine:-}' "$int_recipe" &&
     grep -Fq 'git archive --format=tar "$base" -- "$reader_dir"' "$int_recipe" &&
-    grep -Fq 'trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs"' "$int_recipe" &&
+    grep -Fq 'trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"' "$int_recipe" &&
     grep -Fq 'lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs`' "$int_recipe"; then
     echo "  ✓ integrate/SKILL.md runs the merge-base engine and routes engine edits to it"
 else

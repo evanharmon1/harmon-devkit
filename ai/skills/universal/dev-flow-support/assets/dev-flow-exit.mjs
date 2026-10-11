@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// dev-flow-capability: merge-base-absent-v1
+// (The marker trusted callers select a governing copy by — dev-flow-support
+// SKILL.md, step 0, "First adoption": this engine takes
+// --merge-base-policy-absent, treats a missing --policy as the built-in
+// fallback, and refuses malformed merge-base arguments before --closure
+// delegation. Keep the line exact; bump the suffix only with the rule.)
+//
 // dev-flow-exit.mjs — deterministic confidence-stage exit computation, and
 // the integration stage's exit (`--stage integration`, harmon-devkit#1272:
 // see "Integration stage" below — a separate path that reads only the
