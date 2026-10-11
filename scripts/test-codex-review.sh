@@ -1023,6 +1023,19 @@ wait "$orig_pid" || rc=$?
     fail "the late original replaced the retry's pass"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
 
+echo "==> envelope: a receipted pass whose file is missing fails closed"
+# review-r1-codex-verification-1: its ids are reserved, so dropping it from
+# the known-ids set would let this pass reuse one.
+reset_record
+jq '.receipts += [{kind: "pass", file: "challenge-r1-copilot-adversarial"}]' "${record}/run.json" >"${env_root}/run.json"
+mv "${env_root}/run.json" "${record}/run.json"
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+rc=0
+STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "does not exist" "${env_root}/err" ||
+    fail "a receipted-but-missing pass did not fail closed (rc $rc): $(cat "${env_root}/err")"
+assert_nothing_published "receipted-but-missing pass"
+
 echo "==> envelope: only RECEIPTED passes reserve finding ids; an orphan does not"
 # One finder filling two slots of a round (its own, and another primary's as
 # a fallback) is the one way two passes can mint the same finding id.
@@ -1041,10 +1054,13 @@ rc=0
 ENV_SLOT=copilot-adversarial STUB_PAYLOAD="${env_root}/sub.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
 [ "$rc" -eq 1 ] && [ ! -e "$sub_pass" ] || fail "a receipted pass's finding id was reusable (rc $rc)"
 
-echo "==> envelope: a stubbed-Codex lane leaves passes/, adjudications/ and verdict.json"
-# The harness-neutral path end to end, as review/SKILL.md tells any lane to
-# run it: the runner publishes, the CALLER appends the receipt and runs
-# verification, adjudicates, and persists the exit verdict.
+echo "==> envelope: a runner-published pass flows through receipt, verification, adjudication and exit"
+# The envelope-mode MECHANISM end to end, with a stub standing in for a
+# finder that answers in the payload schema: the runner publishes, the CALLER
+# appends the receipt and runs verification, adjudicates, and persists the
+# exit verdict. This is not evidence that a Codex lane produces passes today:
+# the real CLI fails closed in envelope mode (harmon-devkit#1365), and Codex
+# slots are assembled by the role agents.
 reset_record
 payload "${env_root}/p.json" challenge 1 codex-adversarial
 STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" ||
@@ -1078,6 +1094,6 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
     --run-id run-941 --initiated-by human --receipt >/dev/null ||
     fail "the adjudication does not validate against the runner's pass"
 
-echo "codex-review envelope mode OK (17 cases)"
+echo "codex-review envelope mode OK (18 cases)"
 
 echo "codex-review + codex-gate guards OK (38 cases)"

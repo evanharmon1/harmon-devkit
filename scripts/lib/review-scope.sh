@@ -940,6 +940,7 @@ review_envelope_publish() {
 }
 
 # The finding ids of every pass run.json's receipts name, as a JSON array.
+# Fails when a receipted pass file is missing.
 review_envelope_known_ids() {
     local names name file
     local -a files=()
@@ -947,7 +948,14 @@ review_envelope_known_ids() {
     while IFS= read -r name; do
         [ -n "$name" ] || continue
         file="$envelope_record_dir/passes/${name}.json"
-        [ -f "$file" ] && files+=("$file")
+        # A receipted pass whose file is gone is not an orphan to skip: its
+        # ids are reserved, and dropping them would let this pass reuse one.
+        # The exit computation calls that state indeterminate; so does this.
+        [ -f "$file" ] || {
+            echo "run.json receipts pass '$name', but $file does not exist" >&2
+            return 1
+        }
+        files+=("$file")
     done <<<"$names"
     if [ "${#files[@]}" -eq 0 ]; then
         printf '[]\n'
