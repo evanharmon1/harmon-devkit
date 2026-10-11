@@ -776,6 +776,107 @@ if [ "$(run_personal 'Validate issue metadata before creation' "$valid_body")" !
     fail "valid personal draft should pass: $(cat "$tmp/metadata.out")"
 fi
 
+# The implementer record (harmon-devkit#1269). The checkout carries the
+# harmon-init manifest shape that provisions the four implementer families from
+# the agent registry, so the shared interpreter must accept them too.
+metadata_model="$tmp/metadata-model"
+mkdir -p "$metadata_model"
+git -C "$metadata_model" init -q
+git -C "$metadata_model" remote add personal https://github.com/testowner/testrepo.git
+git -C "$metadata_model" remote add organization git@github.com:testorg/testrepo.git
+cp agent-registry.json "$metadata_model/agent-registry.json"
+jq '.families += [("model-family", "model", "model-version", "model-effort") as $f | {
+      family: $f, prefix: $f,
+      purpose: "Implementer record: \($f).", axis: "model",
+      source: "agent-registry", registry_set: $f, writers: ["agent"],
+      writer_note: "the implementing agent, as a record of fact",
+      readers: "humans, saved views — never read to select a model",
+      lifecycle: "durable", lifecycle_note: "kept; replaced by the next implementer",
+      trust_note: "a record of fact, never a routing input",
+      exclusive: true, provision: true, placeholder: "<\($f)>", color: "C2E0C6",
+      values: []}]' "$metadata_repo/label-registry.json" >"$metadata_model/label-registry.json"
+model_live_labels="$(printf '%s\n' enhancement feature area:fixture layer:none domain:fixture \
+    ai-generated needs-triage impact:medium risk:low complexity:s \
+    model-family:claude model-family:gpt model-family:deepseek model:opus model:sol model:flash \
+    model-version:5.5 model-version:6.1 model-version:4 model-effort:medium model-effort:high)"
+run_model_personal() {
+    METADATA_GH_LABELS="$model_live_labels" run_metadata --repo testowner/testrepo \
+        --repo-root "$metadata_model" --owner-type personal \
+        --title 'Record the implementing model' --body-file "$valid_body" \
+        --agent-authored --label feature --label area:fixture --label layer:none \
+        --label domain:fixture --label ai-generated --label impact:medium \
+        --label risk:low --label complexity:s "$@"
+}
+run_model_organization() {
+    METADATA_GH_LABELS="$model_live_labels" run_metadata --repo testorg/testrepo \
+        --repo-root "$metadata_model" --owner-type organization --issue-type Task \
+        --title 'Record the implementing model' --body-file "$valid_body" \
+        --agent-authored --label area:fixture --label layer:none --label domain:fixture \
+        --label ai-generated --impact medium --risk low --complexity s "$@"
+}
+claude_record=(--label model-family:claude --label model:opus --label model-version:5.5 --label model-effort:medium)
+
+echo "==> metadata: a manifest provisioning the implementer families still loads"
+[ "$(run_model_personal)" = 0 ] ||
+    fail "the implementer families must not invalidate the manifest: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: personal accounts accept the four implementer labels"
+[ "$(run_model_personal "${claude_record[@]}")" = 0 ] ||
+    fail "a valid personal implementer record must pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: organizations accept the four implementer issue fields"
+[ "$(run_model_organization --model-family gpt --model sol --model-version 6.1 --model-effort high)" = 0 ] ||
+    fail "a valid organization implementer record must pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: a second implementer replaces the first, never sits beside it"
+[ "$(run_model_personal "${claude_record[@]}" --label model-family:gpt --label model:sol)" = 1 ] ||
+    fail "two implementers' values must be refused"
+grep -qF 'exactly one model-family:* label (found 2)' "$tmp/metadata.out" ||
+    fail "the second implementer refusal must name the family: $(cat "$tmp/metadata.out")"
+grep -qF 'exactly one model:* label (found 2)' "$tmp/metadata.out" ||
+    fail "the second implementer refusal must name the line: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: family, line and version come together; the effort is optional"
+[ "$(run_model_personal --label model-family:claude --label model:opus --label model-version:5.5)" = 0 ] ||
+    fail "a personal record without an effort (an efforts-free harness) must pass: $(cat "$tmp/metadata.out")"
+[ "$(run_model_organization --model-family gpt --model sol --model-version 6.1)" = 0 ] ||
+    fail "an organization record without an effort must pass: $(cat "$tmp/metadata.out")"
+[ "$(run_model_personal --label model-family:claude --label model:opus --label model-effort:medium)" = 1 ] &&
+    grep -qF 'exactly one model-version:* label (found 0)' "$tmp/metadata.out" ||
+    fail "a personal record without a version must be refused: $(cat "$tmp/metadata.out")"
+[ "$(run_model_organization --model-family gpt --model sol)" = 1 ] &&
+    grep -qF 'needs all of --model-family, --model and --model-version' "$tmp/metadata.out" ||
+    fail "a partial organization record must be refused: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: implementer values are validated against the agent registry"
+[ "$(run_model_personal --label model-family:claude --label model:sol --label model-version:6.1 \
+    --label model-effort:medium)" = 1 ] &&
+    grep -qF 'model line "sol" is not a line of family "claude"' "$tmp/metadata.out" ||
+    fail "a line of another family must be refused: $(cat "$tmp/metadata.out")"
+[ "$(run_model_personal --label model-family:deepseek --label model:flash --label model-version:4 \
+    --label model-effort:high)" = 1 ] && grep -qF 'is retired' "$tmp/metadata.out" ||
+    fail "a retired version must be refused: $(cat "$tmp/metadata.out")"
+[ "$(run_model_organization --model-family gpt --model sol --model-version 9.9 --model-effort high)" = 1 ] &&
+    grep -qF 'model version "9.9"' "$tmp/metadata.out" ||
+    fail "an unknown organization version must be refused: $(cat "$tmp/metadata.out")"
+[ "$(run_model_organization --model-family gpt --model sol --model-version 6.1 --model-effort turbo)" = 1 ] &&
+    grep -qF 'effort "turbo" is not on the registry effort_ladder' "$tmp/metadata.out" ||
+    fail "an effort off the ladder must be refused: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: each owner type uses its own implementer surface"
+[ "$(run_model_organization "${claude_record[@]}")" = 1 ] &&
+    grep -qF 'pass --model-family instead of' "$tmp/metadata.out" ||
+    fail "organization implementer labels must point at the field flags: $(cat "$tmp/metadata.out")"
+[ "$(run_model_personal --model-family gpt --model sol --model-version 6.1 --model-effort high)" = 1 ] &&
+    grep -qF 'not field flags' "$tmp/metadata.out" ||
+    fail "personal implementer field flags must be refused: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: an unprovisioned implementer label is refused"
+[ "$(run_model_personal --label model-family:claude --label model:sonnet --label model-version:5.5 \
+    --label model-effort:medium)" = 1 ] &&
+    grep -qF "implementer label 'model:sonnet' is not provisioned" "$tmp/metadata.out" ||
+    fail "an unprovisioned implementer label must be refused: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: host-qualified targets bind every direct gh read to their host"
 metadata_host="$tmp/metadata-host"
 mkdir -p "$metadata_host"
@@ -5131,5 +5232,9 @@ printf '%s' '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignee
 _rcs="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
 [ "$_rcs" = 3 ] || fail "a reassigned omitted owner must abort before writes (got $_rcs)"
 [ ! -s "$rc_log" ] || fail "a reassigned omitted owner must trigger zero writes"
+
+echo "==> implement: record-implementer.sh writes and checks the implementer record"
+bash ./ai/skills/universal/implement/assets/test-record-implementer.sh ||
+    fail "record-implementer.sh behavior regressed"
 
 echo "✓ track-work checks behave"

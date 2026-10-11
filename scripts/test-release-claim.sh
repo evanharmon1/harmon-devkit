@@ -203,4 +203,19 @@ rc="$(RUN_COMMENTS_FAIL_FLAG="$tmp/comments.fail" run_release)"
 [ "$rc" = 2 ] || fail "a gh api failure must fail closed with exit 2, got $rc: $(cat "$tmp/err")"
 grep -q "could not fetch comments" "$tmp/err" || fail "a gh api failure must report 'could not fetch comments': $(cat "$tmp/err")"
 
+echo "==> 7. claim release removes claim:* and leaves the implementer record in place (#1269)"
+# The four implementer values are a record of fact, not a claim marker: the
+# release plan removes the claim label and never names a model-* label.
+jq -n '{state: "OPEN", assignees: [{login: "workerbot"}],
+        labels: ([{name: "claim:gpt"}] + ([("model-family:gpt", "model:sol",
+                  "model-version:6.1", "model-effort:high")] | map({name: .})))}' >"$issue_file"
+make_comments_file 0
+make_timeline_file 0
+[ "$(run_release)" = 0 ] || fail "an issue carrying the implementer record must release cleanly: $(cat "$tmp/err")"
+grep -qF -- "--remove-label claim:gpt" "$tmp/err" || fail "the release plan must remove claim:gpt: $(cat "$tmp/err")"
+if grep -E -- '--remove-label model(-family|-version|-effort)?:' "$tmp/err"; then
+    fail "claim release must never remove an implementer label"
+fi
+make_issue
+
 echo "ALL PASS"
