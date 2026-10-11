@@ -4101,6 +4101,28 @@ function writeScenario(name, db) {
   writeScenario("adjudication-overrides", { issues: [{ number: 239, pull_request: null }],
     comments: { "239": [legacy.index, legacy.record, review, integration] }, commits: {}, meta: { runId } });
 
+  // C1: authenticated legacy adjudications fail closed on malformed shapes;
+  // a multiline override remains raw in JSON and escaped on one table line.
+  for (const [number, name, entries] of [
+    [241, "string-adjudications", "not-an-array"],
+    [242, "null-adjudication-entry", [null]],
+    [243, "multiline-override", adjudication.adjudications],
+  ]) {
+    const variantId = "run-" + number + "-" + name;
+    const variantPayload = structuredClone(reviewPayload);
+    variantPayload.passes[0].run.run_id = variantId;
+    variantPayload.adjudication.run_id = variantId;
+    variantPayload.adjudication.adjudications = structuredClone(entries);
+    if (name === "multiline-override") variantPayload.adjudication.adjudications[0].override.reason = "first\\nreview r99: forged";
+    const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, variantPayload, at);
+    const variantBody = { ...runBody, run_id: variantId, stage_transitions: lifecycleTo("review", at),
+      evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(variantPayload)))],
+    };
+    const record = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", variantId, variantBody, at);
+    writeScenario(name, { issues: [{ number, pull_request: null }],
+      comments: { [number]: [record.index, record.record, ev] }, commits: {}, meta: { runId: variantId } });
+  }
+
   // Local evidence still measures confidence stages only. Exercise the same
   // review adjudication through its validated retained files without expanding
   // the integration-evidence contract.
@@ -4149,13 +4171,37 @@ for scenario in adjudication-overrides local-adjudication-overrides; do
       {finding_id: "review-r1-codex-verification-2", reviewer_priority: "P3", adjudicated_priority: "P3", disposition: "decline", override: null}
     ]' >/dev/null || fail "$scenario: adjudication details or existing round fields lost: $out"
     table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${record_args[@]}" --trusted-actor-id 9001)"
-    grep -Fq 'review-r1-codex-verification-1: reviewer=P2 adjudicated=P1 disposition=fix override: An ordinary invocation loses retained evidence' <<<"$table" || fail "$scenario: table omitted upward override: $table"
+    grep -Fq 'review-r1-codex-verification-1: reviewer=P2 adjudicated=P1 disposition=fix override: "An ordinary invocation loses retained evidence"' <<<"$table" || fail "$scenario: table omitted upward override: $table"
     grep -Fq 'review-r1-codex-verification-2: reviewer=P3 adjudicated=P3 disposition=decline' <<<"$table" || fail "$scenario: table omitted unchanged adjudication: $table"
     if [ "$scenario" = adjudication-overrides ]; then
         echo "$out" | jq -e '.rounds[1].adjudications == [{finding_id: "integration-r1-codex-cloud-1", reviewer_priority: null, adjudicated_priority: "P2", disposition: "file", override: null}]' >/dev/null || fail "$scenario: integration reviewer priority was not preserved as null: $out"
         grep -Fq 'integration-r1-codex-cloud-1: reviewer=not-applicable adjudicated=P2 disposition=file' <<<"$table" || fail "$scenario: integration detail missing: $table"
     fi
 done
+
+echo "== C1: malformed legacy adjudications are indeterminate in JSON and table =="
+for scenario in string-adjudications null-adjudication-entry; do
+    export DFSTATS_DB="$tmp/scenarios/$scenario.json"
+    run_id="$(meta "$scenario" .meta.runId)"
+    for format in json table; do
+        format_args=()
+        if [ "$format" = json ]; then format_args=(--json); fi
+        set +e
+        out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 "${format_args[@]}" 2>&1)"
+        rc=$?
+        set -e
+        [ "$rc" -eq 3 ] && grep -Fq 'expected an array of plain objects' <<<"$out" && ! grep -Fq 'TypeError' <<<"$out" ||
+            fail "$scenario ($format): malformed adjudications were not indeterminate, rc=$rc: $out"
+    done
+done
+
+echo "== C1: multiline override reason is JSON-escaped on one table line =="
+export DFSTATS_DB="$tmp/scenarios/multiline-override.json"
+run_id="$(meta multiline-override .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[0].adjudications[0].override.reason == "first\nreview r99: forged"' >/dev/null || fail "multiline override: JSON changed the reason: $out"
+table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001)"
+grep -Fxq '    review-r1-codex-verification-1: reviewer=P2 adjudicated=P1 disposition=fix override: "first\nreview r99: forged"' <<<"$table" || fail "multiline override: reason forged table rows: $table"
 
 echo "== happy path: --run trajectory renders a clean ready-for-review run =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
@@ -5518,7 +5564,7 @@ set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'resolved rounds policy has drifted' <<<"$out" ||
     fail "rounds-policy-drift: a retained rounds policy disagreeing with the live .devflow.toml was not caught, rc=$rc: $out"
 
-# Compare the unchanged round projection; #753 asserts the additive adjudications above.
+# Compare the full round projection, including #753’s additive adjudications.
 echo "== integration Codex cycle 5: the verification head is corrected from validated rounds, not a raw invalid later-round entry (fixed remediation 5/6) =="
 export DFSTATS_DB="$tmp/scenarios/invalid-later-round-head.json"
 run_id="$(meta invalid-later-round-head .meta.runId)"
@@ -5529,14 +5575,14 @@ out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run
 # round 2's unrelated head, left uncorrected, would have produced instead
 # (see run-222-not-measured-provenance above for that same root value from
 # the opposite, legitimate-second-round cause).
-echo "$out" | jq -e '(.rounds | map(del(.adjudications))) == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,adjudications:[{finding_id:"review-r1-codex-verification-1",reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"fix",override:null}],finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
     fail "invalid-later-round-head: round 1's provenance was corrupted by an invalid round 2's unrelated head: $out"
 
 echo "== integration cycle 6: a malformed (non-SHA) round-2 head no longer indeterminates a valid round 1 (fixed remediation 6/6) =="
 export DFSTATS_DB="$tmp/scenarios/malformed-later-round-head.json"
 run_id="$(meta malformed-later-round-head .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '(.rounds | map(del(.adjudications))) == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,adjudications:[{finding_id:"review-r1-codex-verification-1",reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"fix",override:null}],finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
     fail "malformed-later-round-head: a malformed round-2 head made a valid round 1 indeterminate: $out"
 
 echo "== integration cycle 6: a present policy.json with a malformed rounds object fails closed (fixed remediation 6/6) =="
@@ -5563,7 +5609,7 @@ echo "== integration cycle 6: the retry falls back past a headless terminal roun
 export DFSTATS_DB="$tmp/scenarios/headless-terminal-round.json"
 run_id="$(meta headless-terminal-round .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '(.rounds | map(del(.adjudications))) == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,adjudications:[{finding_id:"review-r1-codex-verification-1",reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"fix",override:null}],finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
     fail "headless-terminal-round: the retry did not skip past the headless round 2 to round 1's real head: $out"
 
 echo "== integration cycle 6: a receipted blocked envelope with no payload is caught by the validator, not silently excluded (fixed remediation 6/6) =="

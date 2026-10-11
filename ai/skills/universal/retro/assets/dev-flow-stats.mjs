@@ -3202,6 +3202,13 @@ function renderTrajectory(run) {
   const rounds = run.rounds
     .filter((r) => r.dest === "issue" && r.round !== null)
     .sort((a, b) => Math.min(...a.commentIds) - Math.min(...b.commentIds));
+  for (const round of rounds) {
+    if (!round.payload.adjudication) continue;
+    const entries = round.payload.adjudication.adjudications;
+    if (!Array.isArray(entries) || entries.some((entry) => entry === null || typeof entry !== "object" || Array.isArray(entry))) {
+      throw new EvidenceError(`malformed adjudications for ${round.stage} round ${round.round}: expected an array of plain objects`);
+    }
+  }
   const verifiedMeasurements = verifiedFindingMeasurements(rounds);
   return {
     run_id: run.runId,
@@ -3292,7 +3299,7 @@ function renderTrajectoryTable(trajectory) {
   for (const r of trajectory.rounds) {
     lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
     for (const entry of r.adjudications ?? []) {
-      lines.push(`    ${entry.finding_id}: reviewer=${entry.reviewer_priority ?? "not-applicable"} adjudicated=${entry.adjudicated_priority} disposition=${entry.disposition}${entry.override ? ` override: ${entry.override.reason}` : ""}`);
+      lines.push(`    ${entry.finding_id}: reviewer=${entry.reviewer_priority ?? "not-applicable"} adjudicated=${entry.adjudicated_priority} disposition=${entry.disposition}${entry.override ? ` override: ${JSON.stringify(entry.override.reason)}` : ""}`);
     }
   }
   lines.push("integration: not measured from local evidence");
@@ -3967,7 +3974,14 @@ function cliRun(args) {
     console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}${report.legacy_also_present ? "\nlegacy-also-present: true" : ""}`);
     return 0;
   }
-  const trajectory = renderTrajectory(run);
+  let trajectory;
+  try {
+    trajectory = renderTrajectory(run);
+  } catch (err) {
+    if (!(err instanceof EvidenceError)) throw err;
+    console.error(`dev-flow-stats: indeterminate: run "${args.run}" — ${err.message}`);
+    return 3;
+  }
   console.log(args.json ? JSON.stringify(trajectory, null, 2) : renderTrajectoryTable(trajectory));
   return 0;
 }
