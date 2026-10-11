@@ -250,6 +250,28 @@ pass "a refused bind releases only a slate lock this invocation created"
 [ -z "$(find "$state" -name '*.wlock*')" ] || fail "a mutex or its temp stamp file was left behind"
 pass "the write mutex leaves neither a lock nor a temp stamp behind"
 
+mkdir -p "$state/slates/s11"
+cp "$state/slates/s1/plan.json" "$state/slates/s11/plan.json"
+expect_refused "plan copied from another slate" 'records slate_id "s1", not s11' \
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s11 --session alice"
+[ ! -e "$state/locks/s11.json" ] || fail "a plan bound to another slate produced a lock"
+pass "a plan whose slate_id does not match its slate directory is refused before any lock"
+
+# A mutex whose stamp cannot be read (here, a directory) is waited out under
+# the deadline with back-off, not spun on. The outer timeout turns a
+# reintroduced hot loop, which never reaches its deadline, into a failure
+# rather than a hung suite.
+mkdir -p "$state/runs/run-d/run.json.wlock"
+cpu_log="$tmp/wlock-cpu"
+TIMEFORMAT='%U %R'
+{ time expect_refused "unreadable mutex stamp" "timed out waiting for" \
+    timeout 60 bash -c "cd '$repo' && node '$writer' intervention --slate s1 --session alice --run-id run-d --kind other --note x --at 2026-01-01T00:02:00Z"; } 2>"$cpu_log"
+rmdir "$state/runs/run-d/run.json.wlock"
+unset TIMEFORMAT
+read -r cpu_user wall <"$cpu_log"
+awk -v u="$cpu_user" 'BEGIN { exit !(u < 5) }' || fail "an unreadable mutex stamp burned ${cpu_user}s of CPU (wall ${wall}s)"
+pass "an unreadable mutex stamp times out with back-off instead of spinning"
+
 write_plan s8 17:run-t
 new_run run-t
 jq '.revisions[0].reason = "tampered"' "$state/slates/s8/plan.json" >"$tmp/s8.json"
@@ -376,6 +398,16 @@ expect_refused "pr binding after abandon" "run already ended with outcome abando
     rr alice bind-pr --run-id run-b --number 45 --url https://example.test/pr/45 --at 2026-01-01T00:03:00Z
 cmp -s "$state/runs/run-b/run.json" "$tmp/run-b-closed.json" || fail "a write after a non-promotion close changed run.json"
 pass "after a non-promotion close, every write is refused and the record is unchanged"
+
+new_run run-e
+write_plan s12 19:run-e
+(cd "$repo" && node "$writer" transition --slate s12 --session alice --run-id run-e --stage claim --exit k --at 2026-01-01T00:05:00Z) >/dev/null
+cp "$state/runs/run-e/run.json" "$tmp/run-e.json"
+expect_refused "close before the active stage" "before the active stage claim began" \
+    bash -c "cd '$repo' && node '$writer' close --slate s12 --session alice --run-id run-e --outcome abandoned --exit x --at 2026-01-01T00:04:00Z"
+cmp -s "$state/runs/run-e/run.json" "$tmp/run-e.json" || fail "a close dated before the active stage changed run.json"
+(cd "$repo" && node "$writer" lock release --slate s12 --session alice) >/dev/null
+pass "a close dated before the active stage began is refused"
 
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane

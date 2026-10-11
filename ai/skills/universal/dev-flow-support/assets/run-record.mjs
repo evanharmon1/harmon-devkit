@@ -170,17 +170,21 @@ export function withMutex(target, fn, { timeoutMs = 15000 } = {}) {
       unlinkSync(temporary)
     }
     if (acquired) break
+    // An unreadable stamp (vanished, or not a readable file) falls through to
+    // the same deadline and back-off as a live owner, never a hot retry loop.
     let observed = null
     try {
       observed = readFileSync(lock, 'utf8')
     } catch {
-      continue
+      observed = null
     }
     let owner = null
-    try {
-      owner = JSON.parse(observed)
-    } catch {
-      owner = null
+    if (observed !== null) {
+      try {
+        owner = JSON.parse(observed)
+      } catch {
+        owner = null
+      }
     }
     if (owner && !ownerAlive(owner)) {
       const guard = `${lock}.break`
@@ -302,7 +306,11 @@ function readValidatedPlan(root, slate) {
   const file = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(file)) return null
   validateFile('plan', file, `slate ${slate}'s ${file}`)
-  return readJson(file, 'plan')
+  const document = readJson(file, 'plan')
+  if (document.slate_id !== slate) {
+    throw new Refusal(`${file} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}; a plan is bound to its slate directory`)
+  }
+  return document
 }
 
 // currentPlan — the slate's latest plan revision, or null when no plan exists.
@@ -567,6 +575,10 @@ const MUTATORS = {
       throw new UsageError('--outcome must be capped, escalated or abandoned for an open run (ready-for-review is `promote`)')
     }
     guardTimestamp(record, args.at)
+    const enteredAt = record.stage_transitions.at(-1).entered_at
+    if (isBefore(args.at, enteredAt)) {
+      throw new Refusal(`${args.at} is before the active stage ${record.stage_transitions.at(-1).stage} began (${enteredAt}); a run cannot end before its last stage started`)
+    }
     closeLastExit(record, args.exit, { required: true })
     record.outcome_transitions = appendChain(record.outcome_transitions, OUTCOME_FIELDS, { outcome: args.outcome, at: args.at })
     record.outcome = args.outcome

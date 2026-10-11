@@ -229,6 +229,25 @@ expect_refused "GIT_LITERAL_PATHSPECS" "lane c (#3) fence: c/two.txt" \
     bash -c "cd '$repo11/sub' && GIT_LITERAL_PATHSPECS=1 node '$reviser' base-move --slate s11 --session alice --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
 pass "GIT_LITERAL_PATHSPECS=1 does not hide moved paths"
 
+# -- overridden history ----------------------------------------------------------
+repo14="$(new_repo replaced)"
+write_plan "$repo14" s14 '[]'
+base14="$(git -C "$repo14" rev-parse HEAD)"
+moved="$(commit_touching "$repo14" c/two.txt)"
+git -C "$repo14" replace "$moved" "$base14"
+expect_refused "replace ref hiding a fence move" "lane c (#3) fence: c/two.txt" \
+    pr "$repo14" alice s14 --new-base "$moved" --at 2026-01-01T01:00:00Z
+pass "a refs/replace override cannot hide a fence-touching move"
+
+repo15="$(new_repo grafted)"
+write_plan "$repo15" s15 '[]'
+moved="$(commit_touching "$repo15" unrelated.txt)"
+mkdir -p "$repo15/.git/info"
+printf '%s\n' "$moved" >"$repo15/.git/info/grafts"
+expect_refused "grafted history" "info/grafts exists" \
+    pr "$repo15" alice s15 --new-base "$moved" --at 2026-01-01T01:00:00Z
+pass "a repository with an info/grafts file is refused"
+
 PLAN_REVISER="$reviser" node --input-type=module -e '
   const { pathMatches } = await import(process.env.PLAN_REVISER)
   const cases = [["a\u{1F600}.js", "a?.js"], ["n\nx.txt", "n*.txt"], ["d/a\u{1F600}\nb.js", "d/a*.js"]]

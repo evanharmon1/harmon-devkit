@@ -27,7 +27,8 @@
 //   - a live fence or candidate pattern has a component combining a bracket
 //     class with `*`/`?`, or holding a backslash — such a pattern is never
 //     interpreted here, so any move needs judgment;
-//   - the new base does not descend from the old one, or nothing moved.
+//   - the new base does not descend from the old one, or nothing moved;
+//   - the repository has an info/grafts file (replace refs are ignored).
 // The existing plan is validated before anything else, so a broken chain is
 // refused too. Both writers take the slate lock (see run-record.mjs).
 //
@@ -55,8 +56,15 @@ import {
   writeValidated,
 } from './run-record.mjs'
 
+// Every git call reads the real objects: replace refs are disabled, so an
+// overridden history cannot hide a moved path (a grafts file, which no flag
+// disables, is refused in baseMove).
 function git(args) {
-  return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  return execFileSync('git', ['--no-replace-objects', ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
+  })
 }
 
 function resolveCommit(value, label) {
@@ -199,6 +207,10 @@ function baseMove(args) {
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)
     const oldBase = last.plan.base_sha
+    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts']).trim()
+    if (existsSync(grafts)) {
+      throw new Refusal(`${grafts} exists; a grafted history cannot prove what a base move changed, refusing`)
+    }
     const newBase = resolveCommit(args['new-base'], '--new-base')
     resolveCommit(oldBase, 'the plan base')
     if (newBase === oldBase) throw new Refusal(`base ${oldBase} did not move; nothing to revise`)
