@@ -372,10 +372,23 @@ task challenge -- --model gpt-5.6-sol --envelope \
   --base main
 ```
 
-Envelope mode drives Codex through plain `codex exec` with `--output-schema`
-and a read-only sandbox, not `codex exec review`: the review subcommand accepts
-`--output-schema` and never reads it. A pass becomes evidence only when the
+Envelope mode drives Codex through the same `codex exec review` invocation as
+an ordinary run, never plain `codex exec`, which let a command the model
+marked as escalated leave its sandbox. The review subcommand enforces no
+output schema, so the payload schema is requested in the prompt and the
+runner accepts only exactly one JSON object (bare, or alone in one fenced
+block); anything else publishes nothing. A pass becomes evidence only when the
 supervising orchestrator validates it and appends its receipt.
+
+**Codex envelope mode currently fails closed.** On Codex CLI 0.162.1,
+`codex exec review` answers in its own review prose and ignores the requested
+JSON, so a Codex envelope run publishes no pass — never a false one. A
+schema-enforcing, approval-never Codex path is
+[harmon-devkit#1365](https://github.com/evanharmon1/harmon-devkit/issues/1365);
+until it lands, Codex passes go through the `challenger`/`reviewer` role-agent
+wrapper. Note too that local Codex review passes, ordinary and envelope alike,
+run with `approval: on-request` on that CLI, not approval-never
+([harmon-devkit#1366](https://github.com/evanharmon1/harmon-devkit/issues/1366)).
 
 `task challenge:copilot` / `task review:copilot` take the same flags plus
 `--model <model>`, which is pinned into the vendor invocation (a model in

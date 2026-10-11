@@ -744,33 +744,28 @@ grep -q "non-interactive" <<<"$out" || fail "missing non-interactive disable ref
 # ---------------------------------------------------------------------------
 env_root="${test_tmp}/envelope"
 mkdir -p "${env_root}/bin"
-# The envelope stub answers through --output-last-message, as the real CLI
-# does under --output-schema, with whatever payload the case armed. STUB_GATE
+# The envelope stub answers on stdout, as `codex exec review` does, with
+# whatever reply the case armed; its narration goes to stderr. STUB_GATE
 # parks it mid-review until the gate file appears, which is how the race case
 # holds a "timed-out" original open while its retry runs to completion.
 cat >"${env_root}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
 printf 'argv=%s\n' "$*" >>"${STUB_LOG:-/dev/null}"
-out=
 cd_dir=
-schema=
 while [ $# -gt 0 ]; do
     case "$1" in
-    --output-last-message) out="$2"; shift 2 ;;
     --cd) cd_dir="$2"; shift 2 ;;
-    --output-schema) schema="$2"; shift 2 ;;
     *) shift ;;
     esac
 done
 cat >"${STUB_PROMPT:-/dev/null}"
-printf 'cd=%s schema=%s\n' "$cd_dir" "$schema" >>"${STUB_LOG:-/dev/null}"
-[ -z "${STUB_SCHEMA_COPY:-}" ] || cp "$schema" "$STUB_SCHEMA_COPY"
-echo "stub review narration on stdout"
+printf 'cd=%s\n' "$cd_dir" >>"${STUB_LOG:-/dev/null}"
+echo "stub review narration on stderr" >&2
 if [ -n "${STUB_GATE:-}" ]; then
     : >"${STUB_GATE}.waiting"
     while [ ! -e "$STUB_GATE" ]; do sleep 0.1; done
 fi
-[ -z "${STUB_PAYLOAD:-}" ] || cp "$STUB_PAYLOAD" "$out"
+[ -z "${STUB_PAYLOAD:-}" ] || cat "$STUB_PAYLOAD"
 exit "${STUB_EXIT:-0}"
 CODEXSTUB
 chmod +x "${env_root}/bin/codex"
@@ -857,50 +852,22 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
     fail "the published pass does not validate"
 [ "$(cat "${record}/run.json")" = "$run_json_before" ] || fail "the runner wrote run.json"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "temporaries left in passes/: $(ls -A "${record}/passes")"
-grep -q "stub review narration" "${env_root}/err" || fail "Codex's own stdout was not diverted to stderr"
+grep -q "stub review narration" "${env_root}/err" || fail "Codex's narration did not reach stderr"
 grep -q "^cd=/" "${env_root}/stub.log" && ! grep -q "^cd=${ewd}\$" "${env_root}/stub.log" ||
     fail "Codex did not review an immutable checkout: $(cat "${env_root}/stub.log")"
-# challenge-r3-codex-adversarial-1: `exec review` never reads --output-schema,
-# so envelope mode must call plain `exec` (read-only), never the subcommand.
-grep -Eq '^argv=exec --cd /[^ ]+ --sandbox read-only ' "${env_root}/stub.log" &&
-    ! grep -Eq '^argv=.* review( |$)' "${env_root}/stub.log" ||
-    fail "envelope mode did not invoke plain read-only codex exec: $(cat "${env_root}/stub.log")"
-grep -q "schema=${record}/passes/.strict-schema." "${env_root}/stub.log" ||
-    fail "--output-schema was not handed the strict derivation: $(cat "${env_root}/stub.log")"
+# challenge-r4-codex-adversarial-2: envelope mode uses `codex exec review` —
+# legacy mode's approval-never invocation — never plain `exec`, which runs
+# approval on-request and let an escalated command escape its sandbox.
+grep -Eq '^argv=exec --cd /[^ ]+ review --model gpt-5\.6-sol --config model_reasoning_effort=high -$' "${env_root}/stub.log" ||
+    fail "envelope mode did not invoke codex exec review: $(cat "${env_root}/stub.log")"
+! grep -Eq -- '--output-schema|--output-last-message|--sandbox' "${env_root}/stub.log" ||
+    fail "envelope mode still passes the removed plain-exec flags: $(cat "${env_root}/stub.log")"
+grep -Fq 'The result.challenger JSON Schema:' "${env_root}/prompt" && grep -Fq '"attack_scenarios"' "${env_root}/prompt" ||
+    fail "the payload schema is not requested in the prompt"
 grep -q "immutable diff ${env_base}...${env_head}" "${env_root}/prompt" || fail "scope not rewritten to captured SHAs"
 grep -q 'challenge-r1-codex-adversarial-1' "${env_root}/prompt" || fail "binding instructions missing from the prompt"
 
-echo "==> envelope: --output-schema gets a strict-structured-output schema at every object level"
-# Challenge round 1 (challenge-r1-codex-adversarial-2): the live API rejects
-# the real payload schema ("'schema.required' is required to include every
-# key in properties. Missing 'slot'"). The derivation must close every object,
-# require every key, and carry no keyword that mode refuses.
-reset_record
-payload "${env_root}/p.json" challenge 1 codex-adversarial
-STUB_SCHEMA_COPY="${env_root}/strict.json" STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>&1 ||
-    fail "strict-schema run failed"
-for role in challenger reviewer; do
-    if [ "$role" = challenger ]; then
-        strict="${env_root}/strict.json"
-    else
-        strict="${env_root}/strict-reviewer.json"
-        (cd "$ewd" && . scripts/lib/review-scope.sh &&
-            review_envelope_strict_schema ai/skills/universal/dev-flow-support/assets/schemas/result.reviewer.schema.json) >"$strict"
-    fi
-    jq -e '
-        [.. | objects | select(has("properties"))] as $objs
-        | ($objs | length) > 0
-          and all($objs[]; .additionalProperties == false and ((.required | sort) == (.properties | keys)))
-          and ([.. | objects | keys[] | select(IN("if", "then", "else", "pattern", "minLength", "maxLength",
-                "minimum", "maximum", "minItems", "oneOf", "allOf", "not", "$comment", "$schema", "$id"))] | length == 0)
-          and ([.. | objects | .["$ref"]? // empty | ltrimstr("#/$defs/")] | all(. as $d | $d | IN($defs_keys[])))
-    ' --argjson defs_keys "$(jq '.["$defs"] // {} | keys' "$strict")" "$strict" >/dev/null ||
-        fail "the derived $role schema breaks a strict-structured-output rule: $(cat "$strict")"
-    jq -e '.properties.slot.type == ["string", "null"] and .properties.substitutes_for.type == ["string", "null"]' \
-        "$strict" >/dev/null || fail "the derived $role schema did not make its optional keys nullable"
-done
-
-echo "==> envelope: null optionals from a strict answer are normalized away, then validated"
+echo "==> envelope: null optionals in an answer are normalized away, then validated"
 reset_record
 payload "${env_root}/p.json" challenge 1 codex-adversarial '.substitutes_for = null'
 out="$(STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge 2>"${env_root}/err")" ||
@@ -964,6 +931,38 @@ rc=0
 STUB_PAYLOAD="${env_root}/bad.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
 [ "$rc" -eq 1 ] || fail "prose output not refused (rc $rc)"
 assert_nothing_published "prose output"
+
+echo "==> envelope: two JSON objects, or an object inside prose, fail closed"
+for shape in two prose; do
+    reset_record
+    payload "${env_root}/one.json" challenge 1 codex-adversarial
+    if [ "$shape" = two ]; then
+        cat "${env_root}/one.json" "${env_root}/one.json" >"${env_root}/bad.json"
+    else
+        {
+            echo "Here is the review:"
+            cat "${env_root}/one.json"
+            echo "Hope this helps."
+        } >"${env_root}/bad.json"
+    fi
+    rc=0
+    STUB_PAYLOAD="${env_root}/bad.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+    [ "$rc" -eq 1 ] && grep -q "not exactly one JSON object" "${env_root}/err" ||
+        fail "a $shape reply was not refused (rc $rc): $(cat "${env_root}/err")"
+    assert_nothing_published "$shape reply"
+done
+
+echo "==> envelope: one object in one fenced block, and nothing else, publishes"
+reset_record
+payload "${env_root}/one.json" challenge 1 codex-adversarial
+{
+    echo '```json'
+    cat "${env_root}/one.json"
+    echo '```'
+} >"${env_root}/fenced.json"
+STUB_PAYLOAD="${env_root}/fenced.json" envelope_run challenge >/dev/null 2>"${env_root}/err" ||
+    fail "a single fenced object was refused: $(cat "${env_root}/err")"
+[ -f "$pass_file" ] || fail "a single fenced object published nothing"
 
 echo "==> envelope: a failing CLI publishes nothing"
 reset_record
@@ -1079,6 +1078,6 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
     --run-id run-941 --initiated-by human --receipt >/dev/null ||
     fail "the adjudication does not validate against the runner's pass"
 
-echo "codex-review envelope mode OK (16 cases)"
+echo "codex-review envelope mode OK (17 cases)"
 
 echo "codex-review + codex-gate guards OK (38 cases)"

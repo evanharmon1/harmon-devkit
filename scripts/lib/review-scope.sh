@@ -788,49 +788,36 @@ review_envelope_bind_scope() {
         "Envelope mode reviews a branch's commits; there is nothing to review."
 }
 
-# review_envelope_strict_schema SCHEMA — print a derivation of the payload
-# SCHEMA that strict structured outputs accept (the Codex `--output-schema`
-# path rejects the real one: "'schema.required' is required to include every
-# key in properties"). At every object level each property is required and
-# optional ones become nullable, objects are closed, and only the keywords
-# that mode accepts survive — the conditional (if/then/else) and every
-# validation-only keyword (pattern, minLength, minimum, ...) are dropped.
-# Strictness never stands in for validation: the answer is normalized back
-# (review_envelope_normalize) and checked against the REAL schema by the
-# unchanged validator before anything is published.
-review_envelope_strict_schema() {
-    jq '
-        def nullable:
-            if has("$ref") or (has("type") | not) then {anyOf: [., {type: "null"}]}
-            elif (.type | type) == "array" then (if (.type | index("null")) then . else .type += ["null"] end)
-            else .type = [.type, "null"] end
-            | if has("enum") and ((.enum | index(null)) | not) then .enum += [null] else . end;
-        def strict:
-            if type != "object" then .
-            else
-                with_entries(select(.key | IN("type", "properties", "required", "additionalProperties",
-                    "items", "enum", "const", "$defs", "$ref", "description", "anyOf")))
-                | if has("properties") then
-                    (.required // []) as $req
-                    | .properties |= (to_entries
-                        | map(.key as $k | .value |= (strict | if ($req | index($k)) then . else nullable end))
-                        | from_entries)
-                    | .required = (.properties | keys_unsorted)
-                    | .additionalProperties = false
-                  else . end
-                | if has("items") then .items |= strict else . end
-                | if has("anyOf") then .anyOf |= map(strict) else . end
-                | if has("$defs") then .["$defs"] |= map_values(strict) else . end
-            end;
-        strict
-    ' "$1"
+# review_envelope_extract RAW — print the one JSON object a finder answered
+# with, or fail. Structured output is requested in the PROMPT (neither CLI
+# offers an enforced schema on its review path), so the answer is parsed
+# here and anything but exactly one object fails closed: the whole reply
+# as one object, or one fenced block holding one object and nothing outside
+# it. Prose, a second object, or an object buried in narration is refused —
+# guessing which part was meant would publish a pass nobody asked for.
+review_envelope_extract() {
+    local raw="$1" inner
+    if jq -se 'length == 1 and (.[0] | type) == "object"' "$raw" >/dev/null 2>&1; then
+        jq -s '.[0]' "$raw"
+        return
+    fi
+    inner="$(awk '
+        { sub(/[ \t\r]+$/, "") }
+        NF { body[++n] = $0 }
+        END {
+            if (n < 3 || body[1] !~ /^```(json)?$/ || body[n] != "```") exit 1
+            for (i = 2; i < n; i++) if (body[i] ~ /^```/) exit 1
+            for (i = 2; i < n; i++) print body[i]
+        }
+    ' "$raw")" || return 1
+    jq -se 'length == 1 and (.[0] | type) == "object"' <<<"$inner" >/dev/null 2>&1 || return 1
+    jq -s '.[0]' <<<"$inner"
 }
 
 # review_envelope_normalize SCHEMA PAYLOAD — drop every null whose key the
-# REAL schema marks optional, at every object level the schema describes:
-# the strict derivation above made such keys nullable, and "absent" is what
-# the real schema means by them. A null on a required key is left for the
-# validator to judge.
+# schema marks optional, at every object level the schema describes: a model
+# asked for JSON routinely writes `"substitutes_for": null` where the schema
+# means "absent". A null on a required key is left for the validator to judge.
 review_envelope_normalize() {
     jq --slurpfile root "$1" '
         def resolve($r): if has("$ref") then $r["$defs"][.["$ref"] | ltrimstr("#/$defs/")] else . end;
@@ -847,7 +834,8 @@ review_envelope_normalize() {
     ' "$2"
 }
 
-# review_envelope_instructions — the binding clause appended to the finder's
+# review_envelope_instructions — the binding clause and the payload schema
+# appended to the finder's
 # prompt. The runner checks every bound field afterwards, so this is the
 # request, not the enforcement.
 review_envelope_instructions() {
@@ -866,6 +854,10 @@ validate against the result.${envelope_role} JSON Schema. Set stage to
 "${envelope_stage}-r${envelope_round}-${envelope_finder}-1", "-2", and so on.
 Set counts to the tally of findings by priority. For provenance use "original"
 and for fingerprint use "new" unless you can name the earlier finding exactly.
+
+The result.${envelope_role} JSON Schema:
+
+$(cat "$envelope_payload_schema")
 INSTRUCTIONS
 }
 
@@ -885,13 +877,13 @@ review_envelope_publish() {
     review_envelope_temp tmp_envelope envelope || exit 1
     review_envelope_temp tmp_ids known-ids || exit 1
 
-    # Exactly one JSON object, bound to what the caller captured. jq -s reads
-    # the whole stream, so trailing prose or a second document fails here.
-    jq -se 'length == 1 and (.[0] | type) == "object"' "$raw" >/dev/null 2>&1 || {
+    # Exactly one JSON object, then bound to what the caller captured.
+    local answer
+    answer="$(review_envelope_extract "$raw")" || {
         echo "finder output is not exactly one JSON object; no pass published" >&2
         exit 1
     }
-    review_envelope_normalize "$envelope_payload_schema" <(jq -s '.[0]' "$raw") >"$tmp_payload" || {
+    review_envelope_normalize "$envelope_payload_schema" <(printf '%s\n' "$answer") >"$tmp_payload" || {
         echo "could not normalize the finder payload; no pass published" >&2
         exit 1
     }

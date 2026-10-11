@@ -240,7 +240,11 @@ an overwrite. It prints that path and nothing else on stdout, and it **never
 writes `run.json`**. Any harness that can run the task therefore gets the same
 binding; the Claude `challenger`/`reviewer` agents are optional process
 isolation around the same invocation, never an envelope authority of their
-own, and the orchestrator never fabricates envelope data.
+own, and the orchestrator never fabricates envelope data. **Codex envelope
+mode currently fails closed**: `codex exec review` answers in prose and
+ignores the in-prompt schema, so it publishes no pass; until
+harmon-devkit#1365 delivers a schema-enforcing, approval-never path, Codex
+passes go through the `challenger`/`reviewer` role-agent wrapper.
 
 **Append the pass receipt, then verify.** Receipt authority stays with the
 caller that owns the run record — in an orchestrated run, the supervising

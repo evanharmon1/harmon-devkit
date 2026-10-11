@@ -273,39 +273,32 @@ if [ "$envelope_mode" = false ]; then
 fi
 
 # Envelope mode. Codex reviews an immutable checkout of the captured head —
-# never the live worktree, which can move while the model runs — and answers
-# in the role's payload schema into a private file. Its review narration and
-# stdout both go to stderr: stdout carries exactly one line, the published
-# pass path, so a caller can consume it without parsing prose.
+# never the live worktree, which can move while the model runs — through the
+# SAME `codex exec review` invocation legacy mode uses, and with it the same
+# approval-never posture. Plain `codex exec` was tried and is ruled out: it
+# runs approval on-request, so a command the model marks escalated escaped
+# the read-only sandbox with no prompt (challenge-r4-codex-adversarial-2,
+# maintainer decision 2026-10-11). The review subcommand takes no enforced
+# output schema (it accepts --output-schema and never reads it), so the
+# payload schema is requested in the prompt and the answer is parsed by
+# review_envelope_publish, which refuses anything but exactly one object.
+# Codex's answer (its stdout) goes to a private file and its narration to
+# stderr; the runner's own stdout carries exactly one line, the published
+# pass path.
 # shellcheck source=scripts/lib/readonly-sandbox.sh
 . "$script_dir/lib/readonly-sandbox.sh"
 trap 'sandbox_cleanup; review_envelope_cleanup' EXIT
 mkdir -p "$envelope_record_dir/passes"
 review_envelope_temp raw_payload codex-raw || exit 1
-review_envelope_temp strict_schema strict-schema || exit 1
-review_envelope_strict_schema "$envelope_payload_schema" >"$strict_schema" || {
-    echo "could not derive the structured-output schema; no review ran" >&2
-    exit 1
-}
 sandbox_create "$envelope_head" 0 >/dev/null || {
     echo "could not build the immutable review checkout at $envelope_head; no review ran" >&2
     exit 1
 }
-# Plain `codex exec`, NOT `exec review`: the review subcommand accepts
-# --output-schema on its command line and never reads the file (a non-JSON
-# schema still ran and exited 0), so it would answer in review prose that no
-# binding can accept (challenge-r3-codex-adversarial-1). The instructions
-# above already carry the review mode, scope, manifest and binding, which is
-# everything the subcommand added. --sandbox read-only keeps the agent's own
-# commands from writing; the tamper check below still decides.
 codex_status=0
-{ printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" \
-    --sandbox read-only \
+{ printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" review \
     --model "$review_model" \
     --config "model_reasoning_effort=$review_reasoning" \
-    --output-schema "$strict_schema" \
-    --output-last-message "$raw_payload" \
-    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&2 || codex_status=$?
+    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>"$raw_payload" || codex_status=$?
 # Verified before the status is honoured: output produced by something that
 # changed its own review checkout is not accepted, whatever it returned.
 sandbox_verify || {

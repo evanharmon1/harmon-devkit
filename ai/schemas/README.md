@@ -32,8 +32,9 @@ top-level documents, never as an envelope's `payload`.
 A confidence-stage pass is produced by the finder **runner** in `--envelope`
 mode (`scripts/codex-review.sh`, `scripts/finder-review.sh`;
 harmon-devkit#941), not by whichever agent happened to call it. The runner asks
-the finder for the role's payload (Codex through `--output-schema`, a general
-agent CLI with the schema in its prompt), binds it to the captured run, head,
+the finder for the role's payload, with the payload schema in its prompt
+(neither CLI's review path enforces a schema), accepts only exactly one JSON
+object back, binds it to the captured run, head,
 stage, round, finder and slot, wraps it in the envelope — `producer.harness`
 is the registry slug of the CLI that actually ran (`codex-cli`,
 `copilot-cli`), the same vocabulary every other producer uses — validates the
@@ -64,6 +65,13 @@ it is the chain around the file, and none of it is the lane's prose:
 Nothing the runner records about itself is an authority: it names the CLI
 that ran, not the bytes of the runner. What makes a pass evidence is the
 supervising orchestrator validating it and appending its receipt.
+
+**Codex envelope mode currently fails closed.** `codex exec review` (Codex CLI
+0.162.1) answers in review prose and ignores the in-prompt payload schema, so
+the runner refuses every Codex reply and publishes no pass. Until
+[harmon-devkit#1365](https://github.com/evanharmon1/harmon-devkit/issues/1365)
+delivers a schema-enforcing, approval-never path, Codex passes go through the
+`challenger`/`reviewer` role-agent wrapper.
 
 That is the same model `--receipts` strict mode enforces at cross-boundary call
 sites (#821), and it keeps decision record 0009's rule intact — briefs carry a

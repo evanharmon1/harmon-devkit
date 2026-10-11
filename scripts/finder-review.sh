@@ -278,16 +278,12 @@ every entry is in scope, including untracked files):
 ${manifest}"
 
 if [ "$envelope_mode" = true ]; then
-    # This CLI has no structured-output flag, so the schema travels in the
-    # prompt; the runner's own binding check and receipt validation are what
-    # decide whether the answer is accepted.
+    # The payload schema travels in the prompt (this CLI has no structured-
+    # output flag); the runner's extraction, binding check and receipt
+    # validation decide whether the answer is accepted.
     instructions="${instructions}
 
-$(review_envelope_instructions)
-
-The result.${envelope_role} JSON Schema:
-
-$(cat "$envelope_payload_schema")"
+$(review_envelope_instructions)"
 fi
 
 # The prompt travels as a single argv element, which the kernel caps (~128 KiB
