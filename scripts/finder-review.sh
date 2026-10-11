@@ -6,7 +6,18 @@
 #
 # Usage:
 #   finder-review.sh <review|challenge> <tool>
+#                    [--envelope --model <model> --run-id <id> --head <sha>
+#                     --stage <stage> --round <n> --slot <finder>
+#                     --producer <runner@blob> --tier <tier> --record-dir <dir>
+#                     [--registry <file>]]
 #                    [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+#
+# --envelope makes the pass the producer of one schema-bound result envelope
+# for a dev-flow v2 run: the finder is pinned to --model, asked for the
+# result.<role> payload, and the runner binds, validates and publishes that as
+# exactly one immutable file under <record-dir>/passes/, printing its path on
+# stdout. It never writes run.json — the caller appends the pass receipt. The
+# contract is scripts/lib/review-scope.sh § "Envelope mode".
 #
 # `<tool>` names a registered local-CLI finder pair — `<tool>-adversarial` for
 # challenge, `<tool>-verification` for review — and is refused if the registry
@@ -77,8 +88,11 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> <tool> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> <tool> [--envelope --model <model> --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <runner@blob> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
+
+# shellcheck source=scripts/lib/review-scope.sh
+. "$script_dir/lib/review-scope.sh"
 
 MODE="${1:-}"
 case "$MODE" in
@@ -101,6 +115,47 @@ case "$TOOL" in
 *) shift ;;
 esac
 
+producer_model=
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --model)
+        [ $# -ge 2 ] || {
+            echo "--model requires a value" >&2
+            exit 2
+        }
+        [ -z "$producer_model" ] || {
+            echo "--model may be specified only once" >&2
+            exit 2
+        }
+        [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+            echo "invalid model name: $2" >&2
+            exit 2
+        }
+        producer_model="$2"
+        shift 2
+        ;;
+    *)
+        review_envelope_flag "$@" || break
+        shift "$envelope_shift"
+        ;;
+    esac
+done
+if [ "$envelope_mode" = true ]; then
+    # The receipt records the model, so the run has to be pinned to it: an
+    # envelope naming one model over a pass the vendor default answered would
+    # be producer metadata nobody can vouch for.
+    [ -n "$producer_model" ] || {
+        echo "--envelope requires --model" >&2
+        exit 2
+    }
+else
+    review_envelope_refuse_stray_flags
+    [ -z "$producer_model" ] || {
+        echo "--model is only accepted with --envelope; set FINDER_REVIEW_COPILOT_ARGS for a prose pass" >&2
+        exit 2
+    }
+fi
+
 # The registry is the authority on which finders exist and what each one is
 # for; this script only knows how to DRIVE them. Resolving the slug here means
 # an unregistered finder refuses before a model call rather than producing a
@@ -109,7 +164,7 @@ case "$MODE" in
 challenge) slug="${TOOL}-adversarial" ;;
 review) slug="${TOOL}-verification" ;;
 esac
-registry="agent-registry.json"
+registry="${envelope_registry:-agent-registry.json}"
 command -v jq >/dev/null 2>&1 || {
     echo "jq is required to resolve '$slug' against $registry." >&2
     exit 2
@@ -137,6 +192,7 @@ actual_target="$(printf '%s' "$finder_entry" | jq -r '.invocation.target')"
     echo "Reconcile $registry with the Taskfile rather than guessing which one is right." >&2
     exit 2
 }
+[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$script_dir/finder-review.sh" "$slug"
 
 case "$TOOL" in
 copilot)
@@ -177,9 +233,8 @@ if ! command -v "$bin" >/dev/null 2>&1; then
     exit 1
 fi
 
-# shellcheck source=scripts/lib/review-scope.sh
-. "$script_dir/lib/review-scope.sh"
 resolve_review_scope "$@"
+[ "$envelope_mode" = false ] || review_envelope_bind_scope
 
 read_instruction() {
     instruction_file="$script_dir/lib/review-instructions/$1.txt"
@@ -217,6 +272,19 @@ Authoritative changed-file manifest from git for this scope (status + path;
 every entry is in scope, including untracked files):
 
 ${manifest}"
+
+if [ "$envelope_mode" = true ]; then
+    # This CLI has no structured-output flag, so the schema travels in the
+    # prompt; the runner's own binding check and receipt validation are what
+    # decide whether the answer is accepted.
+    instructions="${instructions}
+
+$(review_envelope_instructions)
+
+The result.${envelope_role} JSON Schema:
+
+$(cat "$envelope_payload_schema")"
+fi
 
 # The prompt travels as a single argv element, which the kernel caps (~128 KiB
 # per argument on Linux), so it needs a bound — and the bound is a REFUSAL,
@@ -297,6 +365,17 @@ fi
 # shellcheck disable=SC2206 # deliberate word-splitting: the override is a flag
 # list, not one argument.
 args=(${FINDER_REVIEW_COPILOT_ARGS:-$default_args})
+if [ "$envelope_mode" = true ]; then
+    for arg in "${args[@]}"; do
+        case "$arg" in
+        --model | --model=*)
+            echo "FINDER_REVIEW_COPILOT_ARGS must not select a model in envelope mode; --model pins it so the receipt and the invocation agree" >&2
+            exit 2
+            ;;
+        esac
+    done
+    args+=(--model "$producer_model")
+fi
 if [ "$dry_run" = 1 ]; then
     printf 'finder: %s\ncommand: %s %s\n' "$slug" "$bin" "${args[*]}"
     printf '%s\n' "$instructions"
@@ -462,7 +541,7 @@ sandbox_create "$snapshot_committish" "$snapshot_worktree" >/dev/null || {
     echo "Refusing to run $slug: its finder-specific scratch checkout could not be built; no review ran." >&2
     exit 1
 }
-trap 'sandbox_cleanup' EXIT
+trap 'sandbox_cleanup; review_envelope_cleanup' EXIT
 
 echo "==> $slug over: $scope" >&2
 if [ "${readonly_sandbox_degraded:-0}" = 1 ]; then
@@ -477,7 +556,16 @@ else
     echo "    the tree is verified unchanged afterwards)" >&2
 fi
 finder_status=0
-sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?
+if [ "$envelope_mode" = true ]; then
+    # stdout is the payload, captured privately; only the published path is
+    # printed, once the pass has been bound, validated and linked into place.
+    mkdir -p "$envelope_record_dir/passes"
+    raw_payload="$(mktemp "$envelope_record_dir/passes/.finder-raw.XXXXXX")"
+    envelope_temps+=("$raw_payload")
+    sandbox_exec "$bin" "${args[@]}" "$instructions" >"$raw_payload" || finder_status=$?
+else
+    sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?
+fi
 
 # The verification is unconditional and runs BEFORE the exit status is
 # honoured: a pass whose tree changed is not a pass, whatever the CLI
@@ -489,4 +577,13 @@ if ! sandbox_verify; then
     echo "reported is accepted." >&2
     exit 1
 fi
-exit "$finder_status"
+[ "$envelope_mode" = true ] || exit "$finder_status"
+[ "$finder_status" -eq 0 ] || {
+    echo "$slug exited $finder_status; no pass published" >&2
+    exit "$finder_status"
+}
+[ "$(git rev-parse HEAD)" = "$envelope_head" ] || {
+    echo "HEAD moved off $envelope_head during the review; refusing the stale pass" >&2
+    exit 1
+}
+review_envelope_publish "$raw_payload" "$producer_model"

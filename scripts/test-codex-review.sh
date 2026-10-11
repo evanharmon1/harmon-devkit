@@ -738,4 +738,302 @@ if out="$(CLAUDE_CONFIG_DIR="${fake_claude}2" CLAUDE_PLUGIN_DATA="${test_tmp}/pl
 fi
 grep -q "non-interactive" <<<"$out" || fail "missing non-interactive disable refusal message: $out"
 
+# ---------------------------------------------------------------------------
+# Envelope mode (harmon-devkit#941): the runner as the producer of exactly one
+# validated, immutable pass file — and never of a run.json write.
+# ---------------------------------------------------------------------------
+env_root="${test_tmp}/envelope"
+mkdir -p "${env_root}/bin"
+# The envelope stub answers through --output-last-message, as the real CLI
+# does under --output-schema, with whatever payload the case armed. STUB_GATE
+# parks it mid-review until the gate file appears, which is how the race case
+# holds a "timed-out" original open while its retry runs to completion.
+cat >"${env_root}/bin/codex" <<'CODEXSTUB'
+#!/usr/bin/env bash
+out=
+cd_dir=
+schema=
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --output-last-message) out="$2"; shift 2 ;;
+    --cd) cd_dir="$2"; shift 2 ;;
+    --output-schema) schema="$2"; shift 2 ;;
+    *) shift ;;
+    esac
+done
+cat >"${STUB_PROMPT:-/dev/null}"
+printf 'cd=%s schema=%s\n' "$cd_dir" "$schema" >>"${STUB_LOG:-/dev/null}"
+echo "stub review narration on stdout"
+if [ -n "${STUB_GATE:-}" ]; then
+    : >"${STUB_GATE}.waiting"
+    while [ ! -e "$STUB_GATE" ]; do sleep 0.1; done
+fi
+[ -z "${STUB_PAYLOAD:-}" ] || cp "$STUB_PAYLOAD" "$out"
+exit "${STUB_EXIT:-0}"
+CODEXSTUB
+chmod +x "${env_root}/bin/codex"
+
+git init -q -b main "${env_root}/upstream"
+(
+    cd "${env_root}/upstream"
+    mkdir -p scripts/lib ai/skills/universal
+    cp "${repo}/scripts/codex-review.sh" scripts/
+    cp "${repo}/scripts/lib/review-scope.sh" "${repo}/scripts/lib/readonly-sandbox.sh" scripts/lib/
+    cp -R "${repo}/scripts/lib/review-instructions" scripts/lib/
+    cp -R "${repo}/ai/skills/universal/dev-flow-support" ai/skills/universal/
+    cp "${repo}/agent-registry.json" .
+    git add -A
+    git_t commit -q -m base
+)
+git clone -q "${env_root}/upstream" "${env_root}/clone"
+ewd="${env_root}/clone"
+git -C "$ewd" checkout -q -b feature
+echo change >"${ewd}/feature.txt"
+git -C "$ewd" add feature.txt
+git_t -C "$ewd" commit -q -m work
+env_head="$(git -C "$ewd" rev-parse HEAD)"
+env_base="$(git -C "$ewd" rev-parse main)"
+producer="codex-review.sh@$(git -C "$ewd" hash-object scripts/codex-review.sh)"
+record="${env_root}/record"
+
+reset_record() {
+    rm -rf "$record"
+    mkdir -p "$record"
+    printf '{"run_id":"run-941","initiated_by":"human","receipts":[{"kind":"transition","stage":"challenge"}]}\n' >"${record}/run.json"
+}
+
+# payload FILE STAGE ROUND FINDER [JQ-FILTER] — a payload that binds the
+# fixture's head; the filter bends one field for the refusal cases.
+payload() {
+    local file="$1" stage="$2" round="$3" finder="$4" filter="${5:-.}"
+    jq -n --arg stage "$stage" --argjson round "$round" --arg head "$env_head" --arg finder "$finder" '
+        {stage: $stage, round: $round, reviewed_head: $head, finder: $finder, slot: $finder,
+         findings: [{id: "\($stage)-r\($round)-\($finder)-1", path: "feature.txt", line: 1,
+                     class: "hardening", provenance: "original", fingerprint: "new",
+                     priority: "P2", recommended_disposition: "defer", evidence: "stub finding"}],
+         counts: {P0: 0, P1: 0, P2: 1, P3: 0}}
+        | if $stage == "challenge" then .attack_scenarios = [
+            {id: "as-1", description: "stub attack", outcome: "surfaced-finding",
+             finding_id: "\($stage)-r\($round)-\($finder)-1"}] else . end' | jq "$filter" >"$file"
+}
+
+# envelope_run MODE [ARGS...] — the flags a caller passes, overridable per case.
+envelope_run() {
+    local mode="$1"
+    shift
+    local slot=codex-adversarial
+    [ "$mode" = review ] && slot=codex-verification
+    slot="${ENV_SLOT:-$slot}"
+    (cd "$ewd" && PATH="${env_root}/bin:${PATH}" ./scripts/codex-review.sh "$mode" \
+        --model gpt-5.6-sol --envelope --run-id "${ENV_RUN_ID:-run-941}" --head "${ENV_HEAD:-$env_head}" \
+        --stage "$mode" --round "${ENV_ROUND:-1}" --slot "$slot" --producer "${ENV_PRODUCER:-$producer}" \
+        --tier frontier --record-dir "$record" "$@" --base main)
+}
+
+# Nothing under a .json name and no temporary left behind.
+assert_nothing_published() {
+    local leftovers
+    leftovers="$(find "$record" -mindepth 1 -path "${record}/run.json" -prune -o -type f -print)"
+    [ -z "$leftovers" ] || fail "$1 left files behind: $leftovers"
+}
+
+echo "==> envelope: a valid challenge pass is bound, validated and published once"
+reset_record
+run_json_before="$(cat "${record}/run.json")"
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+out="$(STUB_PAYLOAD="${env_root}/p.json" STUB_LOG="${env_root}/stub.log" STUB_PROMPT="${env_root}/prompt" \
+    envelope_run challenge 2>"${env_root}/err")" || fail "valid envelope run failed: $(cat "${env_root}/err")"
+pass_file="${record}/passes/challenge-r1-codex-adversarial.json"
+[ "$out" = "$pass_file" ] || fail "stdout is not exactly the published path: $out"
+[ -f "$pass_file" ] || fail "no pass published"
+jq -e --arg p "$producer" --arg h "$env_head" \
+    '.role == "challenger" and .status == "completed" and .head == $h and
+     .producer == {harness: $p, model: "gpt-5.6-sol", tier: "frontier"} and
+     .run == {run_id: "run-941", initiated_by: "human"} and .payload.slot == "codex-adversarial"' \
+    "$pass_file" >/dev/null || fail "published envelope is not bound as captured: $(cat "$pass_file")"
+node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" envelope "$pass_file" \
+    --run-id run-941 --initiated-by human --known-ids <(echo '[]') --receipt >/dev/null ||
+    fail "the published pass does not validate"
+[ "$(cat "${record}/run.json")" = "$run_json_before" ] || fail "the runner wrote run.json"
+[ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "temporaries left in passes/: $(ls -A "${record}/passes")"
+grep -q "stub review narration" "${env_root}/err" || fail "Codex's own stdout was not diverted to stderr"
+grep -q "^cd=/" "${env_root}/stub.log" && ! grep -q "^cd=${ewd}\$" "${env_root}/stub.log" ||
+    fail "Codex did not review an immutable checkout: $(cat "${env_root}/stub.log")"
+grep -q "schema=.*result.challenger.schema.json" "${env_root}/stub.log" || fail "--output-schema not passed"
+grep -q "immutable diff ${env_base}...${env_head}" "${env_root}/prompt" || fail "scope not rewritten to captured SHAs"
+grep -q 'challenge-r1-codex-adversarial-1' "${env_root}/prompt" || fail "binding instructions missing from the prompt"
+
+echo "==> envelope: review mode publishes a result.reviewer pass"
+reset_record
+payload "${env_root}/p.json" review 1 codex-verification
+STUB_PAYLOAD="${env_root}/p.json" envelope_run review >/dev/null 2>"${env_root}/err" ||
+    fail "valid review envelope failed: $(cat "${env_root}/err")"
+jq -e '.role == "reviewer"' "${record}/passes/review-r1-codex-verification.json" >/dev/null ||
+    fail "review mode did not publish a reviewer envelope"
+
+echo "==> envelope: a run id run.json does not bind is refused before any review"
+reset_record
+: >"${env_root}/stub.log"
+rc=0
+ENV_RUN_ID=run-other STUB_PAYLOAD="${env_root}/p.json" STUB_LOG="${env_root}/stub.log" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] || fail "run-id mismatch exited $rc, want 1"
+grep -q "does not bind run id" "${env_root}/err" || fail "run-id refusal message missing: $(cat "${env_root}/err")"
+[ ! -s "${env_root}/stub.log" ] || fail "Codex ran despite a run-id mismatch"
+assert_nothing_published "run-id mismatch"
+
+echo "==> envelope: a head other than HEAD is refused"
+reset_record
+rc=0
+ENV_HEAD="$env_base" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "does not match HEAD" "${env_root}/err" || fail "head mismatch not refused (rc $rc): $(cat "${env_root}/err")"
+assert_nothing_published "head mismatch"
+
+echo "==> envelope: a producer other than the runner's own identity is refused"
+reset_record
+rc=0
+ENV_PRODUCER="codex-review.sh@0000000000000000000000000000000000000000" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 2 ] && grep -q "does not match this runner's own identity" "${env_root}/err" ||
+    fail "producer mismatch not refused (rc $rc): $(cat "${env_root}/err")"
+assert_nothing_published "producer mismatch"
+
+echo "==> envelope: a payload bound to another round is refused, nothing partial lands"
+reset_record
+payload "${env_root}/bad.json" challenge 1 codex-adversarial '.round = 2'
+rc=0
+STUB_PAYLOAD="${env_root}/bad.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "does not bind the captured" "${env_root}/err" || fail "misbound payload not refused (rc $rc): $(cat "${env_root}/err")"
+assert_nothing_published "misbound payload"
+
+echo "==> envelope: a payload failing receipt validation is refused, nothing partial lands"
+reset_record
+payload "${env_root}/bad.json" challenge 1 codex-adversarial '.counts.P2 = 0'
+rc=0
+STUB_PAYLOAD="${env_root}/bad.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "failed receipt validation" "${env_root}/err" || fail "invalid payload not refused (rc $rc): $(cat "${env_root}/err")"
+assert_nothing_published "invalid payload"
+
+echo "==> envelope: prose instead of one JSON object is refused"
+reset_record
+printf 'P1 feature.txt:1 — prose, not a payload\n' >"${env_root}/bad.json"
+rc=0
+STUB_PAYLOAD="${env_root}/bad.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] || fail "prose output not refused (rc $rc)"
+assert_nothing_published "prose output"
+
+echo "==> envelope: a failing CLI publishes nothing"
+reset_record
+rc=0
+STUB_EXIT=3 STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 3 ] || fail "CLI failure exited $rc, want 3"
+assert_nothing_published "CLI failure"
+
+echo "==> envelope: binding flags without --envelope, or after the target, are refused"
+rc=0
+(cd "$ewd" && ./scripts/codex-review.sh challenge --run-id run-941 --base main) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "a stray --run-id without --envelope exited $rc, want 2"
+rc=0
+(cd "$ewd" && ./scripts/codex-review.sh challenge --base main --envelope) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "--envelope after the target was read as focus text (rc $rc)"
+rc=0
+(cd "$ewd" && PATH="${env_root}/bin:${PATH}" ./scripts/codex-review.sh challenge --envelope --run-id run-941 \
+    --head "$env_head" --stage challenge --round 1 --slot codex-adversarial --producer "$producer" \
+    --tier frontier --record-dir "$record" --commit "$env_head") >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "envelope mode accepted a non-branch scope (rc $rc)"
+
+echo "==> envelope: an existing pass is never overwritten"
+reset_record
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>&1 || fail "first publication failed"
+before="$(cat "$pass_file")"
+payload "${env_root}/p2.json" challenge 1 codex-adversarial '.findings[0].evidence = "second"'
+rc=0
+STUB_PAYLOAD="${env_root}/p2.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "already exists" "${env_root}/err" || fail "republication not refused (rc $rc): $(cat "${env_root}/err")"
+[ "$(cat "$pass_file")" = "$before" ] || fail "an existing pass was rewritten"
+
+echo "==> envelope: a timed-out original cannot clobber its retry's published pass"
+# The original passes every up-front check, then stalls inside the review. The
+# retry runs to completion and publishes. When the original finally answers,
+# only the atomic link stands between it and the retry's receipted evidence.
+reset_record
+payload "${env_root}/orig.json" challenge 1 codex-adversarial '.findings[0].evidence = "original"'
+payload "${env_root}/retry.json" challenge 1 codex-adversarial '.findings[0].evidence = "retry"'
+gate="${env_root}/gate"
+rm -f "$gate" "${gate}.waiting"
+STUB_GATE="$gate" STUB_PAYLOAD="${env_root}/orig.json" envelope_run challenge >"${env_root}/orig.out" 2>"${env_root}/orig.err" &
+orig_pid=$!
+for _ in $(seq 1 300); do
+    [ -e "${gate}.waiting" ] && break
+    sleep 0.1
+done
+[ -e "${gate}.waiting" ] || fail "the original never reached its review"
+STUB_PAYLOAD="${env_root}/retry.json" envelope_run challenge >/dev/null 2>"${env_root}/err" ||
+    fail "the retry failed: $(cat "${env_root}/err")"
+retry_bytes="$(cat "$pass_file")"
+: >"$gate"
+rc=0
+wait "$orig_pid" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "never overwritten" "${env_root}/orig.err" ||
+    fail "the late original was not refused at publication (rc $rc): $(cat "${env_root}/orig.err")"
+[ "$(cat "$pass_file")" = "$retry_bytes" ] && jq -e '.payload.findings[0].evidence == "retry"' "$pass_file" >/dev/null ||
+    fail "the late original replaced the retry's pass"
+[ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
+
+echo "==> envelope: only RECEIPTED passes reserve finding ids; an orphan does not"
+# One finder filling two slots of a round (its own, and another primary's as
+# a fallback) is the one way two passes can mint the same finding id.
+reset_record
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>&1 || fail "own-slot publication failed"
+payload "${env_root}/sub.json" challenge 1 codex-adversarial '.slot = "copilot-adversarial" | .substitutes_for = "copilot-adversarial"'
+sub_pass="${record}/passes/challenge-r1-copilot-adversarial.json"
+ENV_SLOT=copilot-adversarial STUB_PAYLOAD="${env_root}/sub.json" envelope_run challenge >/dev/null 2>"${env_root}/err" ||
+    fail "an orphan's ids were treated as reserved: $(cat "${env_root}/err")"
+jq -e '.payload.substitutes_for == "copilot-adversarial"' "$sub_pass" >/dev/null || fail "fallback pass lost substitutes_for"
+rm -f "$sub_pass"
+jq '.receipts += [{kind: "pass", file: "challenge-r1-codex-adversarial"}]' "${record}/run.json" >"${env_root}/run.json"
+mv "${env_root}/run.json" "${record}/run.json"
+rc=0
+ENV_SLOT=copilot-adversarial STUB_PAYLOAD="${env_root}/sub.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$sub_pass" ] || fail "a receipted pass's finding id was reusable (rc $rc)"
+
+echo "==> envelope: a stubbed-Codex lane leaves passes/, adjudications/ and verdict.json"
+# The harness-neutral path end to end, as review/SKILL.md tells any lane to
+# run it: the runner publishes, the CALLER appends the receipt and runs
+# verification, adjudicates, and persists the exit verdict.
+reset_record
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" ||
+    fail "e2e publication failed: $(cat "${env_root}/err")"
+jq '.receipts += [{kind: "pass", file: "challenge-r1-codex-adversarial"}]' "${record}/run.json" >"${env_root}/run.json"
+mv "${env_root}/run.json" "${record}/run.json"
+sed -e 's/"codex-cli"/"codex-adversarial"/' -e 's/"gemini-cli"/"codex-verification"/' \
+    "${repo}/ai/schemas/fixtures/exit/challenger-schema-pass-accepted/policy.toml" >"${env_root}/policy.toml"
+exit_cmd=(node "${repo}/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" --run "$record"
+    --stage challenge --policy "${env_root}/policy.toml" --current-head "$env_head" --json)
+"${exit_cmd[@]}" --verification-only >"${env_root}/verify.json" 2>"${env_root}/err" ||
+    fail "verification failed: $(cat "${env_root}/err") $(cat "${env_root}/verify.json")"
+jq -e '.action == "adjudicate"' "${env_root}/verify.json" >/dev/null ||
+    fail "verification did not authorize adjudication: $(cat "${env_root}/verify.json")"
+mkdir -p "${record}/adjudications"
+jq -n --arg head "$env_head" '{schema: 2, run_id: "run-941", stage: "challenge", round: 1, reviewed_head: $head,
+    adjudications: [{finding_id: "challenge-r1-codex-adversarial-1", reviewer_priority: "P2",
+      adjudicated_priority: "P2", disposition: "fix", reason: "confirmed", evidence: "stub", override: null}]}' \
+    >"${record}/adjudications/challenge-r1.json"
+"${exit_cmd[@]}" >"${record}/verdict.json" 2>"${env_root}/err" ||
+    fail "exit computation failed: $(cat "${env_root}/err") $(cat "${record}/verdict.json")"
+jq -e '.outcome' "${record}/verdict.json" >/dev/null || fail "verdict.json has no outcome: $(cat "${record}/verdict.json")"
+jq -e '[.diagnostics[]? | select(.level == "reject")] | length == 0' "${record}/verdict.json" >/dev/null ||
+    fail "the exit computation rejected the runner's pass: $(cat "${record}/verdict.json")"
+
+# One P2-only round under a cap of 3: the stage continues to round 2.
+jq -e '.outcome == "continue" and .action == "dispatch"' "${record}/verdict.json" >/dev/null ||
+    fail "unexpected verdict for a P2-only first round: $(cat "${record}/verdict.json")"
+node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" adjudication \
+    "${record}/adjudications/challenge-r1.json" --pass "$pass_file" --known-adjudicated <(echo '[]') \
+    --run-id run-941 --initiated-by human --receipt >/dev/null ||
+    fail "the adjudication does not validate against the runner's pass"
+
+echo "codex-review envelope mode OK (15 cases)"
+
 echo "codex-review + codex-gate guards OK (38 cases)"

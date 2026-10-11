@@ -221,6 +221,12 @@ resolve_review_scope() {
             empty_hint="Pass --base <ref> to review the branch's commits instead."
             shift
             ;;
+        --envelope | --run-id | --head | --stage | --round | --slot | --producer | --tier | --record-dir | --registry)
+            # Read as focus text, a misplaced envelope flag would silently run
+            # a prose-only pass the caller is waiting on as a published one.
+            echo "$1 must come before the target flags and focus text" >&2
+            exit 2
+            ;;
         *)
             focus="${focus:+${focus} }$1"
             shift
@@ -272,15 +278,7 @@ resolve_review_scope() {
         # not silently become the comparison base. The remote-qualified ref is
         # kept as-is — stripping origin/ could name a branch that does not exist
         # locally. Name guesses only apply to remoteless repos.
-        base="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -z "$base" ]; then
-            for candidate in main master; do
-                if git rev-parse --verify --quiet "$candidate" >/dev/null; then
-                    base="$candidate"
-                    break
-                fi
-            done
-        fi
+        base="$(review_default_base)"
         # An unresolvable base is fatal, on a dirty tree as much as a clean one.
         # Degrading to the worktree half would be the old bug in a new place: the
         # run would review a fraction of the change and still exit 0, and the
@@ -520,4 +518,386 @@ review_scope_snapshot() {
     base:*) printf 'HEAD 0' ;;
     *) return 1 ;;
     esac
+}
+
+# ---------------------------------------------------------------------------
+# Envelope mode (harmon-devkit#941)
+# ---------------------------------------------------------------------------
+#
+# With `--envelope`, a runner stops being a prose-only advisory pass and
+# becomes the PRODUCER of one schema-bound `result.challenger` /
+# `result.reviewer` envelope, published as one immutable file under the run
+# record's `passes/`. It lives here, beside the scope it binds, because both
+# runners need the identical contract and a second hand-rolled copy would
+# drift the way the scope rules once did.
+#
+# What a runner in envelope mode does and does not do:
+#   - binds the finder's structured payload to the captured run, head, stage,
+#     round, finder and slot, and refuses a payload that names anything else;
+#   - wraps it with its OWN producer identity — `<runner>@<git blob sha>`,
+#     derived from the runner's bytes and required to equal the `--producer`
+#     the caller expected, so a changed runner cannot pass as the one the
+#     caller trusted;
+#   - validates the complete envelope with dev-flow-support's
+#     `validate-result-schemas.mjs envelope --receipt` before anything lands;
+#   - publishes it with a HARD LINK into `passes/<stage>-r<round>-<slot>.json`.
+#     link(2) fails when the destination exists, so publication is atomic and
+#     no-clobber in one call: a timed-out original still running beside its
+#     retry cannot overwrite what the retry published, and no check-then-
+#     rename window exists for either to slip through;
+#   - never writes `run.json`. Appending the `{kind: "pass"}` receipt is the
+#     CALLER's step, so receipt authority stays with the orchestrator; a
+#     published pass with no receipt is an orphan that no consumer counts
+#     (review/SKILL.md § "Dispatch and receipt").
+#
+# Nothing partial is ever visible under a `.json` name: every intermediate is
+# a dot-file without that suffix inside `passes/` (the same filesystem as the
+# destination, which link(2) needs), removed on every exit path.
+
+envelope_mode=false
+envelope_run_id=
+envelope_head=
+envelope_stage=
+envelope_round=
+envelope_slot=
+envelope_producer=
+envelope_tier=
+envelope_record_dir=
+envelope_registry=
+envelope_shift=0
+
+# review_envelope_flag FLAG [VALUE] — consume one envelope-mode flag, setting
+# `envelope_shift` to how many words it took. Returns 1 for anything that is
+# not an envelope flag, so a runner's own parse loop can fall through to the
+# scope arguments. A repeated flag is refused rather than last-wins: two
+# values for one binding is an ambiguous caller, not a preference.
+review_envelope_flag() {
+    local var
+    case "$1" in
+    --envelope)
+        [ "$envelope_mode" = false ] || {
+            echo "--envelope may be specified only once" >&2
+            exit 2
+        }
+        envelope_mode=true
+        envelope_shift=1
+        return 0
+        ;;
+    --run-id) var=envelope_run_id ;;
+    --head) var=envelope_head ;;
+    --stage) var=envelope_stage ;;
+    --round) var=envelope_round ;;
+    --slot) var=envelope_slot ;;
+    --producer) var=envelope_producer ;;
+    --tier) var=envelope_tier ;;
+    --record-dir) var=envelope_record_dir ;;
+    --registry) var=envelope_registry ;;
+    *) return 1 ;;
+    esac
+    [ $# -ge 2 ] && [ -n "$2" ] || {
+        echo "$1 requires a value" >&2
+        exit 2
+    }
+    [ -z "${!var}" ] || {
+        echo "$1 may be specified only once" >&2
+        exit 2
+    }
+    printf -v "$var" '%s' "$2"
+    envelope_shift=2
+}
+
+# The repository's default branch as a ref: origin/HEAD first (the remote's
+# real default), then a local main/master for a remoteless repository. Shared
+# by the auto-detected scope above and the envelope scope binding below.
+review_default_base() {
+    local candidate base
+    base="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -z "$base" ]; then
+        for candidate in main master; do
+            if git rev-parse --verify --quiet "$candidate" >/dev/null; then
+                base="$candidate"
+                break
+            fi
+        done
+    fi
+    printf '%s' "$base"
+}
+
+# dev-flow-support's assets directory: the validator and the schema family it
+# validates against. Source tree first, then the two vendored layouts — a
+# consumer has no repository-root copy (harmon-devkit#974).
+review_envelope_support_dir() {
+    local candidate
+    for candidate in ai/skills/universal/dev-flow-support/assets \
+        .agents/skills/dev-flow-support/assets \
+        .claude/skills/dev-flow-support/assets; do
+        if [ -f "$candidate/validate-result-schemas.mjs" ] &&
+            [ -f "$candidate/schemas/result.challenger.schema.json" ]; then
+            (cd "$candidate" && pwd -P)
+            return 0
+        fi
+    done
+    return 1
+}
+
+# review_envelope_prepare MODE RUNNER_PATH FINDER_SLUG — validate every
+# envelope input before any model call, and set the derived values the later
+# steps use: envelope_role, envelope_initiated_by, envelope_substitutes_for,
+# envelope_support_dir, envelope_payload_schema, envelope_pass_path.
+# Usage errors exit 2; a binding that is well-formed but false (HEAD moved,
+# run.json names another run) exits 1.
+review_envelope_prepare() {
+    local mode="$1" runner_path="$2" finder_slug="$3" required flag identity actual_head slot_entry
+    for required in run_id head stage round slot producer tier record_dir; do
+        flag="--${required//_/-}"
+        required="envelope_${required}"
+        [ -n "${!required}" ] || {
+            echo "--envelope requires ${flag}" >&2
+            exit 2
+        }
+    done
+    : "${envelope_registry:=agent-registry.json}"
+    [ "$envelope_stage" = "$mode" ] || {
+        echo "--stage $envelope_stage does not match mode $mode" >&2
+        exit 2
+    }
+    [[ "$envelope_head" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "--head must be a 40-character lowercase commit sha" >&2
+        exit 2
+    }
+    [[ "$envelope_round" =~ ^[1-9][0-9]{0,5}$ ]] || {
+        echo "--round must be a positive integer" >&2
+        exit 2
+    }
+    [[ "$envelope_slot" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || {
+        echo "--slot must be a finder slug" >&2
+        exit 2
+    }
+    case "$envelope_tier" in
+    local | economy | standard | frontier | apex) ;;
+    *)
+        echo "--tier must be one of local, economy, standard, frontier, apex (got: $envelope_tier)" >&2
+        exit 2
+        ;;
+    esac
+    command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1 || {
+        echo "envelope mode requires jq and node" >&2
+        exit 2
+    }
+    identity="$(basename "$runner_path")@$(git hash-object -- "$runner_path")" || exit 2
+    [ "$envelope_producer" = "$identity" ] || {
+        echo "--producer '$envelope_producer' does not match this runner's own identity '$identity'" >&2
+        exit 2
+    }
+    [ -d "$envelope_record_dir" ] && [ -f "$envelope_record_dir/run.json" ] || {
+        echo "--record-dir must name an existing run record directory containing run.json" >&2
+        exit 2
+    }
+    [ -f "$envelope_registry" ] || {
+        echo "--registry '$envelope_registry' is not a readable file" >&2
+        exit 2
+    }
+    envelope_support_dir="$(review_envelope_support_dir)" || {
+        echo "envelope mode needs the dev-flow-support package (validate-result-schemas.mjs and its schemas);" >&2
+        echo "vendor the universal skill category as a unit." >&2
+        exit 2
+    }
+    actual_head="$(git rev-parse HEAD)"
+    [ "$actual_head" = "$envelope_head" ] || {
+        echo "--head $envelope_head does not match HEAD $actual_head" >&2
+        exit 1
+    }
+    envelope_initiated_by="$(jq -er --arg run "$envelope_run_id" \
+        'select(.run_id == $run) | .initiated_by | select(. == "human" or . == "foreman")' \
+        "$envelope_record_dir/run.json" 2>/dev/null)" || {
+        echo "run.json does not bind run id '$envelope_run_id' to a valid initiated_by" >&2
+        exit 1
+    }
+    # A pass fills its own slot, or substitutes for another configured primary
+    # of this stage. Whether THIS finder is in that primary's fallback chain is
+    # policy, and the exit computation enforces it against .devflow.toml; the
+    # runner only refuses a slot that cannot exist for this stage at all.
+    envelope_substitutes_for=
+    if [ "$envelope_slot" != "$finder_slug" ]; then
+        slot_entry="$(jq -c --arg slot "$envelope_slot" --arg stage "$mode" \
+            '.finders[] | select(.slug == $slot and .surface == "local-cli" and ((.stages // []) | index($stage) != null))' \
+            "$envelope_registry")" || {
+            echo "could not read $envelope_registry" >&2
+            exit 2
+        }
+        [ -n "$slot_entry" ] || {
+            echo "--slot $envelope_slot is not a registered local-cli finder for stage $mode" >&2
+            exit 1
+        }
+        envelope_substitutes_for="$envelope_slot"
+    fi
+    envelope_finder="$finder_slug"
+    envelope_role=challenger
+    [ "$mode" = review ] && envelope_role=reviewer
+    envelope_payload_schema="$envelope_support_dir/schemas/result.${envelope_role}.schema.json"
+    envelope_pass_path="$envelope_record_dir/passes/${mode}-r${envelope_round}-${envelope_slot}.json"
+    # Refused up front as well as at publication: a slot already published is
+    # not worth a model call. Publication re-checks atomically, which is the
+    # check that actually decides.
+    [ ! -e "$envelope_pass_path" ] || {
+        echo "refusing: $envelope_pass_path already exists; a published pass is immutable" >&2
+        exit 1
+    }
+}
+
+# review_envelope_bind_scope — after resolve_review_scope: envelope mode is a
+# branch review whose merge base is the canonical default branch's, rewritten
+# to immutable SHAs so the finder's scope cannot drift with a moving ref.
+review_envelope_bind_scope() {
+    local canonical selected canonical_mb
+    [ "$target_kind" = base ] || {
+        echo "envelope mode requires an explicit branch-scoped --base <ref> review" >&2
+        exit 2
+    }
+    canonical="$(review_default_base)"
+    [ -n "$canonical" ] || {
+        echo "envelope mode cannot bind --base: no default-branch ref is available" >&2
+        exit 2
+    }
+    selected="$(git merge-base "$base_ref" "$envelope_head")"
+    canonical_mb="$(git merge-base "$canonical" "$envelope_head")" || {
+        echo "envelope mode cannot bind --base: $canonical shares no merge base with $envelope_head" >&2
+        exit 2
+    }
+    [ "$selected" = "$canonical_mb" ] || {
+        echo "--base $base_ref resolves merge base $selected, not the default branch's $canonical_mb" >&2
+        exit 1
+    }
+    envelope_merge_base="$selected"
+    scope="Review the changes at captured head ${envelope_head} relative to captured merge base ${envelope_merge_base} (the immutable diff ${envelope_merge_base}...${envelope_head})."
+}
+
+# review_envelope_instructions — the binding clause appended to the finder's
+# prompt. The runner checks every bound field afterwards, so this is the
+# request, not the enforcement.
+review_envelope_instructions() {
+    local binding
+    if [ -n "$envelope_substitutes_for" ]; then
+        binding="Set finder to \"${envelope_finder}\", slot to \"${envelope_slot}\", and substitutes_for to \"${envelope_substitutes_for}\"."
+    else
+        binding="Set finder and slot both to \"${envelope_finder}\" and omit substitutes_for."
+    fi
+    cat <<INSTRUCTIONS
+Return exactly one JSON object and nothing else — no Markdown fence, no prose
+around it. It is the payload of a result.${envelope_role} envelope and must
+validate against the result.${envelope_role} JSON Schema. Set stage to
+"${envelope_stage}", round to ${envelope_round}, and reviewed_head to
+"${envelope_head}". ${binding} Number finding ids
+"${envelope_stage}-r${envelope_round}-${envelope_finder}-1", "-2", and so on.
+Set counts to the tally of findings by priority. For provenance use "original"
+and for fingerprint use "new" unless you can name the earlier finding exactly.
+INSTRUCTIONS
+}
+
+# review_envelope_publish RAW_PAYLOAD MODEL — bind, wrap, validate and publish
+# the finder's payload; print the published path. Every failure exits 1 with
+# nothing under a `.json` name.
+review_envelope_publish() {
+    local raw="$1" model="$2" passes_dir tmp_payload tmp_envelope tmp_ids
+    passes_dir="$envelope_record_dir/passes"
+    mkdir -p "$passes_dir" || {
+        echo "could not create $passes_dir" >&2
+        exit 1
+    }
+    tmp_payload="$(mktemp "$passes_dir/.payload.XXXXXX")" &&
+        tmp_envelope="$(mktemp "$passes_dir/.envelope.XXXXXX")" &&
+        tmp_ids="$(mktemp "$passes_dir/.known-ids.XXXXXX")" || {
+        echo "could not create temporary files in $passes_dir" >&2
+        exit 1
+    }
+    envelope_temps+=("$tmp_payload" "$tmp_envelope" "$tmp_ids")
+
+    # Exactly one JSON object, bound to what the caller captured. jq -s reads
+    # the whole stream, so trailing prose or a second document fails here.
+    jq -se 'length == 1 and (.[0] | type) == "object"' "$raw" >/dev/null 2>&1 || {
+        echo "finder output is not exactly one JSON object; no pass published" >&2
+        exit 1
+    }
+    jq -s '.[0]' "$raw" >"$tmp_payload"
+    jq -e --arg stage "$envelope_stage" --argjson round "$envelope_round" \
+        --arg head "$envelope_head" --arg finder "$envelope_finder" --arg slot "$envelope_slot" \
+        --arg sub "$envelope_substitutes_for" \
+        '.stage == $stage and .round == $round and .reviewed_head == $head and
+         .finder == $finder and .slot == $slot and
+         (if $sub == "" then has("substitutes_for") | not else .substitutes_for == $sub end)' \
+        "$tmp_payload" >/dev/null || {
+        echo "finder payload does not bind the captured stage, round, head, finder and slot; no pass published" >&2
+        exit 1
+    }
+
+    jq -n \
+        --arg role "$envelope_role" \
+        --arg head "$envelope_head" \
+        --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg harness "$envelope_producer" \
+        --arg model "$model" \
+        --arg tier "$envelope_tier" \
+        --arg run_id "$envelope_run_id" \
+        --arg initiated_by "$envelope_initiated_by" \
+        --slurpfile payload "$tmp_payload" \
+        '{schema: 2, role: $role, status: "completed", head: $head,
+          produced_at: $produced_at,
+          producer: {harness: $harness, model: $model, tier: $tier},
+          run: {run_id: $run_id, initiated_by: $initiated_by},
+          payload: $payload[0]}' >"$tmp_envelope"
+
+    # Finding ids already used by RECEIPTED passes. An orphan is not evidence,
+    # so its ids are not reserved either.
+    review_envelope_known_ids >"$tmp_ids" || {
+        echo "could not read the finding ids of the run's receipted passes" >&2
+        exit 1
+    }
+
+    node "$envelope_support_dir/validate-result-schemas.mjs" envelope "$tmp_envelope" \
+        --run-id "$envelope_run_id" --initiated-by "$envelope_initiated_by" \
+        --known-ids "$tmp_ids" --receipt >&2 || {
+        echo "envelope failed receipt validation; no pass published" >&2
+        exit 1
+    }
+
+    if ! ln -- "$tmp_envelope" "$envelope_pass_path" 2>/dev/null; then
+        if [ -e "$envelope_pass_path" ]; then
+            echo "refusing: $envelope_pass_path already exists; a published pass is never overwritten" >&2
+        else
+            echo "could not publish $envelope_pass_path" >&2
+        fi
+        exit 1
+    fi
+    printf '%s\n' "$envelope_pass_path"
+}
+
+# The finding ids of every pass run.json's receipts name, as a JSON array.
+review_envelope_known_ids() {
+    local names name file
+    local -a files=()
+    names="$(jq -r '(.receipts // [])[] | select(.kind == "pass") | .file' "$envelope_record_dir/run.json")" || return 1
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        file="$envelope_record_dir/passes/${name}.json"
+        [ -f "$file" ] && files+=("$file")
+    done <<<"$names"
+    if [ "${#files[@]}" -eq 0 ]; then
+        printf '[]\n'
+    else
+        jq -s '[.[].payload.findings[]?.id]' "${files[@]}"
+    fi
+}
+
+envelope_temps=()
+review_envelope_cleanup() {
+    [ "${#envelope_temps[@]}" -eq 0 ] || rm -f -- "${envelope_temps[@]}"
+}
+
+# An envelope binding flag without --envelope would otherwise be silently
+# ignored, and the caller would wait for a pass that legacy mode never writes.
+review_envelope_refuse_stray_flags() {
+    if [ -n "${envelope_run_id}${envelope_head}${envelope_stage}${envelope_round}${envelope_slot}${envelope_producer}${envelope_tier}${envelope_record_dir}${envelope_registry}" ]; then
+        echo "envelope binding flags (--run-id, --head, ...) require --envelope" >&2
+        exit 2
+    fi
 }
