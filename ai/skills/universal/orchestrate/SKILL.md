@@ -242,9 +242,9 @@ it supports, never a hand edit:
 `/integrate` is the promotion authority. It may record a promotion with
 `run-record.mjs promote` as its mechanism.
 
-A run belongs to exactly one slate. A write under a slate is allowed only when
-the run appears as a lane in some revision of that slate's plan, and in no
-revision of any other slate's plan under the same common directory. Each write builds
+A run belongs to exactly one slate. Its first helper write needs the run to be
+a lane in some revision of that slate's plan, and records the slate in
+`runs/<run-id>/owner-slate`; every later write must name the same slate. Each write builds
 a candidate, validates it with `validate-result-schemas.mjs run --receipts`
 plus every adjudication document in the run directory, renames it over
 `run.json` and validates the readback. A refused edge, a promotion dated

@@ -24,8 +24,9 @@
 //   - a done issue releases a dependent — a live issue lists it in
 //     `blocked_by`, or an overlap's merge dependency names it as `before` —
 //     because releasing it is a wave/queue decision;
-//   - a live fence or candidate pattern holds `[`, `{` or `?` — such a
-//     pattern is never interpreted here, so any move needs judgment;
+//   - a live fence or candidate pattern has a component combining a bracket
+//     class with `*`/`?`, or holding a backslash — such a pattern is never
+//     interpreted here, so any move needs judgment;
 //   - the new base does not descend from the old one, or nothing moved.
 // The existing plan is validated before anything else, so a broken chain is
 // refused too. Both writers take the slate lock (see run-record.mjs).
@@ -66,15 +67,15 @@ function resolveCommit(value, label) {
   }
 }
 
-// Fence matching covers the subset of orchestrate/assets/fence-check.sh this
-// helper interprets: per path component, literal first; a component holding
-// `*` is a wildcard within that component, and a `**` component matches any
-// number of components. Patterns holding `[`, `{` or `?` never get here (see
-// reviseForBaseMove).
+// Fence matching mirrors orchestrate/assets/fence-check.sh: per path
+// component, literal first; a component holding `*` or `?` is a glob within
+// that component (`{` and a bare `[x]` stay literal), and a `**` component
+// matches any number of components. A component this matcher cannot
+// interpret the same way never gets here (see uninterpretable).
 function componentMatches(part, pattern) {
   if (part === pattern) return true
-  if (!pattern.includes('*')) return false
-  const source = pattern.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*')
+  if (!/[*?]/.test(pattern)) return false
+  const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
   return new RegExp(`^${source}$`).test(part)
 }
 
@@ -89,6 +90,13 @@ function matchParts(pattern, path, pi = 0, qi = 0) {
 
 export function pathMatches(path, pattern) {
   return matchParts(pattern.split('/'), path.split('/'))
+}
+
+// uninterpretable — a component combining a bracket class with `*`/`?`, or
+// holding a backslash, means something to fence-check.sh this matcher does
+// not reproduce.
+function uninterpretable(pattern) {
+  return pattern.split('/').some((part) => part.includes('\\') || (part.includes('[') && /[*?]/.test(part)))
 }
 
 function fencePaths(lane) {
@@ -118,13 +126,12 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
       refusals.push(`done issue #${dependency.before} releases dependent #${dependency.after} (merge dependency)`)
     }
   }
-  // Only literal paths, `*` and `**` are matched here. A pattern holding `[`,
-  // `{` or `?` is not interpreted at all: when anything moved, it makes the
-  // move need judgment instead of being matched by a second glob engine.
+  // A pattern this helper cannot interpret makes any move need judgment
+  // instead of being matched by a second glob engine.
   if (changed.length > 0) {
     const liveLanes = plan.lanes.filter((lane) => !doneSet.has(lane.issue))
     for (const pattern of [...liveLanes.flatMap(fencePaths), ...live.flatMap((issue) => issue.candidate_files ?? [])]) {
-      if (/[[{?]/.test(pattern)) refusals.push(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
+      if (uninterpretable(pattern)) refusals.push(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
     }
   }
   for (const lane of plan.lanes.filter((lane) => !doneSet.has(lane.issue))) {
@@ -199,7 +206,7 @@ function baseMove(args) {
       throw new Refusal(`new base ${newBase} does not descend from the plan base ${oldBase}`)
     }
     if (isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
-    const changed = git(['diff', '--name-only', '--no-renames', '-z', oldBase, newBase]).split('\0').filter(Boolean)
+    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase, '--', ':/']).split('\0').filter(Boolean)
     const plan = reviseForBaseMove(last.plan, { newBase, done, changed })
     const seq = document.revisions.length
     const entry = { seq, prev_digest: last.digest, at, reason: args.reason, plan }

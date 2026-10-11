@@ -189,7 +189,33 @@ moved="$(commit_touching "$repo8" src/a1.js)"
 expect_refused "bracket fence" "pattern needs orchestrator judgment (not matched here): src/[ab]*.js" \
     pr "$repo8" alice s8 --new-base "$moved" --at 2026-01-01T01:00:00Z
 cmp -s "$plan8" "$tmp/bracket-plan.json" || fail "a refused bracket move changed plan.json"
-pass "a fence pattern holding [, { or ? makes a base move refuse instead of being matched"
+pass "a fence combining a bracket class with a wildcard makes a base move refuse instead of being matched"
+
+repo9="$(new_repo literal)"
+write_plan "$repo9" s9 '[]' 'app/[id]/page.tsx'
+moved="$(commit_touching "$repo9" unrelated.txt)"
+pr "$repo9" alice s9 --new-base "$moved" --at 2026-01-01T01:00:00Z >/dev/null ||
+    fail "a literal [id] fence blocked an untouched base move"
+pass "a literal [id] fence segment passes a base move that touches nothing in it"
+
+repo10="$(new_repo question)"
+write_plan "$repo10" s10 '[]' 'a?.js'
+moved="$(commit_touching "$repo10" ab.js)"
+expect_refused "? wildcard" "lane c (#3) fence: ab.js" \
+    pr "$repo10" alice s10 --new-base "$moved" --at 2026-01-01T01:00:00Z
+pass "a ? in a fence matches one character (a?.js matches ab.js)"
+
+repo11="$(new_repo relative)"
+write_plan "$repo11" s11 '[]'
+git -C "$repo11" config diff.relative true
+mkdir -p "$repo11/sub"
+printf 'x\n' >"$repo11/sub/keep.txt"
+git -C "$repo11" add -A
+git -C "$repo11" commit -q -m sub
+moved="$(commit_touching "$repo11" c/two.txt)"
+expect_refused "diff.relative from a subdirectory" "lane c (#3) fence: c/two.txt" \
+    bash -c "cd '$repo11/sub' && node '$reviser' base-move --slate s11 --session alice --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
+pass "diff.relative=true and a subdirectory cwd do not hide moved paths"
 
 # -- dependent release -------------------------------------------------------
 repo3="$(new_repo dependent)"

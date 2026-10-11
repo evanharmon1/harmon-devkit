@@ -105,7 +105,7 @@ lock_scope() {
 }
 
 # -- runs are written only as lanes of the locked slate's plan ---------------
-expect_refused "write without a plan" "is not a lane in any revision of slate s1's plan" \
+expect_refused "write without a plan" "has no lock yet and no scope to record" \
     rr alice transition --run-id run-a --stage claim --exit kicked --at 2026-01-01T00:01:00Z
 pass "a run write for a slate with no plan is refused"
 
@@ -173,13 +173,19 @@ walk() {
 walk run-a
 [ "$(jq -r '.stage_transitions[-1].stage' "$run")" = "integration" ] || fail "walk to integration failed"
 
+[ "$(cat "$state/runs/run-a/owner-slate")" = "s1" ] || fail "the first write did not record the owning slate"
 write_plan s6 16:run-a
 cp "$run" "$tmp/run-a.json"
-expect_refused "run named by a second slate" "run run-a is also a lane of slate(s) s6" \
-    rr alice intervention --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z
+expect_refused "run owned by another slate" "run run-a is owned by slate s1, not s6" \
+    bash -c "cd '$repo' && node '$writer' intervention --slate s6 --session alice --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z"
 cmp -s "$run" "$tmp/run-a.json" || fail "a refused foreign-slate write changed run.json"
-rm -r "$state/slates/s6"
-pass "a run named by a second slate's plan is refused: a run belongs to exactly one slate"
+pass "a second slate cannot write a run another slate owns, even when its plan names it"
+
+mkdir -p "$state/slates/s7"
+printf 'not json\n' >"$state/slates/s7/plan.json"
+rr alice intervention --run-id run-a --kind other --note "unaffected" --at 2026-01-01T00:03:40Z >/dev/null ||
+    fail "an unrelated or malformed plan.json elsewhere blocked the owning slate"
+pass "an unrelated, even malformed, plan.json elsewhere does not block the owner"
 
 # -- interventions and ruling digests -------------------------------------
 mkdir -p "$state/slates/s1/orchestrator/run-a/a1"

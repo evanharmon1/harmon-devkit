@@ -13,10 +13,11 @@
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock status  --slate ID
 //
-// A run belongs to exactly one slate: every record write requires --run-id to
-// be a lane in some revision of this slate's plan history and in no other
-// slate's, and takes the slate lock (acquiring it on first use, its scope
-// always derived from the current plan). Then, under a short-lived per-file mutex,
+// A run belongs to exactly one slate: its first helper write requires --run-id
+// to be a lane in some revision of this slate's plan and records the slate in
+// `runs/<run-id>/owner-slate`; every later write requires the same slate. Each
+// write takes the slate lock (acquiring it on first use, its scope always
+// derived from the current plan). Then, under a short-lived per-file mutex,
 // it builds the complete candidate beside run.json, validates it with
 // `validate-result-schemas.mjs run --receipts <candidate>` plus every
 // `adjudications/*.json` in the run directory (or `--no-adjudications` when
@@ -297,26 +298,28 @@ export function currentPlan(root, slate) {
   return plan
 }
 
-// assertRunOwnedBySlate — a run belongs to exactly one slate: it must be a
-// lane in some revision of this slate's plan history, and in no revision of
-// any other slate's plan under the same common directory.
-export function assertRunOwnedBySlate(root, slate, runId) {
-  const slatesDir = join(root, 'slates')
-  const owners = []
-  for (const name of existsSync(slatesDir) ? readdirSync(slatesDir).sort() : []) {
-    const file = join(slatesDir, name, 'plan.json')
-    if (!existsSync(file)) continue
-    const revisions = readJson(file, 'plan').revisions
-    if (!Array.isArray(revisions)) throw new Refusal(`plan has no readable revisions: ${file}`)
-    if (revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) owners.push(name)
+// bindRunToSlate — a run's owning slate is recorded once, at its first helper
+// write, in `runs/<run-id>/owner-slate` (created no-clobber). That first
+// write requires the run to be a lane in some revision of this slate's plan;
+// every later write only requires the locked slate to equal the recorded
+// owner, so a run retired from the current revision still writes and closes.
+export function bindRunToSlate(root, slate, runId) {
+  const ownerFile = join(root, 'runs', runId, 'owner-slate')
+  if (!existsSync(ownerFile)) {
+    const file = join(root, 'slates', slate, 'plan.json')
+    const revisions = existsSync(file) ? readJson(file, 'plan').revisions : []
+    if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
+      throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
+    }
+    mkdirSync(dirname(ownerFile), { recursive: true })
+    try {
+      writeFileSync(ownerFile, `${slate}\n`, { flag: 'wx' })
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+    }
   }
-  if (!owners.includes(slate)) {
-    throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
-  }
-  const others = owners.filter((name) => name !== slate)
-  if (others.length > 0) {
-    throw new Refusal(`run ${runId} is also a lane of slate(s) ${others.join(', ')}; a run belongs to exactly one slate, refusing`)
-  }
+  const owner = readFileSync(ownerFile, 'utf8').trim()
+  if (owner !== slate) throw new Refusal(`run ${runId} is owned by slate ${owner}, not ${slate}; refusing`)
 }
 
 function normalizeScope({ milestone, issues }) {
@@ -545,8 +548,8 @@ function recordWrite(command, args) {
   const session = requireId('session', args.session)
   const runId = requireId('run-id', args['run-id'])
   args.at = resolveAt(args.at)
-  assertRunOwnedBySlate(root, slate, runId)
   acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
+  bindRunToSlate(root, slate, runId)
   const canonical = join(root, 'runs', runId, 'run.json')
   const summary = withMutex(canonical, () => {
     const record = readJson(canonical, 'run record')
