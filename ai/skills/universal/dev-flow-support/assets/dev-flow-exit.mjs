@@ -2043,6 +2043,23 @@ function tryDelegateToClosure(argv) {
 
 async function main() {
   const argv = process.argv.slice(2);
+  // `--key=value` is refused, ahead of --closure delegation too. parseArgs
+  // keeps such a token whole as the option NAME, so `--merge-base-policy=` or
+  // `--merge-base-policy-absent=false` would be an unknown key, slip past the
+  // presence checks below, and let the branch policy govern (harmon-devkit#1345,
+  // challenge round 1). No caller spells an option that way; the repeatable
+  // finder flags are the one exception, because extractRepeatable parses both
+  // spellings of them.
+  const eqForm = argv.find(
+    (a) =>
+      a.startsWith("--") && a.includes("=") && !a.startsWith("--add-finder=") && !a.startsWith("--select-finder="),
+  );
+  if (eqForm !== undefined) {
+    console.error(
+      `dev-flow-exit: "${eqForm.slice(0, eqForm.indexOf("=") + 1)}…" is not accepted — pass the option and its value as separate arguments`,
+    );
+    return 1;
+  }
   const delegated = tryDelegateToClosure(argv);
   if (delegated !== null) return delegated;
 

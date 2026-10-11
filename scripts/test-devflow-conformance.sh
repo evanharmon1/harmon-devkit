@@ -253,6 +253,10 @@ cmp -s "$fixtures/policy.toml" "$mbrepo/.devflow.toml" &&
     printf '%s\n' '#!/usr/bin/env bash' 'echo absent' >scripts/lib/merge-base-policy.sh
     git commit -q -am "fix: a branch that rewrites the helper to answer absent"
     git tag rogue
+    git checkout -q -b no-policy-anywhere base
+    printf '\n' >>agent-registry.json
+    git commit -q -am "fix: a governing change on a repository with no policy anywhere"
+    git tag nopolicy
     git checkout -q branch
 ) >/dev/null 2>&1 || err "could not build the merge-base scratch repository"
 
@@ -273,19 +277,20 @@ run_caller() {
             return 2
         }
     fi
-    mb_state="$(bash "$mb_helper" "$base" "$reader" "$scratch/mb-devflow.toml")" || return 1
+    mb_state="$(bash "$mb_helper" "$base" "$reader" "$scratch/mb-devflow.toml" .devflow.toml)" || return 1
     case "$mb_state" in
     present) mb_policy=(--merge-base-policy "$scratch/mb-devflow.toml") ;;
     absent) mb_policy=(--merge-base-policy-absent) ;;
+    none) mb_policy=() ;;
     *) return 1 ;;
     esac
-    node "$reader" resolve --policy .devflow.toml "${mb_policy[@]}" \
+    node "$reader" resolve --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
         --merge-base-registry agent-registry.json --registry agent-registry.json \
         --taskfile-dir . --json
 }
 
 set +e
-state="$(cd "$mbrepo" && bash "$helper" base "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-absent.toml")"
+state="$(cd "$mbrepo" && bash "$helper" base "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-absent.toml" .devflow.toml)"
 st=$?
 set -e
 if [ "$st" -eq 0 ] && [ "$state" = "absent" ] && [ ! -e "$scratch/mb-absent.toml" ]; then
@@ -308,7 +313,7 @@ else
 fi
 
 set +e
-state="$(cd "$mbrepo" && bash "$helper" branch "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-present.toml")"
+state="$(cd "$mbrepo" && bash "$helper" branch "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-present.toml" .devflow.toml)"
 st=$?
 set -e
 if [ "$st" -eq 0 ] && [ "$state" = "present" ] && cmp -s "$scratch/mb-present.toml" "$mbrepo/.devflow.toml"; then
@@ -318,9 +323,9 @@ else
 fi
 
 set +e
-(cd "$mbrepo" && bash "$helper" no-such-rev "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-bad.toml") >"$scratch/bad.out" 2>/dev/null
+(cd "$mbrepo" && bash "$helper" no-such-rev "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-bad.toml" .devflow.toml) >"$scratch/bad.out" 2>/dev/null
 bad=$?
-(cd "$mbrepo" && bash "$helper" "" "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-bad.toml") >"$scratch/empty.out" 2>/dev/null
+(cd "$mbrepo" && bash "$helper" "" "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-bad.toml" .devflow.toml) >"$scratch/empty.out" 2>/dev/null
 empty=$?
 set -e
 if [ "$bad" -eq 2 ] && [ "$empty" -eq 2 ] && [ ! -s "$scratch/bad.out" ] && [ ! -s "$scratch/empty.out" ]; then
@@ -385,11 +390,74 @@ else
     err "first adoption with a pin exited $pst: $(head -2 "$scratch/caller-pin.err")"
 fi
 
+# Neither side has a policy (challenge round 1): step 0 fired on another
+# governing file, so the helper answers "none" and each recipe passes NEITHER
+# merge-base flag; the reader refuses --merge-base-policy-absent without an
+# existing --policy file. run_recipe mirrors each recipe's own invocation:
+# step 0 resolves the closure's reader with --taskfile-dir <closure>;
+# /integrate re-execs through --closure with --taskfile-dir . It records the
+# merge-base arguments it passed in $scratch/recipe-args.
+run_recipe() {
+    local mode="$1" base="$2" dir="$scratch/recipe-$1" mb_state
+    rm -rf "$dir"
+    mkdir -p "$dir/scripts/lib"
+    git show "${base}:scripts/devflow-policy.mjs" >"$dir/scripts/devflow-policy.mjs" &&
+        git show "${base}:scripts/lib/toml-lite.mjs" >"$dir/scripts/lib/toml-lite.mjs" &&
+        git show "${base}:scripts/lib/merge-base-policy.sh" >"$dir/scripts/lib/merge-base-policy.sh" &&
+        git show "${base}:agent-registry.json" >"$dir/agent-registry.json" &&
+        git show "${base}:Taskfile.yml" >"$dir/Taskfile.yml" || return 2
+    mb_state="$(bash "$dir/scripts/lib/merge-base-policy.sh" "$base" "$dir/scripts/devflow-policy.mjs" \
+        "$dir/devflow.toml" .devflow.toml)" || return 1
+    case "$mb_state" in
+    present) mb_policy=(--merge-base-policy "$dir/devflow.toml") ;;
+    absent) mb_policy=(--merge-base-policy-absent) ;;
+    none) mb_policy=() ;;
+    *) return 1 ;;
+    esac
+    printf '%s|%s\n' "$mb_state" "${mb_policy[*]-}" >"$scratch/recipe-args"
+    case "$mode" in
+    step0)
+        node "$dir/scripts/devflow-policy.mjs" resolve --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
+            --merge-base-registry "$dir/agent-registry.json" --registry agent-registry.json \
+            --taskfile-dir "$dir" --json
+        ;;
+    integrate)
+        node "$dir/scripts/devflow-policy.mjs" resolve --closure "$dir" \
+            --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
+            --merge-base-registry "$dir/agent-registry.json" \
+            --registry agent-registry.json --taskfile-dir . --json
+        ;;
+    esac
+}
+
+for mode in step0 integrate; do
+    for case_ in "nopolicy base none built-in-fallback" "branch base absent built-in-fallback"; do
+        read -r head mbase answer source_ <<<"$case_"
+        set +e
+        (cd "$mbrepo" && git checkout -q "$head" && run_recipe "$mode" "$mbase") \
+            >"$scratch/recipe.json" 2>"$scratch/recipe.err"
+        st=$?
+        set -e
+        want_flag=""
+        [ "$answer" = absent ] && want_flag="--merge-base-policy-absent"
+        if [ "$st" -eq 0 ] && [ "$(cat "$scratch/recipe-args")" = "$answer|$want_flag" ] && node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.exit(r.source === process.argv[2] ? 0 : 1);
+' "$scratch/recipe.json" "$source_"; then
+            echo "  ✓ $mode recipe, head $head: answers $answer, passes '${want_flag:-no flag}', resolves $source_"
+        else
+            err "$mode recipe, head $head: exit $st, args '$(cat "$scratch/recipe-args" 2>/dev/null)': $(head -2 "$scratch/recipe.err")"
+        fi
+    done
+done
+(cd "$mbrepo" && git checkout -q branch) || err "could not restore the scratch checkout"
+
 # Both recipes call the helper and pass its answer, never a bare
 # `git show "${base}:.devflow.toml"` or an unconditional --merge-base-policy.
 for recipe in "$repo_root/ai/skills/universal/dev-flow-support/SKILL.md" \
     "$repo_root/ai/skills/universal/integrate/SKILL.md"; do
-    if grep -Fq 'lib/merge-base-policy.sh' "$recipe" && grep -Fq '"${mb_policy[@]}"' "$recipe" &&
+    if grep -Fq 'lib/merge-base-policy.sh' "$recipe" && grep -Fq '${mb_policy[@]+"${mb_policy[@]}"}' "$recipe" &&
+        grep -Fq 'none) mb_policy=()' "$recipe" && grep -Fq 'devflow.toml" .devflow.toml)' "$recipe" &&
         grep -Fq 'bash "$mb_helper"' "$recipe" && grep -Fq '${pinned_mb_helper:-}' "$recipe" &&
         ! grep -Fq '$support_dir/lib/merge-base-policy.sh' "$recipe" &&
         ! grep -Fq 'git show "${base}:.devflow.toml"' "$recipe"; then

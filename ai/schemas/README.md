@@ -2005,16 +2005,22 @@ governance is unchanged: `--merge-base-policy-absent` without a governing
 `.devflow.toml` is governed by the built-in fallback exactly as its resolution
 was. It refuses the flag combined with `--merge-base-policy`, refuses a value
 on the flag, and refuses an empty `--merge-base-policy`, all as usage errors —
-exit **1** there, because the engine's exit 2 means an indeterminate verdict
+exit **1** there, because the engine's exit 2 means an indeterminate verdict.
+It also refuses any `--option=value` token other than the repeatable finder
+flags, so `--merge-base-policy=` or `--merge-base-policy-absent=false` cannot
+slip past those checks as an unknown key
 (`ai/schemas/fixtures/exit/merge-base-policy-absent-governs-builtin-fallback/`,
 `merge-base-policy-absent-conflicts-with-merge-base-policy/`,
-`merge-base-policy-empty-is-usage/`). A trusted caller that runs a merge-base
+`merge-base-policy-empty-is-usage/`, the three `*-equals-*-is-usage/` cases
+and `option-equals-form-is-usage/`). A trusted caller that runs a merge-base
 reader directly — `dev-flow-support`'s step 0 and `/integrate`'s merge-base
-recipe — decides between the two arguments with
+recipe — decides its merge-base argument with
 `dev-flow-support/assets/lib/merge-base-policy.sh`: a checked tree lookup of
 the merge base's `.devflow.toml` (never a failed `git show`), the file
-materialized when present, and `--merge-base-policy-absent` only for a reader
-whose source names the flag. An older reader accepts any option and would
+materialized when present, `--merge-base-policy-absent` only when the branch
+adds a policy and only for a reader whose source names the flag, and neither
+flag when no side has a policy (the reader refuses the absent flag without an
+existing `--policy` file and resolves the built-in fallback by itself). An older reader accepts any option and would
 ignore it, letting the branch policy govern, so the helper stops instead —
 the direct-run counterpart of the reader's own `--closure` probe. The helper
 is itself a governing file: both recipes run the merge base's copy, and a

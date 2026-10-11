@@ -33,7 +33,7 @@ share lives here. Nothing is shipped through the harmon-init template.
 | `assets/render-dev-flow.sh` → `assets/render-dev-flow.mjs` | review, integrate, retro | Render a run record into its PR-body and comment projections. |
 | `assets/dev-flow-exit.sh` → `assets/dev-flow-exit.mjs` | review, retro | Compute a confidence stage's exit verdict from the run record. |
 | `assets/lib/toml-lite.mjs` | the readers above | Restricted TOML parser. |
-| `assets/lib/merge-base-policy.sh` | step 0 below, integrate | Decide the governing merge-base argument for a reader run directly: `--merge-base-policy <file>` when the merge base has `.devflow.toml`, `--merge-base-policy-absent` when it has none (and only for a reader that supports the flag); indeterminate otherwise. |
+| `assets/lib/merge-base-policy.sh` | step 0 below, integrate | Decide the governing merge-base argument for a reader run directly: `--merge-base-policy <file>` when the merge base has `.devflow.toml`, `--merge-base-policy-absent` when it has none but the branch adds one (and only for a reader that supports the flag), neither flag when no side has a policy; indeterminate otherwise. A governing file itself. |
 | `assets/lib/json-schema-subset.mjs` | the validators above | Hand-rolled JSON Schema subset validator. |
 | `assets/lib/run-exit-fixtures.mjs` | `assets/test-dev-flow-exit.sh` | Fixture driver for the stage-exit corpus. |
 | `assets/schemas/` | `validate-result-schemas.mjs`, `render-dev-flow.mjs` | The package's own copy of the shared JSON Schemas — the default schemas directory, so a vendored consumer validates without a separate schema sync. |
@@ -118,7 +118,7 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      never the branch's own new file. Ask the shared helper rather than
      inferring absence from a failed `git show`; it looks the path up with a
      checked tree read, materializes the file when present, and answers one
-     word. Both this step and `/integrate`'s merge-base recipe call it, so
+     word, mapping it to the one argument both recipes pass. Both this step and `/integrate`'s merge-base recipe call it, so
      the whole stage chain resolves the same governing policy:
 
      ```sh
@@ -131,33 +131,36 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      [ -f "$mb_helper" ] || mb_helper="${pinned_mb_helper:-}"
      [ -n "$mb_helper" ] ||
          { echo "step 0 indeterminate: the merge base predates lib/merge-base-policy.sh and no operator-pinned helper was supplied" >&2; exit 2; }
-     mb_state="$(bash "$mb_helper" "$mb" "$mb_reader" "$closure/.devflow.toml")" ||
+     mb_state="$(bash "$mb_helper" "$mb" "$mb_reader" "$closure/.devflow.toml" .devflow.toml)" ||
          { echo "step 0 stopped: merge-base policy lookup failed or the reader is too old" >&2; exit 2; }
      case "$mb_state" in
      present) mb_policy=(--merge-base-policy "$closure/.devflow.toml") ;;
      absent) mb_policy=(--merge-base-policy-absent) ;;
+     none) mb_policy=() ;;
      *) echo "step 0 stopped: unexpected answer '$mb_state'" >&2; exit 2 ;;
      esac
-     node "$mb_reader" resolve --policy .devflow.toml "${mb_policy[@]}" \
+     node "$mb_reader" resolve --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
          --merge-base-registry "$closure/agent-registry.json" \
          --registry agent-registry.json --taskfile-dir "$closure" \
          --json ${tier_args[@]+"${tier_args[@]}"}
      ```
 
-     `present` passes `--merge-base-policy <file>`; `absent` passes
-     `--merge-base-policy-absent`, and `tier-inputs.mjs` then reads the
-     closure's missing `.devflow.toml`, which is the built-in fallback's
-     catalog too. **Any non-zero status stops step 0 as indeterminate** —
+     `present` passes `--merge-base-policy <file>`; `absent` (the merge base
+     has no policy, the branch adds one) passes `--merge-base-policy-absent`;
+     `none` (neither side has a policy, so step 0 fired on another governing
+     file) passes **neither** flag, because the reader refuses
+     `--merge-base-policy-absent` without an existing `--policy` file and
+     resolves the built-in fallback on its own when the file is missing. The
+     helper's fourth argument is the branch policy path the reader gets as
+     `--policy`, which is how it tells `absent` from `none`. On `absent` and
+     `none`, `tier-inputs.mjs` reads the closure's missing `.devflow.toml`,
+     which is the built-in fallback's catalog too. **Any non-zero status stops step 0 as indeterminate** —
      never read it, or empty output, as "absent". On `absent` the helper has
      already confirmed the merge-base reader's source names
      `merge-base-policy-absent` (the same check the reader's own `--closure`
      probe makes): a reader written before the flag accepts any option,
      would ignore it, and would let the branch policy govern, so the helper
      exits 1 instead, and that is a stop, exactly like a missing reader.
-     When the branch has no `.devflow.toml` either (step 0 fired on another
-     governing file), neither side has a policy: drop `mb_policy` and pass
-     the closure's missing `.devflow.toml` as `--policy` with the closure
-     registry as `--registry`, which is the built-in fallback.
      Both readers refuse an **empty** `--merge-base-policy` with usage status
      2 — an unset variable is a caller bug, never "no merge-base policy" —
      and refuse it combined with `--merge-base-policy-absent`.

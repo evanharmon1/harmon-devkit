@@ -385,10 +385,11 @@ else
     mb_helper="${pinned_mb_helper:-}"
     [ -n "$mb_helper" ] || exit 1   # first adoption with no pin: indeterminate
 fi
-mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader}" "$mb_dir/devflow.toml")" || exit 1
+mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader}" "$mb_dir/devflow.toml" .devflow.toml)" || exit 1
 case "$mb_state" in
 present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
 absent) mb_policy=(--merge-base-policy-absent) ;;
+none) mb_policy=() ;;   # neither side has a policy: pass neither flag
 *) exit 1 ;;
 esac
 
@@ -400,16 +401,20 @@ git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 # the task target is branch-controlled, so routing through it lets the branch
 # choose the command line that is supposed to constrain it.
 node "$mb_dir/${reader}" resolve --closure "$mb_dir" \
-    --policy .devflow.toml "${mb_policy[@]}" \
+    --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
     --merge-base-registry "$mb_dir/agent-registry.json" \
     --registry agent-registry.json --taskfile-dir . --json
 ```
 
 **Carry the absent-base state; never improvise it.** `mb_policy` is the one
 governing argument for every later reader or exit-engine call in this run —
-`--merge-base-policy <file>` when the merge base has a policy, and
-`--merge-base-policy-absent` when it has none, so the built-in fallback
-governs rather than the branch's own new file (harmon-devkit#1345). The
+`--merge-base-policy <file>` when the merge base has a policy,
+`--merge-base-policy-absent` when it has none but the branch adds one, so the
+built-in fallback governs rather than the branch's own new file
+(harmon-devkit#1345), and nothing at all when neither side has a policy (the
+helper's `none`: the reader refuses the absent flag without an existing
+`--policy` file and resolves the built-in fallback by itself). The mapping is
+the helper's, so the two recipes cannot diverge. The
 helper `dev-flow-support/assets/lib/merge-base-policy.sh` is the same one
 `dev-flow-support`'s step 0 calls, so the whole stage chain resolves the same
 governing policy. It is a governing file in its own right: the recipe runs the
@@ -1335,7 +1340,8 @@ validated against its integrator pass — and before any remediation push, run
 (`$support_dir` resolved as at the top of this skill) and act on its
 `outcome`. When the run resolved its policy through the merge-base path
 above, pass the branch `.devflow.toml` as `--policy` and the same
-`"${mb_policy[@]}"` the resolution used: `dev-flow-exit.mjs` accepts
+`${mb_policy[@]+"${mb_policy[@]}"}` the resolution used (empty on the
+helper's `none`): `dev-flow-exit.mjs` accepts
 `--merge-base-policy-absent` exactly as the reader does, so an absent merge
 base governs the exit through the built-in fallback, as it governed the
 resolution, and an empty `--merge-base-policy` is a usage error (exit 1)
