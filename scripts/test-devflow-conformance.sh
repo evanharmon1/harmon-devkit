@@ -452,6 +452,121 @@ process.exit(r.source === process.argv[2] ? 0 : 1);
 done
 (cd "$mbrepo" && git checkout -q branch) || err "could not restore the scratch checkout"
 
+# The integration-exit recipe runs the MERGE BASE's dev-flow-exit.mjs
+# (harmon-devkit#1345, challenge round 2): a branch that edits the engine to
+# always converge must not change the verdict. run_exit_recipe mirrors the
+# recipe in integrate/SKILL.md: the merge base's whole asset directory
+# materialized with git archive, else $pinned_mb_engine, else a stop (1), and
+# an engine that does not name --merge-base-policy-absent refused when the
+# recipe passes it.
+echo "==> the integration exit runs the merge-base engine"
+exrepo="$scratch/exrepo"
+exfix="$repo_root/ai/schemas/fixtures/exit/integration-cap-reached-with-p1-capped"
+assets_rel=ai/skills/universal/dev-flow-support/assets
+mkdir -p "$exrepo/$assets_rel"
+cp -R "$support/." "$exrepo/$assets_rel/"
+cp "$exfix/policy.toml" "$exrepo/.devflow.toml"
+mv "$exrepo/$assets_rel/dev-flow-exit.mjs" "$scratch/engine.mjs"
+(
+    export GIT_CONFIG_GLOBAL="$scratch/gitconfig" GIT_CONFIG_NOSYSTEM=1
+    cd "$exrepo"
+    git init -q
+    git add -A
+    git commit -q -m "chore: merge base without the exit engine"
+    git tag noengine
+    cp "$scratch/engine.mjs" "$assets_rel/dev-flow-exit.mjs"
+    git add -A
+    git commit -q -m "chore: merge base with the exit engine"
+    git tag base
+    printf '%s\n' 'process.stdout.write(JSON.stringify({ outcome: "converged" }) + "\n");' \
+        'process.exitCode = 20;' >"$assets_rel/dev-flow-exit.mjs"
+    git commit -q -am "fix: a branch whose engine always converges"
+    git tag rogue
+) >/dev/null 2>&1 || err "could not build the exit-engine scratch repository"
+
+# run_exit_recipe BASE [absent] — prints the engine's stdout, returns its status.
+run_exit_recipe() {
+    local base="$1" reader_dir="$assets_rel" mb_dir="$scratch/exit-mb" engine mb_engine
+    rm -rf "$mb_dir"
+    mkdir -p "$mb_dir"
+    if [ "${2:-}" = absent ]; then
+        mb_policy=(--merge-base-policy-absent)
+    else
+        git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml" || return 2
+        mb_policy=(--merge-base-policy "$mb_dir/devflow.toml")
+    fi
+    engine="${reader_dir}/dev-flow-exit.mjs"
+    if git cat-file -e "${base}:${engine}" 2>/dev/null; then
+        git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || return 1
+        mb_engine="$mb_dir/${engine}"
+    else
+        mb_engine="${pinned_mb_engine:-}"
+        [ -n "$mb_engine" ] || return 1
+    fi
+    case " ${mb_policy[*]-} " in
+    *" --merge-base-policy-absent "*)
+        grep -Fq -- 'merge-base-policy-absent' "$mb_engine" || return 1
+        ;;
+    esac
+    node "$mb_engine" --run "$exfix/run" --stage integration --policy .devflow.toml \
+        ${mb_policy[@]+"${mb_policy[@]}"} --json
+}
+
+exit_outcome() {
+    node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.stdout.write(String(r.outcome));
+' "$1" 2>/dev/null || true
+}
+
+set +e
+(cd "$exrepo" && git checkout -q rogue && node "$assets_rel/dev-flow-exit.mjs") >"$scratch/exit-ctl.json" 2>/dev/null
+ctl=$?
+(cd "$exrepo" && run_exit_recipe base) >"$scratch/exit-rogue.json" 2>"$scratch/exit-rogue.err"
+st=$?
+set -e
+if [ "$ctl" -eq 20 ] && [ "$(exit_outcome "$scratch/exit-ctl.json")" = converged ] &&
+    [ "$st" -eq 22 ] && [ "$(exit_outcome "$scratch/exit-rogue.json")" = capped ]; then
+    echo "  ✓ a branch engine that always converges does not change the recipe's verdict (capped)"
+else
+    err "rogue engine: control exit $ctl, recipe exit $st ($(exit_outcome "$scratch/exit-rogue.json")): $(head -2 "$scratch/exit-rogue.err")"
+fi
+
+set +e
+(cd "$exrepo" && run_exit_recipe noengine) >"$scratch/exit-nopin.out" 2>/dev/null
+st=$?
+(cd "$exrepo" && pinned_mb_engine="$support/dev-flow-exit.mjs" run_exit_recipe noengine) >"$scratch/exit-pin.json" 2>/dev/null
+pst=$?
+printf '%s\n' 'process.stdout.write("OLD-ENGINE-RAN\n");' >"$scratch/old-engine.mjs"
+(cd "$exrepo" && pinned_mb_engine="$scratch/old-engine.mjs" run_exit_recipe noengine absent) >"$scratch/exit-old.out" 2>/dev/null
+ost=$?
+set -e
+if [ "$st" -eq 1 ] && [ ! -s "$scratch/exit-nopin.out" ]; then
+    echo "  ✓ a merge base without the engine stops without an operator pin, never running the branch's"
+else
+    err "first adoption without an engine pin exited $st (want 1, no output)"
+fi
+if [ "$pst" -eq 22 ] && [ "$(exit_outcome "$scratch/exit-pin.json")" = capped ]; then
+    echo "  ✓ a merge base without the engine runs the operator-pinned engine"
+else
+    err "first adoption with an engine pin exited $pst"
+fi
+if [ "$ost" -eq 1 ] && ! grep -Fq 'OLD-ENGINE-RAN' "$scratch/exit-old.out"; then
+    echo "  ✓ an engine that predates --merge-base-policy-absent is refused before it runs"
+else
+    err "the exit recipe ran an engine that predates --merge-base-policy-absent (exit $ost)"
+fi
+(cd "$exrepo" && git checkout -q base) || err "could not restore the exit scratch checkout"
+
+int_recipe="$repo_root/ai/skills/universal/integrate/SKILL.md"
+if grep -Fq 'node "$mb_engine"' "$int_recipe" && grep -Fq '${pinned_mb_engine:-}' "$int_recipe" &&
+    grep -Fq 'git archive --format=tar "$base" -- "$reader_dir"' "$int_recipe" &&
+    grep -Fq 'lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs`' "$int_recipe"; then
+    echo "  ✓ integrate/SKILL.md runs the merge-base engine and routes engine edits to it"
+else
+    err "integrate/SKILL.md does not run the merge-base dev-flow-exit.mjs on the merge-base path"
+fi
+
 # Both recipes call the helper and pass its answer, never a bare
 # `git show "${base}:.devflow.toml"` or an unconditional --merge-base-policy.
 for recipe in "$repo_root/ai/skills/universal/dev-flow-support/SKILL.md" \

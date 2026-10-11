@@ -172,14 +172,18 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      Only when no such pin exists is tier resolution **indeterminate**: stop
      and report it. Never fall back to the branch copy.
      **The same rule governs `lib/merge-base-policy.sh`**, here and in
-     `/integrate`'s merge-base recipe, which points at this sentence rather
-     than restating it: a branch that edits the helper could answer `absent`
-     and swap the merge-base policy for the built-in fallback, so both
-     recipes run the merge base's copy, materialized only when
-     `git cat-file -e <merge-base>:<path>` finds it. When the merge base
-     predates the helper, run an operator-pinned helper (`$pinned_mb_helper`,
-     a path outside the candidate branch); without one, resolution is
-     **indeterminate**: stop and report it. Never run the branch's copy.
+     `/integrate`'s merge-base recipe, **and `dev-flow-exit.mjs`** in
+     `/integrate`'s integration-exit recipe; both point at this sentence
+     rather than restating it. A branch that edits the helper could answer
+     `absent` and swap the merge-base policy for the built-in fallback, and
+     one that edits the engine could ignore the merge-base argument or lower
+     its own caps, so each recipe runs the merge base's copy, materialized
+     only when `git cat-file -e <merge-base>:<path>` finds it. When the merge
+     base predates the file, or its copy does not name a flag the recipe
+     passes, run an operator-pinned copy (`$pinned_mb_helper`,
+     `$pinned_mb_engine`, a path outside the candidate branch); without one,
+     resolution is **indeterminate**: stop and report it. Never run the
+     branch's copy.
    - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type,

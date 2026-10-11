@@ -311,8 +311,10 @@ legacy shape or the v1 shape, and never resolves either by hand
 its refusal names the markers it actually found, so no procedure here has to
 restate an older shape's vocabulary in order to reject it.
 
-**On an ordinary review** — the change under review touches none of
-`dev-flow-support/assets/devflow-policy.mjs`, `dev-flow-support/assets/lib/toml-lite.mjs`, `.devflow.toml`,
+**On an ordinary review** — the change under review touches nothing under
+`dev-flow-support/assets/` (the reader `devflow-policy.mjs`, `lib/toml-lite.mjs`,
+`lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs` with the
+modules, validator and `schemas/` it loads), nor `.devflow.toml`,
 `agent-registry.json`, `Taskfile.yml`, or `taskfiles/` —
 `task devflow:policy -- resolve --policy .devflow.toml --registry
 agent-registry.json --taskfile-dir . --json` (add `--rigor <level>` for an
@@ -1338,14 +1340,49 @@ validated against its integrator pass — and before any remediation push, run
 ```
 
 (`$support_dir` resolved as at the top of this skill) and act on its
-`outcome`. When the run resolved its policy through the merge-base path
-above, pass the branch `.devflow.toml` as `--policy` and the same
-`${mb_policy[@]+"${mb_policy[@]}"}` the resolution used (empty on the
-helper's `none`): `dev-flow-exit.mjs` accepts
-`--merge-base-policy-absent` exactly as the reader does, so an absent merge
-base governs the exit through the built-in fallback, as it governed the
-resolution, and an empty `--merge-base-policy` is a usage error (exit 1)
-there too. It counts completed cycles — exempt included; a carry, an
+`outcome`.
+
+**When the run resolved its policy through the merge-base path above, the
+exit runs the MERGE BASE's engine, never `"$support_dir/dev-flow-exit.sh"`.**
+That path is taken whenever the change touches the engine too, since it sits
+under `dev-flow-support/assets/` on the list above.
+The engine decides the verdict, so it governs exactly as the reader does: a
+branch that edits `dev-flow-exit.mjs` could ignore the merge-base argument or
+lower its own caps, and carrying `mb_policy` into the branch's engine
+constrains nothing. Materialize the merge base's whole asset directory beside
+the reader, in the same `$mb_dir` layout (the engine, the modules it imports,
+its default validator and `schemas/`), and invoke that engine by path:
+
+```sh
+# $base, $mb_dir, $reader_dir and mb_policy come from the merge-base recipe above.
+engine="${reader_dir}/dev-flow-exit.mjs"
+if git cat-file -e "${base}:${engine}" 2>/dev/null; then
+    git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
+    mb_engine="$mb_dir/${engine}"
+else
+    mb_engine="${pinned_mb_engine:-}"   # first adoption: dev-flow-support step 0
+    [ -n "$mb_engine" ] || exit 1       # no pin: indeterminate, never the branch copy
+fi
+# An engine that predates a flag this recipe passes ignores it and lets the
+# branch policy govern: that copy counts as predating the engine, too.
+case " ${mb_policy[*]-} " in
+*" --merge-base-policy-absent "*)
+    grep -Fq -- 'merge-base-policy-absent' "$mb_engine" || exit 1 ;;
+esac
+node "$mb_engine" --run <record dir> --stage integration --policy .devflow.toml \
+    ${mb_policy[@]+"${mb_policy[@]}"} --json
+```
+
+The engine is invoked directly rather than through the branch engine's
+`--closure` delegation: the branch's module, and everything in its `main()`
+ahead of the delegation, would already have run, and a branch can delete the
+delegation outright. A merge base without `dev-flow-exit.mjs`, or whose copy
+does not name a flag the recipe passes, follows `dev-flow-support` step 0's
+**First adoption** rule. Pass the branch `.devflow.toml` as `--policy` and
+the same `mb_policy` the resolution used (empty on the helper's `none`): an
+engine that accepts `--merge-base-policy-absent` governs an absent merge base
+through the built-in fallback, as the resolution did, and refuses an empty
+`--merge-base-policy` as a usage error (exit 1). It counts completed cycles — exempt included; a carry, an
 incomplete attempt, and a retry add none — separately from remediation
 pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
 confirmed P0/P1 from any reviewer, a late human review included, breaks the

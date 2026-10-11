@@ -2025,7 +2025,11 @@ ignore it, letting the branch policy govern, so the helper stops instead —
 the direct-run counterpart of the reader's own `--closure` probe. The helper
 is itself a governing file: both recipes run the merge base's copy, and a
 merge base that predates it needs an operator-pinned helper or stops as
-indeterminate, never the branch's copy.
+indeterminate, never the branch's copy. The same holds for this engine: `/integrate`'s
+integration-exit recipe, on the merge-base path, runs the merge base's
+`dev-flow-exit.mjs` materialized with its whole asset directory (or an
+operator-pinned engine, or stops), because carrying the merge-base argument
+into a branch engine constrains nothing.
 
 **The decoder's scope is an invariant, not a field list.** On a migration
 diff, *every* merge-base-protected value — defaults, rounds, breadth,
