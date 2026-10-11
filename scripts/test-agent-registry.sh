@@ -106,13 +106,23 @@ const actualVersions = Object.fromEntries(
 deepStrictEqual(actualVersions, expectedVersions, "model line versions must match harmon-init's")
 
 // Effort is a harness property (#1268): the ladder and each harness's accepted
-// levels match harmon-init's. Only the Claude Code pair and codex-cli are
-// verified; every other harness records [] until its effort control is.
+// levels match harmon-init's at REGISTRY_PARITY_REV (harmon-init#1610 recorded
+// the verified ladders). A harness absent here records [] until its effort
+// control is verified for the model it resolves.
 deepStrictEqual(registry.effort_ladder, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const verifiedEfforts = {
     'claude-code': ['low', 'medium', 'high', 'xhigh', 'max'],
     'claude-code-action': ['low', 'medium', 'high', 'xhigh', 'max'],
-    'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh']
+    'claude-code-deepseek': ['low', 'high', 'max'],
+    'claude-code-kimi': ['low', 'high', 'max'],
+    'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    'copilot-cli': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'qwen-code': ['low', 'medium', 'high', 'xhigh', 'max'],
+    opencode: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    pi: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    'oh-my-pi': ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    goose: ['low', 'medium', 'high', 'max'],
+    cline: ['low', 'medium', 'high', 'xhigh']
 }
 deepStrictEqual(
     Object.fromEntries(registry.harnesses.map(({ slug, efforts }) => [slug, efforts])),
@@ -154,7 +164,7 @@ NODE
 # REGISTRY_PARITY_REV. The test runs offline: when harmon-init changes this
 # shape, refresh the literal from that revision (the same projection run over
 # its schema) and move the pin, never edit one side to suit the other.
-REGISTRY_PARITY_REV="d361a514acef49b59887f8030c4662ec89e393cf"
+REGISTRY_PARITY_REV="9c9c8879bdeee22f6b23ca3635b9f3616b2253af"
 check_shape_parity() {
     node --input-type=module - "$1" "$REGISTRY_PARITY_REV" <<'NODE'
 import { readFile } from 'node:fs/promises'
@@ -748,9 +758,9 @@ switch (mutation) {
   }
   case 'effort-ladder-subset':
     registry.effort_ladder = registry.effort_ladder.filter((effort) => effort !== 'minimal')
-    harness('codex-cli').efforts = harness('codex-cli').efforts.filter(
-      (effort) => effort !== 'minimal'
-    )
+    for (const entry of registry.harnesses) {
+      entry.efforts = entry.efforts.filter((effort) => effort !== 'minimal')
+    }
     break
   case 'review-role-without-write-restriction':
     harness('codex-cli').can_restrict_writes = false

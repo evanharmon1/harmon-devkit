@@ -833,21 +833,21 @@ Effort ladder: `minimal` < `low` < `medium` < `high` < `xhigh` < `max`.
 | --- | --- | --- | --- | --- | --- |
 | `claude-code` | Claude Code CLI | `claude` | `foreman:claude` — production, dispatchable | `runner-config` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `claude-code-action` | claude-code-action | `claude` | — | `workflow-config` | `low`, `medium`, `high`, `xhigh`, `max` |
-| `claude-code-deepseek` | Claude Code provider wrapper | `deepseek` | `claude-code-deepseek` — production, not dispatchable, no label | `provider-wrapper` | — |
+| `claude-code-deepseek` | Claude Code provider wrapper | `deepseek` | `claude-code-deepseek` — production, not dispatchable, no label | `provider-wrapper` | `low`, `high`, `max` |
 | `claude-code-glm` | Claude Code provider wrapper | `glm` | `claude-code-glm` — production, not dispatchable, no label | `provider-wrapper` | — |
-| `claude-code-kimi` | Claude Code provider wrapper | `kimi` | `claude-code-kimi` — production, not dispatchable, no label | `provider-wrapper` | — |
+| `claude-code-kimi` | Claude Code provider wrapper | `kimi` | `claude-code-kimi` — production, not dispatchable, no label | `provider-wrapper` | `low`, `high`, `max` |
 | `claude-code-minimax` | Claude Code provider wrapper | `minimax` | — | `provider-wrapper` | — |
 | `claude-code-qwen` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` | — |
 | `claude-code-qwen-local` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` | — |
 | `codex-cli` | OpenAI Codex CLI | `gpt` | `codex-cli` — production, not dispatchable, no label | `runner-config` | `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `copilot-cli` | GitHub Copilot CLI | any (multi-provider; default `mai`) | — | `harness-runtime` | — |
-| `qwen-code` | Qwen Code CLI | `qwen` | — | `runner-config` | — |
+| `copilot-cli` | GitHub Copilot CLI | any (multi-provider; default `mai`) | — | `harness-runtime` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `qwen-code` | Qwen Code CLI | `qwen` | — | `runner-config` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` | — |
-| `opencode` | OpenCode | any (multi-provider) | — | `harness-runtime` | — |
-| `pi` | Pi | any (multi-provider) | — | `harness-runtime` | — |
-| `oh-my-pi` | Oh My Pi | any (multi-provider) | — | `harness-runtime` | — |
-| `goose` | Block Goose | any (multi-provider) | — | `harness-runtime` | — |
-| `cline` | Cline | any (multi-provider) | — | `harness-runtime` | — |
+| `opencode` | OpenCode | any (multi-provider) | — | `harness-runtime` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `pi` | Pi | any (multi-provider) | — | `harness-runtime` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `oh-my-pi` | Oh My Pi | any (multi-provider) | — | `harness-runtime` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `goose` | Block Goose | any (multi-provider) | — | `harness-runtime` | `low`, `medium`, `high`, `max` |
+| `cline` | Cline | any (multi-provider) | — | `harness-runtime` | `low`, `medium`, `high`, `xhigh` |
 <!-- registry-tables:end -->
 
 ## Claiming — making an agent's work visible while it happens
