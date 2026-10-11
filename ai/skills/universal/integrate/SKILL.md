@@ -9,7 +9,7 @@ description: >-
   .devflow.toml's review policy). Use when a draft PR exists and the dev loop
   calls for integrating it to ready-for-review. Invoke as /integrate [PR # or
   URL].
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/update-branch.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
 
 # Integrate
@@ -602,8 +602,10 @@ snippets resolve as `$skill_dir`). The grant matches the literal resolved
 path, so a call spelled through an unexpanded variable, or from a harness
 without the substitution, still prompts — friction, never silent, and the
 command being approved is one that structurally cannot write. Pushes, PR
-comments, body edits, review triggers, raw `gh api` (its write forms and
-GraphQL alike), and gate runs always go through the normal permission prompt.
+comments, body edits, review triggers, the server-side catch-up
+(`assets/update-branch.sh`, a GitHub write that moves the head), raw `gh api`
+(its write forms and GraphQL alike), and gate runs always go through the
+normal permission prompt.
 
 ## 1. Target
 
@@ -1701,11 +1703,15 @@ new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
 
 The helper's exits are the invariant, stated once (0 caught up, printing the
 new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
-retarget):
+retarget; 15 not a draft):
 
 - **Merge mode, guarded by the expected head.** It re-reads `baseRefName`
   first and stops on a retarget (14): `base-retargeted` applies and nothing is
-  requested. It then sends REST `PUT …/pulls/<n>/update-branch` with the
+  requested. A retarget that lands after that re-read but before GitHub
+  processes the request is the same window a local merge has, an accepted
+  residual (harmon-init ADR 2026-10-11) that the gate's base re-check
+  catches. The same re-read refuses a PR that is no longer a draft (15)
+  unless `--maintainer-requested` is passed (below). It then sends REST `PUT …/pulls/<n>/update-branch` with the
   captured head as `expected_head_sha`. That endpoint takes no other field and
   always merges. Rebase exists only as GraphQL `updateMethod` or
   `gh pr update-branch --rebase`; it rewrites pushed history, and the helper
@@ -1795,8 +1801,9 @@ round. Two consequences follow rather than needing their own procedure:
   is owed at all and the gate's Codex condition drops out, as everywhere else.
 
 **A promoted PR is caught up only when the maintainer asks.** Then it is
-updated in place, through the same helper, which neither needs nor changes
-draft state, and its promotion is never undone. Otherwise its drift is
+updated in place, through the same helper with `--maintainer-requested` (the
+one case that flag exists for; without it the helper refuses a non-draft PR
+with exit 15), and its promotion is never undone. Otherwise its drift is
 reported, never acted on (§ "Unexplained promotion").
 
 **A PR the gate can establish is behind is never reported ready** — under any

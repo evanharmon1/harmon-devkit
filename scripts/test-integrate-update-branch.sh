@@ -72,9 +72,10 @@ STUB
 chmod +x "${bin_dir}/gh"
 
 pr_json() {
-    # $1 head, $2 baseRefName, $3 state (default OPEN)
+    # $1 head, $2 baseRefName, $3 state (default OPEN), $4 isDraft (default true)
     jq -cn --arg h "$1" --arg b "$2" --arg o "$base_oid" --arg s "${3:-OPEN}" \
-        '{state:$s,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
+        --argjson d "${4:-true}" \
+        '{state:$s,isDraft:$d,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
 }
 
 commit_json() {
@@ -175,6 +176,27 @@ run_default
 expect "closed PR" 10 "not open"
 no_put "closed PR"
 
+echo "==> a PR that is ready for review is refused unless the maintainer asked"
+# Challenge round 2: a promoted PR is caught up only on the maintainer's
+# request, so the default refuses it before any write.
+reset
+pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
+run_default
+expect "non-draft without the flag" 15 "maintainer's request"
+no_put "non-draft without the flag"
+reset
+pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
+pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
+run_default --maintainer-requested
+expect "non-draft with the flag" 0 ""
+[ "$out" = "$new_sha" ] || fail "non-draft with the flag printed '$out'"
+grep -qF -- '--method PUT' "$log" || fail "non-draft with the flag sent no PUT: $(cat "$log")"
+reset
+jq -c 'del(.isDraft)' "${fixtures}/pr-1.json" >"${fixtures}/p" && mv "${fixtures}/p" "${fixtures}/pr-1.json"
+run_default
+expect "missing isDraft" 13 "isDraft"
+no_put "missing isDraft"
+
 echo "==> an unreadable PR is indeterminate, without a PUT"
 reset
 printf '1\n' >"${fixtures}/pr-view-exit"
@@ -271,8 +293,13 @@ expect "unreadable commit" 13 "provenance"
 
 echo "==> the skill wires the helper in"
 skill_flat="$(tr '\n' ' ' <"$skill_md" | tr -s ' ')"
+# A GitHub write is never pre-approved: the helper stays behind the prompt.
+case "$skill_flat" in
+*'assets/update-branch.sh:*)'*) fail "SKILL.md pre-approves update-branch.sh in allowed-tools" ;;
+esac
 for needle in \
-    'Bash(${CLAUDE_SKILL_DIR}/assets/update-branch.sh:*)' \
+    'through the same helper with `--maintainer-requested`' \
+    '(`assets/update-branch.sh`, a GitHub write that moves the head)' \
     'assets/update-branch.sh --repo <repo> --pr <n>' \
     'A server-side catch-up spends no remediation round.' \
     'neither of them the run record' \

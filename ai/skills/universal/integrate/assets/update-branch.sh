@@ -32,7 +32,12 @@
 #
 # Usage:
 #   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-#       [--wait SECONDS] [--interval SECONDS]
+#       [--maintainer-requested] [--wait SECONDS] [--interval SECONDS]
+#
+#   The catch-up runs at the readiness gate, on a draft. A PR that is no
+#   longer a draft has been handed to a human, and is caught up only when the
+#   maintainer asks (SKILL.md § "Base reconciliation"): --maintainer-requested
+#   records that request and is the only way past the draft check (exit 15).
 #
 #   --head and --base are what the readiness gate captured (`headRefOid`,
 #   `baseRefName`). --wait bounds step 3 by wall clock (default 180): the
@@ -63,6 +68,8 @@
 #       and report, never request again.
 #   14  retarget — `baseRefName` is not the captured base. `base-retargeted`
 #       applies; nothing is merged against the new base.
+#   15  not a draft — the PR is ready for review and --maintainer-requested
+#       was not passed. Report its drift; never act on it unasked.
 
 set -euo pipefail
 
@@ -70,12 +77,14 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-      [--wait SECONDS] [--interval SECONDS]
+      [--maintainer-requested] [--wait SECONDS] [--interval SECONDS]
 
 Catches a behind PR up to its base with GitHub update-branch in merge mode,
 guarded by --head as expected_head_sha. Prints the new head OID.
-Rebase is refused. Exit codes: 0 caught up, 2 usage, 10 refused, 11 conflict,
-12 stale head, 13 indeterminate, 14 retarget.
+Rebase is refused. A non-draft PR is refused unless --maintainer-requested
+says the maintainer asked for this catch-up. Exit codes: 0 caught up,
+2 usage, 10 refused, 11 conflict, 12 stale head, 13 indeterminate,
+14 retarget, 15 not a draft.
 EOF
     exit 2
 }
@@ -112,6 +121,7 @@ head=
 base=
 wait_sec=180
 interval_sec=5
+maintainer_requested=0
 
 [ "$#" -gt 0 ] || usage
 while [ "$#" -gt 0 ]; do
@@ -130,6 +140,10 @@ while [ "$#" -gt 0 ]; do
         --interval) interval_sec=$2 ;;
         esac
         shift 2
+        ;;
+    --maintainer-requested)
+        maintainer_requested=1
+        shift
         ;;
     -h | --help) usage ;;
     *) refuse "unrecognised argument: $1" ;;
@@ -168,7 +182,7 @@ run_gh() {
 
 # read_pr [SECONDS] — the PR's head and base, bounded by SECONDS (default 60).
 read_pr() {
-    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,headRefOid,baseRefName,baseRefOid
+    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid,baseRefName,baseRefOid
 }
 
 # field JSON NAME — a required string field, or non-zero.
@@ -183,6 +197,11 @@ state="$(field "$before" state)" ||
     finish indeterminate 13 "PR read carries no state"
 [ "$state" = OPEN ] ||
     finish refused 10 "PR #${pr} is ${state}, not open"
+# Not `jq -e`: it fails on a false value, which is the one this check needs.
+is_draft="$(jq -r '.isDraft | if type == "boolean" then tostring else error("no isDraft") end' <<<"$before")" ||
+    finish indeterminate 13 "PR read carries no isDraft"
+[ "$is_draft" = true ] || [ "$maintainer_requested" = 1 ] ||
+    finish not-draft 15 "PR #${pr} is ready for review — catch it up only on the maintainer's request (--maintainer-requested); otherwise report its drift"
 current_base="$(field "$before" baseRefName)" ||
     finish indeterminate 13 "PR read carries no baseRefName"
 [ "$current_base" = "$base" ] ||
