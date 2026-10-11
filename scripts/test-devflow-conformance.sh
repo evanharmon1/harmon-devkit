@@ -118,7 +118,7 @@ process.stdout.write(lines.join("\n") + "\n");
 # The corpus drives the CLI, whose usage pre-check runs before the library.
 # Keep the canonical library invariant covered for non-CLI consumers too.
 echo "==> absent merge-base policy requires a branch policy in the library"
-if node --input-type=module - "$support/devflow-policy.mjs" <<'JS'
+if node --input-type=module - "$support/devflow-policy.mjs" <<'JS'; then
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 const { resolvePolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
@@ -126,7 +126,6 @@ for (const doc of [null, undefined]) {
     assert.throws(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true }), PolicyError);
 }
 JS
-then
     echo "  ✓ library refuses an absent branch policy"
 else
     err "resolvePolicy accepted an absent merge-base policy without a branch policy"
@@ -201,7 +200,7 @@ fi
 # The library refuses an absent merge base that also supplies a merge-base
 # document, with otherwise valid v2 documents (finding 6).
 echo "==> library refuses an absent merge base together with mergeBaseDoc"
-if node --input-type=module - "$support/devflow-policy.mjs" "$support/lib/toml-lite.mjs" "$fixtures/policy.toml" <<'JS'
+if node --input-type=module - "$support/devflow-policy.mjs" "$support/lib/toml-lite.mjs" "$fixtures/policy.toml" <<'JS'; then
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -211,7 +210,6 @@ const doc = parseToml(readFileSync(process.argv[4], "utf8"));
 assert.doesNotThrow(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true }));
 assert.throws(() => resolvePolicy(doc, { mergeBasePolicyAbsent: true, mergeBaseDoc: doc }), PolicyError);
 JS
-then
     echo "  ✓ library refuses mergeBasePolicyAbsent with mergeBaseDoc"
 else
     err "resolvePolicy accepted mergeBasePolicyAbsent together with a mergeBaseDoc"
