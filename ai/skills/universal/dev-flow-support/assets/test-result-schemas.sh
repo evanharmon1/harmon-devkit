@@ -257,7 +257,7 @@ NODE
 #     one needs.
 is_context_only_fixture() {
     case "$1" in
-    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json | *.receipts.json | *.verdict.json) return 0 ;;
+    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json | *.receipts.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
     */result.challenger.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
@@ -270,7 +270,6 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
-    */adjudication.schema/invalid/split-non-candidate.json) return 0 ;;
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
     */run.schema/invalid/adjudicated-round-without-issue-evidence-marker.json) return 0 ;;
     */run.schema/invalid/adjudicated-round-capped-without-issue-evidence-marker.json) return 0 ;;
@@ -1159,38 +1158,6 @@ run_context_case \
     "is not adjudicated in any supplied --adjudication document" \
     --adjudication "$settlement_cross_check_adjudication"
 
-# Split eligibility is corroborated against the exit computation's projection.
-split_candidate_verdict="$fixtures_dir/adjudication.schema/valid/split-candidate.verdict.json"
-split_adjudication="$fixtures_dir/adjudication.schema/valid/split-mechanism-filed-as-issue.json"
-run_context_case \
-    "a non-candidate round cannot authorize a split" \
-    adjudication "$fixtures_dir/adjudication.schema/invalid/split-non-candidate.json" \
-    "split requires a detected split_candidate" \
-    --verdict "$fixtures_dir/adjudication.schema/invalid/split-non-candidate.verdict.json"
-for kind in adjudication run; do
-    split_document="$split_adjudication"
-    [ "$kind" != run ] || split_document="$fixtures_dir/run.schema/valid/split-recorded.json"
-    if ! out="$(node "$validator" "$kind" "$split_document" --verdict "$split_candidate_verdict" 2>&1)"; then
-        fail "eligible $kind split rejected: $out"
-    fi
-    for mutation in \
-        '.stage = "challenge"' \
-        '.split_candidate.round = 3' \
-        '.split_candidate.finding_ids = []' \
-        'del(.split_candidate)'; do
-        jq "$mutation" "$split_candidate_verdict" >"$test_tmp/wrong-split.verdict.json"
-        run_context_case "mismatched eligibility rejected ($kind, $mutation)" \
-            "$kind" "$split_document" "split_candidate" \
-            --verdict "$test_tmp/wrong-split.verdict.json"
-    done
-    run_context_case "duplicate verdicts rejected ($kind)" \
-        "$kind" "$split_document" "repeats a stage/round verdict" \
-        --verdict "$split_candidate_verdict" --verdict "$split_candidate_verdict"
-done
-run_context_case "receipt cannot silently skip eligibility on a split" \
-    run "$fixtures_dir/run.schema/valid/split-recorded.json" "--receipt requires --verdict" \
-    --receipt --no-adjudications
-
 # Raw schema consumers must reject bad issue shapes without semantic context.
 node --input-type=module - "$schemas_dir" "$fixtures_dir" <<'NODE'
 import { readFileSync } from 'node:fs'
@@ -1229,7 +1196,7 @@ jq '.stage_transitions += [{"stage":"verify","entered_at":"2026-09-01T12:40:00Z"
 if ! out="$(node "$validator" run "$test_tmp/split-time.json" 2>&1)"; then
     fail "split in repeated, active stage rejected: $out"
 fi
-echo "PASS: split eligibility, raw issue shape, and stage intervals validated"
+echo "PASS: split raw issue shape and stage intervals validated"
 
 split_cross_check_adjudication="$fixtures_dir/run.schema/invalid/split-cross-check.adjudication.json"
 
