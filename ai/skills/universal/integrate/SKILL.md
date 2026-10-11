@@ -1,8 +1,9 @@
 ---
 name: integrate
 description: >-
-  Integrate a draft PR to ready for review — dispatch the integrator agent to
-  drive CI settlement and one current-head Codex cloud-review cycle, poll
+  Integrate a draft PR to ready for review — use the checker-driven clean-run
+  fast path or dispatch the integrator agent to drive CI settlement and one
+  current-head Codex cloud-review cycle, poll
   incoming bot/human reviews, adjudicate findings as hypotheses (verify, fix
   only what's confirmed, explain rejections in per-thread replies), push, and
   re-dispatch, under the resolved integration and remediation caps (from
@@ -77,8 +78,9 @@ retired single-stage skill at its pin and refuses as described above. Do
 not fabricate a `run.json` to route around any of this; there is nothing that
 would keep it truthful.
 
-Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
-to settle CI and drive the Codex cloud-review cycle (see
+Opening a draft PR is not the end. Integrate it: use the checker-driven
+clean-run fast path or dispatch the integrator agent to settle CI and drive
+the Codex cloud-review cycle (see
 [§2](#2-watch)), poll incoming bot/human reviews, adjudicate what lands, fix
 what's confirmed, and re-dispatch — under the resolved **integration cap**
 (bounds Codex cycles) and **remediation cap** (bounds fix pushes), counted
@@ -1976,10 +1978,11 @@ that loops indefinitely:
    `promotion: {head, promoted_at, gate_fingerprint}` to `run.json`, `head`
    and `gate_fingerprint` copied verbatim from the confirmed reads above,
    never re-derived. This is the write side of an invariant the readiness
-   gate's own `--integrator-result` and `--head` checks already enforce on
-   the read side (a schema-valid envelope's `head` — and, transitively, its
-   `codex_cycle.accepted.reviewed_commit` — can never disagree with the head
-   the gate just confirmed), so a `promotion` entry can never legitimately
+   gate's `--head` check and evidence binding already enforce on the read side:
+   a supplied `--integrator-result` binds its schema-valid envelope's `head`
+   and `codex_cycle.accepted.reviewed_commit`; checker-only evidence binds the
+   live state head or proven `carry.attests_head` to that same gated head.
+   Thus a `promotion` entry can never legitimately
    name a head other than this one.
    If the open PR is non-draft on a changed head or content snapshot, or any
    other confirmation result cannot

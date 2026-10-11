@@ -1030,6 +1030,8 @@ write_defaults
 clean_result="$(write_integrator_result clean "$(codex_cycle_json 0)")"
 run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
 assert_gate 0 pass ready
+[ "$(gate_field cycle_evidence | jq -r '.kind')" = integrator-result ] ||
+    fail "supplied-result verdict must name integrator-result evidence: $gate_out"
 first_fingerprint="$(gate_field fingerprint)"
 [ -n "$first_fingerprint" ] && [ "$first_fingerprint" != "null" ] ||
     fail "pass did not print a fingerprint: $gate_out"
@@ -4052,7 +4054,7 @@ write_defaults
 run_audit
 assert_gate 1 fail pr-draft
 
-echo "==> --record, --integrator-result, and the two caps are never skippable by silence"
+echo "==> --record, either evidence input, and both caps are required"
 write_defaults
 clean_result="$(write_integrator_result skip-check "$(codex_cycle_json 0)")"
 set +e
@@ -4060,7 +4062,7 @@ usage_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" 2>&1)
 usage_rc=$?
 set -e
 [ "$usage_rc" -eq 2 ] ||
-    fail "omitting --record and --integrator-result should exit 2, got $usage_rc: $usage_out"
+    fail "omitting --record and both evidence inputs should exit 2, got $usage_rc: $usage_out"
 set +e
 no_record_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
     --integrator-result "$clean_result" --integration-cap 1 --remediation-cap 4 2>&1)"
@@ -4074,7 +4076,7 @@ no_result_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
 no_result_rc=$?
 set -e
 [ "$no_result_rc" -eq 2 ] ||
-    fail "omitting --integrator-result alone should exit 2, got $no_result_rc: $no_result_out"
+    fail "omitting both --integrator-result and --codex-recheck should exit 2, got $no_result_rc: $no_result_out"
 set +e
 no_cap_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
     --record "$record_dir" --integrator-result "$clean_result" --remediation-cap 4 2>&1)"

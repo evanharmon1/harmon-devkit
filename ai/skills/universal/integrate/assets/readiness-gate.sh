@@ -39,7 +39,7 @@
 # `check`'s value.
 #
 # Exit codes:
-#   0  pass — every condition held; the fingerprint is on stdout
+#   0  pass — every condition held; fingerprint and cycle_evidence are on stdout
 #   1  fail — a readiness condition is definitively not met
 #   2  indeterminate — a fetch failed, data is malformed, GitHub has not
 #      populated an answer yet, or the arguments are unusable. Unknown never
@@ -71,7 +71,13 @@
 #   finder-indeterminate, promotion-head-mismatch,
 #   behind-base-unknown, merge-state-stale,
 #   integration-exit-indeterminate, integration-record-unbound,
-#   usage                                                    (indeterminate)
+#   checker-fast-path-unavailable, usage                     (indeterminate)
+#
+# A pass's cycle_evidence names the evidence kind (integrator-result or
+# checker-state) and its file path. Checker-state evidence also reports the
+# cycle ordinal; a cap-0 run requires an integrator result.
+# checker-fast-path-unavailable requires dispatching an integrator and supplying
+# --integrator-result; re-polling cannot replace missing integration evidence.
 #
 # `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
 # so a genuinely behind head never reaches the cache branch, and a cache that
@@ -759,19 +765,16 @@ compute_fingerprint() {
         indeterminate malformed-data "hashing produced an empty fingerprint"
 }
 
-# Re-confirms a cached codex_cycle.exit_code 0 against live GitHub state,
-# read-only, rather than trusting it unconditionally — see the --codex-recheck
-# paragraph in the header comment for why. Called only for exit_code 0
-# (harmon-devkit#639 gauntlet challenge round 1, finding 3): 10/11/12/13
-# already fail or stay non-terminal on their own, and a null codex_cycle has
-# nothing cached to go stale.
+# Checks live GitHub state, read-only: primary evidence on the checker-only
+# path, or freshness confirmation for a supplied codex_cycle.exit_code 0.
+# Supplied non-clean and null cycles retain their own handling below.
 recheck_codex_freshness() {
     [ -n "$codex_recheck_state" ] ||
-        indeterminate codex-stale "codex_cycle reports a clean exit_code 0 but no --codex-recheck was given to reconfirm it against current GitHub state — a clean result can go stale between the integrator pass and this gate"
+        indeterminate codex-stale "no --codex-recheck was given to confirm current-head Codex evidence against live GitHub state"
     [ -x "$codex_checker" ] ||
         die "$codex_checker is missing or not executable — cannot honor --codex-recheck"
     [ -f "$codex_recheck_state" ] ||
-        indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot reconfirm the cached clean result"
+        indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot confirm live Codex evidence"
     state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
     state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
     state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
@@ -819,7 +822,7 @@ recheck_codex_freshness() {
         codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
-            indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"
+            indeterminate codex-transient-read "live Codex check could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating unknown evidence as stale: $codex_recheck_output"
     fi
     # Codex cloud-review cycle 3 on PR harmon-devkit#1125, finding 4067133481
     # (confirmed P2): 16 got its own handling above and 15 did not, so a live
@@ -836,10 +839,13 @@ recheck_codex_freshness() {
     # the remedy is to report the blocker, never to re-poll. Same wording and
     # same recovery route as the cached arm.
     if [ "$codex_recheck_exit" -eq 15 ]; then
-        fail_condition codex-quota-exhausted "recheck of the cached clean Codex cycle came back quota-exhausted (check-codex-cloud-review.sh exited 15): the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115): $codex_recheck_output"
+        fail_condition codex-quota-exhausted "live Codex check came back quota-exhausted (check-codex-cloud-review.sh exited 15): the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115): $codex_recheck_output"
+    fi
+    if [ "$codex_recheck_exit" -eq 10 ]; then
+        indeterminate codex-stale "live Codex check reports findings — adjudicate them before gating (check-codex-cloud-review.sh exited 10): $codex_recheck_output"
     fi
     [ "$codex_recheck_exit" -eq 0 ] ||
-        indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
+        indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
 }
 
 # `behind` is the read-only preflight the reserved-cycle rule needs. Before
@@ -1992,7 +1998,7 @@ exit_engine="$support_dir/dev-flow-exit.mjs"
 # The engine path goes LAST: the engine treats process.argv[1] as the script
 # it was invoked as and runs its own CLI when that resolves to itself.
 integration_record="$(node --input-type=module -e '
-const [record, cap, validator, gated, checker, head, engine] = process.argv.slice(1);
+const [record, cap, validator, gated, engine] = process.argv.slice(1);
 const { integrationExitForRunDir, loadRunDir, ExitIndeterminate } = await import(engine);
 try {
   integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
@@ -2010,10 +2016,6 @@ const latest = passes
   .map((p) => bindOf(p.envelope))
   .sort((x, y) => x.round - y.round)
   .at(-1) ?? null;
-if (!result && latest !== null) {
-  console.log(JSON.stringify({ ok: false, reason: "recorded integrator pass requires --integrator-result" }));
-  process.exit(0);
-}
 const want = result ? bindOf(result) : null;
 const owed = result && (want.cycle !== null || latest !== null);
 const bound = !owed || (latest !== null && latest.round === want.round && latest.cycle === want.cycle && latest.head === want.head);
@@ -2022,7 +2024,7 @@ const filed = docs.flatMap((d) => d.adjudications)
   .filter((e) => ["P0", "P1"].includes(e.adjudicated_priority) && ["file", "defer"].includes(e.disposition))
   .map((e) => e.finding_id);
 console.log(JSON.stringify({ ok: true, filed, bound, latest, want }));
-' "$record_dir" "$integration_cap" "$validate_result_schemas" "$integrator_result" "$codex_recheck_state" "$head" "$exit_engine" 2>/dev/null)" ||
+' "$record_dir" "$integration_cap" "$validate_result_schemas" "$integrator_result" "$exit_engine" 2>/dev/null)" ||
     indeterminate integration-exit-indeterminate "the integration record could not be read over --record"
 jq -e '.ok' <<<"$integration_record" >/dev/null 2>&1 ||
     indeterminate integration-exit-indeterminate "the integration exit is indeterminate: $(jq -r '.reason // "unreadable record output"' <<<"$integration_record" 2>/dev/null)"
