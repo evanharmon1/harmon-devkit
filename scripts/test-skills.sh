@@ -11193,6 +11193,8 @@ expect_ok "orchestrate: the slate lock is taken with --milestone at plan publica
     grep -qF 'adding `--milestone <n>` for a milestone-backed' "$ORCH_MD"
 expect_ok "orchestrate: the lane scratch dir is for throwaway files only (#1296 review r1 -4)" \
     grep -qF 'for throwaway files only — nothing needed to resume lives there' "$ORCH_MD"
+expect_ok "orchestrate: no entry lands after a run ends, whatever its outcome (#1296 review r2 -3)" \
+    grep -qF 'or any entry written after the run has ended — promoted, capped, escalated or' "$ORCH_MD"
 expect_ok "orchestrate: the run-record fields run-record.mjs does not write keep their named writers (#1296)" \
     grep -qF 'record keeps its existing writers:' "$ORCH_MD"
 if grep -qF 'Write the run record only through' "$ORCH_MD"; then

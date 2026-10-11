@@ -89,16 +89,40 @@ no_candidates() {
 run="$state/runs/run-a/run.json"
 new_run run-a
 
-# write_plan SLATE ISSUE:RUN... — the minimal plan shape the writer reads:
-# the latest revision's issue numbers and lane run ids.
+# write_plan SLATE ISSUE:RUN... — a schema-valid one-revision plan: each
+# issue in its own wave with one lane (fence and candidate file f/<issue>.txt).
 write_plan() {
     local slate="$1"
     shift
     mkdir -p "$state/slates/$slate"
-    printf '%s\n' "$@" | jq -R 'split(":") | {issue: (.[0]|tonumber), run: .[1]}' | jq -s '{
-      schema: 1, slate_id: "'"$slate"'",
-      revisions: [{plan: {issues: map({number: .issue}), lanes: map(select(.run != "") | {run_id: .run, issue})}}]
-    }' >"$state/slates/$slate/plan.json"
+    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" node --input-type=module -e '
+      const { chainDigest } = await import(process.env.PLAN_WRITER)
+      const entries = process.env.PLAN_LANES.split(" ").map((pair) => pair.split(":"))
+      const policy = {
+        rigor: "deep", rigor_source: "default",
+        caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
+        breadth: { max_agent_runs: 20, max_parallel_agents: 1 },
+        strategy: "plan", strategy_source: "default",
+        role_tiers: { orchestrator: "apex", implementer: "frontier", challenger: "apex", reviewer: "frontier", integrator: "economy" },
+        operator_pins: [],
+      }
+      const plan = {
+        base_sha: "a".repeat(40), policy,
+        dispatcher: { kind: "interactive", parallel_cap: 1, foreman_max_parallel: null },
+        issues: entries.map(([n]) => ({ number: Number(n), title: `Issue ${n}`, url: `https://example.test/issues/${n}`,
+          verdict: "valid", candidate_files: [`f/${n}.txt`], blocked_by: [] })),
+        overlaps: [],
+        waves: entries.map(([n], i) => ({ number: i + 1, issues: [Number(n)] })),
+        lanes: entries.map(([n, run], i) => ({ lane: `l${n}`, issue: Number(n), wave: i + 1, branch: `${n}-l`,
+          run_id: run, fence: [{ path: `f/${n}.txt` }], expansions: [] })),
+      }
+      const at = "2026-01-01T00:00:00Z", reason = "fixture plan"
+      const digest = chainDigest({ seq: 0, plan, at, reason }, "genesis")
+      process.stdout.write(JSON.stringify({ schema: 1, slate_id: process.env.PLAN_SLATE,
+        revisions: [{ seq: 0, prev_digest: "genesis", digest, at, reason, plan }] }, null, 2) + "\n")
+    ' >"$state/slates/$slate/plan.json"
+    node "$asset_dir/validate-result-schemas.mjs" plan "$state/slates/$slate/plan.json" >/dev/null ||
+        fail "fixture plan for $slate is invalid"
 }
 
 lock_scope() {
@@ -200,6 +224,18 @@ printf 'not json\n' >"$state/slates/s7/plan.json"
 rr alice intervention --run-id run-a --kind other --note "unaffected" --at 2026-01-01T00:03:40Z >/dev/null ||
     fail "an unrelated or malformed plan.json elsewhere blocked the owning slate"
 pass "an unrelated, even malformed, plan.json elsewhere does not block the owner"
+
+write_plan s8 17:run-t
+new_run run-t
+jq '.revisions[0].reason = "tampered"' "$state/slates/s8/plan.json" >"$tmp/s8.json"
+cp "$tmp/s8.json" "$state/slates/s8/plan.json"
+expect_refused "tampered plan on lock acquire" "failed \`plan\` validation" \
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s8 --session alice"
+expect_refused "tampered plan on a run write" "failed \`plan\` validation" \
+    bash -c "cd '$repo' && node '$writer' transition --slate s8 --session alice --run-id run-t --stage claim --exit k --at 2026-01-01T00:01:00Z"
+[ ! -e "$state/locks/s8.json" ] || fail "a tampered plan produced a slate lock"
+[ ! -e "$state/runs/run-t/owner-slate" ] || fail "a tampered plan produced an owner record"
+pass "a plan whose digest chain is tampered is refused before any lock or ownership is recorded"
 
 # -- interventions and ruling digests -------------------------------------
 mkdir -p "$state/slates/s1/orchestrator/run-a/a1"

@@ -291,11 +291,21 @@ function lockPaths(root, slate) {
   return { dir, file: join(dir, `${slate}.json`), registry: join(dir, 'registry') }
 }
 
-// currentPlan — the slate's latest plan revision, or null when no plan exists.
-export function currentPlan(root, slate) {
+// readValidatedPlan — the slate's plan document after `validate-result-schemas.mjs
+// plan` accepts it, or null when no plan exists. Nothing reads a plan for the
+// lock scope or a run's ownership before it has validated.
+function readValidatedPlan(root, slate) {
   const file = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(file)) return null
-  const document = readJson(file, 'plan')
+  validateFile('plan', file, `slate ${slate}'s ${file}`)
+  return readJson(file, 'plan')
+}
+
+// currentPlan — the slate's latest plan revision, or null when no plan exists.
+export function currentPlan(root, slate) {
+  const document = readValidatedPlan(root, slate)
+  if (document === null) return null
+  const file = join(root, 'slates', slate, 'plan.json')
   const plan = Array.isArray(document.revisions) ? document.revisions.at(-1)?.plan : null
   if (!Array.isArray(plan?.issues) || !Array.isArray(plan?.lanes)) throw new Refusal(`plan has no readable issues and lanes: ${file}`)
   return plan
@@ -329,8 +339,7 @@ export function assertRunOwner(root, slate, runId) {
 export function bindRunToSlate(root, slate, runId) {
   const ownerFile = join(root, 'runs', runId, 'owner-slate')
   if (readRunOwner(root, runId) === null) {
-    const file = join(root, 'slates', slate, 'plan.json')
-    const revisions = existsSync(file) ? readJson(file, 'plan').revisions : []
+    const revisions = readValidatedPlan(root, slate)?.revisions ?? []
     if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
       throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
     }

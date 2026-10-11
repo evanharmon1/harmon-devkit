@@ -255,7 +255,8 @@ a candidate, validates it with `validate-result-schemas.mjs run --receipts`
 plus every adjudication document in the run directory, renames it over
 `run.json` and validates the readback. A refused edge, a promotion dated
 before the last transition, a promotion over an unsettled deferred finding,
-or an entry dated after the promotion therefore never lands. The rest of the
+or any entry written after the run has ended — promoted, capped, escalated or
+abandoned — therefore never lands. The rest of the
 record keeps its existing writers:
 
 - the kickoff record — this skill, at activation;
