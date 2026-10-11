@@ -519,8 +519,9 @@ The split's issue reference must be a positive bare number or
 `owner/repo#number`, enforced by both schema copies. Its `split_at` must fall
 within an occurrence of its recorded confidence stage: from that transition's
 `entered_at` inclusive to the next transition exclusive. A repeated stage has
-multiple such intervals; the last occurrence remains open, subject to the
-run's existing start and promotion bounds.
+multiple such intervals; the last occurrence stays open until the run's
+terminal outcome (its promotion, or a terminal `outcome_transitions[].at`),
+which closes it, and remains subject to the run's start bound.
 
 It does **not** prove parts 1, 3 and 4 of the contract — that the mechanism
 actually left the tree, that the addressed finding's follow-up was really
