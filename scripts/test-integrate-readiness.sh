@@ -812,6 +812,65 @@ assert_gate 0 pass ready
     fail "checker-only test accidentally supplied an integrator pass"
 
 echo "==> #1070: non-clean checker evidence remains indeterminate"
+write_checker_defaults
+recorded_result="$(gated_round 1 1)"
+run_checker_gate
+assert_gate 2 indeterminate integrator-result-required
+write_checker_defaults
+recorded_result="$(gated_round 1 1)"
+jq '.payload.verdict = "pending"' "$recorded_result" >"${recorded_result}.next"
+mv "${recorded_result}.next" "$recorded_result"
+cp "$recorded_result" "${record_dir}/passes/integration-r1-codex-cloud.json"
+run_checker_gate
+assert_gate 2 indeterminate integrator-result-required
+
+echo "==> R1: checker-only refuses unanswered human findings and binds replies"
+for finding_body in '[P1] Incorrect head binding' 'A race remains in the gate'; do
+    write_checker_defaults
+    jq -cn --arg body "$finding_body" '[[{id:50,body:$body,
+      html_url:"https://github.com/example/repo/pull/493#issuecomment-50",
+      user:{id:9,login:"reviewer"},created_at:"2026-01-01T01:00:00Z",
+      updated_at:"2026-01-01T01:00:00Z"}]]' >"${fixtures}/top.pages.json"
+    run_checker_gate
+    assert_gate 1 fail unresolved-review-findings
+    jq --arg head "$head_sha" '.[0] += [{id:51,user:{id:1,login:"pr-author"},
+      body:("Adjudicated decline at " + $head + " — https://github.com/example/repo/pull/493#issuecomment-50"),
+      created_at:"2026-01-01T01:01:00Z",updated_at:"2026-01-01T01:01:00Z"}]' \
+        "${fixtures}/top.pages.json" >"${fixtures}/top.next"
+    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
+    run_checker_gate
+    assert_gate 0 pass ready
+    jq --arg old "$head_sha" --arg moved "$moved_sha" '.[0][1].body |= sub($old; $moved)' \
+        "${fixtures}/top.pages.json" >"${fixtures}/top.next"
+    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
+    run_checker_gate
+    assert_gate 1 fail unresolved-review-findings
+    jq --arg old "$head_sha" --arg moved "$moved_sha" '.[0][1].body |= sub($moved; $old)' \
+        "${fixtures}/top.pages.json" >"${fixtures}/top.next"
+    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
+    jq '.[0][0].updated_at = "2026-01-01T01:02:00Z"' "${fixtures}/top.pages.json" >"${fixtures}/top.next"
+    mv "${fixtures}/top.next" "${fixtures}/top.pages.json"
+    run_checker_gate
+    assert_gate 1 fail unresolved-review-findings
+done
+write_checker_defaults
+jq -cn '[[{id:60,body:"[P2] Review-body concern",state:"COMMENTED",
+  html_url:"https://github.com/example/repo/pull/493#pullrequestreview-60",
+  user:{id:9,login:"reviewer"},submitted_at:"2026-01-01T01:00:00Z"}]]' \
+    >"${fixtures}/reviews.pages.json"
+run_checker_gate
+assert_gate 1 fail unresolved-review-findings
+
+echo "==> R1: checker-only derives remediation dispositions from the record"
+write_checker_defaults
+jq -cn --arg head "$head_sha" '{schema:2,run_id:"test-run",stage:"integration",round:1,
+  reviewed_head:$head,adjudications:[{finding_id:"integration-r1-human-1",
+  reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"fix",
+  reason:"fixed",evidence:"verified fix",override:null}]}' \
+    >"${record_dir}/adjudications/integration-r1.json"
+run_checker_gate
+assert_gate 1 fail remediation-capped
+
 for checker_exit in 2 10 11 12 13 14; do
     write_checker_defaults
     export RECHECK_FAKE_EXIT="$checker_exit"

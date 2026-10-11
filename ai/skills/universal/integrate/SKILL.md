@@ -930,6 +930,17 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
+  Checker-only evidence is admissible only while the run record holds **no
+  integrator pass**; once one exists, supply `--integrator-result`. The direct
+  path also checks non-Codex review bodies and conversation comments. It
+  conservatively requires a disposition for nonempty prose, including
+  unbadged concerns. Record a top-level reply beginning `Adjudicated` followed by a space that
+  names the source's exact permalink and the current head, after the source's
+  latest edit. A settlement explanation uses the same recorded reply; a
+  settlement alone cannot bind a live source's edited text to this head.
+  The exact `@codex review` command and those linked disposition replies are
+  protocol messages. Integration adjudications feed the remediation budget
+  checks directly on this path.
 - **For dispatched integration, retain the integrator agent
   (`ai/agents/integrator.md`) and its validated result.** It settles checks and
   lists unanswered threads at every cap, and drives the current-head Codex

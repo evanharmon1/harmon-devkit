@@ -1429,6 +1429,54 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
     indeterminate malformed-data "run.json carries no run_id"
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
+checker_dispositions='[]'
+if [ -z "$integrator_result" ]; then
+    # R1: these evidence paths are exclusive. A recorded integrator pass
+    # carries obligations that a clean Codex state alone cannot discharge.
+    for checker_pass in "$record_dir"/passes/*.json; do
+        [ -f "$checker_pass" ] || continue
+        checker_role="$(jq -er '.role' "$checker_pass")" ||
+            indeterminate malformed-data "cannot read recorded pass $checker_pass"
+        [ "$checker_role" != integrator ] ||
+            indeterminate integrator-result-required "the record holds an integrator pass; supply --integrator-result rather than switching to checker-only evidence"
+    done
+    for checker_adj in "$record_dir"/adjudications/*.json; do
+        [ -f "$checker_adj" ] || continue
+        checker_dispositions="$(jq -cs '.[0] + (.[1] | if .stage == "integration" then .adjudications else [] end)' \
+            <(printf '%s' "$checker_dispositions") "$checker_adj")" ||
+            indeterminate malformed-data "cannot read integration adjudications"
+
+    done
+    # Reuse the fingerprint reads. A reply must explicitly name BOTH the
+    # source permalink and this head, and postdate the source's latest edit.
+    # Review bodies are review-shaped by their surface. Without an integrator
+    # classifying prose, nonempty conversation comments are conservatively
+    # owed a disposition too; only the exact review command and explicitly
+    # linked current-head disposition replies are protocol, not findings.
+    non_codex_findings="$(jq -cn --argjson top "$fp_top" --argjson reviews "$fp_reviews" \
+        --arg me "$me" --arg head "$head" --argjson bot "$codex_actor_id" '
+      def badged: .body | test("(?im)^\\s*(?:#{1,6}\\s*|[-*+]\\s*)?(?:\\*\\*|\\[|!\\[)?P[0-3]\\b");
+      ($top | add // []) as $comments |
+      [($comments[] | . + {surface:"comment"}),
+       (($reviews | add // [])[] | . + {surface:"review"})] |
+      map(select(.user.id != $bot and (.body // "" | length) > 0) |
+        select(.surface == "review" or
+          ((.body | test("^\\s*@codex review\\s*$")) | not)) |
+        select(.surface == "review" or .user.login != $me or
+          (((.body | startswith("Adjudicated ") and contains($head) and test("https://[^[:space:]]+[/#](?:issuecomment-|pullrequestreview-)[0-9]+")) and (badged | not)) | not)) |
+        . as $source |
+        select(any($comments[];
+          .user.login == $me and .id != $source.id and
+          (.body | type) == "string" and
+          ($source.html_url | type) == "string" and ($source.html_url | length) > 0 and
+          (.body | startswith("Adjudicated ") and contains($source.html_url) and contains($head)) and
+          (.created_at | type) == "string" and
+          (($source.updated_at // $source.submitted_at // $source.created_at) | type) == "string" and
+          .created_at >= ($source.updated_at // $source.submitted_at // $source.created_at)) | not))
+    ')" || indeterminate malformed-data "non-Codex review findings could not be classified"
+    [ "$(jq 'length' <<<"$non_codex_findings")" -eq 0 ] ||
+        fail_condition unresolved-review-findings "non-Codex findings lack a current-head recorded reply: $(jq -c 'map({surface,id})' <<<"$non_codex_findings")"
+fi
 if [ -n "$integrator_result" ]; then
     # The run's known finding universe, so the validator's
     # checkAppliedDispositionsKnownFindingIds actually runs here
@@ -1726,7 +1774,7 @@ fi
 # condition is genuinely waived for this pass; that is a statement about
 # codex_cycle specifically, not about the pass as a whole.
 
-applied_dispositions='[]'
+applied_dispositions="$checker_dispositions"
 if [ -n "$integrator_result" ]; then
     # 8b. Per-finder cloud conditions (#804). finder_cycles[] carries every
     # configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud,
@@ -1952,16 +2000,19 @@ try {
 const { passes, adjudications } = loadRunDir(record);
 const fs = await import("node:fs");
 const result = gated ? JSON.parse(fs.readFileSync(gated, "utf8")) : null;
-const state = result ? null : JSON.parse(fs.readFileSync(checker, "utf8"));
 const bindOf = (envelope) => ({ round: envelope.payload?.integration_round ?? null, cycle: envelope.payload?.codex_cycle?.cycle ?? null, head: envelope.head ?? null });
 const latest = passes
   .filter((p) => p.envelope.role === "integrator")
   .map((p) => bindOf(p.envelope))
   .sort((x, y) => x.round - y.round)
   .at(-1) ?? null;
-const want = result ? bindOf(result) : { cycle: state.cycle, head };
-const owed = result ? want.cycle !== null || latest !== null : latest !== null;
-const bound = !owed || (latest !== null && (result ? latest.round === want.round : true) && latest.cycle === want.cycle && latest.head === want.head);
+if (!result && latest !== null) {
+  console.log(JSON.stringify({ ok: false, reason: "recorded integrator pass requires --integrator-result" }));
+  process.exit(0);
+}
+const want = result ? bindOf(result) : null;
+const owed = result && (want.cycle !== null || latest !== null);
+const bound = !owed || (latest !== null && latest.round === want.round && latest.cycle === want.cycle && latest.head === want.head);
 const docs = adjudications.map((a) => a.doc).filter((d) => d?.stage === "integration");
 const filed = docs.flatMap((d) => d.adjudications)
   .filter((e) => ["P0", "P1"].includes(e.adjudicated_priority) && ["file", "defer"].includes(e.disposition))
