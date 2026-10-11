@@ -823,6 +823,47 @@ assert_gate 0 pass ready
 ! compgen -G "${record_dir}/passes/integration-*.json" >/dev/null ||
     fail "checker-only test accidentally supplied an integrator pass"
 
+echo "==> R5: a real Codex finder profile qualifies; other finder actors do not"
+write_checker_defaults
+checker_finder_profile="$(jq -c '.finders[] | select(.slug == "codex-cloud") | {
+  slug:.slug, actor_id:(.trusted_actor_id | tostring), actor_login:.trusted_actor_login,
+  trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+  reviewer_login:.collection.trigger.reviewer_login,
+  surfaces:.collection.terminal_signals.surfaces,
+  head_binding:.collection.terminal_signals.head_binding,
+  verdict_mode:.collection.terminal_signals.verdict_mode,
+  clean_verdict:.collection.terminal_signals.clean_verdict,
+  actionable_pattern:.collection.terminal_signals.actionable_pattern,
+  severity_marker:.collection.terminal_signals.severity_marker,
+  metadata_line:.collection.terminal_signals.metadata_line,
+  about_summary:.collection.terminal_signals.about_summary,
+  heading:.collection.terminal_signals.heading,
+  carrier_sentence:.collection.terminal_signals.carrier_sentence,
+  success_reaction:.collection.terminal_signals.success_reaction,
+  pending_reaction:.collection.terminal_signals.pending_reaction
+}' "${repo_root}/agent-registry.json")"
+jq --argjson finder "$checker_finder_profile" '.finder = $finder' \
+    "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 0 pass ready
+for finder_slug in copilot-cloud codex-cloud; do
+    write_checker_defaults
+    jq --argjson finder "$checker_finder_profile" --arg slug "$finder_slug" \
+        '.finder = ($finder + {slug:$slug,actor_id:"175728472"})' \
+        "$recheck_state" >"${recheck_state}.next"
+    mv "${recheck_state}.next" "$recheck_state"
+    run_checker_gate
+    assert_gate 2 indeterminate checker-fast-path-unavailable
+done
+
+echo "==> R5: any exempt cycle requires integrator evidence despite a declared cap"
+write_checker_defaults
+jq '.exempt_cycles = 1' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate --integration-exempt-cap 1
+assert_gate 2 indeterminate checker-fast-path-unavailable
+
 echo "==> #1070: non-clean checker evidence remains indeterminate"
 write_checker_defaults
 recorded_result="$(gated_round 1 1)"
@@ -4395,6 +4436,16 @@ carried_cycle_json() {
       .accepted.reviewed_commit = $origin |
       .carried = $carried' <<<"$(codex_cycle_json 0)"
 }
+
+echo "==> R5: a carried single charged cycle remains checker-only eligible"
+write_checker_defaults
+jq --arg o "$carried_origin" \
+    --argjson carry "$(carried_record_json "$carried_origin" "$carried_id" "$head_sha" |
+        jq -c 'del(.origin_head)')" \
+    '.head = $o | .carry = $carry' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_checker_gate
+assert_gate 0 pass ready
 
 echo "==> a carried verdict the checker state corroborates passes"
 write_defaults

@@ -935,9 +935,12 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   every top-level PR comment and every non-empty review body is authored by
   Codex bot `199175422` or is exactly `@codex review` after whitespace
   trimming; resolved `policy.json` names exactly `codex-cloud` in
-  `stages.integration.finders`; and the live checker attests one terminal-clean
-  charged cycle with empty `settled[]`; and the PR has no inline review
-  comments. The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
+  `stages.integration.finders`; the live checker attests exactly one
+  terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
+  the PR has no inline review comments. The state's `finder` is null or names
+  `codex-cloud` with actor `199175422`. Carry remains admissible, retaining the
+  reviewed cycle's state; any exempt cycle requires integrator evidence.
+  The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
   state without these counters is refused.
   No authenticated-actor exemption applies: the orchestrator and maintainer
   may share an account. Inline comments require the dispatched-integrator path,

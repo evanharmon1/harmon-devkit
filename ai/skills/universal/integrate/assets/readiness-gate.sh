@@ -184,9 +184,12 @@ against the resolved caps and the pass verdict names that state as evidence.
 Checker-only is a clean-run fast path: no integrator pass or integration
 adjudication, only Codex bodies or exact review triggers on top-level/review surfaces,
 record policy.json resolving integration finders to codex-cloud alone, and
-one clean charged checker cycle without settlements, and no inline review
-comments. Cycle spend comes from charged_cycles + exempt_cycles; state without
-these counters is refused. Otherwise dispatch an
+exactly one clean charged checker cycle, zero exempt cycles and no settlements,
+and no inline review
+comments. The state's finder must be null or codex-cloud with actor 199175422.
+Cycle spend comes from charged_cycles + exempt_cycles; state without
+these counters is refused. Carry retains the reviewed cycle's state.
+Otherwise dispatch an
 integrator and supply --integrator-result. The gate reads checks, thread
 replies and deferred settlements live in either path. No recording-pass
 envelope is fabricated. A cap-0 run still needs an
@@ -1584,6 +1587,12 @@ else
     # and its state owns cycle spend. Live checks, threads and settlements are
     # evaluated by this gate in both paths.
     recheck_codex_freshness
+    jq -e --argjson bot "$codex_actor_id" '
+      .finder == null or
+      (.finder.slug == "codex-cloud" and
+       (.finder.actor_id | tostring) == ($bot | tostring))
+      ' "$codex_recheck_state" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker state does not name the Codex finder; dispatch an integrator and supply --integrator-result"
     codex_cycle="$(jq -ce --arg head "$head" '
       def uint: type == "number" and . >= 0 and . == floor;
       select(has("charged_cycles") and has("exempt_cycles"))
@@ -1596,9 +1605,9 @@ else
              {carried:($state.carry + {origin_head:$state.head})} else {} end)
       ' "$codex_recheck_state" 2>/dev/null)" ||
         indeterminate malformed-data "checker state carries invalid cycle counters"
-    jq -e '.charged_cycles == 1 and (.settled // []) == []' \
+    jq -e '.charged_cycles == 1 and .exempt_cycles == 0 and (.settled // []) == []' \
         "$codex_recheck_state" >/dev/null 2>&1 ||
-        indeterminate checker-fast-path-unavailable "checker evidence is not one clean charged cycle without settlements; dispatch an integrator and supply --integrator-result"
+        indeterminate checker-fast-path-unavailable "checker evidence is not exactly one clean charged cycle with zero exempt cycles and no settlements; dispatch an integrator and supply --integrator-result"
 fi
 if [ "$codex_cycle" != null ]; then
     cycle_head="$(jq -er '.head | select(type == "string")' \
