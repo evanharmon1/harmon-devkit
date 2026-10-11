@@ -14,7 +14,7 @@ what make that true: the bot profile leaves `TS_AUTHKEY` off its allow-list so a
 tailnet key never reaches an agent container, and the dev profile leaves
 `GH_TOKEN` off so a bot credential never reaches a human one.
 
-**Codex follows the same split.** Both profiles default to `gpt-5.6-sol` with
+**Codex follows the same split.** Both profiles default to `gpt-6.1-sol` with
 medium reasoning and a 64 KiB project-instruction budget. The **dev** profile
 uses `workspace-write`, `on-request`, and Auto-review: the sandbox defines the
 writable boundary, while eligible exits from it are reviewed automatically.

@@ -187,7 +187,7 @@ blocks promotion rather than passing it.
    Confirm with `codex login status`.
 3. **Trust the repo in Codex** when prompted on first run. The committed
    `.codex/config.toml` raises the project-instruction budget to 64 KiB. Review
-   tasks default to `gpt-5.6-sol` with high reasoning for ordinary manual
+   tasks default to `gpt-6.1-sol` with high reasoning for ordinary manual
    invocation. Orchestrated calls pass their resolved values as leading
    `--model <model>` and `--reasoning <level>` arguments.
 4. **For the automatic stop-gate only — the Claude Code codex plugin.** This
