@@ -658,7 +658,11 @@ chmod +x "${recheck_dir}/readiness-gate.sh"
 cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'STUB'
 #!/bin/sh
 if [ -n "${RECHECK_MUTATE_STATE:-}" ]; then
-    jq '.phase = "reserved" | .charged_cycles = 2' "$RECHECK_MUTATE_STATE" >"$RECHECK_MUTATE_STATE.next"
+    if [ "${RECHECK_REPLACE_IDENTICAL:-0}" = 1 ]; then
+        cp "$RECHECK_MUTATE_STATE" "$RECHECK_MUTATE_STATE.next"
+    else
+        jq '.phase = "reserved" | .charged_cycles = 2' "$RECHECK_MUTATE_STATE" >"$RECHECK_MUTATE_STATE.next"
+    fi
     mv "$RECHECK_MUTATE_STATE.next" "$RECHECK_MUTATE_STATE"
 fi
 if [ -n "${RECHECK_FAKE_EXITS:-}" ]; then
@@ -856,16 +860,21 @@ mv "$recheck_state.next" "$recheck_state"
 run_checker_gate
 assert_gate 2 indeterminate checker-fast-path-unavailable
 
-echo "==> I1: concurrent original-state replacement cannot alter the checked snapshot"
+echo "==> I2: changed live checker bytes invalidate the snapshot verdict"
 write_checker_defaults
 export RECHECK_MUTATE_STATE="$recheck_state"
 run_checker_gate
 unset RECHECK_MUTATE_STATE
-assert_gate 0 pass ready
+assert_gate 2 indeterminate codex-stale
 jq -e '.phase == "reserved" and .charged_cycles == 2' "$recheck_state" >/dev/null ||
     fail "snapshot regression did not replace the original state"
-[ "$(gate_field cycle_evidence | jq -r '.cycle')" = 1 ] ||
-    fail "gate constructed its cycle from the concurrently replaced state"
+
+echo "==> I2: replacing the live file with identical bytes still passes"
+write_checker_defaults
+export RECHECK_MUTATE_STATE="$recheck_state" RECHECK_REPLACE_IDENTICAL=1
+run_checker_gate
+unset RECHECK_MUTATE_STATE RECHECK_REPLACE_IDENTICAL
+assert_gate 0 pass ready
 
 echo "==> R5: a real Codex finder profile qualifies; other finder actors do not"
 write_checker_defaults
@@ -891,6 +900,24 @@ jq --argjson finder "$checker_finder_profile" '.finder = $finder' \
 mv "${recheck_state}.next" "$recheck_state"
 run_checker_gate
 assert_gate 0 pass ready
+echo "==> I2: agreeing registry and state cannot replace the policy-pinned Codex actor"
+for foreign_actor in id login; do
+    write_checker_defaults
+    if [ "$foreign_actor" = id ]; then
+        jq '(.finders[] | select(.slug == "codex-cloud") | .trusted_actor_id) = "12345678"' \
+            "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+        foreign_profile="$(jq -c '.actor_id = "12345678"' <<<"$checker_finder_profile")"
+    else
+        jq '(.finders[] | select(.slug == "codex-cloud") | .trusted_actor_login) = "other-reviewer[bot]"' \
+            "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+        foreign_profile="$(jq -c '.actor_login = "other-reviewer[bot]"' <<<"$checker_finder_profile")"
+    fi
+    jq --argjson finder "$foreign_profile" '.finder = $finder' "$recheck_state" >"$recheck_state.next"
+    mv "$recheck_state.next" "$recheck_state"
+    run_checker_gate
+    assert_gate 2 indeterminate checker-fast-path-unavailable
+done
+
 echo "==> I1: trusted profile must inspect both comment and review surfaces"
 for omitted_surface in comment review; do
     write_checker_defaults

@@ -941,9 +941,12 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   `stages.integration.finders`; the live checker attests exactly one
   terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
   the PR has no inline review comments. The state must be attached or terminal; a private snapshot supplies both
-  the freshness check and cycle construction. The state's `finder` matches
+  the freshness check and cycle construction. Immediately before a checker-only
+  pass, the live state bytes must still equal that snapshot; otherwise the gate
+  reports `codex-stale` and must be re-run. The state's `finder` matches
   the trusted registry's `codex-cloud` reserve profile field by field, including
-  actor `199175422`; `trusted-registry.sh` resolves it from the PR base commit
+  the fixed actor ID `199175422` and login `chatgpt-codex-connector[bot]`;
+  `trusted-registry.sh` resolves it from the PR base commit
   on GitHub, never a caller-supplied registry. Null `finder` is accepted only
   when that trusted profile equals the fixed legacy defaults. Trusted surfaces
   must include `comment` and `review`. Live checker exit 10 fails as

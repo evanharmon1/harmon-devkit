@@ -1641,6 +1641,8 @@ LEGACY
             success_reaction:.collection.terminal_signals.success_reaction,
             pending_reaction:.collection.terminal_signals.pending_reaction
           }) as $expected |
+          $expected.actor_id == "199175422" and
+          $expected.actor_login == "chatgpt-codex-connector[bot]" and
           ($expected.surfaces | index("comment") != null) and
           ($expected.surfaces | index("review") != null) and
           (if .finder == null then $expected == $legacy[0] else .finder == $expected end)
@@ -2324,6 +2326,12 @@ elif [ "$audit_behind" -ne 0 ]; then
 else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
+fi
+# The checker-only verdict attests these exact checked bytes. A newer
+# reservation or state edit invalidates it, even when the PR head is unchanged.
+if [ -z "$integrator_result" ]; then
+    cmp -s "$codex_recheck_state" "$checker_state_snapshot" ||
+        indeterminate codex-stale "checker state changed during the gate — re-run the gate against the current state"
 fi
 jq -cn \
     --arg head "$head" \
