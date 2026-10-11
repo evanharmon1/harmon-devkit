@@ -198,6 +198,35 @@ else
     err "--closure delegated --merge-base-policy-absent to a reader that predates it (exit $old_status)"
 fi
 
+# The merge-base argument checks run BEFORE --closure delegation in both
+# entrypoints (harmon-devkit#1345, review round 1): an older closure would skip
+# them, so an empty --merge-base-policy must be refused before it can run. The
+# stub closures accept anything and announce themselves if they run.
+echo "==> merge-base argument checks run before --closure delegation"
+mkdir -p "$scratch/anyclosure"
+printf '%s\n' 'process.stdout.write("STUB-CLOSURE-RAN\n");' >"$scratch/anyclosure/devflow-policy.mjs"
+printf '%s\n' 'process.stdout.write("STUB-CLOSURE-RAN\n");' >"$scratch/anyclosure/dev-flow-exit.mjs"
+set +e
+node "$support/devflow-policy.mjs" resolve --closure "$scratch/anyclosure" --policy "$fixtures/policy.toml" \
+    --merge-base-policy "" --json >"$scratch/early-reader.out" 2>"$scratch/early-reader.err"
+reader_status=$?
+node "$support/dev-flow-exit.mjs" --closure "$scratch/anyclosure" --run "$scratch" --stage review \
+    --policy "$fixtures/policy.toml" --merge-base-policy "" --json >"$scratch/early-exit.out" 2>"$scratch/early-exit.err"
+exit_status=$?
+set -e
+if [ "$reader_status" -eq 2 ] && grep -Fq -- '--merge-base-policy must be a non-empty file path' "$scratch/early-reader.err" &&
+    ! grep -Fq STUB-CLOSURE-RAN "$scratch/early-reader.out"; then
+    echo "  ✓ the reader refuses an empty --merge-base-policy before delegating"
+else
+    err "the reader delegated an empty --merge-base-policy to its --closure (exit $reader_status)"
+fi
+if [ "$exit_status" -eq 1 ] && grep -Fq -- '--merge-base-policy must be a non-empty file path' "$scratch/early-exit.err" &&
+    ! grep -Fq STUB-CLOSURE-RAN "$scratch/early-exit.out"; then
+    echo "  ✓ the exit engine refuses an empty --merge-base-policy before delegating"
+else
+    err "the exit engine delegated an empty --merge-base-policy to its --closure (exit $exit_status)"
+fi
+
 # The library refuses an absent merge base that also supplies a merge-base
 # document, with otherwise valid v2 documents (finding 6).
 echo "==> library refuses an absent merge base together with mergeBaseDoc"

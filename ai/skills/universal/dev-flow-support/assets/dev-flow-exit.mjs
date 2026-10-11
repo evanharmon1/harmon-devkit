@@ -2041,9 +2041,27 @@ function tryDelegateToClosure(argv) {
   return result.status === null ? 1 : result.status;
 }
 
+// mergeBaseUsageError ARGS — the merge-base argument checks. Presence, not
+// truthiness: an empty --merge-base-policy (an unset variable in the caller)
+// must never fall through to "no merge-base policy", which lets the branch's
+// own policy govern (harmon-devkit#1345). main() runs them on the raw argv
+// BEFORE --closure delegation, because an older closure would skip them; they
+// are pure argument checks and need nothing from the closure.
+function mergeBaseUsageError(args) {
+  const given = args["merge-base-policy"] !== undefined;
+  const absent = args["merge-base-policy-absent"] !== undefined;
+  if (absent && args["merge-base-policy-absent"] !== true) return "--merge-base-policy-absent takes no value";
+  if (given && absent) return "--merge-base-policy-absent cannot be combined with --merge-base-policy";
+  if (given && (args["merge-base-policy"] === "" || args["merge-base-policy"] === true)) {
+    return "--merge-base-policy must be a non-empty file path";
+  }
+  return null;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
-  // `--key=value` is refused, ahead of --closure delegation too. parseArgs
+  // `--key=value` is refused, ahead of --closure delegation too, and so are
+  // the merge-base argument checks below (harmon-devkit#1345, review round 1). parseArgs
   // keeps such a token whole as the option NAME, so `--merge-base-policy=` or
   // `--merge-base-policy-absent=false` would be an unknown key, slip past the
   // presence checks below, and let the branch policy govern (harmon-devkit#1345,
@@ -2058,6 +2076,11 @@ async function main() {
     console.error(
       `dev-flow-exit: "${eqForm.slice(0, eqForm.indexOf("=") + 1)}…" is not accepted — pass the option and its value as separate arguments`,
     );
+    return 1;
+  }
+  const mergeBaseError = mergeBaseUsageError(parseArgs(argv));
+  if (mergeBaseError) {
+    console.error(`dev-flow-exit: ${mergeBaseError}`);
     return 1;
   }
   const delegated = tryDelegateToClosure(argv);
@@ -2089,23 +2112,10 @@ async function main() {
     return 1;
   }
 
-  // Presence, not truthiness: an empty --merge-base-policy (an unset
-  // variable in the caller) must never fall through to "no merge-base
-  // policy", which lets the branch's own policy govern (harmon-devkit#1345).
+  // mergeBaseUsageError already refused every malformed merge-base argument,
+  // ahead of --closure delegation.
   const mergeBasePolicyGiven = args["merge-base-policy"] !== undefined;
   const mergeBasePolicyAbsent = args["merge-base-policy-absent"] !== undefined;
-  if (mergeBasePolicyAbsent && args["merge-base-policy-absent"] !== true) {
-    console.error("dev-flow-exit: --merge-base-policy-absent takes no value");
-    return 1;
-  }
-  if (mergeBasePolicyGiven && mergeBasePolicyAbsent) {
-    console.error("dev-flow-exit: --merge-base-policy-absent cannot be combined with --merge-base-policy");
-    return 1;
-  }
-  if (mergeBasePolicyGiven && (args["merge-base-policy"] === "" || args["merge-base-policy"] === true)) {
-    console.error("dev-flow-exit: --merge-base-policy must be a non-empty file path");
-    return 1;
-  }
 
   let policyDoc, mergeBaseDoc;
   try {

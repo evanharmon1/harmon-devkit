@@ -2767,8 +2767,28 @@ function tryDelegateToClosure(argv) {
   return result.status === null ? 1 : result.status;
 }
 
+// mergeBaseUsageError ARGV — the merge-base argument checks, on the raw argv
+// so main() runs them BEFORE --closure delegation: an older closure would skip
+// them, and an empty --merge-base-policy would then let the branch policy
+// govern (harmon-devkit#1345, review round 1). Pure argument checks: they need
+// nothing from the closure. Same order and messages as before the move.
+function mergeBaseUsageError(argv) {
+  const given = argv.some((a) => a === "--merge-base-policy" || a.startsWith("--merge-base-policy="));
+  const absent = argv.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="));
+  if (given && absent) return "--merge-base-policy-absent cannot be combined with --merge-base-policy";
+  if (argv.some((a, i) => a === "--merge-base-policy" && argv[i + 1] === "")) {
+    return "--merge-base-policy must be a non-empty file path";
+  }
+  return null;
+}
+
 function main() {
   const argv = process.argv.slice(2);
+  const mergeBaseError = mergeBaseUsageError(argv);
+  if (mergeBaseError) {
+    console.error(`devflow-policy: ${mergeBaseError}`);
+    return 2;
+  }
   const delegated = tryDelegateToClosure(argv);
   if (delegated !== null) return delegated;
 
@@ -2799,12 +2819,6 @@ function main() {
     // Validate the tier inputs' own syntax up front, so a malformed one is a
     // usage error (exit 2) rather than a policy refusal (exit 1).
     if (cmd === "resolve") {
-      if (args["merge-base-policy"] !== undefined && args["merge-base-policy-absent"]) {
-        throw new PolicyError("--merge-base-policy-absent cannot be combined with --merge-base-policy");
-      }
-      if (args["merge-base-policy"] === "") {
-        throw new PolicyError("--merge-base-policy must be a non-empty file path");
-      }
       tierInputsFromArgs(args);
     }
   } catch (err) {
