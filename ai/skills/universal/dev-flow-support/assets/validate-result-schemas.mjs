@@ -79,6 +79,15 @@
 //                                 validator — it needs the run's full
 //                                 trajectory, not just this one document —
 //                                 and is left to the exit script (#636).
+//   --verdict <file.json>        (adjudication or run, repeatable) exit-engine
+//                                 JSON verdict for a confidence round. Split
+//                                 findings must belong to its detected
+//                                 split_candidate for the same stage/round.
+//                                 Supply all relevant rounds; duplicate stage/round
+//                                 verdicts are rejected. This corroborates a
+//                                 decision, not tree removal or issue creation.
+//                                 --receipt requires this context only when
+//                                 the primary or supplied adjudications split.
 //   --no-adjudications           (run only) an explicit "confirmed zero":
 //                                 there is genuinely no adjudication history
 //                                 for this run yet (a fresh kickoff, or one
@@ -108,7 +117,8 @@
 //                                 --run-id/--initiated-by; challenger,
 //                                 reviewer, and integrator: also --known-ids;
 //                                 adjudication: --pass and
-//                                 --known-adjudicated; run: --adjudication)
+//                                 --known-adjudicated; run: --adjudication;
+//                                 adjudication/run with splits: --verdict)
 //                                 — a missing one is a
 //                                 usage error (exit 2), not a silently
 //                                 narrower check. Without --receipt, an
@@ -181,7 +191,7 @@ function usage() {
     'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
+      '[--verdict <file.json> ...] [--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
   )
 }
 
@@ -398,6 +408,7 @@ function parseArgs(argv) {
     passes: [],
     knownAdjudicated: null,
     adjudications: [],
+    verdicts: [],
     receipt: false,
     noAdjudications: false,
     receiptsRecord: null
@@ -473,6 +484,34 @@ function parseArgs(argv) {
           validateAdjudicationInstance(candidate)
         )
         options.adjudications.push({ file: adjudicationFile, data })
+        break
+      }
+      case '--verdict': {
+        const verdictFile = rest[(i += 1)]
+        if (!verdictFile || !['adjudication', 'run'].includes(kind)) {
+          console.error('validate-result-schemas: --verdict requires a file and kind adjudication or run')
+          usage()
+          process.exit(2)
+        }
+        const data = loadJson(verdictFile)
+        const candidate = data?.split_candidate
+        if (
+          !data || !['challenge', 'review'].includes(data.stage) ||
+          (candidate !== undefined && (
+            !candidate || typeof candidate.detected !== 'boolean' ||
+            !Number.isInteger(candidate.round) || candidate.round < 1 ||
+            !(candidate.mechanism === null || (typeof candidate.mechanism === 'string' && candidate.mechanism.trim() !== '')) ||
+            !Array.isArray(candidate.finding_ids) || !candidate.finding_ids.every((id) => typeof id === 'string')
+          ))
+        ) {
+          console.error(`validate-result-schemas: --verdict file ${verdictFile} has an invalid confidence-stage split_candidate projection`)
+          process.exit(1)
+        }
+        if (options.verdicts.some(({ data: prior }) => prior.stage === data.stage && prior.split_candidate?.round === candidate?.round)) {
+          console.error(`validate-result-schemas: --verdict file ${verdictFile} repeats a stage/round verdict`)
+          process.exit(1)
+        }
+        options.verdicts.push({ file: verdictFile, data })
         break
       }
       case '--schemas-dir':
@@ -553,9 +592,13 @@ const CONTEXT_FLAGS = {
   adjudication: [
     { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
     { flag: '--pass', given: (o) => o.passes.length > 0 },
-    RUN_ID_FLAG
+    RUN_ID_FLAG,
+    { flag: '--verdict', given: (o) => !o.hasSplits || o.verdicts.length > 0 }
   ],
-  run: [{ flag: '--adjudication', given: (o) => o.adjudications.length > 0 || o.noAdjudications }]
+  run: [
+    { flag: '--adjudication', given: (o) => o.adjudications.length > 0 || o.noAdjudications },
+    { flag: '--verdict', given: (o) => !o.hasSplits || o.verdicts.length > 0 }
+  ]
 }
 
 // applicableContextSpecs KIND ROLE — ROLE is only consulted for kind
@@ -1851,6 +1894,9 @@ function validateAdjudicationInstance(instance) {
   const errors = validateAgainst(schema, instance, '$adjudication')
   if (errors.length === 0) {
     checkAdjudicationEntries(instance, errors)
+    if (instance.round === 1 && instance.adjudications.some((entry) => entry.disposition === 'split')) {
+      errors.push('$adjudication.round: a round-1 split cannot have successive-round split_candidate evidence')
+    }
     checkAdjudicationIdAttribution(instance, errors)
   }
   checkTimestampRealness(instance, errors, '$adjudication')
@@ -2114,6 +2160,17 @@ function checkRunChronology(document, errors) {
         errors.push(`$run.splits[${index}].split_at: ${split.split_at} must not be before started_at ${startedAt}`)
       }
     }
+  }
+  // An occurrence is [entered_at, next entered_at): the instant of a
+  // transition belongs to the new stage. Repeated confidence stages each
+  // contribute their own interval; the last occurrence remains open.
+  for (const [index, split] of (document.splits ?? []).entries()) {
+    const splitTime = Date.parse(split.split_at)
+    const inStage = transitions.some((transition, transitionIndex) =>
+      transition.stage === split.stage && splitTime >= Date.parse(transition.entered_at) &&
+      (transitionIndex === transitions.length - 1 || splitTime < Date.parse(transitions[transitionIndex + 1].entered_at))
+    )
+    if (!inStage) errors.push(`$run.splits[${index}].split_at: must fall within an occurrence of stage ${split.stage}`)
   }
   // Upper bound: a settlement resolves a finding BEFORE the run can be
   // promoted (the readiness gate requires every deferred finding settled
@@ -3309,6 +3366,27 @@ function checkSplitsAgainstAdjudications(document, adjudications, errors) {
   }
 }
 
+// Verdicts are supplied by the caller from the exit computation. Bind only
+// its public projection; recomputing provenance requires the full trajectory.
+function checkSplitEligibility(stage, round, findingIds, location, verdicts, errors) {
+  if (verdicts.length === 0) return
+  const candidate = verdicts.find(({ data }) => data.stage === stage && data.split_candidate?.round === round)?.data.split_candidate
+  if (!candidate || candidate.detected !== true || round < 2) {
+    errors.push(`${location}: split requires a detected split_candidate for ${stage} round ${round} in --verdict`)
+    return
+  }
+  for (const id of findingIds) {
+    if (!candidate.finding_ids.includes(id)) {
+      errors.push(`${location}: finding ${id} is not named by the round's split_candidate`)
+    }
+  }
+}
+
+function checkAdjudicationSplitEligibility(document, verdicts, errors) {
+  const ids = document.adjudications.filter((entry) => entry.disposition === 'split').map((entry) => entry.finding_id)
+  if (ids.length > 0) checkSplitEligibility(document.stage, document.round, ids, '$adjudication', verdicts, errors)
+}
+
 // checkSplitAdjudicationsRecordedBeforePromotion — the converse of
 // checkSplitsAgainstAdjudications, which only ever walks splits[] toward the
 // adjudications. Challenge round 1, confirmed: an adjudication carrying
@@ -3507,6 +3585,10 @@ function main() {
     return
   }
   const instance = loadJson(file)
+  options.hasSplits = (Array.isArray(instance?.splits) && instance.splits.length > 0) ||
+    [instance, ...options.adjudications.map(({ data }) => data)].some(
+      (document) => Array.isArray(document?.adjudications) && document.adjudications.some((entry) => entry?.disposition === 'split')
+    )
   const role = kind === 'envelope' ? instance.role : kind
   checkReceiptRequirements(kind, role, options)
 
@@ -3516,6 +3598,7 @@ function main() {
       checkAdjudicationActiveRun(instance, options, errors)
       if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, options, errors)
       checkAdjudicationUniqueAcrossRun(instance, options, errors)
+      checkAdjudicationSplitEligibility(instance, options.verdicts, errors)
     }
     const skipped = skippedContextFlags(kind, role, options)
     const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
@@ -3535,6 +3618,11 @@ function main() {
       }
       checkSettlements(instance, errors)
       checkSplits(instance, errors)
+      for (const [index, split] of (instance.splits ?? []).entries()) {
+        if (split.round === 1) errors.push(`$run.splits[${index}].round: a round-1 split cannot have successive-round split_candidate evidence`)
+        checkSplitEligibility(split.stage, split.round, split.finding_ids, `$run.splits[${index}]`, options.verdicts, errors)
+      }
+      for (const { data } of options.adjudications) checkAdjudicationSplitEligibility(data, options.verdicts, errors)
       checkEvidenceMarkerRunId(instance, errors)
       checkEvidenceMarkerStageVisited(instance, errors)
       checkEvidenceMarkerPrDestinationRequiresPr(instance, errors)

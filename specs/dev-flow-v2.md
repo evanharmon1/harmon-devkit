@@ -507,6 +507,22 @@ splits, no mechanism is split twice out of one stage, and a run that has
 stopped must have recorded every split it adjudicated. Each of those is
 decidable from the documents in hand, which is why each is enforced.
 
+Eligibility is corroborated by the semantic validator's opt-in, repeatable
+`--verdict <file.json>` input: supply the exit computation's JSON verdicts
+for the split rounds. Every split finding must be named by a **detected**
+`split_candidate` for the same stage and round. Binding the finding IDs also
+permits the run-level mechanism's longer human name. Round 1 is always ineligible. Without
+verdict context, standalone validation explicitly reports eligibility as
+skipped; `--receipt` requires verdict context whenever the primary record or
+its supplied adjudications contain a split. The verdict is caller-supplied
+exit evidence, not a substitute for the computation's trajectory validation.
+The split's issue reference must be a positive bare number or
+`owner/repo#number`, enforced by both schema copies. Its `split_at` must fall
+within an occurrence of its recorded confidence stage: from that transition's
+`entered_at` inclusive to the next transition exclusive. A repeated stage has
+multiple such intervals; the last occurrence remains open, subject to the
+run's existing start and promotion bounds.
+
 It does **not** prove parts 1, 3 and 4 of the contract — that the mechanism
 actually left the tree, that the addressed finding's follow-up was really
 filed, that a deletion round confirmed the removal. A record holding no trees,

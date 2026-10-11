@@ -257,7 +257,7 @@ NODE
 #     one needs.
 is_context_only_fixture() {
     case "$1" in
-    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json | *.receipts.json) return 0 ;;
+    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json | *.receipts.json | *.verdict.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
     */result.challenger.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
@@ -270,6 +270,7 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
+    */adjudication.schema/invalid/split-non-candidate.json) return 0 ;;
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
     */run.schema/invalid/adjudicated-round-without-issue-evidence-marker.json) return 0 ;;
     */run.schema/invalid/adjudicated-round-capped-without-issue-evidence-marker.json) return 0 ;;
@@ -1157,6 +1158,78 @@ run_context_case \
     "$fixtures_dir/run.schema/invalid/settlement-of-unknown-finding.json" \
     "is not adjudicated in any supplied --adjudication document" \
     --adjudication "$settlement_cross_check_adjudication"
+
+# Split eligibility is corroborated against the exit computation's projection.
+split_candidate_verdict="$fixtures_dir/adjudication.schema/valid/split-candidate.verdict.json"
+split_adjudication="$fixtures_dir/adjudication.schema/valid/split-mechanism-filed-as-issue.json"
+run_context_case \
+    "a non-candidate round cannot authorize a split" \
+    adjudication "$fixtures_dir/adjudication.schema/invalid/split-non-candidate.json" \
+    "split requires a detected split_candidate" \
+    --verdict "$fixtures_dir/adjudication.schema/invalid/split-non-candidate.verdict.json"
+for kind in adjudication run; do
+    split_document="$split_adjudication"
+    [ "$kind" != run ] || split_document="$fixtures_dir/run.schema/valid/split-recorded.json"
+    if ! out="$(node "$validator" "$kind" "$split_document" --verdict "$split_candidate_verdict" 2>&1)"; then
+        fail "eligible $kind split rejected: $out"
+    fi
+    for mutation in \
+        '.stage = "challenge"' \
+        '.split_candidate.round = 3' \
+        '.split_candidate.finding_ids = []' \
+        'del(.split_candidate)'; do
+        jq "$mutation" "$split_candidate_verdict" >"$test_tmp/wrong-split.verdict.json"
+        run_context_case "mismatched eligibility rejected ($kind, $mutation)" \
+            "$kind" "$split_document" "split_candidate" \
+            --verdict "$test_tmp/wrong-split.verdict.json"
+    done
+    run_context_case "duplicate verdicts rejected ($kind)" \
+        "$kind" "$split_document" "repeats a stage/round verdict" \
+        --verdict "$split_candidate_verdict" --verdict "$split_candidate_verdict"
+done
+run_context_case "receipt cannot silently skip eligibility on a split" \
+    run "$fixtures_dir/run.schema/valid/split-recorded.json" "--receipt requires --verdict" \
+    --receipt --no-adjudications
+
+# Raw schema consumers must reject bad issue shapes without semantic context.
+node --input-type=module - "$schemas_dir" "$fixtures_dir" <<'NODE'
+import { readFileSync } from 'node:fs'
+import { createSchemaValidator } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
+const [schemas, fixtures] = process.argv.slice(2)
+const schema = JSON.parse(readFileSync(`${schemas}/adjudication.schema.json`, 'utf8'))
+const engine = createSchemaValidator(schema)
+for (const name of ['split-reference-zero', 'split-reference-non-issue']) {
+  const data = JSON.parse(readFileSync(`${fixtures}/adjudication.schema/invalid/${name}.json`, 'utf8'))
+  if (engine.validate(data, schema, '$adjudication').length === 0) throw new Error(`schema accepted ${name}`)
+}
+const data = JSON.parse(readFileSync(`${fixtures}/adjudication.schema/valid/split-mechanism-filed-as-issue.json`, 'utf8'))
+for (const value of ['649', 'owner/repo#649']) {
+  data.adjudications[0].reference.value = value
+  if (engine.validate(data, schema, '$adjudication').length > 0) throw new Error(`schema rejected ${value}`)
+}
+NODE
+
+# Stage intervals include their start and exclude the next transition. A
+# later occurrence and an active final occurrence both remain valid.
+for timestamp in 2026-09-01T10:10:00Z 2026-09-01T12:29:59Z; do
+    jq --arg timestamp "$timestamp" '.splits[0].split_at = $timestamp' \
+        "$fixtures_dir/run.schema/valid/split-recorded.json" >"$test_tmp/split-time.json"
+    if ! out="$(node "$validator" run "$test_tmp/split-time.json" 2>&1)"; then
+        fail "split inside stage rejected: $out"
+    fi
+done
+jq '.splits[0].split_at = "2026-09-01T12:30:00Z"' \
+    "$fixtures_dir/run.schema/valid/split-recorded.json" >"$test_tmp/split-time.json"
+run_context_case "a split at the next transition belongs to the new stage" \
+    run "$test_tmp/split-time.json" "must fall within an occurrence of stage review"
+jq '.stage_transitions += [{"stage":"verify","entered_at":"2026-09-01T12:40:00Z","exit":"green"},
+    {"stage":"review","entered_at":"2026-09-01T12:50:00Z"}] |
+    .stage_transitions[6].exit = "fixed" | .splits[0].split_at = "2026-09-01T13:00:00Z"' \
+    "$fixtures_dir/run.schema/valid/split-recorded.json" >"$test_tmp/split-time.json"
+if ! out="$(node "$validator" run "$test_tmp/split-time.json" 2>&1)"; then
+    fail "split in repeated, active stage rejected: $out"
+fi
+echo "PASS: split eligibility, raw issue shape, and stage intervals validated"
 
 split_cross_check_adjudication="$fixtures_dir/run.schema/invalid/split-cross-check.adjudication.json"
 
