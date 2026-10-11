@@ -194,6 +194,17 @@ expect_ok "breakdown applies scoped titles to every issue shape" \
 expect_ok "breakdown authors a dispatch-planning surface per issue" \
     grep -qF 'Each authored issue also carries a `## Surface` section' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+# Cloud dispatch is an explicit operator choice, never a suggested default.
+ORCH_CLOUD_MD="$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator cloud lanes require an explicit operator request" \
+    grep -qF 'Cloud lanes are used only on the operator’s explicit request.' "$ORCH_CLOUD_MD"
+expect_ok "orchestrator forbids unprompted cloud choice or recommendation" \
+    grep -qF 'Never choose or recommend cloud lanes unprompted;' "$ORCH_CLOUD_MD"
+if grep -qiE '(default to|recommend using|prefer|automatically (choose|use)) cloud lanes|cloud lanes (are|as) (the )?default|cloud lanes are (recommended|preferred)|^recommend cloud lanes' "$ORCH_CLOUD_MD"; then
+    bad "orchestrator makes cloud lanes a default or recommendation"
+else
+    ok "orchestrator does not make cloud lanes a default or recommendation"
+fi
 expect_ok "orchestrator planning precedes lane briefs" \
     sh -c 'test "$(grep -n "^## Planning$" "$1" | cut -d: -f1)" -lt "$(grep -n "^## Lane briefs$" "$1" | cut -d: -f1)"' sh \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"

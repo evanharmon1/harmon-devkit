@@ -52,6 +52,10 @@ EOF
 cat >"$bin_dir/herdr" <<'STUB'
 #!/usr/bin/env bash
 set -u
+if [ -f "$WATCH_FIXTURES/cloud-only" ]; then
+    printf '%s\n' "$*" >>"$WATCH_FIXTURES/cloud-herdr-calls"
+    exit 90
+fi
 if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; then
     trap '' TERM
     sleep 5
@@ -131,6 +135,10 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         cat "$WATCH_FIXTURES/dormant-pr-json"
         exit 0
     fi
+    if [ "$branch" = claude/cloud-fixture ]; then
+        cat "$WATCH_FIXTURES/cloud-pr.json"
+        exit 0
+    fi
     if [ "$branch" != branch-alpha ]; then
         printf '%s\n' '[]'
         exit 0
@@ -156,6 +164,10 @@ fi
 
 if [ "${1:-}" = api ]; then
     endpoint=${*: -1}
+    if [ "$endpoint" = repos/evanharmon1/harmon-devkit/git/ref/heads/claude/cloud-fixture ]; then
+        cat "$WATCH_FIXTURES/cloud-branch.json"
+        exit 0
+    fi
     if [ -f "$WATCH_FIXTURES/tail-activity-at" ]; then
         case "$endpoint" in
         */reviews?per_page=100)
@@ -399,6 +411,34 @@ common_args=(
     beta:branch-beta:n2:evanharmon1/harmon-devkit
     gamma:branch-gamma:n3:evanharmon1/harmon-devkit
 )
+
+# No-worktree lanes observe the pushed branch and PR without any local agent
+# calls. A later poisoned local report must still be ignored, including after
+# a restart, while branch/head transitions remain visible and deduplicated.
+cloud_out="$test_tmp/cloud.out"
+cloud_state="$test_tmp/cloud.state"
+touch "$fixture_dir/cloud-only"
+printf '%s\n' '{"ref":"refs/heads/claude/cloud-fixture","object":{"type":"commit","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}' >"$fixture_dir/cloud-branch.json"
+printf '%s\n' '[]' >"$fixture_dir/cloud-pr.json"
+cloud_args=(--iterations 1 --state-file "$cloud_state" --registry "$registry"
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1
+    2099-01-01T00:00:00Z cloud:claude/cloud-fixture:n4:evanharmon1/harmon-devkit:cloud)
+bash "$watcher" "${cloud_args[@]}" >"$cloud_out"
+assert_line "$cloud_out" 'BRANCH cloud: claude/cloud-fixture head=aaaaaaaa'
+assert_count "$cloud_out" 0 '^(AGENT|SENTINEL|PR) cloud:'
+[ ! -e "$workspace_root/harmon-devkit/.worktrees/cloud" ] || fail "cloud fixture unexpectedly has a worktree"
+mkdir -p "$workspace_root/harmon-devkit/.worktrees/cloud"
+printf '%s\n' 'LANE-CLOUD-READY-n4' >"$workspace_root/harmon-devkit/.worktrees/cloud/.lane-report.md"
+printf '%s\n' '{"ref":"refs/heads/claude/cloud-fixture","object":{"type":"commit","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}' >"$fixture_dir/cloud-branch.json"
+printf '%s\n' '[{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' >"$fixture_dir/cloud-pr.json"
+bash "$watcher" "${cloud_args[@]}" >>"$cloud_out"
+assert_line "$cloud_out" 'BRANCH cloud: claude/cloud-fixture head=bbbbbbbb'
+assert_line "$cloud_out" 'PR cloud: #88 draft=true OPEN head=bbbbbbbb'
+assert_count "$cloud_out" 0 '^(AGENT|SENTINEL) cloud:'
+[ ! -e "$fixture_dir/cloud-herdr-calls" ] || fail "cloud watcher called herdr"
+bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-restart.out"
+assert_count "$test_tmp/cloud-restart.out" 0 '^(BRANCH|PR) cloud:'
+rm -f "$fixture_dir/cloud-only"
 
 # The phase-driven default gh stub fixture (no dedicated WATCH_FIXTURES file)
 # always resolves promotion_epoch() to this fixed event/epoch; every

@@ -558,6 +558,15 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+### Cloud lanes
+
+Cloud lanes are used only on the operator’s explicit request. Never choose or recommend cloud lanes unprompted;
+local Herdr agents remain the default. See
+[Cloud lanes](references/cloud-lanes.md) for launch, messaging, GitHub watching,
+environment limits, and the orchestrator-owned review and PR handoff. This mode
+replaces local worktree, agent-settle, and report-file handling for that lane;
+claims, policy resolution, fences, and readiness duties still bind.
+
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step. Use the harness's
