@@ -943,8 +943,11 @@ function resolveStrategy(doc, requestedStrategy) {
 /**
  * Cross-file validation against the registry and the Taskfile's known
  * target names. `registryDoc` may be null (skip registry-dependent checks —
- * only legitimate when the caller has no registry to check against at all,
- * which is itself reported by the CLI as reduced-confidence, never silent).
+ * only legitimate when the caller has no registry to check against at all).
+ * A null registry is reported as an indeterminate entry unless the caller
+ * passes `{ registryRequired: false }`, which the CLI does only when there is
+ * no policy file and no registry was requested: the built-in fallback is then
+ * the whole policy and there is nothing to cross-validate against.
  * `taskTargets` is a Set<string> of bare target names, or null.
  */
 // The tier a role's AUTHORED configuration resolves to, before any issue,
@@ -1004,7 +1007,12 @@ function hasExecutableTuple({
   });
 }
 
-export function crossValidate(resolved, registryDoc, taskTargets) {
+export function crossValidate(
+  resolved,
+  registryDoc,
+  taskTargets,
+  { registryRequired = true } = {},
+) {
   const errors = [];
 
   for (const key of GATE_KEYS) {
@@ -1285,7 +1293,7 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
         );
       }
     }
-  } else {
+  } else if (registryRequired) {
     errors.push("indeterminate: no registry was supplied — finders/pools/families/harnesses could not be checked");
   }
 
@@ -2491,7 +2499,15 @@ function cliResolve(args) {
   // (specs/dev-flow-v2.md, SKILL.md), so crossValidate does not size their
   // attempts against that envelope — configured and per-run finders resolve
   // identically.
-  const crossErrors = crossValidate(resolved, registryDoc, taskTargets);
+  // An absent branch policy with no requested registry is wholly defined by
+  // the built-ins. Keep every other cross-validation check, and do not extend
+  // this exception to merge-base governance or an explicitly requested file.
+  const registryRequired =
+    doc !== null ||
+    usesMergeBase ||
+    args.registry !== undefined ||
+    args["merge-base-registry"] !== undefined;
+  const crossErrors = crossValidate(resolved, registryDoc, taskTargets, { registryRequired });
   const selectionResult = applyFinderSelection(resolved, args.addFinders ?? [], args.selectFinders ?? []);
   if (selectionResult.error) {
     console.error(`devflow-policy: ${selectionResult.error}`);
