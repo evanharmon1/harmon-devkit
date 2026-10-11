@@ -37,8 +37,8 @@
 #
 # --effort is required when --harness names a harness that declares efforts. validate prints the label names it would record; without --harness
 # it checks the effort against the registry's effort_ladder (the issue-metadata
-# checker's use, which knows no harness). apply validates, then writes the pull
-# request labels and the issue record and re-reads both.
+# checker's use, which knows no harness). apply validates, then writes the issue
+# record and then the pull request labels (PR last), re-reading each.
 #
 # check is read-only and existence-only (maintainer ruling, 2026-10-11): the
 # pull request must carry exactly one family, line and version label and at
@@ -272,16 +272,22 @@ verify_labels() {
 }
 
 # Refuse before any write when a wanted label is not provisioned: adding an
-# absent label through the REST API would silently create it.
+# absent label through the REST API would silently create it. Only a 404 proves
+# a label absent (exit 1); any other failed read — auth, transport, 5xx, rate
+# limit — is indeterminate (exit 2), never "not provisioned".
 require_provisioned() {
-    local name enc status
+    local name enc status err
     while IFS= read -r name; do
         enc="$(jq -rn --arg s "$name" '$s | @uri')"
         status=0
-        gh api "repos/$repo/labels/$enc" --jq '.name' >/dev/null 2>&1 || status=$?
-        [ "$status" -eq 0 ] ||
-            refuse "label '$name' is not provisioned in $repo (or could not be read); run task setup:github-labels"
+        err="$(gh api "repos/$repo/labels/$enc" --jq '.name' 2>&1 >/dev/null)" || status=$?
+        [ "$status" -ne 0 ] || continue
+        if grep -qF '(HTTP 404)' <<<"$err"; then
+            refuse "label '$name' is not provisioned in $repo; run task setup:github-labels"
+        fi
+        die "could not read label '$name' in $repo: $err"
     done < <(label_names)
+    return 0
 }
 
 org_field_value_pairs() {
@@ -336,6 +342,29 @@ org_preflight() {
     return 0
 }
 
+# read_org_field_values N — one issue's single-select values as
+# {"<Field name>": "<value>"}. Runs in the current shell's command
+# substitution, so it prints nothing on failure and the caller checks the
+# output; a second page of values is indeterminate rather than a partial read.
+read_org_field_values() {
+    local n="$1" raw
+    raw="$(gh api graphql -H "$GQL_FEATURES" \
+        -f query='query($o: String!, $r: String!, $n: Int!) {
+            repository(owner: $o, name: $r) {
+              issue(number: $n) {
+                issueFieldValues(first: 100) {
+                  pageInfo { hasNextPage }
+                  nodes { ... on IssueFieldSingleSelectValue { name field { ... on IssueFieldSingleSelect { name } } } }
+                }
+              }
+            }
+          }' -f o="${repo%%/*}" -f r="${repo#*/}" -F n="$n" \
+        --jq '.data.repository.issue.issueFieldValues')" || return 2
+    jq -e '(.pageInfo.hasNextPage // false) | not' <<<"$raw" >/dev/null || return 3
+    jq -c '[.nodes[]? | select(.field.name? != null) | {key: .field.name, value: .name}]
+           | from_entries' <<<"$raw"
+}
+
 # Organization issue: one setIssueFieldValue mutation for the recorded fields,
 # then a verified re-read. Single-select values are replaced, so the last
 # implementer wins; when no effort is recorded the same mutation deletes the
@@ -343,33 +372,36 @@ org_preflight() {
 # cleared rather than left beside the new model. Consumes org_preflight's
 # results.
 write_org_fields() {
-    local n="$1" owner name values
-    owner="${repo%%/*}"
-    name="${repo#*/}"
+    local n="$1" values attempts read_rc
     jq -cn --arg id "$org_issue_id" --argjson f "$org_fields_input" --argjson c "$org_clear_input" '{
         query: "mutation($issue: ID!, $fields: [IssueFieldCreateOrUpdateInput!]!) { setIssueFieldValue(input: {issueId: $issue, issueFields: $fields}) { clientMutationId } }",
         variables: {issue: $id, fields: ([$f[] | {fieldId, singleSelectOptionId}] + $c)}}' |
         gh api graphql -H "$GQL_FEATURES" --input - >/dev/null ||
         refuse "write failed: setIssueFieldValue on $repo#$n"
-    values="$(gh api graphql -H "$GQL_FEATURES" \
-        -f query='query($o: String!, $r: String!, $n: Int!) {
-            repository(owner: $o, name: $r) {
-              issue(number: $n) {
-                issueFieldValues(first: 50) {
-                  nodes { ... on IssueFieldSingleSelectValue { name field { ... on IssueFieldSingleSelect { name } } } }
-                }
-              }
-            }
-          }' -f o="$owner" -f r="$name" -F n="$n" \
-        --jq '[.data.repository.issue.issueFieldValues.nodes[]?
-               | select(.field.name? != null) | {key: .field.name, value: .name}]
-              | from_entries')" ||
-        die "write indeterminate: could not re-read the issue fields of $repo#$n"
-    jq -e --argjson want "$org_fields_input" --argjson clear "$record_effort" '
-        . as $got | all($want[]; $got[.field] == .value)
-        and ($clear == 1 or (has("Model effort") | not))' \
-        <<<"$values" >/dev/null ||
-        refuse "write failed: the issue fields of $repo#$n did not become the implementer values"
+    # The read after the mutation can lag, so a mismatch is retried as
+    # triage-apply.sh retries its own field read-back: three attempts, and only
+    # a mismatch on the last one is a failure.
+    attempts=0
+    while :; do
+        attempts=$((attempts + 1))
+        read_rc=0
+        values="$(read_org_field_values "$n")" || read_rc=$?
+        if [ "$read_rc" -eq 3 ]; then
+            die "write indeterminate: the issue field values of $repo#$n exceed one page"
+        elif [ "$read_rc" -ne 0 ]; then
+            [ "$attempts" -lt 3 ] ||
+                die "write indeterminate: could not re-read the issue fields of $repo#$n after $attempts reads"
+            continue
+        fi
+        if jq -e --argjson want "$org_fields_input" --argjson clear "$record_effort" '
+            . as $got | all($want[]; $got[.field] == .value)
+            and ($clear == 1 or (has("Model effort") | not))' \
+            <<<"$values" >/dev/null; then
+            break
+        fi
+        [ "$attempts" -lt 3 ] ||
+            refuse "write failed: the issue fields of $repo#$n did not become the implementer values after $attempts reads"
+    done
     if [ "$record_effort" -eq 1 ]; then
         echo "RECORDED Model family=$family Model=$model Model version=$version Model effort=$effort on $repo#$n"
     else
@@ -406,7 +438,10 @@ apply)
             issue_labels="$(read_labels "$issue")" || die "could not read the labels of $repo#$issue"
         fi
     fi
-    write_labels "$pr" "$pr_labels"
+    # The issue is written first and the pull request last. The PR is the exact
+    # per-change record the promotion re-check reads, so a PR that carries the
+    # record proves the issue write already succeeded; a failed issue write
+    # leaves the PR untouched rather than passing a resumed check.
     if [ -n "$issue" ]; then
         if [ "$kind" = organization ]; then
             write_org_fields "$issue"
@@ -414,6 +449,7 @@ apply)
             write_labels "$issue" "$issue_labels"
         fi
     fi
+    write_labels "$pr" "$pr_labels"
     ;;
 check)
     [ -n "$repo" ] && [ -n "$pr" ] || usage

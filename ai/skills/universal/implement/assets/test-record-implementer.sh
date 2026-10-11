@@ -108,8 +108,20 @@ graphql)
     elif grep -q issueFieldValues <<<"$query"; then
         f="$state/fields-$n.json"
         [ -e "$f" ] || echo '{}' >"$f"
-        jq '{data: {repository: {issue: {issueFieldValues: {nodes:
-              [to_entries[] | {name: .value, field: {name: .key}}]}}}}}' "$f" | out
+        # stale-reads: that many read-backs still return the pre-write values
+        # (an empty set), as a lagging replica would.
+        stale=0
+        [ ! -e "$state/stale-reads" ] || stale="$(cat "$state/stale-reads")"
+        if [ "$stale" -gt 0 ]; then
+            echo $((stale - 1)) >"$state/stale-reads"
+            f="$state/empty.json"
+            echo '{}' >"$f"
+        fi
+        next=false
+        [ ! -e "$state/values-next-page" ] || next=true
+        jq --argjson next "$next" '{data: {repository: {issue: {issueFieldValues: {
+              pageInfo: {hasNextPage: $next},
+              nodes: [to_entries[] | {name: .value, field: {name: .key}}]}}}}}' "$f" | out
     else
         jq --arg id "ISSUE_$n" '{data: {repository: {issue: {id: $id},
               issueFields: {pageInfo: {hasNextPage: false}, nodes: .}}}}' \
@@ -144,7 +156,11 @@ repos/*/*/issues/*/labels/*)
     ;;
 repos/*/*/labels/*)
     name="$(printf '%s' "${path#repos/*/*/labels/}" | sed 's/%3A/:/g')"
-    grep -qxF -- "$name" "$state/provisioned" || { echo 'HTTP 404' >&2; exit 1; }
+    if [ -e "$state/fail-label-read" ]; then
+        echo "gh: $(cat "$state/fail-label-read")" >&2
+        exit 1
+    fi
+    grep -qxF -- "$name" "$state/provisioned" || { echo 'gh: Not Found (HTTP 404)' >&2; exit 1; }
     jq -n --arg n "$name" '{name: $n}' | out
     ;;
 repos/*/*)
@@ -308,11 +324,44 @@ grep -qF 'could not read the labels of me/proj#7' "$tmp/apply.err" ||
 rm "$GH_STATE/fail-read-7"
 ok
 
-# An unprovisioned label is refused rather than created by the add endpoint.
+# The issue is written before the PR: a failed issue-label write leaves the
+# PR untouched and fails the run.
+: >"$GH_STATE/fail-add"
+rc=0
+run apply --repo me/proj --pr 16 --issue 7 --registry "$registry" "${claude_opus[@]}" \
+    >/dev/null 2>"$tmp/apply.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a failed issue-label write must fail apply"
+grep -qF 'could not add the implementer labels to me/proj#7' "$tmp/apply.err" ||
+    fail "the issue write must be the one that failed: $(cat "$tmp/apply.err")"
+! grep -E -- '--method (POST|DELETE) repos/me/proj/issues/16/' "$GH_STATE/calls" >/dev/null ||
+    fail "PR 16 was written although the issue write failed"
+rm "$GH_STATE/fail-add"
+ok
+
+# A failed provisioning read that is not a 404 is indeterminate (exit 2), and
+# writes nothing.
+for failure in 'Server Error (HTTP 500)' 'Forbidden (HTTP 403)'; do
+    printf '%s\n' "$failure" >"$GH_STATE/fail-label-read"
+    before="$(wc -l <"$GH_STATE/calls")"
+    rc=0
+    run apply --repo me/proj --pr 17 --issue 7 --registry "$registry" "${claude_opus[@]}" \
+        >/dev/null 2>"$tmp/apply.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "'$failure' on a provisioning read must be exit 2, got $rc: $(cat "$tmp/apply.err")"
+    ! tail -n +"$((before + 1))" "$GH_STATE/calls" | grep -E -- '--method (POST|DELETE)' >/dev/null ||
+        fail "'$failure' on a provisioning read still wrote"
+    ok
+done
+rm "$GH_STATE/fail-label-read"
+
+# An unprovisioned label (a real 404) is refused (exit 1) rather than created
+# by the add endpoint.
 grep -vxF 'model-version:6.1' "$GH_STATE/provisioned" >"$GH_STATE/p" && mv "$GH_STATE/p" "$GH_STATE/provisioned"
+before="$(wc -l <"$GH_STATE/calls")"
 expect_refused "unprovisioned label" "label 'model-version:6.1' is not provisioned" apply \
-    --repo me/proj --pr 13 --registry "$registry" "${gpt_sol[@]}"
+    --repo me/proj --pr 13 --issue 7 --registry "$registry" "${gpt_sol[@]}"
 [ ! -e "$GH_STATE/labels-13" ] || fail "an unprovisioned label was written"
+! tail -n +"$((before + 1))" "$GH_STATE/calls" | grep -E -- '--method (POST|DELETE)' >/dev/null ||
+    fail "an unprovisioned label still wrote"
 ok
 
 # --- organization: PR labels, issue fields, last implementer wins -------------
@@ -343,6 +392,44 @@ jq -e '. == {"Model family":"gemini","Model":"flash","Model version":"3.8"}' \
     "$GH_STATE/fields-7.json" >/dev/null || fail "the earlier Model effort was not cleared: $(cat "$GH_STATE/fields-7.json")"
 [ "$(labels_of 23)" = "model-family:gemini model-version:3.8 model:flash" ] ||
     fail "efforts-free organization PR labels: $(labels_of 23)"
+ok
+
+# The read-back after setIssueFieldValue can lag: a stale first read is
+# retried and a later matching read records the value.
+echo 2 >"$GH_STATE/stale-reads"
+run apply --repo org/proj --pr 24 --issue 9 --registry "$registry" "${claude_opus[@]}" \
+    >/dev/null 2>"$tmp/apply.err" || fail "a lagging read-back must be retried: $(cat "$tmp/apply.err")"
+[ "$(cat "$GH_STATE/stale-reads")" = 0 ] || fail "the stale reads were not consumed"
+ok
+# Three stale reads exhaust the retries: a failure, and the PR stays unwritten.
+echo 3 >"$GH_STATE/stale-reads"
+expect_refused "read-back never matches" 'did not become the implementer values after 3 reads' apply \
+    --repo org/proj --pr 25 --issue 10 --registry "$registry" "${claude_opus[@]}"
+! grep -E -- '--method (POST|DELETE) repos/org/proj/issues/25/' "$GH_STATE/calls" >/dev/null ||
+    fail "PR 25 was written although its issue record did not verify"
+rm "$GH_STATE/stale-reads"
+
+# A second page of field values is indeterminate, never a partial read.
+: >"$GH_STATE/values-next-page"
+rc=0
+run apply --repo org/proj --pr 26 --issue 11 --registry "$registry" "${claude_opus[@]}" \
+    >/dev/null 2>"$tmp/apply.err" || rc=$?
+[ "$rc" -eq 2 ] && grep -qF 'exceed one page' "$tmp/apply.err" ||
+    fail "a paged read-back must be indeterminate (exit 2), got $rc: $(cat "$tmp/apply.err")"
+[ ! -s "$GH_STATE/labels-26" ] || fail "PR 26 was written after an indeterminate read-back"
+rm "$GH_STATE/values-next-page"
+ok
+
+# The issue is written before the PR: a failed issue mutation leaves the PR
+# untouched and fails the run.
+: >"$GH_STATE/fail-mutation"
+rc=0
+run apply --repo org/proj --pr 27 --issue 12 --registry "$registry" "${claude_opus[@]}" \
+    >/dev/null 2>"$tmp/apply.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a failed issue mutation must fail apply"
+! grep -E -- '--method (POST|DELETE) repos/org/proj/issues/27/' "$GH_STATE/calls" >/dev/null ||
+    fail "PR 27 was written although the issue mutation failed"
+rm "$GH_STATE/fail-mutation"
 ok
 
 # A missing option refuses before the mutation.
