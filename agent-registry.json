@@ -59,12 +59,12 @@
           "display_name": "Astra",
           "cli_ids": { "codex-cli": "gpt-6-astra" },
           "tier": "apex",
-          "versions": [{ "slug": "6.1", "display_name": "Astra 6.1", "retired": false }]
+          "versions": [{ "slug": "6", "display_name": "Astra 6", "retired": false }]
         },
         {
           "slug": "sol",
           "display_name": "Sol",
-          "cli_ids": { "codex-cli": "gpt-5.6-sol" },
+          "cli_ids": { "codex-cli": "gpt-6.1-sol" },
           "tier": "frontier",
           "versions": [{ "slug": "6.1", "display_name": "Sol 6.1", "retired": false }]
         },
@@ -73,14 +73,14 @@
           "display_name": "Terra",
           "cli_ids": { "codex-cli": "gpt-5.6-terra" },
           "tier": "standard",
-          "versions": [{ "slug": "6.1", "display_name": "Terra 6.1", "retired": false }]
+          "versions": [{ "slug": "5.6", "display_name": "Terra 5.6", "retired": false }]
         },
         {
           "slug": "luna",
           "display_name": "Luna",
-          "cli_ids": { "codex-cli": "gpt-5.6-luna" },
+          "cli_ids": { "codex-cli": "gpt-6-luna" },
           "tier": "economy",
-          "versions": [{ "slug": "6.1", "display_name": "Luna 6.1", "retired": false }]
+          "versions": [{ "slug": "6", "display_name": "Luna 6", "retired": false }]
         }
       ]
     },
