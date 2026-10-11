@@ -2067,7 +2067,7 @@ async function main() {
   // top-level imports, above. Resolves relative to THIS file, same as a
   // static import would; the only difference that matters is WHEN it runs.
   const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
-  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection } =
+  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection, readBranchPolicy } =
     await import("./devflow-policy.mjs");
 
   // --add-finder / --select-finder are repeatable and must be lifted out
@@ -2109,7 +2109,10 @@ async function main() {
 
   let policyDoc, mergeBaseDoc;
   try {
-    policyDoc = parseToml(readFileSync(args.policy, "utf8"));
+    // The reader's own rule: a missing --policy is the built-in fallback, so
+    // the engine resolves the same governing policy as the reader in every
+    // merge-base state, including a repository with no policy anywhere.
+    policyDoc = readBranchPolicy(args.policy);
     if (mergeBasePolicyGiven) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
   } catch (err) {
     console.error(`dev-flow-exit: could not read/parse policy inputs: ${err.message}`);

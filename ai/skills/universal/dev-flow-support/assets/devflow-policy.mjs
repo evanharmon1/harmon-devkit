@@ -2378,6 +2378,39 @@ function cliDetect(args) {
   return isV2 ? 0 : 1;
 }
 
+// readBranchPolicy PATH — the one rule for a --policy file: its parsed
+// document, or null (the built-in fallback) when the path has no directory
+// entry at all in a parent that resolves to a directory; anything else that
+// cannot be read or parsed throws a PolicyError. dev-flow-exit.mjs loads
+// --policy through this too, so the engine and this reader resolve the same
+// governing policy for every merge-base state (harmon-devkit#1345).
+export function readBranchPolicy(policyPath) {
+  try {
+    return loadTomlFile(policyPath);
+  } catch (err) {
+    // Only a path with no directory entry takes the built-in fallback.
+    // ENOENT from reading can also mean an existing dangling symlink.
+    if (err?.code !== "ENOENT") throw new PolicyError(`could not read/parse --policy: ${err.message}`);
+    try {
+      lstatSync(policyPath);
+    } catch (statErr) {
+      if (statErr?.code !== "ENOENT") throw new PolicyError(`could not inspect --policy: ${statErr.message}`);
+      try {
+        // Fallback requires an absent final entry in a resolvable parent directory.
+        if (!statSync(realpathSync(path.dirname(policyPath))).isDirectory()) {
+          throw new PolicyError("parent is not a directory");
+        }
+      } catch (parentErr) {
+        throw new PolicyError(
+          `could not read/parse --policy: parent directory cannot be resolved: ${parentErr.message}`,
+        );
+      }
+      return null;
+    }
+    throw new PolicyError(`could not read/parse --policy: ${err.message}`);
+  }
+}
+
 function cliResolve(args) {
   if (!args.policy) {
     console.error("devflow-policy resolve: --policy <file> is required");
@@ -2385,41 +2418,10 @@ function cliResolve(args) {
   }
   let doc;
   try {
-    doc = loadTomlFile(args.policy);
+    doc = readBranchPolicy(args.policy);
   } catch (err) {
-    // Only a path with no directory entry takes the built-in fallback.
-    // ENOENT from reading can also mean an existing dangling symlink.
-    if (err?.code === "ENOENT") {
-      try {
-        lstatSync(args.policy);
-      } catch (statErr) {
-        if (statErr?.code === "ENOENT") {
-          try {
-            // Fallback requires an absent final entry in a resolvable parent directory.
-            if (!statSync(realpathSync(path.dirname(args.policy))).isDirectory()) {
-              throw new PolicyError("parent is not a directory");
-            }
-          } catch (parentErr) {
-            console.error(
-              `devflow-policy: could not read/parse --policy: parent directory cannot be resolved: ${parentErr.message}`,
-            );
-            return 2;
-          }
-          doc = null;
-        } else {
-          console.error(
-            `devflow-policy: could not inspect --policy: ${statErr.message}`,
-          );
-          return 2;
-        }
-      }
-    }
-    if (doc !== null) {
-      console.error(
-        `devflow-policy: could not read/parse --policy: ${err.message}`,
-      );
-      return 2;
-    }
+    console.error(`devflow-policy: ${err.message}`);
+    return 2;
   }
 
   let mergeBaseDoc = null;

@@ -177,13 +177,12 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      rather than restating it. A branch that edits the helper could answer
      `absent` and swap the merge-base policy for the built-in fallback, and
      one that edits the engine could ignore the merge-base argument or lower
-     its own caps, so each recipe runs the merge base's copy, materialized
-     only when `git cat-file -e <merge-base>:<path>` finds it. When the merge
-     base predates the file, or its copy does not name a flag the recipe
-     passes, run an operator-pinned copy (`$pinned_mb_helper`,
-     `$pinned_mb_engine`, a path outside the candidate branch); without one,
+     its own caps. **One rule picks every governing copy:** run the merge
+     base's copy when it exists and names every flag the recipe passes it;
+     otherwise run the operator pin (`$pinned_mb_helper`, `$pinned_mb_engine`,
+     a path outside the candidate branch) when one is supplied; otherwise
      resolution is **indeterminate**: stop and report it. Never run the
-     branch's copy.
+     branch's copy. (`/integrate` implements it once, as `trusted_copy`.)
    - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type,

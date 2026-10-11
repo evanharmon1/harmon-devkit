@@ -452,115 +452,157 @@ process.exit(r.source === process.argv[2] ? 0 : 1);
 done
 (cd "$mbrepo" && git checkout -q branch) || err "could not restore the scratch checkout"
 
-# The integration-exit recipe runs the MERGE BASE's dev-flow-exit.mjs
-# (harmon-devkit#1345, challenge round 2): a branch that edits the engine to
-# always converge must not change the verdict. run_exit_recipe mirrors the
-# recipe in integrate/SKILL.md: the merge base's whole asset directory
-# materialized with git archive, else $pinned_mb_engine, else a stop (1), and
-# an engine that does not name --merge-base-policy-absent refused when the
-# recipe passes it.
-echo "==> the integration exit runs the merge-base engine"
+# The integration chain — integrate's merge-base recipe, then its integration
+# exit — resolves ONE governing policy in every merge-base state
+# (harmon-devkit#1345, challenge rounds 2 and 3). run_integrate_chain mirrors
+# the recipe and runs its trusted_copy verbatim, lifted from integrate/SKILL.md,
+# so the selection rule under test is the one the skill ships.
+echo "==> the integration chain resolves one governing policy"
+int_recipe="$repo_root/ai/skills/universal/integrate/SKILL.md"
+trusted_copy_src="$(sed -n '/^trusted_copy() {$/,/^}$/p' "$int_recipe")"
+[ -n "$trusted_copy_src" ] || err "integrate/SKILL.md defines no trusted_copy"
+eval "$trusted_copy_src"
+
 exrepo="$scratch/exrepo"
 exfix="$repo_root/ai/schemas/fixtures/exit/integration-cap-reached-with-p1-capped"
 assets_rel=ai/skills/universal/dev-flow-support/assets
 mkdir -p "$exrepo/$assets_rel"
 cp -R "$support/." "$exrepo/$assets_rel/"
-cp "$exfix/policy.toml" "$exrepo/.devflow.toml"
-mv "$exrepo/$assets_rel/dev-flow-exit.mjs" "$scratch/engine.mjs"
+# The fixture policy caps integration at 2, which its two gating cycles reach
+# (capped); the built-in fallback caps it at 4 (continue). A branch copy at
+# cap 5 makes a branch-governed resolution visible too.
+sed -e 's/^integration = 2$/integration = 5/' "$exfix/policy.toml" >"$scratch/branch-cap5.toml"
+cmp -s "$exfix/policy.toml" "$scratch/branch-cap5.toml" &&
+    err "the cap-5 edit changed nothing — update the sed alongside the fixture policy"
 (
     export GIT_CONFIG_GLOBAL="$scratch/gitconfig" GIT_CONFIG_NOSYSTEM=1
     cd "$exrepo"
     git init -q
     git add -A
-    git commit -q -m "chore: merge base without the exit engine"
-    git tag noengine
-    cp "$scratch/engine.mjs" "$assets_rel/dev-flow-exit.mjs"
-    git add -A
-    git commit -q -m "chore: merge base with the exit engine"
-    git tag base
+    git commit -q -m "chore: merge base without a policy"
+    git tag mbnone
+    git checkout -q -b old-engine
+    printf '%s\n' '// --run --stage --policy --json --merge-base-policy' \
+        'process.stdout.write("OLD-ENGINE-RAN\n");' >"$assets_rel/dev-flow-exit.mjs"
+    git commit -q -am "chore: merge base whose engine predates the absent flag"
+    git tag oldengine
+    git checkout -q mbnone
+    cp "$exfix/policy.toml" .devflow.toml
+    git add .devflow.toml
+    git commit -q -m "chore: merge base with a policy"
+    git tag mbpresent
     printf '%s\n' 'process.stdout.write(JSON.stringify({ outcome: "converged" }) + "\n");' \
         'process.exitCode = 20;' >"$assets_rel/dev-flow-exit.mjs"
     git commit -q -am "fix: a branch whose engine always converges"
     git tag rogue
-) >/dev/null 2>&1 || err "could not build the exit-engine scratch repository"
+) >/dev/null 2>&1 || err "could not build the integration-chain scratch repository"
 
-# run_exit_recipe BASE [absent] — prints the engine's stdout, returns its status.
-run_exit_recipe() {
-    local base="$1" reader_dir="$assets_rel" mb_dir="$scratch/exit-mb" engine mb_engine
-    rm -rf "$mb_dir"
-    mkdir -p "$mb_dir"
-    if [ "${2:-}" = absent ]; then
-        mb_policy=(--merge-base-policy-absent)
-    else
-        git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml" || return 2
-        mb_policy=(--merge-base-policy "$mb_dir/devflow.toml")
-    fi
-    engine="${reader_dir}/dev-flow-exit.mjs"
-    if git cat-file -e "${base}:${engine}" 2>/dev/null; then
-        git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || return 1
-        mb_engine="$mb_dir/${engine}"
-    else
-        mb_engine="${pinned_mb_engine:-}"
-        [ -n "$mb_engine" ] || return 1
-    fi
-    case " ${mb_policy[*]-} " in
-    *" --merge-base-policy-absent "*)
-        grep -Fq -- 'merge-base-policy-absent' "$mb_engine" || return 1
-        ;;
+# at REV [POLICY] — check out REV and make POLICY the branch's .devflow.toml
+# ("-" removes it), as an uncommitted edit.
+at() {
+    git checkout -q -f "$1" && git clean -qfd || return 1
+    case "${2:-}" in
+    "") ;;
+    -) rm -f .devflow.toml ;;
+    *) cp "$2" .devflow.toml ;;
     esac
-    node "$mb_engine" --run "$exfix/run" --stage integration --policy .devflow.toml \
-        ${mb_policy[@]+"${mb_policy[@]}"} --json
 }
 
-exit_outcome() {
+# run_integrate_chain BASE — the reader's JSON lands in chain-reader.json, the
+# engine's in chain-exit.json; returns the engine's status, or 90 on a stop.
+run_integrate_chain() {
+    local base="$1" reader_dir="$assets_rel" mb_dir="$scratch/chain-mb" mb_helper mb_state mb_engine
+    local -a exit_args
+    rm -rf "$mb_dir" "$scratch/chain-reader.json" "$scratch/chain-exit.json"
+    mkdir -p "$mb_dir"
+    git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || return 90
+    mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
+    [ -n "$mb_helper" ] || return 90
+    mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader_dir}/devflow-policy.mjs" \
+        "$mb_dir/devflow.toml" .devflow.toml)" || return 90
+    case "$mb_state" in
+    present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
+    absent) mb_policy=(--merge-base-policy-absent) ;;
+    none) mb_policy=() ;;
+    *) return 90 ;;
+    esac
+    # No registry here: the reader then exits 3 (unchecked references) but
+    # still prints the resolution, and only its governing caps are compared.
+    node "$mb_dir/${reader_dir}/devflow-policy.mjs" resolve --closure "$mb_dir" \
+        --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} --json >"$scratch/chain-reader.json" 2>/dev/null
+    exit_args=(--run "$exfix/run" --stage integration --policy .devflow.toml
+        ${mb_policy[@]+"${mb_policy[@]}"} --json)
+    mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}" "${exit_args[@]}")"
+    [ -n "$mb_engine" ] || return 90
+    node "$mb_engine" "${exit_args[@]}" >"$scratch/chain-exit.json"
+}
+
+# json_field FILE EXPR — EXPR evaluated against the parsed FILE as `r`.
+json_field() {
     node -e '
 const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-process.stdout.write(String(r.outcome));
-' "$1" 2>/dev/null || true
+process.stdout.write(String(eval(process.argv[2])));
+' "$1" "$2" 2>/dev/null || true
 }
 
+# The three-state table: state, checkout, branch policy, the cap the reader
+# must resolve, and the verdict the engine must reach under that same cap.
+while read -r state rev policy cap verdict; do
+    set +e
+    (cd "$exrepo" && at "$rev" "$policy" && run_integrate_chain "$rev") 2>"$scratch/chain.err"
+    st=$?
+    set -e
+    got_cap="$(json_field "$scratch/chain-reader.json" r.rounds.integration)"
+    got_verdict="$(json_field "$scratch/chain-exit.json" r.outcome)"
+    if [ "$got_cap" = "$cap" ] && [ "$got_verdict" = "$verdict" ]; then
+        echo "  ✓ $state: the reader resolves integration cap $cap and the engine decides under it ($verdict)"
+    else
+        err "$state: reader cap '$got_cap' (want $cap), engine '$got_verdict' exit $st (want $verdict): $(head -2 "$scratch/chain.err")"
+    fi
+done <<EOF
+present mbpresent $scratch/branch-cap5.toml 2 capped
+absent mbnone $exfix/policy.toml 4 continue
+none mbnone - 4 continue
+EOF
+
+# A branch engine that always converges must not change the verdict.
 set +e
-(cd "$exrepo" && git checkout -q rogue && node "$assets_rel/dev-flow-exit.mjs") >"$scratch/exit-ctl.json" 2>/dev/null
+(cd "$exrepo" && at rogue && node "$assets_rel/dev-flow-exit.mjs") >"$scratch/exit-ctl.json" 2>/dev/null
 ctl=$?
-(cd "$exrepo" && run_exit_recipe base) >"$scratch/exit-rogue.json" 2>"$scratch/exit-rogue.err"
+(cd "$exrepo" && at rogue && run_integrate_chain mbpresent) 2>"$scratch/chain.err"
 st=$?
 set -e
-if [ "$ctl" -eq 20 ] && [ "$(exit_outcome "$scratch/exit-ctl.json")" = converged ] &&
-    [ "$st" -eq 22 ] && [ "$(exit_outcome "$scratch/exit-rogue.json")" = capped ]; then
-    echo "  ✓ a branch engine that always converges does not change the recipe's verdict (capped)"
+if [ "$ctl" -eq 20 ] && [ "$(json_field "$scratch/exit-ctl.json" r.outcome)" = converged ] &&
+    [ "$st" -eq 22 ] && [ "$(json_field "$scratch/chain-exit.json" r.outcome)" = capped ]; then
+    echo "  ✓ a branch engine that always converges does not change the verdict (capped)"
 else
-    err "rogue engine: control exit $ctl, recipe exit $st ($(exit_outcome "$scratch/exit-rogue.json")): $(head -2 "$scratch/exit-rogue.err")"
+    err "rogue engine: control exit $ctl, chain exit $st: $(head -2 "$scratch/chain.err")"
 fi
 
+# A merge-base engine too old for a flag the recipe passes: the pin runs when
+# supplied, otherwise the recipe stops and the old engine never runs.
 set +e
-(cd "$exrepo" && run_exit_recipe noengine) >"$scratch/exit-nopin.out" 2>/dev/null
+(cd "$exrepo" && at oldengine "$exfix/policy.toml" && run_integrate_chain oldengine) >"$scratch/old-nopin.out" 2>&1
 st=$?
-(cd "$exrepo" && pinned_mb_engine="$support/dev-flow-exit.mjs" run_exit_recipe noengine) >"$scratch/exit-pin.json" 2>/dev/null
+(cd "$exrepo" && at oldengine "$exfix/policy.toml" &&
+    pinned_mb_engine="$support/dev-flow-exit.mjs" run_integrate_chain oldengine) >"$scratch/old-pin.out" 2>&1
 pst=$?
-printf '%s\n' 'process.stdout.write("OLD-ENGINE-RAN\n");' >"$scratch/old-engine.mjs"
-(cd "$exrepo" && pinned_mb_engine="$scratch/old-engine.mjs" run_exit_recipe noengine absent) >"$scratch/exit-old.out" 2>/dev/null
-ost=$?
 set -e
-if [ "$st" -eq 1 ] && [ ! -s "$scratch/exit-nopin.out" ]; then
-    echo "  ✓ a merge base without the engine stops without an operator pin, never running the branch's"
+if [ "$st" -eq 90 ] && ! grep -Fq OLD-ENGINE-RAN "$scratch/old-nopin.out" "$scratch/chain-exit.json" 2>/dev/null; then
+    echo "  ✓ a too-old merge-base engine with no pin stops before it runs"
 else
-    err "first adoption without an engine pin exited $st (want 1, no output)"
+    err "too-old engine without a pin: exit $st (want 90, engine not run)"
 fi
-if [ "$pst" -eq 22 ] && [ "$(exit_outcome "$scratch/exit-pin.json")" = capped ]; then
-    echo "  ✓ a merge base without the engine runs the operator-pinned engine"
+if [ "$pst" -eq 0 ] && [ "$(json_field "$scratch/chain-exit.json" r.outcome)" = continue ]; then
+    echo "  ✓ a too-old merge-base engine with a pin runs the pin"
 else
-    err "first adoption with an engine pin exited $pst"
+    err "too-old engine with a pin: exit $pst: $(head -2 "$scratch/old-pin.out")"
 fi
-if [ "$ost" -eq 1 ] && ! grep -Fq 'OLD-ENGINE-RAN' "$scratch/exit-old.out"; then
-    echo "  ✓ an engine that predates --merge-base-policy-absent is refused before it runs"
-else
-    err "the exit recipe ran an engine that predates --merge-base-policy-absent (exit $ost)"
-fi
-(cd "$exrepo" && git checkout -q base) || err "could not restore the exit scratch checkout"
+(cd "$exrepo" && at mbpresent) || err "could not restore the chain scratch checkout"
 
-int_recipe="$repo_root/ai/skills/universal/integrate/SKILL.md"
 if grep -Fq 'node "$mb_engine"' "$int_recipe" && grep -Fq '${pinned_mb_engine:-}' "$int_recipe" &&
     grep -Fq 'git archive --format=tar "$base" -- "$reader_dir"' "$int_recipe" &&
+    grep -Fq 'trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs"' "$int_recipe" &&
     grep -Fq 'lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs`' "$int_recipe"; then
     echo "  ✓ integrate/SKILL.md runs the merge-base engine and routes engine edits to it"
 else

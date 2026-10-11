@@ -2029,7 +2029,10 @@ indeterminate, never the branch's copy. The same holds for this engine: `/integr
 integration-exit recipe, on the merge-base path, runs the merge base's
 `dev-flow-exit.mjs` materialized with its whole asset directory (or an
 operator-pinned engine, or stops), because carrying the merge-base argument
-into a branch engine constrains nothing.
+into a branch engine constrains nothing. The engine reads `--policy` through the reader's own
+`readBranchPolicy`, so a missing file with no merge-base argument is the
+built-in fallback in both, and the two resolve one governing policy whether
+the merge base's state is `present`, `absent` or `none`.
 
 **The decoder's scope is an invariant, not a field list.** On a migration
 diff, *every* merge-base-protected value — defaults, rounds, breadth,

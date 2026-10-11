@@ -361,13 +361,29 @@ done
 [ -n "$reader" ] || exit 1   # a merge base with no reader is a blocker, never
                              # grounds to fall back to the branch's own copy
 
-# Materialize the reader AT THE MERGE BASE'S OWN RELATIVE PATH, so its
-# ES-module import of ./lib/toml-lite.mjs resolves and --closure's probe finds
-# the entrypoint where it expects it.
+# Materialize the merge base's whole asset directory AT ITS OWN RELATIVE PATH,
+# so the reader's ES-module imports resolve, --closure's probe finds the
+# entrypoint where it expects it, and the helper and the exit engine (with its
+# validator and schemas) sit beside it, all from the merge base.
 reader_dir="$(dirname "$reader")"
-mkdir -p "$mb_dir/$reader_dir/lib"
-git show "${base}:${reader}"                    >"$mb_dir/${reader}"
-git show "${base}:${reader_dir}/lib/toml-lite.mjs" >"$mb_dir/${reader_dir}/lib/toml-lite.mjs"
+git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
+
+# trusted_copy COPY PIN [ARG...] — dev-flow-support step 0's First adoption
+# rule, implemented once for every governing copy this skill runs: COPY (the
+# merge base's) when it exists and names every --flag in ARGs, else PIN (the
+# operator's, supplied outside the candidate branch), else nothing, and the
+# caller stops as indeterminate. Never the branch's copy.
+trusted_copy() {
+    local copy="$1" pin="$2" arg
+    shift 2
+    [ -f "$copy" ] || { printf '%s' "$pin"; return; }
+    for arg in "$@"; do
+        case "$arg" in
+        --*) grep -Fq -- "$arg" "$copy" || { printf '%s' "$pin"; return; } ;;
+        esac
+    done
+    printf '%s' "$copy"
+}
 
 # The merge base may have NO .devflow.toml (a branch that adds it). Ask, never
 # infer it from a failed `git show`: the shared helper looks it up with a
@@ -376,17 +392,9 @@ git show "${base}:${reader_dir}/lib/toml-lite.mjs" >"$mb_dir/${reader_dir}/lib/t
 # --merge-base-policy-absent — an older reader that accepts any option would
 # ignore the flag and let the branch policy govern, so it stops (exit 1)
 # instead. Any non-zero status is a blocker, never "absent". The helper is a
-# governing file too, so run the MERGE BASE's copy beside the reader, never the
-# branch's; a merge base without one follows dev-flow-support step 0's
-# first-adoption rule (an operator-pinned $pinned_mb_helper, or stop).
-helper="${reader_dir}/lib/merge-base-policy.sh"
-if git cat-file -e "${base}:${helper}" 2>/dev/null; then
-    git show "${base}:${helper}" >"$mb_dir/${helper}" || exit 1
-    mb_helper="$mb_dir/${helper}"
-else
-    mb_helper="${pinned_mb_helper:-}"
-    [ -n "$mb_helper" ] || exit 1   # first adoption with no pin: indeterminate
-fi
+# governing file too, so trusted_copy picks it.
+mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
+[ -n "$mb_helper" ] || exit 1   # indeterminate
 mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader}" "$mb_dir/devflow.toml" .devflow.toml)" || exit 1
 case "$mb_state" in
 present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
@@ -1349,39 +1357,27 @@ under `dev-flow-support/assets/` on the list above.
 The engine decides the verdict, so it governs exactly as the reader does: a
 branch that edits `dev-flow-exit.mjs` could ignore the merge-base argument or
 lower its own caps, and carrying `mb_policy` into the branch's engine
-constrains nothing. Materialize the merge base's whole asset directory beside
-the reader, in the same `$mb_dir` layout (the engine, the modules it imports,
-its default validator and `schemas/`), and invoke that engine by path:
+constrains nothing. The merge-base recipe above already materialized the
+engine beside the reader; `trusted_copy` picks it, and it runs by path with
+the same arguments in every merge-base state:
 
 ```sh
-# $base, $mb_dir, $reader_dir and mb_policy come from the merge-base recipe above.
-engine="${reader_dir}/dev-flow-exit.mjs"
-if git cat-file -e "${base}:${engine}" 2>/dev/null; then
-    git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
-    mb_engine="$mb_dir/${engine}"
-else
-    mb_engine="${pinned_mb_engine:-}"   # first adoption: dev-flow-support step 0
-    [ -n "$mb_engine" ] || exit 1       # no pin: indeterminate, never the branch copy
-fi
-# An engine that predates a flag this recipe passes ignores it and lets the
-# branch policy govern: that copy counts as predating the engine, too.
-case " ${mb_policy[*]-} " in
-*" --merge-base-policy-absent "*)
-    grep -Fq -- 'merge-base-policy-absent' "$mb_engine" || exit 1 ;;
-esac
-node "$mb_engine" --run <record dir> --stage integration --policy .devflow.toml \
-    ${mb_policy[@]+"${mb_policy[@]}"} --json
+# $mb_dir, $reader_dir, mb_policy and trusted_copy come from the merge-base
+# recipe above; $record_dir is the run's record directory.
+exit_args=(--run "$record_dir" --stage integration --policy .devflow.toml
+    ${mb_policy[@]+"${mb_policy[@]}"} --json)
+mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}" "${exit_args[@]}")"
+[ -n "$mb_engine" ] || exit 1   # indeterminate
+node "$mb_engine" "${exit_args[@]}"
 ```
 
 The engine is invoked directly rather than through the branch engine's
 `--closure` delegation: the branch's module, and everything in its `main()`
 ahead of the delegation, would already have run, and a branch can delete the
-delegation outright. A merge base without `dev-flow-exit.mjs`, or whose copy
-does not name a flag the recipe passes, follows `dev-flow-support` step 0's
-**First adoption** rule. Pass the branch `.devflow.toml` as `--policy` and
-the same `mb_policy` the resolution used (empty on the helper's `none`): an
-engine that accepts `--merge-base-policy-absent` governs an absent merge base
-through the built-in fallback, as the resolution did, and refuses an empty
+delegation outright. The engine reads `--policy` through the reader's own
+`readBranchPolicy`, so for `present`, `absent` and `none` alike it resolves
+the governing policy the reader resolved: a missing `.devflow.toml` with no
+merge-base argument is the built-in fallback in both. It refuses an empty
 `--merge-base-policy` as a usage error (exit 1). It counts completed cycles — exempt included; a carry, an
 incomplete attempt, and a retry add none — separately from remediation
 pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
