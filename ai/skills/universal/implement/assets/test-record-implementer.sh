@@ -21,6 +21,7 @@ fail() {
 pass_count=0
 ok() {
     pass_count=$((pass_count + 1))
+    return 0
 }
 
 registry="$tmp/agent-registry.json"

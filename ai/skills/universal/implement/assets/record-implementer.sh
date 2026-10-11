@@ -263,7 +263,7 @@ verify_labels() {
         want_count=1
         [ "$f" != model-effort ] || [ "$record_effort" -eq 1 ] || want_count=0
         if [ "$(printf '%s' "$got" | grep -c . || true)" -ne "$want_count" ] ||
-            { [ "$want_count" -eq 1 ] && ! label_names | grep -qxF -- "$got"; }; then
+            { [ "$want_count" -eq 1 ] && ! grep -qxF -- "$got" <<<"$(label_names)"; }; then
             echo "record-implementer: $repo#$n $f labels are '$(printf '%s' "$got" | paste -sd ',' -)'" >&2
             ok=1
         fi
