@@ -120,6 +120,10 @@ repos/*/*/issues/*/labels)
     n="${path#repos/*/*/issues/}"
     n="${n%/labels}"
     f="$state/labels-$n"
+    if [ "$method" = GET ] && [ -e "$state/fail-read-$n" ]; then
+        echo 'gh: Server Error (HTTP 502)' >&2
+        exit 1
+    fi
     touch "$f"
     if [ "$method" = POST ]; then
         [ ! -e "$state/fail-add" ] || exit 1
@@ -289,6 +293,21 @@ expect_refused "apply refuses before writing" 'is retired' apply --repo me/proj 
 [ "$(wc -l <"$GH_STATE/calls")" -eq "$before" ] || fail "a refused tuple reached GitHub"
 ok
 
+# A failed read of the personal-account issue's labels stops before any write:
+# the pull request is left unchanged.
+: >"$GH_STATE/fail-read-7"
+rc=0
+run apply --repo me/proj --pr 15 --issue 7 --registry "$registry" "${claude_opus[@]}" \
+    >/dev/null 2>"$tmp/apply.err" || rc=$?
+[ "$rc" -eq 2 ] || fail "a failed issue-label read must be indeterminate (exit 2), got $rc: $(cat "$tmp/apply.err")"
+grep -qF 'could not read the labels of me/proj#7' "$tmp/apply.err" ||
+    fail "the failed read must be named: $(cat "$tmp/apply.err")"
+! grep -E -- '--method (POST|DELETE) repos/me/proj/issues/15/' "$GH_STATE/calls" >/dev/null ||
+    fail "PR 15 was written before the issue-label read failed"
+[ ! -s "$GH_STATE/labels-15" ] || fail "PR 15 carries labels after a failed preflight: $(labels_of 15)"
+rm "$GH_STATE/fail-read-7"
+ok
+
 # An unprovisioned label is refused rather than created by the add endpoint.
 grep -vxF 'model-version:6.1' "$GH_STATE/provisioned" >"$GH_STATE/p" && mv "$GH_STATE/p" "$GH_STATE/provisioned"
 expect_refused "unprovisioned label" "label 'model-version:6.1' is not provisioned" apply \
@@ -332,6 +351,11 @@ jq 'map(if .name == "Model version" then .options |= map(select(.name != "6.1"))
 expect_refused "missing field option" 'has no option "6.1"' apply --repo org/proj --pr 22 \
     --issue 8 --registry "$registry" "${gpt_sol[@]}"
 [ ! -e "$GH_STATE/fields-8.json" ] || fail "a field write ran despite a missing option"
+# The issue preflight runs before the first write, so the pull request is
+# untouched too: no label POST or DELETE for it.
+! grep -E -- '--method (POST|DELETE) repos/org/proj/issues/22/' "$GH_STATE/calls" >/dev/null ||
+    fail "PR 22 was written before the issue preflight refused"
+[ ! -s "$GH_STATE/labels-22" ] || fail "PR 22 carries labels after a refused apply: $(labels_of 22)"
 ok
 
 # --- check --------------------------------------------------------------------

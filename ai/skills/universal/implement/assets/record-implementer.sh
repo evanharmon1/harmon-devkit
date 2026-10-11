@@ -230,11 +230,11 @@ owner_type() {
     esac
 }
 
-# Write the four labels on one issue or pull request, replacing any earlier
-# value in each family, then re-read and require exactly the four.
+# Write the implementer labels on one issue or pull request, replacing any
+# earlier value in each family, then re-read and require exactly those.
+# CURRENT is the target's labels, read by apply's preflight before any write.
 write_labels() {
-    local n="$1" current want stale name enc payload
-    current="$(read_labels "$n")" || die "could not read the labels of $repo#$n"
+    local n="$1" current="$2" want stale name enc payload
     want="$(label_names)"
     payload="$(printf '%s\n' "$want" | jq -Rnc '{labels: [inputs]}')"
     gh api --method POST "repos/$repo/issues/$n/labels" --input - >/dev/null <<<"$payload" ||
@@ -289,13 +289,15 @@ org_field_value_pairs() {
     [ "$record_effort" -eq 0 ] || printf 'Model effort\t%s\n' "$effort"
 }
 
-# Organization issue: one setIssueFieldValue mutation for the recorded fields,
-# then a verified re-read. Single-select values are replaced, so the last
-# implementer wins; when no effort is recorded the same mutation deletes the
-# Model effort value (`delete: true`), so an earlier implementer's effort is
-# cleared rather than left beside the new model.
-write_org_fields() {
-    local n="$1" owner name catalogue issue_id fields_input clear_input values
+# org_preflight N — every read and lookup the organization issue write needs,
+# done before ANY write so a missing field, option or node id refuses while the
+# pull request is still untouched. It runs in the current shell (never in a
+# command substitution) so its refusals exit the script, and it leaves its
+# results in org_issue_id, org_fields_input and org_clear_input for
+# write_org_fields to consume.
+org_issue_id="" org_fields_input="" org_clear_input="[]"
+org_preflight() {
+    local n="$1" owner name catalogue
     owner="${repo%%/*}"
     name="${repo#*/}"
     catalogue="$(gh api graphql -H "$GQL_FEATURES" \
@@ -312,26 +314,39 @@ write_org_fields() {
         die "could not read the issue fields of $repo (the issue_fields preview must be enabled and readable)"
     jq -e '(.issueFields.pageInfo.hasNextPage // false) | not' <<<"$catalogue" >/dev/null ||
         die "the issue field list of $repo exceeds one page"
-    issue_id="$(jq -r '.issue.id // empty' <<<"$catalogue")"
-    [ -n "$issue_id" ] || die "could not resolve the node id of $repo#$n"
-    fields_input="$(org_field_value_pairs | jq -Rnc --argjson c "$catalogue" '
+    org_issue_id="$(jq -r '.issue.id // empty' <<<"$catalogue")"
+    [ -n "$org_issue_id" ] || die "could not resolve the node id of $repo#$n"
+    org_fields_input="$(org_field_value_pairs | jq -Rnc --argjson c "$catalogue" '
         [inputs | split("\t") | .[0] as $f | .[1] as $v
          | ([$c.issueFields.nodes[]? | select(.name == $f)] | first) as $field
          | {field: $f, value: $v, fieldId: $field.id,
             singleSelectOptionId: ([($field.options // [])[] | select(.name == $v)] | first | .id)}]')"
-    if jq -e 'any(.[]; .fieldId == null or .singleSelectOptionId == null)' <<<"$fields_input" >/dev/null; then
+    if jq -e 'any(.[]; .fieldId == null or .singleSelectOptionId == null)' <<<"$org_fields_input" >/dev/null; then
         jq -r --arg repo "$repo" '.[] | select(.fieldId == null) | "record-implementer: issue field \(.field | @json) is not provisioned in \($repo)"' \
-            <<<"$fields_input" >&2
+            <<<"$org_fields_input" >&2
         jq -r '.[] | select(.fieldId != null and .singleSelectOptionId == null) | "record-implementer: issue field \(.field | @json) has no option \(.value | @json)"' \
-            <<<"$fields_input" >&2
+            <<<"$org_fields_input" >&2
         refuse "run task setup:github-issue-fields for the organization, then retry"
     fi
-    clear_input='[]'
+    org_clear_input='[]'
     if [ "$record_effort" -eq 0 ]; then
-        clear_input="$(jq -c '[.issueFields.nodes[]? | select(.name == "Model effort")
+        org_clear_input="$(jq -c '[.issueFields.nodes[]? | select(.name == "Model effort")
             | {fieldId: .id, delete: true}]' <<<"$catalogue")"
     fi
-    jq -cn --arg id "$issue_id" --argjson f "$fields_input" --argjson c "$clear_input" '{
+    return 0
+}
+
+# Organization issue: one setIssueFieldValue mutation for the recorded fields,
+# then a verified re-read. Single-select values are replaced, so the last
+# implementer wins; when no effort is recorded the same mutation deletes the
+# Model effort value (`delete: true`), so an earlier implementer's effort is
+# cleared rather than left beside the new model. Consumes org_preflight's
+# results.
+write_org_fields() {
+    local n="$1" owner name values
+    owner="${repo%%/*}"
+    name="${repo#*/}"
+    jq -cn --arg id "$org_issue_id" --argjson f "$org_fields_input" --argjson c "$org_clear_input" '{
         query: "mutation($issue: ID!, $fields: [IssueFieldCreateOrUpdateInput!]!) { setIssueFieldValue(input: {issueId: $issue, issueFields: $fields}) { clientMutationId } }",
         variables: {issue: $id, fields: ([$f[] | {fieldId, singleSelectOptionId}] + $c)}}' |
         gh api graphql -H "$GQL_FEATURES" --input - >/dev/null ||
@@ -350,7 +365,7 @@ write_org_fields() {
                | select(.field.name? != null) | {key: .field.name, value: .name}]
               | from_entries')" ||
         die "write indeterminate: could not re-read the issue fields of $repo#$n"
-    jq -e --argjson want "$fields_input" --argjson clear "$record_effort" '
+    jq -e --argjson want "$org_fields_input" --argjson clear "$record_effort" '
         . as $got | all($want[]; $got[.field] == .value)
         and ($clear == 1 or (has("Model effort") | not))' \
         <<<"$values" >/dev/null ||
@@ -378,13 +393,25 @@ apply)
     resolve_effort
     validate_tuple
     kind="$(owner_type)"
+    # Preflight: every precondition of every target is established before the
+    # first write, so a refusal or a failed read leaves the pull request and
+    # the issue as they were rather than half-recorded.
     require_provisioned
-    write_labels "$pr"
+    pr_labels="$(read_labels "$pr")" || die "could not read the labels of $repo#$pr"
+    issue_labels=""
+    if [ -n "$issue" ]; then
+        if [ "$kind" = organization ]; then
+            org_preflight "$issue"
+        else
+            issue_labels="$(read_labels "$issue")" || die "could not read the labels of $repo#$issue"
+        fi
+    fi
+    write_labels "$pr" "$pr_labels"
     if [ -n "$issue" ]; then
         if [ "$kind" = organization ]; then
             write_org_fields "$issue"
         else
-            write_labels "$issue"
+            write_labels "$issue" "$issue_labels"
         fi
     fi
     ;;
