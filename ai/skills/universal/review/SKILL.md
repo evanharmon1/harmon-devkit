@@ -227,12 +227,15 @@ harness.** Run the slot's registry task with `--envelope` and the captured
 binding as leading flags — `--run-id`, `--head`, `--stage`, `--round`,
 `--slot`, `--tier` (the resolved challenger or reviewer tier), `--record-dir`,
 and `--producer` set to the identity you expect, `<runner>@<git blob sha of
-the runner>` — then the branch-scoped `--base <ref>`. The runner refuses a
+the runner>`, computed from a runner the candidate branch does not control
+(the merge base's, whenever the change edits a runner) — then the
+branch-scoped `--base <ref>`. The runner refuses a
 `--producer` that is not its own identity, a head that is not `HEAD`, a run id
 `run.json` does not bind, and a base whose merge base is not the default
 branch's; it binds the finder's structured answer to the captured run, head,
-stage, round, finder and slot, wraps it with its own producer identity,
-validates the whole envelope with
+stage, round, finder and slot, records the CLI that ran as
+`producer.harness` (its registry harness slug), validates the whole envelope
+with
 `dev-flow-support/assets/validate-result-schemas.mjs envelope --receipt`, and
 publishes exactly one immutable file, `passes/<stage>-r<round>-<slot>.json`,
 through a no-clobber hard link: a pre-existing destination is a refusal, never
@@ -242,8 +245,9 @@ binding; the Claude `challenger`/`reviewer` agents are optional process
 isolation around the same invocation, never an envelope authority of their
 own, and the orchestrator never fabricates envelope data.
 
-**Append the pass receipt, then verify.** Receipt authority stays with you,
-the caller: after the runner exits 0, re-validate the printed file with the
+**Append the pass receipt, then verify.** Receipt authority stays with the
+caller that owns the run record — in an orchestrated run, the supervising
+orchestrator, never the lane that ran the finder: after the runner exits 0, re-validate the printed file with the
 same `envelope --receipt` call against the captured run, then append
 `{"kind": "pass", "file": "<stage>-r<round>-<slot>"}` (the filename without
 `.json`) to `run.json`'s `receipts`, and only then enter verification below. A

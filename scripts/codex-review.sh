@@ -125,7 +125,7 @@ if [ "$envelope_mode" = true ]; then
     challenge) envelope_slug=codex-adversarial ;;
     review) envelope_slug=codex-verification ;;
     esac
-    review_envelope_prepare "$MODE" "$script_dir/codex-review.sh" "$envelope_slug"
+    review_envelope_prepare "$MODE" "$script_dir/codex-review.sh" "$envelope_slug" codex-cli
 else
     review_envelope_refuse_stray_flags
 fi
@@ -282,6 +282,11 @@ fi
 trap 'sandbox_cleanup; review_envelope_cleanup' EXIT
 mkdir -p "$envelope_record_dir/passes"
 review_envelope_temp raw_payload codex-raw || exit 1
+review_envelope_temp strict_schema strict-schema || exit 1
+review_envelope_strict_schema "$envelope_payload_schema" >"$strict_schema" || {
+    echo "could not derive the structured-output schema; no review ran" >&2
+    exit 1
+}
 sandbox_create "$envelope_head" 0 >/dev/null || {
     echo "could not build the immutable review checkout at $envelope_head; no review ran" >&2
     exit 1
@@ -290,7 +295,7 @@ codex_status=0
 { printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" review \
     --model "$review_model" \
     --config "model_reasoning_effort=$review_reasoning" \
-    --output-schema "$envelope_payload_schema" \
+    --output-schema "$strict_schema" \
     --output-last-message "$raw_payload" \
     - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&2 || codex_status=$?
 # Verified before the status is honoured: output produced by something that

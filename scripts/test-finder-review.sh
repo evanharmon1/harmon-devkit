@@ -854,8 +854,8 @@ epass="$erecord/passes/challenge-r1-copilot-adversarial.json"
 envelope_stub
 out="$(envelope_finder env 2>"$tmp/eerr")" || fail "valid finder envelope failed: $(cat "$tmp/eerr")"
 [ "$out" = "$epass" ] || fail "stdout is not exactly the published path: $out"
-jq -e --arg p "$eproducer" '.role == "challenger" and
-    .producer == {harness: $p, model: "claude-sonnet-5-5", tier: "frontier"}' "$epass" >/dev/null ||
+jq -e '.role == "challenger" and
+    .producer == {harness: "copilot-cli", model: "claude-sonnet-5-5", tier: "frontier"}' "$epass" >/dev/null ||
     fail "the finder envelope is not bound as captured: $(cat "$epass")"
 grep -q 'STUB-ARGV: -p --model claude-sonnet-5-5 ' "$tmp/eerr" ||
     fail "the vendor invocation was not pinned to --model: $(cat "$tmp/eerr")"
@@ -887,5 +887,24 @@ envelope_finder env >/dev/null 2>"$tmp/eerr" || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'does not bind the captured' "$tmp/eerr" || fail "misbound finder payload not refused (rc $rc): $(cat "$tmp/eerr")"
 [ -z "$(find "$erecord" -mindepth 1 -path "$erecord/run.json" -prune -o -type f -print)" ] ||
     fail "a refused finder pass left files behind"
+
+echo "==> envelope: the diff and snapshot read the captured SHAs, not a base ref moved after binding"
+# Challenge round 1 (challenge-r1-codex-adversarial-1): binding names an
+# immutable merge base, so a base ref rewritten afterwards must not change
+# what the finder is handed.
+moved="$( (
+    cd "$ework" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/review-scope.sh
+    envelope_head="$ehead"
+    resolve_review_scope --base main >/dev/null 2>&1
+    review_envelope_bind_scope
+    git update-ref refs/heads/main "$ehead"
+    printf 'SNAPSHOT=%s\n' "$(review_scope_snapshot)"
+    collect_review_diff
+    git update-ref refs/heads/main "$ehead~1"
+) 2>&1)"
+grep -Fq "SNAPSHOT=$ehead 0" <<<"$moved" || fail "the envelope snapshot is not the captured head: $moved"
+grep -Fq '+changed' <<<"$moved" || fail "moving the base ref after binding changed the reviewed diff: $moved"
 
 echo "finder review runner OK"

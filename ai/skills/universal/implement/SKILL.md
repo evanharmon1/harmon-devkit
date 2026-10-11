@@ -385,7 +385,11 @@ and follow it — it carries the adjudication ledger, durable round
 accounting. Lacking a Skill tool or a subagent runtime is **not** a reason to
 fall back to the inline procedure when an active run identity exists: `/review`
 runs each finder through its task in `--envelope` mode, which any harness that
-can run the task can do, and that is what produces the `passes/` evidence.
+can run the task can do, and that is what produces the `passes/` evidence. In
+an orchestrated run the lane may **produce** passes that way, but receipt
+authority and adjudication stay with the supervising orchestrator: it
+validates each pass and appends its receipt, and a lane never receipts or
+adjudicates its own.
 It returns to this skill for security and draft publication; it
 does not open a PR or run integration. In the fork topology this
 skill supports where `origin` is the writable fork rather than the target,

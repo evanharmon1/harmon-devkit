@@ -373,6 +373,12 @@ task challenge -- --model gpt-5.6-sol --envelope \
   --base main
 ```
 
+`--producer` is input validation, not attestation: the runner checks it
+against its own bytes, so compute it from a runner the candidate branch does
+not control — the merge base's whenever the change edits a runner. The value
+above, taken from the working tree, is right only for a branch that leaves the
+runner alone.
+
 `task challenge:copilot` / `task review:copilot` take the same flags plus
 `--model <model>`, which is pinned into the vendor invocation (a model in
 `FINDER_REVIEW_COPILOT_ARGS` is refused there). The envelope flags come

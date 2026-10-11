@@ -763,6 +763,7 @@ while [ $# -gt 0 ]; do
 done
 cat >"${STUB_PROMPT:-/dev/null}"
 printf 'cd=%s schema=%s\n' "$cd_dir" "$schema" >>"${STUB_LOG:-/dev/null}"
+[ -z "${STUB_SCHEMA_COPY:-}" ] || cp "$schema" "$STUB_SCHEMA_COPY"
 echo "stub review narration on stdout"
 if [ -n "${STUB_GATE:-}" ]; then
     : >"${STUB_GATE}.waiting"
@@ -848,7 +849,7 @@ pass_file="${record}/passes/challenge-r1-codex-adversarial.json"
 [ -f "$pass_file" ] || fail "no pass published"
 jq -e --arg p "$producer" --arg h "$env_head" \
     '.role == "challenger" and .status == "completed" and .head == $h and
-     .producer == {harness: $p, model: "gpt-5.6-sol", tier: "frontier"} and
+     .producer == {harness: "codex-cli", model: "gpt-5.6-sol", tier: "frontier"} and
      .run == {run_id: "run-941", initiated_by: "human"} and .payload.slot == "codex-adversarial"' \
     "$pass_file" >/dev/null || fail "published envelope is not bound as captured: $(cat "$pass_file")"
 node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" envelope "$pass_file" \
@@ -859,9 +860,56 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
 grep -q "stub review narration" "${env_root}/err" || fail "Codex's own stdout was not diverted to stderr"
 grep -q "^cd=/" "${env_root}/stub.log" && ! grep -q "^cd=${ewd}\$" "${env_root}/stub.log" ||
     fail "Codex did not review an immutable checkout: $(cat "${env_root}/stub.log")"
-grep -q "schema=.*result.challenger.schema.json" "${env_root}/stub.log" || fail "--output-schema not passed"
+grep -q "schema=${record}/passes/.strict-schema." "${env_root}/stub.log" ||
+    fail "--output-schema was not handed the strict derivation: $(cat "${env_root}/stub.log")"
 grep -q "immutable diff ${env_base}...${env_head}" "${env_root}/prompt" || fail "scope not rewritten to captured SHAs"
 grep -q 'challenge-r1-codex-adversarial-1' "${env_root}/prompt" || fail "binding instructions missing from the prompt"
+
+echo "==> envelope: --output-schema gets a strict-structured-output schema at every object level"
+# Challenge round 1 (challenge-r1-codex-adversarial-2): the live API rejects
+# the real payload schema ("'schema.required' is required to include every
+# key in properties. Missing 'slot'"). The derivation must close every object,
+# require every key, and carry no keyword that mode refuses.
+reset_record
+payload "${env_root}/p.json" challenge 1 codex-adversarial
+STUB_SCHEMA_COPY="${env_root}/strict.json" STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>&1 ||
+    fail "strict-schema run failed"
+for role in challenger reviewer; do
+    if [ "$role" = challenger ]; then
+        strict="${env_root}/strict.json"
+    else
+        strict="${env_root}/strict-reviewer.json"
+        (cd "$ewd" && . scripts/lib/review-scope.sh &&
+            review_envelope_strict_schema ai/skills/universal/dev-flow-support/assets/schemas/result.reviewer.schema.json) >"$strict"
+    fi
+    jq -e '
+        [.. | objects | select(has("properties"))] as $objs
+        | ($objs | length) > 0
+          and all($objs[]; .additionalProperties == false and ((.required | sort) == (.properties | keys)))
+          and ([.. | objects | keys[] | select(IN("if", "then", "else", "pattern", "minLength", "maxLength",
+                "minimum", "maximum", "minItems", "oneOf", "allOf", "not", "$comment", "$schema", "$id"))] | length == 0)
+          and ([.. | objects | .["$ref"]? // empty | ltrimstr("#/$defs/")] | all(. as $d | $d | IN($defs_keys[])))
+    ' --argjson defs_keys "$(jq '.["$defs"] // {} | keys' "$strict")" "$strict" >/dev/null ||
+        fail "the derived $role schema breaks a strict-structured-output rule: $(cat "$strict")"
+    jq -e '.properties.slot.type == ["string", "null"] and .properties.substitutes_for.type == ["string", "null"]' \
+        "$strict" >/dev/null || fail "the derived $role schema did not make its optional keys nullable"
+done
+
+echo "==> envelope: null optionals from a strict answer are normalized away, then validated"
+reset_record
+payload "${env_root}/p.json" challenge 1 codex-adversarial '.substitutes_for = null'
+out="$(STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge 2>"${env_root}/err")" ||
+    fail "a payload with null optionals was refused: $(cat "${env_root}/err")"
+jq -e '.payload | has("substitutes_for") | not' "$out" >/dev/null || fail "a null optional survived normalization"
+node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" envelope "$out" \
+    --run-id run-941 --initiated-by human --known-ids <(echo '[]') --receipt >/dev/null ||
+    fail "the normalized pass does not validate"
+reset_record
+payload "${env_root}/p.json" challenge 1 codex-adversarial '.counts = null'
+rc=0
+STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a null on a REQUIRED key was normalized into acceptance (rc $rc)"
+assert_nothing_published "null required key"
 
 echo "==> envelope: review mode publishes a result.reviewer pass"
 reset_record
@@ -1034,6 +1082,6 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
     --run-id run-941 --initiated-by human --receipt >/dev/null ||
     fail "the adjudication does not validate against the runner's pass"
 
-echo "codex-review envelope mode OK (15 cases)"
+echo "codex-review envelope mode OK (17 cases)"
 
 echo "codex-review + codex-gate guards OK (38 cases)"

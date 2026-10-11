@@ -469,6 +469,12 @@ collect_review_diff() {
     base:*)
         git diff --no-ext-diff --ignore-submodules=none "${review_diff_spec#base:}...HEAD"
         ;;
+    range:*)
+        # Envelope mode: two immutable SHAs, never a ref that can move after
+        # the scope was bound (review_envelope_bind_scope).
+        local range="${review_diff_spec#range:}"
+        git diff --no-ext-diff --ignore-submodules=none "${range%%:*}" "${range#*:}"
+        ;;
     commit:*)
         local sha="${review_diff_spec#commit:}"
         if git rev-parse --verify --quiet "${sha}^" >/dev/null; then
@@ -514,6 +520,7 @@ collect_review_diff() {
 review_scope_snapshot() {
     case "$review_diff_spec" in
     commit:*) printf '%s 0' "${review_diff_spec#commit:}" ;;
+    range:*) printf '%s 0' "${review_diff_spec##*:}" ;;
     worktree | both:*) printf 'HEAD 1' ;;
     base:*) printf 'HEAD 0' ;;
     *) return 1 ;;
@@ -640,14 +647,14 @@ review_envelope_support_dir() {
     return 1
 }
 
-# review_envelope_prepare MODE RUNNER_PATH FINDER_SLUG — validate every
+# review_envelope_prepare MODE RUNNER_PATH FINDER_SLUG HARNESS — validate every
 # envelope input before any model call, and set the derived values the later
 # steps use: envelope_role, envelope_initiated_by, envelope_substitutes_for,
 # envelope_support_dir, envelope_payload_schema, envelope_pass_path.
 # Usage errors exit 2; a binding that is well-formed but false (HEAD moved,
 # run.json names another run) exits 1.
 review_envelope_prepare() {
-    local mode="$1" runner_path="$2" finder_slug="$3" required flag identity actual_head slot_entry
+    local mode="$1" runner_path="$2" finder_slug="$3" harness="$4" required flag identity actual_head slot_entry
     for required in run_id head stage round slot producer tier record_dir; do
         flag="--${required//_/-}"
         required="envelope_${required}"
@@ -697,6 +704,14 @@ review_envelope_prepare() {
         echo "--registry '$envelope_registry' is not a readable file" >&2
         exit 2
     }
+    # producer.harness is the registry slug of the CLI that actually ran, the
+    # same vocabulary every other producer uses; the runner's own identity is
+    # input validation above, not producer metadata.
+    jq -e --arg h "$harness" '[.harnesses[]? | select(.slug == $h)] | length == 1' "$envelope_registry" >/dev/null || {
+        echo "harness '$harness' is not registered in $envelope_registry" >&2
+        exit 2
+    }
+    envelope_harness="$harness"
     envelope_support_dir="$(review_envelope_support_dir)" || {
         echo "envelope mode needs the dev-flow-support package (validate-result-schemas.mjs and its schemas);" >&2
         echo "vendor the universal skill category as a unit." >&2
@@ -770,6 +785,76 @@ review_envelope_bind_scope() {
     }
     envelope_merge_base="$selected"
     scope="Review the changes at captured head ${envelope_head} relative to captured merge base ${envelope_merge_base} (the immutable diff ${envelope_merge_base}...${envelope_head})."
+    # Everything downstream — the manifest here, the diff and the snapshot a
+    # finder is handed — reads these two SHAs, never `$base_ref` or HEAD
+    # again: a ref rewritten after binding must not change the reviewed bytes.
+    review_diff_spec="range:${envelope_merge_base}:${envelope_head}"
+    manifest="$(git_diff_name_status "$envelope_merge_base" "$envelope_head" | cap_manifest)" || {
+        echo "could not list the captured range ${envelope_merge_base}..${envelope_head}" >&2
+        exit 2
+    }
+    [ -n "$manifest" ] || refuse_empty_scope \
+        "the captured range ${envelope_merge_base}..${envelope_head} changes no files." \
+        "Envelope mode reviews a branch's commits; there is nothing to review."
+}
+
+# review_envelope_strict_schema SCHEMA — print a derivation of the payload
+# SCHEMA that strict structured outputs accept (the Codex `--output-schema`
+# path rejects the real one: "'schema.required' is required to include every
+# key in properties"). At every object level each property is required and
+# optional ones become nullable, objects are closed, and only the keywords
+# that mode accepts survive — the conditional (if/then/else) and every
+# validation-only keyword (pattern, minLength, minimum, ...) are dropped.
+# Strictness never stands in for validation: the answer is normalized back
+# (review_envelope_normalize) and checked against the REAL schema by the
+# unchanged validator before anything is published.
+review_envelope_strict_schema() {
+    jq '
+        def nullable:
+            if has("$ref") or (has("type") | not) then {anyOf: [., {type: "null"}]}
+            elif (.type | type) == "array" then (if (.type | index("null")) then . else .type += ["null"] end)
+            else .type = [.type, "null"] end
+            | if has("enum") and ((.enum | index(null)) | not) then .enum += [null] else . end;
+        def strict:
+            if type != "object" then .
+            else
+                with_entries(select(.key | IN("type", "properties", "required", "additionalProperties",
+                    "items", "enum", "const", "$defs", "$ref", "description", "anyOf")))
+                | if has("properties") then
+                    (.required // []) as $req
+                    | .properties |= (to_entries
+                        | map(.key as $k | .value |= (strict | if ($req | index($k)) then . else nullable end))
+                        | from_entries)
+                    | .required = (.properties | keys_unsorted)
+                    | .additionalProperties = false
+                  else . end
+                | if has("items") then .items |= strict else . end
+                | if has("anyOf") then .anyOf |= map(strict) else . end
+                | if has("$defs") then .["$defs"] |= map_values(strict) else . end
+            end;
+        strict
+    ' "$1"
+}
+
+# review_envelope_normalize SCHEMA PAYLOAD — drop every null whose key the
+# REAL schema marks optional, at every object level the schema describes:
+# the strict derivation above made such keys nullable, and "absent" is what
+# the real schema means by them. A null on a required key is left for the
+# validator to judge.
+review_envelope_normalize() {
+    jq --slurpfile root "$1" '
+        def resolve($r): if has("$ref") then $r["$defs"][.["$ref"] | ltrimstr("#/$defs/")] else . end;
+        def norm($sch; $r):
+            ($sch | resolve($r)) as $s
+            | if type == "object" and ($s | has("properties")) then
+                ($s.required // []) as $req
+                | with_entries(.key as $k | select(.value != null or ($req | index($k)) != null))
+                | with_entries(.key as $k
+                    | if $s.properties[$k] then .value |= norm($s.properties[$k]; $r) else . end)
+              elif type == "array" and ($s | has("items")) then map(norm($s.items; $r))
+              else . end;
+        norm($root[0]; $root[0])
+    ' "$2"
 }
 
 # review_envelope_instructions — the binding clause appended to the finder's
@@ -816,7 +901,10 @@ review_envelope_publish() {
         echo "finder output is not exactly one JSON object; no pass published" >&2
         exit 1
     }
-    jq -s '.[0]' "$raw" >"$tmp_payload"
+    review_envelope_normalize "$envelope_payload_schema" <(jq -s '.[0]' "$raw") >"$tmp_payload" || {
+        echo "could not normalize the finder payload; no pass published" >&2
+        exit 1
+    }
     jq -e --arg stage "$envelope_stage" --argjson round "$envelope_round" \
         --arg head "$envelope_head" --arg finder "$envelope_finder" --arg slot "$envelope_slot" \
         --arg sub "$envelope_substitutes_for" \
@@ -832,7 +920,7 @@ review_envelope_publish() {
         --arg role "$envelope_role" \
         --arg head "$envelope_head" \
         --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        --arg harness "$envelope_producer" \
+        --arg harness "$envelope_harness" \
         --arg model "$model" \
         --arg tier "$envelope_tier" \
         --arg run_id "$envelope_run_id" \

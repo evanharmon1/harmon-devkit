@@ -192,7 +192,7 @@ actual_target="$(printf '%s' "$finder_entry" | jq -r '.invocation.target')"
     echo "Reconcile $registry with the Taskfile rather than guessing which one is right." >&2
     exit 2
 }
-[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$script_dir/finder-review.sh" "$slug"
+[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$script_dir/finder-review.sh" "$slug" "${TOOL}-cli"
 
 case "$TOOL" in
 copilot)

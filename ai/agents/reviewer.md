@@ -13,7 +13,7 @@ registry task (`task review`, or the finder's own `review:<tool>` target) in
 `--envelope` mode with the binding your dispatch supplied: run id, head, stage,
 round, slot, tier, record directory, the expected producer identity, the
 resolved model, and the branch-scoped `--base`. The runner — not you — binds
-the finder's answer to that scope, wraps it with its own producer identity,
+the finder's answer to that scope, records the CLI that ran as the producer,
 validates the complete `result.reviewer` envelope with
 `dev-flow-support/assets/validate-result-schemas.mjs envelope ... --receipt`,
 and publishes it as one immutable file under the record directory's `passes/`,

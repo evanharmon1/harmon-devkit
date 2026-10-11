@@ -34,10 +34,10 @@ mode (`scripts/codex-review.sh`, `scripts/finder-review.sh`;
 harmon-devkit#941), not by whichever agent happened to call it. The runner asks
 the finder for the role's payload (Codex through `--output-schema`, a general
 agent CLI with the schema in its prompt), binds it to the captured run, head,
-stage, round, finder and slot, wraps it in the envelope with its **own**
-producer identity — the runner's filename plus the Git blob SHA of its bytes,
-which must equal the `--producer` the caller expected — validates the whole
-document with `validate-result-schemas.mjs envelope --receipt`, and publishes
+stage, round, finder and slot, wraps it in the envelope — `producer.harness`
+is the registry slug of the CLI that actually ran (`codex-cli`,
+`copilot-cli`), the same vocabulary every other producer uses — validates the
+whole document with `validate-result-schemas.mjs envelope --receipt`, and publishes
 exactly one file, `passes/<stage>-r<round>-<slot>.json`, by hard-linking a
 fully written temporary into place. `link(2)` fails on an existing
 destination, so publication is atomic and no-clobber: a pre-existing pass is a
@@ -51,17 +51,26 @@ binding, or hand-write a document and run the validator over it. Moving
 assembly into a script removes none of that, and does not claim to. What bounds
 it is the chain around the file, and none of it is the lane's prose:
 
-- the **producer identity** names the exact runner bytes, so a pass from a
-  modified runner is attributable to those bytes rather than passing as the
-  one the caller expected;
 - **receipt validation** binds run identity, head, role, stage, round, slot and
   previously used finding ids, and runs again on the caller's side and in the
   exit computation, not only inside the runner;
 - **immutability** means a published pass cannot be rewritten at its path;
-- and **receipt authority stays with the caller**: a pass counts only once the
-  orchestrator has validated it against trusted run state and captured
-  revisions and appended its `{kind: "pass"}` receipt. A pass with no receipt
-  is an orphan and is never evidence.
+- and **receipt authority stays with the supervising caller**: a pass counts
+  only once whoever owns the run record — in an orchestrated run, the
+  orchestrator, never the lane that ran the finder — has validated it against
+  trusted run state and captured revisions and appended its `{kind: "pass"}`
+  receipt. A pass with no receipt is an orphan and is never evidence.
+
+The runner's `--producer` check is **input validation, not attestation**. The
+runner compares the value against an identity it derives from its own bytes,
+so it only catches a caller invoking a runner other than the one it named —
+and only when that expected value comes from somewhere the candidate branch
+does not control. Computed from the candidate checkout, as a lane would, it
+proves nothing about a modified runner, and the identity is not recorded in
+the envelope at all. A change that edits a runner is therefore reviewed with
+the merge base's runner, not its own: a branch may not supply the code that
+produces its own review evidence (the same boundary `AGENTS.md` § "Rigor and
+Strategy" draws for the policy files).
 
 That is the same model `--receipts` strict mode enforces at cross-boundary call
 sites (#821), and it keeps decision record 0009's rule intact — briefs carry a
