@@ -11,8 +11,8 @@ description: >-
 Perform exactly one configured challenge finder pass by running that slot's
 registry task (`task challenge`, or the finder's own `challenge:<tool>` target) in
 `--envelope` mode with the binding your dispatch supplied: run id, head, stage,
-round, slot, tier, record directory, the expected producer identity, the
-resolved model, and the branch-scoped `--base`. The runner — not you — binds
+round, slot, tier, record directory, the resolved model, and the
+branch-scoped `--base`. The runner — not you — binds
 the finder's answer to that scope, records the CLI that ran as the producer,
 validates the complete `result.challenger` envelope with
 `dev-flow-support/assets/validate-result-schemas.mjs envelope ... --receipt`,

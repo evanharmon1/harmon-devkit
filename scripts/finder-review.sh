@@ -8,7 +8,7 @@
 #   finder-review.sh <review|challenge> <tool>
 #                    [--envelope --model <model> --run-id <id> --head <sha>
 #                     --stage <stage> --round <n> --slot <finder>
-#                     --producer <runner@blob> --tier <tier> --record-dir <dir>
+#                     --tier <tier> --record-dir <dir>
 #                     [--registry <file>]]
 #                    [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
@@ -88,7 +88,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> <tool> [--envelope --model <model> --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <runner@blob> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> <tool> [--envelope --model <model> --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 # shellcheck source=scripts/lib/review-scope.sh
@@ -229,7 +229,7 @@ coderabbit)
 esac
 # After the per-tool case, so a finder this runner refuses (coderabbit, #809;
 # an unknown CLI) gets that refusal rather than an envelope-input one.
-[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$script_dir/finder-review.sh" "$slug" "$harness_slug"
+[ "$envelope_mode" = false ] || review_envelope_prepare "$MODE" "$slug" "$harness_slug"
 if ! command -v "$bin" >/dev/null 2>&1; then
     echo "$TOOL CLI ('$bin') not found. $install_hint" >&2
     echo "See docs/guides/codex-review.md. Refusing rather than skipping: a finder that" >&2
@@ -382,6 +382,15 @@ if [ "$envelope_mode" = true ]; then
     # flag (-p), which must be immediately followed by the prompt — appended,
     # `-p` consumed `--model` as its prompt and the CLI refused the command.
     args=(--model "$producer_model" ${args[@]+"${args[@]}"})
+    # --silent: envelope mode reads ALL of stdout as the payload, and without
+    # it the CLI interleaves tool-call and info events there, so a valid
+    # answer would fail the one-JSON-object check
+    # (challenge-r3-codex-adversarial-2). Prepended for the same reason as
+    # --model, and only once if the operator's flag list already has it.
+    case " ${args[*]} " in
+    *" --silent "* | *" -s "*) ;;
+    *) args=(--silent "${args[@]}") ;;
+    esac
 fi
 if [ "$dry_run" = 1 ]; then
     printf 'finder: %s\ncommand: %s %s\n' "$slug" "$bin" "${args[*]}"

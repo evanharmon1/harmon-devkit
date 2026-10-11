@@ -820,7 +820,6 @@ git -C "$ework" checkout -qb feature
 printf 'changed\n' >"$ework/app.txt"
 git -C "$ework" commit -qam 'test: the change'
 ehead="$(git -C "$ework" rev-parse HEAD)"
-eproducer="finder-review.sh@$(git -C "$ework" hash-object scripts/finder-review.sh)"
 erecord="$tmp/envelope-record"
 ebin="$tmp/envelope-bin"
 mkdir -p "$ebin"
@@ -864,7 +863,7 @@ envelope_finder() {
     printf '{"run_id":"run-941","initiated_by":"human"}\n' >"$erecord/run.json"
     (cd "$ework" && PATH="$ebin:$PATH" "$@" ./scripts/finder-review.sh challenge copilot \
         --model claude-sonnet-5-5 --envelope --run-id run-941 --head "$ehead" --stage challenge \
-        --round 1 --slot copilot-adversarial --producer "$eproducer" --tier frontier \
+        --round 1 --slot copilot-adversarial --tier frontier \
         --record-dir "$erecord" --base main)
 }
 epass="$erecord/passes/challenge-r1-copilot-adversarial.json"
@@ -875,7 +874,8 @@ out="$(envelope_finder env 2>"$tmp/eerr")" || fail "valid finder envelope failed
 jq -e '.role == "challenger" and
     .producer == {harness: "copilot-cli", model: "claude-sonnet-5-5", tier: "frontier"}' "$epass" >/dev/null ||
     fail "the finder envelope is not bound as captured: $(cat "$epass")"
-grep -q 'STUB-ARGV: --model claude-sonnet-5-5 -p ' "$tmp/eerr" ||
+# --silent too (challenge-r3-codex-adversarial-2): stdout is the payload.
+grep -q 'STUB-ARGV: --silent --model claude-sonnet-5-5 -p ' "$tmp/eerr" ||
     fail "the vendor invocation was not pinned to --model: $(cat "$tmp/eerr")"
 
 echo "==> envelope: the finder prompt carries the binding and the payload schema"
@@ -883,7 +883,7 @@ out="$(envelope_finder env FINDER_REVIEW_DRY_RUN=1 2>/dev/null)" || fail "envelo
 grep -Fq 'The result.challenger JSON Schema:' <<<"$out" && grep -Fq '"attack_scenarios"' <<<"$out" ||
     fail "the payload schema is not in the prompt"
 grep -Fq 'challenge-r1-copilot-adversarial-1' <<<"$out" || fail "the id binding is not in the prompt"
-grep -Fq 'command: copilot --model claude-sonnet-5-5 -p' <<<"$out" || fail "dry run does not show the model pin: $out"
+grep -Fq 'command: copilot --silent --model claude-sonnet-5-5 -p' <<<"$out" || fail "dry run does not show the model pin: $out"
 
 echo "==> envelope: a model chosen through FINDER_REVIEW_COPILOT_ARGS is refused"
 rc=0
@@ -904,7 +904,7 @@ echo "==> envelope: a refused finder keeps its own refusal, not an envelope-inpu
 rc=0
 (cd "$ework" && PATH="$ebin:$PATH" ./scripts/finder-review.sh challenge coderabbit --model m --envelope \
     --run-id run-941 --head "$ehead" --stage challenge --round 1 --slot coderabbit-adversarial \
-    --producer "$eproducer" --tier frontier --record-dir "$erecord" --base main) >/dev/null 2>"$tmp/eerr" || rc=$?
+    --tier frontier --record-dir "$erecord" --base main) >/dev/null 2>"$tmp/eerr" || rc=$?
 [ "$rc" -eq 2 ] && grep -Fq 'harmon-devkit#809' "$tmp/eerr" ||
     fail "coderabbit in envelope mode did not get its own refusal (rc $rc): $(cat "$tmp/eerr")"
 

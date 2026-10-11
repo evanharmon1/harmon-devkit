@@ -10,7 +10,7 @@
 #
 # Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>]
 #        [--envelope --run-id <id> --head <sha> --stage <stage> --round <n>
-#         --slot <finder> --producer <runner@blob> --tier <tier>
+#         --slot <finder> --tier <tier>
 #         --record-dir <dir> [--registry <file>]]
 #        [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
@@ -51,7 +51,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <runner@blob> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 # WHAT gets reviewed — the target flags, the auto-detected scope, the
@@ -125,7 +125,7 @@ if [ "$envelope_mode" = true ]; then
     challenge) envelope_slug=codex-adversarial ;;
     review) envelope_slug=codex-verification ;;
     esac
-    review_envelope_prepare "$MODE" "$script_dir/codex-review.sh" "$envelope_slug" codex-cli
+    review_envelope_prepare "$MODE" "$envelope_slug" codex-cli
 else
     review_envelope_refuse_stray_flags
 fi
@@ -291,8 +291,16 @@ sandbox_create "$envelope_head" 0 >/dev/null || {
     echo "could not build the immutable review checkout at $envelope_head; no review ran" >&2
     exit 1
 }
+# Plain `codex exec`, NOT `exec review`: the review subcommand accepts
+# --output-schema on its command line and never reads the file (a non-JSON
+# schema still ran and exited 0), so it would answer in review prose that no
+# binding can accept (challenge-r3-codex-adversarial-1). The instructions
+# above already carry the review mode, scope, manifest and binding, which is
+# everything the subcommand added. --sandbox read-only keeps the agent's own
+# commands from writing; the tamper check below still decides.
 codex_status=0
-{ printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" review \
+{ printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" \
+    --sandbox read-only \
     --model "$review_model" \
     --config "model_reasoning_effort=$review_reasoning" \
     --output-schema "$strict_schema" \

@@ -61,12 +61,9 @@ it is the chain around the file, and none of it is the lane's prose:
   trusted run state and captured revisions and appended its `{kind: "pass"}`
   receipt. A pass with no receipt is an orphan and is never evidence.
 
-The runner's `--producer` check is **input validation, not an authority**. The
-runner compares the value against an identity it derives from its own bytes,
-so it only catches a caller invoking a runner other than the one it named; it
-proves nothing about a modified runner, and the identity is not recorded in
-the envelope. What makes a pass evidence is the supervising orchestrator
-validating it and appending its receipt.
+Nothing the runner records about itself is an authority: it names the CLI
+that ran, not the bytes of the runner. What makes a pass evidence is the
+supervising orchestrator validating it and appending its receipt.
 
 That is the same model `--receipts` strict mode enforces at cross-boundary call
 sites (#821), and it keeps decision record 0009's rule intact — briefs carry a

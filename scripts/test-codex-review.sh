@@ -750,6 +750,7 @@ mkdir -p "${env_root}/bin"
 # holds a "timed-out" original open while its retry runs to completion.
 cat >"${env_root}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
+printf 'argv=%s\n' "$*" >>"${STUB_LOG:-/dev/null}"
 out=
 cd_dir=
 schema=
@@ -794,7 +795,6 @@ git -C "$ewd" add feature.txt
 git_t -C "$ewd" commit -q -m work
 env_head="$(git -C "$ewd" rev-parse HEAD)"
 env_base="$(git -C "$ewd" rev-parse main)"
-producer="codex-review.sh@$(git -C "$ewd" hash-object scripts/codex-review.sh)"
 record="${env_root}/record"
 
 reset_record() {
@@ -827,7 +827,7 @@ envelope_run() {
     slot="${ENV_SLOT:-$slot}"
     (cd "$ewd" && PATH="${env_root}/bin:${PATH}" ./scripts/codex-review.sh "$mode" \
         --model gpt-5.6-sol --envelope --run-id "${ENV_RUN_ID:-run-941}" --head "${ENV_HEAD:-$env_head}" \
-        --stage "$mode" --round "${ENV_ROUND:-1}" --slot "$slot" --producer "${ENV_PRODUCER:-$producer}" \
+        --stage "$mode" --round "${ENV_ROUND:-1}" --slot "$slot" \
         --tier frontier --record-dir "$record" "$@" --base main)
 }
 
@@ -847,7 +847,7 @@ out="$(STUB_PAYLOAD="${env_root}/p.json" STUB_LOG="${env_root}/stub.log" STUB_PR
 pass_file="${record}/passes/challenge-r1-codex-adversarial.json"
 [ "$out" = "$pass_file" ] || fail "stdout is not exactly the published path: $out"
 [ -f "$pass_file" ] || fail "no pass published"
-jq -e --arg p "$producer" --arg h "$env_head" \
+jq -e --arg h "$env_head" \
     '.role == "challenger" and .status == "completed" and .head == $h and
      .producer == {harness: "codex-cli", model: "gpt-5.6-sol", tier: "frontier"} and
      .run == {run_id: "run-941", initiated_by: "human"} and .payload.slot == "codex-adversarial"' \
@@ -860,6 +860,11 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
 grep -q "stub review narration" "${env_root}/err" || fail "Codex's own stdout was not diverted to stderr"
 grep -q "^cd=/" "${env_root}/stub.log" && ! grep -q "^cd=${ewd}\$" "${env_root}/stub.log" ||
     fail "Codex did not review an immutable checkout: $(cat "${env_root}/stub.log")"
+# challenge-r3-codex-adversarial-1: `exec review` never reads --output-schema,
+# so envelope mode must call plain `exec` (read-only), never the subcommand.
+grep -Eq '^argv=exec --cd /[^ ]+ --sandbox read-only ' "${env_root}/stub.log" &&
+    ! grep -Eq '^argv=.* review( |$)' "${env_root}/stub.log" ||
+    fail "envelope mode did not invoke plain read-only codex exec: $(cat "${env_root}/stub.log")"
 grep -q "schema=${record}/passes/.strict-schema." "${env_root}/stub.log" ||
     fail "--output-schema was not handed the strict derivation: $(cat "${env_root}/stub.log")"
 grep -q "immutable diff ${env_base}...${env_head}" "${env_root}/prompt" || fail "scope not rewritten to captured SHAs"
@@ -936,14 +941,6 @@ ENV_HEAD="$env_base" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc
 [ "$rc" -eq 1 ] && grep -q "does not match HEAD" "${env_root}/err" || fail "head mismatch not refused (rc $rc): $(cat "${env_root}/err")"
 assert_nothing_published "head mismatch"
 
-echo "==> envelope: a producer other than the runner's own identity is refused"
-reset_record
-rc=0
-ENV_PRODUCER="codex-review.sh@0000000000000000000000000000000000000000" envelope_run challenge >/dev/null 2>"${env_root}/err" || rc=$?
-[ "$rc" -eq 2 ] && grep -q "does not match this runner's own identity" "${env_root}/err" ||
-    fail "producer mismatch not refused (rc $rc): $(cat "${env_root}/err")"
-assert_nothing_published "producer mismatch"
-
 echo "==> envelope: a payload bound to another round is refused, nothing partial lands"
 reset_record
 payload "${env_root}/bad.json" challenge 1 codex-adversarial '.round = 2'
@@ -984,7 +981,7 @@ rc=0
 [ "$rc" -eq 2 ] || fail "--envelope after the target was read as focus text (rc $rc)"
 rc=0
 (cd "$ewd" && PATH="${env_root}/bin:${PATH}" ./scripts/codex-review.sh challenge --envelope --run-id run-941 \
-    --head "$env_head" --stage challenge --round 1 --slot codex-adversarial --producer "$producer" \
+    --head "$env_head" --stage challenge --round 1 --slot codex-adversarial \
     --tier frontier --record-dir "$record" --commit "$env_head") >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "envelope mode accepted a non-branch scope (rc $rc)"
 
@@ -1082,6 +1079,6 @@ node "${repo}/ai/skills/universal/dev-flow-support/assets/validate-result-schema
     --run-id run-941 --initiated-by human --receipt >/dev/null ||
     fail "the adjudication does not validate against the runner's pass"
 
-echo "codex-review envelope mode OK (17 cases)"
+echo "codex-review envelope mode OK (16 cases)"
 
 echo "codex-review + codex-gate guards OK (38 cases)"

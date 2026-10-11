@@ -369,17 +369,18 @@ record:
 task challenge -- --model gpt-5.6-sol --envelope \
   --run-id <run> --head "$(git rev-parse HEAD)" --stage challenge --round 1 \
   --slot codex-adversarial --tier frontier --record-dir <run-record-dir> \
-  --producer "codex-review.sh@$(git hash-object scripts/codex-review.sh)" \
   --base main
 ```
 
-`--producer` is input validation, not an authority: the runner checks it
-against its own bytes and nothing more. A pass becomes evidence only when the
+Envelope mode drives Codex through plain `codex exec` with `--output-schema`
+and a read-only sandbox, not `codex exec review`: the review subcommand accepts
+`--output-schema` and never reads it. A pass becomes evidence only when the
 supervising orchestrator validates it and appends its receipt.
 
 `task challenge:copilot` / `task review:copilot` take the same flags plus
 `--model <model>`, which is pinned into the vendor invocation (a model in
-`FINDER_REVIEW_COPILOT_ARGS` is refused there). The envelope flags come
+`FINDER_REVIEW_COPILOT_ARGS` is refused there), and envelope mode adds
+`--silent` so stdout carries only the answer. The envelope flags come
 **before** the target and focus text, and envelope mode accepts only a
 branch-scoped `--base` whose merge base is the default branch's.
 

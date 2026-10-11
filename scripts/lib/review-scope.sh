@@ -221,7 +221,7 @@ resolve_review_scope() {
             empty_hint="Pass --base <ref> to review the branch's commits instead."
             shift
             ;;
-        --envelope | --run-id | --head | --stage | --round | --slot | --producer | --tier | --record-dir | --registry)
+        --envelope | --run-id | --head | --stage | --round | --slot | --tier | --record-dir | --registry)
             # Read as focus text, a misplaced envelope flag would silently run
             # a prose-only pass the caller is waiting on as a published one.
             echo "$1 must come before the target flags and focus text" >&2
@@ -541,10 +541,8 @@ review_scope_snapshot() {
 # What a runner in envelope mode does and does not do:
 #   - binds the finder's structured payload to the captured run, head, stage,
 #     round, finder and slot, and refuses a payload that names anything else;
-#   - wraps it with its OWN producer identity — `<runner>@<git blob sha>`,
-#     derived from the runner's bytes and required to equal the `--producer`
-#     the caller expected, so a changed runner cannot pass as the one the
-#     caller trusted;
+#   - wraps it in the envelope, recording the CLI that actually ran (its
+#     registry harness slug) as `producer.harness`;
 #   - validates the complete envelope with dev-flow-support's
 #     `validate-result-schemas.mjs envelope --receipt` before anything lands;
 #   - publishes it with a HARD LINK into `passes/<stage>-r<round>-<slot>.json`.
@@ -567,7 +565,6 @@ envelope_head=
 envelope_stage=
 envelope_round=
 envelope_slot=
-envelope_producer=
 envelope_tier=
 envelope_record_dir=
 envelope_registry=
@@ -595,7 +592,6 @@ review_envelope_flag() {
     --stage) var=envelope_stage ;;
     --round) var=envelope_round ;;
     --slot) var=envelope_slot ;;
-    --producer) var=envelope_producer ;;
     --tier) var=envelope_tier ;;
     --record-dir) var=envelope_record_dir ;;
     --registry) var=envelope_registry ;;
@@ -647,15 +643,15 @@ review_envelope_support_dir() {
     return 1
 }
 
-# review_envelope_prepare MODE RUNNER_PATH FINDER_SLUG HARNESS — validate every
+# review_envelope_prepare MODE FINDER_SLUG HARNESS — validate every
 # envelope input before any model call, and set the derived values the later
 # steps use: envelope_role, envelope_initiated_by, envelope_substitutes_for,
 # envelope_support_dir, envelope_payload_schema, envelope_pass_path.
 # Usage errors exit 2; a binding that is well-formed but false (HEAD moved,
 # run.json names another run) exits 1.
 review_envelope_prepare() {
-    local mode="$1" runner_path="$2" finder_slug="$3" harness="$4" required flag identity actual_head slot_entry
-    for required in run_id head stage round slot producer tier record_dir; do
+    local mode="$1" finder_slug="$2" harness="$3" required flag actual_head slot_entry
+    for required in run_id head stage round slot tier record_dir; do
         flag="--${required//_/-}"
         required="envelope_${required}"
         [ -n "${!required}" ] || {
@@ -691,11 +687,6 @@ review_envelope_prepare() {
         echo "envelope mode requires jq and node" >&2
         exit 2
     }
-    identity="$(basename "$runner_path")@$(git hash-object -- "$runner_path")" || exit 2
-    [ "$envelope_producer" = "$identity" ] || {
-        echo "--producer '$envelope_producer' does not match this runner's own identity '$identity'" >&2
-        exit 2
-    }
     [ -d "$envelope_record_dir" ] && [ -f "$envelope_record_dir/run.json" ] || {
         echo "--record-dir must name an existing run record directory containing run.json" >&2
         exit 2
@@ -705,8 +696,7 @@ review_envelope_prepare() {
         exit 2
     }
     # producer.harness is the registry slug of the CLI that actually ran, the
-    # same vocabulary every other producer uses; the runner's own identity is
-    # input validation above, not producer metadata.
+    # same vocabulary every other producer uses.
     jq -e --arg h "$harness" '[.harnesses[]? | select(.slug == $h)] | length == 1' "$envelope_registry" >/dev/null || {
         echo "harness '$harness' is not registered in $envelope_registry" >&2
         exit 2
@@ -995,7 +985,7 @@ review_envelope_cleanup() {
 # An envelope binding flag without --envelope would otherwise be silently
 # ignored, and the caller would wait for a pass that legacy mode never writes.
 review_envelope_refuse_stray_flags() {
-    if [ -n "${envelope_run_id}${envelope_head}${envelope_stage}${envelope_round}${envelope_slot}${envelope_producer}${envelope_tier}${envelope_record_dir}${envelope_registry}" ]; then
+    if [ -n "${envelope_run_id}${envelope_head}${envelope_stage}${envelope_round}${envelope_slot}${envelope_tier}${envelope_record_dir}${envelope_registry}" ]; then
         echo "envelope binding flags (--run-id, --head, ...) require --envelope" >&2
         exit 2
     fi

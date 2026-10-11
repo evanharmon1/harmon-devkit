@@ -225,12 +225,9 @@ implementer lanes, synthesis, and remediation.
 **The finder invocation in envelope mode is the dispatched role, on every
 harness.** Run the slot's registry task with `--envelope` and the captured
 binding as leading flags — `--run-id`, `--head`, `--stage`, `--round`,
-`--slot`, `--tier` (the resolved challenger or reviewer tier), `--record-dir`,
-and `--producer` set to the identity you expect, `<runner>@<git blob sha of
-the runner>` — then the branch-scoped `--base <ref>`. That check is input
-validation, not an authority: what makes the pass evidence is the receipt
-step below. The runner refuses a
-`--producer` that is not its own identity, a head that is not `HEAD`, a run id
+`--slot`, `--tier` (the resolved challenger or reviewer tier) and
+`--record-dir` — then the branch-scoped `--base <ref>`. The runner refuses a
+head that is not `HEAD`, a run id
 `run.json` does not bind, and a base whose merge base is not the default
 branch's; it binds the finder's structured answer to the captured run, head,
 stage, round, finder and slot, records the CLI that ran as
