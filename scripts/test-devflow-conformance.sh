@@ -46,10 +46,10 @@
 # Run via `task test:devflow-conformance`. Needs node, python3, and task.
 set -euo pipefail
 
-SOURCE_REV="bf2f31bdc4eef3a3f2abb62b11f50723c2ac1530"
+SOURCE_REV="f93e0c2614f9e59c5031d5ac0f3c05bb989d5ca4"
 REGISTRY_SOURCE_REV="81bbe78784c0b146e754e80030274ff95e10cf51"
-CORPUS_BLOB="522a2cc21f5353252cd89a9082f3bf7e6c9939fb"
-RUNNER_BLOB="598834eb00a452b1e01d3a15bc374fb5b4c8acdd"
+CORPUS_BLOB="3b2fc854eaac0002d81bf4576afe7f716ec85bd7"
+RUNNER_BLOB="bbe218be11ff87181fba20f164804870f28420c7"
 POLICY_BLOB="7e36129a43e0ae73c8a8c878e6055fdab8a1e6ab"
 REGISTRY_BLOB="27844622efb4a7f8508729e6b413170b67bd7b3f"
 
@@ -217,21 +217,187 @@ else
     err "resolvePolicy accepted mergeBasePolicyAbsent together with a mergeBaseDoc"
 fi
 
-# The shared corpus's malformed --rigor-source case omits --rigor, so it would
-# still exit 2 through "--rigor-source requires --rigor" if the value check
-# vanished. Isolate the value check here (Codex cloud review cycle 2 on
-# #1343, finding 2; the canonical corpus fix is tracked in #1345).
-echo "==> malformed --rigor-source is refused by its own value check"
+# A trusted caller that runs a merge-base reader DIRECTLY (dev-flow-support's
+# step 0, /integrate's merge-base recipe) never goes through --closure, so the
+# reader's own probe cannot see it. Both recipes decide the governing argument
+# with lib/merge-base-policy.sh (harmon-devkit#1345, criteria 1, 2 and 4); the
+# caller below mirrors their code exactly: the merge base's helper (or an
+# operator pin when the merge base predates it), then the one-word answer
+# turned into an argument array, then the reader.
+echo "==> trusted callers carry an absent merge-base policy"
+helper="$support/lib/merge-base-policy.sh"
+mbrepo="$scratch/mbrepo"
+make_repo "$mbrepo" "$support/devflow-policy.mjs"
+# The branch policy differs from the built-in fallback (review cap 3), so a
+# resolution governed by the branch is visible in the output.
+sed -e '/^\[rounds\.standard\]$/,/^$/ s/^review         = 3$/review         = 1/' \
+    "$fixtures/policy.toml" >"$mbrepo/.devflow.toml"
+cmp -s "$fixtures/policy.toml" "$mbrepo/.devflow.toml" &&
+    err "the branch-policy edit changed nothing — update the sed alongside policy.toml"
+(
+    export GIT_CONFIG_GLOBAL="$scratch/gitconfig" GIT_CONFIG_NOSYSTEM=1
+    git config --global user.name conformance
+    git config --global user.email conformance@example.invalid
+    cd "$mbrepo"
+    git init -q
+    git add scripts agent-registry.json Taskfile.yml
+    git commit -q -m "chore: merge base without the helper or a policy"
+    git tag prehelper
+    cp "$helper" scripts/lib/merge-base-policy.sh
+    git add scripts/lib/merge-base-policy.sh
+    git commit -q -m "chore: merge base without a policy"
+    git tag base
+    git add .devflow.toml
+    git commit -q -m "feat: the branch adds the policy"
+    git tag branch
+    printf '%s\n' '#!/usr/bin/env bash' 'echo absent' >scripts/lib/merge-base-policy.sh
+    git commit -q -am "fix: a branch that rewrites the helper to answer absent"
+    git tag rogue
+    git checkout -q branch
+) >/dev/null 2>&1 || err "could not build the merge-base scratch repository"
+
+# run_caller BASE READER — the recipes' caller; prints the reader's stdout.
+# The helper is a governing file: it runs the merge base's copy, else the
+# operator pin in $pinned_mb_helper, else stops as indeterminate (status 2).
+run_caller() {
+    local base="$1" reader="$2" rel=scripts/lib/merge-base-policy.sh mb_helper mb_state
+    rm -f "$scratch/mb-devflow.toml"
+    if git cat-file -e "${base}:${rel}" 2>/dev/null; then
+        mkdir -p "$scratch/mb-closure/scripts/lib"
+        git show "${base}:${rel}" >"$scratch/mb-closure/$rel" || return 2
+        mb_helper="$scratch/mb-closure/$rel"
+    else
+        mb_helper="${pinned_mb_helper:-}"
+        [ -n "$mb_helper" ] || {
+            echo "merge-base helper: the merge base predates it and no operator pin was supplied — indeterminate" >&2
+            return 2
+        }
+    fi
+    mb_state="$(bash "$mb_helper" "$base" "$reader" "$scratch/mb-devflow.toml")" || return 1
+    case "$mb_state" in
+    present) mb_policy=(--merge-base-policy "$scratch/mb-devflow.toml") ;;
+    absent) mb_policy=(--merge-base-policy-absent) ;;
+    *) return 1 ;;
+    esac
+    node "$reader" resolve --policy .devflow.toml "${mb_policy[@]}" \
+        --merge-base-registry agent-registry.json --registry agent-registry.json \
+        --taskfile-dir . --json
+}
+
 set +e
-node "$support/devflow-policy.mjs" resolve --policy "$fixtures/policy.toml" \
-    --rigor standard --rigor-source bogus --json >/dev/null 2>"$scratch/rigor-source.err"
-rs_status=$?
+state="$(cd "$mbrepo" && bash "$helper" base "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-absent.toml")"
+st=$?
 set -e
-if [ "$rs_status" -eq 2 ] && grep -Fq -- '--rigor-source must be "operator" or "label"' "$scratch/rigor-source.err"; then
-    echo "  ✓ --rigor-source bogus (with --rigor) exits 2 on the value check"
+if [ "$st" -eq 0 ] && [ "$state" = "absent" ] && [ ! -e "$scratch/mb-absent.toml" ]; then
+    echo "  ✓ a merge base without .devflow.toml answers absent and writes nothing"
 else
-    err "--rigor standard --rigor-source bogus exited $rs_status: $(head -1 "$scratch/rigor-source.err")"
+    err "absent merge base: exit $st, answer '$state'"
 fi
+
+set +e
+(cd "$mbrepo" && run_caller base "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-absent.json" 2>"$scratch/caller-absent.err"
+st=$?
+set -e
+if [ "$st" -eq 0 ] && node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.exit(r.source === "built-in-fallback" && r.rounds.review === 3 ? 0 : 1);
+' "$scratch/caller-absent.json"; then
+    echo "  ✓ a branch that adds the policy resolves under the built-in fallback, not its own policy"
+else
+    err "branch-adds-policy caller exited $st: $(head -2 "$scratch/caller-absent.err")"
+fi
+
+set +e
+state="$(cd "$mbrepo" && bash "$helper" branch "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-present.toml")"
+st=$?
+set -e
+if [ "$st" -eq 0 ] && [ "$state" = "present" ] && cmp -s "$scratch/mb-present.toml" "$mbrepo/.devflow.toml"; then
+    echo "  ✓ a merge base with .devflow.toml answers present and materializes its bytes"
+else
+    err "present merge base: exit $st, answer '$state'"
+fi
+
+set +e
+(cd "$mbrepo" && bash "$helper" no-such-rev "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-bad.toml") >"$scratch/bad.out" 2>/dev/null
+bad=$?
+(cd "$mbrepo" && bash "$helper" "" "$mbrepo/scripts/devflow-policy.mjs" "$scratch/mb-bad.toml") >"$scratch/empty.out" 2>/dev/null
+empty=$?
+set -e
+if [ "$bad" -eq 2 ] && [ "$empty" -eq 2 ] && [ ! -s "$scratch/bad.out" ] && [ ! -s "$scratch/empty.out" ]; then
+    echo "  ✓ an unresolvable or empty merge base is indeterminate, never absent"
+else
+    err "bad merge base: exit $bad / empty merge base: exit $empty (want 2 and 2, no answer)"
+fi
+
+# Criterion 4: an older reader that accepts any option would ignore the flag
+# and let the branch policy govern. The caller must stop before running it.
+printf '%s\n' 'process.stdout.write("OLD-READER-RAN\n");' >"$scratch/old-reader.mjs"
+set +e
+(cd "$mbrepo" && run_caller base "$scratch/old-reader.mjs") >"$scratch/caller-old.out" 2>"$scratch/caller-old.err"
+st=$?
+set -e
+if [ "$st" -ne 0 ] && grep -Fq 'predates --merge-base-policy-absent' "$scratch/caller-old.err" &&
+    ! grep -Fq 'OLD-READER-RAN' "$scratch/caller-old.out"; then
+    echo "  ✓ the caller stops rather than hand the flag to a reader that predates it"
+else
+    err "the caller ran a reader that predates --merge-base-policy-absent (exit $st)"
+fi
+
+# The helper governs too (harmon-devkit#1345, disposition 1): a branch that
+# rewrites it to answer "absent" must not swap the merge-base policy for the
+# built-in fallback. The branch copy really does lie (the control below), so
+# only running the merge base's copy keeps the merge-base policy (review 1).
+set +e
+state="$(cd "$mbrepo" && git checkout -q rogue && bash scripts/lib/merge-base-policy.sh branch x y)"
+(cd "$mbrepo" && run_caller branch "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-rogue.json" 2>"$scratch/caller-rogue.err"
+st=$?
+set -e
+if [ "$state" = "absent" ] && [ "$st" -eq 0 ] && node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.exit(r.source !== "built-in-fallback" && r.rounds.review === 1 ? 0 : 1);
+' "$scratch/caller-rogue.json"; then
+    echo "  ✓ a branch that rewrites the helper to answer absent still resolves the merge-base policy"
+else
+    err "rogue helper: control answered '$state', caller exited $st: $(head -2 "$scratch/caller-rogue.err")"
+fi
+
+# First adoption: a merge base that predates the helper stops as
+# indeterminate without an operator pin, never running the branch's copy, and
+# runs the pin when one is supplied.
+set +e
+(cd "$mbrepo" && run_caller prehelper "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-nopin.out" 2>"$scratch/caller-nopin.err"
+st=$?
+(cd "$mbrepo" && pinned_mb_helper="$helper" run_caller prehelper "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-pin.json" 2>"$scratch/caller-pin.err"
+pst=$?
+set -e
+(cd "$mbrepo" && git checkout -q branch) || err "could not restore the scratch checkout"
+if [ "$st" -eq 2 ] && [ ! -s "$scratch/caller-nopin.out" ] && grep -Fq 'indeterminate' "$scratch/caller-nopin.err"; then
+    echo "  ✓ a merge base that predates the helper stops as indeterminate without an operator pin"
+else
+    err "first adoption without a pin exited $st (want 2, no output)"
+fi
+if [ "$pst" -eq 0 ] && node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.exit(r.source === "built-in-fallback" ? 0 : 1);
+' "$scratch/caller-pin.json"; then
+    echo "  ✓ a merge base that predates the helper runs the operator-pinned helper"
+else
+    err "first adoption with a pin exited $pst: $(head -2 "$scratch/caller-pin.err")"
+fi
+
+# Both recipes call the helper and pass its answer, never a bare
+# `git show "${base}:.devflow.toml"` or an unconditional --merge-base-policy.
+for recipe in "$repo_root/ai/skills/universal/dev-flow-support/SKILL.md" \
+    "$repo_root/ai/skills/universal/integrate/SKILL.md"; do
+    if grep -Fq 'lib/merge-base-policy.sh' "$recipe" && grep -Fq '"${mb_policy[@]}"' "$recipe" &&
+        grep -Fq 'bash "$mb_helper"' "$recipe" && grep -Fq '${pinned_mb_helper:-}' "$recipe" &&
+        ! grep -Fq '$support_dir/lib/merge-base-policy.sh' "$recipe" &&
+        ! grep -Fq 'git show "${base}:.devflow.toml"' "$recipe"; then
+        echo "  ✓ ${recipe#"$repo_root"/} carries the absent-base state"
+    else
+        err "${recipe#"$repo_root"/} does not decide its merge-base argument through lib/merge-base-policy.sh"
+    fi
+done
 
 echo "==> conformance corpus against the vendored reader"
 make_repo "$scratch/repo" "$support/devflow-policy.mjs"

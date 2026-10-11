@@ -366,7 +366,31 @@ reader_dir="$(dirname "$reader")"
 mkdir -p "$mb_dir/$reader_dir/lib"
 git show "${base}:${reader}"                    >"$mb_dir/${reader}"
 git show "${base}:${reader_dir}/lib/toml-lite.mjs" >"$mb_dir/${reader_dir}/lib/toml-lite.mjs"
-git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
+
+# The merge base may have NO .devflow.toml (a branch that adds it). Ask, never
+# infer it from a failed `git show`: the shared helper looks it up with a
+# checked tree read, materializes it when present, and answers one word. On
+# "absent" it has already confirmed the materialized reader supports
+# --merge-base-policy-absent — an older reader that accepts any option would
+# ignore the flag and let the branch policy govern, so it stops (exit 1)
+# instead. Any non-zero status is a blocker, never "absent". The helper is a
+# governing file too, so run the MERGE BASE's copy beside the reader, never the
+# branch's; a merge base without one follows dev-flow-support step 0's
+# first-adoption rule (an operator-pinned $pinned_mb_helper, or stop).
+helper="${reader_dir}/lib/merge-base-policy.sh"
+if git cat-file -e "${base}:${helper}" 2>/dev/null; then
+    git show "${base}:${helper}" >"$mb_dir/${helper}" || exit 1
+    mb_helper="$mb_dir/${helper}"
+else
+    mb_helper="${pinned_mb_helper:-}"
+    [ -n "$mb_helper" ] || exit 1   # first adoption with no pin: indeterminate
+fi
+mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader}" "$mb_dir/devflow.toml")" || exit 1
+case "$mb_state" in
+present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
+absent) mb_policy=(--merge-base-policy-absent) ;;
+*) exit 1 ;;
+esac
 
 # Always extract the merge-base registry — it is a repository file, so it
 # exists at the merge base whether or not THIS change edits it, and the
@@ -376,10 +400,24 @@ git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 # the task target is branch-controlled, so routing through it lets the branch
 # choose the command line that is supposed to constrain it.
 node "$mb_dir/${reader}" resolve --closure "$mb_dir" \
-    --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
+    --policy .devflow.toml "${mb_policy[@]}" \
     --merge-base-registry "$mb_dir/agent-registry.json" \
     --registry agent-registry.json --taskfile-dir . --json
 ```
+
+**Carry the absent-base state; never improvise it.** `mb_policy` is the one
+governing argument for every later reader or exit-engine call in this run —
+`--merge-base-policy <file>` when the merge base has a policy, and
+`--merge-base-policy-absent` when it has none, so the built-in fallback
+governs rather than the branch's own new file (harmon-devkit#1345). The
+helper `dev-flow-support/assets/lib/merge-base-policy.sh` is the same one
+`dev-flow-support`'s step 0 calls, so the whole stage chain resolves the same
+governing policy. It is a governing file in its own right: the recipe runs the
+merge base's copy, and a merge base that predates it follows `dev-flow-support`
+step 0's **First adoption** rule, which is the one statement of it. Both readers
+refuse an **empty** `--merge-base-policy` with usage status 2 (an unset `$mb_dir` or `$base` is a caller bug, never "no
+merge-base policy"), and refuse it combined with
+`--merge-base-policy-absent`.
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
 reader imports `dev-flow-support/assets/lib/toml-lite.mjs`, so extracting the entrypoint alone
@@ -1295,7 +1333,13 @@ validated against its integrator pass — and before any remediation push, run
 ```
 
 (`$support_dir` resolved as at the top of this skill) and act on its
-`outcome`. It counts completed cycles — exempt included; a carry, an
+`outcome`. When the run resolved its policy through the merge-base path
+above, pass the branch `.devflow.toml` as `--policy` and the same
+`"${mb_policy[@]}"` the resolution used: `dev-flow-exit.mjs` accepts
+`--merge-base-policy-absent` exactly as the reader does, so an absent merge
+base governs the exit through the built-in fallback, as it governed the
+resolution, and an empty `--merge-base-policy` is a usage error (exit 1)
+there too. It counts completed cycles — exempt included; a carry, an
 incomplete attempt, and a retry add none — separately from remediation
 pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
 confirmed P0/P1 from any reviewer, a late human review included, breaks the

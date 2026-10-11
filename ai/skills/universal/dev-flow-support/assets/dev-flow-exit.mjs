@@ -12,7 +12,8 @@
 //
 // CLI:
 //   node dev-flow-exit.mjs --run <dir> --stage <challenge|review|integration> \
-//     --policy <file> [--rigor <level>] [--merge-base-policy <file>] \
+//     --policy <file> [--rigor <level>] \
+//     [--merge-base-policy <file> | --merge-base-policy-absent] \
 //     [--current-head <sha>] [--history <file> | --repo-root <dir>] \
 //     [--heads <file>] [--closure <dir>] [--validator <path>]
 //     [--verification-only] [--json]
@@ -23,6 +24,16 @@
 // structurally complete — that check belongs entirely to `devflow-policy.mjs
 // resolve`, run once, before a caller ever invokes this script (see
 // ai/schemas/README.md).
+//
+// --merge-base-policy-absent (harmon-devkit#1345) says the merge base has no
+// .devflow.toml at all — a branch that adds it — so the built-in fallback
+// governs, exactly as devflow-policy.mjs resolves it; without it, a caller
+// whose merge base has no policy could only omit --merge-base-policy and let
+// the branch's own policy govern. It cannot be combined with
+// --merge-base-policy, and an empty --merge-base-policy is refused rather
+// than read as "no merge-base policy" (an unset shell variable is a caller
+// bug, never a decision). Each refusal is a usage error, exit 1 — not the
+// reader's 2, which this engine reserves for an indeterminate verdict.
 //
 // Exit codes: 0 continue, 20 converged, 21 diverging, 22 capped,
 // 2 indeterminate, 1 usage/parse error.
@@ -2009,6 +2020,19 @@ function tryDelegateToClosure(argv) {
       }
     }
   }
+  // Same hazard as devflow-policy.mjs's own --closure guard: a trusted copy
+  // written before --merge-base-policy-absent ignores it and lets the
+  // branch's policy govern the exit — the one outcome the flag prevents.
+  if (passthrough.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="))) {
+    const src = readTrustedSource();
+    if (!src) return 1;
+    if (!src.includes("merge-base-policy-absent")) {
+      console.error(
+        `dev-flow-exit: the --closure reader (${trustedScript}) predates --merge-base-policy-absent and would silently drop it, letting the branch policy govern — refusing`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`dev-flow-exit: could not exec the --closure reader: ${result.error.message}`);
@@ -2048,10 +2072,28 @@ async function main() {
     return 1;
   }
 
+  // Presence, not truthiness: an empty --merge-base-policy (an unset
+  // variable in the caller) must never fall through to "no merge-base
+  // policy", which lets the branch's own policy govern (harmon-devkit#1345).
+  const mergeBasePolicyGiven = args["merge-base-policy"] !== undefined;
+  const mergeBasePolicyAbsent = args["merge-base-policy-absent"] !== undefined;
+  if (mergeBasePolicyAbsent && args["merge-base-policy-absent"] !== true) {
+    console.error("dev-flow-exit: --merge-base-policy-absent takes no value");
+    return 1;
+  }
+  if (mergeBasePolicyGiven && mergeBasePolicyAbsent) {
+    console.error("dev-flow-exit: --merge-base-policy-absent cannot be combined with --merge-base-policy");
+    return 1;
+  }
+  if (mergeBasePolicyGiven && (args["merge-base-policy"] === "" || args["merge-base-policy"] === true)) {
+    console.error("dev-flow-exit: --merge-base-policy must be a non-empty file path");
+    return 1;
+  }
+
   let policyDoc, mergeBaseDoc;
   try {
     policyDoc = parseToml(readFileSync(args.policy, "utf8"));
-    if (args["merge-base-policy"]) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
+    if (mergeBasePolicyGiven) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
   } catch (err) {
     console.error(`dev-flow-exit: could not read/parse policy inputs: ${err.message}`);
     return 1;
@@ -2059,7 +2101,7 @@ async function main() {
 
   let resolved;
   try {
-    resolved = resolvePolicy(policyDoc, { rigor: args.rigor, mergeBaseDoc });
+    resolved = resolvePolicy(policyDoc, { rigor: args.rigor, mergeBaseDoc, mergeBasePolicyAbsent });
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
       console.error(`dev-flow-exit: ${err.message}`);

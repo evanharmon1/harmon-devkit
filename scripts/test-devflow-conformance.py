@@ -328,9 +328,11 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
                     replace(source, case.get("config_replacements", []), name, "config_replacements")
                 )
                 policy_entry = case.get("policy_entry")
-                if policy_entry is not None and basis != "absent":
-                    raise ValueError(f"{name}: policy_entry requires absent basis")
-                if policy_entry == "dangling-symlink":
+                if policy_entry == "missing" and basis in {"absent", "merge-base"}:
+                    pass  # A deleted branch policy may still have a governing merge-base file.
+                elif policy_entry is not None and basis != "absent":
+                    raise ValueError(f"{name}: policy_entry requires absent basis (or missing under merge-base)")
+                elif policy_entry == "dangling-symlink":
                     policy.symlink_to(tmp_path / "missing.toml")
                 elif policy_entry == "dangling-parent-symlink":
                     parent = tmp_path / "current"

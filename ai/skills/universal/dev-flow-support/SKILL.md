@@ -33,6 +33,7 @@ share lives here. Nothing is shipped through the harmon-init template.
 | `assets/render-dev-flow.sh` → `assets/render-dev-flow.mjs` | review, integrate, retro | Render a run record into its PR-body and comment projections. |
 | `assets/dev-flow-exit.sh` → `assets/dev-flow-exit.mjs` | review, retro | Compute a confidence stage's exit verdict from the run record. |
 | `assets/lib/toml-lite.mjs` | the readers above | Restricted TOML parser. |
+| `assets/lib/merge-base-policy.sh` | step 0 below, integrate | Decide the governing merge-base argument for a reader run directly: `--merge-base-policy <file>` when the merge base has `.devflow.toml`, `--merge-base-policy-absent` when it has none (and only for a reader that supports the flag); indeterminate otherwise. |
 | `assets/lib/json-schema-subset.mjs` | the validators above | Hand-rolled JSON Schema subset validator. |
 | `assets/lib/run-exit-fixtures.mjs` | `assets/test-dev-flow-exit.sh` | Fixture driver for the stage-exit corpus. |
 | `assets/schemas/` | `validate-result-schemas.mjs`, `render-dev-flow.mjs` | The package's own copy of the shared JSON Schemas — the default schemas directory, so a vendored consumer validates without a separate schema sync. |
@@ -61,8 +62,8 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
    decides whether step 0 applies; the working tree does.
    - **When it applies:** the **working tree** differs from the merge base
      in a governing file: `.devflow.toml`, `agent-registry.json`,
-     `assets/devflow-policy.mjs`, `assets/lib/toml-lite.mjs` or
-     `assets/tier-inputs.mjs`. Commits alone are not enough; an uncommitted,
+     `assets/devflow-policy.mjs`, `assets/lib/toml-lite.mjs`,
+     `assets/lib/merge-base-policy.sh` or `assets/tier-inputs.mjs`. Commits alone are not enough; an uncommitted,
      staged or untracked edit governs just as much:
 
      ```sh
@@ -81,7 +82,7 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
          changed="$(git diff --name-only "$mb")" || { echo "step 0 indeterminate: git diff failed" >&2; return 2; }
          untracked="$(git ls-files --others --exclude-standard)" || { echo "step 0 indeterminate: git ls-files failed" >&2; return 2; }
          files="$(printf '%s\n%s\n' "$changed" "$untracked" |
-             grep -E '(^|/)(\.devflow\.toml|agent-registry\.json|dev-flow-support/assets/(devflow-policy\.mjs|lib/toml-lite\.mjs|tier-inputs\.mjs))$')" || true
+             grep -E '(^|/)(\.devflow\.toml|agent-registry\.json|dev-flow-support/assets/(devflow-policy\.mjs|lib/toml-lite\.mjs|lib/merge-base-policy\.sh|tier-inputs\.mjs))$')" || true
          [ -n "$files" ] || return 1
          printf '%s\n' "$files"
      }
@@ -102,14 +103,64 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      branch or merge base that cannot be resolved is never mistaken for "no
      governing file".
    - **What to do:** before running any branch copy, materialize the
-     **merge-base** copy of all five *outside the worktree*
-     (`git show <merge-base>:<path>` into a scratch closure that keeps the
-     helper beside its `lib/`). Materialize the merge-base `Taskfile.yml` and
+     **merge-base** copy of all six *outside the worktree*
+     (`git show <merge-base>:<path>` into a scratch closure that keeps
+     `tier-inputs.mjs` and `devflow-policy.mjs` beside their shared `lib/`,
+     with `lib/merge-base-policy.sh` in it). Materialize the merge-base `Taskfile.yml` and
      any `taskfiles/` it includes into the same closure. Run *that*
-     `tier-inputs.mjs` and *that* `devflow-policy.mjs`, both with the
-     merge-base `.devflow.toml` as `--policy`, the merge-base registry, and
+     `tier-inputs.mjs` with the closure's `.devflow.toml` as `--policy`, and
+     *that* `devflow-policy.mjs` with the governing merge-base argument
+     below, the merge-base registry as `--merge-base-registry`, and
      `--taskfile-dir <closure>`, so the gate-target list also comes from the
      merge base, never the branch's.
+   - **The merge base may have no `.devflow.toml`** — a branch that adds
+     it. That is not "no merge-base rule": the built-in fallback governs,
+     never the branch's own new file. Ask the shared helper rather than
+     inferring absence from a failed `git show`; it looks the path up with a
+     checked tree read, materializes the file when present, and answers one
+     word. Both this step and `/integrate`'s merge-base recipe call it, so
+     the whole stage chain resolves the same governing policy:
+
+     ```sh
+     # $mb is step0_probe's merge base; $closure the materialized closure,
+     # $mb_reader the merge-base devflow-policy.mjs inside it; tier_args are
+     # step 3's translated flags, from the closure's tier-inputs.mjs.
+     # The helper governs too: run the closure's merge-base copy, never the
+     # branch's. A merge base without one is the first adoption below.
+     mb_helper="$(dirname "$mb_reader")/lib/merge-base-policy.sh"
+     [ -f "$mb_helper" ] || mb_helper="${pinned_mb_helper:-}"
+     [ -n "$mb_helper" ] ||
+         { echo "step 0 indeterminate: the merge base predates lib/merge-base-policy.sh and no operator-pinned helper was supplied" >&2; exit 2; }
+     mb_state="$(bash "$mb_helper" "$mb" "$mb_reader" "$closure/.devflow.toml")" ||
+         { echo "step 0 stopped: merge-base policy lookup failed or the reader is too old" >&2; exit 2; }
+     case "$mb_state" in
+     present) mb_policy=(--merge-base-policy "$closure/.devflow.toml") ;;
+     absent) mb_policy=(--merge-base-policy-absent) ;;
+     *) echo "step 0 stopped: unexpected answer '$mb_state'" >&2; exit 2 ;;
+     esac
+     node "$mb_reader" resolve --policy .devflow.toml "${mb_policy[@]}" \
+         --merge-base-registry "$closure/agent-registry.json" \
+         --registry agent-registry.json --taskfile-dir "$closure" \
+         --json ${tier_args[@]+"${tier_args[@]}"}
+     ```
+
+     `present` passes `--merge-base-policy <file>`; `absent` passes
+     `--merge-base-policy-absent`, and `tier-inputs.mjs` then reads the
+     closure's missing `.devflow.toml`, which is the built-in fallback's
+     catalog too. **Any non-zero status stops step 0 as indeterminate** —
+     never read it, or empty output, as "absent". On `absent` the helper has
+     already confirmed the merge-base reader's source names
+     `merge-base-policy-absent` (the same check the reader's own `--closure`
+     probe makes): a reader written before the flag accepts any option,
+     would ignore it, and would let the branch policy govern, so the helper
+     exits 1 instead, and that is a stop, exactly like a missing reader.
+     When the branch has no `.devflow.toml` either (step 0 fired on another
+     governing file), neither side has a policy: drop `mb_policy` and pass
+     the closure's missing `.devflow.toml` as `--policy` with the closure
+     registry as `--registry`, which is the built-in fallback.
+     Both readers refuse an **empty** `--merge-base-policy` with usage status
+     2 — an unset variable is a caller bug, never "no merge-base policy" —
+     and refuse it combined with `--merge-base-policy-absent`.
    - **First adoption:** when the merge base predates `tier-inputs.mjs`, the
      merge base has no trusted helper. Use an **operator-pinned** helper and
      reader supplied *outside the candidate branch* (`AGENTS.md`: "an
@@ -117,6 +168,15 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      them only the materialized merge-base policy, registry and target list.
      Only when no such pin exists is tier resolution **indeterminate**: stop
      and report it. Never fall back to the branch copy.
+     **The same rule governs `lib/merge-base-policy.sh`**, here and in
+     `/integrate`'s merge-base recipe, which points at this sentence rather
+     than restating it: a branch that edits the helper could answer `absent`
+     and swap the merge-base policy for the built-in fallback, so both
+     recipes run the merge base's copy, materialized only when
+     `git cat-file -e <merge-base>:<path>` finds it. When the merge base
+     predates the helper, run an operator-pinned helper (`$pinned_mb_helper`,
+     a path outside the candidate branch); without one, resolution is
+     **indeterminate**: stop and report it. Never run the branch's copy.
    - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type,
