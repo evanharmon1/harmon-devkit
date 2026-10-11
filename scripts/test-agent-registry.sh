@@ -65,10 +65,10 @@ const expectedVersions = {
     'claude/opus': ['5.5|Opus 5.5'],
     'claude/sonnet': ['5.5|Sonnet 5.5'],
     'claude/haiku': ['5.5|Haiku 5.5'],
-    'gpt/astra': ['6.1|Astra 6.1'],
+    'gpt/astra': ['6|Astra 6'],
     'gpt/sol': ['6.1|Sol 6.1'],
-    'gpt/terra': ['6.1|Terra 6.1'],
-    'gpt/luna': ['6.1|Luna 6.1'],
+    'gpt/terra': ['5.6|Terra 5.6'],
+    'gpt/luna': ['6|Luna 6'],
     'mai/code-flash': ['1.1|Code-1.1-Flash'],
     'mai/thinking': ['1|Thinking-1'],
     'qwen/max': ['3.8|3.8 Max'],
@@ -132,9 +132,9 @@ deepStrictEqual(
 
 const expectedCliIds = {
     'gpt/astra': { 'codex-cli': 'gpt-6-astra' },
-    'gpt/sol': { 'codex-cli': 'gpt-5.6-sol' },
+    'gpt/sol': { 'codex-cli': 'gpt-6.1-sol' },
     'gpt/terra': { 'codex-cli': 'gpt-5.6-terra' },
-    'gpt/luna': { 'codex-cli': 'gpt-5.6-luna' },
+    'gpt/luna': { 'codex-cli': 'gpt-6-luna' },
     'qwen/max': { 'claude-code-qwen': 'qwen3.8-max' },
     'qwen/coder-plus': { 'claude-code-qwen': 'qwen3-coder-plus' },
     'qwen/flash': { 'claude-code-qwen': 'qwen3.8-flash' },
@@ -164,7 +164,7 @@ NODE
 # REGISTRY_PARITY_REV. The test runs offline: when harmon-init changes this
 # shape, refresh the literal from that revision (the same projection run over
 # its schema) and move the pin, never edit one side to suit the other.
-REGISTRY_PARITY_REV="9c9c8879bdeee22f6b23ca3635b9f3616b2253af"
+REGISTRY_PARITY_REV="a4c16972c9d45fbdfbf5959d0a00a32d1f742c35"
 check_shape_parity() {
     node --input-type=module - "$1" "$REGISTRY_PARITY_REV" <<'NODE'
 import { readFile } from 'node:fs/promises'

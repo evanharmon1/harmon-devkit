@@ -538,6 +538,50 @@ publishing.
 - `gh pr create --draft`, then fetch `headRefOid,isDraft` and require both the
   pushed SHA and `isDraft == true`. A non-draft result is not the normal
   publication path; stop and reconcile it before integrating.
+- **Record the implementing model** as soon as the draft is confirmed: the
+  four values `model-family`, `model`, `model-version` and `model-effort`
+  (harmon-devkit#1262) for the model that **actually ran** this
+  implementation — your host's attestation of family, model line, version and
+  reasoning effort, never a value read from the issue, the repository, or a
+  label. The writer is this skill's own `assets/record-implementer.sh`,
+  resolved from `.agents/skills/implement`, then `.claude/skills/implement`,
+  then `ai/skills/universal/implement` in harmon-devkit itself — never a
+  repository-root `scripts/` path. The registry comes from the fetched
+  default branch exactly as `/claim` reads it, because a branch may not
+  supply the registry it is validated against:
+
+  ```sh
+  implement_dir=<the resolved implement skill directory>
+  registry="$(mktemp)"
+  git show "$default:agent-registry.json" >"$registry"   # step 3's fetched default ref
+  "$implement_dir/assets/record-implementer.sh" apply \
+    --repo "$repo" --pr <n> --issue <issue #> --registry "$registry" \
+    --harness <harness slug> --family <family> --model <line> \
+    --version <version> --effort <effort>   # omit --effort only for a harness that declares no efforts
+  ```
+
+  It validates before writing anything — the harness exists, a fixed
+  harness's family matches, the family, line and version exist, the version
+  is not retired, and the effort is one the harness declares — and refuses
+  an unknown value rather than guessing one. A harness whose registry entry
+  declares **no** verified `efforts` (Antigravity, for one) records the other
+  three values and leaves `model-effort` unset, printing `model-effort not
+  recorded: harness <slug> declares no verified efforts`; a harness that does
+  declare efforts still owes one from its list. Then it labels the PR on
+  every owner type, and records the issue as labels on a personal-account
+  repository or the issue fields (`Model family`, `Model`, `Model version`,
+  `Model effort`) on an organization, **replacing any earlier implementer's
+  values** on the issue — including clearing an earlier implementer's effort
+  when this one records none, so a stale effort never sits beside a new
+  model. The last implementer wins there, while each PR keeps its own exact
+  record.
+  It never touches `claim:*`, and claim release never removes these values.
+  A refusal (exit 1) or an indeterminate read (exit 2) is a blocker: stop
+  and report it rather than writing a value by hand. When this session
+  cannot write labels (a harness without GitHub access, an Antigravity lane),
+  say so in the handoff; the dispatching orchestrator writes the record on
+  its behalf (`orchestrate` § PR-open confirmation). These values are a
+  record of fact — nothing reads them to choose a model.
 - **Delete the scratch file last** — only once `gh pr create` has returned a URL
   *and* you have re-read the PR body and confirmed the findings are in it. The
   file is the sole durable copy: a push rejected for auth, a validation error, a

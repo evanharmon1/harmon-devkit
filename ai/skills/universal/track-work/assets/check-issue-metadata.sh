@@ -18,6 +18,7 @@ Usage: check-issue-metadata.sh --repo [HOST/]OWNER/REPO --repo-root PATH
           [--issue-type TYPE] (--agent-authored|--human-authored)
           [--inapplicable AXIS]...
           [--impact VALUE --risk VALUE --complexity VALUE]
+          [--model-family F --model LINE --model-version V --model-effort E]
 
        check-issue-metadata.sh --required-axes --repo [HOST/]OWNER/REPO [--repo-root PATH]
 
@@ -44,7 +45,20 @@ Organization example:
     --label area:build --inapplicable layer --label domain:platform --human-authored
 
 Organization field proposals use --impact/--risk/--complexity; personal
-proposals use impact:*/risk:*/complexity:* labels. Agent drafts require all
+proposals use impact:*/risk:*/complexity:* labels.
+
+The implementer record (harmon-devkit#1262) is optional: on a personal
+repository the labels model-family:<family>, model:<line>,
+model-version:<version> and model-effort:<effort>; on an organization the
+issue-field flags --model-family/--model/--model-version/--model-effort.
+Family, line and version come together or not at all; the effort is
+optional, because an implementer whose harness declares no verified efforts
+records none. Each holds one value (the last implementer wins, so two
+implementers' values never sit side by side), and they are validated against
+the target checkout's agent-registry.json through the sibling
+implement/assets/record-implementer.sh: the family, its line and the line's
+version exist, the version is not retired, and the effort is on the
+registry's effort_ladder. An unknown value is refused, never guessed. Agent drafts require all
 three, a work type, and each active exclusive classification prefix from the
 manifest (area/layer/domain without a manifest; explicit none is a value).
 Human drafts are exempt from completeness. Agent --inapplicable is accepted only
@@ -312,6 +326,10 @@ author_type=""
 impact=""
 risk=""
 complexity=""
+model_family=""
+model_line=""
+model_version=""
+model_effort=""
 labels=()
 inapplicable=()
 
@@ -321,7 +339,7 @@ while [ "$#" -gt 0 ]; do
         help_text
         exit 0
         ;;
-    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable | --previous-title | --impact | --risk | --complexity)
+    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable | --previous-title | --impact | --risk | --complexity | --model-family | --model | --model-version | --model-effort)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo="$2" ;;
@@ -353,6 +371,27 @@ while [ "$#" -gt 0 ]; do
             --complexity)
                 [ -z "$complexity" ] || die "--complexity is repeated"
                 complexity="$2"
+                ;;
+            esac
+            ;;
+        --model-family | --model | --model-version | --model-effort)
+            [ -n "$2" ] || die "$1 requires a non-empty value"
+            case "$1" in
+            --model-family)
+                [ -z "$model_family" ] || die "--model-family is repeated"
+                model_family="$2"
+                ;;
+            --model)
+                [ -z "$model_line" ] || die "--model is repeated"
+                model_line="$2"
+                ;;
+            --model-version)
+                [ -z "$model_version" ] || die "--model-version is repeated"
+                model_version="$2"
+                ;;
+            --model-effort)
+                [ -z "$model_effort" ] || die "--model-effort is repeated"
+                model_effort="$2"
                 ;;
             esac
             ;;
@@ -433,7 +472,7 @@ validate_previous_title() {
 if [ "$title_only" -eq 1 ]; then
     [ "$required_axes_only" -eq 0 ] || usage
     [ "$title_set" -eq 1 ] || usage
-    [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] ||
+    [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity$model_family$model_line$model_version$model_effort" ] ||
         die "--title-only accepts only --title and optional --previous-title"
     [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] ||
         die "--title-only accepts only --title and optional --previous-title"
@@ -448,7 +487,7 @@ fi
 
 if [ "$required_axes_only" -eq 1 ]; then
     [ -n "$repo" ] || usage
-    [ -z "$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity" ] &&
+    [ -z "$owner_type$body_file$issue_type$work_type_label$author_type$impact$risk$complexity$model_family$model_line$model_version$model_effort" ] &&
         [ "$title_set" -eq 0 ] && [ "$previous_title_set" -eq 0 ] &&
         [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] || usage
     parse_target_repo
@@ -965,6 +1004,11 @@ fi
 
 has_ai_generated=0
 has_needs_triage=0
+implementer_family_labels=""
+implementer_line_labels=""
+implementer_version_labels=""
+implementer_effort_labels=""
+implementer_labels=()
 work_type_count=0
 impact_count=0
 risk_count=0
@@ -990,6 +1034,22 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         fi
     fi
     case "$label_key" in
+    model-family:* | model:* | model-version:* | model-effort:*)
+        implementer_family="${label_key%%:*}"
+        if [ "$owner_type" = organization ]; then
+            violation "organization issues record the implementer in issue fields; pass --$implementer_family instead of '$label'"
+            continue
+        fi
+        implementer_value="${label#*:}"
+        case "$implementer_family" in
+        model-family) implementer_family_labels="${implementer_family_labels}${implementer_value}"$'\n' ;;
+        model) implementer_line_labels="${implementer_line_labels}${implementer_value}"$'\n' ;;
+        model-version) implementer_version_labels="${implementer_version_labels}${implementer_value}"$'\n' ;;
+        *) implementer_effort_labels="${implementer_effort_labels}${implementer_value}"$'\n' ;;
+        esac
+        implementer_labels+=("$label")
+        continue
+        ;;
     impact:* | risk:* | complexity:*)
         classification_axis="${label_key%%:*}"
         classification_value="${label_key#*:}"
@@ -1167,6 +1227,80 @@ if [ -n "$undecided" ] && [ "$author_type" = agent ]; then
 fi
 if [ "$author_type" = agent ] && [ "$has_needs_triage" -eq 1 ]; then
     violation "agent-authored drafts must be fully classified; needs-triage is derived by the shared helper, never authored"
+fi
+
+# The implementer record: optional, all four or none, one value each. The
+# values are validated against the target's agent registry by the implement
+# skill's writer, so the checker and the writer can never disagree on what a
+# valid record is.
+if [ "$owner_type" = personal ] && [ -n "$model_family$model_line$model_version$model_effort" ]; then
+    violation "personal repositories record the implementer as model-family:*/model:*/model-version:*/model-effort:* labels, not field flags"
+fi
+implementer_proposed=0
+if [ "$owner_type" = personal ] && [ "${#implementer_labels[@]}" -gt 0 ]; then
+    implementer_proposed=1
+    for implementer_slot in model-family model model-version model-effort; do
+        case "$implementer_slot" in
+        model-family) implementer_values="$implementer_family_labels" ;;
+        model) implementer_values="$implementer_line_labels" ;;
+        model-version) implementer_values="$implementer_version_labels" ;;
+        *) implementer_values="$implementer_effort_labels" ;;
+        esac
+        implementer_count="$(printf '%s' "$implementer_values" | grep -c . || true)"
+        if [ "$implementer_slot" = model-effort ] && [ "$implementer_count" -eq 0 ]; then
+            model_effort=""
+            continue
+        fi
+        if [ "$implementer_count" -ne 1 ]; then
+            violation "the implementer record needs exactly one $implementer_slot:* label (found $implementer_count); a later implementer replaces the earlier values rather than sitting beside them"
+            implementer_proposed=0
+        fi
+        implementer_values="${implementer_values%$'\n'}"
+        case "$implementer_slot" in
+        model-family) model_family="$implementer_values" ;;
+        model) model_line="$implementer_values" ;;
+        model-version) model_version="$implementer_values" ;;
+        *) model_effort="$implementer_values" ;;
+        esac
+    done
+    if [ "$implementer_proposed" -eq 1 ]; then
+        [ "$live_read" -eq 1 ] || live="$(read_live_labels)" ||
+            die "could not read the target repository's labels to verify the implementer record"
+        live_read=1
+        for label in "${implementer_labels[@]}"; do
+            live_label_exists "$label" ||
+                violation "implementer label '$label' is not provisioned in the target repository"
+        done
+    fi
+elif [ "$owner_type" = organization ] && [ -n "$model_family$model_line$model_version$model_effort" ]; then
+    implementer_proposed=1
+    [ -n "$model_family" ] && [ -n "$model_line" ] && [ -n "$model_version" ] || {
+        violation "the implementer record needs all of --model-family, --model and --model-version (--model-effort is optional)"
+        implementer_proposed=0
+    }
+fi
+if [ "$implementer_proposed" -eq 1 ]; then
+    implementer_writer="$asset_dir/../../implement/assets/record-implementer.sh"
+    [ -x "$implementer_writer" ] ||
+        die "the implementer record validator is missing; vendor the implement skill alongside track-work"
+    implementer_registry="$repo_root/agent-registry.json"
+    [ -f "$implementer_registry" ] ||
+        die "the implementer record cannot be validated: $implementer_registry is absent"
+    implementer_rc=0
+    implementer_effort_args=()
+    [ -z "$model_effort" ] || implementer_effort_args=(--effort "$model_effort")
+    implementer_err="$("$implementer_writer" validate --registry "$implementer_registry" \
+        --family "$model_family" --model "$model_line" --version "$model_version" \
+        "${implementer_effort_args[@]+"${implementer_effort_args[@]}"}" 2>&1 >/dev/null)" || implementer_rc=$?
+    case "$implementer_rc" in
+    0) ;;
+    1)
+        while IFS= read -r line; do
+            [ -n "$line" ] && violation "implementer record ${line#record-implementer: }"
+        done <<<"$implementer_err"
+        ;;
+    *) die "the implementer record could not be validated: $implementer_err" ;;
+    esac
 fi
 
 if [ "$violations" -ne 0 ]; then
