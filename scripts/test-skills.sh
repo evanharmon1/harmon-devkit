@@ -10816,7 +10816,7 @@ run_vendored() {
     esac
 }
 
-# The 15 runtime entrypoints the review, integrate, orchestrate and retro
+# The runtime entrypoints the review, integrate, orchestrate and retro
 # skills invoke by name.
 run_vendored "AC5: devflow-policy.mjs runs" "usage: devflow-policy.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/devflow-policy.mjs" node
@@ -10826,6 +10826,12 @@ run_vendored "AC5: render-dev-flow.mjs runs" "render-dev-flow: missing projectio
     "$AC5_SKILLS/dev-flow-support/assets/render-dev-flow.mjs" node
 run_vendored "AC5: dev-flow-exit.mjs runs" "usage: dev-flow-exit.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.mjs" node
+run_vendored "AC5: run-record.mjs runs" "usage: run-record.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/run-record.mjs" node
+# plan-revise.mjs imports its sibling run-record.mjs, so its own usage line
+# proves that import resolved from the vendored package.
+run_vendored "AC5: plan-revise.mjs runs" "usage: plan-revise.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/plan-revise.mjs" node
 run_vendored "AC5: normalize-finder-findings.mjs runs" "normalize-finder-findings: --finder is required" \
     "$AC5_SKILLS/review/assets/normalize-finder-findings.mjs" node
 run_vendored "AC5: dev-flow-stats.mjs runs" "usage: dev-flow-stats.mjs" \
@@ -11171,6 +11177,53 @@ expect_ok "dev-flow-support: the strategy source comes from the translation (thr
     grep -qF 'inputs.strategy.source' "$DFS_MD"
 expect_ok "dev-flow-support: the selection source is never read from the reader (thread 4178487553)" \
     grep -qF 'never from the reader' "$DFS_MD"
+
+# Durable orchestrator state and the record writers (harmon-devkit#1296).
+expect_ok "orchestrate: names the per-slate orchestrator directory keyed by run id and attempt nonce (#1296)" \
+    grep -qF 'dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/' "$ORCH_MD"
+expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad (#1296)" \
+    grep -qF 'Everything you need in order to resume lives under the Git common directory,' "$ORCH_MD"
+expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
+    grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the run-record operations' "$ORCH_MD"
+expect_ok "orchestrate: the session that owns integration decides and records promotion (#1296 integration r1 -2)" \
+    grep -qF 'Promotion is decided out of the readiness gate by the session that owns' "$ORCH_MD"
+if grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"; then
+    bad "orchestrate: still names /integrate the promotion authority in an orchestrated run (#1296 integration r1 -2)"
+else
+    ok "orchestrate: no longer names /integrate the promotion authority in an orchestrated run (#1296 integration r1 -2)"
+fi
+expect_ok "orchestrate: a run belongs to exactly one slate (#1296 challenge r2 -4)" \
+    grep -qF 'A run belongs to exactly one slate.' "$ORCH_MD"
+expect_ok "orchestrate: the slate lock is taken with --milestone (#1296 review r1 -3)" \
+    grep -qF 'adding `--milestone <n>` for a' "$ORCH_MD"
+expect_ok "orchestrate: the slate lock is reserved before plan.json is written (#1296 integration r1 -4)" \
+    grep -qF 'Before writing `plan.json` at all, take the' "$ORCH_MD"
+expect_ok "orchestrate: the lane scratch dir is for throwaway files only (#1296 review r1 -4)" \
+    grep -qF 'for throwaway files only — nothing needed to resume lives there' "$ORCH_MD"
+expect_ok "orchestrate: no entry lands after a run ends, whatever its outcome (#1296 review r2 -3)" \
+    grep -qF 'or any entry written after the run has ended — promoted, capped, escalated or' "$ORCH_MD"
+expect_ok "orchestrate: the run-record fields run-record.mjs does not write keep their named writers (#1296)" \
+    grep -qF 'record keeps its existing writers:' "$ORCH_MD"
+if grep -qF 'Write the run record only through' "$ORCH_MD"; then
+    bad "orchestrate: still claims every run-record write goes through run-record.mjs (#1296 challenge r1 -4)"
+else
+    ok "orchestrate: no longer claims every run-record write goes through run-record.mjs (#1296 challenge r1 -4)"
+fi
+if grep -qF 'make such an edit detectable' "$ORCH_MD"; then
+    bad "orchestrate: overclaims ruling-digest edit detection (#1296 challenge r1 -10)"
+else
+    ok "orchestrate: states the ruling digest guarantee without overclaiming (#1296 challenge r1 -10)"
+fi
+expect_ok "orchestrate: base moves go through plan-revise.mjs (#1296)" \
+    grep -qF '`dev-flow-support/assets/plan-revise.mjs base-move`' "$ORCH_MD"
+expect_ok "dev-flow-support: lists the run-record writer (#1296)" \
+    grep -qF '| `assets/run-record.mjs` |' "$DFS_MD"
+expect_ok "dev-flow-support: lists the plan-revision writer (#1296)" \
+    grep -qF '| `assets/plan-revise.mjs` |' "$DFS_MD"
+for writer_test in test-run-record.sh test-plan-revise.sh; do
+    expect_ok "dev-flow-support: $writer_test is wired into the Taskfile (#1296)" \
+        grep -qF "./ai/skills/universal/dev-flow-support/assets/$writer_test" "$repo/Taskfile.yml"
+done
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
