@@ -2115,6 +2115,25 @@ function checkRunChronology(document, errors) {
       }
     }
   }
+  // An occurrence is [entered_at, next entered_at): the instant of a
+  // transition belongs to the new stage. Repeated confidence stages each
+  // contribute their own interval. The final occurrence closes when the
+  // run ends: every non-null outcome in run.schema.json is terminal.
+  const terminalTime = document.promotion
+    ? Date.parse(document.promotion.promoted_at)
+    : document.outcome !== null && document.outcome_transitions.length > 0
+      ? document.outcome_transitions.reduce((latest, entry) => Math.max(latest, Date.parse(entry.at)), -Infinity)
+      : null
+  for (const [index, split] of (document.splits ?? []).entries()) {
+    const splitTime = Date.parse(split.split_at)
+    const inStage = transitions.some((transition, transitionIndex) =>
+      transition.stage === split.stage && splitTime >= Date.parse(transition.entered_at) &&
+      (transitionIndex === transitions.length - 1
+        ? terminalTime === null || splitTime <= terminalTime
+        : splitTime < Date.parse(transitions[transitionIndex + 1].entered_at))
+    )
+    if (!inStage) errors.push(`$run.splits[${index}].split_at: must fall within an occurrence of stage ${split.stage}`)
+  }
   // Upper bound: a settlement resolves a finding BEFORE the run can be
   // promoted (the readiness gate requires every deferred finding settled
   // first — checkDeferredFindingsSettledBeforePromotion), so once promoted

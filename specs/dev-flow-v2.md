@@ -511,6 +511,22 @@ splits, no mechanism is split twice out of one stage, and a run that has
 stopped must have recorded every split it adjudicated. Each of those is
 decidable from the documents in hand, which is why each is enforced.
 
+**Eligibility decision.** Split eligibility is decided at adjudication time
+from the exit engine's `split_candidate`; the semantic validator does not
+re-check it. Per-round verdicts are not yet persisted with a run identity,
+the canonical write path passes none, and requiring one would block
+integration. [harmon-devkit#1369](https://github.com/evanharmon1/harmon-devkit/issues/1369)
+tracks the persistence and binding needed before validation can corroborate
+that decision.
+
+The split's issue reference must be a positive bare number or
+`owner/repo#number`, enforced by both schema copies. Its `split_at` must fall
+within an occurrence of its recorded confidence stage: from that transition's
+`entered_at` inclusive to the next transition exclusive. A repeated stage has
+multiple such intervals; the last occurrence stays open until the run's
+terminal outcome (its promotion, or a terminal `outcome_transitions[].at`),
+which closes it, and remains subject to the run's start bound.
+
 It does **not** prove parts 1, 3 and 4 of the contract — that the mechanism
 actually left the tree, that the addressed finding's follow-up was really
 filed, that a deletion round confirmed the removal. A record holding no trees,
