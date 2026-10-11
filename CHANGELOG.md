@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.54.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.53.0...v0.54.0) (2026-10-10)
+
+
+### Features
+
+* **integrate:** enforce integration-stage convergence in the integrate skill and the exit engine ([#1331](https://github.com/evanharmon1/harmon-devkit/issues/1331)) ([620738b](https://github.com/evanharmon1/harmon-devkit/commit/620738beee6b8edd165a742c322abce0b6568bc7))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** add the absent merge-base policy flag and usage exits for bad tier options ([#1343](https://github.com/evanharmon1/harmon-devkit/issues/1343)) ([199a3be](https://github.com/evanharmon1/harmon-devkit/commit/199a3bef23118c01ea9f7bb305a09928fccc909b))
+* **dev-flow-support:** bind step 0 to the validated remote and stop the tier recipe on translation failure ([#1333](https://github.com/evanharmon1/harmon-devkit/issues/1333)) ([fdc4a95](https://github.com/evanharmon1/harmon-devkit/commit/fdc4a958720e362b0504868838c26944df842227))
+* **dev-flow-support:** read organization Risk and Complexity only from fields ([#1341](https://github.com/evanharmon1/harmon-devkit/issues/1341)) ([021a84a](https://github.com/evanharmon1/harmon-devkit/commit/021a84ac1dd4f5a6fe9980d42ba46f0a7615e512))
+* **dev-flow-support:** resolve after the base fetch, record lane profiles, skip an absent registry ([#1342](https://github.com/evanharmon1/harmon-devkit/issues/1342)) ([71a9a26](https://github.com/evanharmon1/harmon-devkit/commit/71a9a26120b6ef01e58e85bee6842c3ca0a9235d))
+* **review:** keep round-push's replace-ref suppression out of the gate and push it runs ([#1340](https://github.com/evanharmon1/harmon-devkit/issues/1340)) ([e05349f](https://github.com/evanharmon1/harmon-devkit/commit/e05349f7f6a6e5ba6cc9bc9152e6b780c8b8fa40)), closes [#1310](https://github.com/evanharmon1/harmon-devkit/issues/1310)
+* **triage:** post overflowing removal records as report comments ([#1336](https://github.com/evanharmon1/harmon-devkit/issues/1336)) ([0cb22fd](https://github.com/evanharmon1/harmon-devkit/commit/0cb22fd4233e0f2fed5a01adfd91d17663e3cc9e))
+* **triage:** re-add human when its removal guards stop holding during the edit ([#1344](https://github.com/evanharmon1/harmon-devkit/issues/1344)) ([a11f1c3](https://github.com/evanharmon1/harmon-devkit/commit/a11f1c35f121930ac7de463a3c3cc6f22319fa78))
+
 ## [0.53.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.52.0...v0.53.0) (2026-10-09)
 
 
