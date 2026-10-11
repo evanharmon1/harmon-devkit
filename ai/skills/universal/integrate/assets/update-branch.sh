@@ -59,8 +59,8 @@
 #    0  caught up (or already level) — fast-forward to the printed OID
 #    2  usage error, or a refusal by this helper (any rebase mode)
 #   10  ruleset refusal — GitHub answered that a repository rule rejects the
-#       merge (a "rule violation", or a rule against merge commits). Only
-#       this and 11 take the local-merge fallback.
+#       merge it would make (a "rule violation"), and the rule is not a ban on
+#       merge commits. Only this and 11 take the local-merge fallback.
 #   11  conflict — the base does not merge cleanly. Local-merge fallback.
 #   12  stale head — the head is not the one captured (expected_head_sha
 #       refused, or a re-read shows another head), or it moved to a head that
@@ -74,7 +74,9 @@
 #   15  not a draft — the PR is ready for review, before the request or
 #       after it, and --maintainer-requested was not passed. Report its
 #       drift; never act on it unasked.
-#   16  refused, not a merge refusal — any other 4xx: rate limiting, an
+#   16  refused, not a merge refusal a local merge can satisfy — a ban on
+#       merge commits (linear history: a local merge breaks the same rule and
+#       cannot be pushed), or any other 4xx: rate limiting, an
 #       authentication or permission failure, a fork without maintainer edits,
 #       a 422 whose message is not a known merge refusal, or a PR that is not
 #       open. Never the fallback: stop and report (for a fork, ask for
@@ -249,7 +251,12 @@ if [ "$put_rc" -ne 0 ]; then
     *conflict*)
         finish conflict 11 "the base does not merge cleanly — take the local-merge fallback: ${response}"
         ;;
-    *"rule violation"* | *"merge commit"*)
+    *"merge commit"*)
+        # Checked before the generic rule match: a linear-history ruleset also
+        # reports a rule violation, and its ban rejects a local merge too.
+        finish refused 16 "a rule bans merge commits, so a local merge would be rejected too — stop and report, no fallback: ${response}"
+        ;;
+    *"rule violation"*)
         finish ruleset 10 "a repository rule rejects the merge — take the local-merge fallback: ${response}"
         ;;
     esac

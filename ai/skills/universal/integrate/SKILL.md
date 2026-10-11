@@ -1765,13 +1765,15 @@ record, whose schema is closed and has no field for it:
 take it, each detected from the helper's exit rather than predicted:
 
 - a genuine merge refusal — a conflict (11), or a ruleset that rejects
-  GitHub-made merge commits (10);
+  GitHub-made merge commits (10), as long as the rule is not a ban on merge
+  commits;
 - a base merge that must ship in the same push as a fix (the last-push rule
   below).
 
-Every other refusal (16: rate limiting, an authentication or permission
-failure, a 422 that is not a known merge refusal, a PR that is not open)
-stops with a report and never falls back. A fork PR that does not allow
+Every other refusal (16: a ban on merge commits, such as a linear-history
+rule, which rejects a local merge too; rate limiting; an authentication or
+permission failure; a 422 that is not a known merge refusal; a PR that is
+not open) stops with a report and never falls back. A fork PR that does not allow
 edits by maintainers is one of them, not a fallback case:
 the integration identity cannot push a local merge to that branch either, so
 stop and ask for maintainer edits rather than spending a round. A conflict

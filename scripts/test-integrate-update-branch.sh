@@ -219,7 +219,9 @@ classify "expected-head refusal" "gh: expected head sha didn't match current hea
 classify "merge conflict" "gh: merge conflict between base and head (HTTP 422)" 11 "conflict"
 # Only a recognized merge refusal falls back (10, 11); every other 4xx is 16.
 classify "ruleset refusal" "gh: Repository rule violations found (HTTP 422)" 10 "ruleset"
-classify "merge-commit rule" "gh: This branch must not contain merge commits. (HTTP 422)" 10 "ruleset"
+# A merge-commit ban (linear history) rejects a local merge too: no fallback.
+classify "merge-commit ban" "gh: This branch must not contain merge commits. (HTTP 422)" 16 "no fallback"
+classify "linear-history ruleset" "gh: Repository rule violations found: This branch must not contain merge commits. (HTTP 422)" 16 "no fallback"
 classify "permission refusal" "gh: Resource not accessible by integration (HTTP 403)" 16 "no fallback"
 classify "rate limit" "gh: API rate limit exceeded for user ID 1. (HTTP 403)" 16 "no fallback"
 classify "authentication failure" "gh: Bad credentials (HTTP 401)" 16 "no fallback"
