@@ -370,6 +370,7 @@
             }
           },
           "split_at": {
+            "description": "Must fall within an occurrence of this split's stage in stage_transitions: entered_at inclusive, the next transition exclusive. The last occurrence closes at the run's terminal outcome (promotion, or a terminal outcome_transitions[].at) when there is one. The semantic validator checks this interval and the run/promotion bounds.",
             "type": "string",
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
           }
