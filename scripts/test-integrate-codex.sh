@@ -3292,12 +3292,12 @@ echo "==> attach's GitHub calls are budgeted by the persisted timeout, not the d
 # `run_gh`'s per-call timeout budget is driven by \$timeout_min for every
 # command, including attach — not just the commands that reference the flag
 # by name. Persist a non-default 5-minute timeout, leave only ~2s of that
-# window, and stall attach's trigger-comment fetch for 5s (the fixture's
-# fixed artificial sleep). If attach threads the persisted 5 minutes through,
+# window, and stall attach's trigger-comment fetch for 60s (via slow-sec,
+# harmon-devkit#1387). If attach threads the persisted 5 minutes through,
 # run_gh's timeout wrapper cuts the stalled call off after ~2s. If it fell
 # back to the unmodified 15-minute default (the #223 bug applied to attach),
-# the remaining budget would be minutes wide, so the call would run its full
-# 5s sleep uninterrupted and this assertion would fail.
+# the remaining budget would be minutes wide, so the call would run an order
+# of magnitude longer (~60s) and the assertion below would fail.
 trigger_id=123
 request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 write_defaults
@@ -3311,14 +3311,15 @@ jq --arg reserved "$near_deadline" '.reserved_at = $reserved' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 printf '%s\n' 'issues/comments' >"${fixtures}/slow-endpoint"
+printf '%s\n' 60 >"${fixtures}/slow-sec"
 set +e
 start_seconds=$SECONDS
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null 2>&1
 attach_rc=$?
 elapsed_seconds=$((SECONDS - start_seconds))
 set -e
-rm -f "${fixtures}/slow-endpoint"
-[ "$elapsed_seconds" -lt 4 ] ||
+rm -f "${fixtures}/slow-endpoint" "${fixtures}/slow-sec"
+[ "$elapsed_seconds" -lt 15 ] ||
     fail "attach did not bound its call to the persisted 5-minute window (${elapsed_seconds}s, rc=$attach_rc)"
 
 echo "==> a corrupted persisted timeout_min fails closed rather than blowing up shell arithmetic (harmon-devkit#223 challenge round 1)"
