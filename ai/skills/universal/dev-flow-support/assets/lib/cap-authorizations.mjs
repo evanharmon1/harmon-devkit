@@ -6,12 +6,11 @@
 // records each such instruction, one entry per (stage, round), with the actor
 // who gave it, the instruction verbatim, and when. This module is the only
 // place that turns those entries into an effective ceiling. dev-flow-exit.mjs
-// (own-stage check, cross-stage scan, the capped-final-round exit and the
-// integration escalation) and render-dev-flow.mjs (the cap-consistency check
-// and the `round n/cap (authorized)` projection) both call it, so the two
-// cannot disagree about which challenge or review rounds are admitted. An
-// integration authorization names a charged Codex cycle, which only the exit
-// engine derives; the renderer applies no integration cap check of its own.
+// (own-stage check, cross-stage scan and the capped-final-round exit) and
+// render-dev-flow.mjs (the cap-consistency check and the
+// `round n/cap (authorized)` projection) both call it, so the two cannot
+// disagree about which rounds are admitted. Only challenge and review rounds
+// can be authorized; integration is not supported yet.
 //
 // Invariants:
 //   - The resolved cap is never rewritten. The ceiling is computed in memory
@@ -31,7 +30,7 @@
 //
 // Pure functions over plain values; no imports, no top-level side effects.
 
-const STAGES = new Set(["challenge", "review", "integration"]);
+const STAGES = new Set(["challenge", "review"]);
 // The same instant pattern run.schema.json requires of `at`.
 const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
 

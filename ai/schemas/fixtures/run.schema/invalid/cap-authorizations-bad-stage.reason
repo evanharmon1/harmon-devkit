@@ -1,1 +1,1 @@
-$run.cap_authorizations[0].stage: must be one of "challenge", "review", "integration"
+$run.cap_authorizations[0].stage: must be one of "challenge", "review"

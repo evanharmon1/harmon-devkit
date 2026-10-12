@@ -145,16 +145,16 @@
       }
     },
     "cap_authorizations": {
-      "description": "Optional record of maintainer instructions authorizing a round above the resolved cap (harmon-devkit#1239). One entry per (stage, round), each attributable: the actor who gave the instruction, the instruction verbatim, and when. An entry records a human instruction; an agent never writes one on its own judgement. ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs is the one predicate dev-flow-exit.mjs and render-dev-flow.mjs share: a round above the cap is scored only when it and every round between the cap and it are authorized here. A challenge or review authorization names that stage's round; an integration authorization names a charged Codex cycle (the counter the integration cap bounds), never an integration pass round, and only dev-flow-exit.mjs derives that count — render-dev-flow.mjs checks confidence-stage rounds alone. policy.json's resolved caps are never rewritten, and a cap of 0 (a disabled stage) is never lifted. validate-result-schemas.mjs `run` rejects a duplicate (stage, round) pair; whether a round really lies above the cap is the engines' check, because this document does not carry the policy.",
+      "description": "Optional record of maintainer instructions authorizing a challenge or review round above the resolved cap (harmon-devkit#1239). Integration authorizations are not supported yet: an integration cycle above the cap stays refused. One entry per (stage, round), each attributable: the actor who gave the instruction, the instruction verbatim, and when. An entry records a human instruction; an agent never writes one on its own judgement. ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs is the one predicate dev-flow-exit.mjs and render-dev-flow.mjs share: a round above the cap is scored only when it and every round between the cap and it are authorized here. policy.json's resolved caps are never rewritten, and a cap of 0 (a disabled stage) is never lifted. validate-result-schemas.mjs `run` rejects a duplicate (stage, round) pair; whether a round really lies above the cap is the engines' check, because this document does not carry the policy.",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["stage", "round", "actor", "instruction", "at"],
         "properties": {
-          "stage": { "enum": ["challenge", "review", "integration"] },
+          "stage": { "enum": ["challenge", "review"] },
           "round": {
-            "description": "The round the instruction authorizes; for integration, the charged Codex cycle.",
+            "description": "The round the instruction authorizes.",
             "type": "integer",
             "minimum": 1
           },

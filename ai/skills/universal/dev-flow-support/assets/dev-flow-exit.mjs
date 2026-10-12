@@ -1889,16 +1889,7 @@ function roundHead(r) {
   return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
 }
 
-// `authorizedCap` is the in-memory ceiling lib/cap-authorizations.mjs derives
-// from run.json's cap_authorizations[] (harmon-devkit#1239): the escalation
-// threshold moves to it, while `integrationCap` stays the resolved value and
-// keeps governing the cap-0 rule. It defaults to the resolved cap, so a caller
-// that supplies none sees exactly the behaviour before authorizations existed.
-function computeIntegrationExit(
-  rounds,
-  integrationCap,
-  { pushes = [], unrecorded = 0, confidence = new Map(), authorizedCap = integrationCap } = {},
-) {
+function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map() } = {}) {
   const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds);
   // A remediation push is judged only by the rounds that completed before
   // its re-entry and reviewed another head, never by its findings' origin: a
@@ -1987,7 +1978,6 @@ function computeIntegrationExit(
   const summary = cycles.map((c) => ({ cycle: c.cycle, rounds: c.rounds, head: c.head, clean: c.clean, tell: isTell(c) }));
   const base = { stage: "integration", rounds_counted: cycles.length, next_round: null, clean_streak: streak, cycles: summary };
   if (awaiting !== null) base.incomplete_round = awaiting;
-  if (integrationCap > 0 && authorizedCap > integrationCap) base.authorized_ceiling = authorizedCap;
   if (integrationCap === 0) {
     if (cycles.length > 0) {
       throw integrationIndeterminate(`the resolved integration cap is 0 but the record holds ${cycles.length} completed Codex cycle(s)`, "cycle-under-cap-zero");
@@ -2003,7 +1993,7 @@ function computeIntegrationExit(
       : { ...base, outcome: "diverging", reason: "tell", action: "stop-fix-loop" };
   }
   if (streak >= 2) return { ...base, outcome: "converged", reason: "two_consecutive_clean", action: "settle-without-push" };
-  if (streak === 0 && latest.charged >= authorizedCap) return { ...base, outcome: "capped", reason: "cap_reached_with_gating_findings", action: "escalate" };
+  if (streak === 0 && latest.charged >= integrationCap) return { ...base, outcome: "capped", reason: "cap_reached_with_gating_findings", action: "escalate" };
   if (streak === 0) return { ...base, outcome: "continue", reason: "gating_findings", action: "fix", next_round: latest.cycle + 1 };
   return { ...base, outcome: "continue", reason: "last_cycle_clean", action: "settle", next_round: latest.cycle + 1 };
 }
@@ -2011,14 +2001,9 @@ function computeIntegrationExit(
 // The one entry point both the CLI and readiness-gate.sh use: load, validate,
 // compute. Throws ExitIndeterminate (with a `code`) on anything it cannot
 // establish.
-// `authorizedCap` is optional and only moves the escalation threshold (see
-// computeIntegrationExit); every refusal this throws is independent of it.
-function integrationExitForRunDir(dir, { integrationCap, authorizedCap = integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
+function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
   const runDir = loadRunDir(dir);
-  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, {
-    ...loadRemediationPushes(runDir.runRecord, runDir.adjudications),
-    authorizedCap,
-  });
+  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, loadRemediationPushes(runDir.runRecord, runDir.adjudications));
 }
 
 // ---------------------------------------------------------------------------
@@ -2349,10 +2334,7 @@ async function main() {
       verdict = computeIntegrationExit(
         loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
         resolved.rounds.integration,
-        {
-          ...loadRemediationPushes(runDir.runRecord, runDir.adjudications),
-          authorizedCap: authorizedCeiling(runDir.runRecord, "integration", resolved.rounds.integration),
-        },
+        loadRemediationPushes(runDir.runRecord, runDir.adjudications),
       );
     } catch (err) {
       if (err instanceof ExitIndeterminate) return indeterminate(args, err.message, err.code ?? null);

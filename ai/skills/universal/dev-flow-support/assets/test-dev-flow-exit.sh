@@ -1005,7 +1005,7 @@ console.log("tell-guard disposition check OK");
 
 echo "== harmon-devkit#1239: the shared over-cap authorization predicate =="
 # The corpus covers the engine end to end (capped-clean-at-authorized-round,
-# over-cap-*-rejected, cross-stage-authorized-*, integration-authorized-*);
+# over-cap-*-rejected, cross-stage-authorized-*);
 # these pin the predicate's own edges, which both engines inherit.
 node --input-type=module -e '
 import { authorizedCeiling, isAuthorizedOverCap } from "./ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs";
@@ -1026,7 +1026,7 @@ assert.equal(authorizedCeiling(run(auth("challenge", 4)), "review", 3), 3);
 assert.equal(authorizedCeiling(run(auth("review", 1)), "review", 0), 0);
 // A malformed entry authorizes nothing (fail closed: only ever a LOWER ceiling).
 // A malformed `at` is checked against run.schema.json'"'"'s instant pattern, not just for presence.
-for (const bad of [{ actor: "" }, { actor: "  " }, { instruction: "" }, { at: "" }, { at: "yesterday" }, { at: "2026-10-12" }, { at: "2026-10-12 00:00:00Z" }, { round: 0 }, { round: "4" }, { stage: "remediation" }]) {
+for (const bad of [{ actor: "" }, { actor: "  " }, { instruction: "" }, { at: "" }, { at: "yesterday" }, { at: "2026-10-12" }, { at: "2026-10-12 00:00:00Z" }, { round: 0 }, { round: "4" }, { stage: "remediation" }, { stage: "integration" }]) {
   assert.equal(authorizedCeiling(run(auth("challenge", 4, bad)), "challenge", 3), 3, JSON.stringify(bad));
 }
 for (const field of ["stage", "round", "actor", "instruction", "at"]) {
@@ -1036,43 +1036,13 @@ for (const field of ["stage", "round", "actor", "instruction", "at"]) {
 }
 assert.equal(authorizedCeiling({ cap_authorizations: "not an array" }, "challenge", 3), 3);
 // isAuthorizedOverCap: only rounds above the cap are "authorized".
-const r = run(auth("integration", 5));
-assert.equal(isAuthorizedOverCap(r, "integration", 5, 4), true);
-assert.equal(isAuthorizedOverCap(r, "integration", 4, 4), false);
-assert.equal(isAuthorizedOverCap(r, "integration", 6, 4), false);
+const r = run(auth("review", 5));
+assert.equal(isAuthorizedOverCap(r, "review", 5, 4), true);
+assert.equal(isAuthorizedOverCap(r, "review", 4, 4), false);
+assert.equal(isAuthorizedOverCap(r, "review", 6, 4), false);
+// Integration authorizations are not supported: an integration entry admits nothing.
+assert.equal(authorizedCeiling(run(auth("integration", 5)), "integration", 4), 4);
 console.log("cap-authorization predicate OK");
-'
-
-echo "== harmon-devkit#1239: an authorized integration cycle moves only the escalation threshold =="
-node --input-type=module -e '
-import { computeIntegrationExit } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
-import assert from "node:assert/strict";
-const head = (n) => String(n).repeat(40);
-const round = (n, entries) => ({
-  round: n,
-  pass: { envelope: { head: head(n), payload: { settled_at: `2026-10-08T00:${String(n * 10).padStart(2, "0")}:00Z`, findings: entries.map((e) => ({ id: e.finding_id })), codex_cycle: { head: head(n), cycle: n, exit_code: entries.length ? 10 : 0 } } } },
-  adjudication: { doc: { adjudications: entries } },
-});
-const p1 = (n) => ({
-  finding_id: `integration-r${n}-codex-cloud-1`,
-  adjudicated_priority: "P1",
-  disposition: "fix",
-  ...(n >= 2 ? { checkpoint: { attacks_remediation: false } } : {}),
-});
-const rounds = [round(1, [p1(1)]), round(2, [p1(2)])];
-// At the resolved cap with a P1 open: escalate, as before.
-const capped = computeIntegrationExit(rounds, 2);
-assert.equal(capped.outcome, "capped");
-assert.equal(capped.authorized_ceiling, undefined);
-// With cycle 3 authorized: one more fix cycle, the ceiling reported beside the cap.
-const lifted = computeIntegrationExit(rounds, 2, { authorizedCap: 3 });
-assert.deepEqual([lifted.outcome, lifted.action, lifted.next_round, lifted.authorized_ceiling], ["continue", "fix", 3, 3]);
-// The authorized cycle itself, still gating: escalate at the authorized ceiling.
-const atCeiling = computeIntegrationExit([...rounds, round(3, [p1(3)])], 2, { authorizedCap: 3 });
-assert.equal(atCeiling.outcome, "capped");
-// Cap 0 stays disabled whatever is authorized.
-assert.equal(computeIntegrationExit([], 0, { authorizedCap: 0 }).reason, "disabled");
-console.log("integration authorized ceiling OK");
 '
 
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="

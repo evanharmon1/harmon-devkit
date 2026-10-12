@@ -59,10 +59,10 @@
       "at": "2026-09-14T13:00:00Z"
     },
     {
-      "stage": "integration",
-      "round": 5,
+      "stage": "review",
+      "round": 4,
       "actor": "evanharmon1",
-      "instruction": "run a fifth Codex cycle",
+      "instruction": "do 1 more review round",
       "at": "2026-09-14T14:00:00Z"
     }
   ]

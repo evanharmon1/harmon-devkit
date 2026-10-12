@@ -3102,41 +3102,39 @@ suspect for all of them alike.
 read `n/a` when no matching pass supplies them (always true for integration-
 stage findings, which carry neither field at all).
 
-**A round above the resolved cap needs an attributable authorization**
-([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239)). A cap is
-a ceiling the agent never raises on its own; a maintainer may still order one
-more round. `run.json`'s optional `cap_authorizations[]` records each such
-instruction as `{stage, round, actor, instruction, at}`: the stage
-(`challenge`, `review` or `integration`), the round it admits, who gave it,
-the instruction verbatim, and when. For integration that round is a
-**charged Codex cycle**, the counter the integration cap bounds, never an
-integration pass round: a retry folds into its cycle and an exempt cycle
-charges nothing, so the two numbers differ. An entry records a human instruction; an agent never writes one on
-its own judgement, and nothing writes one to make a recorded round fit.
+**A challenge or review round above the resolved cap needs an attributable
+authorization** ([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239)).
+A cap is a ceiling the agent never raises on its own; a maintainer may still
+order one more round. `run.json`'s optional `cap_authorizations[]` records each
+such instruction as `{stage, round, actor, instruction, at}`: the stage
+(`challenge` or `review`), the round it admits, who gave it, the instruction
+verbatim, and when. An entry records a human instruction; an agent never writes
+one on its own judgement, and nothing writes one to make a recorded round fit.
 `validate-result-schemas.mjs run` rejects an entry with any field missing or
-blank and a second entry for the same `(stage, round)`. Whether the round
-really lies above the cap is not the validator's to decide, because
-`run.json` carries no policy. That is decided by
+blank, any other stage, and a second entry for the same `(stage, round)`.
+Whether the round really lies above the cap is not the validator's to decide,
+because `run.json` carries no policy. That is decided by
 `assets/lib/cap-authorizations.mjs`, the one predicate both engines call. It
 admits rounds `cap+1..N` only when every one of them is authorized, so a gap
 stops the ceiling at the last contiguous round, and it never lifts a cap of 0
 (a disabled stage). `dev-flow-exit.mjs` scores an admitted round like any
 other: in the stage's own computation, in the cross-stage over-cap scan a
-later stage runs, and in the capped-final-round exit, which now applies at
-the highest authorized round. For integration, the escalation threshold moves
-to that round. Without an authorization the round is still `indeterminate`.
-The renderer projects an admitted challenge or review round as
+later stage runs, and in the capped-final-round exit, which now applies at the
+highest authorized round. Without an authorization the round is still
+`indeterminate`. The renderer projects an admitted round as
 `round n/cap (authorized)`, as on `blocker-comment`'s Spent line, and still
-refuses an unauthorized one. It applies no integration cap check of its own
-and never labels an integration pass round. Integration cycle accounting
-belongs to the exit engine alone, which `readiness-gate.sh` already runs.
-The integrate assets (`check-codex-cloud-review.sh reserve` and
-`readiness-gate.sh`) do not read `cap_authorizations[]` yet, so they still
-refuse an authorized integration cycle above the cap.
-`policy.json`'s `rounds` are never rewritten to admit a round, and nothing
-reads a raised copy as authority. The effective ceiling is computed in memory
-and reported beside the resolved cap as the verdict's `authorized_ceiling`,
-which is absent when nothing was authorized.
+refuses an unauthorized one. `policy.json`'s `rounds` are never rewritten to
+admit a round, and nothing reads a raised copy as authority. The effective
+ceiling is computed in memory and reported beside the resolved cap as the
+verdict's `authorized_ceiling`, which is absent when nothing was authorized.
+
+**Integration cycles above the cap are not yet authorizable.** The
+integration cap counts charged Codex cycles rather than pass rounds, and
+admitting one above the cap would need the exit engine, the renderer and the
+integrate assets (`check-codex-cloud-review.sh reserve` and
+`readiness-gate.sh`) to agree on that count. Until they do, every one of them
+compares against the resolved integration cap, and an integration cycle above
+it is refused.
 
 Free-text fields pulled from a finding's evidence, an adjudication's reason,
 or a policy disclosure detail are reviewer- or human-authored prose this
