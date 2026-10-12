@@ -4110,6 +4110,12 @@ function writeScenario(name, db) {
     [244, "newline-finding-id", adjudication.adjudications],
     [245, "non-object-override", adjudication.adjudications],
     [246, "missing-reviewer-priority", adjudication.adjudications],
+    [247, "non-string-finding-id", adjudication.adjudications],
+    [248, "non-string-disposition", adjudication.adjudications],
+    [249, "non-string-adjudicated-priority", adjudication.adjudications],
+    [250, "numeric-reviewer-priority", adjudication.adjudications],
+    [251, "non-string-override-reason", adjudication.adjudications],
+    [252, "array-override", adjudication.adjudications],
   ]) {
     const variantId = "run-" + number + "-" + name;
     const variantPayload = structuredClone(reviewPayload);
@@ -4120,6 +4126,12 @@ function writeScenario(name, db) {
     if (name === "newline-finding-id") variantPayload.adjudication.adjudications[0].finding_id = "review-r1-codex-verification-1\\nreview r99: forged";
     if (name === "non-object-override") variantPayload.adjudication.adjudications[0].override = "not-an-object";
     if (name === "missing-reviewer-priority") delete variantPayload.adjudication.adjudications[0].reviewer_priority;
+    if (name === "non-string-finding-id") variantPayload.adjudication.adjudications[0].finding_id = 123;
+    if (name === "non-string-disposition") variantPayload.adjudication.adjudications[0].disposition = false;
+    if (name === "non-string-adjudicated-priority") variantPayload.adjudication.adjudications[0].adjudicated_priority = null;
+    if (name === "numeric-reviewer-priority") variantPayload.adjudication.adjudications[0].reviewer_priority = 2;
+    if (name === "non-string-override-reason") variantPayload.adjudication.adjudications[0].override = { reason: 123 };
+    if (name === "array-override") variantPayload.adjudication.adjudications[0].override = [];
     const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, variantPayload, at);
     const variantBody = { ...runBody, run_id: variantId, stage_transitions: lifecycleTo("review", at),
       evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(variantPayload)))],
@@ -4185,8 +4197,10 @@ for scenario in adjudication-overrides local-adjudication-overrides; do
     fi
 done
 
-echo "== C2: invalid legacy adjudications are indeterminate in JSON and table =="
-for scenario in string-adjudications null-adjudication-entry non-object-override; do
+echo "== C2/V1: invalid legacy adjudications are indeterminate in JSON and table =="
+for scenario in string-adjudications null-adjudication-entry non-object-override \
+    non-string-finding-id non-string-disposition non-string-adjudicated-priority \
+    numeric-reviewer-priority non-string-override-reason array-override; do
     export DFSTATS_DB="$tmp/scenarios/$scenario.json"
     run_id="$(meta "$scenario" .meta.runId)"
     for format in json table; do
@@ -4198,6 +4212,15 @@ for scenario in string-adjudications null-adjudication-entry non-object-override
         set -e
         [ "$rc" -eq 3 ] && grep -Fq 'dev-flow-stats: indeterminate:' <<<"$out" && ! grep -Fq 'TypeError' <<<"$out" ||
             fail "$scenario ($format): malformed adjudications were not indeterminate, rc=$rc: $out"
+        case "$scenario" in
+        non-string-finding-id) expected_error='adjudication finding_id must be a string' ;;
+        non-string-disposition) expected_error='adjudication disposition must be a string' ;;
+        non-string-adjudicated-priority) expected_error='adjudication adjudicated_priority must be a string' ;;
+        numeric-reviewer-priority) expected_error='adjudication reviewer_priority must be a string or null' ;;
+        non-string-override-reason | array-override) expected_error='adjudication override must be an object with a string reason or null' ;;
+        *) expected_error='dev-flow-stats: indeterminate:' ;;
+        esac
+        grep -Fq "$expected_error" <<<"$out" || fail "$scenario ($format): wrong refusal branch: $out"
     done
 done
 
