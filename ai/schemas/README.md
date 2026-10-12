@@ -27,6 +27,62 @@ agent file under `ai/agents/` (see the spec's "Roles and authority" table) — s
 `adjudication.schema.json` and `run.schema.json` are validated as complete
 top-level documents, never as an envelope's `payload`.
 
+## Finder-produced envelopes
+
+A confidence-stage pass for a `labelled-text` finder — all of the Codex
+finders today — is assembled by the `challenger`/`reviewer` role agent from the
+finder's badged output. A local-CLI finder **runner** in `--envelope` mode
+(`scripts/codex-review.sh`, `scripts/finder-review.sh`; harmon-devkit#941) is
+an additional producer for a finder whose runner can publish, and needs no
+role agent, so any harness that can run the task can use it. The runner asks
+the finder for the role's payload, with the payload schema in its prompt
+(neither CLI's review path enforces a schema), accepts only exactly one JSON
+object back, binds it to the captured run, head,
+stage, round, finder and slot, wraps it in the envelope — `producer.harness`
+is the registry slug of the CLI that actually ran (`codex-cli`,
+`copilot-cli`), the same vocabulary every other producer uses — validates the
+whole document with `validate-result-schemas.mjs envelope --receipt`, and publishes
+exactly one file, `passes/<stage>-r<round>-<slot>.json`, by hard-linking a
+fully written temporary into place. `link(2)` fails on an existing
+destination, so publication is atomic and no-clobber: a pre-existing pass is a
+refusal, never an overwrite, and a timed-out original still running beside its
+retry cannot replace evidence the retry published. The runner never writes
+`run.json`.
+
+**What this does not make trustworthy, and what does.** Whoever produces the
+pass can still forge: a lane can edit or replace the runner, feed it a false
+binding, or hand-write a document and run the validator over it, and a role
+agent's assembly is its own text. Neither producer removes that, and envelope
+mode does not claim to. What bounds
+it is the chain around the file, and none of it is the lane's prose:
+
+- **receipt validation** binds run identity, head, role, stage, round, slot and
+  previously used finding ids, and runs again on the caller's side and in the
+  exit computation, not only inside the runner;
+- **immutability** means a published pass cannot be rewritten at its path;
+- and **receipt authority stays with the supervising caller**: a pass counts
+  only once whoever owns the run record — in an orchestrated run, the
+  orchestrator, never the lane that ran the finder — has validated it against
+  trusted run state and captured revisions and appended its `{kind: "pass"}`
+  receipt. A pass with no receipt is an orphan and is never evidence.
+
+Nothing the runner records about itself is an authority: it names the CLI
+that ran, not the bytes of the runner. What makes a pass evidence is the
+supervising orchestrator validating it and appending its receipt.
+
+**Codex envelope mode currently fails closed.** `codex exec review` (Codex CLI
+0.162.1) answers in review prose and ignores the in-prompt payload schema, so
+the runner refuses every Codex reply and publishes no pass. Codex passes stay
+with the `challenger`/`reviewer` role agents until
+[harmon-devkit#1365](https://github.com/evanharmon1/harmon-devkit/issues/1365)
+delivers a schema-enforcing, approval-never path.
+
+That is the same model `--receipts` strict mode enforces at cross-boundary call
+sites (#821), and it keeps decision record 0009's rule intact — briefs carry a
+schema-bound envelope, **results are schema-bound** — whichever producer
+assembled the envelope. Neither the role agent nor the runner is the source of
+the trust; the receipt chain is.
+
 ## Brief envelope and Markdown body
 
 Rendered lane briefs keep their human-facing format. Between the existing
@@ -2156,7 +2212,13 @@ from timestamps): an ordered list of
 naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
 preceding `"transition"` receipt into its own `payload.stage`, is rejected
 and contributes no pass or finding — logged in the verdict's `diagnostics[]`,
-never silently. `run.json` may also carry `slot_failures: [{stage, round,
+never silently. Such a receipt-less pass is an **orphan**: a runner in
+envelope mode publishes the file and returns, and the caller appends the
+receipt, so an orphan is what a pass the caller has not yet accepted — or a
+late answer from an attempt it stopped waiting on — looks like. It is never
+evidence, it reserves no finding ids for the next runner, and it is never
+deleted or overwritten to make room for a retry; adopting or ignoring it is
+the caller's decision ("Finder-produced envelopes" above). `run.json` may also carry `slot_failures: [{stage, round,
 slot, reason: "finder_unavailable"|"breadth_exhausted", head?}]`, recording a
 primary slot that never got filled after its retry and configured
 `finder_fallbacks` chain (`finder_unavailable`) or because the fallback chain

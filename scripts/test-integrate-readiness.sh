@@ -711,6 +711,20 @@ gate_field() {
     printf '%s\n' "$gate_out" | tail -n 1 | jq -r --arg f "$1" '.[$f]'
 }
 
+# harmon-devkit#1360: every behind-base message names the server-side catch-up
+# as the default and the local merge only as its fallback.
+assert_behind_remedy() {
+    case "$1" in
+    *"update-branch.sh (GitHub update-branch in merge mode, guarded by the expected head) by default"*"fall back to a local merge under the full round gate only on a conflict or a ruleset refusal"*) ;;
+    *) fail "behind-base message does not name update-branch as default and the local merge as fallback: $1" ;;
+    esac
+    case "$1" in
+    *"merge the base into the branch, re-verify, push once"*)
+        fail "behind-base message still prescribes the local merge as the default: $1"
+        ;;
+    esac
+}
+
 assert_gate() {
     expected_rc=$1
     expected_status=$2
@@ -1417,10 +1431,22 @@ assert_skill "behind-ness deferred to the gate, not acted on mid-stage" \
     "not a mid-stage blocker"
 assert_skill "the base bound to the PR's own baseRefName in the target repo" \
     "own \`baseRefName\` in the **target** repository"
-assert_skill "reconciliation being an ordinary remediation round" \
-    "ordinary remediation round"
+assert_skill "the local-merge fallback being an ordinary remediation round" \
+    "Fallback — a local merge, as an ordinary remediation round."
+assert_skill "the server-side catch-up as the standard path" \
+    "Standard path — GitHub update-branch, on the server."
+assert_skill "a server-side catch-up spending no remediation round" \
+    "A server-side catch-up spends no remediation round."
+assert_skill "the catch-up's carry or cycle owed only under cloud review and a positive cap" \
+    "Where Codex cloud review is on **and** the resolved \`integration\` cap is positive"
+assert_skill "the fast-forward to the recorded OID, not the configured upstream" \
+    "never the configured upstream"
+assert_skill "the fork without maintainer edits stopping rather than falling back" \
+    "stop and ask for maintainer edits"
+assert_skill "a promoted PR caught up only on the maintainer's request" \
+    "A promoted PR is caught up only when the maintainer asks."
 assert_skill "the exhausted-remediation blocked stop" \
-    "no remediation budget left, reconciliation is the **blocked stop**"
+    "no remediation budget left, a fallback reconciliation is the **blocked stop**"
 assert_skill "the last cycle reserved for the reconciled head" \
     "last permitted cycle is therefore reserved for the reconciled head"
 assert_skill "the executable preflight for the reserved cycle" \
@@ -1465,6 +1491,7 @@ jq -cn --arg head "$head_sha" \
 jq -cn '{behind_by:16,ahead_by:3,status:"diverged",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
 run_gate
 assert_gate 1 fail behind-base
+assert_behind_remedy "$(gate_field detail)"
 
 echo "==> a head level with its base passes with the same CLEAN cache"
 # The negative control for the case above: same mergeStateStatus, behind_by 0.
@@ -1780,6 +1807,7 @@ set -e
 [ "$preflight_rc" -eq 1 ] || fail "behind preflight on a behind head exited $preflight_rc: $preflight_out"
 grep -Fq 'behind-base' <<<"$preflight_out" ||
     fail "behind preflight did not name behind-base: $preflight_out"
+assert_behind_remedy "$preflight_out"
 
 # Indeterminate must NOT read as level: spending the reserved cycle on an
 # unverified head is the failure this preflight exists to prevent.

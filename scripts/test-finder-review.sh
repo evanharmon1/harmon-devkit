@@ -47,6 +47,12 @@ cp "$repo/scripts/lib/review-scope.sh" "$work/scripts/lib/"
 cp "$repo/scripts/lib/readonly-sandbox.sh" "$work/scripts/lib/"
 cp -R "$repo/scripts/lib/review-instructions" "$work/scripts/lib/"
 cp "$repo/agent-registry.json" "$work/"
+# The tooling is its own commit, so the fixture's base commit is the reviewed
+# file alone: a `--commit` case below hands the finder that commit's whole
+# diff as one argv element, and the runner plus its libraries would push it
+# past the kernel's per-argument limit (exec fails with E2BIG, exit 126).
+git -C "$work" add -A
+git -C "$work" commit -qm 'test: fixture tooling'
 printf 'initial\n' >"$work/src/app.txt"
 git -C "$work" add -A
 git -C "$work" commit -qm 'test: fixture base'
@@ -453,9 +459,8 @@ out="$( (cd "$work" && PATH="$scope_bin:$PATH" ./scripts/finder-review.sh challe
 grep -Fq 'SEEN=changed' <<<"$out" ||
     fail "the scratch tree did not carry the uncommitted content the diff describes: $out"
 base_sha="$(git -C "$work" rev-parse HEAD)"
-# The base commit carries the copied runner and its libraries, so the prompt is
-# larger than the default refusal bound; the bound is exercised on its own
-# elsewhere and is not what this case is about.
+# The raised bound keeps this case independent of the prompt-size refusal,
+# which is exercised on its own elsewhere and is not what this case is about.
 out="$( (cd "$work" && PATH="$scope_bin:$PATH" FINDER_REVIEW_MAX_PROMPT_BYTES=2000000 \
     ./scripts/finder-review.sh challenge copilot --commit "$base_sha") 2>&1)"
 grep -Fq 'SEEN=initial' <<<"$out" ||
@@ -792,5 +797,142 @@ xargs .*-r[ 	]
 readlink -f
 PATTERNS
 done
+
+echo "==> envelope: a finder pass is pinned to --model and published as one validated pass"
+# harmon-devkit#941. The publication contract itself (no-clobber link, the
+# timed-out-original race, receipted-only id reservation) is shared library
+# code exercised in scripts/test-codex-review.sh; these cases cover what this
+# runner adds: the model pin, the in-prompt schema, and stdout as the payload.
+ework="$tmp/envelope-repo"
+git init -q -b main "$ework"
+git -C "$ework" config user.email fixture@example.invalid
+git -C "$ework" config user.name 'Fixture Author'
+mkdir -p "$ework/scripts/lib" "$ework/ai/skills/universal"
+cp "$repo/$runner" "$ework/scripts/"
+cp "$repo/scripts/lib/review-scope.sh" "$repo/scripts/lib/readonly-sandbox.sh" "$ework/scripts/lib/"
+cp -R "$repo/scripts/lib/review-instructions" "$ework/scripts/lib/"
+cp -R "$repo/ai/skills/universal/dev-flow-support" "$ework/ai/skills/universal/"
+cp "$repo/agent-registry.json" "$ework/"
+printf 'initial\n' >"$ework/app.txt"
+git -C "$ework" add -A
+git -C "$ework" commit -qm 'test: fixture base'
+git -C "$ework" checkout -qb feature
+printf 'changed\n' >"$ework/app.txt"
+git -C "$ework" commit -qam 'test: the change'
+ehead="$(git -C "$ework" rev-parse HEAD)"
+erecord="$tmp/envelope-record"
+ebin="$tmp/envelope-bin"
+mkdir -p "$ebin"
+
+# The sandbox strips the environment and replaces /tmp, so the stub carries
+# its answer inline: the payload JSON, and a log of its own argv on stderr.
+envelope_stub() {
+    local filter="${1:-.}"
+    {
+        # The real CLI's argv contract: -p takes the NEXT word as the prompt,
+        # so anything flag-shaped there is the "Invalid command format" the
+        # live CLI reported (challenge-r2-codex-adversarial-1).
+        cat <<'STUBHEAD'
+#!/usr/bin/env bash
+echo "STUB-ARGV: $*" >&2
+while [ $# -gt 0 ]; do
+    if [ "$1" = -p ]; then
+        case "${2-}" in
+        '' | -*)
+            echo "error: Invalid command format." >&2
+            exit 1
+            ;;
+        esac
+    fi
+    shift
+done
+STUBHEAD
+        printf "cat <<'PAYLOAD'\n"
+        jq -n --arg head "$ehead" '{stage: "challenge", round: 1, reviewed_head: $head,
+            finder: "copilot-adversarial", slot: "copilot-adversarial", findings: [],
+            counts: {P0: 0, P1: 0, P2: 0, P3: 0},
+            attack_scenarios: [{id: "as-1", description: "stub attack", outcome: "held", finding_id: null}]}' |
+            jq "$filter"
+        printf 'PAYLOAD\n'
+    } >"$ebin/copilot"
+    chmod +x "$ebin/copilot"
+}
+envelope_finder() {
+    rm -rf "$erecord"
+    mkdir -p "$erecord"
+    printf '{"run_id":"run-941","initiated_by":"human"}\n' >"$erecord/run.json"
+    (cd "$ework" && PATH="$ebin:$PATH" "$@" ./scripts/finder-review.sh challenge copilot \
+        --model claude-sonnet-5-5 --envelope --run-id run-941 --head "$ehead" --stage challenge \
+        --round 1 --slot copilot-adversarial --tier frontier \
+        --record-dir "$erecord" --base main)
+}
+epass="$erecord/passes/challenge-r1-copilot-adversarial.json"
+
+envelope_stub
+out="$(envelope_finder env 2>"$tmp/eerr")" || fail "valid finder envelope failed: $(cat "$tmp/eerr")"
+[ "$out" = "$epass" ] || fail "stdout is not exactly the published path: $out"
+jq -e '.role == "challenger" and
+    .producer == {harness: "copilot-cli", model: "claude-sonnet-5-5", tier: "frontier"}' "$epass" >/dev/null ||
+    fail "the finder envelope is not bound as captured: $(cat "$epass")"
+# --silent too (challenge-r3-codex-adversarial-2): stdout is the payload.
+grep -q 'STUB-ARGV: --silent --model claude-sonnet-5-5 -p ' "$tmp/eerr" ||
+    fail "the vendor invocation was not pinned to --model: $(cat "$tmp/eerr")"
+
+echo "==> envelope: the finder prompt carries the binding and the payload schema"
+out="$(envelope_finder env FINDER_REVIEW_DRY_RUN=1 2>/dev/null)" || fail "envelope dry run failed"
+grep -Fq 'The result.challenger JSON Schema:' <<<"$out" && grep -Fq '"attack_scenarios"' <<<"$out" ||
+    fail "the payload schema is not in the prompt"
+grep -Fq 'challenge-r1-copilot-adversarial-1' <<<"$out" || fail "the id binding is not in the prompt"
+grep -Fq 'command: copilot --silent --model claude-sonnet-5-5 -p' <<<"$out" || fail "dry run does not show the model pin: $out"
+
+echo "==> envelope: a model chosen through FINDER_REVIEW_COPILOT_ARGS is refused"
+rc=0
+envelope_finder env FINDER_REVIEW_COPILOT_ARGS='-p --model other' >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "a vendor-arg model override was accepted in envelope mode (rc $rc)"
+
+echo "==> envelope: --envelope without --model, and --model without --envelope, are refused"
+rc=0
+(cd "$ework" && PATH="$ebin:$PATH" ./scripts/finder-review.sh challenge copilot --envelope --base main) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "--envelope without --model exited $rc, want 2"
+rc=0
+(cd "$ework" && PATH="$ebin:$PATH" ./scripts/finder-review.sh challenge copilot --model m --base main) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "--model without --envelope exited $rc, want 2"
+
+echo "==> envelope: a refused finder keeps its own refusal, not an envelope-input one"
+# challenge-r2-codex-adversarial-3: the per-tool case runs before envelope
+# preparation, so coderabbit's #809 explanation is what the caller sees.
+rc=0
+(cd "$ework" && PATH="$ebin:$PATH" ./scripts/finder-review.sh challenge coderabbit --model m --envelope \
+    --run-id run-941 --head "$ehead" --stage challenge --round 1 --slot coderabbit-adversarial \
+    --tier frontier --record-dir "$erecord" --base main) >/dev/null 2>"$tmp/eerr" || rc=$?
+[ "$rc" -eq 2 ] && grep -Fq 'harmon-devkit#809' "$tmp/eerr" ||
+    fail "coderabbit in envelope mode did not get its own refusal (rc $rc): $(cat "$tmp/eerr")"
+
+echo "==> envelope: a finder payload bound to another head publishes nothing"
+envelope_stub '.reviewed_head = "0000000000000000000000000000000000000000"'
+rc=0
+envelope_finder env >/dev/null 2>"$tmp/eerr" || rc=$?
+[ "$rc" -eq 1 ] && grep -q 'does not bind the captured' "$tmp/eerr" || fail "misbound finder payload not refused (rc $rc): $(cat "$tmp/eerr")"
+[ -z "$(find "$erecord" -mindepth 1 -path "$erecord/run.json" -prune -o -type f -print)" ] ||
+    fail "a refused finder pass left files behind"
+
+echo "==> envelope: the diff and snapshot read the captured SHAs, not a base ref moved after binding"
+# Challenge round 1 (challenge-r1-codex-adversarial-1): binding names an
+# immutable merge base, so a base ref rewritten afterwards must not change
+# what the finder is handed.
+moved="$( (
+    cd "$ework" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/review-scope.sh
+    envelope_head="$ehead"
+    resolve_review_scope --base main >/dev/null 2>&1
+    review_envelope_bind_scope
+    git update-ref refs/heads/main "$ehead"
+    printf 'SNAPSHOT=%s\n' "$(review_scope_snapshot)"
+    collect_review_diff
+    git update-ref refs/heads/main "$ehead~1"
+) 2>&1)"
+grep -Fq "SNAPSHOT=$ehead 0" <<<"$moved" || fail "the envelope snapshot is not the captured head: $moved"
+grep -Fq '+changed' <<<"$moved" || fail "moving the base ref after binding changed the reviewed diff: $moved"
 
 echo "finder review runner OK"
