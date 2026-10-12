@@ -20,17 +20,22 @@ worktree, never by switching the launching checkout.
 
 Render `assets/cloud-lane-brief.md` into a file using the launch-time fields
 below. The `brief` validator governs local PR-owning lane briefs; cloud briefs
-use this render check instead: require every catalog field in the template,
-substitute once, refuse any unreplaced `{{…}}`, require all four sections, and
-refuse local report-file instructions or a literal Codex trigger.
-Run this check on the rendered file before every launch; the template test pins
-only that the template can pass it.
+use this render check instead: before inserting anything, require the template's
+`{{…}}` placeholders to be exactly the catalog's fields; then insert every value
+in one simultaneous pass and never rescan the inserted text. Require all four
+sections, and refuse local report-file instructions or a literal Codex trigger.
+Run this check for every launch; the template test pins only that the template
+can pass it.
 The orchestrator chooses `claude/<lane-slug>` before launch, records it in the
 plan's lane assignment like any lane, refreshes the claim to that branch with
 the claim transaction before launch, and passes the branch to the brief.
 Pushes to a `claude/*` name other than the platform's session branch were
 accepted in every session tried, but the platform does not promise it; the
-brief therefore makes a refused push a BLOCKED report.
+brief therefore makes a refused push a BLOCKED report. Before launch, require
+that the remote has no `refs/heads/claude/<lane-slug>`
+(`git ls-remote --exit-code origin refs/heads/claude/<lane-slug>` finds nothing);
+if it exists, choose a new slug, so the first head the watcher reports is this
+launch's push.
 `assets/fence-check.sh` needs a schema-bound brief, so it cannot check a cloud
 lane; before the readiness gate, check instead that every changed path, both the
 source and the destination of any rename or copy, is inside the planned lane
@@ -49,20 +54,27 @@ as fence-check.sh does).
 | `{{verified-facts-and-rulings}}` | Verified issue facts and attributed rulings |
 | `{{gate-commands}}` | Repository gate commands |
 | `{{gate-bounds-override}}` | Repository gate bounds, including tier |
-| `{{cloud-report-path}}` | Fence-authorized pushed report path |
 | `{{github-rest-read-path}}` | Environment's provided REST read command |
 
 Launch from the target checkout in a new Herdr tab using the lane-launch section's
 editor environment. In its terminal, or under a pseudo-terminal, run:
 
 ```sh
-script -qec 'claude --cloud "$(cat <run-dir>/<lane>/brief.md)"' <run-dir>/<lane>/launch.log </dev/null
+BRIEF='<run-dir>/<lane>/brief.md' MODEL='<model>' EFFORT='<effort>' \
+  script -qec 'claude --cloud "$(cat "$BRIEF")" --model "$MODEL" --effort "$EFFORT"' \
+  '<run-dir>/<lane>/launch.log' </dev/null
 ```
 
 This is the verified Linux `script` form. The brief must come from a file:
 `script -c` re-parses its argument, and inline backtick-quoted brief text ran
 locally in the spike. Never interpolate the brief into that command string.
-A Herdr terminal can instead run `claude --cloud "$(cat <run-dir>/<lane>/brief.md)"` directly.
+A Herdr terminal can instead run
+`claude --cloud "$(cat "$BRIEF")" --model "$MODEL" --effort "$EFFORT"` directly.
+`<model>` and `<effort>` are the implementer profile the orchestrator resolved;
+they are the dispatch-attested values it records at PR open with
+`record-implementer.sh apply`. Whether the cloud session honours them is not yet
+verified, so the PR body discloses that until the end-to-end check confirms the
+model on the session page.
 Without a terminal it refuses with `Error: --cloud requires an interactive
 terminal.` Capture `Created cloud session: <title>`, the `View:` session URL and
 `Resume with: claude --teleport <session-id>` from the launch output. Keep the
@@ -103,8 +115,9 @@ An `absent` ref means deleted, renamed, never pushed or not visible to the token
 check the session before acting. No local worktree, report file or Herdr
 agent read is used. A branch observation proves a push, not a passed gate: read
 the lane's report and verify the exact head before proceeding. The lane reports
-through its pushed branch, then the PR body section or comment when a PR exists;
-never through `.lane-report.md`. The orchestrator's claim refresh through the
+in the body of its final commit message on each push, so no report file enters
+the diff; read it with `git log -1 --format=%B <head>` after fetching, never
+through `.lane-report.md`. The orchestrator's claim refresh through the
 claim transaction records the chosen branch, the draft's ordinary `pr` / `pr_bindings`
 record the PR, and the session URL goes in the PR body.
 
@@ -136,8 +149,9 @@ run; do not infer success from a pushed branch or an expired wait.
 The lane implements, runs the gates it can, commits and pushes the orchestrator-chosen
 branch through the repository's push gates, reports, and stops without opening
 a PR. The orchestrator fetches that exact pushed head into its review worktree
-and runs the resolved `task challenge` and `task review` stages
-from its logged-in pane, retaining their normal caps and adjudication records.
+and runs the confidence stages through `/review` against that head (its finders
+run `task challenge` and `task review` from the logged-in pane), so the run keeps
+its normal caps and adjudication records.
 It sends confirmed fixes with `claude -p --cloud`, re-fetches the returned head,
 and verifies the round gates. It then runs `task security`, opens the draft
 with `gh pr create --draft --head <planned-branch>`, verifies draft/head state,

@@ -23,7 +23,7 @@ rewrite pushed history, bypass hooks, write credentials, or terminate a process.
 
 {{file-scope-fence}}
 
-Stay inside this fence. Its authorized report path is `{{cloud-report-path}}`.
+Stay inside this fence.
 Do not widen the fence yourself; report BLOCKED if a needed path is not owned.
 Verified facts and attributed orchestrator rulings:
 
@@ -40,19 +40,18 @@ This lane's REST read command: `{{github-rest-read-path}}`.
 Gate commands: {{gate-commands}}
 Gate bounds and tier: {{gate-bounds-override}}
 
-Run long gates detached with
-`nohup bash -c 'task verify; echo GATE-EXIT=$?' > verify.log 2>&1 & disown`, then
-poll through `GATE-EXIT=`. Report the exact result and any unavailable gate;
+Run each long gate command above detached, with its log outside the repository:
+`nohup bash -c '<gate command>; echo GATE-EXIT=$?' > /tmp/gate.log 2>&1 & disown`,
+then poll through `GATE-EXIT=`. Report the exact result and any unavailable gate;
 a timeout or missing exit line is indeterminate. The orchestrator runs Codex
 challenge/review from its own logged-in pane and sends authorized fixes here.
 Apply only those confirmed fixes, then rerun the relevant gates and push.
 
 ## Reporting protocol
 
-Report through the authorized path on your pushed branch, and through the PR
-body section or comment once a PR exists. Use no local report file or pane
-sentinels. Include the branch, full head, changes, gate results, remaining
-work and human follow-ups. Commit and push with the repository's round gate
+Report in the body of your final commit message on each push; commit no report
+file and use no pane sentinels. Include the branch, changes, gate results,
+remaining work and human follow-ups. Commit and push with the repository's round gate
 and secret scan, then stop. Never open the PR; the orchestrator opens the draft
 and owns integration. Never write an at-sign immediately followed by the word `codex` into GitHub text.
 The orchestrator binds the draft through `pr` and `pr_bindings` and records its

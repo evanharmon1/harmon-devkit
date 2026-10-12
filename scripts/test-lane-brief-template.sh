@@ -1460,15 +1460,15 @@ fields = {
     "lane-name": "cloud-fixture", "branch": "claude/cloud-fixture", "run-id": "fixture-run",
     "issue-url": "https://github.com/owner/repo/issues/1",
     "deadline": "2099-01-01T00:00:00Z", "policy-projection": "fixture-policy",
-    "file-scope-fence": "docs/cloud-report.md", "verified-facts-and-rulings": "None.",
+    "file-scope-fence": "docs/**", "verified-facts-and-rulings": "None.",
     "gate-commands": "task verify", "gate-bounds-override": "standard; 60 minutes",
-    "cloud-report-path": "docs/cloud-report.md", "github-rest-read-path": "gh-api-read",
+    "github-rest-read-path": "gh-api-read",
 }
 assert set(re.findall(r"\{\{([^}]*)\}\}", text)) == set(fields), "cloud field contract drift"
 catalog = (root / "references/cloud-lanes.md").read_text()
 assert all("| `{{" + field + "}}` |" in catalog for field in fields), "cloud catalog drift"
 rendered = re.sub(r"\{\{([^}]*)\}\}", lambda m: fields[m[1]], text)
-assert not re.search(r"\{\{.*?\}\}", rendered), "unrendered cloud field"
+assert "final commit message" in rendered, "cloud report channel missing"
 for heading in ("Identity and boundaries", "File-scope fence", "Gates and review handoff", "Reporting protocol"):
     assert "## " + heading in rendered.splitlines(), "missing cloud section: " + heading
 assert ".lane-report.md" not in rendered, "local report-file instruction in cloud brief"
