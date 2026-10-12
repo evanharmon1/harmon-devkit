@@ -499,8 +499,8 @@ matches `<project_type>`:
   Add repository-local floors below the end marker inside `overrides` in the same
   shape, quoting scoped package keys (`'@scope/pkg@7': '>=7.0.1 <8'`). Before
   harmon-init v5.5.1 there are no markers, so local floors go directly inside
-  `overrides`. When a later
-  template release floors a package you floored locally, delete the local entry.
+  `overrides`. When a later template version floors a release line you floored
+  locally (its `pkg@<major>` or `pkg@0.<minor>` key), delete the local entry.
   After a template update changes the block, run a non-frozen `pnpm install` and
   commit the updated `pnpm-lock.yaml` (avoids `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`
   on frozen CI installs). Add any other packages your deps need to `allowBuilds`
