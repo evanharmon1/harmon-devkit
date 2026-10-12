@@ -331,9 +331,8 @@ never the producer's superseded assertions. A missing, unverified, duplicate,
 or mismatched projection is a blocker, not permission to fall back to raw
 envelopes. Combine the verified projection, the round's adjudication JSON and
 its exit projection in ONE fenced JSON object, never separate JSON fences.
-Its `passes` array contains envelopes with verified/corrected
-`payload.findings`; `findingAttributions` contains the verified attribution
-projection the harvester reads. Then append the human table from
+As a caller contract, its `passes` array contains envelopes with
+verified/corrected `payload.findings`. Then append the human table from
 `dev-flow-support/assets/render-dev-flow.sh round-table --record <record> --stage <stage>
 --round <N>`.
 
@@ -363,8 +362,8 @@ Write the marker object alone to `marker.json`, and the sanitized Markdown
 summary plus exactly one fenced JSON verification-bound projection to
 `round.md`, both in your own scratch directory. That projection must name
 `run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope,
-a `passes` array with `payload.findings` arrays, and a `findingAttributions`
-array containing the verified finding measurements.
+a `passes` array with `payload.findings` arrays (the caller's projection
+contract).
 Scan the complete final comment, including the canonical marker line, before
 calling the helper; scanning and projection adjudication remain caller-owned.
 
@@ -390,11 +389,12 @@ blocks), and posts only on monitor `retry`. It adopts the monitor's lowest
 authenticated match and revalidates the readback on every re-arm. A failed
 or ambiguous post is resumed with the same destination and scope, never by a
 direct comment write. The reservation binds both repo and issue number.
-The exact comment bytes persist beside it as `<event>.body.md`; on re-arm
-omit `--body-file` to reuse that copy, or supply the identical body. A changed
+After a successful reservation, the exact comment bytes persist atomically
+beside it as `<event>.body.md`. That copy is authoritative only while the
+event reservation exists; an orphan copy is replaced. On re-arm omit `--body-file` to reuse that copy, or supply the identical body. A changed
 caller body or destination refuses. Its stdout is the adopted comment ID. For registration it
-hashes the exact fenced JSON bytes, distinct from the monitor's whole-comment
-digest, and appends `evidence_registrations` with its canonical chain digest.
+hashes the exact posted whole-comment body, matching the harvester's current
+marker authentication, and appends `evidence_registrations` with its canonical chain digest.
 It validates the candidate with `run --receipts` and all local adjudications,
 renames it over the canonical run record, and validates that readback. Exact
 existing ID/marker/actor/payload matches are adopted without appending;

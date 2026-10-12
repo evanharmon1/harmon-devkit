@@ -101,8 +101,16 @@ try {
   const event = `evidence-${marker.destination}-${marker.stage}-r${marker.round}-s${marker.sequence}`;
   const persistedFile = join(dirname(state), `${event}.body.md`);
   let persistedBody;
-  try { persistedBody = readFileSync(persistedFile, 'utf8'); }
+  let reserved = false;
+  try { reserved = read(state).actions.some((action) => action.event === event); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
+  // An orphan body has no reservation authority, including a torn write.
+  if (reserved) {
+    try { persistedBody = readFileSync(persistedFile, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  } else {
+    rmSync(persistedFile, { force: true });
+  }
   const suppliedBody = o['body-file'] ? `${markerLine}\n\n${readFileSync(o['body-file'], 'utf8')}` : undefined;
   if (persistedBody !== undefined && suppliedBody !== undefined && persistedBody !== suppliedBody) fail('caller body differs from persisted reserved body');
   const body = persistedBody ?? suppliedBody;
@@ -114,8 +122,9 @@ try {
   const payload = fences[0][1];
   const projection = JSON.parse(payload);
   if (projection.run_id !== marker.run_id || projection.stage !== marker.stage || projection.round !== marker.round || projection.reviewed_head !== o.head) fail('projection does not bind marker and reviewed head');
-  if (!Array.isArray(projection.passes) || !projection.passes.every((pass) => Array.isArray(pass?.payload?.findings))
-      || !Array.isArray(projection.findingAttributions)) fail('projection requires passes with payload.findings and verified findingAttributions arrays');
+  // Caller contract; the harvester authenticates the whole body and reads
+  // retained local evidence rather than parsing this current-grammar fence.
+  if (!Array.isArray(projection.passes) || !projection.passes.every((pass) => Array.isArray(pass?.payload?.findings))) fail('projection requires passes with payload.findings arrays');
   if (Buffer.byteLength(body, 'utf8') > 60000) fail('comment exceeds single-segment budget; split the projection before publication');
   const origin = sh('git', ['remote', 'get-url', 'origin']);
   const repoURL = sh('gh', ['repo', 'view', origin, '--json', 'url', '-q', '.url']);
@@ -124,11 +133,17 @@ try {
   if (actor.id !== Number(o['actor-id'])) fail('authenticated actor does not match requested actor');
   const common = ['--active-state', o['active-state'], '--run-id', marker.run_id, '--branch', o.branch, '--generation', o.generation, '--repo-root', o['repo-root']];
   const digest = sha(body);
-  // Persist before reserving: a crash after reserve can always recover the
-  // exact bytes. A crash before reserve has caused no external side effect.
-  if (persistedBody === undefined) writeFileSync(persistedFile, body, { flag: 'wx', mode: 0o600 });
   sh('bash', [monitor, 'reserve', '--state', state, '--event', event, '--action', 'comment', '--expected-head', o.head, '--writer', 'feature-owner', ...common, '--trusted-actor-id', o['actor-id'], '--evidence-role', o.role, '--evidence-finder', o.finder, '--marker', markerLine, '--payload-digest', digest,
     '--destination-repo', o.repo, '--destination-issue', o.issue, '--comment-lock-fd', '9']);
+  // Only a successful reservation makes these bytes authoritative. Publish
+  // the complete copy atomically before any external POST can begin.
+  if (persistedBody === undefined) {
+    const candidate = `${persistedFile}.candidate-${process.pid}`;
+    try {
+      writeFileSync(candidate, body, { flag: 'wx', mode: 0o600 });
+      renameSync(candidate, persistedFile);
+    } finally { rmSync(candidate, { force: true }); }
+  }
   const scratch = mkdtempSync(join(realpathSync(o['scratch-dir']), 'post-evidence-'));
   try {
     const bodyFile = join(scratch, 'body.md');
@@ -168,9 +183,9 @@ try {
     const id = action?.postcondition?.comment_id;
     const comment = comments.find((c) => String(c.id) === id);
     if (!comment || comment.user.id !== actor.id || comment.body !== body) fail('adopted comment readback conflicts with reservation');
-    // The monitor authenticates ALL body bytes; the evidence schema/harvester
-    // payload digest instead authenticates exactly the fenced JSON text.
-    const payloadDigest = `sha256:${sha(payload)}`;
+    // Current-grammar evidence authentication covers the exact posted body,
+    // including its marker, prose and fenced JSON.
+    const payloadDigest = `sha256:${sha(comment.body)}`;
     validate(runPath);
     const before = readFileSync(runPath, 'utf8');
     run = JSON.parse(before);
