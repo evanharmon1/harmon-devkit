@@ -7930,18 +7930,20 @@ fi
 ci_prev=4444444444444444444444444444444444444444
 ci_new=5555555555555555555555555555555555555555
 
-# wf_run NAME ID STATUS CONCLUSION [ATTEMPT] [WORKFLOW_ID] [PRS_JSON] [SHA] —
-# one workflow run as GitHub reports it: its latest attempt's status and
-# conclusion, on $ci_prev, scoped to this PR unless PRS_JSON says otherwise.
+# wf_run NAME ID STATUS CONCLUSION [ATTEMPT] [WORKFLOW_ID] [PRS_JSON] [SHA]
+# [EVENT] [BRANCH] — one workflow run as GitHub reports it: its latest
+# attempt's status and conclusion, a pull_request run on $ci_prev and this
+# PR's branch, scoped to this PR unless the arguments say otherwise.
 wf_run() {
     wf_prs=${7:-}
     [ -n "$wf_prs" ] || wf_prs='[{"number":493}]'
     jq -cn --arg name "$1" --argjson id "$2" --arg status "$3" --arg conclusion "$4" \
         --argjson attempt "${5:-1}" --argjson wf "${6:-$2}" \
         --argjson prs "$wf_prs" --arg sha "${8:-$ci_prev}" \
-        '{id:$id, name:$name, workflow_id:$wf, event:"pull_request",
+        --arg event "${9:-pull_request}" --arg branch "${10:-feature}" \
+        '{id:$id, name:$name, workflow_id:$wf, event:$event,
           status:$status, conclusion:(if $conclusion == "" then null else $conclusion end),
-          run_attempt:$attempt, head_sha:$sha, head_branch:"feature", pull_requests:$prs}'
+          run_attempt:$attempt, head_sha:$sha, head_branch:$branch, pull_requests:$prs}'
 }
 # wf_runs RUN... — the paginated --slurp payload holding those runs.
 wf_runs() {
@@ -8066,10 +8068,10 @@ for not_proof in timed_out skipped neutral stale action_required; do
     assert_ci_charge "conclusion $not_proof" 2 0 charged "(other)"
 done
 
-echo "==> a failure in a run shared with another PR is not proof"
+echo "==> a run shared with another PR is not this PR's evidence"
 ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 \
     '[{"number":493},{"number":999}]')")"
-assert_ci_charge "ambiguous run failure" 2 0 charged "(other)"
+assert_ci_charge "ambiguous run failure" 2 0 charged "(none)"
 
 echo "==> a failure in a run scoped to another PR is dropped"
 ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 '[{"number":999}]')" \
@@ -8080,6 +8082,16 @@ echo "==> a failed run for a different commit is not this head's CI"
 ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 \
     '[{"number":493}]' "$ci_new")" "$(wf_run lint 12 completed success)")"
 assert_ci_charge "other-commit run failure" 2 0 charged "(passed)"
+
+echo "==> challenge-r2-2: a failed push run on another branch at the same SHA is not evidence"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 '[]' "$ci_prev" push other-branch)" \
+    "$(wf_run lint 12 completed success)")"
+assert_ci_charge "other-branch push failure" 2 0 charged "(passed)"
+
+echo "==> challenge-r2-2: a failed run on the PR's own head branch is evidence"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 '[]' "$ci_prev" push feature)" \
+    "$(wf_run lint 12 completed success)")"
+assert_ci_charge "own-branch push failure" 1 1 exempt "concluded failed"
 
 echo "==> after-ci-first: a cycle whose head's CI concluded failed is exempt"
 ci_reserve after-ci-first 4 "$ci_runs_failed"
@@ -8127,6 +8139,161 @@ printf '%s' "$ci_new" >"${fixtures}/head"
     --review-trigger with-push >/dev/null ||
     fail "the CI-failed cycle must free the one charged cycle for the fix head"
 assert_ci_charge "budget freed" 1 1 exempt "concluded failed"
+
+# challenge-r2-codex-adversarial-1: `classify-ci` settles the CURRENT cycle's
+# charge from its own head's CI before the integrator assembles its result,
+# because the exit engine counts the charged number that result reports.
+# $1 workflow-runs payload for $ci_prev ("" leaves it unreadable), $2 1 to
+# give the cycle its terminal verdict first. Leaves a cap-1 cycle on $ci_prev.
+classify_setup() {
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/workflow-runs-*.pages.json
+    printf '%s' "$ci_prev" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
+        --attempt 1 --run-id run-a --integration-cap 1 --integration-exempt-cap 1 \
+        --review-trigger with-push >/dev/null
+    jq --arg terminal "${2:-0}" '.phase = "attached" | .trigger_comment_id = 4242 |
+        .requested_at = .reserved_at |
+        (if $terminal == "1" then .last_reviewed_head = .head |
+           .last_reviewed_verdict = "findings" else . end)' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    [ -z "$1" ] || printf '%s\n' "$1" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
+}
+run_classify() {
+    "$helper" classify-ci --state "$state" --run-id run-a \
+        --integration-cap 1 --integration-exempt-cap 1
+}
+# The exit engine's verdict for one adjudicated findings cycle on $ci_prev,
+# reporting the state's counters exactly as the integrator result would.
+engine_action() {
+    node --input-type=module - "$repo_root/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" \
+        "$(jq -c '{charged: .charged_cycles, exempt: .exempt_cycles, head}' "$state")" <<'JS'
+import { pathToFileURL } from "node:url";
+const { computeIntegrationExit } = await import(pathToFileURL(process.argv[2]));
+const s = JSON.parse(process.argv[3]);
+const entry = { finding_id: "integration-r1-codex-cloud-1", adjudicated_priority: "P1", disposition: "fix" };
+const rounds = [{
+  round: 1,
+  pass: { envelope: { head: s.head, payload: { findings: [{ id: entry.finding_id }],
+    codex_cycle: { head: s.head, cycle: s.charged + s.exempt, charged: s.charged, exempt: s.exempt, exit_code: 10 } } } },
+  adjudication: { doc: { adjudications: [entry] } },
+}];
+const verdict = computeIntegrationExit(rounds, 1);
+process.stdout.write(`${verdict.outcome}/${verdict.action}\n`);
+JS
+}
+
+echo "==> classify-ci: a CI-failed cycle on the last charged slot is exempt before the exit computation"
+classify_setup "$ci_runs_failed" 1
+classify_out="$(run_classify)" || fail "classify-ci must succeed: $classify_out"
+[ "$(jq -r '.outcome' <<<"$classify_out")" = exempt ] ||
+    fail "a CI-failed cycle must settle exempt: $classify_out"
+[ "$(jq -r '.charged_cycles' "$state")/$(jq -r '.exempt_cycles' "$state")/$(jq -r '.charge' "$state")" = 0/1/exempt ] ||
+    fail "the state must carry the exemption: $(jq -c '{charged_cycles, exempt_cycles, charge}' "$state")"
+[ "$(jq -r '.ci_classification.outcome' "$state")" = exempt ] ||
+    fail "the settled classification must be recorded: $(jq -c '.ci_classification' "$state")"
+[ "$(jq -c '.["run-a"]' "${state%.json}.spend.json")" = '{"charged":0,"exempt":1}' ] ||
+    fail "the run-spend sidecar must follow the settlement: $(cat "${state%.json}.spend.json")"
+[ "$(engine_action)" = continue/fix ] ||
+    fail "with the cycle exempt the run must continue to a fix, got $(engine_action)"
+"$helper" show --state "$state" >/dev/null || fail "a settled state must stay readable"
+
+echo "==> classify-ci: a CI still running at the terminal verdict stays charged and escalates at the cap"
+classify_setup "$(wf_runs "$(wf_run build 11 completed failure)" "$(wf_run lint 12 in_progress "")")" 1
+classify_out="$(run_classify)" || fail "classify-ci must succeed: $classify_out"
+[ "$(jq -r '.outcome' <<<"$classify_out")" = charged ] ||
+    fail "pending CI at the terminal verdict must settle charged: $classify_out"
+[ "$(jq -r '.charged_cycles' "$state")/$(jq -r '.exempt_cycles' "$state")" = 1/0 ] ||
+    fail "a charged settlement must not move a counter"
+[ "$(engine_action)" = capped/escalate ] ||
+    fail "a charged cycle on the last slot must escalate, got $(engine_action)"
+# Frozen: the failure that lands afterwards can no longer change it.
+printf '%s\n' "$ci_runs_failed" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
+classify_out="$(run_classify)" || fail "a repeat classify-ci must succeed"
+[ "$(jq -r '.outcome' <<<"$classify_out")/$(jq -r '.charged_cycles' "$state")" = charged/1 ] ||
+    fail "a settled charge must never change: $classify_out"
+
+echo "==> classify-ci: before the terminal verdict, an open answer is left undecided"
+classify_setup "$(wf_runs "$(wf_run build 11 queued "")")" 0
+classify_out="$(run_classify)" || fail "classify-ci must succeed: $classify_out"
+[ "$(jq -r '.outcome' <<<"$classify_out")" = undecided ] ||
+    fail "pending CI before the verdict must stay undecided: $classify_out"
+[ "$(jq -r '.ci_classification // "none"' "$state")" = none ] ||
+    fail "an undecided cycle must record nothing"
+printf '%s\n' "$ci_runs_failed" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
+classify_out="$(run_classify)" || fail "classify-ci must succeed: $classify_out"
+[ "$(jq -r '.outcome' <<<"$classify_out")/$(jq -r '.exempt_cycles' "$state")" = exempt/1 ] ||
+    fail "the later failure must settle it exempt: $classify_out"
+
+echo "==> classify-ci is idempotent, and reserve never reclassifies a settled cycle"
+classify_setup "$ci_runs_failed" 1
+run_classify >/dev/null
+classify_out="$(run_classify)" || fail "a repeat classify-ci must succeed"
+[ "$(jq -r '.charged_cycles' "$state")/$(jq -r '.exempt_cycles' "$state")" = 0/1 ] ||
+    fail "a repeat classify-ci must not move a counter twice: $classify_out"
+printf '%s' "$ci_new" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_new" \
+    --attempt 1 --run-id run-a --integration-cap 1 --integration-exempt-cap 1 \
+    --review-trigger with-push >/dev/null ||
+    fail "the settled exemption must leave the charged slot free for the fix head"
+[ "$(jq -r '.charged_cycles' "$state")/$(jq -r '.exempt_cycles' "$state")" = 1/1 ] ||
+    fail "reserve must not apply a settled exemption again: $(jq -c '{charged_cycles, exempt_cycles, prior_ci_charge}' "$state")"
+case "$(jq -r '.prior_ci_charge.reason' "$state")" in
+"settled by classify-ci:"*) ;;
+*) fail "reserve must report the settled classification: $(jq -c '.prior_ci_charge' "$state")" ;;
+esac
+[ "$(jq -r '.ci_classification // "none"' "$state")" = none ] ||
+    fail "a new head's cycle starts unsettled"
+
+echo "==> reserve keeps the charge of a cycle that reached its verdict unsettled"
+# Reclassifying it now would lower a charged count a recorded result already
+# reported, which is what makes the exit engine's tell check skip the next
+# cycle.
+ci_reserve_terminal() {
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/workflow-runs-*.pages.json
+    printf '%s' "$ci_prev" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
+        --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+        --review-trigger with-push >/dev/null
+    jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at |
+        .last_reviewed_head = .head | .last_reviewed_verdict = "findings"' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    printf '%s\n' "$ci_runs_failed" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
+    printf '%s' "$ci_new" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_new" \
+        --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+        --review-trigger with-push >/dev/null
+}
+ci_reserve_terminal
+assert_ci_charge "terminal unsettled prior" 2 0 charged "reached its verdict"
+! grep -Fq "actions/runs?head_sha=${ci_prev}" "$log" ||
+    fail "a cycle whose charge stands must not be re-read"
+
+echo "==> classify-ci under after-ci changes nothing"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/workflow-runs-*.pages.json
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+    --review-trigger after-ci >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+before_after_ci="$(cat "$state")"
+classify_out="$(run_classify)" || fail "classify-ci must succeed: $classify_out"
+[ "$(jq -r '.outcome' <<<"$classify_out")" = not-applicable ] ||
+    fail "after-ci must be not-applicable: $classify_out"
+[ "$(cat "$state")" = "$before_after_ci" ] || fail "after-ci classify-ci must not write"
+
+echo "==> classify-ci refuses a cycle still reserved"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --run-id run-a --review-trigger with-push >/dev/null
+if "$helper" classify-ci --state "$state" --run-id run-a >/dev/null 2>&1; then
+    fail "classify-ci must refuse a reservation with no requested review"
+fi
 
 echo "==> attempt 2 keeps the review trigger its cycle was reserved under"
 write_defaults

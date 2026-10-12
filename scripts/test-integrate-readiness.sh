@@ -4938,6 +4938,22 @@ write_defaults
 ci_runs '{"name":"build","id":11,"run_attempt":2,"status":"completed","conclusion":"success"}'
 run_ci 0 passed
 
+echo "==> ci: only this PR's runs are evidence"
+# challenge round 2: a push to another branch at the same SHA, another PR's
+# run and a run shared with another PR are all ignored; a push run on the
+# PR's own head branch counts.
+write_defaults
+ci_runs '{"name":"build","id":11,"status":"completed","conclusion":"success"}' \
+    '{"name":"elsewhere","id":21,"event":"push","head_branch":"other","pull_requests":[],"status":"completed","conclusion":"failure"}' \
+    '{"name":"sibling","id":22,"pull_requests":[{"number":999}],"status":"completed","conclusion":"failure"}' \
+    '{"name":"shared","id":23,"pull_requests":[{"number":493},{"number":999}],"status":"in_progress","conclusion":null}'
+run_ci 0 passed
+[ "$(gate_field total)" = 1 ] || fail "ci must ignore every run that is not this PR's: $gate_out"
+write_defaults
+ci_runs '{"name":"build","id":11,"status":"completed","conclusion":"success"}' \
+    '{"name":"branch-push","id":21,"event":"push","pull_requests":[],"status":"completed","conclusion":"failure"}'
+run_ci 0 failed
+
 echo "==> ci: no workflow runs at all is none, never a conclusion"
 write_defaults
 run_ci 0 none

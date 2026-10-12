@@ -79,6 +79,7 @@ Usage:
                                      [--integration-cap N] [--integration-exempt-cap N]
                                      [--review-trigger after-ci|with-push|after-ci-first]
   check-codex-cloud-review.sh trigger-timing --review-trigger after-ci|with-push|after-ci-first --remediation N
+  check-codex-cloud-review.sh classify-ci --state FILE [--run-id ID] [--integration-cap N] [--integration-exempt-cap N]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh carry --state FILE --head SHA [--run-id ID] [--repo-dir DIR]
@@ -120,17 +121,27 @@ the cycle (harmon-devkit#1376). Under `with-push` and `after-ci-first` a
 review can be requested before CI on its head concludes, and a cycle whose
 head's CI then concludes FAILED spends `integration_exempt` rather than
 `integration`. The CI conclusion is not known at reservation, so the cycle is
-charged then (unknown charges) and classified from evidence when the next
-attempt-1 cycle on a different head is reserved: `reserve` reads the CI
-conclusion on that exact earlier head (`readiness-gate.sh ci`: the latest
-attempt of each workflow run for that SHA) and, only when a latest run
-concluded `failure` and none is still running, moves the cycle from
-`charged_cycles` to `exempt_cycles` before checking the new cycle against its
-ceiling. Green, pending, cancelled, no runs, unreadable, a different run's
-state, an undeclared or zero exempt ceiling, or a spent one all leave it
-charged. Under `after-ci`, or
-when no value was recorded, no cycle is ever classified this way: no review is
-requested before CI is green. The record is `prior_ci_charge` on the new state.
+charged then (unknown charges) and settled by `classify-ci`, which the
+integrator runs on the cycle's own head immediately before assembling each
+result — so the counters a result reports, and the exit engine counts,
+already carry the exemption, and a CI-failed cycle on the last charged slot
+does not escalate at the cap. Evidence is `readiness-gate.sh ci`: the latest
+attempt of each of THIS PR's workflow runs for that SHA; only a latest run
+that concluded `failure` with none still running is proof. Green or cancelled
+CI, a different run's state, and an undeclared, zero or spent exempt ceiling
+all charge. The decision is made once and frozen as `ci_classification`:
+proof settles it exempt at any time; any other final answer, or any answer
+once the cycle has a terminal verdict, settles it charged; pending, no runs
+or unreadable CI before that leaves it for a later call. A charge never
+changes after a terminal result can have reported it.
+
+`reserve` keeps one fallback for the cycle it supersedes: a cycle that never
+reached a terminal verdict and was never settled is classified then, by the
+same decision, before the new cycle is checked against its ceiling. A settled
+cycle is reported as it stands and never applied twice, and an unsettled one
+that reached a verdict keeps its charge. The record is `prior_ci_charge` on
+the new state. Under `after-ci`, or when no value was recorded, no cycle is
+ever classified: no review is requested before CI is green.
 
 `trigger-timing` answers WHEN this cycle's review is requested, for the
 recorded value and the number of remediation (integration-stage fix) pushes
@@ -955,7 +966,13 @@ read_state() {
         (.prior_ci_charge.head | type == "string") and
         (.prior_ci_charge.outcome == "charged" or .prior_ci_charge.outcome == "exempt") and
         (.prior_ci_charge.reason | type == "string") and
-        (.prior_ci_charge.failed | type == "array")))
+        (.prior_ci_charge.failed | type == "array"))) and
+      (.ci_classification == null or ((.ci_classification | type == "object") and
+        (.ci_classification.head | type == "string") and
+        (.ci_classification.outcome == "charged" or .ci_classification.outcome == "exempt") and
+        (.ci_classification.reason | type == "string") and
+        (.ci_classification.failed | type == "array") and
+        (.ci_classification.classified_at | type == "string")))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -2066,21 +2083,73 @@ valid_review_trigger() {
     case "$1" in after-ci | with-push | after-ci-first) return 0 ;; *) return 1 ;; esac
 }
 
-# harmon-devkit#1376: classify the PREVIOUS cycle — the one the state on disk
-# records — from the CI conclusion on its own head, now that a later head has
-# superseded it. Under `with-push` and `after-ci-first` that cycle's review
-# may have been requested before its CI concluded, and a cycle whose head's CI
-# concluded FAILED spends `integration_exempt` instead of `integration`.
+# harmon-devkit#1376: the one CI-failed exemption decision, for a cycle on
+# HEAD. Under `with-push` and `after-ci-first` a review may be requested
+# before CI on its head concludes, and a cycle whose head's CI concluded
+# FAILED spends `integration_exempt` instead of `integration`.
 #
 # The invariant is the one classify_cycle_charge states: exempt only on
 # positive proof. The cycle was charged when it was reserved, because nothing
-# was known then, and it stays charged unless every condition below holds —
-# the state is this run's, its recorded trigger requests before CI, it is
-# still charged, an exempt ceiling is declared and has room, and the CI read
-# on that exact head succeeds and concludes `failed` — a latest workflow-run
-# attempt concluded failure and none is still pending. Cancelled, pending,
-# green, no runs or unreadable CI all charge (`readiness-gate.sh ci` states
+# was known then, and it is exempt only when every condition below holds —
+# the counters are this run's, an exempt ceiling is declared and has room, a
+# charged cycle exists to move, and the CI read on that exact head succeeds
+# and concludes `failed` (a latest workflow-run attempt of this PR's own runs
+# concluded failure and none is still pending; `readiness-gate.sh ci` states
 # which conclusions are never proof, and why).
+#
+# ci_charge_decision HEAD MINE CHARGED EXEMPT sets ci_dec_outcome (exempt or
+# charged), ci_dec_reason, ci_dec_failed, and ci_dec_final — 0 when the answer
+# could still change (CI pending, no runs yet, or unreadable), 1 otherwise.
+ci_charge_decision() {
+    ci_dec_head=$1
+    ci_dec_outcome=charged
+    ci_dec_failed='[]'
+    ci_dec_final=1
+    if [ "$2" != "1" ]; then
+        ci_dec_reason="the persisted state belongs to a different run; charged"
+    elif [ -z "$integration_exempt_cap" ] || [ "$integration_exempt_cap" = "0" ]; then
+        ci_dec_reason="no exempt ceiling applies; charged"
+    elif [ "$3" -lt 1 ]; then
+        ci_dec_reason="no charged cycle is recorded to reclassify; charged"
+    elif [ "$(($4 + 1))" -gt "$integration_exempt_cap" ]; then
+        ci_dec_reason="the exempt ceiling ($integration_exempt_cap) is spent; charged"
+    else
+        ci_dec_out=
+        ci_dec_status=0
+        ci_dec_out=$("$timeout_bin" -k 1 "${CODEX_CI_READ_TIMEOUT_SEC:-120}" \
+            "$SCRIPT_DIR/readiness-gate.sh" ci --repo "$repo" --pr "$pr" \
+            --head "$ci_dec_head" 2>/dev/null) || ci_dec_status=$?
+        if [ "$ci_dec_status" -ne 0 ] ||
+            ! jq -e --arg h "$ci_dec_head" \
+                '.status == "ci" and .head == $h and (.failed | type == "array") and
+                 (.conclusion | type == "string")' \
+                <<<"$ci_dec_out" >/dev/null 2>&1; then
+            ci_dec_reason="CI on $ci_dec_head could not be established; charged"
+            ci_dec_final=0
+        elif jq -e '.conclusion == "failed" and (.failed | length > 0)' \
+            <<<"$ci_dec_out" >/dev/null; then
+            ci_dec_failed=$(jq -c '.failed | .[0:20]' <<<"$ci_dec_out")
+            ci_dec_outcome=exempt
+            ci_dec_reason="CI on $ci_dec_head concluded failed"
+        else
+            ci_dec_conclusion=$(jq -r '.conclusion' <<<"$ci_dec_out")
+            ci_dec_reason="CI on $ci_dec_head did not conclude failed ($ci_dec_conclusion); charged"
+            case "$ci_dec_conclusion" in pending | none) ci_dec_final=0 ;; esac
+        fi
+    fi
+    return 0
+}
+
+# harmon-devkit#1376: classify the PREVIOUS cycle — the one the state on disk
+# records — now that a later head supersedes it. This is the fallback for a
+# cycle `classify-ci` never settled, and it is deliberately narrow, because a
+# cycle's charge may never change once a terminal result reporting it can have
+# been recorded: the exit engine takes each cycle's charged count from its
+# first completed pass, so a later decrement would make the NEXT cycle look as
+# if it charged nothing and skip the engine's tell check. So a settled
+# classification is reported as it stands (never applied twice), a cycle that
+# reached a terminal verdict unsettled stays charged, and only a cycle that
+# never reached one is classified here.
 #
 # Sets prior_ci_payload (JSON, or null when no classification applies) and
 # moves one cycle from carried_charged to carried_exempt on proof.
@@ -2092,44 +2161,31 @@ classify_prior_ci_charge() {
     prior_ci_charge=$(jq -r '.charge // "charged"' "$state_file")
     valid_sha "$prior_ci_head" && [ "$prior_ci_head" != "$head" ] || return 0
     case "$prior_ci_trigger" in with-push | after-ci-first) ;; *) return 0 ;; esac
+    prior_ci_settled=$(jq -c '.ci_classification // empty' "$state_file")
+    if [ -n "$prior_ci_settled" ]; then
+        # Already applied to the counters by `classify-ci`: report, never redo.
+        prior_ci_payload=$(jq -c --arg trigger "$prior_ci_trigger" \
+            '.ci_classification | {head, review_trigger:$trigger, outcome,
+              reason:("settled by classify-ci: " + .reason), failed}' "$state_file")
+        return 0
+    fi
     # Already exempt (a base catch-up): one cycle is never exempted twice.
     [ "$prior_ci_charge" = charged ] || return 0
-    prior_ci_outcome=charged
-    prior_ci_failed='[]'
-    if [ "$state_carries_my_counters" != "1" ]; then
-        prior_ci_reason="the persisted state belongs to a different run; charged"
-    elif [ -z "$integration_exempt_cap" ] || [ "$integration_exempt_cap" = "0" ]; then
-        prior_ci_reason="no exempt ceiling applies; charged"
-    elif [ "$carried_charged" -lt 1 ]; then
-        prior_ci_reason="no charged cycle is recorded to reclassify; charged"
-    elif [ "$((carried_exempt + 1))" -gt "$integration_exempt_cap" ]; then
-        prior_ci_reason="the exempt ceiling ($integration_exempt_cap) is spent; charged"
+    if [ "$(jq -r '.last_reviewed_head // empty' "$state_file")" = "$prior_ci_head" ]; then
+        ci_dec_outcome=charged
+        ci_dec_failed='[]'
+        ci_dec_reason="the cycle reached its verdict without a settled CI classification; its charge stands"
     else
-        prior_ci_out=
-        prior_ci_status=0
-        prior_ci_out=$("$timeout_bin" -k 1 "${CODEX_CI_READ_TIMEOUT_SEC:-120}" \
-            "$SCRIPT_DIR/readiness-gate.sh" ci --repo "$repo" --pr "$pr" \
-            --head "$prior_ci_head" 2>/dev/null) || prior_ci_status=$?
-        if [ "$prior_ci_status" -ne 0 ] ||
-            ! jq -e --arg h "$prior_ci_head" \
-                '.status == "ci" and .head == $h and (.failed | type == "array") and
-                 (.conclusion | type == "string")' \
-                <<<"$prior_ci_out" >/dev/null 2>&1; then
-            prior_ci_reason="CI on $prior_ci_head could not be established; charged"
-        elif jq -e '.conclusion == "failed" and (.failed | length > 0)' \
-            <<<"$prior_ci_out" >/dev/null; then
-            prior_ci_failed=$(jq -c '.failed | .[0:20]' <<<"$prior_ci_out")
-            prior_ci_outcome=exempt
-            prior_ci_reason="CI on $prior_ci_head concluded failed"
+        ci_charge_decision "$prior_ci_head" "$state_carries_my_counters" \
+            "$carried_charged" "$carried_exempt"
+        if [ "$ci_dec_outcome" = exempt ]; then
             carried_charged=$((carried_charged - 1))
             carried_exempt=$((carried_exempt + 1))
-        else
-            prior_ci_reason="CI on $prior_ci_head did not conclude failed ($(jq -r '.conclusion // "unknown"' <<<"$prior_ci_out")); charged"
         fi
     fi
     prior_ci_payload=$(jq -cn --arg head "$prior_ci_head" --arg trigger "$prior_ci_trigger" \
-        --arg outcome "$prior_ci_outcome" --arg reason "$prior_ci_reason" \
-        --argjson failed "$prior_ci_failed" \
+        --arg outcome "$ci_dec_outcome" --arg reason "$ci_dec_reason" \
+        --argjson failed "$ci_dec_failed" \
         '{head:$head, review_trigger:$trigger, outcome:$outcome, reason:$reason, failed:$failed}')
     return 0
 }
@@ -2156,6 +2212,101 @@ trigger-timing)
     jq -cn --arg trigger "$review_trigger" --argjson remediation "$remediation" \
         --arg order "$trigger_order" \
         '{review_trigger:$trigger, remediation:$remediation, order:$order}'
+    ;;
+
+classify-ci)
+    # harmon-devkit#1376: settle the CURRENT cycle's charge from its own head's
+    # CI, as the last step before the cycle's result is assembled — and so
+    # before the exit engine counts it. Without this, a cycle on the last
+    # charged slot whose CI failed escalates at the cap before the exemption
+    # it earned could apply. The decision is made once and frozen
+    # (`ci_classification`): proof of failure settles it exempt at any time;
+    # any other final answer, or ANY answer once the cycle has a terminal
+    # verdict, settles it charged; a still-open answer before that (CI
+    # pending, no runs yet, unreadable) leaves it unsettled for a later call.
+    # Prints {head, outcome, reason, charged_cycles, exempt_cycles}, outcome
+    # one of exempt, charged, undecided, not-applicable. Writes only state.
+    [ -z "$integration_exempt_cap" ] || valid_uint_or_zero "$integration_exempt_cap" ||
+        die "--integration-exempt-cap must be a non-negative integer"
+    [ -z "$integration_cap" ] || valid_uint_or_zero "$integration_cap" ||
+        die "--integration-cap must be a non-negative integer"
+    if [ -n "$integration_exempt_cap" ] && [ -n "$integration_cap" ]; then
+        [ "$integration_exempt_cap" = "0" ] ||
+            [ "$integration_exempt_cap" = "$integration_cap" ] ||
+            die "--integration-exempt-cap ($integration_exempt_cap) must be 0 or equal to --integration-cap ($integration_cap); no resolved policy produces any other pair"
+    fi
+    acquire_state_lock
+    read_state
+    [ "$(jq -r '.phase' "$state_file")" = attached ] ||
+        die "the cycle is still reserved; there is no requested review to classify"
+    repo=$(jq -r '.repo' "$state_file")
+    pr=$(jq -r '.pr' "$state_file")
+    cc_head=$(jq -r '.head' "$state_file")
+    valid_sha "$cc_head" || die "state carries no valid head"
+    cc_trigger=$(jq -r '.review_trigger // empty' "$state_file")
+    cc_charged=$(jq -r '.charged_cycles // 0' "$state_file")
+    cc_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+    valid_uint_or_zero "$cc_charged" && valid_uint_or_zero "$cc_exempt" ||
+        die "persisted cycle counters are not non-negative integers (charged=$cc_charged exempt=$cc_exempt)"
+    cc_mine=1
+    if [ -n "$run_id" ] && [ "$(jq -r '.run_id // empty' "$state_file")" != "$run_id" ]; then
+        cc_mine=0
+    fi
+    cc_settled=$(jq -c '.ci_classification // empty' "$state_file")
+    cc_write=0
+    if [ -n "$cc_settled" ]; then
+        cc_outcome=$(jq -r '.outcome' <<<"$cc_settled")
+        cc_reason="already settled: $(jq -r '.reason' <<<"$cc_settled")"
+    elif ! valid_review_trigger "$cc_trigger" || [ "$cc_trigger" = after-ci ]; then
+        cc_outcome=not-applicable
+        cc_reason="the cycle was not requested before CI (review_trigger ${cc_trigger:-none})"
+    elif [ "$(jq -r '.charge // "charged"' "$state_file")" != charged ]; then
+        cc_outcome=not-applicable
+        cc_reason="the cycle is already exempt"
+    else
+        ci_charge_decision "$cc_head" "$cc_mine" "$cc_charged" "$cc_exempt"
+        cc_outcome=$ci_dec_outcome
+        cc_reason=$ci_dec_reason
+        if [ "$ci_dec_outcome" = exempt ] || [ "$ci_dec_final" = 1 ] ||
+            [ "$(jq -r '.last_reviewed_head // empty' "$state_file")" = "$cc_head" ]; then
+            cc_write=1
+        else
+            cc_outcome=undecided
+        fi
+    fi
+    if [ "$cc_write" = 1 ]; then
+        if [ "$cc_outcome" = exempt ]; then
+            cc_charged=$((cc_charged - 1))
+            cc_exempt=$((cc_exempt + 1))
+        fi
+        cc_payload=$(jq --arg outcome "$cc_outcome" --arg reason "$cc_reason" \
+            --argjson failed "$ci_dec_failed" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --argjson charged "$cc_charged" --argjson exempt "$cc_exempt" '
+              .version = 2 |
+              .ci_classification = {head:.head, outcome:$outcome, reason:$reason,
+                                    failed:$failed, classified_at:$at} |
+              (if $outcome == "exempt" then
+                 .charge = "exempt" | .charge_reason = $reason |
+                 .charged_cycles = $charged | .exempt_cycles = $exempt
+               else . end)' "$state_file")
+        write_state "$state_file" "$cc_payload"
+        if [ "$cc_outcome" = exempt ] && [ -n "$run_id" ]; then
+            cc_spend="${state_file%.json}.spend.json"
+            [ -f "$cc_spend" ] || printf '{}' >"$cc_spend"
+            jq --arg r "$run_id" --argjson c "$cc_charged" --argjson e "$cc_exempt" \
+                '.[$r] = {charged: $c, exempt: $e}' "$cc_spend" >"${cc_spend}.next" 2>/dev/null &&
+                mv "${cc_spend}.next" "$cc_spend" || {
+                rm -f "${cc_spend}.next"
+                die "the cycle is settled exempt in state but the run-spend sidecar could not be updated; repair $cc_spend before reserving again"
+            }
+        fi
+    fi
+    release_state_lock
+    jq -cn --arg head "$cc_head" --arg outcome "$cc_outcome" --arg reason "$cc_reason" \
+        --argjson charged "$(jq -r '.charged_cycles // 0' "$state_file")" \
+        --argjson exempt "$(jq -r '.exempt_cycles // 0' "$state_file")" \
+        '{head:$head, outcome:$outcome, reason:$reason,
+          charged_cycles:$charged, exempt_cycles:$exempt}'
     ;;
 
 reserve)
@@ -2446,6 +2597,7 @@ reserve)
     charge_class=charged
     charge_reason="no persisted prior reviewed head; charging"
     prior_ci_payload=null
+    carried_ci_classification=null
     if [ "$attempt" = "1" ]; then
         # Attempt 1 of a head is a NEW cycle, and the only thing that spends a
         # ceiling. Classify it, then charge whichever counter it belongs to.
@@ -2551,6 +2703,7 @@ reserve)
             die "--review-trigger $review_trigger disagrees with the trigger attempt 1 was reserved under (${recorded_review_trigger:-none})"
         review_trigger=$recorded_review_trigger
         prior_ci_payload=$(jq -c '.prior_ci_charge // null' "$state_file")
+        carried_ci_classification=$(jq -c '.ci_classification // null' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
@@ -2713,6 +2866,7 @@ reserve)
         --argjson first_trigger_comment_id "$payload_first_trigger_comment_id" \
         --arg review_trigger "$review_trigger" \
         --argjson prior_ci_charge "$prior_ci_payload" \
+        --argjson ci_classification "$carried_ci_classification" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -2730,7 +2884,8 @@ reserve)
           run_id:(if $run_id == "" then null else $run_id end),
           base_sha:(if $base_sha == "" then null else $base_sha end),
           review_trigger:(if $review_trigger == "" then null else $review_trigger end),
-          prior_ci_charge:$prior_ci_charge
+          prior_ci_charge:$prior_ci_charge,
+          ci_classification:$ci_classification
         }')
     write_state "$state_file" "$payload" || {
         restore_spend

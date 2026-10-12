@@ -878,10 +878,16 @@ recheck_codex_freshness() {
 # replaces the failure it re-ran). Check runs are not used: a run cancelled
 # after one job failed still shows that job's failure, and a failed run whose
 # replacement is queued but has no check runs yet still looks failed (challenge
-# round 1, harmon-devkit#1376). Repeated deliveries of one workflow for one
-# event collapse to the newest run, as the gate's own collapse does; a run
-# positively scoped to another PR is dropped; a run shared with another PR
-# counts as pending while it runs but is never failure proof.
+# round 1, harmon-devkit#1376).
+#
+# ONLY RUNS THAT BELONG TO THIS PR ARE EVIDENCE (challenge round 2): a
+# `pull_request` run whose `pull_requests[]` names this PR and no other, or
+# any run on this PR's head branch (a `pull_request` run GitHub left with an
+# empty list, or a `push`/`workflow_dispatch` run on the branch). Everything
+# else is ignored — a push to another branch at the same SHA, another PR's
+# run, a run shared with another PR — because its failure says nothing about
+# this PR. Repeated deliveries of one workflow for one event collapse to the
+# newest run, as the gate's own collapse does.
 #
 # `conclusion` is `failed` only when a latest run concluded `failure` AND no
 # run is still queued or in progress. Any pending run makes it `pending`, and
@@ -904,33 +910,15 @@ if [ "$command_name" = ci ]; then
           [.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
                  else error("page carries no workflow_runs") end]
           | map(select(.head_sha == $head))
-          | map(
-              if .event != "pull_request" then . + {_scope: "unscoped"}
-              else
-                (.pull_requests // []) as $prs |
-                (($prs | length) > 0 and any($prs[]; .number == $pr)) as $includes_us |
-                if ($prs | length) == 0 then
-                  if .head_branch != null and .head_branch != $head_ref_name
-                    then . + {_scope: "other-pr"}
-                    else . + {_scope: "unscoped"} end
-                elif $includes_us and ($prs | length) == 1 then . + {_scope: "this-pr"}
-                elif $includes_us then . + {_scope: "ambiguous"}
-                else . + {_scope: "other-pr"} end
-              end)
-          | map(select(._scope != "other-pr"))
-          | map(. + {_identity:
-              (if ._scope == "ambiguous" then "run:" + (.id | tostring)
-               elif .event != "pull_request" then
-                 "wf:" + (.workflow_id | tostring) + ":" + (.event // "unknown") +
-                 ":branch:" + (.head_branch // "unknown")
-               else "wf:" + (.workflow_id | tostring) + ":" + (.event // "unknown")
-               end)})
-          | group_by(._identity) | map(max_by(.id))
+          | map(select(
+              if .event == "pull_request" and ((.pull_requests // []) | length) > 0
+              then (.pull_requests | length) == 1 and .pull_requests[0].number == $pr
+              else .head_branch == $head_ref_name end))
+          | group_by([.workflow_id, .event]) | map(max_by(.id))
           | map({name:(.name // "unnamed workflow"), attempt:(.run_attempt // 1),
                  outcome:(if .status != "completed" then "pending"
                           elif .conclusion == "success" then "passed"
-                          elif .conclusion == "failure" and ._scope != "ambiguous"
-                            then "failed"
+                          elif .conclusion == "failure" then "failed"
                           else "other" end)}) as $all
           | def names($o): [$all[] | select(.outcome == $o) | .name];
           {status:"ci", head:$head, total:($all | length),

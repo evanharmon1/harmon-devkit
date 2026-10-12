@@ -240,19 +240,28 @@ failed is exempt.** Requesting before CI concludes trades an occasional review
 of a head CI then rejects for wall-clock time, and that cycle spends
 `integration_exempt`, not `integration`. Evidence decides it, never
 judgement: `reserve --review-trigger <value>` records the value on the cycle,
-which is charged at reservation because its CI is not known yet, and the next
-attempt-1 reservation on a later head reads the CI conclusion on that exact
-earlier head (`readiness-gate.sh ci`: the latest attempt of each workflow run
-for that SHA) and moves the cycle to `exempt_cycles` only when a latest run
-concluded `failure` and none is still queued or running — before checking the
-new cycle against its ceiling, so the freed budget is usable. Indeterminate CI
+which is charged at reservation because its CI is not known yet.
+`check-codex-cloud-review.sh classify-ci` then settles it from the CI
+conclusion on that exact head (`readiness-gate.sh ci`: the latest attempt of
+each of THIS PR's workflow runs for that SHA — its `pull_request` runs and
+runs on its head branch, nothing else) and moves it to `exempt_cycles` only
+when a latest run concluded `failure` and none is still queued or running.
+The integrator runs it immediately before assembling each result, so the
+counters the result reports — and the exit engine below counts — already
+carry the exemption: a CI-failed cycle on the last charged slot does not
+escalate at the cap, so the freed budget is usable. Indeterminate CI
 charges normally, and so do green, still-running, cancelled, or
 re-run-to-green CI, a different run's state, and an exempt ceiling that is
-undeclared, 0, or spent. Under `after-ci` no review is requested before CI is
+undeclared, 0, or spent. The decision is made once and frozen
+(`ci_classification`), at the latest on the pass that first reports the
+cycle's terminal verdict, because the exit engine takes each cycle's charged
+count from that pass: a CI still running then leaves the cycle charged, and
+at the cap it escalates exactly as before. `reserve` classifies a superseded
+cycle only when it never reached a verdict and was never settled. Under `after-ci` no review is requested before CI is
 green, so no cycle is ever exempted for a CI failure. The cycle's findings are
 still adjudicated, and the fix push still spends `remediation`. The new
-state's `prior_ci_charge` records the classification and the evidence it
-rested on; the counters reach the readiness gate exactly as a base-merge
+state's `ci_classification` (and a successor's `prior_ci_charge`) records the
+classification and the evidence it rested on; the counters reach the readiness gate exactly as a base-merge
 exemption's do, and its cap check needs nothing new to accept them.
 
 **Before either ceiling, ask whether the cycle is needed at all**
@@ -1455,7 +1464,10 @@ validated against its integrator pass — and before any remediation push, run
 ```
 
 (`$support_dir` resolved as at the top of this skill) and act on its
-`outcome`.
+`outcome`. Under `with-push` or `after-ci-first` the pass it reads must already
+carry the settled charge — the integrator's §4 runs `classify-ci` before it
+assembles the result; when you drove the cycle yourself, run that same step
+on the checker state before recording the pass.
 
 **When the run resolved its policy through the merge-base path above, the
 exit runs the MERGE BASE's engine, never `"$support_dir/dev-flow-exit.sh"`.**
