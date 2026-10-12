@@ -54,6 +54,22 @@
             "type": "string",
             "minLength": 1
           },
+          "remediation": {
+            "description": "The explicit record of one integration remediation push (harmon-devkit#1386). Present only on an integration transition that RE-ENTERS integration (every integration entry after the first is one integration -> implement -> integration loop, the count readiness-gate.sh holds against --remediation-cap), written with that transition by run-record.mjs transition --remediation-head/--remediation-findings. `head` is the 40-hex SHA the push put on the PR branch; `findings` are the adjudication finding ids the push answers — integration findings, or challenge/review findings deferred to integration (disposition defer) (empty only for the local-merge fallback base reconciliation, which fixes no finding). dev-flow-exit.mjs --stage integration classifies a head move from this record and never from a cycle's `charged` flag: a server-side catch-up (update-branch) and a carry are never remediation pushes and never carry this field. The semantic validator enforces re-entry-only placement and unique findings.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["head", "findings"],
+            "properties": {
+              "head": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "findings": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$" }
+              }
+            }
+          },
           "assembly": {
             "description": "Feature-owner-authored lane assembly evidence. Present only on the implement transition whose output was assembled: the exact canonical feature head plus every selected and discarded lane. At least one lane must be accounted for across the two lists; the semantic validator also enforces implement-only placement, uniqueness, and disjoint lane sets.",
             "type": "object",
