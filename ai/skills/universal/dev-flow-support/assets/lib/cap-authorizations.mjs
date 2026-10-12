@@ -23,27 +23,38 @@
 //     never lifted. Opening a disabled stage changes the topology the run
 //     resolved (stage-skipping, the cross-stage emptiness rule), which is a
 //     policy change rather than one more round.
-//   - Fail closed on shape: an entry that is not a well-formed authorization
-//     (validate-result-schemas.mjs `run` rejects those outright) authorizes
+//   - Fail closed on shape: isWellFormed mirrors run.schema.json's
+//     cap_authorizations[] entry shape exactly — the key set is exactly
+//     {stage, round, actor, instruction, at} (the schema's
+//     additionalProperties: false) and each field meets the constraint the
+//     schema states for it. An entry the schema would reject
+//     (validate-result-schemas.mjs `run` refuses it outright) authorizes
 //     nothing here, so a reader that never ran the validator can only see a
-//     LOWER ceiling, never a higher one.
+//     LOWER ceiling, never a higher one. A change to that entry schema must
+//     change this predicate with it.
 //
 // Pure functions over plain values; no imports, no top-level side effects.
 
+// run.schema.json's cap_authorizations[] entry, field for field.
+// stage: enum ["challenge", "review"]
 const STAGES = new Set(["challenge", "review"]);
-// The same instant pattern run.schema.json requires of `at`.
+// at: the instant pattern the schema requires
 const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
+// required + additionalProperties: false — exactly these keys, no others
+const ENTRY_KEYS = ["actor", "at", "instruction", "round", "stage"];
 
+// actor, instruction: string, minLength 1, pattern \S
 function nonBlank(value) {
-  return typeof value === "string" && /\S/.test(value);
+  return typeof value === "string" && value.length >= 1 && /\S/.test(value);
 }
 
 function isWellFormed(entry) {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const keys = Object.keys(entry).sort();
+  if (keys.length !== ENTRY_KEYS.length || keys.some((key, i) => key !== ENTRY_KEYS[i])) return false;
   return (
-    entry !== null &&
-    typeof entry === "object" &&
-    !Array.isArray(entry) &&
     STAGES.has(entry.stage) &&
+    // round: integer, minimum 1
     Number.isInteger(entry.round) &&
     entry.round >= 1 &&
     nonBlank(entry.actor) &&
