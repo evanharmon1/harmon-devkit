@@ -370,13 +370,13 @@ done
 reader_dir="$(dirname "$reader")"
 git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
 
-# trusted_copy COPY PIN picks every governing copy this skill runs. Define it
+# trusted_copy COPY picks every governing copy this skill runs. Define it
 # exactly as dev-flow-support's step 0 recipe does: that is the First adoption
-# rule's one implementation (the merge base's copy if it declares the
-# capability marker, else the pin under the same check, else nothing, and the
-# caller stops as indeterminate). The reader is a governing copy too: a merge
-# base whose reader predates the capability runs the operator's pin.
-mb_reader="$(trusted_copy "$mb_dir/${reader}" "${pinned_mb_reader:-}")"
+# rule's one implementation (the merge base's own copy if it declares the
+# capability marker, else nothing). A merge base that predates the marker
+# cannot govern this path: the stage stops as indeterminate and the
+# maintainer decides (dev-flow-support step 0, "First adoption").
+mb_reader="$(trusted_copy "$mb_dir/${reader}")"
 [ -n "$mb_reader" ] || exit 1   # indeterminate
 
 # The merge base may have NO .devflow.toml (a branch that adds it). Ask, never
@@ -387,7 +387,7 @@ mb_reader="$(trusted_copy "$mb_dir/${reader}" "${pinned_mb_reader:-}")"
 # ignore the flag and let the branch policy govern, so it stops (exit 1)
 # instead. Any non-zero status is a blocker, never "absent". The helper is a
 # governing file too, so trusted_copy picks it.
-mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
+mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh")"
 [ -n "$mb_helper" ] || exit 1   # indeterminate
 mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || exit 1
 case "$mb_state" in
@@ -404,8 +404,7 @@ git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 # Invoke the SELECTED reader by path, never through `task devflow:policy`:
 # the task target is branch-controlled, so routing through it lets the branch
 # choose the command line that is supposed to constrain it. No --closure: the
-# selected copy is already the trusted one, and --closure "$mb_dir" would hand
-# a pinned reader's run back to the merge base's copy it replaced.
+# selected copy is already the trusted merge-base one.
 node "$mb_reader" resolve \
     --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
     --merge-base-registry "$mb_dir/agent-registry.json" \
@@ -507,9 +506,8 @@ own gate by editing the resolution code instead of the config. A merge base
 predating the reader's own existence has nothing to materialize into
 `$mb_dir/scripts/`, and the reader refuses rather than falling back to the
 branch copy; that is a blocker, not a shape to work around. The recipe above
-no longer passes `--closure`: it runs the copy `trusted_copy` selected by
-path, which runs no branch code either, and lets an operator-pinned reader
-replace a merge-base reader that predates the capability (harmon-devkit#1345).
+no longer passes `--closure`: it runs the merge-base copy `trusted_copy`
+selected by path, which runs no branch code either (harmon-devkit#1345).
 
 The merge base is the **one** place an older shape is ever read, and only by
 the reader's own historical decoder — an immutable commit cannot be migrated,
@@ -1397,16 +1395,17 @@ The engine decides the verdict, so it governs exactly as the reader does: a
 branch that edits `dev-flow-exit.mjs` could ignore the merge-base argument or
 lower its own caps, and carrying `mb_policy` into the branch's engine
 constrains nothing. The merge-base recipe above already materialized the
-engine beside the reader; `trusted_copy` picks it, and it runs by path with
-the same arguments in every merge-base state:
+engine beside the reader, from the same merge-base tree, so the engine
+imports that same reader; `trusted_copy` qualifies it, and it runs by path
+with the same arguments in every merge-base state:
 
 ```sh
 # $mb_dir, $reader_dir, mb_policy and trusted_copy come from the merge-base
 # recipe above; $record_dir is the run's record directory.
 exit_args=(--run "$record_dir" --stage integration --policy .devflow.toml
     ${mb_policy[@]+"${mb_policy[@]}"} --json)
-mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"
-[ -n "$mb_engine" ] || exit 1   # indeterminate
+mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"
+[ -n "$mb_engine" ] || exit 1   # indeterminate: dev-flow-support step 0, "First adoption"
 node "$mb_engine" "${exit_args[@]}"
 ```
 

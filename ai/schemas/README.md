@@ -2024,20 +2024,19 @@ existing `--policy` file and resolves the built-in fallback by itself). An older
 ignore it, letting the branch policy govern, so the helper stops instead —
 the direct-run counterpart of the reader's own `--closure` probe. The helper
 is itself a governing file: both recipes run the merge base's copy, and a
-merge base that predates it needs an operator-pinned helper or stops as
-indeterminate, never the branch's copy. The same holds for this engine: `/integrate`'s
+merge base that predates it stops as indeterminate, never the branch's copy. The same holds for this engine: `/integrate`'s
 integration-exit recipe, on the merge-base path, runs the merge base's
-`dev-flow-exit.mjs` materialized with its whole asset directory (or an
-operator-pinned engine, or stops), because carrying the merge-base argument
+`dev-flow-exit.mjs` materialized with its whole asset directory (beside,
+and importing, the reader from that same tree), or stops, because carrying the merge-base argument
 into a branch engine constrains nothing. The engine reads `--policy` through the reader's own
 `readBranchPolicy`, so a missing file with no merge-base argument is the
 built-in fallback in both, and the two resolve one governing policy whether
 the merge base's state is `present`, `absent` or `none`. A copy of the reader, the engine or the
 helper is selected by its **capability marker**, the exact line
 `dev-flow-capability: merge-base-absent-v1` in its source, never by which flag
-names it mentions: the merge base's copy if it declares the marker, else an
-operator pin that declares it, else the caller stops (`dev-flow-support`
-step 0, "First adoption", and its `trusted_copy`).
+names it mentions: the merge base's own copy if it declares the marker,
+otherwise the caller stops as indeterminate and the maintainer decides
+(`dev-flow-support` step 0, "First adoption", and its `trusted_copy`).
 
 **The decoder's scope is an invariant, not a field list.** On a migration
 diff, *every* merge-base-protected value — defaults, rounds, breadth,

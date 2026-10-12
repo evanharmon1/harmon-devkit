@@ -263,9 +263,9 @@ fi
 # step 0, /integrate's merge-base recipe) never goes through --closure, so the
 # reader's own probe cannot see it. Both recipes decide the governing argument
 # with lib/merge-base-policy.sh (harmon-devkit#1345, criteria 1, 2 and 4); the
-# caller below mirrors their code exactly: the merge base's helper (or an
-# operator pin when the merge base predates it), then the one-word answer
-# turned into an argument array, then the reader.
+# caller below mirrors their code exactly: the merge base's helper (a stop
+# when the merge base predates it), then the one-word answer turned into an
+# argument array, then the reader.
 echo "==> trusted callers carry an absent merge-base policy"
 helper="$support/lib/merge-base-policy.sh"
 mbrepo="$scratch/mbrepo"
@@ -317,16 +317,16 @@ else
 fi
 
 # run_caller BASE READER — the recipes' caller; prints the reader's stdout.
-# The helper is a governing file: trusted_copy picks the merge base's copy or
-# the operator pin in $pinned_mb_helper, else it stops as indeterminate (2).
+# The helper is a governing file: trusted_copy qualifies the merge base's copy,
+# and without one the caller stops as indeterminate (2).
 run_caller() {
     local base="$1" reader="$2" rel=scripts/lib/merge-base-policy.sh mb_helper mb_state
     rm -f "$scratch/mb-devflow.toml" "$scratch/mb-closure/$rel"
     mkdir -p "$scratch/mb-closure/scripts/lib"
     git show "${base}:${rel}" >"$scratch/mb-closure/$rel" 2>/dev/null || rm -f "$scratch/mb-closure/$rel"
-    mb_helper="$(trusted_copy "$scratch/mb-closure/$rel" "${pinned_mb_helper:-}")"
+    mb_helper="$(trusted_copy "$scratch/mb-closure/$rel")"
     [ -n "$mb_helper" ] || {
-        echo "merge-base helper: neither the merge base's copy nor a pin declares the capability — indeterminate" >&2
+        echo "merge-base helper: the merge base's copy does not declare the capability — indeterminate" >&2
         return 2
     }
     mb_state="$(bash "$mb_helper" "$base" "$reader" "$scratch/mb-devflow.toml" .devflow.toml)" || return 1
@@ -419,27 +419,16 @@ else
 fi
 
 # First adoption: a merge base that predates the helper stops as
-# indeterminate without an operator pin, never running the branch's copy, and
-# runs the pin when one is supplied.
+# indeterminate, never running the branch's copy.
 set +e
-(cd "$mbrepo" && run_caller prehelper "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-nopin.out" 2>"$scratch/caller-nopin.err"
+(cd "$mbrepo" && run_caller prehelper "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-prehelper.out" 2>"$scratch/caller-prehelper.err"
 st=$?
-(cd "$mbrepo" && pinned_mb_helper="$helper" run_caller prehelper "$mbrepo/scripts/devflow-policy.mjs") >"$scratch/caller-pin.json" 2>"$scratch/caller-pin.err"
-pst=$?
 set -e
 (cd "$mbrepo" && git checkout -q branch) || err "could not restore the scratch checkout"
-if [ "$st" -eq 2 ] && [ ! -s "$scratch/caller-nopin.out" ] && grep -Fq 'indeterminate' "$scratch/caller-nopin.err"; then
-    echo "  ✓ a merge base that predates the helper stops as indeterminate without an operator pin"
+if [ "$st" -eq 2 ] && [ ! -s "$scratch/caller-prehelper.out" ] && grep -Fq 'indeterminate' "$scratch/caller-prehelper.err"; then
+    echo "  ✓ a merge base that predates the helper stops as indeterminate"
 else
-    err "first adoption without a pin exited $st (want 2, no output)"
-fi
-if [ "$pst" -eq 0 ] && node -e '
-const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-process.exit(r.source === "built-in-fallback" ? 0 : 1);
-' "$scratch/caller-pin.json"; then
-    echo "  ✓ a merge base that predates the helper runs the operator-pinned helper"
-else
-    err "first adoption with a pin exited $pst: $(head -2 "$scratch/caller-pin.err")"
+    err "first adoption exited $st (want 2, no output)"
 fi
 
 # Neither side has a policy (challenge round 1): step 0 fired on another
@@ -529,8 +518,6 @@ const lines = fs.readFileSync(process.argv[1], "utf8").split("\n")
 lines.splice(1, 0, "process.stderr.write(\"STALE-ENGINE-RAN\\n\");");
 fs.writeFileSync(process.argv[2], lines.join("\n"));
 ' "$support/dev-flow-exit.mjs" "$scratch/stale-engine.mjs"
-printf '%s\n' '// --run --stage --policy --json --merge-base-policy --merge-base-policy-absent' \
-    'process.stdout.write("STALE-PIN-RAN\n");' >"$scratch/stale-pin.mjs"
 # The stale reader is the current one without the marker; it announces itself
 # only when run as the entry point, since the engine imports it as a sibling.
 node -e '
@@ -599,9 +586,9 @@ run_integrate_chain() {
     rm -rf "$mb_dir" "$scratch/chain-reader.json" "$scratch/chain-reader.err" "$scratch/chain-exit.json"
     mkdir -p "$mb_dir"
     git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || return 90
-    mb_reader="$(trusted_copy "$mb_dir/${reader_dir}/devflow-policy.mjs" "${pinned_mb_reader:-}")"
+    mb_reader="$(trusted_copy "$mb_dir/${reader_dir}/devflow-policy.mjs")"
     [ -n "$mb_reader" ] || return 90
-    mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
+    mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh")"
     [ -n "$mb_helper" ] || return 90
     mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || return 90
     case "$mb_state" in
@@ -616,7 +603,7 @@ run_integrate_chain() {
         --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} --json >"$scratch/chain-reader.json" 2>"$scratch/chain-reader.err"
     exit_args=(--run "$exfix/run" --stage integration --policy .devflow.toml
         ${mb_policy[@]+"${mb_policy[@]}"} --json)
-    mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"
+    mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"
     [ -n "$mb_engine" ] || return 90
     node "$mb_engine" "${exit_args[@]}" >"$scratch/chain-exit.json"
 }
@@ -629,29 +616,19 @@ process.stdout.write(String(eval(process.argv[2])));
 ' "$1" "$2" 2>/dev/null || true
 }
 
-# The table: case, merge base (checkout), branch policy ("-" none), engine pin
-# ("-" none, good, stale), reader pin ("-" none, good), the cap the reader must
-# resolve, and the verdict the engine must reach under it ("stop":
-# indeterminate, and no engine runs). A stale copy never runs, whichever side
-# supplies it.
-while read -r name rev policy pin rpin cap verdict; do
-    case "$pin" in
-    good) pin_path="$support/dev-flow-exit.mjs" ;;
-    stale) pin_path="$scratch/stale-pin.mjs" ;;
-    *) pin_path="" ;;
-    esac
-    rpin_path=""
-    [ "$rpin" = good ] && rpin_path="$support/devflow-policy.mjs"
+# The table: case, merge base (checkout), branch policy ("-" none), the cap
+# the reader must resolve, and the verdict the engine must reach under it
+# ("stop": indeterminate, and no engine runs). A stale merge-base copy never
+# runs: the stage stops instead.
+while read -r name rev policy cap verdict; do
     set +e
-    (cd "$exrepo" && at "$rev" "$policy" &&
-        pinned_mb_engine="$pin_path" pinned_mb_reader="$rpin_path" run_integrate_chain "$rev") \
-        2>"$scratch/chain.err"
+    (cd "$exrepo" && at "$rev" "$policy" && run_integrate_chain "$rev") 2>"$scratch/chain.err"
     st=$?
     set -e
     got_cap="$(json_field "$scratch/chain-reader.json" r.rounds.integration)"
     got_verdict="$(json_field "$scratch/chain-exit.json" r.outcome)"
     ran_stale=no
-    grep -Fqs -e STALE-ENGINE-RAN -e STALE-PIN-RAN -e STALE-READER-RAN \
+    grep -Fqs -e STALE-ENGINE-RAN -e STALE-READER-RAN \
         "$scratch/chain.err" "$scratch/chain-reader.err" "$scratch/chain-exit.json" && ran_stale=yes
     if [ "$verdict" = stop ]; then
         if [ "$st" -eq 90 ] && [ ! -e "$scratch/chain-exit.json" ] && [ "$ran_stale" = no ]; then
@@ -665,17 +642,14 @@ while read -r name rev policy pin rpin cap verdict; do
         err "$name: reader cap '$got_cap' (want $cap), engine '$got_verdict' exit $st (want $verdict), stale ran: $ran_stale: $(head -2 "$scratch/chain.err")"
     fi
 done <<EOF
-present mbpresent $scratch/branch-cap5.toml - - 2 capped
-absent mbnone $exfix/policy.toml - - 4 continue
-none mbnone - - - 4 continue
-branch-deletes-policy mbpresent - - - 2 capped
-stale-copy-and-stale-pin stalenone $exfix/policy.toml stale - - stop
-stale-copy-no-pin stalenone - - - - stop
-stale-copy-good-pin-absent stalenone $exfix/policy.toml good - 4 continue
-stale-copy-good-pin-none stalenone - good - 4 continue
-stale-copy-good-pin-branch-deletes-policy stalepresent - good - 2 capped
-stale-reader-no-pin stalereader $exfix/policy.toml - - - stop
-stale-reader-good-reader-pin-absent stalereader $exfix/policy.toml - good 4 continue
+present mbpresent $scratch/branch-cap5.toml 2 capped
+absent mbnone $exfix/policy.toml 4 continue
+none mbnone - 4 continue
+branch-deletes-policy mbpresent - 2 capped
+stale-engine-absent stalenone $exfix/policy.toml - stop
+stale-engine-none stalenone - - stop
+stale-engine-branch-deletes-policy stalepresent - - stop
+stale-reader-absent stalereader $exfix/policy.toml - stop
 EOF
 
 # A branch engine that always converges must not change the verdict.
@@ -693,9 +667,9 @@ else
 fi
 (cd "$exrepo" && at mbpresent) || err "could not restore the chain scratch checkout"
 
-if grep -Fq 'node "$mb_engine"' "$int_recipe" && grep -Fq '${pinned_mb_engine:-}' "$int_recipe" &&
+if grep -Fq 'node "$mb_engine"' "$int_recipe" &&
     grep -Fq 'git archive --format=tar "$base" -- "$reader_dir"' "$int_recipe" &&
-    grep -Fq 'trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"' "$int_recipe" &&
+    grep -Fq 'mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"' "$int_recipe" &&
     grep -Fq 'lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs`' "$int_recipe"; then
     echo "  ✓ integrate/SKILL.md runs the merge-base engine and routes engine edits to it"
 else
@@ -708,7 +682,7 @@ for recipe in "$repo_root/ai/skills/universal/dev-flow-support/SKILL.md" \
     "$repo_root/ai/skills/universal/integrate/SKILL.md"; do
     if grep -Fq 'lib/merge-base-policy.sh' "$recipe" && grep -Fq '${mb_policy[@]+"${mb_policy[@]}"}' "$recipe" &&
         grep -Fq 'none) mb_policy=()' "$recipe" && grep -Fq 'devflow.toml" .devflow.toml)' "$recipe" &&
-        grep -Fq 'bash "$mb_helper"' "$recipe" && grep -Fq '${pinned_mb_helper:-}' "$recipe" &&
+        grep -Fq 'bash "$mb_helper"' "$recipe" && ! grep -Fq 'pinned_mb_' "$recipe" &&
         ! grep -Fq '$support_dir/lib/merge-base-policy.sh' "$recipe" &&
         ! grep -Fq 'git show "${base}:.devflow.toml"' "$recipe"; then
         echo "  ✓ ${recipe#"$repo_root"/} carries the absent-base state"

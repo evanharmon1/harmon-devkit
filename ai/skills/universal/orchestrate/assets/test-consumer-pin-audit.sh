@@ -1134,11 +1134,10 @@ echo "== the recipe invokes the materialized reader, not the branch task target 
 # A branch-controlled `devflow:policy` target can drop `--closure`, so routing
 # the trusted resolution through it defeats the closure entirely; and a
 # Taskfile-only change never entered the closure path at all.
-# harmon-devkit#1345: the trusted reader is SELECTED (the materialized
-# merge-base copy, or an operator pin, by capability marker) and invoked by
-# path, without --closure, which would hand a pin back to the copy it replaced.
+# harmon-devkit#1345: the trusted reader is the materialized merge-base copy,
+# qualified by its capability marker, and invoked by path without --closure.
 # shellcheck disable=SC2016 # the literal recipe text is the assertion
-if grep -Fq 'mb_reader="$(trusted_copy "$mb_dir/${reader}" "${pinned_mb_reader:-}")"' "$INTEGRATE_MD" &&
+if grep -Fq 'mb_reader="$(trusted_copy "$mb_dir/${reader}")"' "$INTEGRATE_MD" &&
     grep -Fq 'node "$mb_reader" resolve \' "$INTEGRATE_MD"; then
     ok "the closure recipe invokes the selected trusted reader by path"
 else

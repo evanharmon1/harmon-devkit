@@ -127,22 +127,19 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      # $mb is step0_probe's merge base; $closure the materialized closure,
      # $mb_reader the merge-base devflow-policy.mjs inside it; tier_args are
      # step 3's translated flags, from the closure's tier-inputs.mjs.
-     # The helper governs too: trusted_copy (the First adoption rule below,
-     # implemented once, here) picks the closure's merge-base copy or the pin.
+     # The helper and the reader govern too: trusted_copy (the First adoption
+     # rule below, implemented once, here) prints the merge base's own copy
+     # when it declares the capability marker, and nothing otherwise.
      trusted_copy() {
-         local candidate
-         for candidate in "$1" "$2"; do
-             [ -n "$candidate" ] && [ -f "$candidate" ] &&
-                 grep -Fq 'dev-flow-capability: merge-base-absent-v1' "$candidate" &&
-                 { printf '%s' "$candidate"; return; }
-         done
+         [ -f "$1" ] && grep -Fq 'dev-flow-capability: merge-base-absent-v1' "$1" && printf '%s' "$1"
+         return 0
      }
-     mb_helper="$(trusted_copy "$(dirname "$mb_reader")/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
+     mb_helper="$(trusted_copy "$(dirname "$mb_reader")/lib/merge-base-policy.sh")"
      [ -n "$mb_helper" ] ||
-         { echo "step 0 indeterminate: neither the merge base's lib/merge-base-policy.sh nor an operator pin declares the capability" >&2; exit 2; }
-     mb_reader="$(trusted_copy "$mb_reader" "${pinned_mb_reader:-}")"
+         { echo "step 0 indeterminate: the merge base's lib/merge-base-policy.sh does not declare the capability (first adoption)" >&2; exit 2; }
+     mb_reader="$(trusted_copy "$mb_reader")"
      [ -n "$mb_reader" ] ||
-         { echo "step 0 indeterminate: neither the merge base's devflow-policy.mjs nor an operator pin declares the capability" >&2; exit 2; }
+         { echo "step 0 indeterminate: the merge base's devflow-policy.mjs does not declare the capability (first adoption)" >&2; exit 2; }
      mb_state="$(bash "$mb_helper" "$mb" "$mb_reader" "$closure/.devflow.toml" .devflow.toml)" ||
          { echo "step 0 stopped: merge-base policy lookup failed or the reader is too old" >&2; exit 2; }
      case "$mb_state" in
@@ -190,18 +187,19 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      rather than restating it. A branch that edits the helper could answer
      `absent` and swap the merge-base policy for the built-in fallback, and
      one that edits the engine could ignore the merge-base argument or lower
-     its own caps. **One rule picks every governing copy:** a candidate
-     qualifies **iff its source declares the capability marker**, the exact
-     line `dev-flow-capability: merge-base-absent-v1` (which the engine and
-     the helper carry as a comment). Run the merge base's copy when it
-     qualifies; otherwise the operator pin (`$pinned_mb_reader`,
-     `$pinned_mb_helper`, `$pinned_mb_engine`, a path outside the candidate
-     branch) when it
-     qualifies, under exactly the same check; otherwise resolution is
-     **indeterminate**: stop and report it. Never run the branch's copy, and
-     never judge a copy by which flag names its source mentions.
-     `trusted_copy COPY PIN` in the recipe above is the one implementation;
-     `/integrate` defines it from there rather than restating it.
+     its own caps. **One rule picks every governing copy:** it is the merge
+     base's own copy, and it qualifies **iff its source declares the
+     capability marker**, the exact line
+     `dev-flow-capability: merge-base-absent-v1` (which the reader, the helper
+     and the engine carry as a comment). A merge base whose copy is missing or
+     predates the marker cannot govern this path: resolution is
+     **indeterminate**, the stage stops, and the maintainer decides. Never run
+     the branch's copy, and never judge a copy by which flag names its source
+     mentions. The reader, the helper and the engine therefore always come
+     from one merge-base tree, and the engine imports the reader beside it in
+     that same tree. `trusted_copy COPY` in the recipe above is the one
+     implementation; `/integrate` defines it from there rather than restating
+     it.
    - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type,
