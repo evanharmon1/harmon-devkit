@@ -419,6 +419,21 @@ write_record_with_integration_entries() {
     rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
 }
 
+# record_pushes HEAD:FINDING[,FINDING...] ... — records one remediation push
+# on each integration re-entry of run.json, in order (harmon-devkit#1386:
+# every integration -> implement -> integration loop carries its own record,
+# whose head is the next head a cycle reviews or a carry attests).
+record_pushes() {
+    jq --args '
+      [.stage_transitions | to_entries[] | select(.value.stage == "integration") | .key][1:] as $reentries
+      | reduce range(0; $ARGS.positional | length) as $i (.;
+          ($ARGS.positional[$i] | split(":")) as $push
+          | .stage_transitions[$reentries[$i]].remediation =
+              {head: $push[0], findings: ($push[1] | split(",") | map(select(. != "")))})' \
+        "$@" <"${record_dir}/run.json" >"${record_dir}/run.json.tmp"
+    mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
+}
+
 # write_review_r1_pass — the reviewer pass that RAISED review-r1-codex-cli-9.
 # The known-ids universe is derived from passes, not adjudications (integrate
 # cycle 2 on PR #800: an adjudication is a judgement ABOUT a finding, never
@@ -4760,6 +4775,7 @@ EOF
 echo "==> #1272: a stage closed by converged, its P2s declined or filed without a push, passes"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
 write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false}'
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
@@ -4768,6 +4784,7 @@ assert_gate 0 pass ready
 echo "==> #1272: a self-feeding cycle settled by stop-and-file (P2 only) passes"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
 write_integration_cycle 2 "$head_sha" 2 P2 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
@@ -4776,6 +4793,7 @@ assert_gate 0 pass ready
 echo "==> #1272: a tell cycle holding a confirmed P1 settled by filing keeps the PR draft"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
 write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
@@ -4784,6 +4802,7 @@ assert_gate 1 fail integration-filed-gating-finding
 echo "==> #1272: a run capped with a confirmed P1 filed keeps the PR draft"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
 write_integration_cycle 2 "$head_sha" 2 P1 file '{"attacks_remediation":false}'
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 2
@@ -4799,6 +4818,7 @@ assert_gate 1 fail integration-filed-gating-finding
 echo "==> #1272 r5: no completed cycle with a filed P1 keeps the PR draft"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$head_sha" 1 P1 file none 11
 run_gate_recheck_clean --integrator-result "$(gated_round 2 1)" --integration-cap 4
 assert_gate 1 fail integration-filed-gating-finding
@@ -4806,6 +4826,7 @@ assert_gate 1 fail integration-filed-gating-finding
 echo "==> #1272 r5: a converged stage (engine exit 20) with a filed P1 keeps the PR draft"
 write_defaults
 write_record_with_integration_entries 2
+record_pushes "$stale_head_sha:integration-r1-codex-cloud-1" "$head_sha:integration-r2-codex-cloud-1"
 write_integration_cycle 1 3333333333333333333333333333333333333333 1 P1 file none
 write_integration_cycle 2 "$stale_head_sha" 2 P2 decline '{"attacks_remediation":false}'
 write_integration_cycle 3 "$head_sha" 3 P2 decline '{"attacks_remediation":false}'
@@ -4815,6 +4836,7 @@ assert_gate 1 fail integration-filed-gating-finding
 echo "==> #1272 r5: a P2-only tell then a filed non-cycle human P1 keeps the PR draft"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P2 fix none
 write_integration_cycle 2 "$head_sha" 2 P2 file '{"attacks_remediation":true,"remedy":"stop-and-file"}'
 write_integration_cycle 3 "$head_sha" none P1 file '{"attacks_remediation":false}'
@@ -4835,6 +4857,7 @@ grep -Fq "never adjudicated" <<<"$gate_out" ||
 echo "==> #1272 r5: a P1 fixed and followed by a clean cycle passes"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
 write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false}'
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
@@ -4843,6 +4866,7 @@ assert_gate 0 pass ready
 echo "==> #1272 integration-r1: a record missing the later cycles (a filed-P1 cycle 2) is unbound"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P2 decline none
 run_gate_recheck_clean --integrator-result "$cycle3_result" --integration-cap 4
 assert_gate 2 indeterminate integration-record-unbound
@@ -4857,6 +4881,7 @@ assert_gate 2 indeterminate integration-record-unbound
 echo "==> #1272 integration-r1: a record holding a pass later than the gated one is unbound"
 write_defaults
 write_record_with_integration_entries 1
+record_pushes "$head_sha:integration-r1-codex-cloud-1"
 write_integration_cycle 1 "$stale_head_sha" 1 P2 decline none
 gated_r2="$(gated_round 2 2)"
 jq '.payload.integration_round = 3' "$gated_r2" >"${record_dir}/passes/integration-r3-codex-cloud.json"
@@ -4866,12 +4891,7 @@ assert_gate 2 indeterminate integration-record-unbound
 echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
 write_defaults
 write_record_with_integration_entries 2
-# Both pushes are recorded on their integration re-entries (harmon-devkit#1386):
-# the engine judges a recorded push, never a head move inferred from `charged`.
-jq --arg first "$stale_head_sha" --arg second "$head_sha" '
-  .stage_transitions[10].remediation = {head:$first, findings:["integration-r1-codex-cloud-1"]}
-  | .stage_transitions[14].remediation = {head:$second, findings:["integration-r2-codex-cloud-1"]}' \
-    "${record_dir}/run.json" >"${record_dir}/run.json.tmp" && mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
+record_pushes "$stale_head_sha:integration-r1-codex-cloud-1" "$head_sha:integration-r2-codex-cloud-1"
 write_integration_cycle 1 3333333333333333333333333333333333333333 1 P1 fix none
 write_integration_cycle 2 "$stale_head_sha" 2 P2 fix '{"attacks_remediation":true,"remedy":"retain"}'
 write_integration_cycle 3 "$head_sha" 3 P2 decline '{"attacks_remediation":false}'

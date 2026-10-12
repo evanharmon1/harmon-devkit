@@ -1402,17 +1402,25 @@ node "$support_dir/run-record.mjs" transition --slate <slate> --session <session
 That writes `remediation: {head, findings}` on the re-entry entry of
 `stage_transitions[]`, and the validator refuses it anywhere else. `head` is
 the SHA the push put on the branch. `findings` lists the integration
-adjudication finding ids the push answers. Leave the list empty
-(`--remediation-findings ""`) only for a local-merge fallback reconciliation
-that fixes no finding. A push follows the latest cycle that holds any finding
-it names, and that cycle decides how the push is judged: under the tell rule
-above, or under the fixing ceiling. A **server-side catch-up** (update-branch)
-and a **carry** are never remediation pushes, so they record nothing and
-never re-enter integration. A head move that no record explains is therefore
-a catch-up. The exception is a record that holds an integration re-entry
-*without* this field: the engine then cannot tell a catch-up from an
-unrecorded push, so a head move out of a tell or a converged cycle is
-indeterminate (`remediation-unrecorded`).
+adjudication finding ids the push answers. An empty list
+(`--remediation-findings ""`) marks a pure base-reconciliation push, the
+local-merge fallback that fixes no finding. The engine places each push by
+history, never by where its findings came from:
+
+- The push's `head` must be the next head a completed cycle reviews or a
+  carry attests. Only the latest push may still be awaiting that review.
+- The push follows the latest completed cycle before that review, and that
+  cycle decides how the push is judged: under the tell rule above, or under
+  the fixing ceiling.
+- A carry may attest only a pure base reconciliation. A push with findings
+  changed the reviewed diff, so a carry of its head is indeterminate
+  (`remediation-head-carried`).
+
+A **server-side catch-up** (update-branch) is never a remediation push, so it
+records nothing and never re-enters integration. **Every** integration
+re-entry records its own push: once any cycle or carry exists, a re-entry
+without this field is indeterminate (`remediation-unrecorded`), whatever the
+other pushes say.
 
 The readiness gate reads the integration record itself, never a verdict
 reason, and infers nothing about fix pushes. An integration pass with

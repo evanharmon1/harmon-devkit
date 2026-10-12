@@ -1,4 +1,4 @@
 {
   "indeterminate": true,
-  "reason_contains": "cannot tell a catch-up from an unrecorded remediation push"
+  "reason_contains": "without a remediation record"
 }

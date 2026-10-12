@@ -1,0 +1,52 @@
+{
+  "run_id": "run-integration-unrecorded-loop-after-recorded-push-rejected",
+  "initiated_by": "human",
+  "stage_transitions": [
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T00:00:00Z",
+      "exit": "remediating"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-10-08T00:06:00Z",
+      "exit": "fixed"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T00:07:00Z",
+      "exit": "remediating",
+      "remediation": {
+        "head": "0202020202020202020202020202020202020202",
+        "findings": [
+          "integration-r1-codex-cloud-1"
+        ]
+      }
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-10-08T00:11:00Z",
+      "exit": "fixed"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T00:12:00Z",
+      "remediation": {
+        "head": "0303030303030303030303030303030303030303",
+        "findings": [
+          "integration-r2-codex-cloud-1"
+        ]
+      },
+      "exit": "remediating"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-10-08T00:16:00Z",
+      "exit": "fixed"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T00:17:00Z"
+    }
+  ]
+}
