@@ -1653,9 +1653,9 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 contains "$OUT" "the run record and its comment evidence only" &&
     ok "the report narrows what --as-of reconstructs" ||
     bad "--as-of still implies it reconstructs everything"
-contains "$OUT" "default discovery trust root" &&
+contains "$OUT" "default trust set" &&
     contains "$OUT" "trusts the default allowlist as it is now" &&
-    ok "as-of disclosure names current default trust and legacy write-time revisions" ||
+    ok "as-of disclosure includes the current trust-set strings" ||
     bad "as-of disclosure omits the current trust root"
 contains "$OUT" "linked-issue set" &&
     ok "the linked-issue set is named as current-state in the output, not just the docs" ||

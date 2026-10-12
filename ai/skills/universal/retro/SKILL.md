@@ -181,7 +181,7 @@ are read as they stand now and are **not** reconstructed:
   body changes a historical read;
 - the **PR body** the disclosed caps come from, which is mutable and
   unauthenticated anyway (§2);
-- the **default discovery trust root** from the target repository's
+- the **default trust set** from the target repository's
   default-branch-head registry, when neither explicit trust flag is supplied.
   A replay with `--as-of` trusts the default allowlist as it is now, while the
   harvester still applies write-time registry revisions to legacy evidence.
