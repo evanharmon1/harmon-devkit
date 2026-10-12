@@ -1008,6 +1008,23 @@ run adjudication-record --record "$integration_retry"
 assert_rc 1
 assert_contains "$err" "rounds.challenge cap is 0, but round 1 was supplied for stage challenge"
 
+echo "==> a stage whose resolved cap is 0 refuses any adjudication, integration included"
+# The cap-0 guard is an invariant on the stage existing at all, independent of
+# the round-vs-ceiling comparison the renderer keeps for confidence stages only.
+integration_disabled="${test_tmp}/integration-cap-zero"
+mkdir -p "$integration_disabled"
+cp -r "${record_dir}/." "$integration_disabled/"
+node -e "
+const fs = require('fs');
+const p = process.argv[1] + '/policy.json';
+const policy = JSON.parse(fs.readFileSync(p, 'utf8'));
+policy.rounds.integration = 0;
+fs.writeFileSync(p, JSON.stringify(policy, null, 2));
+" "$integration_disabled"
+run adjudication-record --record "$integration_disabled"
+assert_rc 1
+assert_contains "$err" "rounds.integration cap is 0, but round 1 was supplied for stage integration"
+
 # policy.json is read, never rewritten: the resolved cap is still 1.
 [ "$(node -e "process.stdout.write(String(require('${over_cap}/policy.json').rounds.review))")" = "1" ] ||
     fail "rendering an authorized over-cap round rewrote policy.json's resolved review cap"

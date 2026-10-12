@@ -808,6 +808,15 @@ function validateCrossDocumentConsistency(record, options = {}) {
       const current = maxRoundByStage.get(doc.stage) ?? 0
       if (doc.round > current) maxRoundByStage.set(doc.stage, doc.round)
     }
+    // A cap of 0 disables its stage outright, so ANY adjudication for it is a
+    // contradiction, whatever its round number means. This is an invariant on
+    // the stage's existence, not a round count, so it holds for integration too.
+    for (const stage of ['challenge', 'review', 'integration']) {
+      const maxRound = maxRoundByStage.get(stage)
+      if (record.policy.rounds[stage] === 0 && maxRound !== undefined) {
+        fail(`policy.json: rounds.${stage} cap is 0, but round ${maxRound} was supplied for stage ${stage} — the stage is disabled`)
+      }
+    }
     for (const stage of CAP_COUNTED_STAGES) {
       const cap = record.policy.rounds[stage]
       const maxRound = maxRoundByStage.get(stage)

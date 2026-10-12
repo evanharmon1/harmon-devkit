@@ -3130,6 +3130,9 @@ The renderer projects an admitted challenge or review round as
 refuses an unauthorized one. It applies no integration cap check of its own
 and never labels an integration pass round. Integration cycle accounting
 belongs to the exit engine alone, which `readiness-gate.sh` already runs.
+The integrate assets (`check-codex-cloud-review.sh reserve` and
+`readiness-gate.sh`) do not read `cap_authorizations[]` yet, so they still
+refuse an authorized integration cycle above the cap.
 `policy.json`'s `rounds` are never rewritten to admit a round, and nothing
 reads a raised copy as authority. The effective ceiling is computed in memory
 and reported beside the resolved cap as the verdict's `authorized_ceiling`,
