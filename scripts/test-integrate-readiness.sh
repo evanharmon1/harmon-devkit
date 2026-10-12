@@ -4874,4 +4874,97 @@ assert_gate 2 indeterminate integration-exit-indeterminate
 grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
     fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
 
+# harmon-devkit#1376: `ci` reports one commit's CI conclusion from the gate's
+# own collapsed check list, for the Codex checker's CI-failed exemption.
+# $1 expected exit, $2 expected conclusion ("" when none is printed)
+run_ci() {
+    set +e
+    gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" ci \
+        --repo example/repo --pr 493 --head "$head_sha" 2>&1)"
+    gate_rc=$?
+    set -e
+    check_watchdog "$gate_rc" run_ci "$gate_out"
+    [ "$gate_rc" -eq "$1" ] || fail "ci: expected exit $1, got $gate_rc: $gate_out"
+    [ -z "$2" ] || [ "$(gate_field conclusion)" = "$2" ] ||
+        fail "ci: expected conclusion $2: $gate_out"
+}
+
+echo "==> ci: a failed check run is a failed conclusion, naming the check"
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {name:"build",status:"completed",conclusion:"success"},
+    {name:"lint",status:"completed",conclusion:"failure"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+run_ci 0 failed
+[ "$(printf '%s\n' "$gate_out" | tail -n 1 | jq -c '.failed')" = '["lint"]' ] ||
+    fail "ci must name the failed check: $gate_out"
+[ "$(gate_field head)" = "$head_sha" ] || fail "ci must name the commit it read: $gate_out"
+
+echo "==> ci: the default green fixture is a passed conclusion"
+write_defaults
+run_ci 0 passed
+
+echo "==> ci: a failed latest legacy status is a failed conclusion"
+write_defaults
+jq -cn '[[{context:"ci/legacy",state:"success",id:1},
+          {context:"ci/legacy",state:"error",id:3}]]' \
+    >"${fixtures}/statuses.pages.json"
+run_ci 0 failed
+
+echo "==> ci: a cancelled run is not a failure"
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {name:"build",status:"completed",conclusion:"cancelled"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
+run_ci 0 other
+[ "$(printf '%s\n' "$gate_out" | tail -n 1 | jq -c '.failed')" = '[]' ] ||
+    fail "a cancelled run must not be reported failed: $gate_out"
+
+echo "==> ci: a still-running check with no failure is pending"
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {name:"build",status:"in_progress",conclusion:null}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
+run_ci 0 pending
+
+echo "==> ci: no checks at all is indeterminate, never a conclusion"
+write_defaults
+printf '%s\n' '[{"total_count":0,"check_runs":[]}]' >"${fixtures}/check-runs.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
+run_ci 2 ""
+[ "$(gate_field condition)" = checks-indeterminate ] ||
+    fail "an empty check list must be checks-indeterminate: $gate_out"
+
+echo "==> ci: a missing --head is a usage error"
+set +e
+"$gate" ci --repo example/repo --pr 493 >/dev/null 2>&1
+ci_usage_rc=$?
+set -e
+[ "$ci_usage_rc" -eq 2 ] || fail "ci without --head must be a usage error, got $ci_usage_rc"
+
+echo "==> a CI-failed cycle's exempt split passes the cap check like a base-merge one"
+# harmon-devkit#1376: the checker records a CI-failed cycle in the same two
+# counters a base-merge exemption uses, so the gate needs nothing new to
+# accept it — this pins that the state's added fields change nothing here.
+write_defaults
+ci_split="$(jq -c '.cycle = 3 | .charged = 2 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-ci-split "$ci_split")"
+write_integration_cycle 1 3333333333333333333333333333333333333333 1 P2 decline none
+write_integration_cycle 2 "$stale_head_sha" 2 P2 decline '{"attacks_remediation":false}'
+jq '.payload.integration_round = 3' "$clean_result" >"${clean_result}.next" && mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "${record_dir}/passes/integration-r3-codex-cloud.json"
+ci_saved_state="$(cat "$recheck_state")"
+jq --arg prev "$stale_head_sha" '.charged_cycles = 2 | .exempt_cycles = 1 |
+    .review_trigger = "with-push" |
+    .prior_ci_charge = {head:$prev, review_trigger:"with-push", outcome:"exempt",
+      reason:"CI on \($prev) concluded failed", failed:["build"]}' \
+    "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 0 pass ready
+printf '%s\n' "$ci_saved_state" >"$recheck_state"
+
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

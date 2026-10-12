@@ -208,6 +208,52 @@ difficulty. Such a cycle is **exempt**: it runs, and it spends the separate
 second ceiling is why: a busy base branch could otherwise spend a whole run
 re-reviewing code nobody changed.
 
+**When each review is requested is `stages.integration.review_trigger`**
+(harmon-devkit#1376; the setting is harmon-init#1571's). Read it from the same
+resolution that yields the caps, and hand it — with the number of remediation
+pushes this stage has made so far — to whatever drives the cycle. It takes one
+of three values, absent meaning `after-ci`:
+
+- `after-ci` — wait for CI on the head to conclude green, then request the
+  review; on the PR's first head and after every remediation push alike.
+  Today's serial order.
+- `with-push` — request the review with every push and settle CI alongside.
+- `after-ci-first` — wait for CI on the PR's first head, then request; after a
+  remediation push, request with the push.
+
+`check-codex-cloud-review.sh trigger-timing --review-trigger <value>
+--remediation <n>` is the one statement of that table — it prints the order
+for THIS cycle, `after-ci` or `with-push` — and the integrator agent's §3 runs
+it rather than re-reading the list above. The value decides timing only. The
+readiness gate is unchanged under all three (every check concluded green AND a
+terminal clean current-head review); carry and the base-merge exemption apply
+exactly as stated here; it never suppresses a cycle the resolved rounds policy
+requires and never requests one beyond it (forensic's `min_rounds = 2` is the
+one legitimate second cycle on an unchanged head); and a CI-only
+infrastructure re-run is not a push, so it never re-requests a review —
+`reserve` refuses a second attempt-1 request for a head it already holds.
+When CI fails while a review requested alongside it is pending, the cycle
+still waits for that review's terminal result, or is reported incomplete.
+
+**Under `with-push` and `after-ci-first`, a cycle whose head's CI concludes
+failed is exempt.** Requesting before CI concludes trades an occasional review
+of a head CI then rejects for wall-clock time, and that cycle spends
+`integration_exempt`, not `integration`. Evidence decides it, never
+judgement: `reserve --review-trigger <value>` records the value on the cycle,
+which is charged at reservation because its CI is not known yet, and the next
+attempt-1 reservation on a later head reads the CI conclusion on that exact
+earlier head (`readiness-gate.sh ci`, the gate's own collapsed check list) and
+moves the cycle to `exempt_cycles` only on positive proof of a failed check —
+before checking the new cycle against its ceiling, so the freed budget is
+usable. Indeterminate CI charges normally, and so do green, still-running, or
+cancelled-only CI, a different run's state, and an exempt ceiling that is
+undeclared, 0, or spent. Under `after-ci` no review is requested before CI is
+green, so no cycle is ever exempted for a CI failure. The cycle's findings are
+still adjudicated, and the fix push still spends `remediation`. The new
+state's `prior_ci_charge` records the classification and the evidence it
+rested on; the counters reach the readiness gate exactly as a base-merge
+exemption's do, and its cap check needs nothing new to accept them.
+
 **Before either ceiling, ask whether the cycle is needed at all**
 (harmon-init#752). The exemption above still runs the review — it spends a
 reviewer window and 10–15 minutes of wall clock to re-read bytes nobody
@@ -1056,6 +1102,10 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     integration cap once base-merge-only cycles are exempt from it
     (harmon-init#1326) — what may not exceed the cap is the CHARGED count the
     reserve state keeps, which is the number the readiness gate checks;
+  - the resolved `stages.integration.review_trigger` and the number of
+    remediation pushes this stage has made so far — the two inputs the
+    agent's §3 hands to `trigger-timing` to order CI settlement against the
+    trigger, and the value it records on each reservation;
   - `run_id` and `initiated_by` — the active run's identity, read from
     `--record <dir>`'s own `run.json` (the same two values §6's gate binds
     the result to before trusting it);
@@ -1111,9 +1161,10 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   Branch on the validated result:
 
   - `verdict: "pending"` with `codex_cycle: null` — CI had not settled when
-    the agent read it, so it skipped the cycle without driving one
-    (`ai/agents/integrator.md` §4 skips on an unsettled `checks_ready`
-    exactly as it does on cap 0) — at **any** cap. This is not terminal and
+    the agent read it under an `after-ci` order, so it skipped the cycle
+    without driving one (`ai/agents/integrator.md` §4 skips on an unsettled
+    `checks_ready` under that order exactly as it does on cap 0) — at
+    **any** cap. A `with-push` order never skips for CI. This is not terminal and
     not a cap-0 signal: treat it exactly like exit `11` below — bounded
     wait, re-dispatch. Handing it to §6's gate under a positive cap is
     `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any

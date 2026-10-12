@@ -100,6 +100,11 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         cat "$GH_FIXTURES/base-head"
         exit 0
     fi
+    # harmon-devkit#1376: `readiness-gate.sh ci` reads only the branch name.
+    if [[ "$*" == *headRefName* ]]; then
+        jq -cn '{headRefName:"feature"}'
+        exit 0
+    fi
     # harmon-devkit#1189: `head-stale-calls` holds a call count. Up to and
     # including it the PR reports `head-stale` — GitHub still lagging a push —
     # and every later call reports `head`, so a case can put the catch-up
@@ -217,6 +222,25 @@ repos/*/compare/*)
 # Must sort before the bare-commit pattern below, which its trailing `*`
 # would otherwise also match.
 repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
+# harmon-devkit#1376: the CI read `readiness-gate.sh ci` makes for one commit.
+# Keyed by SHA; a commit with no check-runs fixture is an unreadable read.
+repos/*/commits/*/check-runs*)
+    ci_sha="${endpoint#*/commits/}"
+    file="check-runs-${ci_sha%%/*}.pages.json"
+    [ -f "$GH_FIXTURES/$file" ] || exit 96
+    ;;
+repos/*/commits/*/statuses*)
+    ci_sha="${endpoint#*/commits/}"
+    file="statuses-${ci_sha%%/*}.pages.json"
+    [ -f "$GH_FIXTURES/$file" ] || {
+        printf '%s\n' '[[]]'
+        exit 0
+    }
+    ;;
+repos/*/actions/runs\?head_sha=*)
+    printf '%s\n' '[{"workflow_runs":[]}]'
+    exit 0
+    ;;
 repos/*/commits/*)
     jq -cn \
         --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
@@ -7885,6 +7909,244 @@ for huge_var in CODEX_RESERVE_HEAD_WAIT_SEC CODEX_RESERVE_HEAD_POLL_SEC; do
     [ ! -f "$state" ] || fail "$huge_var out of range must reserve nothing"
     [ ! -d "${state}.lock" ] || fail "$huge_var out of range must take no lock"
 done
+
+# harmon-devkit#1376: [stage.integration].review_trigger. `trigger-timing` is
+# the one place the ordering each value implies is decided, for the PR's first
+# head (no remediation push yet) and for a head a remediation push produced.
+echo "==> trigger-timing orders each review_trigger value on the first head and after a remediation push"
+for timing_case in \
+    "after-ci 0 after-ci" "after-ci 1 after-ci" "after-ci 3 after-ci" \
+    "with-push 0 with-push" "with-push 1 with-push" "with-push 3 with-push" \
+    "after-ci-first 0 after-ci" "after-ci-first 1 with-push" "after-ci-first 3 with-push"; do
+    set -- $timing_case
+    timing_out="$("$helper" trigger-timing --review-trigger "$1" --remediation "$2")" ||
+        fail "trigger-timing $1 after $2 remediation push(es) must succeed"
+    [ "$(jq -r '.order' <<<"$timing_out")" = "$3" ] ||
+        fail "trigger-timing $1 after $2 remediation push(es) must order $3: $timing_out"
+done
+for bad_timing in "parallel 0" "with-push -1" "with-push x"; do
+    set -- $bad_timing
+    if "$helper" trigger-timing --review-trigger "$1" --remediation "$2" >/dev/null 2>&1; then
+        fail "trigger-timing must refuse --review-trigger $1 --remediation $2"
+    fi
+done
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --review-trigger parallel >/dev/null 2>&1; then
+    fail "reserve must refuse an unknown --review-trigger"
+fi
+
+# The CI-failed exemption. A cycle reserved under with-push / after-ci-first is
+# charged at reservation (its CI is unknown) and classified from the CI
+# conclusion on its own head when the next head's cycle is reserved.
+ci_prev=4444444444444444444444444444444444444444
+ci_new=5555555555555555555555555555555555555555
+ci_runs_failed='[{"name":"build","status":"completed","conclusion":"failure","check_suite":{"id":11},"app":{"id":15368}},
+    {"name":"lint","status":"completed","conclusion":"success","check_suite":{"id":12},"app":{"id":15368}}]'
+ci_runs_green='[{"name":"build","status":"completed","conclusion":"success","check_suite":{"id":11},"app":{"id":15368}}]'
+
+# $1 recorded review trigger ("" records none), $2 exempt ceiling, $3 the
+# previous head's check runs ("" leaves its CI unreadable), $4 run id of the
+# second reservation (default run-a), $5 the previous head's commit statuses
+# (default none).
+ci_reserve() {
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/check-runs-*.pages.json \
+        "${fixtures}"/statuses-*.pages.json
+    ci_trigger_args=()
+    [ -z "$1" ] || ci_trigger_args=(--review-trigger "$1")
+    printf '%s' "$ci_prev" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$ci_prev" --attempt 1 --run-id run-a \
+        --integration-cap 4 --integration-exempt-cap "$2" \
+        ${ci_trigger_args[@]+"${ci_trigger_args[@]}"} >/dev/null
+    jq '.phase = "attached" | .trigger_comment_id = 4242 |
+        .requested_at = .reserved_at' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    [ -z "$3" ] || printf '[{"total_count":1,"check_runs":%s}]\n' "$3" \
+        >"${fixtures}/check-runs-${ci_prev}.pages.json"
+    [ -z "${5:-}" ] || printf '[%s]\n' "$5" >"${fixtures}/statuses-${ci_prev}.pages.json"
+    printf '%s' "$ci_new" >"${fixtures}/head"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$ci_new" --attempt 1 --run-id "${4:-run-a}" \
+        --integration-cap 4 --integration-exempt-cap "$2" \
+        ${ci_trigger_args[@]+"${ci_trigger_args[@]}"} >/dev/null
+}
+
+# $1 label, $2 charged_cycles, $3 exempt_cycles, $4 prior_ci_charge.outcome
+# ("null" when no classification may apply at all)
+assert_ci_charge() {
+    [ "$(jq -r '.charged_cycles' "$state")" = "$2" ] ||
+        fail "$1: expected charged_cycles $2, got $(jq -c '{charged_cycles, exempt_cycles, prior_ci_charge}' "$state")"
+    [ "$(jq -r '.exempt_cycles' "$state")" = "$3" ] ||
+        fail "$1: expected exempt_cycles $3, got $(jq -c '{charged_cycles, exempt_cycles, prior_ci_charge}' "$state")"
+    [ "$(jq -r '.prior_ci_charge.outcome // "null"' "$state")" = "$4" ] ||
+        fail "$1: expected prior_ci_charge.outcome $4, got $(jq -c '.prior_ci_charge' "$state")"
+    # The NEW cycle is classified on its own terms and is never exempted by
+    # its predecessor's CI.
+    [ "$(jq -r '.charge' "$state")" = charged ] ||
+        fail "$1: the new cycle must stay charged, got $(jq -r '.charge' "$state")"
+}
+
+echo "==> with-push: a cycle whose head's CI concluded failed is exempt"
+ci_reserve with-push 4 "$ci_runs_failed"
+assert_ci_charge "with-push CI failed" 1 1 exempt
+[ "$(jq -r '.prior_ci_charge.head' "$state")" = "$ci_prev" ] ||
+    fail "the classification must name the head whose CI decided it: $(jq -c '.prior_ci_charge' "$state")"
+[ "$(jq -c '.prior_ci_charge.failed' "$state")" = '["build"]' ] ||
+    fail "the classification must name the failed check: $(jq -c '.prior_ci_charge' "$state")"
+[ "$(jq -r '.review_trigger' "$state")" = with-push ] ||
+    fail "the new cycle must record its own review trigger"
+grep -Fq "commits/${ci_prev}/check-runs" "$log" ||
+    fail "the CI conclusion must be read on the exact previous head"
+"$helper" show --state "$state" >/dev/null ||
+    fail "a state carrying review_trigger and prior_ci_charge must stay readable"
+jq '.prior_ci_charge.outcome = "maybe"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+if "$helper" show --state "$state" >/dev/null 2>&1; then
+    fail "a malformed prior_ci_charge must be refused as malformed state"
+fi
+
+echo "==> with-push: a cycle whose head's CI concluded green is charged"
+ci_reserve with-push 4 "$ci_runs_green"
+assert_ci_charge "with-push CI green" 2 0 charged
+
+echo "==> with-push: an unreadable CI result charges normally"
+ci_reserve with-push 4 ""
+assert_ci_charge "with-push CI unreadable" 2 0 charged
+case "$(jq -r '.prior_ci_charge.reason' "$state")" in
+*"could not be established"*) ;;
+*) fail "an unreadable CI read must say so: $(jq -c '.prior_ci_charge' "$state")" ;;
+esac
+
+echo "==> with-push: an empty check list is indeterminate and charges"
+ci_reserve with-push 4 '[]'
+assert_ci_charge "with-push CI empty" 2 0 charged
+
+echo "==> with-push: CI still running with no failure charges"
+ci_reserve with-push 4 '[{"name":"build","status":"in_progress","conclusion":null,"check_suite":{"id":11},"app":{"id":15368}}]'
+assert_ci_charge "with-push CI pending" 2 0 charged
+
+echo "==> with-push: runs cancelled by a superseding push are not a CI failure"
+ci_reserve with-push 4 '[{"name":"build","status":"completed","conclusion":"cancelled","check_suite":{"id":11},"app":{"id":15368}}]'
+assert_ci_charge "with-push CI cancelled" 2 0 charged
+
+echo "==> with-push: a failure superseded by a green re-run charges"
+# The gate's own latest-suite collapse decides, so a re-run that went green
+# is not read as the failure it replaced.
+ci_reserve with-push 4 '[{"name":"build","status":"completed","conclusion":"failure","check_suite":{"id":11},"app":{"id":15368}},
+    {"name":"build","status":"completed","conclusion":"success","check_suite":{"id":13},"app":{"id":15368}}]'
+assert_ci_charge "with-push CI re-run green" 2 0 charged
+
+echo "==> with-push: a failed commit status is a CI failure"
+ci_reserve with-push 4 "$ci_runs_green" run-a '[{"id":7,"context":"ci/external","state":"failure"}]'
+assert_ci_charge "with-push status failure" 1 1 exempt
+
+echo "==> after-ci-first: a cycle whose head's CI concluded failed is exempt"
+ci_reserve after-ci-first 4 "$ci_runs_failed"
+assert_ci_charge "after-ci-first CI failed" 1 1 exempt
+
+echo "==> after-ci-first: a cycle whose head's CI concluded green is charged"
+ci_reserve after-ci-first 4 "$ci_runs_green"
+assert_ci_charge "after-ci-first CI green" 2 0 charged
+
+echo "==> after-ci: a CI failure never exempts a cycle"
+ci_reserve after-ci 4 "$ci_runs_failed"
+assert_ci_charge "after-ci CI failed" 2 0 null
+! grep -Fq "commits/${ci_prev}/check-runs" "$log" ||
+    fail "after-ci must not read CI to classify a cycle at all"
+
+echo "==> no recorded review trigger: a CI failure never exempts a cycle"
+ci_reserve "" 4 "$ci_runs_failed"
+assert_ci_charge "no trigger CI failed" 2 0 null
+
+echo "==> a zero exempt ceiling charges a CI-failed cycle"
+ci_reserve with-push 0 "$ci_runs_failed"
+assert_ci_charge "with-push zero exempt ceiling" 2 0 charged
+
+echo "==> a different run's state cannot license a CI exemption"
+ci_reserve with-push 4 "$ci_runs_failed" run-b
+assert_ci_charge "with-push foreign run" 1 0 charged
+[ "$(jq -r '.run_id' "$state")" = run-b ] || fail "fixture: run-b should own the state"
+
+echo "==> a CI-failed cycle frees the charged budget the next cycle needs"
+# Integration cap 1: the first cycle spent it, so without the reclassification
+# the second reservation would be refused as over the cap.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+printf '%s' "$ci_prev" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
+    --attempt 1 --run-id run-a --integration-cap 1 --integration-exempt-cap 1 \
+    --review-trigger with-push >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '[{"total_count":1,"check_runs":%s}]\n' "$ci_runs_failed" \
+    >"${fixtures}/check-runs-${ci_prev}.pages.json"
+printf '%s' "$ci_new" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_new" \
+    --attempt 1 --run-id run-a --integration-cap 1 --integration-exempt-cap 1 \
+    --review-trigger with-push >/dev/null ||
+    fail "the CI-failed cycle must free the one charged cycle for the fix head"
+assert_ci_charge "budget freed" 1 1 exempt
+
+echo "==> attempt 2 keeps the review trigger its cycle was reserved under"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --run-id run-a --review-trigger with-push >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+retrigger_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 --run-id run-a --review-trigger after-ci 2>&1)"
+retrigger_rc=$?
+set -e
+[ "$retrigger_rc" -ne 0 ] ||
+    fail "attempt 2 must refuse a review trigger its cycle was not reserved under"
+grep -Fq 'disagrees with the trigger attempt 1 was reserved under' <<<"$retrigger_out" ||
+    fail "the refusal must name the disagreement: $retrigger_out"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 2 --run-id run-a >/dev/null ||
+    fail "attempt 2 without a trigger must inherit attempt 1's"
+[ "$(jq -r '.review_trigger' "$state")" = with-push ] ||
+    fail "attempt 2 must keep with-push, got $(jq -r '.review_trigger' "$state")"
+[ "$(jq -r '.charged_cycles' "$state")" = 1 ] ||
+    fail "attempt 2 must not charge again"
+
+echo "==> with-push: a CI infrastructure re-run never re-requests a review"
+# A re-run is not a push: the head is unchanged, so no new cycle exists, and
+# the only same-head route is the bounded attempt-2 re-trigger after an
+# incomplete attempt 1. A fresh attempt-1 request for the same head — what a
+# caller re-triggering on the re-run would need — is refused, and nothing is
+# spent.
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+printf '%s' "$ci_prev" >"${fixtures}/head"
+printf '[{"total_count":1,"check_runs":%s}]\n' "$ci_runs_failed" \
+    >"${fixtures}/check-runs-${ci_prev}.pages.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
+    --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+    --review-trigger with-push >/dev/null
+jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+rerun_before="$(cat "$state")"
+# The infrastructure re-run lands: the same head's CI is now green.
+printf '[{"total_count":1,"check_runs":%s}]\n' "$ci_runs_green" \
+    >"${fixtures}/check-runs-${ci_prev}.pages.json"
+set +e
+rerun_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$ci_prev" --attempt 1 --run-id run-a --integration-cap 4 \
+    --integration-exempt-cap 4 --review-trigger with-push 2>&1)"
+rerun_rc=$?
+set -e
+[ "$rerun_rc" -ne 0 ] ||
+    fail "a CI re-run must never reserve a second review request for the same head"
+grep -Fq 'refusing an uncontrolled duplicate trigger for this head' <<<"$rerun_out" ||
+    fail "the refusal must be the duplicate-trigger guard: $rerun_out"
+[ "$(cat "$state")" = "$rerun_before" ] ||
+    fail "a refused re-run reservation must leave the cycle state untouched"
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

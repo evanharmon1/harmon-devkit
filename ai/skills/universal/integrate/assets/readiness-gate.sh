@@ -22,6 +22,7 @@
 #       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #   readiness-gate.sh behind --repo OWNER/REPO --pr N
+#   readiness-gate.sh ci --repo OWNER/REPO --pr N --head SHA
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
 # pass only, prints `{"status":"pass",...,"fingerprint":...}` — where the
@@ -173,13 +174,16 @@ Usage:
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
   readiness-gate.sh behind --repo OWNER/REPO --pr N
+  readiness-gate.sh ci --repo OWNER/REPO --pr N --head SHA
 
 check evaluates every step-6 readiness condition for the adjudicated head;
 audit is the same evaluation with the draft requirement inverted (the PR
 must be non-draft), for judging a PR somebody already promoted — its pass
 never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
-post-promotion compare. --record DIR is the dev-flow-v2 record directory
+post-promotion compare.
+ci reports the CI conclusion for one exact commit of the PR, read-only, from
+the same collapsed check list check judges (harmon-devkit#1376). --record DIR is the dev-flow-v2 record directory
 (run.json plus adjudications/*.json) render-dev-flow.mjs projects deferred-
 finding settlement from, and this script separately reads run.json's own
 settlements[] from for the applied-disposition check below.
@@ -419,6 +423,10 @@ check | audit)
     [ -n "$remediation_cap" ] || usage
     ;;
 fingerprint | behind) ;;
+ci)
+    [ -n "$head" ] || usage
+    valid_sha "$head" || die "--head must be a full 40-hex commit"
+    ;;
 *) usage ;;
 esac
 
@@ -853,119 +861,13 @@ recheck_codex_freshness() {
         indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
 }
 
-# `behind` is the read-only preflight the reserved-cycle rule needs. Before
-# dispatching the last permitted review cycle an integrator must know whether
-# the head is behind — and telling it to work that out itself would mean
-# re-deriving ref encoding and fail-closed handling outside the one place they
-# are tested, which is exactly the hand-rolling this skill forbids everywhere
-# else. Same code path as the gate, same exit vocabulary: 0 level, 1 behind,
-# 2 could not establish. It writes nothing and judges nothing else.
-if [ "$command_name" = behind ]; then
-    behind_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
-        indeterminate fetch-failed "cannot fetch the PR state"
-    head="$(jq -er '.headRefOid | select(type == "string")' <<<"$behind_scalars")" ||
-        indeterminate malformed-data "PR payload carries no head commit"
-    establish_behind "$behind_scalars" "preflight"
-    # Same binding the gate does: a push or retarget during the comparison
-    # would otherwise let this report `level` for a head that no longer
-    # exists, and the caller spends its reserved cycle on the wrong one.
-    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName,baseRefOid)" ||
-        indeterminate fetch-failed "cannot confirm PR identity after the comparison"
-    jq -e --arg h "$head" --arg b "$behind_base_ref" --arg o "$behind_base_oid" \
-        '.headRefOid == $h and .baseRefName == $b and .baseRefOid == $o' <<<"$behind_after" >/dev/null ||
-        indeterminate behind-base-unknown "the PR head, base branch or base tip moved while comparing — re-run the preflight"
-    if [ "$behind_by" -eq 0 ]; then
-        jq -cn --arg base "$behind_base_ref" --arg head "$head" \
-            '{status:"level",behind_by:0,base:$base,head:$head}'
-        exit 0
-    fi
-    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}, before spending the reserved cycle"
-    exit 1
-fi
-
-if [ "$command_name" = fingerprint ]; then
-    fetch_fingerprint_surfaces
-    compute_fingerprint
-    jq -cn --arg fingerprint "$fingerprint" \
-        '{status:"fingerprint",fingerprint:$fingerprint}'
-    exit 0
-fi
-
-# ------------------------------ check / audit ------------------------------
-
-# 1. PR scalars. `gh pr view` is a single-object read (pagination does not
-# apply); the list surfaces below all go through --paginate --slurp.
-scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName,body,closingIssuesReferences)" ||
-    indeterminate fetch-failed "cannot fetch the PR state"
-scalars="$(normalize_body_field <<<"$scalars")" ||
-    indeterminate malformed-data "PR payload carries an invalid body"
-
-# This PR's own branch name — an extra signal `evaluate_checks` uses below to
-# narrow the case actions/runs' own `pull_requests[]` cannot: two open PRs
-# sharing a head sha where GitHub returns an EMPTY pull_requests for BOTH
-# workflow runs (harmon-devkit#714 shepherd, PR #723's own current-head
-# cycle). Not a full answer — two PRs can also share the same branch name
-# against different bases — but it costs nothing extra (already part of this
-# same `gh pr view` call) and catches the more common case of a differently
-# named sibling branch that happens to produce an identical tree.
-head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$scalars")" ||
-    indeterminate malformed-data "PR payload carries no head branch name"
-
-pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
-    indeterminate malformed-data "PR payload carries no state"
-[ "$pr_state" = "OPEN" ] ||
-    fail_condition pr-not-open "PR state is $pr_state — only an open PR can be gated or audited"
-
-if [ "$require_draft" = 1 ]; then
-    jq -e '.isDraft == true' <<<"$scalars" >/dev/null ||
-        fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; run audit, do not re-promote"
-else
-    # Audit judges an existing promotion, so its target must actually be
-    # promoted: a PR converted back to draft since the caller observed it
-    # has no standing handoff to accept.
-    jq -e '.isDraft == false' <<<"$scalars" >/dev/null ||
-        fail_condition pr-draft "the PR is a draft — there is no promotion to audit; check is the gate for promoting one"
-fi
-
-live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
-    indeterminate malformed-data "PR payload carries no head commit"
-[ "$live_head" = "$head" ] ||
-    fail_condition head-mismatch "PR head is $live_head, not the adjudicated $head — re-adjudicate against the new head"
-
-# 2. The PR object (REST) — the fingerprint's first surface, and a second
-# head-moved check independent of the scalar fetch above.
-fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
-    indeterminate fetch-failed "cannot fetch the PR object"
-fp_pr="$(normalize_body_field <<<"$fp_pr")" ||
-    indeterminate malformed-data "PR object carries an invalid body"
-rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
-    indeterminate malformed-data "PR object carries no head commit"
-[ "$rest_head" = "$head" ] ||
-    fail_condition head-moved "PR head changed while the gate was reading it"
-scalar_body="$(jq -r '.body' <<<"$scalars")" ||
-    indeterminate malformed-data "PR payload carries no body"
-rest_body="$(jq -r '.body' <<<"$fp_pr")" ||
-    indeterminate malformed-data "PR object carries no body"
-[ "$scalar_body" = "$rest_body" ] ||
-    fail_condition content-moved "PR body changed between the linkage and fingerprint reads — re-adjudicate against the current body"
-assert_closing_linkage "$scalars" "initial snapshot"
-
-# 3. Checks, page-safe from the commit itself: check runs plus legacy commit
-# statuses are what the PR's checks tab aggregates. `gh pr view`'s
-# statusCheckRollup caps at one page, so it cannot be the evidence here. The
-# evaluation is a function because it runs twice: here, and again immediately
-# before the verdict — the fetches between the two take real time, a rerun or
-# late-triggered workflow can turn the commit red inside that window, and
-# checks are deliberately not part of the content fingerprint, so nothing
-# after promotion would catch it either.
-#
-# What this judges is every check GitHub REPORTS for the commit. A required
-# context that never registered at all is invisible to any list read (only
-# merge-blocked-ness encodes it, and BLOCKED must stay promotable), so
-# "every required workflow actually ran" remains the §6 automation-coverage
-# condition the caller holds — see the header.
-evaluate_checks() {
+# The head's checks, fetched and collapsed to the latest run per workflow
+# identity — the one implementation of that collapse. `evaluate_checks` (the
+# gate's checks condition) and the read-only `ci` subcommand below both start
+# from it, so a CI conclusion read for cycle classification sees exactly the
+# checks the gate would judge. Sets $check_runs and $statuses; needs $repo,
+# $pr, $head and $head_ref_name.
+collect_head_checks() {
     check_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
         indeterminate fetch-failed "cannot fetch check runs for the head"
@@ -1164,6 +1066,177 @@ evaluate_checks() {
                 $group[] | select(.check_suite.id == $latest_suite))' \
         <<<"$check_runs" 2>/dev/null)" ||
         indeterminate malformed-data "check-runs payload could not be collapsed to latest per workflow"
+}
+
+# `ci` reports the CI conclusion for one exact commit (harmon-devkit#1376), for
+# the Codex checker's cycle classification under a review trigger that
+# requests review before CI concludes. It reads the same collapsed check list
+# the gate judges and writes nothing. Unlike `check`, the commit need not be
+# the PR's current head: a cycle is classified once a later head supersedes
+# it. Exit 0 with one JSON line on a complete read; 2 when the checks cannot be
+# established (a failed fetch, malformed data, or no checks reported yet).
+#
+# `failed` is positive evidence that the commit's CI concluded failed: a
+# latest run concluded failure, timed_out or startup_failure, or a latest
+# status is failure or error. A CANCELLED run is not in it — a superseding
+# push cancels the previous head's runs under a concurrency group, which says
+# nothing about that head — and neither is any other conclusion; those are
+# reported as `other`.
+if [ "$command_name" = ci ]; then
+    ci_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefName)" ||
+        indeterminate fetch-failed "cannot fetch the PR state"
+    head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$ci_scalars")" ||
+        indeterminate malformed-data "PR payload carries no head branch name"
+    collect_head_checks
+    ci_summary="$(jq -cn \
+        --slurpfile runs_sf <(printf '%s' "$check_runs") \
+        --slurpfile statuses_sf <(printf '%s' "$statuses") \
+        --arg head "$head" '
+          $runs_sf[0] as $runs | $statuses_sf[0] as $statuses |
+          def run_outcome:
+            if .status != "completed" then "pending"
+            elif (.conclusion == "success" or .conclusion == "neutral"
+                  or .conclusion == "skipped") then "passed"
+            elif (.conclusion == "failure" or .conclusion == "timed_out"
+                  or .conclusion == "startup_failure") then "failed"
+            else "other" end;
+          def status_outcome:
+            if .state == "success" then "passed"
+            elif .state == "pending" then "pending"
+            elif (.state == "failure" or .state == "error") then "failed"
+            else "other" end;
+          (($runs | map({name:(.name // "unnamed check"), outcome:run_outcome})) +
+           ($statuses | map({name:(.context // "unnamed status"),
+                             outcome:status_outcome}))) as $all
+          | def names($o): [$all[] | select(.outcome == $o) | .name];
+          {status:"ci", head:$head, total:($all | length),
+           failed:names("failed"), pending:names("pending"),
+           other:names("other"), passed:(names("passed") | length)}
+          | .conclusion = (if (.failed | length) > 0 then "failed"
+                           elif (.pending | length) > 0 then "pending"
+                           elif (.other | length) > 0 then "other"
+                           else "passed" end)')" ||
+        indeterminate malformed-data "check states could not be classified"
+    [ "$(jq -r '.total' <<<"$ci_summary")" -gt 0 ] ||
+        indeterminate checks-indeterminate "GitHub reports no checks for this commit — populated asynchronously, so the conclusion is unknown"
+    printf '%s\n' "$ci_summary"
+    exit 0
+fi
+
+# `behind` is the read-only preflight the reserved-cycle rule needs. Before
+# dispatching the last permitted review cycle an integrator must know whether
+# the head is behind — and telling it to work that out itself would mean
+# re-deriving ref encoding and fail-closed handling outside the one place they
+# are tested, which is exactly the hand-rolling this skill forbids everywhere
+# else. Same code path as the gate, same exit vocabulary: 0 level, 1 behind,
+# 2 could not establish. It writes nothing and judges nothing else.
+if [ "$command_name" = behind ]; then
+    behind_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
+        indeterminate fetch-failed "cannot fetch the PR state"
+    head="$(jq -er '.headRefOid | select(type == "string")' <<<"$behind_scalars")" ||
+        indeterminate malformed-data "PR payload carries no head commit"
+    establish_behind "$behind_scalars" "preflight"
+    # Same binding the gate does: a push or retarget during the comparison
+    # would otherwise let this report `level` for a head that no longer
+    # exists, and the caller spends its reserved cycle on the wrong one.
+    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName,baseRefOid)" ||
+        indeterminate fetch-failed "cannot confirm PR identity after the comparison"
+    jq -e --arg h "$head" --arg b "$behind_base_ref" --arg o "$behind_base_oid" \
+        '.headRefOid == $h and .baseRefName == $b and .baseRefOid == $o' <<<"$behind_after" >/dev/null ||
+        indeterminate behind-base-unknown "the PR head, base branch or base tip moved while comparing — re-run the preflight"
+    if [ "$behind_by" -eq 0 ]; then
+        jq -cn --arg base "$behind_base_ref" --arg head "$head" \
+            '{status:"level",behind_by:0,base:$base,head:$head}'
+        exit 0
+    fi
+    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}, before spending the reserved cycle"
+    exit 1
+fi
+
+if [ "$command_name" = fingerprint ]; then
+    fetch_fingerprint_surfaces
+    compute_fingerprint
+    jq -cn --arg fingerprint "$fingerprint" \
+        '{status:"fingerprint",fingerprint:$fingerprint}'
+    exit 0
+fi
+
+# ------------------------------ check / audit ------------------------------
+
+# 1. PR scalars. `gh pr view` is a single-object read (pagination does not
+# apply); the list surfaces below all go through --paginate --slurp.
+scalars="$(run_gh pr view "$pr" --repo "$repo" \
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName,body,closingIssuesReferences)" ||
+    indeterminate fetch-failed "cannot fetch the PR state"
+scalars="$(normalize_body_field <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries an invalid body"
+
+# This PR's own branch name — an extra signal `evaluate_checks` uses below to
+# narrow the case actions/runs' own `pull_requests[]` cannot: two open PRs
+# sharing a head sha where GitHub returns an EMPTY pull_requests for BOTH
+# workflow runs (harmon-devkit#714 shepherd, PR #723's own current-head
+# cycle). Not a full answer — two PRs can also share the same branch name
+# against different bases — but it costs nothing extra (already part of this
+# same `gh pr view` call) and catches the more common case of a differently
+# named sibling branch that happens to produce an identical tree.
+head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no head branch name"
+
+pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no state"
+[ "$pr_state" = "OPEN" ] ||
+    fail_condition pr-not-open "PR state is $pr_state — only an open PR can be gated or audited"
+
+if [ "$require_draft" = 1 ]; then
+    jq -e '.isDraft == true' <<<"$scalars" >/dev/null ||
+        fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; run audit, do not re-promote"
+else
+    # Audit judges an existing promotion, so its target must actually be
+    # promoted: a PR converted back to draft since the caller observed it
+    # has no standing handoff to accept.
+    jq -e '.isDraft == false' <<<"$scalars" >/dev/null ||
+        fail_condition pr-draft "the PR is a draft — there is no promotion to audit; check is the gate for promoting one"
+fi
+
+live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no head commit"
+[ "$live_head" = "$head" ] ||
+    fail_condition head-mismatch "PR head is $live_head, not the adjudicated $head — re-adjudicate against the new head"
+
+# 2. The PR object (REST) — the fingerprint's first surface, and a second
+# head-moved check independent of the scalar fetch above.
+fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
+    indeterminate fetch-failed "cannot fetch the PR object"
+fp_pr="$(normalize_body_field <<<"$fp_pr")" ||
+    indeterminate malformed-data "PR object carries an invalid body"
+rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
+    indeterminate malformed-data "PR object carries no head commit"
+[ "$rest_head" = "$head" ] ||
+    fail_condition head-moved "PR head changed while the gate was reading it"
+scalar_body="$(jq -r '.body' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no body"
+rest_body="$(jq -r '.body' <<<"$fp_pr")" ||
+    indeterminate malformed-data "PR object carries no body"
+[ "$scalar_body" = "$rest_body" ] ||
+    fail_condition content-moved "PR body changed between the linkage and fingerprint reads — re-adjudicate against the current body"
+assert_closing_linkage "$scalars" "initial snapshot"
+
+# 3. Checks, page-safe from the commit itself: check runs plus legacy commit
+# statuses are what the PR's checks tab aggregates. `gh pr view`'s
+# statusCheckRollup caps at one page, so it cannot be the evidence here. The
+# evaluation is a function because it runs twice: here, and again immediately
+# before the verdict — the fetches between the two take real time, a rerun or
+# late-triggered workflow can turn the commit red inside that window, and
+# checks are deliberately not part of the content fingerprint, so nothing
+# after promotion would catch it either.
+#
+# What this judges is every check GitHub REPORTS for the commit. A required
+# context that never registered at all is invisible to any list read (only
+# merge-blocked-ness encodes it, and BLOCKED must stay promotable), so
+# "every required workflow actually ran" remains the §6 automation-coverage
+# condition the caller holds — see the header.
+evaluate_checks() {
+    collect_head_checks
 
     # An EMPTY list is indeterminate, never a pass: GitHub populates check
     # suites asynchronously, so a read moments after a push reports nothing

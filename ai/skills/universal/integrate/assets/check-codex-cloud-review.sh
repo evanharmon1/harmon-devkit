@@ -77,6 +77,8 @@ Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
                                      [--previous-head SHA] [--run-id ID]
                                      [--integration-cap N] [--integration-exempt-cap N]
+                                     [--review-trigger after-ci|with-push|after-ci-first]
+  check-codex-cloud-review.sh trigger-timing --review-trigger after-ci|with-push|after-ci-first --remediation N
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh carry --state FILE --head SHA [--run-id ID] [--repo-dir DIR]
@@ -112,6 +114,29 @@ the gate as the only backstop.
 --run-id scopes the totals to one run. The state file outlives the run that
 wrote it, so a second run against the same PR would otherwise inherit the
 first run's spend; naming a different run starts the totals again.
+
+--review-trigger records the resolved [stage.integration].review_trigger on
+the cycle (harmon-devkit#1376). Under `with-push` and `after-ci-first` a
+review can be requested before CI on its head concludes, and a cycle whose
+head's CI then concludes FAILED spends `integration_exempt` rather than
+`integration`. The CI conclusion is not known at reservation, so the cycle is
+charged then (unknown charges) and classified from evidence when the next
+attempt-1 cycle on a different head is reserved: `reserve` reads the CI
+conclusion on that exact earlier head (`readiness-gate.sh ci`) and, only on
+positive proof of failure, moves the cycle from `charged_cycles` to
+`exempt_cycles` before checking the new cycle against its ceiling. Green,
+pending, cancelled-only, unreadable, a different run's state, an undeclared or
+zero exempt ceiling, or a spent one all leave it charged. Under `after-ci`, or
+when no value was recorded, no cycle is ever classified this way: no review is
+requested before CI is green. The record is `prior_ci_charge` on the new state.
+
+`trigger-timing` answers WHEN this cycle's review is requested, for the
+recorded value and the number of remediation (integration-stage fix) pushes
+made so far: `after-ci` waits for CI green on every head, `with-push` requests
+with every push, and `after-ci-first` waits on the PR's first head (no
+remediation push yet) and requests with the push after that. It reads and
+writes nothing and prints `{review_trigger, remediation, order}` where order
+is `after-ci` or `with-push`.
 
 `carry` (harmon-init#752) answers one question before a cycle is reserved:
 does the previously reviewed clean verdict still attest THIS head? It does
@@ -252,6 +277,8 @@ run_id=
 repo_dir=.
 integration_cap=
 integration_exempt_cap=
+review_trigger=
+remediation=
 requested_at_arg=
 # harmon-devkit#573: the finder's usage-limit reply, once `check` has seen it.
 # Empty until the comment surface has actually been fetched and scanned, which
@@ -279,7 +306,7 @@ eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --repo-dir)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --review-trigger | --remediation | --repo-dir)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -297,6 +324,8 @@ while [ "$#" -gt 0 ]; do
         --repo-dir) repo_dir=$2 ;;
         --integration-cap) integration_cap=$2 ;;
         --integration-exempt-cap) integration_exempt_cap=$2 ;;
+        --review-trigger) review_trigger=$2 ;;
+        --remediation) remediation=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
@@ -321,6 +350,7 @@ done
 # the `*)` arm of the dispatch below, which is `usage` anyway.
 case "$command_name" in
 reap) [ -n "$root_dir" ] || usage ;;
+trigger-timing) ;;
 *) [ -n "$state_file" ] || usage ;;
 esac
 valid_repo() {
@@ -916,7 +946,14 @@ read_state() {
       (.boundary_source == null or
         (.boundary_source == "check-suite" or .boundary_source == "commit-date")) and
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
-      (.check_suite_boundary == null or (.check_suite_boundary | type == "string"))
+      (.check_suite_boundary == null or (.check_suite_boundary | type == "string")) and
+      (.review_trigger == null or .review_trigger == "after-ci" or
+        .review_trigger == "with-push" or .review_trigger == "after-ci-first") and
+      (.prior_ci_charge == null or ((.prior_ci_charge | type == "object") and
+        (.prior_ci_charge.head | type == "string") and
+        (.prior_ci_charge.outcome == "charged" or .prior_ci_charge.outcome == "exempt") and
+        (.prior_ci_charge.reason | type == "string") and
+        (.prior_ci_charge.failed | type == "array")))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -2021,7 +2058,101 @@ classify_cycle_charge() {
     return 0
 }
 
+# harmon-devkit#1376: the review triggers under which a review can be
+# requested before CI on its head concludes. `after-ci` is absent on purpose.
+valid_review_trigger() {
+    case "$1" in after-ci | with-push | after-ci-first) return 0 ;; *) return 1 ;; esac
+}
+
+# harmon-devkit#1376: classify the PREVIOUS cycle — the one the state on disk
+# records — from the CI conclusion on its own head, now that a later head has
+# superseded it. Under `with-push` and `after-ci-first` that cycle's review
+# may have been requested before its CI concluded, and a cycle whose head's CI
+# concluded FAILED spends `integration_exempt` instead of `integration`.
+#
+# The invariant is the one classify_cycle_charge states: exempt only on
+# positive proof. The cycle was charged when it was reserved, because nothing
+# was known then, and it stays charged unless every condition below holds —
+# the state is this run's, its recorded trigger requests before CI, it is
+# still charged, an exempt ceiling is declared and has room, and the CI read
+# on that exact head succeeds and reports a failed check. A cancelled run is
+# not a failure (`readiness-gate.sh ci` explains why), and pending, green or
+# unreadable CI all charge.
+#
+# Sets prior_ci_payload (JSON, or null when no classification applies) and
+# moves one cycle from carried_charged to carried_exempt on proof.
+classify_prior_ci_charge() {
+    prior_ci_payload=null
+    [ -f "$state_file" ] || return 0
+    prior_ci_head=$(jq -r '.head // empty' "$state_file")
+    prior_ci_trigger=$(jq -r '.review_trigger // empty' "$state_file")
+    prior_ci_charge=$(jq -r '.charge // "charged"' "$state_file")
+    valid_sha "$prior_ci_head" && [ "$prior_ci_head" != "$head" ] || return 0
+    case "$prior_ci_trigger" in with-push | after-ci-first) ;; *) return 0 ;; esac
+    # Already exempt (a base catch-up): one cycle is never exempted twice.
+    [ "$prior_ci_charge" = charged ] || return 0
+    prior_ci_outcome=charged
+    prior_ci_failed='[]'
+    if [ "$state_carries_my_counters" != "1" ]; then
+        prior_ci_reason="the persisted state belongs to a different run; charged"
+    elif [ -z "$integration_exempt_cap" ] || [ "$integration_exempt_cap" = "0" ]; then
+        prior_ci_reason="no exempt ceiling applies; charged"
+    elif [ "$carried_charged" -lt 1 ]; then
+        prior_ci_reason="no charged cycle is recorded to reclassify; charged"
+    elif [ "$((carried_exempt + 1))" -gt "$integration_exempt_cap" ]; then
+        prior_ci_reason="the exempt ceiling ($integration_exempt_cap) is spent; charged"
+    else
+        prior_ci_out=
+        prior_ci_status=0
+        prior_ci_out=$("$timeout_bin" -k 1 "${CODEX_CI_READ_TIMEOUT_SEC:-120}" \
+            "$SCRIPT_DIR/readiness-gate.sh" ci --repo "$repo" --pr "$pr" \
+            --head "$prior_ci_head" 2>/dev/null) || prior_ci_status=$?
+        if [ "$prior_ci_status" -ne 0 ] ||
+            ! jq -e --arg h "$prior_ci_head" \
+                '.status == "ci" and .head == $h and (.failed | type == "array")' \
+                <<<"$prior_ci_out" >/dev/null 2>&1; then
+            prior_ci_reason="CI on $prior_ci_head could not be established; charged"
+        elif jq -e '.failed | length > 0' <<<"$prior_ci_out" >/dev/null; then
+            prior_ci_failed=$(jq -c '.failed | .[0:20]' <<<"$prior_ci_out")
+            prior_ci_outcome=exempt
+            prior_ci_reason="CI on $prior_ci_head concluded failed"
+            carried_charged=$((carried_charged - 1))
+            carried_exempt=$((carried_exempt + 1))
+        else
+            prior_ci_reason="CI on $prior_ci_head did not conclude failed ($(jq -r '.conclusion // "unknown"' <<<"$prior_ci_out")); charged"
+        fi
+    fi
+    prior_ci_payload=$(jq -cn --arg head "$prior_ci_head" --arg trigger "$prior_ci_trigger" \
+        --arg outcome "$prior_ci_outcome" --arg reason "$prior_ci_reason" \
+        --argjson failed "$prior_ci_failed" \
+        '{head:$head, review_trigger:$trigger, outcome:$outcome, reason:$reason, failed:$failed}')
+    return 0
+}
+
 case "$command_name" in
+trigger-timing)
+    # harmon-devkit#1376: a pure answer, so the ordering each value implies is
+    # decided in one tested place instead of by every caller's reading.
+    [ -n "$review_trigger" ] && [ -n "$remediation" ] || usage
+    valid_review_trigger "$review_trigger" ||
+        die "--review-trigger must be one of after-ci, with-push, after-ci-first"
+    valid_uint_or_zero "$remediation" || die "--remediation must be a non-negative integer"
+    case "$review_trigger" in
+    after-ci) trigger_order=after-ci ;;
+    with-push) trigger_order=with-push ;;
+    after-ci-first)
+        if [ "$remediation" = "0" ]; then
+            trigger_order=after-ci
+        else
+            trigger_order=with-push
+        fi
+        ;;
+    esac
+    jq -cn --arg trigger "$review_trigger" --argjson remediation "$remediation" \
+        --arg order "$trigger_order" \
+        '{review_trigger:$trigger, remediation:$remediation, order:$order}'
+    ;;
+
 reserve)
     [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] && [ -n "$attempt" ] ||
         usage
@@ -2030,6 +2161,8 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
+    [ -z "$review_trigger" ] || valid_review_trigger "$review_trigger" ||
+        die "--review-trigger must be one of after-ci, with-push, after-ci-first"
     # harmon-devkit#1189: right after a push GitHub routinely reports the
     # previous head for a few seconds, so a reservation taken immediately
     # refused a benign race — and a caller that masked that refusal posted the
@@ -2307,6 +2440,7 @@ reserve)
     fi
     charge_class=charged
     charge_reason="no persisted prior reviewed head; charging"
+    prior_ci_payload=null
     if [ "$attempt" = "1" ]; then
         # Attempt 1 of a head is a NEW cycle, and the only thing that spends a
         # ceiling. Classify it, then charge whichever counter it belongs to.
@@ -2362,6 +2496,10 @@ reserve)
                 [ "$integration_exempt_cap" = "$integration_cap" ] ||
                 die "--integration-exempt-cap ($integration_exempt_cap) must be 0 or equal to --integration-cap ($integration_cap); no resolved policy produces any other pair"
         fi
+        # harmon-devkit#1376: settle the superseded cycle's own charge first,
+        # so a CI-failed head frees the charged budget this cycle is about to
+        # be checked against.
+        classify_prior_ci_charge
         # An exempt ceiling of 0 is not "no exempt budget left", it is a policy
         # with no exemption at all — what every historical (legacy/v1) decode
         # resolves to, because those shapes spend one shared total. Refusing
@@ -2401,6 +2539,13 @@ reserve)
         # that the change never asked for. Carry attempt 1's verdict.
         charge_class=$(jq -r '.charge // "charged"' "$state_file")
         charge_reason=$(jq -r '.charge_reason // ""' "$state_file")
+        # The same cycle keeps the trigger it was reserved under, and the
+        # record of how its predecessor was classified.
+        recorded_review_trigger=$(jq -r '.review_trigger // empty' "$state_file")
+        [ -z "$review_trigger" ] || [ "$review_trigger" = "$recorded_review_trigger" ] ||
+            die "--review-trigger $review_trigger disagrees with the trigger attempt 1 was reserved under (${recorded_review_trigger:-none})"
+        review_trigger=$recorded_review_trigger
+        prior_ci_payload=$(jq -c '.prior_ci_charge // null' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
@@ -2561,6 +2706,8 @@ reserve)
         --arg run_id "$run_id" \
         --arg base_sha "$reserve_base_sha" \
         --argjson first_trigger_comment_id "$payload_first_trigger_comment_id" \
+        --arg review_trigger "$review_trigger" \
+        --argjson prior_ci_charge "$prior_ci_payload" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -2576,7 +2723,9 @@ reserve)
           charged_cycles:$charged_cycles,
           exempt_cycles:$exempt_cycles,
           run_id:(if $run_id == "" then null else $run_id end),
-          base_sha:(if $base_sha == "" then null else $base_sha end)
+          base_sha:(if $base_sha == "" then null else $base_sha end),
+          review_trigger:(if $review_trigger == "" then null else $review_trigger end),
+          prior_ci_charge:$prior_ci_charge
         }')
     write_state "$state_file" "$payload" || {
         restore_spend

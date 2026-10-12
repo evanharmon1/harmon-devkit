@@ -1972,6 +1972,21 @@ restriction, every implementer-capable harness eligible — turning a
 mistaken *narrow* allowlist into the *widest possible* one instead of
 failing closed.
 
+**A present `[stage.*]` table is closed, and `review_trigger` belongs to
+`[stage.integration]` alone** (harmon-init#1571, ported in
+harmon-devkit#1376). Any key other than `finders`/`finder_fallbacks`/`pool`
+— plus `review_trigger` on integration — is a `PolicyError` (`[stage.<name>]
+has invalid keys; unsupported: …`) rather than a silently ignored setting: a
+misplaced `review_trigger` on another stage would otherwise read as configured
+while changing nothing. `review_trigger` resolves to
+`stages.integration.review_trigger` on every path — `after-ci` when absent,
+including the built-in fallback and a historical decode — and a value outside
+`after-ci`/`with-push`/`after-ci-first` is refused, never widened to the
+default. It decides only *when* the integration stage requests its PR-side
+reviews relative to CI; the `integrate` skill and its checker own what that
+changes (`check-codex-cloud-review.sh trigger-timing`, and the CI-failed
+exemption `reserve` classifies).
+
 **A strategy's own requirements are cross-checked against breadth, not just
 resolved and left unchecked.** `[strategy.orchestrate]` and
 `[strategy.council]` declare `min_agents`; `crossValidate()` enforces the

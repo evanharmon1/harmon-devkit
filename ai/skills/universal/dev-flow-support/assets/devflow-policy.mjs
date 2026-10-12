@@ -69,6 +69,17 @@ const ROLES = ["orchestrator", "implementer", "challenger", "reviewer", "integra
 const CONFIDENCE_STAGES = ["challenge", "review"];
 const STAGES = ["implement", "challenge", "review", "integration"];
 const PRE_PR_STAGES = new Set(["implement", "challenge", "review"]);
+// [stage.integration].review_trigger (harmon-init#1571): WHEN the integration
+// stage requests its PR-side reviews relative to CI on the head. Timing only —
+// it never adds or removes a finder, and never suppresses or adds a cycle the
+// resolved [rounds.*] policy decides. Absent resolves to the first value, the
+// serial order (wait for CI green, then request).
+const REVIEW_TRIGGERS = ["after-ci", "with-push", "after-ci-first"];
+const DEFAULT_REVIEW_TRIGGER = REVIEW_TRIGGERS[0];
+// The keys a [stage.<name>] table may carry. review_trigger is integration's
+// alone: no other stage requests a review on a PR, so the key anywhere else is
+// a misplaced setting, not a no-op.
+const STAGE_KEYS = ["finders", "finder_fallbacks", "pool"];
 const PREDICATES = new Set(["no_gating_findings", "provenance_share", "count_rising", "repeat_after_fix"]);
 // specs/config/spec.md "Rigor uses the revised six-level ladder": rigor_order
 // SHALL be exactly this list, weakest to strongest — not merely a nonempty
@@ -206,6 +217,7 @@ const BUILTIN_ROLE_TIER_DEFAULTS = Object.freeze({
 function builtinStagesDefault() {
   const result = {};
   for (const stage of STAGES) result[stage] = { finders: [], finder_fallbacks: [], pool: null };
+  result.integration.review_trigger = DEFAULT_REVIEW_TRIGGER;
   return result;
 }
 function builtinRolesDefault() {
@@ -878,6 +890,13 @@ function resolveStages(doc) {
   const result = {};
   for (const stage of STAGES) {
     const table = doc.stage?.[stage];
+    // An absent table resolves to the defaults below; a present one is closed,
+    // so a misspelled or misplaced key is refused rather than silently
+    // ignored (harmon-init#1571 ported the same rule, in the same shape).
+    if (table !== undefined) {
+      const keys = stage === "integration" ? [...STAGE_KEYS, "review_trigger"] : STAGE_KEYS;
+      requireClosedStageTable(table, keys, `[stage.${stage}]`);
+    }
     const finders = resolveStageArray(table?.finders, `[stage.${stage}].finders`, []);
     // Each entry in `finders` is its own all-of primary slot (dev-flow-exit.mjs
     // keys logical-round assembly by slot name) — a duplicate slug collapses
@@ -913,8 +932,35 @@ function resolveStages(doc) {
       finder_fallbacks: finderFallbacks,
       pool: resolveStageArray(table?.pool, `[stage.${stage}].pool`, null),
     };
+    if (stage === "integration") {
+      result[stage].review_trigger = resolveReviewTrigger(table?.review_trigger);
+    }
   }
   return result;
+}
+
+// The diagnostic shape is harmon-init's requireClosedTable, which the shared
+// conformance runner classifies as `unsupported_key`.
+function requireClosedStageTable(table, allowedKeys, errorPath) {
+  if (table === null || typeof table !== "object" || Array.isArray(table)) {
+    throw new PolicyError(`${errorPath} must be a table`);
+  }
+  const extra = Object.keys(table).filter((key) => !allowedKeys.includes(key));
+  if (extra.length > 0) {
+    throw new PolicyError(`${errorPath} has invalid keys; unsupported: ${extra.join(", ")}`);
+  }
+}
+
+// Absent is the documented default; present-but-invalid is refused, never
+// widened to the default — the same rule resolveStageArray applies.
+function resolveReviewTrigger(value) {
+  if (value === undefined) return DEFAULT_REVIEW_TRIGGER;
+  if (!REVIEW_TRIGGERS.includes(value)) {
+    throw new PolicyError(
+      `[stage.integration].review_trigger must be one of [${REVIEW_TRIGGERS.join(", ")}], got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
 }
 
 function resolveStrategy(doc, requestedStrategy) {
@@ -2593,6 +2639,8 @@ function cliResolve(args) {
       );
     }
     console.log(`gates[${resolved.gates.source}]: round_code=${resolved.gates.round_code} round_docs=${resolved.gates.round_docs} secret_scan=${resolved.gates.secret_scan} pre_pr=${resolved.gates.pre_pr}`);
+    const integration = resolved.stages.integration;
+    console.log(`stage[integration]: finders=[${integration.finders.join(", ")}] review_trigger=${integration.review_trigger}`);
     const implementer = resolved.roles.implementer;
     console.log(
       `implementer tier: ${implementer.tier} (source: ${implementer.source}; profile: ${implementer.profile_tier})` +
