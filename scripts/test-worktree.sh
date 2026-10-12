@@ -327,8 +327,13 @@ fi
 echo "==> worktree:rm removes the tree and prunes the registry"
 rm_wt scratch >/dev/null || fail "worktree-rm.sh failed on a clean tree"
 refute_exists "$fixture/.worktrees/scratch" "worktree-rm.sh left the directory behind"
-if grep -q "scratch" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain); then
     fail "worktree-rm.sh left a stale registry record"
+fi
+
+if [ "${WORKTREE_TEST_SUBCASE:-}" = "scratch-rm" ]; then
+    echo "worktree subcase scratch-rm OK"
+    exit 0
 fi
 
 # ── dirty-tree refusal ───────────────────────────────────────────────
@@ -3574,5 +3579,20 @@ grep -qi 'removed' "$rm_trunc_log" &&
 rm -rf "$trunc_shim"
 
 echo "    worktree:rm target resolution: outside-cone, moved-record, and no-match all refuse without claiming a removal (#963)"
+
+if [ -z "${WORKTREE_TEST_SUBCASE:-}" ]; then
+    echo "==> worktree:rm registry assertion passes when TMPDIR contains 'scratch' (#1388)"
+    scratch_subcase_tmp="$(cd "$(mktemp -d -t harmon-init-scratch-XXXXXX)" && pwd -P)"
+    subcase_status=0
+    (
+        export WORKTREE_TEST_SUBCASE="scratch-rm"
+        export TMPDIR="$scratch_subcase_tmp"
+        bash "$repo/scripts/test-worktree.sh"
+    ) || subcase_status=$?
+    rm -rf "$scratch_subcase_tmp"
+    if [ "$subcase_status" -ne 0 ]; then
+        fail "worktree removal regression failed when TMPDIR contains 'scratch' (#1388)"
+    fi
+fi
 
 echo "worktree entrypoint OK: create → hooks verified → deps installed → removed"
