@@ -1,8 +1,9 @@
 ---
 name: integrate
 description: >-
-  Integrate a draft PR to ready for review — dispatch the integrator agent to
-  drive CI settlement and one current-head Codex cloud-review cycle, poll
+  Integrate a draft PR to ready for review — use the checker-driven clean-run
+  fast path or dispatch the integrator agent to drive CI settlement and one
+  current-head Codex cloud-review cycle, poll
   incoming bot/human reviews, adjudicate findings as hypotheses (verify, fix
   only what's confirmed, explain rejections in per-thread replies), push, and
   re-dispatch, under the resolved integration and remediation caps (from
@@ -77,8 +78,9 @@ retired single-stage skill at its pin and refuses as described above. Do
 not fabricate a `run.json` to route around any of this; there is nothing that
 would keep it truthful.
 
-Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
-to settle CI and drive the Codex cloud-review cycle (see
+Opening a draft PR is not the end. Integrate it: use the checker-driven
+clean-run fast path or dispatch the integrator agent to settle CI and drive
+the Codex cloud-review cycle (see
 [§2](#2-watch)), poll incoming bot/human reviews, adjudicate what lands, fix
 what's confirmed, and re-dispatch — under the resolved **integration cap**
 (bounds Codex cycles) and **remediation cap** (bounds fix pushes), counted
@@ -920,15 +922,55 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   clears it. Thread `isResolved` state is a separate question the readiness
   gate reads via GraphQL directly (§6): resolution is the maintainer's act,
   never evidence that you replied.
-- **Dispatch the integrator agent (`ai/agents/integrator.md`) every pass,
-  whatever the resolved integration cap — never hand-roll the
-  reserve/trigger/attach/check protocol yourself.** It settles checks and
+- **Choose the cycle-evidence path before collection.** When the
+  orchestrator has already driven the current-head Codex cycle through the
+  vendored checker, it may pass that state directly to §6's executable gate
+  with `--codex-recheck`, without dispatching an integrator merely to record
+  the same verdict. Use the checker and broker's reserve/trigger/check
+  protocol (§2), never a hand-rolled substitute. The gate reads live checks,
+  thread replies, deferred findings and record settlements itself; its verdict
+  records the checker state as cycle evidence. This removes only the recording
+  pass: the orchestrator still owes watch/adjudication, run evidence,
+  automation coverage and every readiness prerequisite. Additional configured
+  finders still need their evidence; use the dispatched-integrator path when
+  their `finder_cycles` must be supplied.
+  Checker-only evidence is a **clean-run fast path**: the active stage must
+  be integration, with no run-level integration `finder_selection`;
+  the record holds no integrator pass; it holds no integration adjudication;
+  every top-level PR comment and every non-empty review body is authored by
+  Codex bot `199175422` or is exactly `@codex review` after whitespace
+  trimming; resolved `policy.json` names exactly `codex-cloud` in
+  `stages.integration.finders`; the live checker attests exactly one
+  terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
+  the PR has no inline review comments. The state must be attached or terminal; a private snapshot supplies both
+  the freshness check and cycle construction. Immediately before a checker-only
+  pass, the live state bytes must still equal that snapshot; otherwise the gate
+  reports `codex-stale` and must be re-run. The state's `finder` matches
+  the trusted registry's `codex-cloud` reserve profile field by field, including
+  the fixed actor ID `199175422` and login `chatgpt-codex-connector[bot]`;
+  `trusted-registry.sh` resolves it from the PR base commit
+  on GitHub, never a caller-supplied registry. Null `finder` is accepted only
+  when that trusted profile equals the fixed legacy defaults. Trusted surfaces
+  must include `comment` and `review`. Live checker exit 10 fails as
+  `codex-not-clean`, including in audit mode. Carry remains admissible, retaining the
+  reviewed cycle's state; any exempt cycle requires integrator evidence.
+  The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
+  state without these counters is refused.
+  No authenticated-actor exemption applies: the orchestrator and maintainer
+  may share an account. Inline comments require the dispatched-integrator path,
+  even when their threads have replies.
+  If any condition is absent, the gate is indeterminate: dispatch an integrator
+  and supply `--integrator-result` to classify and settle integration work.
+  Conversation or cycle-work preconditions use `checker-fast-path-unavailable`;
+  existing live-checker and counter-validation errors remain explicit.
+  The fast path does not detect badges, match replies or derive dispositions.
+- **For dispatched integration, retain the integrator agent
+  (`ai/agents/integrator.md`) and its validated result.** It settles checks and
   lists unanswered threads at every cap, and drives the current-head Codex
   cycle only where the cap is not 0 (at 0 its brief says so and it skips
   its §4, reporting `codex_cycle: null` — the result §6's gate still
-  requires, since `--integrator-result` is mandatory there at every cap;
-  skipping the dispatch at 0 leaves an otherwise-ready PR with no result to
-  gate on). It also drives one cloud-review cycle per configured PR-side
+  requires at cap 0; checker-only evidence cannot waive the Codex
+  condition). It also drives one cloud-review cycle per configured PR-side
   finder (#804) — each finder's cycle is independent, with its trigger
   mechanism and verdict mode resolved from the trusted registry. That file
   owns every mechanical detail (resumption after interruption, the one
@@ -1868,19 +1910,19 @@ that loops indefinitely:
    its failing checks in a snapshot and promoted anyway —
    harmon-devkit#384):
 
-   The four flags after `--head` are, in order (each continuation
+   The gate inputs are (each continuation
    backslash below is the last byte on its line — a comment after one
    un-escapes the newline and runs the gate half-built):
 
    - `--record <dir>` — the same dev-flow-v2 record directory §5's
      `render-dev-flow.sh` calls read; required, never skippable.
-   - `--integrator-result <file>` — the LAST dispatched integrator agent's
-     validated `result.integrator` for this exact head — never a stale or a
-     different-head result. A null `codex_cycle` inside it (the resolved
-     integration cap was 0) is how the gate itself learns the Codex
-     condition is waived; there is no separate disabled flag to pass or
-     avoid, so the condition can never be skipped by silence nor by a false
-     claim.
+   - `--integrator-result <file>` — for dispatched integrators, the LAST
+     agent's validated `result.integrator` for this exact head. Supply it
+     whenever that path was used: an invalid supplied result is never masked
+     by checker evidence. For the orchestrator-driven Codex path, omit this
+     flag and supply `--codex-recheck` instead; no recording-pass dispatch is
+     needed. At a resolved cap of 0, retain the result with null `codex_cycle`
+     to express the waiver; checker-only evidence requires a real clean cycle.
    - `--integration-cap <n>` — required, not advisory (harmon-devkit#685;
      harmon-devkit#639 gauntlet challenge round 3): the resolved integration
      cap, cross-checked against `codex_cycle`'s own cap-0/cycle-ceiling
@@ -1907,7 +1949,7 @@ that loops indefinitely:
      only for a result that reports no split at all, which is one that never
      classified its cycles and is therefore held to the original
      single-counter rule.
-   - `--codex-recheck <state file>` — the integrator's own
+   - `--codex-recheck <state file>` — the orchestrator's or integrator's
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
      path §2's settle recipe resolves. Re-confirms a clean `codex_cycle`
@@ -1918,12 +1960,20 @@ that loops indefinitely:
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
      --record <dir> \
-     --integrator-result <file> \
      --integration-cap <n> \
      --integration-exempt-cap <n> \
      --remediation-cap <n> \
      --codex-recheck <state file>
    ```
+
+   For a dispatched integrator (including every cap-0 run), add
+   `--integrator-result <file>` to that command. Without either evidence
+   input, or with a non-clean or head-mismatched checker state, the gate is
+   indeterminate. Checker-only passes name `cycle_evidence.kind: checker-state`
+   and its path/cycle in the gate verdict; supplied-result passes name
+   `integrator-result`. Existing recorded integrator passes and their findings
+   remain validated and must bind to the gated cycle/head; switching inputs
+   does not drop adjudication or settlement obligations.
 
    `--head` is the head whose CI, Codex result, comments, and deferred
    findings you just adjudicated — from your own round record, never
@@ -2070,10 +2120,11 @@ that loops indefinitely:
    `promotion: {head, promoted_at, gate_fingerprint}` to `run.json`, `head`
    and `gate_fingerprint` copied verbatim from the confirmed reads above,
    never re-derived. This is the write side of an invariant the readiness
-   gate's own `--integrator-result` and `--head` checks already enforce on
-   the read side (a schema-valid envelope's `head` — and, transitively, its
-   `codex_cycle.accepted.reviewed_commit` — can never disagree with the head
-   the gate just confirmed), so a `promotion` entry can never legitimately
+   gate's `--head` check and evidence binding already enforce on the read side:
+   a supplied `--integrator-result` binds its schema-valid envelope's `head`
+   and `codex_cycle.accepted.reviewed_commit`; checker-only evidence binds the
+   live state head or proven `carry.attests_head` to that same gated head.
+   Thus a `promotion` entry can never legitimately
    name a head other than this one.
    If the open PR is non-draft on a changed head or content snapshot, or any
    other confirmation result cannot
