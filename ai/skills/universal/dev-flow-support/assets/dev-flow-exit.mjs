@@ -1772,21 +1772,15 @@ function foldLateRound(cycle, entries) {
   if (gating.length > 0) cycle.clean = false;
 }
 
-function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0 } = {}) {
+// Assembles completed cycles from integration rounds in order (the rules in
+// the section comment above), plus the review history: every head a new
+// completed cycle reviewed or a carry attested, with the round that did it.
+function assembleIntegrationCycles(rounds) {
   const cycles = [];
+  const reviewed = [];
   let streak = 0;
   let ordinal = 0;
   let awaiting = null;
-  // What a remediation push is judged against: each adjudicated finding's
-  // entry, and the review history in order — every head a new completed
-  // cycle reviewed or a carry attested, with the latest completed cycle
-  // before it (null before the first). A push is placed by the history that
-  // precedes the head it put on the branch, never by its findings' origin.
-  const findingIndex = new Set();
-  const reviewed = [];
-  for (const r of rounds) {
-    for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.add(e.finding_id);
-  }
   for (const r of rounds) {
     const findings = r.pass.envelope.payload?.findings ?? [];
     if (!r.adjudication && findings.length > 0) {
@@ -1812,8 +1806,8 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
     }
     const completed = cc !== null && !cc.carried && (cc.exit_code === 0 || cc.exit_code === 10);
     const latest = cycles.at(-1);
-    if (cc?.carried) reviewed.push({ head: cc.head, kind: "carry", prior: latest ?? null });
-    else if (completed && cc.cycle !== latest?.cycle) reviewed.push({ head: cc.head, kind: "cycle", prior: latest ?? null });
+    if (cc?.carried) reviewed.push({ head: cc.head, kind: "carry", round: r.round });
+    else if (completed && cc.cycle !== latest?.cycle) reviewed.push({ head: cc.head, kind: "cycle", round: r.round });
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
       // attempt. It folds into the latest completed cycle; before any, it
@@ -1848,16 +1842,27 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
     cycles.push(cycle);
     streak = cycle.clean ? streak + 1 : 0;
   }
+  return { cycles, reviewed, streak, awaiting };
+}
+
+// The head a round reviewed: its cycle's head (a carry's attested head), or
+// the pass head when it carries no cycle.
+function roundHead(r) {
+  return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
+}
+
+function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0 } = {}) {
+  const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds);
+  // A remediation push is placed by the review history before the head it
+  // put on the branch, never by its findings' origin, and judged only by the
+  // rounds that reviewed an earlier head before it: a finding first
+  // adjudicated on the pushed head, or later, never authorizes the push.
+  const findingIndex = new Set();
+  for (const r of rounds) {
+    for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.add(e.finding_id);
+  }
 
   const isTell = (c) => c.cycle >= 2 && c.entries.length > 0 && c.entries.every((e) => e.checkpoint?.attacks_remediation === true);
-  // The clean streak each cycle closes, from the final clean flags (a late
-  // P0/P1 folded into a cycle has already made it gating).
-  const streakAt = new Map();
-  cycles.reduce((run, c) => {
-    const next = c.clean ? run + 1 : 0;
-    streakAt.set(c, next);
-    return next;
-  }, 0);
   // Every integration -> implement -> integration loop owes its own record:
   // with review history to classify, an unrecorded loop leaves some head
   // move unexplainable as a push or a catch-up.
@@ -1876,19 +1881,19 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
     // carry); only the last push may still be awaiting that review, and then
     // everything reviewed so far precedes it.
     const j = reviewed.findIndex((e, i) => i >= cursor && e.head === push.head);
-    let prior;
+    let before;
     if (j === -1) {
       if (k !== pushes.length - 1) {
         throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, which no later cycle reviewed and no carry attested`, "remediation-head-unreviewed");
       }
-      prior = cycles.at(-1) ?? null;
+      before = rounds;
     } else {
       // A carry attests an identical diff, so it can follow only a pure base
       // reconciliation (no findings); a fix push changed the diff.
       if (reviewed[j].kind === "carry" && push.findings.length > 0) {
         throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] answers findings, yet a carry attested its head ${push.head} — a fix push changes the reviewed diff`, "remediation-head-carried");
       }
-      prior = reviewed[j].prior;
+      before = rounds.filter((r) => r.round < reviewed[j].round);
       cursor = j + 1;
     }
     for (const id of push.findings) {
@@ -1896,6 +1901,9 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
         throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, which no integration adjudication holds`, "remediation-finding-unknown");
       }
     }
+    // The state before the push: only rounds that reviewed another head.
+    const prefix = assembleIntegrationCycles(before.filter((r) => roundHead(r) !== push.head));
+    const prior = prefix.cycles.at(-1) ?? null;
     // A pure base reconciliation, or a push before the first cycle, has
     // nothing to judge. The reconciliation stays open after convergence: a
     // conflicting base can be reconciled only by the local-merge fallback,
@@ -1918,7 +1926,7 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
     // the streak. So every fix push after it is refused; a new P0/P1 enters
     // as a finding in a cycle, ends the converged state, and the next push is
     // judged against that cycle.
-    if (streakAt.get(prior) >= 2) {
+    if (prefix.streak >= 2) {
       throw integrationIndeterminate(
         `cycle ${prior.cycle} closed two consecutive clean cycles, but a remediation push followed it (${push.head}) — the fixing ceiling allows no further remediation push until a cycle records a P0/P1`,
         "fixing-ceiling",
