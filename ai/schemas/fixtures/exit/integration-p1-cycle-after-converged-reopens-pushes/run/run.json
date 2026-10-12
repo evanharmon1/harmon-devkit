@@ -1,0 +1,26 @@
+{
+  "run_id": "run-integration-p1-cycle-after-converged-reopens-pushes",
+  "initiated_by": "human",
+  "stage_transitions": [
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T00:00:00Z",
+      "exit": "remediating"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-10-08T01:01:00Z",
+      "exit": "fixed"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T01:02:00Z",
+      "remediation": {
+        "head": "0404040404040404040404040404040404040404",
+        "findings": [
+          "integration-r3-codex-cloud-1"
+        ]
+      }
+    }
+  ]
+}

@@ -1655,9 +1655,9 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 //   server-side catch-up — is never a remediation push. A push is placed by
 //   history: its head is the next head a cycle reviews or a carry attests,
 //   and it follows the latest completed cycle before that. After that cycle
-//   closed a clean streak of two (the fixing ceiling), a push whose findings
-//   are all P2/P3 is refused (indeterminate); one naming a confirmed P0/P1 is
-//   accepted. A carry may attest only a pure base reconciliation (a push
+//   closed a clean streak of two (the fixing ceiling), every fix push is
+//   refused (indeterminate): a confirmed P0/P1 would have broken the streak,
+//   so none is outstanding. A carry may attest only a pure base reconciliation (a push
 //   with no findings). Every integration re-entry owes its own record; with
 //   review history to classify, an unrecorded one is indeterminate.
 // - `capped`: the clean streak is broken and the charged cycles have reached
@@ -1782,10 +1782,10 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
   // cycle reviewed or a carry attested, with the latest completed cycle
   // before it (null before the first). A push is placed by the history that
   // precedes the head it put on the branch, never by its findings' origin.
-  const findingIndex = new Map();
+  const findingIndex = new Set();
   const reviewed = [];
   for (const r of rounds) {
-    for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.set(e.finding_id, e);
+    for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.add(e.finding_id);
   }
   for (const r of rounds) {
     const findings = r.pass.envelope.payload?.findings ?? [];
@@ -1897,7 +1897,9 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
       }
     }
     // A pure base reconciliation, or a push before the first cycle, has
-    // nothing to judge.
+    // nothing to judge. The reconciliation stays open after convergence: a
+    // conflicting base can be reconciled only by the local-merge fallback,
+    // and the readiness gate never promotes a BEHIND or DIRTY head.
     if (push.findings.length === 0 || !prior) continue;
     if (isTell(prior)) {
       // A push remedy counts only when the entry's disposition IS that remedy:
@@ -1912,10 +1914,13 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
         );
       }
     }
-    const gating = push.findings.some((id) => isGatingEntry(findingIndex.get(id)));
-    if (streakAt.get(prior) >= 2 && !gating) {
+    // While converged there is no outstanding P0/P1: one would have broken
+    // the streak. So every fix push after it is refused; a new P0/P1 enters
+    // as a finding in a cycle, ends the converged state, and the next push is
+    // judged against that cycle.
+    if (streakAt.get(prior) >= 2) {
       throw integrationIndeterminate(
-        `cycle ${prior.cycle} closed two consecutive clean cycles, but a remediation push followed it (${push.head}) for P2/P3 findings only — the fixing ceiling allows no further remediation push for P2s`,
+        `cycle ${prior.cycle} closed two consecutive clean cycles, but a remediation push followed it (${push.head}) — the fixing ceiling allows no further remediation push until a cycle records a P0/P1`,
         "fixing-ceiling",
       );
     }

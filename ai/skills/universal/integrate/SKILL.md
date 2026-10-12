@@ -1361,12 +1361,13 @@ the document without it.
   no further remediation push for P2s. Settle every remaining finding without
   a push — declined with evidence, or filed together in one follow-up issue —
   reply in each affected thread, `settle` the non-inline ones, tick the
-  deferred entries, and go to the readiness gate. The engine enforces it: a
-  recorded remediation push after a cycle that closed two consecutive clean
-  cycles, naming only P2/P3 findings, is refused (indeterminate,
-  `fixing-ceiling`). A confirmed P0/P1 — a late human review included — has
-  already broken the streak, and its fix push is accepted within the
-  remediation cap.
+  deferred entries, and go to the readiness gate. The engine enforces it as
+  an invariant: while converged no P0/P1 is outstanding, so every recorded fix
+  push after a cycle that closed two consecutive clean cycles is refused
+  (indeterminate, `fixing-ceiling`) until a later cycle — or a late review
+  folded into one — records a P0/P1 that breaks the streak. A pure base
+  reconciliation (empty findings) stays allowed, because the readiness gate
+  never promotes a behind or conflicting head.
 - **`diverging`** is the tell: every finding of a cycle at or after cycle 2
   attacks an earlier remediation push. Stop the fix loop and offer the three
   dispositions — **delete** the added surface, **restructure** it to an
