@@ -57,10 +57,12 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --run <run_id>               Skip discovery and report on this run.
   --trusted-actor-id <id>      Repeatable. Trusted-orchestrator GitHub actor
                                ids. Gates which comments may name a run AND is
-                               passed through to the harvester. REQUIRED (with
-                               --trusted-actors-file): there is no default.
+                               passed through to the harvester. Overrides the
+                               repository registry when supplied.
   --trusted-actors-file <path> A JSON {"trusted_actor_ids": [...]} document,
-                               passed through to the harvester.
+                               passed through to the harvester. Explicit trust
+                               flags override agent-registry.json; otherwise
+                               trusted_orchestrator_actor_ids is required there.
   --as-of <iso8601>            Reconstruct the RUN RECORD and its comment
                                evidence as of this instant. Discovery inputs
                                GitHub does not version are NOT reconstructed
@@ -712,19 +714,41 @@ function discoverRun(args, trustedActorIds) {
 // Trusted actor ids
 // ---------------------------------------------------------------------------
 
-// There is no default trust root, deliberately. An earlier revision fell back
-// to the authenticated account, which made a run's evidence valid or invalid
-// depending on who happened to run `/retro` and let a reader's own comments
-// authenticate their own retrospective — the evidence spec requires authority
-// to "derive solely from configured trusted orchestrator actor IDs", and
-// "whoever is logged in" is not configured (challenge round 2, confirmed P1).
-// dev-flow-stats.mjs already requires the ids explicitly; matching it
-// removes the divergence rather than papering over it. agent-registry.json
-// will carry the allowlist under harmon-devkit#741; until then the caller
-// supplies it, from a committed --trusted-actors-file or the flag.
+// Authority comes only from configured orchestrator IDs, never the authenticated
+// reader. Explicit flags override the local repository registry; discovery and
+// harvesting receive the same resolved set, including when a registry supplies it.
 function resolveTrustedActorArgs(args) {
   const passthrough = []
   const ids = new Set()
+  let registryPath = null
+  if (args.trustedActorIds.length === 0 && !args.trustedActorsFile) {
+    const root = repoRoot()
+    if (!root) throw new UsageError('cannot resolve the repository root for agent-registry.json; supply an explicit trust flag')
+    registryPath = path.join(root, 'agent-registry.json')
+    let doc
+    try {
+      doc = JSON.parse(readFileSync(registryPath, 'utf8'))
+    } catch (error) {
+      throw new UsageError(`could not read/parse agent-registry.json at ${registryPath}: ${error.message}; supply an explicit trust flag`)
+    }
+    const configured = doc?.trusted_orchestrator_actor_ids
+    if (!Array.isArray(configured) || configured.length === 0) {
+      throw new UsageError('agent-registry.json must contain a nonempty trusted_orchestrator_actor_ids array; there is no authenticated-caller default')
+    }
+    for (const id of configured) {
+      if (!Number.isSafeInteger(id) || id < 1) {
+        throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids entries must be positive safe JSON integers, got ${JSON.stringify(id)}`)
+      }
+      if (ids.has(id)) {
+        throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids must contain unique entries, got duplicate ${id}`)
+      }
+      if (Array.isArray(doc.finders) && doc.finders.some((finder) => finder?.trusted_actor_id === String(id))) {
+        throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids includes finder actor ${id}; finder identities cannot authenticate orchestrator evidence`)
+      }
+      ids.add(id)
+      passthrough.push('--trusted-actor-id', String(id))
+    }
+  }
   for (const id of args.trustedActorIds) {
     const n = Number(id)
     if (!Number.isInteger(n) || n < 1) {
@@ -740,7 +764,7 @@ function resolveTrustedActorArgs(args) {
     } catch (error) {
       throw new UsageError(`could not read/parse --trusted-actors-file: ${error.message}`)
     }
-    if (!Array.isArray(doc.trusted_actor_ids)) {
+    if (!Array.isArray(doc?.trusted_actor_ids)) {
       throw new UsageError('--trusted-actors-file must contain {"trusted_actor_ids": [...]}')
     }
     // Parsed here as well as passed through, because discovery gates on the
@@ -768,7 +792,7 @@ function resolveTrustedActorArgs(args) {
   }
   if (ids.size === 0) {
     throw new UsageError(
-      'at least one --trusted-actor-id or --trusted-actors-file entry is required — a marker only names a run if a configured trusted orchestrator posted it, and there is deliberately no "whoever is logged in" default (harmon-devkit#741 will supply the allowlist from agent-registry.json)'
+      'at least one --trusted-actor-id or --trusted-actors-file entry is required when overriding agent-registry.json — there is no authenticated-caller default'
     )
   }
   // Name the ids, not just their provenance. "Supplied on the command line"
@@ -777,7 +801,9 @@ function resolveTrustedActorArgs(args) {
   // hostile marker when the ignored-marker count is nonzero (review round 3,
   // confirmed P2).
   const listed = [...ids].sort((a, b) => a - b).join(', ')
-  const from = args.trustedActorsFile ? ` (including ${args.trustedActorsFile})` : ''
+  const from = registryPath
+    ? ` from ${registryPath} trusted_orchestrator_actor_ids`
+    : ` from explicit trust flags${args.trustedActorsFile ? ` (including ${args.trustedActorsFile})` : ''}`
   return { passthrough, ids, source: `actor id(s) ${listed}${from}` }
 }
 
@@ -1366,7 +1392,7 @@ function renderMarkdown(report) {
     l.push(`- Tampered comments (trusted author, structural anomaly, not forged): ${report.measurements.integrity.tampered_comments}`)
   }
   l.push(
-    `- Trust evaluation: ${safe(report.source.trusted_actors)} — the caller's current set, **not** the run's kickoff-time registry revision, so an orchestrator trusted at kickoff and removed since would read as untrusted here (harmon-devkit#741)`
+    `- Trust evaluation: ${safe(report.source.trusted_actors)} — the currently configured set, **not** the run's kickoff-time registry revision, so an orchestrator trusted at kickoff and removed since would read as untrusted here (harmon-devkit#741)`
   )
   if (report.source.ignored_markers.length === 0) {
     l.push('- Untrusted evidence markers ignored during discovery: 0')
@@ -1493,7 +1519,7 @@ function run(argv) {
         if (untrustedMarkers.length > 0) {
           const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
           parts.push(
-            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since this tool authenticates against the ids you supplied rather than the run's kickoff-time registry revision (harmon-devkit#741)`
+            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since this tool authenticates against the currently configured ids rather than the run's kickoff-time registry revision (harmon-devkit#741)`
           )
         }
         if (corrupted.length > 0) {

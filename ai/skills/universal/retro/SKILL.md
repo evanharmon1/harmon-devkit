@@ -111,8 +111,7 @@ the run id, calls the harvester (`assets/dev-flow-stats.mjs --run <id> --json`,
 issue #663) and renders §2's fixed sections:
 
 ```sh
-<retro-skill-dir>/assets/retro-run-report.mjs --repo <owner/repo> --pr <n> \
-  --trusted-actor-id <configured-orchestrator-actor-id>
+<retro-skill-dir>/assets/retro-run-report.mjs --repo <owner/repo> --pr <n>
 ```
 
 Resolve `<retro-skill-dir>` from `.agents/skills/retro`, then
@@ -122,16 +121,21 @@ harvester (`assets/dev-flow-stats.mjs`, which never writes) — but it is
 deliberately **not** in `allowed-tools`, so expect a permission prompt, the
 same as the GraphQL query in §4.
 
-**A trust root is required, and there is no default.** Pass
-`--trusted-actor-id <id>` (repeatable) or `--trusted-actors-file <path>`
-naming the repository's configured trusted-orchestrator actor ids — the same
-set the harvester authenticates evidence against. Defaulting to the
-authenticated account would make a run's evidence valid or invalid depending
-on who happens to run the retro, and would let a reader's own comments
-authenticate their own retrospective; the evidence contract requires the
-authority to be *configured*. `agent-registry.json` will carry the allowlist
-under harmon-devkit#741; until it does, the ids come from the maintainer or a
-committed actors file.
+**A configured trust root is required.** With neither explicit trust flag,
+the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`
+at the current checkout's Git repository root (including when invoked from a
+subdirectory). A missing registry, invalid JSON, or a missing, empty or malformed
+field fails closed with a usage error. The array must contain positive safe JSON
+integer actor IDs, without duplicates or finder actor identities. The helper never defaults to the authenticated account:
+authority comes from configuration, so a reader cannot authenticate their own
+retrospective merely by logging in.
+
+`--trusted-actor-id <id>` (repeatable) and `--trusted-actors-file <path>`
+(a JSON `{"trusted_actor_ids": [...]}` document) explicitly override the registry.
+When both flags are supplied their IDs are combined, preserving the existing
+flag behavior; the registry is not read or merged into that set. Discovery and
+the harvester receive the same resolved IDs. The report's evidence-integrity
+section names the source and IDs used.
 
 Other useful arguments: `--run <run_id>` when you already know it (a run that
 capped before its PR existed has no PR to discover from — its record is on the
@@ -253,7 +257,7 @@ revision history lists that `run_id` in `lanes[]`.
    either a misconfigured trust root, a trust root that moved since the run,
    or somebody trying to redirect the report; all three are worth a line in
    the retro. Note the stated limitation: authentication here is against the
-   ids **you** supplied, not the run's kickoff-time registry revision
+   currently configured registry IDs (or explicit flag overrides), not the run's kickoff-time registry revision
    (harmon-devkit#741), so a removed-since orchestrator reads as untrusted.
 9. `### Not measurable from this run's evidence` — the measurements this retro
    is expected to make that today's evidence surface cannot supply, each naming

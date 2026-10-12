@@ -309,8 +309,8 @@ set_comments() {
 run_report() {
     local dir="$1" arg has_trust=0
     shift
-    # The asset has no default trust root by design, so every ordinary case
-    # supplies one; a case testing the trust boundary passes its own.
+    # Legacy cases supply explicit IDs independently of the checkout registry.
+    # Registry cases below invoke the asset without this convenience wrapper.
     for arg in "$@"; do
         case "$arg" in
         --trusted-actor-id | --trusted-actors-file) has_trust=1 ;;
@@ -1214,19 +1214,106 @@ contains "$(cat "$d/gh.log")" "api user" &&
     bad "the tool consulted the authenticated account — there must be no implicit trust root" ||
     ok "no implicit trust root: the authenticated account is never consulted"
 
-echo "==> a run with no trust root at all is a usage error, never a default"
-d="$TMPROOT/notrust"
+# Resolve the registry from an isolated Git checkout, never from this suite's
+# own checkout. A nested cwd also proves root discovery rather than cwd lookup.
+run_registry_report() {
+    local dir="$1"
+    shift
+    RC=0
+    OUT="$(cd "$dir/repo/nested" && PATH="$dir/bin:$PATH" GH_LOG="$dir/gh.log" \
+        STATS_LOG="$dir/stats.log" GH_PR_JSON="$dir/pr.json" GH_COMMENTS_DIR="$dir/comments" \
+        GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" --stats-script "$dir/stats.mjs" \
+        "$@" 2>"$dir/stderr")" || RC=$?
+    ERR="$(cat "$dir/stderr")"
+}
+
+echo "==> registry trust resolves at the Git root and reaches discovery and harvesting"
+d="$TMPROOT/registry"
 scaffold "$d" further-along "body"
-RC=0
-OUT="$(PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
-    node "$REPORT" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" 2>"$d/stderr")" || RC=$?
-ERR="$(cat "$d/stderr")"
-[ "$RC" -eq 2 ] && ok "exit 2" || bad "expected exit 2, got $RC: $ERR"
-contains "$ERR" "at least one --trusted-actor-id" &&
-    ok "the message says a trust root is required" || bad "the usage error does not name the missing trust root"
-contains "$ERR" "741" &&
-    ok "the message names where a configured allowlist will come from" ||
-    bad "the usage error does not point at the registry allowlist issue"
+mkdir -p "$d/repo/nested"
+git -C "$d/repo" init -q
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/repo/agent-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 0 ] && contains "$OUT" "### Evidence integrity" &&
+    contains "$OUT" "$d/repo/agent-registry.json trusted_orchestrator_actor_ids" &&
+    contains "$(cat "$d/stats.log")" "--trusted-actor-id $ACTOR" &&
+    ok "registry source is disclosed and the trusted author selects the run" ||
+    bad "registry trust failed: rc=$RC, err=$ERR, out=$OUT"
+contains "$(cat "$d/gh.log")" "api user" &&
+    bad "registry trust consulted the authenticated caller" ||
+    ok "registry trust never consults the authenticated caller"
+run_registry_report "$d" --json
+[ "$RC" -eq 0 ] && contains "$OUT" 'trusted_orchestrator_actor_ids' &&
+    ok "JSON evidence preserves the registry source" || bad "JSON registry source absent: $ERR"
+
+# Removing the once-trusted author must not turn existing evidence into absence.
+printf '{"trusted_orchestrator_actor_ids":[424242]}' >"$d/repo/agent-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 11 ] && contains "$ERR" "$ACTOR" && contains "$ERR" "trust root that changed after the run" &&
+    ok "an author removed from the registry is indeterminate" || bad "removed author accepted: rc=$RC, err=$ERR"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/repo/agent-registry.json"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+run_registry_report "$d"
+[ "$RC" -eq 11 ] && contains "$ERR" "999999" &&
+    ok "an unknown author is not trusted by the registry" || bad "unknown author accepted: rc=$RC, err=$ERR"
+# The login is the trusted login even though the immutable ID is unknown.
+# Embed the trusted ID in the payload too: neither self-assertion grants trust.
+write_file "$d/c1" "<!-- devflow:evidence v2 run_id=run-6001-further-along stage=challenge dest=pr round=- seq=1 -->
+\`\`\`json
+{\"actor_id\":$ACTOR,\"trusted_orchestrator_actor_ids\":[$ACTOR]}
+\`\`\`"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+run_registry_report "$d"
+[ "$RC" -eq 11 ] && contains "$ERR" "999999" &&
+    ok "forged trusted login and payload actor do not replace the API author ID" ||
+    bad "forged author accepted: rc=$RC, err=$ERR"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+
+# Usage failures happen before GitHub discovery, even when the logged-in user
+# would have been trusted. All malformed forms must fail rather than coerce.
+for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
+    '{broken' '{"trusted_orchestrator_actor_ids":true}' \
+    '{"trusted_orchestrator_actor_ids":[true]}' '{"trusted_orchestrator_actor_ids":["37220977"]}' \
+    '{"trusted_orchestrator_actor_ids":[0]}' '{"trusted_orchestrator_actor_ids":[-1]}' \
+    '{"trusted_orchestrator_actor_ids":[1.5]}' '{"trusted_orchestrator_actor_ids":[9007199254740992]}' \
+    '{"trusted_orchestrator_actor_ids":[1,1]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}'; do
+    if [ "$registry" = missing ]; then
+        rm "$d/repo/agent-registry.json"
+    else
+        printf '%s' "$registry" >"$d/repo/agent-registry.json"
+    fi
+    : >"$d/gh.log"
+    run_registry_report "$d"
+    [ "$RC" -eq 2 ] && contains "$ERR" "agent-registry.json" && [ ! -s "$d/gh.log" ] &&
+        ok "invalid or absent registry fails closed before API reads: $registry" ||
+        bad "registry did not fail closed: $registry, rc=$RC, err=$ERR"
+done
+
+# Explicit flags override, rather than widen, the registry. An invalid registry
+# is ignored too, while an invalid explicit override still fails closed.
+printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/repo/agent-registry.json"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && contains "$OUT" 'from explicit trust flags' &&
+    ! contains "$(cat "$d/stats.log")" '--trusted-actor-id 999999' &&
+    ok "explicit ID overrides the registry without merging" || bad "flag override failed: $ERR"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 11 ] && ok "registry-only author is untrusted under an explicit override" ||
+    bad "registry widened the explicit override: rc=$RC, err=$ERR"
+set_comments "$d/comments" "$PR" "$d/c1"
+printf '{broken' >"$d/repo/agent-registry.json"
+printf '{"trusted_actor_ids":[%s]}' "$ACTOR" >"$d/actors.json"
+run_registry_report "$d" --trusted-actors-file "$d/actors.json"
+[ "$RC" -eq 0 ] && contains "$OUT" "including $d/actors.json" &&
+    ok "explicit actors file bypasses malformed registry" || bad "actors-file override failed: $ERR"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && ok "explicit ID bypasses malformed registry" || bad "ID override failed: $ERR"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/repo/agent-registry.json"
+run_registry_report "$d" --trusted-actors-file "$d/repo/agent-registry.json"
+[ "$RC" -eq 2 ] && ok "invalid explicit override never falls back to valid registry" ||
+    bad "invalid explicit override fell back: rc=$RC, err=$ERR"
 
 echo "==> an arbitrary trusted actor id is honoured on its own"
 d="$TMPROOT/trusted"
@@ -1402,9 +1489,13 @@ contains "$OUT" "kickoff-time registry revision" &&
     bad "the trust-pinning limitation is not stated where integrity is read"
 
 echo "==> the skill's documented command is runnable as written"
-grep -qE -- '--trusted-actor-id|--trusted-actors-file' < <(grep -A 3 'assets/retro-run-report.mjs --repo' ai/skills/universal/retro/SKILL.md) &&
-    ok "the documented command carries the required trust root" ||
-    bad "copying the documented command would exit 2 before doing any work"
+grep -qF 'the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`' ai/skills/universal/retro/SKILL.md &&
+    ok "the documented command uses the configured registry trust root" ||
+    bad "the skill does not document registry trust resolution"
+! grep -qE 'will carry the allowlist|#741 will supply|until it does' \
+    ai/skills/universal/retro/SKILL.md "$REPORT" &&
+    ok "helper and skill no longer describe the registry allowlist as pending" ||
+    bad "pending allowlist text remains"
 
 echo "==> a terminal run with no interventions IS reported unattended"
 d="$TMPROOT/unattended"
