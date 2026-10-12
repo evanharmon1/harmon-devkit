@@ -225,8 +225,10 @@ or 12 keeps identical stdout, stderr and exit status with the flag enabled;
 integrity errors never fall back to local data. The run schema validator must
 accept the local `run.json` and its `run_id` must match the requested id;
 otherwise no report is rendered. With `--pr`, read-only discovery must find no
-trusted marker on the PR or its discovered issues before a local read. That check never selects a run
-or changes `--run`. A local record whose own PR number differs from `--pr` is
+trusted marker on the PR or its discovered issues before a local read.
+Indeterminate discovery, including untrusted-only markers or malformed
+markers treated as corrupted evidence, blocks the local read with exit 11.
+That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr` is
 refused with exit 14; a record naming no PR explicitly says it is not bound
 to the requested PR.
 A missing local record retains exit 10 on the ordinary path. An attempted

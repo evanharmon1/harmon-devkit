@@ -82,7 +82,8 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                passed through unchanged to the harvester.
   --local-unverified           After run-not-found only, read --record-dir/--run
                                as unverified local data (exit 13); refused local
-                               records exit 14. Requires both flags. Ignored when authenticated evidence exists.
+                               records exit 14. Requires both flags. Ignored when
+                               authenticated evidence exists.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -1706,6 +1707,10 @@ function run(argv) {
         throw new IndeterminateError('trusted discovery evidence is malformed; local data cannot replace it')
       }
       if (!discovered?.runId) {
+        if (discovered) {
+          reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
+          reportIgnoredHints(discovered.ignoredHints)
+        }
         const local = renderLocalUnverified(args, runId)
         if (local !== null) {
           console.log(local)

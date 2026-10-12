@@ -2481,6 +2481,30 @@ GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
 [ "$RC" -eq 11 ] && [ -z "$OUT" ] && [ "$ERR" = "$forged_err" ] &&
     ok "untrusted-only PR guard retains ordinary discovery indeterminate stderr" || bad "untrusted discovery downgraded: $RC $ERR"
 
+echo "==> local reports retain ordinary ignored-input disclosures"
+for ignored_case in malformed hint; do
+    write_file "$trusted_dir/body" "body"
+    set_comments "$trusted_dir/comments" "$PR"
+    if [ "$ignored_case" = malformed ]; then
+        write_file "$trusted_dir/ignored-marker" '<!-- dev-flow-v2-evidence: {} -->'
+        COMMENT_ACTOR=999 set_comments "$trusted_dir/comments" "$PR" "$trusted_dir/ignored-marker"
+    else
+        write_file "$trusted_dir/body" 'Refs other/repo#5'
+    fi
+    make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+    GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+        run_report "$trusted_dir" --repo o/r --pr "$PR" --stats-script "$trusted_dir/stats.mjs"
+    disclosure_rc="$RC"
+    disclosure="$(printf '%s\n' "$ERR" | grep '^retro-run-report: ignoring ' || true)"
+    GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+        run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+        --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+    [ "$disclosure_rc" -eq 10 ] && [ "$RC" -eq 13 ] && [ -n "$disclosure" ] && [ "$ERR" = "$disclosure" ] &&
+        ok "$ignored_case input disclosure matches ordinary discovery before local rendering" || bad "lost ignored $ignored_case disclosure: $RC $ERR"
+done
+write_file "$trusted_dir/body" "body"
+make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+
 echo "==> documented local-mode absence and guard error exits"
 run_report "$trusted_dir" --repo o/r --run no-local-record --record-dir "$d/records" \
     --stats-script "$trusted_dir/stats.mjs" --local-unverified
