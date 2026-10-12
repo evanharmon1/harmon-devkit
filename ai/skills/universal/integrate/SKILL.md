@@ -235,34 +235,18 @@ infrastructure re-run is not a push, so it never re-requests a review —
 When CI fails while a review requested alongside it is pending, the cycle
 still waits for that review's terminal result, or is reported incomplete.
 
-**Under `with-push` and `after-ci-first`, a cycle whose head's CI concludes
-failed is exempt.** Requesting before CI concludes trades an occasional review
-of a head CI then rejects for wall-clock time, and that cycle spends
-`integration_exempt`, not `integration`. Evidence decides it, never
-judgement: `reserve --review-trigger <value>` records the value on the cycle,
-which is charged at reservation because its CI is not known yet.
-`check-codex-cloud-review.sh classify-ci` then settles it from the CI
-conclusion on that exact head (`readiness-gate.sh ci`: the latest attempt of
-each of THIS PR's workflow runs for that SHA — its `pull_request` runs and
-runs on its head branch, nothing else) and moves it to `exempt_cycles` only
-when a latest run concluded `failure` and none is still queued or running.
-The integrator runs it immediately before assembling each result, so the
-counters the result reports — and the exit engine below counts — already
-carry the exemption: a CI-failed cycle on the last charged slot does not
-escalate at the cap, so the freed budget is usable. Indeterminate CI
-charges normally, and so do green, still-running, cancelled, or
-re-run-to-green CI, a different run's state, and an exempt ceiling that is
-undeclared, 0, or spent. The decision is made once and frozen
-(`ci_classification`), at the latest on the pass that first reports the
-cycle's terminal verdict, because the exit engine takes each cycle's charged
-count from that pass: a CI still running then leaves the cycle charged, and
-at the cap it escalates exactly as before. `reserve` classifies a superseded
-cycle only when it never reached a verdict and was never settled. Under `after-ci` no review is requested before CI is
-green, so no cycle is ever exempted for a CI failure. The cycle's findings are
-still adjudicated, and the fix push still spends `remediation`. The new
-state's `ci_classification` (and a successor's `prior_ci_charge`) records the
-classification and the evidence it rested on; the counters reach the readiness gate exactly as a base-merge
-exemption's do, and its cap check needs nothing new to accept them.
+**Under `with-push` and `after-ci-first`, a review spent on a head whose CI
+then fails still charges `integration`.** Requesting before CI concludes
+trades an occasional review of a head CI then rejects for wall-clock time, and
+that cycle is an ordinary cycle: it charges `integration` like any other, its
+findings are adjudicated as usual, and the fix push spends `remediation`.
+Nothing classifies a cycle from CI evidence, so a run whose charged cycles
+reach the integration cap escalates there whatever its last head's CI did —
+fail closed; the maintainer can authorize more cycles. Charging that case to
+the exempt ceiling instead is tracked separately (#1406). `reserve
+--review-trigger <value>` records the value on the cycle for the record and
+refuses an attempt 2 reserved under a different one; it changes no charge.
+Under `after-ci` no review is requested before CI is green at all.
 
 **Before either ceiling, ask whether the cycle is needed at all**
 (harmon-init#752). The exemption above still runs the review — it spends a
@@ -1464,10 +1448,7 @@ validated against its integrator pass — and before any remediation push, run
 ```
 
 (`$support_dir` resolved as at the top of this skill) and act on its
-`outcome`. Under `with-push` or `after-ci-first` the pass it reads must already
-carry the settled charge — the integrator's §4 runs `classify-ci` before it
-assembles the result; when you drove the cycle yourself, run that same step
-on the checker state before recording the pass.
+`outcome`.
 
 **When the run resolved its policy through the merge-base path above, the
 exit runs the MERGE BASE's engine, never `"$support_dir/dev-flow-exit.sh"`.**

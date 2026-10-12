@@ -72,8 +72,8 @@ A workable brief names:
   resolved policy; the second is the orchestrator's count of integration-stage
   fix pushes. Together they decide WHEN this cycle's review is requested (§3)
   — never whether a cycle runs, and never how many. Pass the value to
-  `reserve` as `--review-trigger` on every attempt-1 reservation: it is what
-  lets a cycle whose head's CI concludes failed be classified exempt (§4). A
+  `reserve` as `--review-trigger` on every attempt-1 reservation, which
+  records it on the cycle; it changes no charge (§4). A
   brief that names neither is an `after-ci` brief — today's order, which
   never requests a review before CI is green — so run that order and pass
   `--review-trigger after-ci`; do not infer a faster one.
@@ -332,12 +332,11 @@ alongside it.
 the cycle exactly as below until `check` reaches a terminal result, or report
 it incomplete with the exit code it last returned — never stop early because
 CI went red, and never re-trigger because CI was re-run. The failed check is
-§3's `$failed_required` finding as always; the cycle's charge is not yours to
-decide either: `classify-ci` settles it from that head's CI conclusion
-before you report it ("Settle the cycle's charge before you report it",
-below), and a cycle whose head's CI concluded failed then spends
-`integration_exempt` rather than `integration`. Report the counters the
-checker leaves in state, as always.
+§3's `$failed_required` finding as always. A review spent on a head whose CI
+then fails still charges `integration`, like any other cycle — never adjust a
+counter by your own reading of CI. Charging that case to the exempt ceiling
+instead is tracked separately (#1406). Report the counters `reserve` and
+`check` leave in state, as always.
 
 Otherwise, persist state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
@@ -753,28 +752,6 @@ You never call `settle`. A badged finding sitting outside an inline thread
 other (§5); recording its disposition against the checker's own state is the
 orchestrator's write, made after it decides fix/decline/file — not yours to
 make on its behalf.
-
-### Settle the cycle's charge before you report it
-
-Under `with-push` or `after-ci-first`, run this immediately before §7
-assembles `codex_cycle`, on every pass that drove or resumed a cycle
-(harmon-devkit#1376):
-
-```sh
-"$helper" classify-ci --state "$state" --run-id "<run id>" \
-    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>"
-```
-
-It settles this cycle's charge from its own head's CI: proof that this PR's
-latest workflow-run attempts concluded failed moves it to `exempt_cycles`;
-anything else leaves it charged. Then copy `charged_cycles` /
-`exempt_cycles` from the state exactly as always — never from your reading of
-CI. The exit engine counts the charged number your result reports, so a
-CI-failed cycle settled here does not escalate at the cap; one whose CI is
-still running stays charged, and is frozen that way on the pass that first
-reports its terminal verdict. A non-zero exit is a blocker to report, never a
-reason to adjust a counter yourself. Under `after-ci` it answers
-`not-applicable` and changes nothing.
 
 ### Per-finder cycles (#804)
 

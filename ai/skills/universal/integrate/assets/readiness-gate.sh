@@ -22,7 +22,6 @@
 #       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #   readiness-gate.sh behind --repo OWNER/REPO --pr N
-#   readiness-gate.sh ci --repo OWNER/REPO --pr N --head SHA
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
 # pass only, prints `{"status":"pass",...,"fingerprint":...}` — where the
@@ -174,17 +173,13 @@ Usage:
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
   readiness-gate.sh behind --repo OWNER/REPO --pr N
-  readiness-gate.sh ci --repo OWNER/REPO --pr N --head SHA
 
 check evaluates every step-6 readiness condition for the adjudicated head;
 audit is the same evaluation with the draft requirement inverted (the PR
 must be non-draft), for judging a PR somebody already promoted — its pass
 never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
-post-promotion compare.
-ci reports, read-only, whether one exact commit of the PR concluded its
-GitHub Actions CI failed: the latest attempt of each workflow run for that SHA
-(harmon-devkit#1376). It is exemption evidence, not the checks condition. --record DIR is the dev-flow-v2 record directory
+post-promotion compare. --record DIR is the dev-flow-v2 record directory
 (run.json plus adjudications/*.json) render-dev-flow.mjs projects deferred-
 finding settlement from, and this script separately reads run.json's own
 settlements[] from for the applied-disposition check below.
@@ -424,10 +419,6 @@ check | audit)
     [ -n "$remediation_cap" ] || usage
     ;;
 fingerprint | behind) ;;
-ci)
-    [ -n "$head" ] || usage
-    valid_sha "$head" || die "--head must be a full 40-hex commit"
-    ;;
 *) usage ;;
 esac
 
@@ -861,78 +852,6 @@ recheck_codex_freshness() {
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
 }
-
-# `ci` reports the CI conclusion for one exact commit (harmon-devkit#1376), as
-# evidence for the Codex checker's CI-failed exemption under a review trigger
-# that requests review before CI concludes. It writes nothing, and it is NOT
-# the gate's checks condition: `check` judges every check the commit reports,
-# while this answers one narrower question — did this commit's CI conclude
-# FAILED? — where a wrong yes grants an exemption the reviewer never
-# sanctioned. Unlike `check`, the commit need not be the PR's current head: a
-# cycle is classified once a later head supersedes it. Exit 0 with one JSON
-# line on a complete read; 2 when the runs cannot be read at all.
-#
-# The evidence is the workflow runs GitHub Actions recorded for this exact
-# SHA, each read as its LATEST ATTEMPT (a run object carries its newest
-# attempt's status and conclusion, so a re-run that is queued or went green
-# replaces the failure it re-ran). Check runs are not used: a run cancelled
-# after one job failed still shows that job's failure, and a failed run whose
-# replacement is queued but has no check runs yet still looks failed (challenge
-# round 1, harmon-devkit#1376).
-#
-# ONLY RUNS THAT BELONG TO THIS PR ARE EVIDENCE (challenge round 2): a
-# `pull_request` run whose `pull_requests[]` names this PR and no other, or
-# any run on this PR's head branch (a `pull_request` run GitHub left with an
-# empty list, or a `push`/`workflow_dispatch` run on the branch). Everything
-# else is ignored — a push to another branch at the same SHA, another PR's
-# run, a run shared with another PR — because its failure says nothing about
-# this PR. Repeated deliveries of one workflow for one event collapse to the
-# newest run, as the gate's own collapse does.
-#
-# `conclusion` is `failed` only when a latest run concluded `failure` AND no
-# run is still queued or in progress. Any pending run makes it `pending`, and
-# no runs at all is `none`; both are unknown, and the caller charges.
-# `cancelled`, `skipped`, `neutral`, `stale`, `action_required` and
-# `timed_out` are never failure proof (`timed_out` is a runner or job limit
-# more often than a verdict on the code). Which workflows are EXPECTED cannot
-# be read from the API, so an expected workflow that has not started yet is
-# invisible here; a commit whose only runs are concluded is judged on them.
-if [ "$command_name" = ci ]; then
-    ci_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefName)" ||
-        indeterminate fetch-failed "cannot fetch the PR state"
-    head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$ci_scalars")" ||
-        indeterminate malformed-data "PR payload carries no head branch name"
-    ci_runs_pages="$(run_gh api --paginate --slurp \
-        "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
-        indeterminate fetch-failed "cannot fetch workflow runs for the commit"
-    ci_summary="$(jq -c --argjson pr "$pr" --arg head "$head" \
-        --arg head_ref_name "$head_ref_name" '
-          [.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
-                 else error("page carries no workflow_runs") end]
-          | map(select(.head_sha == $head))
-          | map(select(
-              if .event == "pull_request" and ((.pull_requests // []) | length) > 0
-              then (.pull_requests | length) == 1 and .pull_requests[0].number == $pr
-              else .head_branch == $head_ref_name end))
-          | group_by([.workflow_id, .event]) | map(max_by(.id))
-          | map({name:(.name // "unnamed workflow"), attempt:(.run_attempt // 1),
-                 outcome:(if .status != "completed" then "pending"
-                          elif .conclusion == "success" then "passed"
-                          elif .conclusion == "failure" then "failed"
-                          else "other" end)}) as $all
-          | def names($o): [$all[] | select(.outcome == $o) | .name];
-          {status:"ci", head:$head, total:($all | length),
-           failed:names("failed"), pending:names("pending"),
-           other:names("other"), passed:(names("passed") | length)}
-          | .conclusion = (if .total == 0 then "none"
-                           elif (.pending | length) > 0 then "pending"
-                           elif (.failed | length) > 0 then "failed"
-                           elif (.other | length) > 0 then "other"
-                           else "passed" end)' <<<"$ci_runs_pages" 2>/dev/null)" ||
-        indeterminate malformed-data "workflow-runs payload is malformed"
-    printf '%s\n' "$ci_summary"
-    exit 0
-fi
 
 # `behind` is the read-only preflight the reserved-cycle rule needs. Before
 # dispatching the last permitted review cycle an integrator must know whether

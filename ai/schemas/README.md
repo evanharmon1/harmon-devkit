@@ -1984,8 +1984,10 @@ including the built-in fallback and a historical decode — and a value outside
 `after-ci`/`with-push`/`after-ci-first` is refused, never widened to the
 default. It decides only *when* the integration stage requests its PR-side
 reviews relative to CI; the `integrate` skill and its checker own what that
-changes (`check-codex-cloud-review.sh trigger-timing`, and the CI-failed
-exemption `reserve` classifies).
+changes (`check-codex-cloud-review.sh trigger-timing`). Under `with-push` and
+`after-ci-first` a review spent on a head whose CI then fails still charges
+`integration`; charging it to the exempt ceiling instead is tracked
+separately (#1406).
 
 **A strategy's own requirements are cross-checked against breadth, not just
 resolved and left unchecked.** `[strategy.orchestrate]` and
