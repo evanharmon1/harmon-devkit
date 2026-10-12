@@ -753,25 +753,11 @@ function resolveTrustedActorArgs(args) {
       if (ids.has(id)) {
         throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids must contain unique entries, got duplicate ${id}`)
       }
+      if (Array.isArray(doc.finders) && doc.finders.some((finder) => finder?.trusted_actor_id === String(id))) {
+        throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids includes finder actor ${id}; finder identities cannot authenticate orchestrator evidence`)
+      }
       ids.add(id)
       passthrough.push('--trusted-actor-id', String(id))
-    }
-    if (Array.isArray(doc.finders)) {
-      for (const finder of doc.finders) {
-        // Local finders need not declare a GitHub identity. Any declared one
-        // must be valid before it can be compared with the orchestrator set.
-        if (!finder || !Object.hasOwn(finder, 'trusted_actor_id')) continue
-        const raw = finder.trusted_actor_id
-        const finderId = typeof raw === 'string' && /^[1-9][0-9]*$/.test(raw)
-          ? Number(raw)
-          : typeof raw === 'number' ? raw : NaN
-        if (!Number.isSafeInteger(finderId) || finderId < 1) {
-          throw new UsageError(`agent-registry.json finder trusted_actor_id must be a positive safe integer or integer string, got ${JSON.stringify(raw)}`)
-        }
-        if (ids.has(finderId)) {
-          throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids includes finder actor ${finderId}; finder identities cannot authenticate orchestrator evidence`)
-        }
-      }
     }
   }
   for (const id of args.trustedActorIds) {

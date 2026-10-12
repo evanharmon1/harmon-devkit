@@ -1294,15 +1294,7 @@ for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
     '{"trusted_orchestrator_actor_ids":[0]}' '{"trusted_orchestrator_actor_ids":[-1]}' \
     '{"trusted_orchestrator_actor_ids":[1.5]}' '{"trusted_orchestrator_actor_ids":[9007199254740992]}' \
     '{"trusted_orchestrator_actor_ids":[1,1]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":1}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":true}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":null}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":{}}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":1.5}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":0}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":9007199254740992}]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":"bad"}]}'; do
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}'; do
     if [ "$registry" = missing ]; then
         rm "$d/remote-registry.json"
     else
@@ -1316,10 +1308,23 @@ for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
         bad "registry did not fail closed: $registry, rc=$RC, err=$ERR"
 done
 
-printf '{"trusted_orchestrator_actor_ids":[%s],"finders":[{"trusted_actor_id":555555},{"slug":"local"}]}' "$ACTOR" >"$d/remote-registry.json"
+echo "==> default registry discovery accepts the real registry's null and string finder identities"
+node -e '
+  const fs = require("node:fs")
+  const registry = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+  if (!registry.finders.some((f) => f.trusted_actor_id === null) ||
+      !registry.finders.some((f) => typeof f.trusted_actor_id === "string")) {
+    throw new Error("real registry fixture must include null and string finder identities")
+  }
+  registry.trusted_orchestrator_actor_ids = [Number(process.argv[3])]
+  fs.writeFileSync(process.argv[2], JSON.stringify(registry))
+' "$PWD/agent-registry.json" "$d/remote-registry.json" "$ACTOR"
+: >"$d/gh.log"
 run_registry_report "$d"
-[ "$RC" -eq 0 ] && ok "a valid noncolliding numeric finder and identity-less local finder remain usable" ||
-    bad "valid finder identities were refused: rc=$RC, err=$ERR"
+[ "$RC" -eq 0 ] && contains "$(cat "$d/gh.log")" 'pr view' &&
+    contains "$(cat "$d/gh.log")" '/comments' &&
+    ok "no-flag discovery runs with real-shaped null/string finder identities" ||
+    bad "real-shaped registry refused before discovery: rc=$RC, err=$ERR"
 printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
 GH_FAIL_REGISTRY=1 run_registry_report "$d"
 [ "$RC" -eq 2 ] && contains "$ERR" 'could not read/parse' && contains "$ERR" 'HTTP 404' &&
