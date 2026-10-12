@@ -3130,6 +3130,27 @@ function checkSlotFailureKeys(document, errors) {
   }
 }
 
+// checkCapAuthorizationKeys — one maintainer authorization per (stage, round)
+// over the resolved cap (harmon-devkit#1239). Two entries for the same round
+// cannot both be the instruction that admitted it, so the record names one.
+// Whether the round really lies above the cap is the exit engine's and the
+// renderer's check (lib/cap-authorizations.mjs): this document carries no
+// policy to compare against.
+function checkCapAuthorizationKeys(document, errors) {
+  const firstIndexByKey = new Map()
+  for (const [index, entry] of (document.cap_authorizations ?? []).entries()) {
+    const key = JSON.stringify([entry.stage, entry.round])
+    const firstIndex = firstIndexByKey.get(key)
+    if (firstIndex !== undefined) {
+      errors.push(
+        `$run.cap_authorizations[${index}]: duplicates cap_authorizations[${firstIndex}] key (${entry.stage}, ${entry.round})`
+      )
+      continue
+    }
+    firstIndexByKey.set(key, index)
+  }
+}
+
 // checkReceiptsRecord — an independent --receipts file is a run-directory
 // subset, not necessarily a complete persisted run record. Validate the two
 // fields strict mode trusts with the canonical run schema definitions before
@@ -3571,6 +3592,7 @@ function main() {
     if (errors.length === 0) {
       checkEvidenceStagesVisited(instance, instance, '$run', errors)
       checkSlotFailureKeys(instance, errors)
+      checkCapAuthorizationKeys(instance, errors)
       if (options.receiptsRecord) {
         checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)
       }
