@@ -357,6 +357,15 @@ function runExitFixture(name, dir) {
   for (const [key, value] of Object.entries(invoke)) {
     if (key === "stage" || key === "poisoned_sibling") continue;
     args.push(`--${key}`);
+    // A boolean flag (`"merge-base-policy-absent": true`) takes no value —
+    // the same convention buildArgs applies to the policy fixtures.
+    if (value === true) continue;
+    // An empty value stays empty: path.join(dir, "") is the fixture
+    // directory itself, which exists and would turn "" into a real path.
+    if (value === "") {
+      args.push("");
+      continue;
+    }
     const asPath = path.join(dir, String(value));
     args.push(existsSync(asPath) ? asPath : String(value));
   }
@@ -369,6 +378,22 @@ function runExitFixture(name, dir) {
     if (closureDir) rmSync(closureDir, { recursive: true, force: true });
   }
   const { status, stdout, stderr } = result;
+
+  // usage_error: the engine refuses its own command line (exit 1, a
+  // diagnostic on stderr, no verdict) before reading the run at all — e.g.
+  // an empty --merge-base-policy, or one combined with
+  // --merge-base-policy-absent (harmon-devkit#1345). Exit 2 would mean
+  // "indeterminate", which is a verdict, so it never satisfies this route.
+  if (expected.usage_error) {
+    const extra = Object.keys(expected).filter((k) => k !== "usage_error" && k !== "stderr_contains");
+    if (extra.length > 0) return report(name, false, `a usage_error expectation takes only stderr_contains, got: ${extra.join(", ")}`);
+    if (status !== 1) return report(name, false, `expected usage exit 1, got ${status}. stderr: ${stderr.trim()}`);
+    if (stdout.trim() !== "") return report(name, false, `usage error also printed a verdict on stdout: ${stdout.trim()}`);
+    if (typeof expected.stderr_contains !== "string" || !stderr.includes(expected.stderr_contains)) {
+      return report(name, false, `usage error stderr does not contain ${JSON.stringify(expected.stderr_contains)}: ${stderr.trim()}`);
+    }
+    return report(name, true, null);
+  }
 
   if (expected.indeterminate) {
     if (status !== 2) return report(name, false, `expected exit 2 (indeterminate), got ${status}. stderr: ${stderr.trim()}`);

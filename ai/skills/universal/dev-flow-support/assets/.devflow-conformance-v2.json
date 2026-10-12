@@ -2219,6 +2219,34 @@
       }
     },
     {
+      "name": "empty-merge-base-policy-is-usage",
+      "basis": "branch",
+      "cli_options": ["--merge-base-policy", ""],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "usage",
+            "subject": "merge-base-policy"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty-merge-base-policy-conflicts-with-absent-flag",
+      "basis": "branch",
+      "cli_options": ["--merge-base-policy", "", "--merge-base-policy-absent"],
+      "expect": {
+        "exit": 2,
+        "error_diagnostics": [
+          {
+            "code": "merge_base_conflict",
+            "subject": "merge-base-policy-absent"
+          }
+        ]
+      }
+    },
+    {
       "name": "malformed-tier-overrides-is-usage",
       "basis": "branch",
       "cli_options": ["--tier-overrides", "implementer=bogus"],
@@ -2235,7 +2263,7 @@
     {
       "name": "malformed-rigor-source-is-usage",
       "basis": "branch",
-      "cli_options": ["--rigor-source", "bogus"],
+      "cli_options": ["--rigor", "standard", "--rigor-source", "bogus"],
       "expect": {
         "exit": 2,
         "error_diagnostics": [
@@ -2351,6 +2379,21 @@
         "error_diagnostics": [
           {
             "code": "registry_unreadable",
+            "subject": "registry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "deleted-branch-policy-and-omitted-merge-base-registry-is-indeterminate",
+      "basis": "merge-base",
+      "policy_entry": "missing",
+      "registry_entry": "omitted",
+      "expect": {
+        "exit": 3,
+        "error_diagnostics": [
+          {
+            "code": "indeterminate",
             "subject": "registry"
           }
         ]

@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// dev-flow-capability: merge-base-absent-v1
+// (The marker trusted callers select a governing copy by — dev-flow-support
+// SKILL.md, step 0, "First adoption": this engine takes
+// --merge-base-policy-absent, treats a missing --policy as the built-in
+// fallback, and refuses malformed merge-base arguments before --closure
+// delegation. Keep the line exact; bump the suffix only with the rule.)
+//
 // dev-flow-exit.mjs — deterministic confidence-stage exit computation, and
 // the integration stage's exit (`--stage integration`, harmon-devkit#1272:
 // see "Integration stage" below — a separate path that reads only the
@@ -12,7 +19,8 @@
 //
 // CLI:
 //   node dev-flow-exit.mjs --run <dir> --stage <challenge|review|integration> \
-//     --policy <file> [--rigor <level>] [--merge-base-policy <file>] \
+//     --policy <file> [--rigor <level>] \
+//     [--merge-base-policy <file> | --merge-base-policy-absent] \
 //     [--current-head <sha>] [--history <file> | --repo-root <dir>] \
 //     [--heads <file>] [--closure <dir>] [--validator <path>]
 //     [--verification-only] [--json]
@@ -23,6 +31,16 @@
 // structurally complete — that check belongs entirely to `devflow-policy.mjs
 // resolve`, run once, before a caller ever invokes this script (see
 // ai/schemas/README.md).
+//
+// --merge-base-policy-absent (harmon-devkit#1345) says the merge base has no
+// .devflow.toml at all — a branch that adds it — so the built-in fallback
+// governs, exactly as devflow-policy.mjs resolves it; without it, a caller
+// whose merge base has no policy could only omit --merge-base-policy and let
+// the branch's own policy govern. It cannot be combined with
+// --merge-base-policy, and an empty --merge-base-policy is refused rather
+// than read as "no merge-base policy" (an unset shell variable is a caller
+// bug, never a decision). Each refusal is a usage error, exit 1 — not the
+// reader's 2, which this engine reserves for an indeterminate verdict.
 //
 // Exit codes: 0 continue, 20 converged, 21 diverging, 22 capped,
 // 2 indeterminate, 1 usage/parse error.
@@ -2156,6 +2174,19 @@ function tryDelegateToClosure(argv) {
       }
     }
   }
+  // Same hazard as devflow-policy.mjs's own --closure guard: a trusted copy
+  // written before --merge-base-policy-absent ignores it and lets the
+  // branch's policy govern the exit — the one outcome the flag prevents.
+  if (passthrough.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="))) {
+    const src = readTrustedSource();
+    if (!src) return 1;
+    if (!src.includes("merge-base-policy-absent")) {
+      console.error(
+        `dev-flow-exit: the --closure reader (${trustedScript}) predates --merge-base-policy-absent and would silently drop it, letting the branch policy govern — refusing`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`dev-flow-exit: could not exec the --closure reader: ${result.error.message}`);
@@ -2164,8 +2195,48 @@ function tryDelegateToClosure(argv) {
   return result.status === null ? 1 : result.status;
 }
 
+// mergeBaseUsageError ARGS — the merge-base argument checks. Presence, not
+// truthiness: an empty --merge-base-policy (an unset variable in the caller)
+// must never fall through to "no merge-base policy", which lets the branch's
+// own policy govern (harmon-devkit#1345). main() runs them on the raw argv
+// BEFORE --closure delegation, because an older closure would skip them; they
+// are pure argument checks and need nothing from the closure.
+function mergeBaseUsageError(args) {
+  const given = args["merge-base-policy"] !== undefined;
+  const absent = args["merge-base-policy-absent"] !== undefined;
+  if (absent && args["merge-base-policy-absent"] !== true) return "--merge-base-policy-absent takes no value";
+  if (given && absent) return "--merge-base-policy-absent cannot be combined with --merge-base-policy";
+  if (given && (args["merge-base-policy"] === "" || args["merge-base-policy"] === true)) {
+    return "--merge-base-policy must be a non-empty file path";
+  }
+  return null;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
+  // `--key=value` is refused, ahead of --closure delegation too, and so are
+  // the merge-base argument checks below (harmon-devkit#1345, review round 1). parseArgs
+  // keeps such a token whole as the option NAME, so `--merge-base-policy=` or
+  // `--merge-base-policy-absent=false` would be an unknown key, slip past the
+  // presence checks below, and let the branch policy govern (harmon-devkit#1345,
+  // challenge round 1). No caller spells an option that way; the repeatable
+  // finder flags are the one exception, because extractRepeatable parses both
+  // spellings of them.
+  const eqForm = argv.find(
+    (a) =>
+      a.startsWith("--") && a.includes("=") && !a.startsWith("--add-finder=") && !a.startsWith("--select-finder="),
+  );
+  if (eqForm !== undefined) {
+    console.error(
+      `dev-flow-exit: "${eqForm.slice(0, eqForm.indexOf("=") + 1)}…" is not accepted — pass the option and its value as separate arguments`,
+    );
+    return 1;
+  }
+  const mergeBaseError = mergeBaseUsageError(parseArgs(argv));
+  if (mergeBaseError) {
+    console.error(`dev-flow-exit: ${mergeBaseError}`);
+    return 1;
+  }
   const delegated = tryDelegateToClosure(argv);
   if (delegated !== null) return delegated;
 
@@ -2173,7 +2244,7 @@ async function main() {
   // top-level imports, above. Resolves relative to THIS file, same as a
   // static import would; the only difference that matters is WHEN it runs.
   const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
-  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection } =
+  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection, readBranchPolicy } =
     await import("./devflow-policy.mjs");
 
   // --add-finder / --select-finder are repeatable and must be lifted out
@@ -2195,10 +2266,18 @@ async function main() {
     return 1;
   }
 
+  // mergeBaseUsageError already refused every malformed merge-base argument,
+  // ahead of --closure delegation.
+  const mergeBasePolicyGiven = args["merge-base-policy"] !== undefined;
+  const mergeBasePolicyAbsent = args["merge-base-policy-absent"] !== undefined;
+
   let policyDoc, mergeBaseDoc;
   try {
-    policyDoc = parseToml(readFileSync(args.policy, "utf8"));
-    if (args["merge-base-policy"]) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
+    // The reader's own rule: a missing --policy is the built-in fallback, so
+    // the engine resolves the same governing policy as the reader in every
+    // merge-base state, including a repository with no policy anywhere.
+    policyDoc = readBranchPolicy(args.policy);
+    if (mergeBasePolicyGiven) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
   } catch (err) {
     console.error(`dev-flow-exit: could not read/parse policy inputs: ${err.message}`);
     return 1;
@@ -2206,7 +2285,7 @@ async function main() {
 
   let resolved;
   try {
-    resolved = resolvePolicy(policyDoc, { rigor: args.rigor, mergeBaseDoc });
+    resolved = resolvePolicy(policyDoc, { rigor: args.rigor, mergeBaseDoc, mergeBasePolicyAbsent });
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
       console.error(`dev-flow-exit: ${err.message}`);
