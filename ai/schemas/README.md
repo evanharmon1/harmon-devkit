@@ -2037,6 +2037,8 @@ cannot be combined with `--merge-base-policy`. The candidate is validated
 independently; the built-in fallback governs, with only `--merge-base-registry`
 supplying any governing registry. A missing file supplied to
 `--merge-base-policy` still exits 2; it never means explicit absence.
+An empty `--merge-base-policy ""` is a usage error (exit 2), never permission
+for the branch policy to govern.
 Invalid flag combinations (including `--rigor-source` without `--rigor`) and
 malformed operator `--tier-overrides` / `--rigor-source` values also exit with
 usage status 2, distinct from invalid policy status 1. Successful resolution
@@ -2051,6 +2053,46 @@ supplied registry still exits 3. An explicitly requested registry file
 that cannot be read (`--registry <missing>`) still exits 2. Merge-base
 governance is unchanged: `--merge-base-policy-absent` without a governing
 `--merge-base-registry` still exits 3.
+
+**Callers carry the absent state through the whole stage chain**
+(harmon-devkit#1345). `dev-flow-exit.mjs` accepts the same
+`--merge-base-policy-absent` and passes it to `resolvePolicy` as
+`mergeBasePolicyAbsent`, so an exit computed for a branch that adds
+`.devflow.toml` is governed by the built-in fallback exactly as its resolution
+was. It refuses the flag combined with `--merge-base-policy`, refuses a value
+on the flag, and refuses an empty `--merge-base-policy`, all as usage errors —
+exit **1** there, because the engine's exit 2 means an indeterminate verdict.
+It also refuses any `--option=value` token other than the repeatable finder
+flags, so `--merge-base-policy=` or `--merge-base-policy-absent=false` cannot
+slip past those checks as an unknown key
+(`ai/schemas/fixtures/exit/merge-base-policy-absent-governs-builtin-fallback/`,
+`merge-base-policy-absent-conflicts-with-merge-base-policy/`,
+`merge-base-policy-empty-is-usage/`, the three `*-equals-*-is-usage/` cases
+and `option-equals-form-is-usage/`). A trusted caller that runs a merge-base
+reader directly — `dev-flow-support`'s step 0 and `/integrate`'s merge-base
+recipe — decides its merge-base argument with
+`dev-flow-support/assets/lib/merge-base-policy.sh`: a checked tree lookup of
+the merge base's `.devflow.toml` (never a failed `git show`), the file
+materialized when present, `--merge-base-policy-absent` only when the branch
+adds a policy and only for a reader whose source names the flag, and neither
+flag when no side has a policy (the reader refuses the absent flag without an
+existing `--policy` file and resolves the built-in fallback by itself). An older reader accepts any option and would
+ignore it, letting the branch policy govern, so the helper stops instead —
+the direct-run counterpart of the reader's own `--closure` probe. The helper
+is itself a governing file: both recipes run the merge base's copy, and a
+merge base that predates it stops as indeterminate, never the branch's copy. The same holds for this engine: `/integrate`'s
+integration-exit recipe, on the merge-base path, runs the merge base's
+`dev-flow-exit.mjs` materialized with its whole asset directory (beside,
+and importing, the reader from that same tree), or stops, because carrying the merge-base argument
+into a branch engine constrains nothing. The engine reads `--policy` through the reader's own
+`readBranchPolicy`, so a missing file with no merge-base argument is the
+built-in fallback in both, and the two resolve one governing policy whether
+the merge base's state is `present`, `absent` or `none`. A copy of the reader, the engine or the
+helper is selected by its **capability marker**, the exact line
+`dev-flow-capability: merge-base-absent-v1` in its source, never by which flag
+names it mentions: the merge base's own copy if it declares the marker,
+otherwise the caller stops as indeterminate and the maintainer decides
+(`dev-flow-support` step 0, "First adoption", and its `trusted_copy`).
 
 **The decoder's scope is an invariant, not a field list.** On a migration
 diff, *every* merge-base-protected value — defaults, rounds, breadth,
