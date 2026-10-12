@@ -219,6 +219,38 @@ for role in challenger reviewer; do
         fail "$role does not validate its full result envelope before handoff"
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
+    # harmon-devkit#941 challenge round 5 (maintainer decision): the role
+    # agents keep ASSEMBLING the pass — envelope mode fails closed for Codex
+    # (#1365), so delegating to it left the default stages with no producer.
+    grep -Fq -- '--envelope' "$agent" &&
+        fail "$role delegates to envelope mode; the role agents assemble passes (#1365)"
+done
+# Envelope mode is an additional producer where it publishes, never a
+# replacement for the role agents, and the caller still owns the receipt.
+skill_flat="$(tr '\n' ' ' <"$skill" | tr -s '[:space:]' ' ')"
+for text in 'The role agents assemble the pass for every `labelled-text` finder' \
+    'Envelope mode is an additional producer, where it publishes.' \
+    'Codex envelope mode currently fails closed' 'harmon-devkit#1365' \
+    'Append the pass receipt, then verify.' 'never writes `run.json`' \
+    '{"kind": "pass", "file": "<stage>-r<round>-<slot>"}' 'is an **orphan**' \
+    'never delete or overwrite that file' 'a pre-existing destination is a refusal, never an overwrite'; do
+    case "$skill_flat" in
+    *"$text"*) ;;
+    *) fail "review skill is missing the dispatch contract: $text" ;;
+    esac
+done
+case "$skill_flat" in
+*'The finder invocation in envelope mode is the dispatched role'*)
+    fail "review skill still makes envelope mode the only producer"
+    ;;
+esac
+implement_flat="$(tr '\n' ' ' <ai/skills/universal/implement/SKILL.md | tr -s '[:space:]' ' ')"
+for text in 'role agents assemble the pass for every `labelled-text` finder' \
+    'a lane never receipts or adjudicates its own'; do
+    case "$implement_flat" in
+    *"$text"*) ;;
+    *) fail "implement skill is missing the producer/receipt contract: $text" ;;
+    esac
 done
 dev_flow_support_skill="ai/skills/universal/dev-flow-support/SKILL.md"
 grep -Fq 'Resolving the assets from an agent file' "$dev_flow_support_skill" ||

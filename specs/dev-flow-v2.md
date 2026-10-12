@@ -205,7 +205,11 @@ legitimately commits and pushes through `push-round.sh`; the integrator is
 limited to its brokered trigger and orchestrator-supplied reply text.
 
 **Briefs have a schema-bound envelope and a free-form body; results are
-schema-bound.** As decided in
+schema-bound.** A confidence-stage pass is assembled by its role agent, or —
+for a finder whose runner publishes in envelope mode — by that runner, and it
+counts only once the caller has receipted it; the trust argument, and what a
+lane could still forge, is `ai/schemas/README.md` § "Finder-produced
+envelopes". As decided in
 [`2026-09-13-brief-envelope-schema-bound-free-form-body.md`](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-13-brief-envelope-schema-bound-free-form-body.md),
 the envelope validates only machine-read facts, the body is opaque Markdown
 with no content lint, the envelope is closed while the body is open, and every
