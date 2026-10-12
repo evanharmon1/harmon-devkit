@@ -302,18 +302,22 @@ cmp -s "$fixtures/policy.toml" "$mbrepo/.devflow.toml" &&
     git checkout -q branch
 ) >/dev/null 2>&1 || err "could not build the merge-base scratch repository"
 
-# trusted_copy is the First adoption rule's one implementation, defined in
-# dev-flow-support's step 0 recipe; both mirrors below run it verbatim.
+# trusted_copy is the First adoption rule's one implementation. Step 0
+# defines it, and /integrate's recipe carries a byte-identical copy so it runs
+# in a fresh shell (harmon-devkit#1345, thread 4245138786); both mirrors below
+# run it verbatim, and the two definitions may never drift.
 step0_recipe="$repo_root/ai/skills/universal/dev-flow-support/SKILL.md"
 int_recipe="$repo_root/ai/skills/universal/integrate/SKILL.md"
 trusted_copy_src="$(sed -n '/^ *trusted_copy() {$/,/^ *}$/p' "$step0_recipe" | sed 's/^     //')"
+int_trusted_copy_src="$(sed -n '/^trusted_copy() {$/,/^}$/p' "$int_recipe")"
 [ -n "$trusted_copy_src" ] || err "dev-flow-support/SKILL.md defines no trusted_copy"
 eval "$trusted_copy_src"
-if [ "$(grep -c '^ *trusted_copy() {$' "$step0_recipe")" -eq 1 ] &&
-    ! grep -q '^ *trusted_copy() {$' "$int_recipe"; then
-    echo "  ✓ trusted_copy is defined once, in step 0, and /integrate defines it from there"
+if [ -n "$int_trusted_copy_src" ] && [ "$trusted_copy_src" = "$int_trusted_copy_src" ] &&
+    [ "$(grep -c '^ *trusted_copy() {$' "$step0_recipe")" -eq 1 ] &&
+    [ "$(grep -c '^trusted_copy() {$' "$int_recipe")" -eq 1 ]; then
+    echo "  ✓ step 0 and /integrate define trusted_copy once each, byte for byte identical"
 else
-    err "trusted_copy must be defined exactly once, in dev-flow-support's step 0"
+    err "trusted_copy in integrate/SKILL.md is missing or differs from dev-flow-support step 0's"
 fi
 
 # run_caller BASE READER — the recipes' caller; prints the reader's stdout.
@@ -578,10 +582,18 @@ at() {
     esac
 }
 
-# run_integrate_chain BASE — the reader's JSON lands in chain-reader.json, the
-# engine's in chain-exit.json; returns the engine's status, or 90 on a stop.
+# mb_args is lifted verbatim from integrate/SKILL.md: it recomputes the
+# governing arguments for the current head before each invocation.
+mb_args_src="$(sed -n '/^mb_args() {$/,/^}$/p' "$int_recipe")"
+[ -n "$mb_args_src" ] || err "integrate/SKILL.md defines no mb_args"
+eval "$mb_args_src"
+
+# run_integrate_chain BASE [THEN] — the reader's JSON lands in
+# chain-reader.json, the engine's in chain-exit.json; returns the engine's
+# status, or 90 on a stop. THEN, when given, changes the branch policy between
+# the resolution and the exit, as a remediation push would ("-" removes it).
 run_integrate_chain() {
-    local base="$1" reader_dir="$assets_rel" mb_dir="$scratch/chain-mb" mb_reader mb_helper mb_state mb_engine
+    local base="$1" then="${2:-}" reader_dir="$assets_rel" mb_dir="$scratch/chain-mb" mb_reader mb_helper mb_engine
     local -a exit_args
     rm -rf "$mb_dir" "$scratch/chain-reader.json" "$scratch/chain-reader.err" "$scratch/chain-exit.json"
     mkdir -p "$mb_dir"
@@ -590,17 +602,17 @@ run_integrate_chain() {
     [ -n "$mb_reader" ] || return 90
     mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh")"
     [ -n "$mb_helper" ] || return 90
-    mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || return 90
-    case "$mb_state" in
-    present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
-    absent) mb_policy=(--merge-base-policy-absent) ;;
-    none) mb_policy=() ;;
-    *) return 90 ;;
-    esac
+    mb_args || return 90
     # No registry here: the reader then exits 3 (unchecked references) but
     # still prints the resolution, and only its governing caps are compared.
     node "$mb_reader" resolve \
         --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} --json >"$scratch/chain-reader.json" 2>"$scratch/chain-reader.err"
+    case "$then" in
+    "") ;;
+    -) rm -f .devflow.toml ;;
+    *) cp "$then" .devflow.toml ;;
+    esac
+    mb_args || return 90
     exit_args=(--run "$exfix/run" --stage integration --policy .devflow.toml
         ${mb_policy[@]+"${mb_policy[@]}"} --json)
     mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"
@@ -616,13 +628,15 @@ process.stdout.write(String(eval(process.argv[2])));
 ' "$1" "$2" 2>/dev/null || true
 }
 
-# The table: case, merge base (checkout), branch policy ("-" none), the cap
-# the reader must resolve, and the verdict the engine must reach under it
-# ("stop": indeterminate, and no engine runs). A stale merge-base copy never
-# runs: the stage stops instead.
-while read -r name rev policy cap verdict; do
+# The table: case, merge base (checkout), branch policy ("-" none), the
+# branch policy a push leaves before the exit ("=" unchanged, "-" removed),
+# the cap the reader resolves for the first head, and the verdict the engine
+# must reach for the head it runs on ("stop": indeterminate, and no engine
+# runs). A stale merge-base copy never runs: the stage stops instead.
+while read -r name rev policy then cap verdict; do
+    [ "$then" = "=" ] && then=""
     set +e
-    (cd "$exrepo" && at "$rev" "$policy" && run_integrate_chain "$rev") 2>"$scratch/chain.err"
+    (cd "$exrepo" && at "$rev" "$policy" && run_integrate_chain "$rev" "$then") 2>"$scratch/chain.err"
     st=$?
     set -e
     got_cap="$(json_field "$scratch/chain-reader.json" r.rounds.integration)"
@@ -642,14 +656,16 @@ while read -r name rev policy cap verdict; do
         err "$name: reader cap '$got_cap' (want $cap), engine '$got_verdict' exit $st (want $verdict), stale ran: $ran_stale: $(head -2 "$scratch/chain.err")"
     fi
 done <<EOF
-present mbpresent $scratch/branch-cap5.toml 2 capped
-absent mbnone $exfix/policy.toml 4 continue
-none mbnone - 4 continue
-branch-deletes-policy mbpresent - 2 capped
-stale-engine-absent stalenone $exfix/policy.toml - stop
-stale-engine-none stalenone - - stop
-stale-engine-branch-deletes-policy stalepresent - - stop
-stale-reader-absent stalereader $exfix/policy.toml - stop
+present mbpresent $scratch/branch-cap5.toml = 2 capped
+absent mbnone $exfix/policy.toml = 4 continue
+none mbnone - = 4 continue
+branch-deletes-policy mbpresent - = 2 capped
+absent-then-push-removes-policy mbnone $exfix/policy.toml - 4 continue
+none-then-push-adds-policy mbnone - $exfix/policy.toml 4 continue
+stale-engine-absent stalenone $exfix/policy.toml = - stop
+stale-engine-none stalenone - = - stop
+stale-engine-branch-deletes-policy stalepresent - = - stop
+stale-reader-absent stalereader $exfix/policy.toml = - stop
 EOF
 
 # A branch engine that always converges must not change the verdict.
@@ -670,6 +686,7 @@ fi
 if grep -Fq 'node "$mb_engine"' "$int_recipe" &&
     grep -Fq 'git archive --format=tar "$base" -- "$reader_dir"' "$int_recipe" &&
     grep -Fq 'mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"' "$int_recipe" &&
+    [ "$(grep -c '^mb_args || exit 1$' "$int_recipe")" -eq 2 ] &&
     grep -Fq 'lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs`' "$int_recipe"; then
     echo "  ✓ integrate/SKILL.md runs the merge-base engine and routes engine edits to it"
 else

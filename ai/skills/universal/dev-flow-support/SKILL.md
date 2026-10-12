@@ -198,8 +198,8 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      mentions. The reader, the helper and the engine therefore always come
      from one merge-base tree, and the engine imports the reader beside it in
      that same tree. `trusted_copy COPY` in the recipe above is the one
-     implementation; `/integrate` defines it from there rather than restating
-     it.
+     implementation; `/integrate`'s recipe carries a byte-identical copy so it
+     runs in a fresh shell, and a test keeps the two identical.
    - **When the working tree differs in none of them**, the checkout's own copies are
      the trusted ones, and the steps below run them.
 1. **Read the issue's inputs.** Its labels, and the repository owner's type,

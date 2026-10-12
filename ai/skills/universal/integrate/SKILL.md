@@ -370,12 +370,16 @@ done
 reader_dir="$(dirname "$reader")"
 git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
 
-# trusted_copy COPY picks every governing copy this skill runs. Define it
-# exactly as dev-flow-support's step 0 recipe does: that is the First adoption
-# rule's one implementation (the merge base's own copy if it declares the
-# capability marker, else nothing). A merge base that predates the marker
-# cannot govern this path: the stage stops as indeterminate and the
-# maintainer decides (dev-flow-support step 0, "First adoption").
+# trusted_copy COPY picks every governing copy this skill runs: the merge
+# base's own copy if it declares the capability marker, else nothing. It is
+# byte for byte dev-flow-support step 0's definition (a test keeps the two
+# identical). A merge base that predates the marker cannot govern this path:
+# the stage stops as indeterminate and the maintainer decides
+# (dev-flow-support step 0, "First adoption").
+trusted_copy() {
+    [ -f "$1" ] && grep -Fq 'dev-flow-capability: merge-base-absent-v1' "$1" && printf '%s' "$1"
+    return 0
+}
 mb_reader="$(trusted_copy "$mb_dir/${reader}")"
 [ -n "$mb_reader" ] || exit 1   # indeterminate
 
@@ -389,13 +393,21 @@ mb_reader="$(trusted_copy "$mb_dir/${reader}")"
 # governing file too, so trusted_copy picks it.
 mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh")"
 [ -n "$mb_helper" ] || exit 1   # indeterminate
-mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || exit 1
-case "$mb_state" in
-present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
-absent) mb_policy=(--merge-base-policy-absent) ;;
-none) mb_policy=() ;;   # neither side has a policy: pass neither flag
-*) exit 1 ;;
-esac
+
+# mb_args — sets mb_policy, the governing merge-base arguments FOR THE CURRENT
+# HEAD. Call it immediately before every reader or engine invocation: a push
+# that adds or removes .devflow.toml changes the answer, so a value computed
+# for an earlier head is stale.
+mb_args() {
+    local mb_state
+    mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || return 1
+    case "$mb_state" in
+    present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
+    absent) mb_policy=(--merge-base-policy-absent) ;;
+    none) mb_policy=() ;; # neither side has a policy: pass neither flag
+    *) return 1 ;;
+    esac
+}
 
 # Always extract the merge-base registry — it is a repository file, so it
 # exists at the merge base whether or not THIS change edits it, and the
@@ -405,14 +417,18 @@ git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 # the task target is branch-controlled, so routing through it lets the branch
 # choose the command line that is supposed to constrain it. No --closure: the
 # selected copy is already the trusted merge-base one.
+mb_args || exit 1
 node "$mb_reader" resolve \
     --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
     --merge-base-registry "$mb_dir/agent-registry.json" \
     --registry agent-registry.json --taskfile-dir . --json
 ```
 
-**Carry the absent-base state; never improvise it.** `mb_policy` is the one
-governing argument for every later reader or exit-engine call in this run —
+**Carry the absent-base state; never improvise it, and never reuse it across
+heads.** `mb_args` recomputes `mb_policy` for the current head immediately
+before every reader or exit-engine call — a remediation push that adds or
+removes `.devflow.toml` changes it, so a value computed for an earlier head is
+stale. It is the one governing argument for each such call —
 `--merge-base-policy <file>` when the merge base has a policy,
 `--merge-base-policy-absent` when it has none but the branch adds one, so the
 built-in fallback governs rather than the branch's own new file
@@ -1402,8 +1418,10 @@ imports that same reader; `trusted_copy` qualifies it, and it runs by path
 with the same arguments in every merge-base state:
 
 ```sh
-# $mb_dir, $reader_dir, mb_policy and trusted_copy come from the merge-base
-# recipe above; $record_dir is the run's record directory.
+# $mb_dir, $reader_dir, trusted_copy and mb_args are defined in the merge-base
+# recipe above; $record_dir is the run's record directory. mb_args runs again
+# here, so the exit uses the CURRENT head's merge-base state.
+mb_args || exit 1
 exit_args=(--run "$record_dir" --stage integration --policy .devflow.toml
     ${mb_policy[@]+"${mb_policy[@]}"} --json)
 mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"
