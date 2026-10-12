@@ -9,12 +9,12 @@
     },
     {
       "stage": "implement",
-      "entered_at": "2026-10-08T01:01:00Z",
+      "entered_at": "2026-10-08T00:18:30Z",
       "exit": "fixed"
     },
     {
       "stage": "integration",
-      "entered_at": "2026-10-08T01:02:00Z",
+      "entered_at": "2026-10-08T00:19:00Z",
       "remediation": {
         "head": "0303030303030303030303030303030303030303",
         "findings": [

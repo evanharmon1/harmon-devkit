@@ -9,12 +9,12 @@
     },
     {
       "stage": "implement",
-      "entered_at": "2026-10-08T00:06:00Z",
+      "entered_at": "2026-10-08T00:08:30Z",
       "exit": "fixed"
     },
     {
       "stage": "integration",
-      "entered_at": "2026-10-08T00:07:00Z",
+      "entered_at": "2026-10-08T00:09:00Z",
       "exit": "remediating",
       "remediation": {
         "head": "0202020202020202020202020202020202020202",
@@ -25,12 +25,12 @@
     },
     {
       "stage": "implement",
-      "entered_at": "2026-10-08T00:11:00Z",
+      "entered_at": "2026-10-08T00:13:30Z",
       "exit": "fixed"
     },
     {
       "stage": "integration",
-      "entered_at": "2026-10-08T00:12:00Z",
+      "entered_at": "2026-10-08T00:14:00Z",
       "remediation": {
         "head": "0303030303030303030303030303030303030303",
         "findings": [

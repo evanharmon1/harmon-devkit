@@ -1405,14 +1405,16 @@ That writes `remediation: {head, findings}` on the re-entry entry of
 the SHA the push put on the branch. `findings` lists the integration
 adjudication finding ids the push answers. An empty list
 (`--remediation-findings ""`) marks a pure base-reconciliation push, the
-local-merge fallback that fixes no finding. The engine places each push by
-history, never by where its findings came from:
+local-merge fallback that fixes no finding. The engine places each push in
+time, never by where its findings came from:
 
-- The push's `head` must be the next head a completed cycle reviews or a
-  carry attests. Only the latest push may still be awaiting that review.
-- The push follows the latest completed cycle before that review, and that
-  cycle decides how the push is judged: under the tell rule above, or under
-  the fixing ceiling.
+- The push is placed at its re-entry's `entered_at` and judged by exactly
+  the rounds whose integrator pass settled before it (`settled_at`), leaving
+  out any round that reviewed the pushed head itself: under the tell rule
+  above, or under the fixing ceiling.
+- Its `head` must be accounted for: never reviewed before the push, and —
+  unless it is the latest push, still awaiting review — reviewed, carried, or
+  superseded by a catch-up whose cycle ran before the next push.
 - A carry may attest only a pure base reconciliation. A push with findings
   changed the reviewed diff, so a carry of its head is indeterminate
   (`remediation-head-carried`).

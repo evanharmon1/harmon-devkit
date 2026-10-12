@@ -761,13 +761,20 @@ assert_gate() {
 # (or "none" — round 1 owes none). $3 "none" records a pass with no Codex
 # cycle (cap 0, or a human finding between cycles); $7 overrides the cycle's
 # exit code (default 10); $8 "noadj" writes the pass without an adjudication.
+# Each round settles at minute 4*round+3 (round_settled_at), between the
+# integration re-entries write_record_with_integration_entries places at
+# minutes 6, 10, 14, … — the engine places a remediation push by its
+# re-entry time (harmon-devkit#1386).
+round_settled_at() {
+    printf '2026-01-01T00:%02d:00Z' "$((4 * $1 + 3))"
+}
 write_integration_cycle() {
     local round="$1" cycle_head="$2" cycle="$3" priority="$4" disposition="$5" checkpoint="$6"
     local exit_code="${7:-10}" adjudicate="${8:-adj}"
     jq -cn --arg head "$cycle_head" --argjson round "$round" --arg cycle "$cycle" \
-        --argjson exit_code "$exit_code" '
+        --argjson exit_code "$exit_code" --arg settled "$(round_settled_at "$round")" '
       {schema:2, role:"integrator", status:"completed", head:$head,
-       produced_at:"2026-01-01T00:00:00Z",
+       produced_at:$settled,
        producer:{harness:"claude-code",model:"test",tier:"economy"},
        run:{run_id:"test-run",initiated_by:"human"},
        payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
@@ -779,7 +786,7 @@ write_integration_cycle() {
                 integration_round:$round,
                 findings:[{id:("integration-r\($round)-codex-cloud-1"),
                            body:"a cloud finding",source_id:"9\($round)"}],
-                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                unanswered_thread_roots:[], settled_at:$settled,
                 verdict:(if $exit_code == 10 or $cycle == "none" then "findings" else "pending" end)}}' \
         >"${record_dir}/passes/integration-r${round}-codex-cloud.json"
     [ "$adjudicate" = adj ] || return 0
@@ -812,7 +819,8 @@ gated_round() {
         "$(jq -cn --arg head "$head_sha" --argjson cycle "$cycle" '{head:$head, cycle:$cycle,
             attempt:1, trigger_comment_id:"1", exit_code:0,
             accepted:{surface:"review", id:"1", reviewed_commit:$head}}')")"
-    jq --argjson round "$round" '.payload.integration_round = $round' "$out" >"${out}.next"
+    jq --argjson round "$round" --arg settled "$(round_settled_at "$round")" \
+        '.payload.integration_round = $round | .payload.settled_at = $settled | .produced_at = $settled' "$out" >"${out}.next"
     mv "${out}.next" "$out"
     node "$validator" envelope "$out" >/dev/null ||
         fail "gated_round $round $cycle: fixture failed schema validation"

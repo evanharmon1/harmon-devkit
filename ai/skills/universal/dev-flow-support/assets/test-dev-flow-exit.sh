@@ -984,7 +984,7 @@ import assert from "node:assert/strict";
 const head = (n) => String(n).repeat(40);
 const round = (n, h, cycle, entries) => ({
   round: n,
-  pass: { envelope: { head: head(h), payload: { findings: entries.map((e) => ({ id: e.finding_id })), codex_cycle: { head: head(h), cycle, exit_code: entries.length ? 10 : 0 } } } },
+  pass: { envelope: { head: head(h), payload: { settled_at: `2026-10-08T00:${String(n * 10).padStart(2, "0")}:00Z`, findings: entries.map((e) => ({ id: e.finding_id })), codex_cycle: { head: head(h), cycle, exit_code: entries.length ? 10 : 0 } } } },
   adjudication: { doc: { adjudications: entries } },
 });
 const entry = (n, priority, disposition, checkpoint) => ({ finding_id: `integration-r${n}-codex-cloud-1`, adjudicated_priority: priority, disposition, ...(checkpoint ? { checkpoint } : {}) });
@@ -994,7 +994,8 @@ const trajectory = (disposition) => [
   round(3, 3, 3, []),
 ];
 // The pushes are the explicit run-record entries (harmon-devkit#1386).
-const pushes = { pushes: [{ index: 2, head: head(2), findings: [entry(1).finding_id] }, { index: 4, head: head(3), findings: [entry(2).finding_id] }], unrecorded: 0 };
+const at = (m) => Date.parse(`2026-10-08T00:${m}:00Z`);
+const pushes = { pushes: [{ index: 2, head: head(2), findings: [entry(1).finding_id], at: at(15) }, { index: 4, head: head(3), findings: [entry(2).finding_id], at: at(25) }], unrecorded: 0 };
 assert.throws(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
 assert.equal(computeIntegrationExit(trajectory("delete"), 4, pushes).outcome, "converged");
 // The same head move with no push recorded is a catch-up, never judged as a fix push.

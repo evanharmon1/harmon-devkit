@@ -1652,9 +1652,11 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 //   cycle's `charged` flag suggests (harmon-devkit#1386): the integration
 //   transition that re-enters integration after a push records
 //   `remediation: {head, findings}`. A head move with no such record — a
-//   server-side catch-up — is never a remediation push. A push is placed by
-//   history: its head is the next head a cycle reviews or a carry attests,
-//   and it follows the latest completed cycle before that. After that cycle
+//   server-side catch-up — is never a remediation push. A push is placed in
+//   time by its re-entry's entered_at and judged by the rounds whose
+//   settled_at precedes it (and that reviewed another head). Its head must
+//   be accounted for: reviewed or carried, or superseded by a catch-up's
+//   review, before the next push. After the latest cycle before it
 //   closed a clean streak of two (the fixing ceiling), every fix push is
 //   refused (indeterminate): a confirmed P0/P1 would have broken the streak,
 //   so none is outstanding. A carry may attest only a pure base reconciliation (a push
@@ -1757,7 +1759,11 @@ function loadRemediationPushes(runRecord) {
     if (!wellFormed) {
       throw integrationIndeterminate(`stage_transitions[${index}].remediation is not {head: <40-hex>, findings: [<finding id>, …]}`, "remediation-malformed");
     }
-    pushes.push({ index, head: rem.head, findings: rem.findings });
+    const at = typeof t.entered_at === "string" ? Date.parse(t.entered_at) : NaN;
+    if (Number.isNaN(at)) {
+      throw integrationIndeterminate(`stage_transitions[${index}] records a remediation push without a readable entered_at — the push cannot be placed in time`, "remediation-malformed");
+    }
+    pushes.push({ index, head: rem.head, findings: rem.findings, at });
   }
   return { pushes, unrecorded };
 }
@@ -1806,8 +1812,8 @@ function assembleIntegrationCycles(rounds) {
     }
     const completed = cc !== null && !cc.carried && (cc.exit_code === 0 || cc.exit_code === 10);
     const latest = cycles.at(-1);
-    if (cc?.carried) reviewed.push({ head: cc.head, kind: "carry", round: r.round });
-    else if (completed && cc.cycle !== latest?.cycle) reviewed.push({ head: cc.head, kind: "cycle", round: r.round });
+    if (cc?.carried) reviewed.push({ head: cc.head, kind: "carry", at: settledAt(r) });
+    else if (completed && cc.cycle !== latest?.cycle) reviewed.push({ head: cc.head, kind: "cycle", at: settledAt(r) });
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
       // attempt. It folds into the latest completed cycle; before any, it
@@ -1845,6 +1851,12 @@ function assembleIntegrationCycles(rounds) {
   return { cycles, reviewed, streak, awaiting };
 }
 
+// When a round completed: its integrator pass's settled_at (required by
+// result.integrator.schema.json).
+function settledAt(r) {
+  return Date.parse(r.pass.envelope.payload?.settled_at);
+}
+
 // The head a round reviewed: its cycle's head (a carry's attested head), or
 // the pass head when it carries no cycle.
 function roundHead(r) {
@@ -1853,10 +1865,10 @@ function roundHead(r) {
 
 function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0 } = {}) {
   const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds);
-  // A remediation push is placed by the review history before the head it
-  // put on the branch, never by its findings' origin, and judged only by the
-  // rounds that reviewed an earlier head before it: a finding first
-  // adjudicated on the pushed head, or later, never authorizes the push.
+  // A remediation push is judged only by the rounds that completed before
+  // its re-entry and reviewed another head, never by its findings' origin: a
+  // finding first adjudicated on the pushed head, or later, never authorizes
+  // the push.
   const findingIndex = new Set();
   for (const r of rounds) {
     for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.add(e.finding_id);
@@ -1872,30 +1884,26 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
       "remediation-unrecorded",
     );
   }
-  let cursor = 0;
   for (const [k, push] of pushes.entries()) {
-    if (reviewed.slice(0, cursor).some((e) => e.head === push.head)) {
-      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, a head reviewed before an earlier push`, "remediation-head-order");
+    // A push is placed in time by its re-entry's entered_at and judged by
+    // exactly the rounds that completed before it. Its head only has to be
+    // accounted for: never reviewed before it, and — unless it is the latest
+    // push, still awaiting review — reviewed or carried, or superseded by a
+    // catch-up's review, before the next push.
+    const nextAt = k + 1 < pushes.length ? pushes[k + 1].at : Infinity;
+    if (reviewed.some((e) => e.at <= push.at && e.head === push.head)) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, a head already reviewed before that push`, "remediation-head-order");
     }
-    // The push's head is the next head reviewed (a cycle) or attested (a
-    // carry); only the last push may still be awaiting that review, and then
-    // everything reviewed so far precedes it.
-    const j = reviewed.findIndex((e, i) => i >= cursor && e.head === push.head);
-    let before;
-    if (j === -1) {
-      if (k !== pushes.length - 1) {
-        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, which no later cycle reviewed and no carry attested`, "remediation-head-unreviewed");
-      }
-      before = rounds;
-    } else {
-      // A carry attests an identical diff, so it can follow only a pure base
-      // reconciliation (no findings); a fix push changed the diff.
-      if (reviewed[j].kind === "carry" && push.findings.length > 0) {
-        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] answers findings, yet a carry attested its head ${push.head} — a fix push changes the reviewed diff`, "remediation-head-carried");
-      }
-      before = rounds.filter((r) => r.round < reviewed[j].round);
-      cursor = j + 1;
+    const following = reviewed.filter((e) => e.at > push.at && e.at <= nextAt);
+    if (following.length === 0 && k !== pushes.length - 1) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, but no cycle or carry reviewed anything before the next push`, "remediation-head-unreviewed");
     }
+    // A carry attests an identical diff, so it can follow only a pure base
+    // reconciliation (no findings); a fix push changed the diff.
+    if (following.some((e) => e.kind === "carry" && e.head === push.head) && push.findings.length > 0) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] answers findings, yet a carry attested its head ${push.head} — a fix push changes the reviewed diff`, "remediation-head-carried");
+    }
+    const before = rounds.filter((r) => settledAt(r) <= push.at);
     for (const id of push.findings) {
       if (!findingIndex.has(id)) {
         throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, which no integration adjudication holds`, "remediation-finding-unknown");
