@@ -388,6 +388,13 @@ OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_D
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 12 ] && contains "$ERR" "no-stats-script" &&
     ok "exit 12 naming no-stats-script" || bad "expected exit 12 / no-stats-script, got $RC: $ERR"
+nostats_out="$OUT" nostats_err="$ERR" nostats_rc="$RC"
+RC=0
+OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    GH_USER_ID="$ACTOR" node "$nostats_report" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" --local-unverified 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
+[ "$RC" -eq 12 ] && [ "$RC" -eq "$nostats_rc" ] && [ "$OUT" = "$nostats_out" ] && [ "$ERR" = "$nostats_err" ] &&
+    ok "missing harvester exit 12 is byte-identical with the local flag" || bad "local flag changed missing harvester: $RC $ERR"
 contains "$ERR" "run-6001-further-along" &&
     ok "the message names the run that was found but cannot be read" ||
     bad "exit 12 did not name the discovered run"
@@ -623,7 +630,7 @@ GH_FAIL_ISSUE=999999 GH_FAIL_ISSUE_STATUS=404 \
     GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 11 ] && contains "$ERR" "indeterminate" && contains "$ERR" "HTTP 503" &&
-    contains "$ERR" "ignoring body discovery hint issue #999999" && contains "$ERR" "HTTP 404" &&
+    contains "$ERR" "ignoring body discovery hint \"issue #999999\"" && contains "$ERR" "HTTP 404" &&
     ok "the indeterminate path preserves the earlier durable-hint disclosure" ||
     bad "the later transient failure dropped an earlier ignored hint, got $RC: $ERR"
 
@@ -857,7 +864,7 @@ make_pr_json "$d/pr.json" "$d/body"
 set_comments "$d/comments" "$PR" "$d/c1"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 10 ] && contains "$ERR" "run-6001-further-along had no matching trusted marker" &&
+[ "$RC" -eq 10 ] && contains "$ERR" '"run-6001-further-along" had no matching trusted marker' &&
     ok "the unverified token is refused with an explicit reason" ||
     bad "expected an unauthenticated-token fallback, got $RC: $ERR"
 
@@ -904,7 +911,7 @@ COMMENT_ACTOR=777 set_comments "$d/comments" "$ISSUE" "$d/i1"
 GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 11 ] &&
-    [ "$(printf '%s\n' "$ERR" | grep -c "ignoring an untrusted evidence marker naming run run-other on issue #$ISSUE")" -eq 1 ] &&
+    [ "$(printf '%s\n' "$ERR" | grep -c "ignoring an untrusted evidence marker naming run \"run-other\" on issue #$ISSUE")" -eq 1 ] &&
     [ "$(printf '%s\n' "$(cat "$d/gh.log")" | grep -c "repos/o/r/issues/$ISSUE/comments")" -eq 1 ] &&
     ok "closing results authenticate token hints without a second fetch or anomaly" ||
     bad "the closing/token issue was fetched or reported more than once, got $RC: $ERR"
@@ -944,7 +951,7 @@ set_comments "$d/comments" 665 "$d/i2"
 GH_FAIL_ISSUE=999999 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 11 ] && contains "$ERR" "run-one, run-two" &&
-    contains "$ERR" "ignoring body discovery hint issue #999999" && contains "$ERR" "HTTP 404" &&
+    contains "$ERR" "ignoring body discovery hint \"issue #999999\"" && contains "$ERR" "HTTP 404" &&
     ok "ambiguity retains the accumulated ignored-hint disclosure" ||
     bad "selected-tier ambiguity dropped discovery context, got $RC: $ERR"
 
@@ -2259,29 +2266,29 @@ run_report "$d" "${local_args[@]}"
 
 printf '{}\n' >"$d/records/run-6000-fresh-kickoff/run.json"
 run_report "$d" "${local_args[@]}" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'failed schema validation' &&
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'failed schema validation' &&
     ok "schema-invalid record is refused without rendering" || bad "invalid record rendered: $RC $ERR"
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 mkdir -p "$d/records/wrong-id"
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/wrong-id/run.json"
 run_report "$d" --repo o/r --run wrong-id --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'run_id differs' &&
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'run_id differs' &&
     ok "schema-valid record with mismatched run id is refused" || bad "mismatch rendered: $RC $ERR"
 run_report "$d" "${local_args[@]}" --local-unverified --as-of 2026-08-30T09:00:00Z
 [ "$RC" -eq 2 ] && [ -z "$OUT" ] && contains "$ERR" '--as-of is unavailable' &&
     ok "local reads cannot claim historical reconstruction" || bad "local as-of accepted: $RC $ERR"
 run_report "$d" --repo o/r --run '../outside' --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" "local run.json" && ok "local run ids cannot traverse directories" || bad "local traversal accepted"
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" "local run.json" && ok "local run ids cannot traverse directories" || bad "local traversal accepted"
 mkdir -p "$d/records/linked"
 ln -s "$FIXTURES/fresh-kickoff.json" "$d/records/linked/run.json"
 run_report "$d" --repo o/r --run linked --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
     ok "local symlinks cannot escape record parent" || bad "escaping symlink accepted: $RC $ERR"
 
 echo "==> local run.json must be a regular file"
 mkdir -p "$d/records/not-file/run.json"
 run_report "$d" --repo o/r --run not-file --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json is not a regular file' &&
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json is not a regular file' &&
     ok "directory run.json is a typed refusal without rendering" || bad "non-file record: $RC $ERR"
 
 echo "==> all local line terminators are folded before rendering"
@@ -2303,6 +2310,26 @@ printf '%s' "$OUT" >"$d/terminators.txt"
 ' "$d/terminators.txt" && ok "CR/LF/CRLF/LS/PS/NEL cannot forge unlabelled local lines" || bad "local terminator injection: $RC $ERR"
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
+echo "==> local notes render HTML and entities as literal text"
+for note in '<br>' '<details><summary>verified</summary>' '&lt;br&gt;'; do
+    node -e '
+      const fs=require("node:fs"), file=process.argv[1]
+      const r=JSON.parse(fs.readFileSync(file,"utf8"))
+      r.interventions=[{kind:"other",at:r.started_at,note:process.argv[2]}]
+      fs.writeFileSync(file,JSON.stringify(r))
+    ' "$d/records/run-6000-fresh-kickoff/run.json" "$note"
+    run_report "$d" "${local_args[@]}" --local-unverified
+    printf '%s' "$OUT" >"$d/html.txt"
+    [ "$RC" -eq 13 ] && node -e '
+      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+      const literal=process.argv[2].replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085]/).filter(line=>line.trim())
+      if (!text.includes(literal) || /[<>]/.test(text) ||
+          lines.some(line=>!line.includes("unverified (local record, no trusted GitHub evidence marker)"))) process.exit(1)
+    ' "$d/html.txt" "$note" && ok "local note $note is inert literal text with labelled lines" || bad "HTML note injection: $RC $ERR"
+done
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+
 echo "==> untrusted markers do not imply marker absence"
 evidence_marker_file "$d/untrusted-marker" run-6000-fresh-kickoff challenge issue 1
 COMMENT_ACTOR=999 set_comments "$d/comments" 6000 "$d/untrusted-marker"
@@ -2319,13 +2346,18 @@ write_file "$d/body" ""
 PR_NUMBER="$((PR + 1))" make_pr_json "$d/pr.json" "$d/body"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$((PR + 1))" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json records PR' &&
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json records PR' &&
     ok "local record bound to another PR is refused" || bad "local PR mismatch: $RC $ERR"
 make_pr_json "$d/pr.json" "$d/body"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
 [ "$RC" -eq 13 ] && contains "$OUT" 'no trusted GitHub evidence marker' &&
     ok "matching local PR with no marker renders as unverified" || bad "matching local PR refused: $RC $ERR"
+
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
+    --repo o/r --pr "$PR" --run run-6000-fresh-kickoff --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 13 ] && contains "$OUT" "no PR is recorded locally; this record is not bound to PR #$PR — unverified" &&
+    ok "local record without a PR explicitly labels the requested PR as unbound" || bad "unbound PR missing: $RC $ERR"
 
 # Exercise both authenticated success and authenticated missing-record with
 # --run: neither may render the local record. Existing fixtures supply the
@@ -2353,29 +2385,62 @@ GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
 [ "$RC" -eq 0 ] && [ "$OUT" = "$trusted_out" ] && [ "$ERR" = "$trusted_err" ] &&
     ok "trusted marker discovery ignores local flag without requiring local inputs" || bad "trusted marker flag changed output: $RC $ERR"
 
-GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
-    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
-    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
-[ "$RC" -eq 0 ] && [ "$OUT" = "$trusted_out" ] && ! contains "$OUT" 'local record, no trusted' &&
-    ok "trusted PR marker for another run overrides the local request" || bad "unrelated local run selected: $RC $ERR"
+# Probe A3: ordinary explicit-run reporting must not be redirected by the flag.
+make_trajectory "$FIXTURES/fresh-kickoff.json" "$trusted_dir/trajectory.json"
+make_stats "$trusted_dir/stats.mjs" 0 "$trusted_dir/trajectory.json"
+for flag in off on; do
+    extra=()
+    [ "$flag" = on ] && extra=(--local-unverified)
+    GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+        run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+        --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" "${extra[@]}"
+    if [ "$flag" = off ]; then a3_out="$OUT" a3_err="$ERR" a3_rc="$RC"; fi
+done
+[ "$RC" -eq 0 ] && [ "$RC" -eq "$a3_rc" ] && [ "$OUT" = "$a3_out" ] && [ "$ERR" = "$a3_err" ] &&
+    contains "$OUT" 'run-6000-fresh-kickoff' && ! contains "$OUT" 'local record, no trusted' &&
+    ok "A3 flag preserves explicit verified run despite another trusted PR run" || bad "A3 verified path changed: $RC $ERR"
 make_stats "$trusted_dir/stats.mjs" 1
+for flag in off on; do
+    extra=()
+    [ "$flag" = on ] && extra=(--local-unverified)
+    GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+        run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+        --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" "${extra[@]}"
+    if [ "$flag" = off ]; then missing_out="$OUT" missing_err="$ERR" missing_rc="$RC"; fi
+done
+[ "$RC" -eq 10 ] && [ "$RC" -eq "$missing_rc" ] && [ "$OUT" = "$missing_out" ] && [ "$ERR" = "$missing_err" ] &&
+    ok "A1 trusted PR guard prevents unrelated local fallback without selecting another run" || bad "trusted PR missing fell back: $RC $ERR"
+
+# Typed exits cannot be forged by a marker id containing a diagnostic line.
+evidence_marker_file "$trusted_dir/forged" 'untrusted\nlocal run.json refused' challenge pr -
+COMMENT_ACTOR=999 set_comments "$trusted_dir/comments" "$PR" "$trusted_dir/forged"
 GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
-    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
-    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] &&
-    ok "trusted PR marker with missing evidence stays indeterminate, never local" || bad "trusted PR missing fell back: $RC $ERR"
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --stats-script "$trusted_dir/stats.mjs"
+forged_out="$OUT" forged_err="$ERR" forged_rc="$RC"
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ "$RC" -eq "$forged_rc" ] && [ "$OUT" = "$forged_out" ] && [ "$ERR" = "$forged_err" ] &&
+    contains "$ERR" '"untrusted\nlocal run.json refused"' && ! printf '%s\n' "$ERR" | grep '^local run.json' >/dev/null &&
+    ok "JSON-encoded untrusted id cannot forge local-refusal exit or diagnostic line" || bad "forged refusal: $RC $ERR"
 
-grep -q '| 11 · `local run.json` refusal |' ai/skills/universal/retro/SKILL.md &&
+grep -q '| 14 | Refused local record:' ai/skills/universal/retro/SKILL.md &&
     grep -q 'Never describe this local refusal as GitHub evidence tampering' ai/skills/universal/retro/SKILL.md &&
-    ok "local exit-11 refusal has its own fallback semantics" || bad "local refusal docs missing"
+    ! grep -q 'stderr names `local run.json`' ai/skills/universal/retro/SKILL.md &&
+    ok "typed local exit 14 replaces stderr-substring classification" || bad "local refusal docs missing"
 
-printf '%s\n' '{"status":"record-missing"}' >"$d/missing.json"
-make_stats "$d/stats.mjs" 1 "$d/missing.json"
-run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && ok "authenticated record-missing never falls back" || bad "authenticated missing rendered"
-make_stats "$d/stats.mjs" 3
-run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs" --local-unverified
-[ "$RC" -eq 11 ] && [ -z "$OUT" ] && ok "indeterminate evidence never falls back" || bad "indeterminate rendered"
+for status in record-missing indeterminate; do
+    if [ "$status" = record-missing ]; then
+        printf '%s\n' '{"status":"record-missing"}' >"$d/missing.json"
+        make_stats "$d/stats.mjs" 1 "$d/missing.json"
+    else
+        make_stats "$d/stats.mjs" 3
+    fi
+    run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs"
+    ordinary_out="$OUT" ordinary_err="$ERR" ordinary_rc="$RC"
+    run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs" --local-unverified
+    [ "$RC" -eq 11 ] && [ "$RC" -eq "$ordinary_rc" ] && [ "$OUT" = "$ordinary_out" ] && [ "$ERR" = "$ordinary_err" ] &&
+        ok "$status exit 11 is byte-identical with or without the flag" || bad "$status path changed: $RC $ERR"
+done
 grep -q '| 13 | `local-unverified`' ai/skills/universal/retro/SKILL.md &&
     grep -q 'After \*\*only\*\* exit 10 `no-run-record` or `run-not-found`' ai/skills/universal/retro/SKILL.md &&
     ok "skill documents distinct code and permitted local fallback" || bad "local exit documentation missing"

@@ -32,6 +32,7 @@
 //       report a clean retro on this path, and never fall back to memory.
 //   13  local-unverified — opt-in local record, no trusted GitHub evidence marker.
 //       Never a verified report or an authenticated trajectory.
+//   14  refused local record — invalid local input, never evidence tampering.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
 // Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
@@ -86,6 +87,7 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
 
 class UsageError extends Error {}
 class OperationalError extends Error {}
+class LocalRefusalError extends Error {}
 // Evidence that exists but does not authenticate, or cannot be attributed to
 // one run. Distinct from "no evidence" — see the exit-code table above.
 class IndeterminateError extends Error {
@@ -1175,15 +1177,13 @@ function unavailableMeasurements(measured) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-// Free text here is reviewer- and human-authored prose (intervention notes,
-// stage exits, disclosure details) that a reader may paste into a PR body or
-// comment. Neutralize marker sequences and fold newlines for the same reason
-// render-dev-flow.mjs does: an evidence note that quotes `<!--` would forge a
-// section boundary on the next parse.
+// Render free text as inert HTML text on one Markdown line, including notes
+// that quote evidence markers or contain HTML and line terminators.
 function safe(value) {
   return String(value ?? '')
-    .replace(/<!--/g, '&lt;!--')
-    .replace(/-->/g, '--&gt;')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
     .replace(/\r\n|[\r\n\u2028\u2029\u0085]/g, ' ')
 }
 
@@ -1461,7 +1461,7 @@ function renderMarkdown(report) {
 function reportIgnoredMarkers(untrusted, malformed) {
   for (const marker of untrusted) {
     console.error(
-      `${TOOL}: ignoring an untrusted evidence marker naming run ${marker.run_id} on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}, actor ${marker.actor_id ?? 'unknown'})`
+      `${TOOL}: ignoring an untrusted evidence marker naming run ${JSON.stringify(marker.run_id)} on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}, actor ${marker.actor_id ?? 'unknown'})`
     )
   }
   for (const marker of malformed) {
@@ -1473,7 +1473,7 @@ function reportIgnoredMarkers(untrusted, malformed) {
 
 function reportIgnoredHints(ignoredHints) {
   for (const hint of ignoredHints) {
-    console.error(`${TOOL}: ignoring body discovery hint ${hint.hint} (${hint.tier}): ${hint.reason}`)
+    console.error(`${TOOL}: ignoring body discovery hint ${JSON.stringify(hint.hint)} (${hint.tier}): ${hint.reason}`)
   }
 }
 
@@ -1486,7 +1486,7 @@ function renderLocalUnverified(args, runId) {
   if (!args.run || !args.recordDir) throw new UsageError('--local-unverified requires --run and --record-dir for a local read')
   if (args.asOf) throw new UsageError('--as-of is unavailable for local-unverified records; rerun without it')
   if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
-    throw new IndeterminateError('local run.json path escapes the selected run directory; --run must name one directory')
+    throw new LocalRefusalError('local run.json path escapes the selected run directory; --run must name one directory')
   }
   const parent = realpathSync(args.recordDir)
   const file = path.join(parent, runId, 'run.json')
@@ -1494,9 +1494,9 @@ function renderLocalUnverified(args, runId) {
   // Symlinks must not redirect the local read outside the selected parent.
   const resolved = realpathSync(file)
   if (!resolved.startsWith(`${parent}${path.sep}`)) {
-    throw new IndeterminateError('local run.json resolves outside --record-dir')
+    throw new LocalRefusalError('local run.json resolves outside --record-dir')
   }
-  if (!statSync(resolved).isFile()) throw new IndeterminateError('local run.json is not a regular file')
+  if (!statSync(resolved).isFile()) throw new LocalRefusalError('local run.json is not a regular file')
   const bytes = readFileSync(resolved, 'utf8')
   const validator = path.join(ASSET_DIR, '..', '..', 'dev-flow-support', 'assets', 'validate-result-schemas.mjs')
   if (!existsSync(validator)) throw new OperationalError('local run schema validator is unavailable')
@@ -1510,15 +1510,15 @@ function renderLocalUnverified(args, runId) {
     })
     if (validation.error) throw new OperationalError(`local run schema validator failed: ${validation.error.message}`)
     if (validation.status !== 0) {
-      throw new IndeterminateError(`local run.json failed schema validation: ${(validation.stderr || '').trim()}`)
+      throw new LocalRefusalError(`local run.json failed schema validation: ${JSON.stringify((validation.stderr || '').trim())}`)
     }
     record = JSON.parse(bytes)
   } finally {
     rmSync(snapshot, { recursive: true, force: true })
   }
-  if (record.run_id !== runId) throw new IndeterminateError('local run.json run_id differs from --run')
+  if (record.run_id !== runId) throw new LocalRefusalError('local run.json run_id differs from --run')
   if (args.pr !== undefined && record.pr && record.pr.number !== args.pr) {
-    throw new IndeterminateError(`local run.json records PR #${record.pr.number}, not the requested #${args.pr}`)
+    throw new LocalRefusalError(`local run.json records PR #${record.pr.number}, not the requested #${args.pr}`)
   }
 
   const measurements = []
@@ -1527,6 +1527,9 @@ function renderLocalUnverified(args, runId) {
   add('Initiated by', record.initiated_by)
   add('Outcome', record.outcome ?? 'not recorded')
   add('PR recorded locally', record.pr ? `#${record.pr.number} (${record.pr.url})` : 'not recorded')
+  if (args.pr !== undefined && !record.pr) {
+    add('PR binding', `no PR is recorded locally; this record is not bound to PR #${args.pr}`)
+  }
   for (const transition of record.stage_transitions) {
     add('Stage entry', `${transition.stage} at ${transition.entered_at}; exit: ${transition.exit ?? 'not recorded'}`)
   }
@@ -1577,20 +1580,12 @@ function run(argv) {
   let malformedMarkers = []
   let ignoredHints = []
   let unverifiedBodyRunIds = []
-  if (!runId || (args.localUnverified && args.pr !== undefined)) {
+  if (!runId) {
     try {
       const discovered = discoverRun(args, trusted.ids)
       pr = discovered.pr
-      // PR evidence takes precedence over an opt-in local --run argument.
-      // With no trusted selection, retain the explicit id for the local read.
-      if (discovered.runId || !args.run) {
-        runId = discovered.runId
-        runIdFrom = discovered.source
-        if (discovered.runId && args.localUnverified) {
-          args.localUnverified = false
-          args.run = undefined
-        }
-      }
+      runId = discovered.runId
+      runIdFrom = discovered.source
       untrustedMarkers = discovered.untrusted
       malformedMarkers = discovered.malformed
       ignoredHints = discovered.ignoredHints
@@ -1606,7 +1601,7 @@ function run(argv) {
     // "something was found and refused" must never look the same on stderr.
     reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
     reportIgnoredHints(ignoredHints)
-    if (!runId || (args.localUnverified && malformedMarkers.some((marker) => marker.trusted))) {
+    if (!runId) {
       // "No trusted marker" and "no marker at all" are different answers, and
       // only the second one licenses the fallback. Markers that exist but do
       // not authenticate are either a redirect attempt or a trust root that
@@ -1621,7 +1616,7 @@ function run(argv) {
       if (untrustedMarkers.length > 0 || corrupted.length > 0) {
         const parts = []
         if (untrustedMarkers.length > 0) {
-          const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
+          const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().map((id) => JSON.stringify(id)).join(', ')
           parts.push(
             `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set and an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed)`
           )
@@ -1637,7 +1632,7 @@ function run(argv) {
         return 11
       }
       console.error(
-        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
+        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.map((id) => JSON.stringify(id)).join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
       )
       return 10
     }
@@ -1687,11 +1682,21 @@ function run(argv) {
       )
       return 11
     }
+    // The opt-in may replace only the ordinary exit-10 outcome. PR comments
+    // guard that local read; they never select a run or mutate --run.
     if (args.localUnverified) {
-      const local = renderLocalUnverified(args, runId)
-      if (local !== null) {
-        console.log(local)
-        return 13
+      const untrusted = []
+      const malformed = []
+      const trustedOnPr = args.pr === undefined ? new Set() : collectRunIds(
+        fetchComments(args.repo, args.pr, args.asOf || null), trusted.ids,
+        `PR #${args.pr}`, 'pr', untrusted, malformed
+      )
+      if (trustedOnPr.size === 0 && !malformed.some((marker) => marker.trusted)) {
+        const local = renderLocalUnverified(args, runId)
+        if (local !== null) {
+          console.log(local)
+          return 13
+        }
       }
     }
     console.error(`${TOOL}: ${harvested.missing}; use the retro's fallback procedure`)
@@ -1817,6 +1822,10 @@ function main() {
       console.error(`${TOOL}: ${error.message}`)
       console.error(USAGE)
       return 2
+    }
+    if (error instanceof LocalRefusalError) {
+      console.error(`${TOOL}: refused local record — ${error.message}`)
+      return 14
     }
     if (error instanceof IndeterminateError) {
       console.error(`${TOOL}: indeterminate — ${error.message}`)

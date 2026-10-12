@@ -203,7 +203,7 @@ fourth time.
 | 10 · `run-not-found` | an id supplied with `--run` was not found; **discovery never ran** | Fall back for the measurements, but do **not** say the session has no run record — nothing looked. Say the supplied id was not found, and consider that it may be mistyped or that the record lives on the issue. §5's `run-not-found` provenance wording is the matching phrasing |
 | 13 | `local-unverified` — opt-in schema-validated local record, without a trusted GitHub evidence marker | Paste only with **unverified (local record, no trusted GitHub evidence marker)** on the heading and every measured line. Never treat it as authenticated evidence or a clean verified result |
 | 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
-| 11 · `local run.json` refusal | With local mode enabled, the local record is refused: schema failure, `run_id` mismatch, PR mismatch, path or symlink escape, or not a regular file. stderr names `local run.json` | Report a **refused local record**, quote the reason, then fall back for measurements. Never describe this local refusal as GitHub evidence tampering |
+| 14 | Refused local record: schema failure, `run_id` mismatch, PR mismatch, path or symlink escape, or not a regular file | Report a **refused local record**, quote the reason, then fall back for measurements. Never describe this local refusal as GitHub evidence tampering |
 | 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; a trusted actor's own marker that does not parse; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding and quote the reason from stderr. **Draft** the follow-up issue — do not create it unless asked, exactly as §5 requires of every other follow-up. Never downgrade any of these to "no run record" |
 | 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
 
@@ -214,19 +214,21 @@ rows above even though the process exit is the same number. Exit 12 is a fact ab
 reporting it as 10 would let a vendoring gap masquerade as work nobody
 recorded. Exit 11 for GitHub evidence is a finding in its own right — treating it as "no
 evidence" is how tampered evidence would read as an ordinary memory-based
-retro. The separately documented `local run.json` refusal is a local input
+retro. Exit 14 is a local input
 problem: report that refusal and fall back, without alleging GitHub tampering.
 
 After **only** exit 10 `no-run-record` or `run-not-found`, if the run id
 and its retained directory are known, an explicit local read is permitted:
 rerun with `--run <id> --record-dir <parent> --local-unverified`. This opt-in
-mode runs only when the harvester returns `run-not-found`; trusted-marker
-results take the verified path unchanged, and integrity errors never fall
-back to local data. The run schema validator must accept the local `run.json`
-and its `run_id` must match the requested id; otherwise no report is rendered.
-With `--pr`, trusted discovery on that PR runs first: any trusted selection
-uses the existing verified or indeterminate path. A local record whose own
-PR number differs from `--pr` is refused with exit 11.
+mode may replace only an ordinary exit-10 outcome. Every ordinary exit 0, 11
+or 12 keeps identical stdout, stderr and exit status with the flag enabled;
+integrity errors never fall back to local data. The run schema validator must
+accept the local `run.json` and its `run_id` must match the requested id;
+otherwise no report is rendered. With `--pr`, a read-only check must find no
+trusted marker on that PR before a local read. That check never selects a run
+or changes `--run`. A local record whose own PR number differs from `--pr` is
+refused with exit 14; a record naming no PR explicitly says it is not bound
+to the requested PR.
 A missing local record retains exit 10. Exit 13 is distinct from success, and
 both Markdown and JSON carry **unverified (local record, no trusted GitHub evidence
 marker)** on every measured entry. Missing `adjudications/` means **not
