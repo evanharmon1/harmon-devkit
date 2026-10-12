@@ -8,7 +8,18 @@
 #               (architecture, authz, data loss, rollback, races, hidden
 #               coupling, operational failure modes, overdesign).
 #
-# Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+# Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>]
+#        [--envelope --run-id <id> --head <sha> --stage <stage> --round <n>
+#         --slot <finder> --tier <tier>
+#         --record-dir <dir> [--registry <file>]]
+#        [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+#
+# --envelope makes this run the producer of one schema-bound result envelope
+# for a dev-flow v2 run instead of a prose-only pass: Codex answers in the
+# result.<role> payload schema, and the runner binds, validates and publishes
+# that as exactly one immutable file under <record-dir>/passes/, printing its
+# path on stdout. It never writes run.json — the caller appends the pass
+# receipt. The contract is scripts/lib/review-scope.sh § "Envelope mode".
 #
 # Target selection when no explicit flag is given: whatever exists is in
 # scope. Commits beyond the default base AND a dirty working tree are reviewed
@@ -40,8 +51,16 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
+
+# WHAT gets reviewed — the target flags, the auto-detected scope, the
+# authoritative manifest, and every refusal that keeps an empty or half scope
+# from reading as a clean pass — is scripts/lib/review-scope.sh, shared with
+# scripts/finder-review.sh. It sets `scope`, `manifest` and `focus`, and owns
+# the envelope-mode flags and publication both runners share.
+# shellcheck source=scripts/lib/review-scope.sh
+. "$script_dir/lib/review-scope.sh"
 
 MODE="${1:-}"
 case "$MODE" in
@@ -94,9 +113,22 @@ while [ $# -gt 0 ]; do
         reasoning_set=true
         shift 2
         ;;
-    *) break ;;
+    *)
+        review_envelope_flag "$@" || break
+        shift "$envelope_shift"
+        ;;
     esac
 done
+
+if [ "$envelope_mode" = true ]; then
+    case "$MODE" in
+    challenge) envelope_slug=codex-adversarial ;;
+    review) envelope_slug=codex-verification ;;
+    esac
+    review_envelope_prepare "$MODE" "$envelope_slug" codex-cli
+else
+    review_envelope_refuse_stray_flags
+fi
 
 if ! command -v codex >/dev/null 2>&1; then
     echo "codex CLI not found. Install it (brew install --cask codex, or npm install -g @openai/codex)," >&2
@@ -125,13 +157,8 @@ case "$MAX_STDERR_BYTES" in
     ;;
 esac
 
-# WHAT gets reviewed — the target flags, the auto-detected scope, the
-# authoritative manifest, and every refusal that keeps an empty or half scope
-# from reading as a clean pass — is scripts/lib/review-scope.sh, shared with
-# scripts/finder-review.sh. It sets `scope`, `manifest` and `focus`.
-# shellcheck source=scripts/lib/review-scope.sh
-. "$script_dir/lib/review-scope.sh"
 resolve_review_scope "$@"
+[ "$envelope_mode" = false ] || review_envelope_bind_scope
 
 # The mode prose and the severity scale below are read from
 # scripts/lib/review-instructions/ rather than inlined here: scripts/
@@ -186,6 +213,12 @@ with git):
 
 ${manifest}"
 
+if [ "$envelope_mode" = true ]; then
+    instructions="${instructions}
+
+$(review_envelope_instructions)"
+fi
+
 # Codex puts the verdict on stdout and everything else — progress narration
 # and errors alike — on stderr, so a caller capturing both (the documented
 # `task challenge > log 2>&1`) interleaves them. Harmless until the CLI logs
@@ -231,7 +264,53 @@ bound_stderr_lines() {
 # a pipeline, so the tail of the narration cannot be lost to the script exiting
 # first. Under pipefail the filter exits 0, leaving codex's own status as the
 # rightmost non-zero, so a failed review still fails the task.
-{ printf '%s\n' "$instructions" | codex exec review \
+if [ "$envelope_mode" = false ]; then
+    { printf '%s\n' "$instructions" | codex exec review \
+        --model "$review_model" \
+        --config "model_reasoning_effort=$review_reasoning" \
+        - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1
+    exit
+fi
+
+# Envelope mode. Codex reviews an immutable checkout of the captured head —
+# never the live worktree, which can move while the model runs — through the
+# SAME `codex exec review` invocation legacy mode uses, and with it the same
+# approval-never posture. Plain `codex exec` was tried and is ruled out: it
+# runs approval on-request, so a command the model marks escalated escaped
+# the read-only sandbox with no prompt (challenge-r4-codex-adversarial-2,
+# maintainer decision 2026-10-11). The review subcommand takes no enforced
+# output schema (it accepts --output-schema and never reads it), so the
+# payload schema is requested in the prompt and the answer is parsed by
+# review_envelope_publish, which refuses anything but exactly one object.
+# Codex's answer (its stdout) goes to a private file and its narration to
+# stderr; the runner's own stdout carries exactly one line, the published
+# pass path.
+# shellcheck source=scripts/lib/readonly-sandbox.sh
+. "$script_dir/lib/readonly-sandbox.sh"
+trap 'sandbox_cleanup; review_envelope_cleanup' EXIT
+mkdir -p "$envelope_record_dir/passes"
+review_envelope_temp raw_payload codex-raw || exit 1
+sandbox_create "$envelope_head" 0 >/dev/null || {
+    echo "could not build the immutable review checkout at $envelope_head; no review ran" >&2
+    exit 1
+}
+codex_status=0
+{ printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" review \
     --model "$review_model" \
     --config "model_reasoning_effort=$review_reasoning" \
-    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1
+    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>"$raw_payload" || codex_status=$?
+# Verified before the status is honoured: output produced by something that
+# changed its own review checkout is not accepted, whatever it returned.
+sandbox_verify || {
+    echo "Codex modified its immutable review checkout; refusing its output" >&2
+    exit 1
+}
+[ "$codex_status" -eq 0 ] || {
+    echo "codex exited $codex_status; no pass published" >&2
+    exit "$codex_status"
+}
+[ "$(git rev-parse HEAD)" = "$envelope_head" ] || {
+    echo "HEAD moved off $envelope_head during the review; refusing the stale pass" >&2
+    exit 1
+}
+review_envelope_publish "$raw_payload" "$review_model"

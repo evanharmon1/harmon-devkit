@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.56.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.55.0...v0.56.0) (2026-10-12)
+
+
+### Features
+
+* **implement:** record the implementing model on the pull request and the issue ([#1363](https://github.com/evanharmon1/harmon-devkit/issues/1363)) ([19a7735](https://github.com/evanharmon1/harmon-devkit/commit/19a77356469ba6aa006b961b79748922ab5554d4))
+* **integrate:** catch a PR up to its base with GitHub update-branch ([#1377](https://github.com/evanharmon1/harmon-devkit/issues/1377)) ([3aee925](https://github.com/evanharmon1/harmon-devkit/commit/3aee9257b58d82e31b4124b5aa796635ce8c31fc))
+* **integrate:** let readiness-gate.sh accept a clean checker state without an integrator result ([#1372](https://github.com/evanharmon1/harmon-devkit/issues/1372)) ([593b81d](https://github.com/evanharmon1/harmon-devkit/commit/593b81df6813dd2001f000851e06775a0b6f8a94))
+* **orchestrate:** ship tested run-record and plan writers over common-dir state ([#1367](https://github.com/evanharmon1/harmon-devkit/issues/1367)) ([07cf0fb](https://github.com/evanharmon1/harmon-devkit/commit/07cf0fb0d19c627be8fe33be3316564a7fc8baff))
+
+
+### Bug Fixes
+
+* **codex:** mirror corrected GPT model pins and registry versions ([#1370](https://github.com/evanharmon1/harmon-devkit/issues/1370)) ([e12a250](https://github.com/evanharmon1/harmon-devkit/commit/e12a250e9a9846c80ed1d4f24cb6842d1cf2e1a7))
+* **dev-flow-support:** bind split adjudications to issue shape and stage time ([#1373](https://github.com/evanharmon1/harmon-devkit/issues/1373)) ([c026dad](https://github.com/evanharmon1/harmon-devkit/commit/c026daddb0b3fe3631dcff1392971a8400b5d280))
+
 ## [0.55.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.54.0...v0.55.0) (2026-10-11)
 
 
