@@ -84,13 +84,13 @@ const run = join(dirname(state), 'run.json');
 mkdirSync(join(dirname(run), 'adjudications'));
 mkdirSync(join(dirname(run), 'passes'));
 put(join(dirname(run),'adjudications/challenge-r1.json'), {schema:2,run_id:runID,stage:'challenge',round:1,reviewed_head:head,adjudications:[]});
-put(join(dirname(run),'passes/challenge-r1.json'), {schema:2,role:'reviewer',status:'completed',head,produced_at:'2026-08-20T09:00:00Z',
+put(join(dirname(run),'passes/challenge-r1-codex.json'), {schema:2,role:'reviewer',status:'completed',head,produced_at:'2026-08-20T09:00:00Z',
   producer:{harness:'codex-adversarial',model:'fixture-model',tier:'local'},run:{run_id:runID,initiated_by:'human'},
   payload:{stage:'challenge',round:1,reviewed_head:head,finder:'codex-adversarial',findings:[],counts:{P0:0,P1:0,P2:0,P3:0}}});
 const at = '2026-08-20T09:00:00Z';
 const baseRun = { schema:2,run_id:runID,initiated_by:'human',started_at:at,
   stage_transitions:['kickoff','claim','plan','implement','verify','challenge'].map((stage,i)=>({stage,entered_at:at,...(i<5?{exit:'complete'}:{})})),
-  receipts:[{kind:'transition',stage:'challenge',entered_at:at},{kind:'pass',file:'challenge-r1'}],interventions:[],outcome:null,pr:null,
+  receipts:[{kind:'transition',stage:'challenge',entered_at:at},{kind:'pass',file:'challenge-r1-codex'}],interventions:[],outcome:null,pr:null,
   evidence_comments:[],evidence_registrations:[],pr_bindings:[],outcome_transitions:[],settlements:[],promotion:null };
 const markerFile = join(tmp, 'marker.json');
 const bodyFile = join(tmp, 'summary.md');
@@ -261,6 +261,30 @@ console.log('PASS: conflicting, edited and deleted authenticated comments block 
 for(const bad of [{...marker,extra:1},{...marker,round:null},{...marker,destination:'pr'},{...marker,sequence:0},{...marker,stage:'retro'}]) {
  reset(); put(markerFile,bad); invoke(2,'marker grammar'); assert.equal(read(data).posts,0); assert.equal(read(state).actions.length,0);
 }
+// Quoting marker text is valid data; only another marker-form line conflicts.
+reset(); const quoted={...projection,quoted:'<!-- dev-flow-v2-evidence: example -->'};
+writeFileSync(bodyFile,`Quoted marker text: \`<!-- dev-flow-v2-evidence: example -->\`\n\n\`\`\`json\n${JSON.stringify(quoted,null,2)}\n\`\`\`\n`);
+invoke(); assert.equal(read(data).posts,1);
+reset(); writeFileSync(bodyFile,summary+'  <!-- dev-flow-v2-evidence: example -->\n');
+invoke(2,'no evidence marker'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+console.log('PASS: marker text quoted in JSON/prose is accepted; a second marker-form line refuses before reserve or POST');
+// The named round must exist locally before any publication reservation.
+reset(); put(markerFile,{...marker,round:2});
+writeFileSync(bodyFile,`\`\`\`json\n${JSON.stringify({...projection,round:2})}\n\`\`\`\n`);
+invoke(2,'round challenge-r2 has no retained adjudication'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+const passFile=join(dirname(run),'passes/challenge-r1-codex.json');
+const retainedPass=readFileSync(passFile,'utf8');
+reset(); rmSync(passFile); invoke(2,'no retained pass with a run receipt');
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0); writeFileSync(passFile,retainedPass);
+reset(); const unreceipted=read(run); unreceipted.receipts=unreceipted.receipts.filter((r)=>r.kind!=='pass'); put(run,unreceipted);
+invoke(2,'no retained pass with a run receipt'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+const adjudicationFile=join(dirname(run),'adjudications/challenge-r1.json');
+const retainedAdjudication=readFileSync(adjudicationFile,'utf8');
+reset(); put(adjudicationFile,{...read(adjudicationFile),round:0}); invoke(2,'validation');
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0); writeFileSync(adjudicationFile,retainedAdjudication);
+reset(); put(adjudicationFile,{...read(adjudicationFile),round:2}); invoke(2,'adjudication does not bind the marker');
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0); writeFileSync(adjudicationFile,retainedAdjudication);
+console.log('PASS: a round-1-only run refuses round 2; invalid or misbound adjudications and absent/unreceipted passes refuse before reserve or POST');
 reset(); writeFileSync(bodyFile,summary.replace(head,'0'.repeat(40))); invoke(2,'projection does not bind');
 for(const field of ['passes']) {
   reset(); const incomplete={...projection}; delete incomplete[field];
@@ -272,7 +296,7 @@ reset({fetchFailure:true}); invoke(2,'Command failed'); assert.equal(read(data).
 reset({fullPages:true}); invoke(2,'bounded destination read'); assert.equal(read(data).posts,0);
 console.log('PASS: invalid marker/payload, oversized comment, failed and incomplete fetch never post');
 reset(); invoke(); record=read(run); record.evidence_comments[0].digest='sha256:'+'0'.repeat(64); put(run,record); invoke(2,'validation'); assert.equal(read(data).posts,1);
-reset(); invoke(); const changed=read(markerFile); changed.round=2; put(markerFile,changed); invoke(2,'projection does not bind');
+reset(); invoke(); const changed=read(markerFile); changed.round=2; put(markerFile,changed); invoke(2,'round challenge-r2 has no retained adjudication');
 console.log('PASS: invalid run registration and changed projection refuse');
 // Consumer layout, no repository-root runtime dependencies; source sibling
 // assets are copied physically, like sync:skills' flattened package tree.

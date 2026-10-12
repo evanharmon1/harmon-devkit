@@ -19,7 +19,7 @@ done
 # modules can distinguish imports from direct CLI execution.
 js_source="$(
     cat <<'JS'
-import { readFileSync, writeFileSync, renameSync, rmSync, mkdtempSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, rmSync, mkdtempSync, realpathSync, existsSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
@@ -72,6 +72,17 @@ try {
   validateFile('run', runPath, 'existing run record');
   let run = read(runPath);
   if (run.run_id !== marker.run_id || !run.stage_transitions.some((t) => t.stage === marker.stage)) fail('marker is not bound to run stage');
+  const roundName = `${marker.stage}-r${marker.round}`;
+  const adjudicationPath = join(dirname(runPath), 'adjudications', `${roundName}.json`);
+  if (!existsSync(adjudicationPath)) fail(`round ${roundName} has no retained adjudication`);
+  // validateFile('run') above validates every retained adjudication through
+  // the shared writer's strict context; bind the named artifact's coordinates.
+  const adjudication = read(adjudicationPath);
+  if (adjudication.run_id !== marker.run_id || adjudication.stage !== marker.stage || adjudication.round !== marker.round) fail(`round ${roundName} adjudication does not bind the marker`);
+  const passesDir = join(dirname(runPath), 'passes');
+  const passes = existsSync(passesDir) ? readdirSync(passesDir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name) : [];
+  if (!passes.some((name) => name.startsWith(`${roundName}-`) && name.endsWith('.json')
+      && run.receipts?.some((receipt) => receipt.kind === 'pass' && receipt.file === name.slice(0, -5)))) fail(`round ${roundName} has no retained pass with a run receipt`);
   const event = `evidence-${marker.destination}-${marker.stage}-r${marker.round}-s${marker.sequence}`;
   const persistedFile = join(dirname(state), `${event}.body.md`);
   let persistedBody;
@@ -92,7 +103,7 @@ try {
   if (!body.startsWith(`${markerLine}\n\n`)) fail('persisted body does not bind the canonical marker');
   const summary = body.slice(markerLine.length + 2);
   const fences = [...summary.matchAll(/```json\r?\n([\s\S]*?)\r?\n```/g)];
-  if (fences.length !== 1 || summary.includes('dev-flow-v2-evidence:')) fail('body must contain exactly one fenced JSON projection and no evidence marker');
+  if (fences.length !== 1 || /^\s*<!-- dev-flow-v2-evidence:/m.test(summary)) fail('body must contain exactly one fenced JSON projection and no evidence marker');
   const payload = fences[0][1];
   const projection = JSON.parse(payload);
   if (projection.run_id !== marker.run_id || projection.stage !== marker.stage || projection.round !== marker.round || projection.reviewed_head !== o.head) fail('projection does not bind marker and reviewed head');
