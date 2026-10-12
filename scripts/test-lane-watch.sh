@@ -165,7 +165,7 @@ fi
 if [ "${1:-}" = api ]; then
     endpoint=${*: -1}
     if [ "$endpoint" = repos/evanharmon1/harmon-devkit/git/ref/heads/claude/cloud-fixture ]; then
-        if [ -f "$WATCH_FIXTURES/cloud-branch-deleted" ]; then
+        if [ -f "$WATCH_FIXTURES/cloud-branch-absent" ]; then
             printf 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}\n'
             exit 1
         fi
@@ -443,24 +443,24 @@ assert_count "$cloud_out" 0 '^(AGENT|SENTINEL) cloud:'
 [ ! -e "$fixture_dir/cloud-herdr-calls" ] || fail "cloud watcher called herdr"
 bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-restart.out"
 assert_count "$test_tmp/cloud-restart.out" 0 '^(BRANCH|PR) cloud:'
-# A deleted ref is a normal retired observation, even with a zero degradation
+# An absent ref is an observation, even with a zero degradation
 # window. It is deduplicated, and a later lane is still observed on each poll.
-touch "$fixture_dir/cloud-branch-deleted"
+touch "$fixture_dir/cloud-branch-absent"
 rm -f "$fixture_dir/cloud-only"
-cloud_deleted_out="$test_tmp/cloud-deleted.out"
+cloud_absent_out="$test_tmp/cloud-absent.out"
 bash "$watcher" --iterations 2 --degrade-window-seconds 0 \
     --state-file "$cloud_state" --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z cloud:claude/cloud-fixture:n4:evanharmon1/harmon-devkit:cloud \
-    beta:branch-beta:n2:evanharmon1/harmon-devkit >"$cloud_deleted_out"
-assert_line "$cloud_deleted_out" 'BRANCH cloud: deleted'
-assert_count "$cloud_deleted_out" 1 '^BRANCH cloud: deleted$'
-assert_count "$cloud_deleted_out" 0 '^OBSERVATION-DEGRADED cloud:'
-assert_line "$cloud_deleted_out" 'AGENT beta: init -> idle'
-assert_line "$cloud_deleted_out" 'SENTINEL beta: LANE-BETA-BLOCKED-n2 (pane only)'
-bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-deleted-restart.out"
-assert_count "$test_tmp/cloud-deleted-restart.out" 0 '^BRANCH cloud:'
-rm -f "$fixture_dir/cloud-branch-deleted"
+    beta:branch-beta:n2:evanharmon1/harmon-devkit >"$cloud_absent_out"
+assert_line "$cloud_absent_out" 'BRANCH cloud: absent'
+assert_count "$cloud_absent_out" 1 '^BRANCH cloud: absent$'
+assert_count "$cloud_absent_out" 0 '^OBSERVATION-DEGRADED cloud:'
+assert_line "$cloud_absent_out" 'AGENT beta: init -> idle'
+assert_line "$cloud_absent_out" 'SENTINEL beta: LANE-BETA-BLOCKED-n2 (pane only)'
+bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-absent-restart.out"
+assert_count "$test_tmp/cloud-absent-restart.out" 0 '^BRANCH cloud:'
+rm -f "$fixture_dir/cloud-branch-absent"
 
 # The phase-driven default gh stub fixture (no dedicated WATCH_FIXTURES file)
 # always resolves promotion_epoch() to this fixed event/epoch; every

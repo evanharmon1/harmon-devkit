@@ -51,9 +51,7 @@ Report through the authorized path on your pushed branch, and through the PR
 body section or comment once a PR exists. Use no local report file or pane
 sentinels. Include the branch, full head, changes, gate results, remaining
 work and human follow-ups. Commit and push with the repository's round gate
-and secret scan, then stop. Never open the PR unless the orchestrator explicitly
-tells you to; it normally opens the draft and owns integration. Never write an
-at-sign immediately followed by the word `codex` into GitHub text.
-The orchestrator records your session URL and learned branch/head in `run.json`
-intervention notes, binds the draft through `pr` and `pr_bindings`, and records
-its review host and reviewed head in the PR.
+and secret scan, then stop. Never open the PR; the orchestrator opens the draft
+and owns integration. Never write an at-sign immediately followed by the word `codex` into GitHub text.
+The orchestrator binds the draft through `pr` and `pr_bindings` and records its
+review host and reviewed head in the PR.

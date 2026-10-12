@@ -2,7 +2,7 @@
 # Watch orchestrated lanes and emit stable, one-line transition events:
 #   AGENT <lane>: <from> -> <to>
 #   SENTINEL <lane>: <value>[ (pane only)]
-#   BRANCH <lane>: <branch> head=<sha8> | deleted (cloud lanes; 404 is retired)
+#   BRANCH <lane>: <branch> head=<sha8> | absent (cloud lanes)
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
 #   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
@@ -1182,7 +1182,7 @@ observe_branch() {
     response="$(bounded "$timeout_seconds" gh api --include "repos/$repo/git/ref/heads/$branch")" || rc=$?
     status="$(awk 'NR == 1 && /^HTTP\// {print $2}' <<<"$response")"
     if [ "$status" = 404 ]; then
-        value="$branch deleted"
+        value="$branch absent"
     else
         [ "$rc" -eq 0 ] && [ "$status" = 200 ] || return 1
         payload="$(awk 'body {print} /^\r?$/ {body=1}' <<<"$response")"
@@ -1197,7 +1197,7 @@ observe_branch() {
         state_set BRANCH "$lane" "$value"
         persist_state
         if [ "$status" = 404 ]; then
-            echo "BRANCH $lane: deleted"
+            echo "BRANCH $lane: absent"
         else
             echo "BRANCH $lane: $branch head=${head:0:8}"
         fi

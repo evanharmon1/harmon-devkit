@@ -14,14 +14,18 @@ be on GitHub with the Claude GitHub App installed: then launch clones the remote
 at the current branch. Otherwise the platform uploads the repository instead;
 that is outside this mode. Claims are unchanged: the orchestrator claims before
 launch, and the lane never claims or refreshes the claim.
+Launch from a checkout on the default branch at its pushed tip, because the
+platform clones the current branch; review fetched lane heads in a separate
+worktree, never by switching the launching checkout.
 
 Render `assets/cloud-lane-brief.md` into a file using the launch-time fields
 below. The `brief` validator governs local PR-owning lane briefs; cloud briefs
 use this render check instead: require every catalog field in the template,
 substitute once, refuse any unreplaced `{{…}}`, require all four sections, and
-refuse local report-file instructions or a literal Codex trigger. The template
-test exercises that check. Do not fabricate a branch, worktree, report sentinel
-or branch-bound claim envelope: the platform chooses the `claude/*` branch.
+refuse local report-file instructions or a literal Codex trigger.
+Run this check on the rendered file before every launch; the template test pins
+only that the template can pass it. Do not fabricate a branch, worktree, report
+sentinel or branch-bound claim envelope: the platform chooses the `claude/*` branch.
 
 | Field | Launch-time source |
 | --- | --- |
@@ -79,18 +83,17 @@ bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state \
 ```
 
 The final `:cloud` selects GitHub-only observation: `BRANCH` reports pushed-head
-changes or a deduplicated `BRANCH <lane>: deleted` on a 404, `PR` reports the matching PR and its head, and the usual post-promotion
-activity monitoring remains in force. No local worktree, report file or Herdr
+changes or a deduplicated `BRANCH <lane>: absent` on a 404, `PR` reports the
+matching PR and its head, and the usual post-promotion activity monitoring
+remains in force.
+An `absent` ref means deleted, renamed, never pushed or not visible to the token;
+check the session before acting. No local worktree, report file or Herdr
 agent read is used. A branch observation proves a push, not a passed gate: read
 the lane's report and verify the exact head before proceeding. The lane reports
 through its pushed branch, then the PR body section or comment when a PR exists;
-never through `.lane-report.md`. In `run.json`, append an `interventions[]`
-note with `kind: asked` and `at` at launch naming the lane and session URL.
-When the branch is learned, append another such note naming the lane, branch
-and full head. Refresh the orchestrator's claim record to that branch with the
-claim transaction; the lane never claims or refreshes it. Once the orchestrator
-opens the draft, record the ordinary `pr` and `pr_bindings` entries. Read these
-existing run surfaces together on resume.
+never through `.lane-report.md`. The orchestrator's claim refresh through the
+claim transaction records the learned branch, the draft's ordinary `pr` / `pr_bindings`
+record the PR, and the session URL goes in the PR body.
 
 `claude --teleport <session-id>` in a local terminal of the same repository
 copies the session's branch and conversation into the local checkout. This take
@@ -119,8 +122,8 @@ run; do not infer success from a pushed branch or an expired wait.
 
 The lane implements, runs the gates it can, commits and pushes its assigned
 branch through the repository's push gates, reports, and stops without opening
-a PR unless told to. The orchestrator fetches that exact pushed head into its
-own checkout and runs the resolved `task challenge` and `task review` stages
+a PR. The orchestrator fetches that exact pushed head into its review worktree
+and runs the resolved `task challenge` and `task review` stages
 from its logged-in pane, retaining their normal caps and adjudication records.
 It sends confirmed fixes with `claude -p --cloud`, re-fetches the returned head,
 and verifies the round gates. It then runs `task security`, opens the draft
