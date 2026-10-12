@@ -224,12 +224,17 @@ mode may replace only an ordinary exit-10 outcome. Every ordinary exit 0, 11
 or 12 keeps identical stdout, stderr and exit status with the flag enabled;
 integrity errors never fall back to local data. The run schema validator must
 accept the local `run.json` and its `run_id` must match the requested id;
-otherwise no report is rendered. With `--pr`, a read-only check must find no
-trusted marker on that PR before a local read. That check never selects a run
+otherwise no report is rendered. With `--pr`, read-only discovery must find no
+trusted marker on the PR or its discovered issues before a local read. That check never selects a run
 or changes `--run`. A local record whose own PR number differs from `--pr` is
 refused with exit 14; a record naming no PR explicitly says it is not bound
 to the requested PR.
-A missing local record retains exit 10. Exit 13 is distinct from success, and
+A missing local record retains exit 10 on the ordinary path. An attempted
+local read with `--as-of` is a usage error (exit 2), even if the local record
+is missing. A guard read failure uses the existing error exits: operational
+GitHub failures exit 1; discovery integrity errors or indeterminate hint
+reads exit 11. A malformed trusted marker found by the guard also exits 11.
+Exit 13 is distinct from success, and
 both Markdown and JSON carry **unverified (local record, no trusted GitHub evidence
 marker)** on every measured entry. Missing `adjudications/` means **not
 recorded**, never zero adjudication rounds. Local adjudications, findings and

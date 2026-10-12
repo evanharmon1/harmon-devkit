@@ -1177,13 +1177,12 @@ function unavailableMeasurements(measured) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-// Render free text as inert HTML text on one Markdown line, including notes
-// that quote evidence markers or contain HTML and line terminators.
+// Preserve verified text while neutralizing marker boundaries and folding
+// all line terminators. HTML escaping belongs to the local renderer only.
 function safe(value) {
   return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+    .replace(/<!--/g, '&lt;!--')
+    .replace(/-->/g, '--&gt;')
     .replace(/\r\n|[\r\n\u2028\u2029\u0085]/g, ' ')
 }
 
@@ -1482,6 +1481,13 @@ function reportIgnoredHints(ignoredHints) {
 // validation. The shipped run validator checks both shape and semantics.
 const LOCAL_PROVENANCE = 'unverified (local record, no trusted GitHub evidence marker)'
 
+function localSafe(value) {
+  return safe(String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;'))
+}
+
 function renderLocalUnverified(args, runId) {
   if (!args.run || !args.recordDir) throw new UsageError('--local-unverified requires --run and --record-dir for a local read')
   if (args.asOf) throw new UsageError('--as-of is unavailable for local-unverified records; rerun without it')
@@ -1551,8 +1557,8 @@ function renderLocalUnverified(args, runId) {
     run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
   }
   return args.json ? JSON.stringify(report, null, 2) : [
-    `## Run evidence — run \`${safe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
-    ...measurements.map((entry) => `- ${entry.measurement}: ${safe(entry.value)} — ${entry.provenance}`)
+    `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
+    ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
   ].join('\n')
 }
 
@@ -1682,16 +1688,16 @@ function run(argv) {
       )
       return 11
     }
-    // The opt-in may replace only the ordinary exit-10 outcome. PR comments
-    // guard that local read; they never select a run or mutate --run.
+    // The opt-in may replace only the ordinary exit-10 outcome. Read-only
+    // discovery guards that local read; it never selects a run or mutates --run.
     if (args.localUnverified) {
-      const untrusted = []
-      const malformed = []
-      const trustedOnPr = args.pr === undefined ? new Set() : collectRunIds(
-        fetchComments(args.repo, args.pr, args.asOf || null), trusted.ids,
-        `PR #${args.pr}`, 'pr', untrusted, malformed
-      )
-      if (trustedOnPr.size === 0 && !malformed.some((marker) => marker.trusted)) {
+      const discovered = args.pr === undefined ? null : discoverRun(args, trusted.ids)
+      const corrupted = discovered?.malformed.filter((marker) => marker.trusted) || []
+      if (corrupted.length > 0) {
+        reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
+        throw new IndeterminateError('trusted discovery evidence is malformed; local data cannot replace it')
+      }
+      if (!discovered?.runId) {
         const local = renderLocalUnverified(args, runId)
         if (local !== null) {
           console.log(local)

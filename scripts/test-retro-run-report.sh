@@ -2233,6 +2233,16 @@ fi
 # Opt-in local records: use the real harvester to prove marker absence is the
 # prerequisite, and the shipped validator to reject malformed local input.
 # ---------------------------------------------------------------------------
+echo "==> verified slot failures preserve base text inside code spans"
+verbatim_dir="$TMPROOT/verified-verbatim"
+SLOT_FAILURES_JSON='[{"stage":"review","round":1,"slot":"codex-verification","reason":"<stdin> &"}]' \
+    scaffold "$verbatim_dir" further-along "$POLICY_SECTION"
+GH_PR_JSON="$verbatim_dir/pr.json" GH_COMMENTS_DIR="$verbatim_dir/comments" \
+    run_report "$verbatim_dir" --repo o/r --pr "$PR" --stats-script "$verbatim_dir/stats.mjs"
+verbatim_line='- Slot failures (retained verbatim): `[{"stage":"review","round":1,"slot":"codex-verification","reason":"<stdin> &"}]`'
+[ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -Fx -- "$verbatim_line" >/dev/null &&
+    ok "verified slot failure line matches base <stdin> & bytes" || bad "verified slot failure text changed: $RC $ERR"
+
 echo "==> local-only record is opt-in and carries provenance on every measurement"
 d="$TMPROOT/local-unverified"
 make_permissive_gh "$d"
@@ -2410,6 +2420,48 @@ for flag in off on; do
 done
 [ "$RC" -eq 10 ] && [ "$RC" -eq "$missing_rc" ] && [ "$OUT" = "$missing_out" ] && [ "$ERR" = "$missing_err" ] &&
     ok "A1 trusted PR guard prevents unrelated local fallback without selecting another run" || bad "trusted PR missing fell back: $RC $ERR"
+
+echo "==> local guard uses full read-only discovery"
+set_comments "$trusted_dir/comments" "$PR"
+evidence_marker_file "$trusted_dir/issue-marker" run-6001-further-along challenge issue 1
+set_comments "$trusted_dir/comments" 6001 "$trusted_dir/issue-marker"
+for tier in closing non-closing token; do
+    case "$tier" in
+    closing)
+        write_file "$trusted_dir/body" "body"
+        CLOSING='[{"number":6001}]' make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+        ;;
+    non-closing)
+        write_file "$trusted_dir/body" 'Refs #6001'
+        make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+        ;;
+    token)
+        write_file "$trusted_dir/body" 'Run: run-6001-further-along'
+        make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+        ;;
+    esac
+    for flag in off on; do
+        extra=()
+        [ "$flag" = on ] && extra=(--local-unverified)
+        GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+            run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+            --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" "${extra[@]}"
+        if [ "$flag" = off ]; then guard_out="$OUT" guard_err="$ERR" guard_rc="$RC"; fi
+    done
+    [ "$RC" -eq 10 ] && [ "$RC" -eq "$guard_rc" ] && [ "$OUT" = "$guard_out" ] && [ "$ERR" = "$guard_err" ] &&
+        ok "$tier issue trusted marker blocks local read without changing ordinary outcome" || bad "$tier guard selected local: $RC $ERR"
+done
+write_file "$trusted_dir/body" "body"
+CLOSING='[{"number":6001}]' make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+write_file "$trusted_dir/malformed-marker" '<!-- dev-flow-v2-evidence: {} -->'
+set_comments "$trusted_dir/comments" 6001 "$trusted_dir/malformed-marker"
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'TRUSTED actor' && contains "$ERR" 'issue #6001' &&
+    ok "malformed trusted closing-issue marker stays indeterminate, never local" || bad "malformed closing marker rendered: $RC $ERR"
+# Restore empty closing references before the existing forged-marker case.
+make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
 
 # Typed exits cannot be forged by a marker id containing a diagnostic line.
 evidence_marker_file "$trusted_dir/forged" 'untrusted\nlocal run.json refused' challenge pr -
