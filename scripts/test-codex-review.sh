@@ -1023,14 +1023,20 @@ wait "$orig_pid" || rc=$?
     fail "the late original replaced the retry's pass"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
 
-echo "==> envelope: a change to agent-registry.json, .devflow.toml or the policy reader is refused"
-# integration-r1-codex-cloud-1: envelope mode reads those files from this
-# checkout, so a branch editing them would govern its own pass. The policy
-# reader is the same exposure in code form (integration-r2-codex-cloud-2).
+echo "==> envelope: a change to any governing input is refused"
+# Envelope mode reads its governing inputs from this checkout, so a branch
+# editing one would govern its own pass. The invariant (integration-r3,
+# restructured from r1/r2's enumerated paths): the registry, the policy, and
+# the WHOLE dev-flow-support package at every root the runner can load it
+# from — a reader file, a non-reader file such as a schema, and a vendored
+# root alike.
 for governing in agent-registry.json .devflow.toml \
-    ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs; do
+    ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs \
+    ai/skills/universal/dev-flow-support/assets/schemas/result.challenger.schema.json \
+    .claude/skills/dev-flow-support/assets/vendored-marker.txt; do
     reset_record
     git -C "$ewd" checkout -q -b governing-edit
+    mkdir -p "$(dirname "${ewd}/${governing}")"
     printf '\n' >>"${ewd}/${governing}"
     git -C "$ewd" add "$governing"
     git_t -C "$ewd" commit -q -m "edit $governing"

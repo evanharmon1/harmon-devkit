@@ -626,14 +626,24 @@ review_default_base() {
     printf '%s' "$base"
 }
 
+# Every root this runner can load the dev-flow-support package from, in
+# search order: the source tree first, then the two vendored layouts (a
+# consumer has no repository-root copy, harmon-devkit#974). This is the ONE
+# list: the loader below searches it, and review_envelope_bind_scope's
+# governing-input guard diffs all of it, so the two cannot disagree about
+# what the runner may load.
+review_envelope_package_roots=(
+    ai/skills/universal/dev-flow-support
+    .agents/skills/dev-flow-support
+    .claude/skills/dev-flow-support
+)
+
 # dev-flow-support's assets directory: the validator and the schema family it
-# validates against. Source tree first, then the two vendored layouts — a
-# consumer has no repository-root copy (harmon-devkit#974).
+# validates against, from the first package root that has them.
 review_envelope_support_dir() {
-    local candidate
-    for candidate in ai/skills/universal/dev-flow-support/assets \
-        .agents/skills/dev-flow-support/assets \
-        .claude/skills/dev-flow-support/assets; do
+    local root candidate
+    for root in "${review_envelope_package_roots[@]}"; do
+        candidate="$root/assets"
         if [ -f "$candidate/validate-result-schemas.mjs" ] &&
             [ -f "$candidate/schemas/result.challenger.schema.json" ]; then
             (cd "$candidate" && pwd -P)
@@ -805,20 +815,18 @@ review_envelope_bind_scope() {
     [ -n "$manifest" ] || refuse_empty_scope \
         "the captured range ${envelope_merge_base}..${envelope_head} changes no files." \
         "Envelope mode reviews a branch's commits; there is nothing to review."
-    # Envelope mode resolves its inputs (the registry, and through the caller
-    # the policy and the policy READER that interprets it) from THIS checkout,
-    # so a change that edits them would choose the values — or the code —
-    # governing its own pass: the merge-base rule in AGENTS.md § "Rigor and
-    # Strategy" (integration-r1-codex-cloud-1). The reader's closure is the
-    # same one the orchestrate step-0 probe guards: devflow-policy.mjs and the
-    # two modules it loads (integration-r2-codex-cloud-2). Such a change is
-    # refused here and reviewed through the role agents instead.
+    # Invariant: every input that governs this pass is read from THIS
+    # checkout — agent-registry.json, .devflow.toml, and the whole
+    # dev-flow-support PACKAGE at every root the runner can load it from
+    # (review_envelope_package_roots). A change to any of them would choose
+    # the values or the code that judge it, against the merge-base rule in
+    # AGENTS.md § "Rigor and Strategy", so it is refused here and reviewed
+    # through the role agents instead. The package roots are diffed as
+    # directories from the loader's own list, never as a file list kept
+    # beside it.
     local governing
     governing="$(git diff --no-ext-diff --name-only "$envelope_merge_base" "$envelope_head" -- \
-        agent-registry.json .devflow.toml \
-        ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs \
-        ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs \
-        ai/skills/universal/dev-flow-support/assets/tier-inputs.mjs)" || {
+        agent-registry.json .devflow.toml "${review_envelope_package_roots[@]}")" || {
         echo "could not check the captured range for governing-file edits" >&2
         exit 2
     }
