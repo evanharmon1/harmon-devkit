@@ -117,6 +117,10 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "unresolved_slot",
   "substitutions_json",
   "next_round",
+  // authorized_ceiling: the in-memory ceiling a run's cap_authorizations[]
+  // lifted the stage to (harmon-devkit#1239). `null` asserts it is absent —
+  // nothing authorized, so the verdict reports the resolved cap alone.
+  "authorized_ceiling",
   // Route flag only (see runExitFixture's `expected.indeterminate` branch,
   // which checks exit code 2 and delegates the JSON body itself to this
   // same function) — not a field checkVerdict compares against `actual`.
@@ -157,6 +161,9 @@ function checkVerdict(expected, actual) {
   }
   if ("next_round" in expected && actual.next_round !== expected.next_round) {
     return `next_round: expected ${JSON.stringify(expected.next_round)}, got ${JSON.stringify(actual.next_round)}`;
+  }
+  if ("authorized_ceiling" in expected && (actual.authorized_ceiling ?? null) !== expected.authorized_ceiling) {
+    return `authorized_ceiling: expected ${JSON.stringify(expected.authorized_ceiling)}, got ${JSON.stringify(actual.authorized_ceiling ?? null)}`;
   }
   // corrections_field/corrections_status: at least one verified_findings
   // entry has that field's status — verdict.corrections[] only records a
@@ -460,6 +467,9 @@ function buildTrustedClosure() {
   copyFileSync(path.join(SCRIPTS_DIR, "devflow-policy.mjs"), path.join(tmp, "scripts", "devflow-policy.mjs"));
   copyFileSync(path.join(SCRIPTS_DIR, "dev-flow-exit.mjs"), path.join(tmp, "scripts", "dev-flow-exit.mjs"));
   copyFileSync(path.join(SCRIPTS_DIR, "lib", "toml-lite.mjs"), path.join(tmp, "scripts", "lib", "toml-lite.mjs"));
+  // The exit engine's other deferred import (harmon-devkit#1239); a real
+  // caller materializes the whole asset directory, so it is always there.
+  copyFileSync(path.join(SCRIPTS_DIR, "lib", "cap-authorizations.mjs"), path.join(tmp, "scripts", "lib", "cap-authorizations.mjs"));
   return tmp;
 }
 

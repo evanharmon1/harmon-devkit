@@ -116,6 +116,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
+import { authorizedCeiling, isAuthorizedOverCap } from './lib/cap-authorizations.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -785,7 +786,10 @@ function validateCrossDocumentConsistency(record, options = {}) {
   // "challenge: 0" alongside an actual challenge round 1 adjudication would
   // present two documents that cannot both be true. Only rounds actually
   // present are checked; min_rounds is a floor, not a per-stage ceiling, so
-  // it plays no part here.
+  // it plays no part here. A round above the cap is admitted only when
+  // run.json's cap_authorizations[] authorizes it and every round between
+  // (lib/cap-authorizations.mjs, the predicate dev-flow-exit.mjs shares —
+  // harmon-devkit#1239); the cap itself is still the resolved value.
   if (record.policy?.rounds) {
     const maxRoundByStage = new Map()
     for (const { doc } of record.adjudications) {
@@ -795,8 +799,10 @@ function validateCrossDocumentConsistency(record, options = {}) {
     for (const stage of ['challenge', 'review', 'integration', 'remediation']) {
       const cap = record.policy.rounds[stage]
       const maxRound = maxRoundByStage.get(stage)
-      if (cap !== undefined && maxRound !== undefined && maxRound > cap) {
-        fail(`policy.json: rounds.${stage} cap is ${cap}, but round ${maxRound} was supplied for stage ${stage}`)
+      if (cap !== undefined && maxRound !== undefined && maxRound > authorizedCeiling(record.run, stage, cap)) {
+        fail(
+          `policy.json: rounds.${stage} cap is ${cap}, but round ${maxRound} was supplied for stage ${stage} and run.json records no cap authorization admitting it`
+        )
       }
     }
   }
@@ -1270,8 +1276,17 @@ function renderDeferredFindings(record) {
   return lines.join('\n')
 }
 
-function renderOneRoundTable(doc, rows) {
-  const lines = [`<details>`, `<summary>${doc.stage} round ${doc.round} — reviewed ${doc.reviewed_head}</summary>`, '']
+// `round n/cap (authorized)` for a round above the resolved cap that the
+// run record authorizes; the plain `round n` otherwise. An unauthorized
+// over-cap round never reaches here: validateCrossDocumentConsistency
+// refuses the record first.
+function roundLabel(record, doc) {
+  const cap = record.policy?.rounds?.[doc.stage]
+  return isAuthorizedOverCap(record.run, doc.stage, doc.round, cap) ? `round ${doc.round}/${cap} (authorized)` : `round ${doc.round}`
+}
+
+function renderOneRoundTable(record, doc, rows) {
+  const lines = [`<details>`, `<summary>${doc.stage} ${roundLabel(record, doc)} — reviewed ${doc.reviewed_head}</summary>`, '']
   lines.push(tableHeader())
   for (const row of rows) lines.push(tableRow(row))
   lines.push('', '</details>')
@@ -1292,7 +1307,7 @@ function renderAdjudicationRecord(record) {
   }
   const blocks = docs.map(({ doc }) => {
     const rows = allRows.filter((r) => r.stage === doc.stage && r.round === doc.round).sort(compareRows)
-    return renderOneRoundTable(doc, rows)
+    return renderOneRoundTable(record, doc, rows)
   })
   lines.push(blocks.join('\n\n'))
   return lines.join('\n')
@@ -1336,7 +1351,7 @@ function renderRoundTable(record, options) {
     fail('round-table requires --stage and --round when more than one adjudication document is supplied')
   }
   const rows = allRows.filter((r) => r.stage === target.doc.stage && r.round === target.doc.round).sort(compareRows)
-  const lines = ['### Round', '', renderOneRoundTable(target.doc, rows)]
+  const lines = ['### Round', '', renderOneRoundTable(record, target.doc, rows)]
   const line = verdictLine(record.verdict)
   if (line) lines.push('', line)
   return lines.join('\n')
@@ -1441,7 +1456,9 @@ function renderBlockerComment(record, options = {}) {
   // verdict's rounds_counted is the exit script's authoritative count for
   // that one stage; record.policy.rounds only supplies the matching cap.
   // Both are validated required above, so this always renders now.
-  lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${record.policy.rounds[lastTransition.stage]}`)
+  const spentCap = record.policy.rounds[lastTransition.stage]
+  const spentAuthorized = isAuthorizedOverCap(record.run, lastTransition.stage, verdict.rounds_counted, spentCap) ? ' (authorized)' : ''
+  lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${spentCap}${spentAuthorized}`)
   lines.push('- Unresolved:')
   if (unresolved.length === 0 && unadjudicatedFindings.length === 0) {
     lines.push('  - None.')

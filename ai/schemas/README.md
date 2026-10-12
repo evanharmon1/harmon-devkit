@@ -3093,7 +3093,7 @@ projections that happen to build a settlement index for their own reasons —
 and a resolved `policy.json` cap that a supplied adjudication round already
 contradicts is rejected (`rounds.challenge: 0` alongside an actual challenge
 round 1 would otherwise publish two documents that cannot both be
-true) — renderer/spec.md "Publication
+true) unless `run.json` authorizes that round (below) — renderer/spec.md "Publication
 SHALL validate local sidecar entries against adjudications," applied to
 every projection rather than only `publish`, since an inconsistent record is
 suspect for all of them alike.
@@ -3101,6 +3101,34 @@ suspect for all of them alike.
 `verdict.json`/`policy.json`. A finding's `class` and `provenance` columns
 read `n/a` when no matching pass supplies them (always true for integration-
 stage findings, which carry neither field at all).
+
+**A round above the resolved cap needs an attributable authorization**
+([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239)). A cap is
+a ceiling the agent never raises on its own; a maintainer may still order one
+more round. `run.json`'s optional `cap_authorizations[]` records each such
+instruction as `{stage, round, actor, instruction, at}`: the stage
+(`challenge`, `review` or `integration`), the round it admits (for
+integration, the charged Codex cycle), who gave it, the instruction verbatim,
+and when. An entry records a human instruction; an agent never writes one on
+its own judgement, and nothing writes one to make a recorded round fit.
+`validate-result-schemas.mjs run` rejects an entry with any field missing or
+blank and a second entry for the same `(stage, round)`. Whether the round
+really lies above the cap is not the validator's to decide, because
+`run.json` carries no policy. That is decided by
+`assets/lib/cap-authorizations.mjs`, the one predicate both engines call. It
+admits rounds `cap+1..N` only when every one of them is authorized, so a gap
+stops the ceiling at the last contiguous round, and it never lifts a cap of 0
+(a disabled stage). `dev-flow-exit.mjs` scores an admitted round like any
+other: in the stage's own computation, in the cross-stage over-cap scan a
+later stage runs, and in the capped-final-round exit, which now applies at
+the highest authorized round. For integration, the escalation threshold moves
+to that round. Without an authorization the round is still `indeterminate`.
+The renderer projects an admitted round as `round n/cap (authorized)`, as on
+`blocker-comment`'s Spent line, and still refuses an unauthorized one.
+`policy.json`'s `rounds` are never rewritten to admit a round, and nothing
+reads a raised copy as authority. The effective ceiling is computed in memory
+and reported beside the resolved cap as the verdict's `authorized_ceiling`,
+which is absent when nothing was authorized.
 
 Free-text fields pulled from a finding's evidence, an adjudication's reason,
 or a policy disclosure detail are reviewer- or human-authored prose this

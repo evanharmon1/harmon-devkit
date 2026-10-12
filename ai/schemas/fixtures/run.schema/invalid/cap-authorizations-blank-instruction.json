@@ -1,0 +1,55 @@
+{
+  "schema": 2,
+  "run_id": "run-1239-cap-authorization",
+  "initiated_by": "human",
+  "started_at": "2026-09-14T11:55:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-14T11:55:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-09-14T11:56:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-09-14T11:57:00Z",
+      "exit": "briefed"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-14T11:58:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-09-14T11:59:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-09-14T12:00:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [],
+  "settlements": [],
+  "promotion": null,
+  "cap_authorizations": [
+    {
+      "stage": "challenge",
+      "round": 4,
+      "actor": "evanharmon1",
+      "instruction": "   ",
+      "at": "2026-09-14T12:30:00Z"
+    }
+  ]
+}

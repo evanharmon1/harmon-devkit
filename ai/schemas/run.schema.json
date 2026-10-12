@@ -144,6 +144,39 @@
         }
       }
     },
+    "cap_authorizations": {
+      "description": "Optional record of maintainer instructions authorizing a round above the resolved cap (harmon-devkit#1239). One entry per (stage, round), each attributable: the actor who gave the instruction, the instruction verbatim, and when. An entry records a human instruction; an agent never writes one on its own judgement. ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs is the one predicate dev-flow-exit.mjs and render-dev-flow.mjs share: a round above the cap is scored only when it and every round between the cap and it are authorized here. policy.json's resolved caps are never rewritten, and a cap of 0 (a disabled stage) is never lifted. validate-result-schemas.mjs `run` rejects a duplicate (stage, round) pair; whether a round really lies above the cap is the engines' check, because this document does not carry the policy.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "round", "actor", "instruction", "at"],
+        "properties": {
+          "stage": { "enum": ["challenge", "review", "integration"] },
+          "round": {
+            "description": "The round the instruction authorizes; for integration, the charged Codex cycle.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "actor": {
+            "description": "Who gave the instruction: the maintainer's login or another attributable identity.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "instruction": {
+            "description": "The instruction verbatim, as given.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          }
+        }
+      }
+    },
     "interventions": {
       "description": "Every human touchpoint between kickoff and gh pr ready. kind distinguishes asked (answering an implementer's blocked_question, which the success metric counts separately) from other (every other human action, which the success metric counts as an intervention) — docs/glossary.md 'intervention'.",
       "type": "array",
