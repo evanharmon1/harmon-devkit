@@ -30,7 +30,7 @@
 //       marker naming a run the harvester cannot find (deleted-entry
 //       tampering). Nothing is rendered; the reason is on stderr. Never
 //       report a clean retro on this path, and never fall back to memory.
-//   13  local-unverified — opt-in local record, no GitHub evidence marker.
+//   13  local-unverified — opt-in local record, no trusted GitHub evidence marker.
 //       Never a verified report or an authenticated trajectory.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
@@ -44,7 +44,7 @@
 // that was never recorded (challenge round 1, confirmed P1).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -1184,7 +1184,7 @@ function safe(value) {
   return String(value ?? '')
     .replace(/<!--/g, '&lt;!--')
     .replace(/-->/g, '--&gt;')
-    .replace(/\r?\n/g, ' ')
+    .replace(/\r\n|[\r\n\u2028\u2029\u0085]/g, ' ')
 }
 
 function cell(value) {
@@ -1480,13 +1480,13 @@ function reportIgnoredHints(ignoredHints) {
 // Local-only data never enters measure(), policy parsing, or authentication.
 // Validate a snapshot of the bytes we render, not a file that may change after
 // validation. The shipped run validator checks both shape and semantics.
-const LOCAL_PROVENANCE = 'unverified (local record, no GitHub evidence marker)'
+const LOCAL_PROVENANCE = 'unverified (local record, no trusted GitHub evidence marker)'
 
 function renderLocalUnverified(args, runId) {
   if (!args.run || !args.recordDir) throw new UsageError('--local-unverified requires --run and --record-dir for a local read')
   if (args.asOf) throw new UsageError('--as-of is unavailable for local-unverified records; rerun without it')
   if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
-    throw new UsageError('--local-unverified requires a run id naming one directory')
+    throw new IndeterminateError('local run.json path escapes the selected run directory; --run must name one directory')
   }
   const parent = realpathSync(args.recordDir)
   const file = path.join(parent, runId, 'run.json')
@@ -1496,6 +1496,7 @@ function renderLocalUnverified(args, runId) {
   if (!resolved.startsWith(`${parent}${path.sep}`)) {
     throw new IndeterminateError('local run.json resolves outside --record-dir')
   }
+  if (!statSync(resolved).isFile()) throw new IndeterminateError('local run.json is not a regular file')
   const bytes = readFileSync(resolved, 'utf8')
   const validator = path.join(ASSET_DIR, '..', '..', 'dev-flow-support', 'assets', 'validate-result-schemas.mjs')
   if (!existsSync(validator)) throw new OperationalError('local run schema validator is unavailable')
@@ -1516,6 +1517,9 @@ function renderLocalUnverified(args, runId) {
     rmSync(snapshot, { recursive: true, force: true })
   }
   if (record.run_id !== runId) throw new IndeterminateError('local run.json run_id differs from --run')
+  if (args.pr !== undefined && record.pr && record.pr.number !== args.pr) {
+    throw new IndeterminateError(`local run.json records PR #${record.pr.number}, not the requested #${args.pr}`)
+  }
 
   const measurements = []
   const add = (measurement, value) => measurements.push({ measurement, value, provenance: LOCAL_PROVENANCE })
@@ -1573,12 +1577,20 @@ function run(argv) {
   let malformedMarkers = []
   let ignoredHints = []
   let unverifiedBodyRunIds = []
-  if (!runId) {
+  if (!runId || (args.localUnverified && args.pr !== undefined)) {
     try {
       const discovered = discoverRun(args, trusted.ids)
       pr = discovered.pr
-      runId = discovered.runId
-      runIdFrom = discovered.source
+      // PR evidence takes precedence over an opt-in local --run argument.
+      // With no trusted selection, retain the explicit id for the local read.
+      if (discovered.runId || !args.run) {
+        runId = discovered.runId
+        runIdFrom = discovered.source
+        if (discovered.runId && args.localUnverified) {
+          args.localUnverified = false
+          args.run = undefined
+        }
+      }
       untrustedMarkers = discovered.untrusted
       malformedMarkers = discovered.malformed
       ignoredHints = discovered.ignoredHints
@@ -1594,7 +1606,7 @@ function run(argv) {
     // "something was found and refused" must never look the same on stderr.
     reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
     reportIgnoredHints(ignoredHints)
-    if (!runId) {
+    if (!runId || (args.localUnverified && malformedMarkers.some((marker) => marker.trusted))) {
       // "No trusted marker" and "no marker at all" are different answers, and
       // only the second one licenses the fallback. Markers that exist but do
       // not authenticate are either a redirect attempt or a trust root that
