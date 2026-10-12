@@ -15,41 +15,16 @@ for ((i = 0; i + 1 < ${#arguments[@]}; i++)); do
         break
     fi
 done
-runner=(node --input-type=module - "$asset_dir" "$@")
-if [ -n "$run_file" ]; then
-    command -v python3 >/dev/null 2>&1 || {
-        echo 'post-evidence: python3 is required for the publication lock' >&2
-        exit 2
-    }
-    runner=(python3 -c '
-import fcntl, os, sys, time
-run = os.path.realpath(sys.argv[1])
-if not os.path.isfile(run):
-    sys.exit("post-evidence: run file does not exist")
-fd = os.open(os.path.join(os.path.dirname(run), "post-evidence.lock"), os.O_CREAT | os.O_RDWR, 0o600)
-if fd != 9:
-    os.dup2(fd, 9)
-    os.close(fd)
-os.set_inheritable(9, True)
-deadline = time.monotonic() + 30
-while True:
-    try:
-        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        break
-    except BlockingIOError:
-        if time.monotonic() >= deadline:
-            sys.stderr.write("post-evidence: publication lock unavailable after 30 seconds\n")
-            sys.exit(2)
-        time.sleep(0.1)
-os.execvp(sys.argv[2], sys.argv[2:])
-' "$run_file" "${runner[@]}")
-fi
-exec "${runner[@]}" <<'JS'
+# Evaluate the embedded module with a real asset path as argv[1], so sibling
+# modules can distinguish imports from direct CLI execution.
+js_source="$(
+    cat <<'JS'
 import { readFileSync, writeFileSync, readdirSync, renameSync, rmSync, mkdtempSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-const [assetDir, ...args] = process.argv.slice(2);
+import { pathToFileURL } from 'node:url';
+const [assetDir, ...args] = process.argv.slice(1);
 const fail = (message) => { throw new Error(message); };
 const options = {};
 const names = ['repo', 'repo-root', 'run', 'branch', 'generation', 'active-state', 'head', 'actor-id', 'role', 'finder', 'issue', 'marker-file', 'body-file', 'scratch-dir'];
@@ -75,6 +50,7 @@ try {
       : ['pipe', 'pipe', 'pipe'] }).trim();
   const monitor = join(assetDir, '../../orchestrate/assets/dev-flow-monitor.sh');
   const validator = join(assetDir, '../../dev-flow-support/assets/validate-result-schemas.mjs');
+  const { withMutex, writeValidated } = await import(pathToFileURL(join(assetDir, '../../dev-flow-support/assets/run-record.mjs')).href);
   const marker = read(o['marker-file']);
   const stages = ['kickoff', 'claim', 'explore', 'plan', 'implement', 'verify', 'challenge', 'review', 'security', 'integration'];
   if (!marker || typeof marker !== 'object' || Array.isArray(marker)
@@ -89,6 +65,8 @@ try {
   if (!/^[^/\s]+\/[^/\s]+$/.test(o.repo) || !/^[0-9a-f]{40}$/.test(o.head)
       || !/^[1-9][0-9]*$/.test(o['actor-id']) || !Number.isSafeInteger(Number(o['actor-id']))
       || !/^[1-9][0-9]*$/.test(o.issue)) fail('invalid repository, head, actor or issue');
+  const issueMatch = /^run-([1-9][0-9]*)-/.exec(marker.run_id);
+  if (!issueMatch || !Number.isSafeInteger(Number(issueMatch[1])) || issueMatch[1] !== o.issue) fail('issue does not match canonical run identity');
   const runPath = realpathSync(o.run);
   const state = sh('bash', [monitor, 'state-path', '--repo-root', o['repo-root'], '--run-id', marker.run_id]);
   if (runPath !== join(dirname(state), 'run.json')) fail('run path is not canonical for the monitor');
@@ -186,27 +164,22 @@ try {
     // Current-grammar evidence authentication covers the exact posted body,
     // including its marker, prose and fenced JSON.
     const payloadDigest = `sha256:${sha(comment.body)}`;
-    validate(runPath);
-    const before = readFileSync(runPath, 'utf8');
-    run = JSON.parse(before);
-    const existing = run.evidence_comments.filter((c) => c.id === id || canon(c.marker) === canon(marker));
-    if (existing.length) {
-      if (existing.length !== 1 || existing[0].id !== id || existing[0].author_actor_id !== actor.id || existing[0].digest !== payloadDigest || canon(existing[0].marker) !== canon(marker)) fail('registration identity conflicts with adopted comment');
-      // Login is display metadata: do not mutate the immutable chain on rename.
-    } else {
-      const prev = run.evidence_registrations.at(-1)?.digest ?? 'genesis';
-      const content = { id, author_actor_id: actor.id, login: comment.user.login, payload_digest: payloadDigest, marker, registered_at: new Date().toISOString() };
-      run.evidence_registrations.push({ seq: run.evidence_registrations.length, prev_digest: prev, digest: sha(canon({ ...content, prev_digest: prev })), ...content });
-      run.evidence_comments.push({ id, author_actor_id: actor.id, login: content.login, digest: payloadDigest, marker });
-      const candidate = `${runPath}.candidate-${process.pid}`;
-      try {
-        writeFileSync(candidate, `${JSON.stringify(run, null, 2)}\n`, { flag: 'wx' });
-        validate(candidate);
-        if (readFileSync(runPath, 'utf8') !== before) fail('run record changed during registration');
-        renameSync(candidate, runPath);
-      } finally { rmSync(candidate, { force: true }); }
-    }
-    validate(runPath);
+    withMutex(runPath, () => {
+      validate(runPath);
+      run = read(runPath);
+      const existing = run.evidence_comments.filter((c) => c.id === id || canon(c.marker) === canon(marker));
+      if (existing.length) {
+        if (existing.length !== 1 || existing[0].id !== id || existing[0].author_actor_id !== actor.id || existing[0].digest !== payloadDigest || canon(existing[0].marker) !== canon(marker)) fail('registration identity conflicts with adopted comment');
+        // Login is display metadata: do not mutate the immutable chain on rename.
+      } else {
+        const prev = run.evidence_registrations.at(-1)?.digest ?? 'genesis';
+        const content = { id, author_actor_id: actor.id, login: comment.user.login, payload_digest: payloadDigest, marker, registered_at: new Date().toISOString() };
+        run.evidence_registrations.push({ seq: run.evidence_registrations.length, prev_digest: prev, digest: sha(canon({ ...content, prev_digest: prev })), ...content });
+        run.evidence_comments.push({ id, author_actor_id: actor.id, login: content.login, digest: payloadDigest, marker });
+        writeValidated('run', runPath, run);
+      }
+      validate(runPath);
+    });
     process.stdout.write(`${id}\n`);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 } catch (error) {
@@ -214,3 +187,34 @@ try {
   process.exitCode = 2;
 }
 JS
+)"
+runner=(node --input-type=module --eval "$js_source" "$asset_dir" "$@")
+if [ -n "$run_file" ]; then
+    command -v python3 >/dev/null 2>&1 || {
+        echo 'post-evidence: python3 is required for the publication lock' >&2
+        exit 2
+    }
+    runner=(python3 -c '
+import fcntl, os, sys, time
+run = os.path.realpath(sys.argv[1])
+if not os.path.isfile(run):
+    sys.exit("post-evidence: run file does not exist")
+fd = os.open(os.path.join(os.path.dirname(run), "post-evidence.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+if fd != 9:
+    os.dup2(fd, 9)
+    os.close(fd)
+os.set_inheritable(9, True)
+deadline = time.monotonic() + 30
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.stderr.write("post-evidence: publication lock unavailable after 30 seconds\n")
+            sys.exit(2)
+        time.sleep(0.1)
+os.execvp(sys.argv[2], sys.argv[2:])
+' "$run_file" "${runner[@]}")
+fi
+exec "${runner[@]}"

@@ -882,7 +882,7 @@ marker, documented in `ai/schemas/README.md`; readers accept any valid JSON seri
 
 The review skill's `assets/post-evidence.sh` publishes a single issue-round
 comment with this marker on line one, through the monitor's reserve/reconcile
-path, and registers its fenced payload digest in the validated run record.
+path, and registers its exact posted whole-body digest in the validated run record.
 It refuses oversized/split projections rather than writing partial evidence;
 the general splitting and PR-rollup obligations below remain caller-owned.
 

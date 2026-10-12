@@ -158,7 +158,7 @@ const noBodyArgs=argv.filter((_,i)=>i!==bodyArg&&i!==bodyArg+1);
 reset({ambiguous:true}); invoke(2,'Command failed');
 assert.equal(readFileSync(join(dirname(state),'evidence-issue-challenge-r1-s1.body.md'),'utf8'),body);
 const changedIssue=[...noBodyArgs]; changedIssue[changedIssue.indexOf('--issue')+1]='2';
-invoke(2,'re-arm conflicts',join(assets,'post-evidence.sh'),changedIssue); assert.equal(read(data).posts,1);
+invoke(2,'issue does not match',join(assets,'post-evidence.sh'),changedIssue); assert.equal(read(data).posts,1);
 const changedRepo=[...noBodyArgs]; changedRepo[changedRepo.indexOf('--repo')+1]='example/other';
 invoke(2,'repository does not match',join(assets,'post-evidence.sh'),changedRepo); assert.equal(read(data).posts,1);
 d=read(data); d.ambiguous=false; put(data,d);
@@ -199,6 +199,59 @@ assert.equal(read(data).posts,1); assert.equal(read(data).comments.length,1);
 assert.equal(readFileSync(data+'.posts','utf8').trim().split('\n').length,1);
 assert.equal(read(run).evidence_registrations.length,1); assert.equal(read(state).actions.length,1);
 console.log('PASS: two concurrent invocations serialize the complete transaction: exactly one comment and registration');
+// Queue the real transition CLI and helper behind the same run-record mutex.
+// While it is held, even a completed POST cannot register; after release,
+// both read/modify/writes must survive regardless of their acquisition order.
+reset();
+const runWriter=join(assets,'../../dev-flow-support/assets/run-record.mjs');
+writeFileSync(join(dirname(run),'owner-slate'),'test-slate\n');
+const held=join(tmp,'run-mutex-held'), release=join(tmp,'run-mutex-release');
+const launch=(args)=>{
+  const child=spawn('node',args,{env,cwd:repo});
+  let stderr=''; child.stderr.on('data',(chunk)=>stderr+=chunk);
+  child.stdout.resume();
+  return new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',(status)=>resolve({status,stderr}));});
+};
+const holding=launch(['--input-type=module','-e',`
+  import {withMutex} from ${JSON.stringify(runWriter)};
+  import {writeFileSync,existsSync} from 'node:fs';
+  withMutex(${JSON.stringify(run)},()=>{
+    writeFileSync(${JSON.stringify(held)},'held');
+    const deadline=Date.now()+10000;
+    while(!existsSync(${JSON.stringify(release)})) {
+      if(Date.now()>deadline) throw new Error('test release deadline exceeded');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);
+    }
+  });
+`,run]);
+const waitFor=async(predicate)=>{
+  const deadline=Date.now()+8000;
+  while(!predicate()) {
+    assert.ok(Date.now()<deadline,'concurrent fixture did not reach its barrier');
+    await new Promise((resolve)=>setTimeout(resolve,20));
+  }
+};
+let transitioning, publishing;
+try {
+  await waitFor(()=>{try{return readFileSync(held,'utf8')==='held';}catch{return false;}});
+  transitioning=launch([runWriter,'transition','--slate','test-slate','--session','test-session','--issues','1',
+    '--run-id',runID,'--stage','implement','--exit','fixture remediation','--at','2026-08-20T09:02:00Z']);
+  publishing=concurrent();
+  await waitFor(()=>{try{return readFileSync(data+'.posts','utf8').trim().length>0;}catch{return false;}});
+  await new Promise((resolve)=>setTimeout(resolve,700));
+  assert.equal(read(run).evidence_registrations.length,0,'registration bypassed the shared writer mutex');
+  assert.equal(read(run).stage_transitions.at(-1).stage,'challenge');
+} finally {writeFileSync(release,'release');}
+for(const result of await Promise.all([holding,transitioning,publishing])) assert.equal(result.status,0,result.stderr);
+assert.equal(read(run).evidence_registrations.length,1);
+assert.equal(read(run).stage_transitions.at(-1).stage,'implement');
+assert.deepEqual(read(run).receipts.at(-1),{kind:'transition',stage:'implement',entered_at:'2026-08-20T09:02:00Z'});
+console.log('PASS: real run-record transition and helper registration share the mutex and both land');
+reset(); const otherIssue=[...argv]; otherIssue[otherIssue.indexOf('--issue')+1]='2';
+invoke(2,'issue does not match',join(assets,'post-evidence.sh'),otherIssue);
+assert.equal(read(data).posts,0); assert.equal(read(state).actions.length,0);
+console.log('PASS: destination issue must match canonical run identity before reservation or POST');
+
 reset({comments:[{id:50,user:{id:999,login:'untrusted'},body}]}); invoke(); assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments[0].id,'200');
 reset({comments:[{id:90,user:{id:12345,login:'writer'},body},{id:70,user:{id:12345,login:'writer'},body}]}); invoke(); assert.equal(read(data).posts,0); assert.equal(read(run).evidence_comments[0].id,'70');
 console.log('PASS: untrusted marker cannot suppress post; lowest authenticated duplicate is registered');

@@ -1440,8 +1440,8 @@ Markdown summary:
 Use the review skill's `assets/post-evidence.sh` for a single issue-round
 comment (sequence 1). It emits the marker on the first line, authenticates
 the whole comment through the reserve-first monitor, and registers the exact
-fenced JSON payload digest through candidate validation and canonical readback.
-Those two digests have different scopes; the registration chain has its own
+posted whole-body digest through candidate validation and canonical readback.
+The monitor and registration authenticate the same body bytes; the chain has its own
 canonical digest as described below. Oversized/split projections are refused.
 
 The marker line carries one JSON object; any valid JSON serialization is accepted, while the displayed form is the canonical serialization emitted by the review skill. The object has exactly those five fields. `stage` uses the run-stage enum,

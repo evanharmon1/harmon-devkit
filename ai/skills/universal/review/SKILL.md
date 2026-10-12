@@ -352,6 +352,8 @@ authenticated match. Post once only after `reconcile` proves the candidate set
 has no authenticated match and returns `retry`; `block` is terminal.
 
 Every round comment starts on its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.
+The helper requires a canonical `run-<issue>-<name>` identity and refuses
+`--issue` unless it matches that run's issue number.
 The marker has exactly five fields: the run ID, a run-stage enum value, a
 positive round, sequence 1, and destination `issue`. The helper handles one
 round comment within a 60,000-byte budget; oversized or split projections are
@@ -395,8 +397,9 @@ event reservation exists; an orphan copy is replaced. On re-arm omit `--body-fil
 caller body or destination refuses. Its stdout is the adopted comment ID. For registration it
 hashes the exact posted whole-comment body, matching the harvester's current
 marker authentication, and appends `evidence_registrations` with its canonical chain digest.
-It validates the candidate with `run --receipts` and all local adjudications,
-renames it over the canonical run record, and validates that readback. Exact
+Registration takes `run-record.mjs`'s shared `run.json.wlock` mutex and uses
+its `writeValidated` candidate/validation/rename/readback path, preserving
+concurrent run-record updates. Validation binds receipts and all local adjudications. Exact
 existing ID/marker/actor/payload matches are adopted without appending;
 conflicts block and a login rename never changes the immutable chain.
 
