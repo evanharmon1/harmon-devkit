@@ -111,8 +111,7 @@ the run id, calls the harvester (`assets/dev-flow-stats.mjs --run <id> --json`,
 issue #663) and renders §2's fixed sections:
 
 ```sh
-<retro-skill-dir>/assets/retro-run-report.mjs --repo <owner/repo> --pr <n> \
-  --trusted-actor-id <configured-orchestrator-actor-id>
+<retro-skill-dir>/assets/retro-run-report.mjs --repo <owner/repo> --pr <n>
 ```
 
 Resolve `<retro-skill-dir>` from `.agents/skills/retro`, then
@@ -122,16 +121,30 @@ harvester (`assets/dev-flow-stats.mjs`, which never writes) — but it is
 deliberately **not** in `allowed-tools`, so expect a permission prompt, the
 same as the GraphQL query in §4.
 
-**A trust root is required, and there is no default.** Pass
-`--trusted-actor-id <id>` (repeatable) or `--trusted-actors-file <path>`
-naming the repository's configured trusted-orchestrator actor ids — the same
-set the harvester authenticates evidence against. Defaulting to the
-authenticated account would make a run's evidence valid or invalid depending
-on who happens to run the retro, and would let a reader's own comments
-authenticate their own retrospective; the evidence contract requires the
-authority to be *configured*. `agent-registry.json` will carry the allowlist
-under harmon-devkit#741; until it does, the ids come from the maintainer or a
-committed actors file.
+**A configured trust root is required.** With neither explicit trust flag,
+the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`
+in `--repo` at its default-branch head through the GitHub Contents API, never
+from the caller's working tree. An unreadable or missing remote registry,
+invalid JSON, or a missing, empty or malformed
+field fails closed with a usage error. The array must contain positive safe JSON
+integer actor IDs, without duplicates or finder actor identities. The helper never defaults to the authenticated account:
+authority comes from configuration, so a reader cannot authenticate their own
+retrospective merely by logging in.
+
+`--trusted-actor-id <id>` (repeatable) and `--trusted-actors-file <path>`
+(a JSON `{"trusted_actor_ids": [...]}` document) explicitly override the registry.
+When both flags are supplied their IDs are combined, preserving the existing
+flag behavior; the registry is not read or merged into that set.
+
+The trusted set, from the registry at `<repo>@<ref> (<blob sha>)` or from explicit
+`--trusted-actor-id`/`--trusted-actors-file` flags, is passed to the harvester.
+Current-format evidence authenticates against exactly that set. Legacy evidence
+is additionally intersected with the registry revision in effect when it was
+written. An explicit flag set is trusted as given and can widen what is
+authenticated, so pass it only deliberately. Under the default registry trust
+set, an orchestrator removed from the allowlist since a run reads as
+indeterminate (fail closed). The report's
+evidence-integrity section names the actual source and IDs used.
 
 Other useful arguments: `--run <run_id>` when you already know it (a run that
 capped before its PR existed has no PR to discover from — its record is on the
@@ -160,18 +173,21 @@ cutoff visibility under `--as-of`; the engine has no opinion on any of that.
 
 **`--as-of <iso8601>` reconstructs the run record and its comment evidence at
 that instant — and nothing else.** Comments are filtered by the cutoff, and
-the harvester replays the record's append-only chain to it. But two discovery
-inputs are things GitHub does not version, so they are read as they stand now
-and are **not** reconstructed:
+the harvester replays the record's append-only chain to it. Three other inputs
+are read as they stand now and are **not** reconstructed:
 
 - the **linked-issue set** (the PR's closing references plus the same-repository
   non-closing references and run-id issue numbers in its body), which decides
   which issues a fallback search reaches — re-linking an issue or editing the
   body changes a historical read;
 - the **PR body** the disclosed caps come from, which is mutable and
-  unauthenticated anyway (§2).
+  unauthenticated anyway (§2);
+- the **default trust set** from the target repository's
+  default-branch-head registry, when neither explicit trust flag is supplied.
+  A replay with `--as-of` trusts the default allowlist as it is now, while the
+  harvester still applies write-time registry revisions to legacy evidence.
 
-The report states both wherever it uses one, so a reader never has to infer
+The report states these wherever it uses one, so a reader never has to infer
 the boundary. This is the honest form of the guarantee rather than a wider one
 the mechanism cannot keep: three separate review rounds each found another
 current-state input feeding a promise of total immutability, so the promise
@@ -252,9 +268,8 @@ revision history lists that `run_id` in `lanes[]`.
    ignored because the author is not in that set. A nonzero ignored count is
    either a misconfigured trust root, a trust root that moved since the run,
    or somebody trying to redirect the report; all three are worth a line in
-   the retro. Note the stated limitation: authentication here is against the
-   ids **you** supplied, not the run's kickoff-time registry revision
-   (harmon-devkit#741), so a removed-since orchestrator reads as untrusted.
+   the retro. Read the selected source and the evidence-format-specific trust
+   rule stated in §1 when interpreting these counts.
 9. `### Not measurable from this run's evidence` — the measurements this retro
    is expected to make that today's evidence surface cannot supply, each naming
    the issue that would close it. Carry these into §5 as-is rather than

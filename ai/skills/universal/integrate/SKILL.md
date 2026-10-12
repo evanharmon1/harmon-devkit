@@ -1542,7 +1542,13 @@ the document without it.
   no further remediation push for P2s. Settle every remaining finding without
   a push — declined with evidence, or filed together in one follow-up issue —
   reply in each affected thread, `settle` the non-inline ones, tick the
-  deferred entries, and go to the readiness gate.
+  deferred entries, and go to the readiness gate. The engine enforces it as
+  an invariant: while converged no P0/P1 is outstanding, so every recorded fix
+  push after a cycle that closed two consecutive clean cycles is refused
+  (indeterminate, `fixing-ceiling`) until a later cycle — or a late review
+  folded into one — records a P0/P1 that breaks the streak. A pure base
+  reconciliation (empty findings) stays allowed, because the readiness gate
+  never promotes a behind or conflicting head.
 - **`diverging`** is the tell: every finding of a cycle at or after cycle 2
   attacks an earlier remediation push. Stop the fix loop and offer the three
   dispositions — **delete** the added surface, **restructure** it to an
@@ -1550,8 +1556,8 @@ the document without it.
   follow-up — recorded as the `remedy` on the table. Never another hardening
   push; a `retain` on an individual finding does not license one. A push that
   deletes or restructures is permitted within the remediation cap; the engine
-  refuses (indeterminate) a record where a remediation push follows a tell
-  cycle without a recorded `delete` or `restructure` remedy.
+  refuses (indeterminate) a record where a recorded remediation push (below)
+  follows a tell cycle without a recorded `delete` or `restructure` remedy.
   `tell_with_gating_findings` is an escalation that keeps the PR draft and
   leads with descoping — recommend removing the added surface first, with the
   findings and provenance as evidence.
@@ -1562,6 +1568,44 @@ the document without it.
   cycle.
 - **`capped`** with gating findings is stop condition 2 — escalate, PR stays
   draft. Indeterminate is never a pass: fix the record or escalate.
+
+**Record every remediation push explicitly** (harmon-devkit#1386). The
+engine classifies a head move from the run record, never from a cycle's
+`charged` flag. Each remediation push is one `integration -> implement ->
+integration` loop, and the transition that re-enters integration after the
+push records it:
+
+```sh
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --run-id <run> \
+  --stage integration --exit <how implement ended> \
+  --remediation-head <pushed SHA> --remediation-findings <finding id>,<finding id>
+```
+
+That writes `remediation: {head, findings}` on the re-entry entry of
+`stage_transitions[]`, and the validator refuses it anywhere else. `head` is
+the SHA the push put on the branch. `findings` lists the integration
+adjudication finding ids the push answers; it may also name challenge or
+review findings deferred to integration (`disposition: defer`). An empty list
+(`--remediation-findings ""`) marks a pure base-reconciliation push, the
+local-merge fallback that fixes no finding. The engine places each push in
+time, never by where its findings came from:
+
+- The push is placed at its re-entry's `entered_at` and judged by exactly
+  the rounds whose integrator pass settled before it (`settled_at`), leaving
+  out any round that reviewed the pushed head itself: under the tell rule
+  above, or under the fixing ceiling.
+- Its `head` must be accounted for: never reviewed before the push, and —
+  unless it is the latest push, still awaiting review — reviewed, carried, or
+  superseded by a catch-up whose cycle ran before the next push.
+- A carry may attest only a pure base reconciliation. A push with findings
+  changed the reviewed diff, so a carry of its head is indeterminate
+  (`remediation-head-carried`).
+
+A **server-side catch-up** (update-branch) is never a remediation push, so it
+records nothing and never re-enters integration. **Every** integration
+re-entry records its own push: once any cycle or carry exists, a re-entry
+without this field is indeterminate (`remediation-unrecorded`), whatever the
+other pushes say.
 
 The readiness gate reads the integration record itself, never a verdict
 reason, and infers nothing about fix pushes. An integration pass with

@@ -1,0 +1,46 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "0404040404040404040404040404040404040404",
+  "produced_at": "2026-10-08T00:20:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "fixture",
+    "tier": "economy"
+  },
+  "run": {
+    "run_id": "run-integration-p1-cycle-after-converged-reopens-pushes",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "build",
+        "bucket": "pass",
+        "run_id": "4",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "0404040404040404040404040404040404040404",
+      "cycle": 4,
+      "charged": 4,
+      "exempt": 0,
+      "attempt": 1,
+      "trigger_comment_id": "8004",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "7004",
+        "reviewed_commit": "0404040404040404040404040404040404040404"
+      }
+    },
+    "integration_round": 4,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-10-08T00:20:00Z",
+    "verdict": "clean",
+    "applied_dispositions": []
+  }
+}

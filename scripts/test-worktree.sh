@@ -89,7 +89,8 @@ refute_exists() {
 
 # `pwd -P` because macOS mktemp hands back /var/... while git reports the
 # physical /private/var/... — the two must agree for the path assertions below.
-test_tmp="$(cd "$(mktemp -d -t harmon-init-worktree-XXXXXX)" && pwd -P)"
+# The template contains "scratch" so every run exercises a TMPDIR-derived path containing "scratch" (#1388).
+test_tmp="$(cd "$(mktemp -d -t harmon-init-worktree-scratch-XXXXXX)" && pwd -P)"
 # The sentinel lives OUTSIDE $test_tmp because the cleanup below removes that
 # directory, and this file has to outlive it to be read on the way out.
 WORKTREE_TIMEOUT_SENTINEL="$(mktemp -t harmon-init-worktree-timeout-XXXXXX)"
@@ -284,7 +285,7 @@ rm_in() {
 echo "==> worktree:new creates .worktrees/<name> with its own branch"
 out="$(new scratch)" || fail "worktree-new.sh failed"
 [ -d "$fixture/.worktrees/scratch" ] || fail "worktree-new.sh did not create .worktrees/scratch"
-grep -qx "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "the new tree is not registered as a worktree"
 git -C "$fixture" show-ref --verify --quiet refs/heads/scratch ||
     fail "worktree-new.sh did not create the branch"
@@ -327,7 +328,7 @@ fi
 echo "==> worktree:rm removes the tree and prunes the registry"
 rm_wt scratch >/dev/null || fail "worktree-rm.sh failed on a clean tree"
 refute_exists "$fixture/.worktrees/scratch" "worktree-rm.sh left the directory behind"
-if grep -q "scratch" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain); then
     fail "worktree-rm.sh left a stale registry record"
 fi
 
@@ -989,7 +990,7 @@ if new half-made >/dev/null 2>&1; then
 fi
 rm -f "$shared_hooks/post-checkout"
 refute_exists "$fixture/.worktrees/half-made" "a partially created worktree was not rolled back"
-if grep -q "half-made" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/half-made" < <(git -C "$fixture" worktree list --porcelain); then
     fail "a partially created worktree stayed in the registry"
 fi
 if git -C "$fixture" show-ref --verify --quiet refs/heads/half-made; then
@@ -1103,7 +1104,7 @@ for mode in "--force" ""; do
 done
 [ -f "$fixture/.worktrees/nestparent/kid/KID.md" ] ||
     fail "worktree-rm.sh deleted the nested worktree's uncommitted work"
-grep -qx "worktree $fixture/.worktrees/nestparent/kid" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $fixture/.worktrees/nestparent/kid" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "worktree-rm.sh dropped the nested worktree's registry record"
 rm_wt nestparent/kid --force >/dev/null || fail "cleanup of the nested child failed"
 rm_wt nestparent >/dev/null || fail "cleanup of the nesting parent failed"
@@ -1128,7 +1129,7 @@ new goer >/dev/null || fail "worktree-new.sh failed creating the unrelated tree"
 rm_wt goer >/dev/null || fail "worktree-rm.sh failed removing the unrelated tree"
 [ -d "$keeper_admin" ] ||
     fail "removing one worktree pruned an unrelated worktree's stale record"
-grep -qx "worktree $fixture/.worktrees/keeper" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $fixture/.worktrees/keeper" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "removing one worktree deregistered an unrelated worktree"
 if grep -q "$held" < <(git -C "$fixture" fsck --unreachable --no-progress 2>/dev/null); then
     fail "removing one worktree left another's commit unreachable"
@@ -1138,7 +1139,7 @@ fi
 # discarding the last reference to it is exactly what the stale-record guard
 # below makes deliberate.
 rm_wt keeper --force >/dev/null || fail "worktree-rm.sh could not clear the keeper's own stale record"
-if grep -q "keeper" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/keeper" < <(git -C "$fixture" worktree list --porcelain); then
     fail "worktree-rm.sh left the keeper's stale record behind"
 fi
 git -C "$fixture" branch -D keeper goer >/dev/null 2>&1 || true
@@ -1202,7 +1203,7 @@ rm -rf "${fixture:?}/.worktrees/stalehead"
 if rm_wt stalehead >/dev/null 2>&1; then
     fail "worktree-rm.sh discarded a stale record holding an unreferenced detached commit"
 fi
-grep -qx "worktree $fixture/.worktrees/stalehead" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $fixture/.worktrees/stalehead" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "the stale record was dropped despite the refusal"
 if grep -q "$stale_held" < <(git -C "$fixture" fsck --unreachable --no-progress 2>/dev/null); then
     fail "the refused removal still left the commit unreachable"
@@ -1219,7 +1220,7 @@ echo "==> creating over a registered descendant record is refused"
 git -C "$fixture" worktree add -q "$fixture/.worktrees/dparent/kid" -b dkid ||
     fail "could not plant the descendant worktree"
 rm -rf "${fixture:?}/.worktrees/dparent"
-grep -qx "worktree $fixture/.worktrees/dparent/kid" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $fixture/.worktrees/dparent/kid" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "fixture assumption broken: the descendant record did not survive"
 if new dparent >"$test_tmp/descendant.log" 2>&1; then
     fail "worktree-new.sh provisioned over a registered descendant record"
@@ -2281,7 +2282,7 @@ refute_exists "$fixture/.worktrees/rollback-remote" "the failed remote-only atta
 if git -C "$fixture" show-ref --verify --quiet refs/heads/rollback-remote; then
     fail "the failed remote-only attach left its pre-created branch behind"
 fi
-if grep -q "rollback-remote" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/rollback-remote" < <(git -C "$fixture" worktree list --porcelain); then
     fail "the failed remote-only attach left a registry record behind"
 fi
 git -C "$fixture" push -q origin :refs/heads/rollback-remote
@@ -2341,7 +2342,7 @@ SHIM
 chmod +x "$shim_dir/git"
 attachrace_out="$(cd "$fixture" && PATH="$shim_dir:$PATH" WTSHIM_ATTACH_RACE=1 "$TIMEOUT_BIN" -k "$WORKTREE_OP_KILL_GRACE" "$WORKTREE_OP_TIMEOUT" bash scripts/worktree-new.sh attachrace 2>&1)" &&
     fail "worktree-new.sh reported success although its branch was attached elsewhere mid-run"
-grep -qx "worktree $rival_tree" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $rival_tree" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "fixture assumption broken: the rival attach did not register"
 git -C "$fixture" show-ref --verify --quiet refs/heads/attachrace ||
     fail "rollback deleted a branch another worktree had attached (harmon-init#916)"
@@ -2373,7 +2374,7 @@ heldtree_out="$(new heldtree 2>&1)" && {
     fail "worktree-new.sh reported success despite the locked-tree attach failure"
 }
 rm -f "$shared_hooks/post-checkout"
-grep -qx "worktree $fixture/.worktrees/heldtree" < <(git -C "$fixture" worktree list --porcelain) ||
+grep -Fxq "worktree $fixture/.worktrees/heldtree" < <(git -C "$fixture" worktree list --porcelain) ||
     fail "fixture assumption broken: the locked tree was deregistered after all"
 git -C "$fixture" show-ref --verify --quiet refs/heads/heldtree ||
     fail "rollback deleted the branch of a worktree it could not remove (harmon-init#916)"
