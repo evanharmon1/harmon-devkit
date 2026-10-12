@@ -1,8 +1,9 @@
 ---
 name: integrate
 description: >-
-  Integrate a draft PR to ready for review — dispatch the integrator agent to
-  drive CI settlement and one current-head Codex cloud-review cycle, poll
+  Integrate a draft PR to ready for review — use the checker-driven clean-run
+  fast path or dispatch the integrator agent to drive CI settlement and one
+  current-head Codex cloud-review cycle, poll
   incoming bot/human reviews, adjudicate findings as hypotheses (verify, fix
   only what's confirmed, explain rejections in per-thread replies), push, and
   re-dispatch, under the resolved integration and remediation caps (from
@@ -77,8 +78,9 @@ retired single-stage skill at its pin and refuses as described above. Do
 not fabricate a `run.json` to route around any of this; there is nothing that
 would keep it truthful.
 
-Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
-to settle CI and drive the Codex cloud-review cycle (see
+Opening a draft PR is not the end. Integrate it: use the checker-driven
+clean-run fast path or dispatch the integrator agent to settle CI and drive
+the Codex cloud-review cycle (see
 [§2](#2-watch)), poll incoming bot/human reviews, adjudicate what lands, fix
 what's confirmed, and re-dispatch — under the resolved **integration cap**
 (bounds Codex cycles) and **remediation cap** (bounds fix pushes), counted
@@ -602,8 +604,10 @@ snippets resolve as `$skill_dir`). The grant matches the literal resolved
 path, so a call spelled through an unexpanded variable, or from a harness
 without the substitution, still prompts — friction, never silent, and the
 command being approved is one that structurally cannot write. Pushes, PR
-comments, body edits, review triggers, raw `gh api` (its write forms and
-GraphQL alike), and gate runs always go through the normal permission prompt.
+comments, body edits, review triggers, the server-side catch-up
+(`assets/update-branch.sh`, a GitHub write that moves the head), raw `gh api`
+(its write forms and GraphQL alike), and gate runs always go through the
+normal permission prompt.
 
 ## 1. Target
 
@@ -918,15 +922,55 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   clears it. Thread `isResolved` state is a separate question the readiness
   gate reads via GraphQL directly (§6): resolution is the maintainer's act,
   never evidence that you replied.
-- **Dispatch the integrator agent (`ai/agents/integrator.md`) every pass,
-  whatever the resolved integration cap — never hand-roll the
-  reserve/trigger/attach/check protocol yourself.** It settles checks and
+- **Choose the cycle-evidence path before collection.** When the
+  orchestrator has already driven the current-head Codex cycle through the
+  vendored checker, it may pass that state directly to §6's executable gate
+  with `--codex-recheck`, without dispatching an integrator merely to record
+  the same verdict. Use the checker and broker's reserve/trigger/check
+  protocol (§2), never a hand-rolled substitute. The gate reads live checks,
+  thread replies, deferred findings and record settlements itself; its verdict
+  records the checker state as cycle evidence. This removes only the recording
+  pass: the orchestrator still owes watch/adjudication, run evidence,
+  automation coverage and every readiness prerequisite. Additional configured
+  finders still need their evidence; use the dispatched-integrator path when
+  their `finder_cycles` must be supplied.
+  Checker-only evidence is a **clean-run fast path**: the active stage must
+  be integration, with no run-level integration `finder_selection`;
+  the record holds no integrator pass; it holds no integration adjudication;
+  every top-level PR comment and every non-empty review body is authored by
+  Codex bot `199175422` or is exactly `@codex review` after whitespace
+  trimming; resolved `policy.json` names exactly `codex-cloud` in
+  `stages.integration.finders`; the live checker attests exactly one
+  terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
+  the PR has no inline review comments. The state must be attached or terminal; a private snapshot supplies both
+  the freshness check and cycle construction. Immediately before a checker-only
+  pass, the live state bytes must still equal that snapshot; otherwise the gate
+  reports `codex-stale` and must be re-run. The state's `finder` matches
+  the trusted registry's `codex-cloud` reserve profile field by field, including
+  the fixed actor ID `199175422` and login `chatgpt-codex-connector[bot]`;
+  `trusted-registry.sh` resolves it from the PR base commit
+  on GitHub, never a caller-supplied registry. Null `finder` is accepted only
+  when that trusted profile equals the fixed legacy defaults. Trusted surfaces
+  must include `comment` and `review`. Live checker exit 10 fails as
+  `codex-not-clean`, including in audit mode. Carry remains admissible, retaining the
+  reviewed cycle's state; any exempt cycle requires integrator evidence.
+  The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
+  state without these counters is refused.
+  No authenticated-actor exemption applies: the orchestrator and maintainer
+  may share an account. Inline comments require the dispatched-integrator path,
+  even when their threads have replies.
+  If any condition is absent, the gate is indeterminate: dispatch an integrator
+  and supply `--integrator-result` to classify and settle integration work.
+  Conversation or cycle-work preconditions use `checker-fast-path-unavailable`;
+  existing live-checker and counter-validation errors remain explicit.
+  The fast path does not detect badges, match replies or derive dispositions.
+- **For dispatched integration, retain the integrator agent
+  (`ai/agents/integrator.md`) and its validated result.** It settles checks and
   lists unanswered threads at every cap, and drives the current-head Codex
   cycle only where the cap is not 0 (at 0 its brief says so and it skips
   its §4, reporting `codex_cycle: null` — the result §6's gate still
-  requires, since `--integrator-result` is mandatory there at every cap;
-  skipping the dispatch at 0 leaves an otherwise-ready PR with no result to
-  gate on). It also drives one cloud-review cycle per configured PR-side
+  requires at cap 0; checker-only evidence cannot waive the Codex
+  condition). It also drives one cloud-review cycle per configured PR-side
   finder (#804) — each finder's cycle is independent, with its trigger
   mechanism and verdict mode resolved from the trusted registry. That file
   owns every mechanical detail (resumption after interruption, the one
@@ -1654,11 +1698,12 @@ is optional in addition, never a substitute for per-thread replies.
 
 The gate decides *whether* the head is behind and *against what*; this states
 the properties any reconciliation must satisfy. It deliberately does not
-restate the mechanism — `readiness-gate.sh` computes the base, the count and
-the condition, its failure message names all three, and a second hand-rolled
-recipe here would be one more thing to keep correct (an earlier draft of this
-section shipped a local `git rev-list` range that counted **ahead**, not
-behind).
+restate the mechanism. Two executables carry it: `readiness-gate.sh` computes
+the base, the count and the condition, and its failure message names all
+three; `assets/update-branch.sh` performs the standard catch-up below. A
+second hand-rolled recipe here would be one more thing to keep correct (an
+earlier draft of this section shipped a local `git rev-list` range that
+counted **ahead**, not behind).
 
 **Direction.** Merging the PR's own base branch **into** the feature branch is
 permitted, and is sometimes required before the gate can pass. Merging the
@@ -1685,27 +1730,119 @@ evanharmon1/harmon-init#1311 the base moved five times in one session and the
 branch was merged three times; two were mid-stage reactions that re-reviewed
 source which had not changed and found nothing.
 
-**Reconciliation is an ordinary remediation round.** It is not a special
-operation exempt from anything: it passes the round gate and the secret scan,
-it pushes the gated SHA, it spends remediation budget, and it counts against
-every cap that governs any other round. Two consequences follow rather than
-needing their own procedure:
+**Standard path — GitHub update-branch, on the server.** When the base merges
+cleanly, GitHub makes the merge commit and the agent pushes nothing. A
+catch-up adds no authored bytes, so it is not a push and owes no round gate
+and no secret scan. CI on the merged head is its gate, and the readiness gate
+already refuses to promote without green checks on that exact `headRefOid`
+(harmon-init ADR 2026-10-11, harmon-devkit#1360). Run it through the helper,
+never `gh pr update-branch` or a raw call:
 
-- With no remediation budget left, reconciliation is the **blocked stop** with
-  a report naming the unreconciled base — never a push anyway, and never a
-  promotion on a behind head. **The last remediation push is reserved the same
-  way the last cycle is**: before making a push that may be the final one,
-  preflight `behind` and fold the base merge into that same push. Deferring it
-  spends the last round on the fix alone and then needs a round that no longer
-  exists — with `remediation = 1`, a behind head and one confirmed finding,
-  merging and fixing together costs one round while doing them in sequence
-  costs two and ends blocked.
-- The merge moves the head, so it owes a fresh current-head cycle exactly as
-  any head move does. **The last permitted cycle is therefore reserved for the
-  reconciled head**: before dispatching it, run
+```sh
+new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
+  --head <captured headRefOid> --base <captured baseRefName>)"
+```
+
+The helper's exits are the invariant, stated once (0 caught up, printing the
+new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
+retarget; 15 not a draft; 16 refused for any other reason):
+
+- **Merge mode, guarded by the expected head.** It re-reads `baseRefName`
+  first and stops on a retarget (14): `base-retargeted` applies and nothing is
+  requested. A retarget that lands after that re-read but before GitHub
+  processes the request is the same window a local merge has, an accepted
+  residual (harmon-init ADR 2026-10-11) that the gate's base re-check
+  catches. The same re-read refuses a PR that is no longer a draft (15)
+  unless `--maintainer-requested` is passed (below). Every re-read after the
+  request repeats that check, so a promotion that lands while GitHub merges
+  also exits 15: the merge may already have happened, an accepted residual
+  window like the retarget one, which the caller reports rather than acts
+  on. It then sends REST `PUT …/pulls/<n>/update-branch` with the
+  captured head as `expected_head_sha`. That endpoint takes no other field and
+  always merges. Rebase exists only as GraphQL `updateMethod` or
+  `gh pr update-branch --rebase`; it rewrites pushed history, and the helper
+  refuses every spelling of it.
+- **The catch-up head is defined by what it is.** It is a merge commit whose
+  parents are exactly the captured head, then the base tip read from the base
+  branch itself (`refs/heads/<base>`, never the PR's `baseRefOid`, which
+  stays at the base of the last head update) before the request, or a
+  descendant of that tip still on the base branch where the base advanced
+  during the request, committed by `GitHub <noreply@github.com>` under a signature that
+  verifies. Parents alone are not enough: a writer with push access can push
+  the same two parents over a different tree, and GitHub's web-flow signature
+  binds the tree as well. Any other head (a concurrent push, an
+  `expected_head_sha` refusal, a merge GitHub did not make) is a newer push
+  under the gate's "no newer push" condition (12): re-read the PR and re-run
+  the gate. It is never a reason to fall back to a local merge.
+- **A head still unmoved when the bounded wait ends is indeterminate** (13),
+  as is a request whose outcome is unknown. Stop and report; never request
+  again, because the first request may still be pending.
+
+Then, in order:
+
+1. Fast-forward every local checkout of the branch to the printed OID from an
+   explicit fetch, never the configured upstream (which can be stale or point
+   at the wrong remote): `git fetch <head remote> <headRefName>`, then
+   `git merge --ff-only <new head>`, and confirm `git rev-parse HEAD` equals
+   it before any further local commit.
+2. Let CI run on the new head.
+3. Where Codex cloud review is on **and** the resolved `integration` cap is
+   positive, ask `carry` whether the clean verdict attests the new head, or
+   run the ordinary current-head cycle. Otherwise neither is owed.
+
+**A server-side catch-up spends no remediation round.** It is not a fix, and
+the `remediation` cap bounds the stage's fix pushes: charging it would let a
+busy base exhaust the budget without one fix pushed. It is still a head move,
+so step 3's carry or cycle is owed, charged to `integration` or
+`integration_exempt` exactly as any cycle is. The remediation counter does not
+advance. The evidence is the head pair: the captured head the request named and
+the head the helper printed. It lives in two places, neither of them the run
+record, whose schema is closed and has no field for it:
+
+- the stage ledger names the step a catch-up (`update-branch → CI → carry`),
+  not a remediation push, with both OIDs;
+- the PR body records the same pair as one line under `## Integration`
+  (create the heading if the body has none), in the body edit the stage
+  already makes: `- Base catch-up: <captured head> → <new head>
+  (update-branch)`.
+
+**Fallback — a local merge, as an ordinary remediation round.** Only these
+take it, each detected from the helper's exit rather than predicted:
+
+- a genuine merge refusal — a conflict (11), or a ruleset that rejects
+  GitHub-made merge commits (10), as long as the rule is not a ban on merge
+  commits;
+- a base merge that must ship in the same push as a fix (the last-push rule
+  below).
+
+Every other refusal (16: a ban on merge commits, such as a linear-history
+rule, which rejects a local merge too; rate limiting; an authentication or
+permission failure; a 422 that is not a known merge refusal; a PR that is
+not open) stops with a report and never falls back. A fork PR that does not allow
+edits by maintainers is one of them, not a fallback case:
+the integration identity cannot push a local merge to that branch either, so
+stop and ask for maintainer edits rather than spending a round. A conflict
+resolution is authored work, so the fallback is exempt from nothing: it
+passes the round gate and the secret scan, pushes the gated SHA, spends
+remediation budget, and counts against every cap that governs any other
+round. Two consequences follow rather than needing their own procedure:
+
+- With no remediation budget left, a fallback reconciliation is the
+  **blocked stop** with a report naming the unreconciled base — never a push
+  anyway, and never a promotion on a behind head. **The last remediation push
+  is reserved the same way the last cycle is**: before making a push that may
+  be the final one, preflight `behind` and, if it reports behind, fold the
+  base merge into that same push. That push is the fallback's second trigger.
+  A fix push followed by a catch-up moves the head twice and owes two cycles
+  where one push owes one; on the last permitted cycle the second does not
+  exist.
+- Either path moves the head, so it owes the carry-or-cycle of step 3 exactly
+  as any head move does. **The last permitted cycle is therefore reserved for
+  the reconciled head**: before dispatching it, run
   `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
   (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
-  behind, reconcile first and spend that cycle on the merged head. Use the
+  behind, reconcile first (update-branch, or the fallback) and spend that
+  cycle on the merged head. Use the
   subcommand rather than a compare call of your own: ref encoding and the
   fail-closed handling of an unreadable comparison live there and are tested
   there, and an indeterminate answer must not be read as "level". Waiting for the gate
@@ -1716,6 +1853,12 @@ needing their own procedure:
   cycle is spent remains an escalation — the point of the reservation is that
   it should not happen. Where the resolved integration cap is 0 no cloud cycle
   is owed at all and the gate's Codex condition drops out, as everywhere else.
+
+**A promoted PR is caught up only when the maintainer asks.** Then it is
+updated in place, through the same helper with `--maintainer-requested` (the
+one case that flag exists for; without it the helper refuses a non-draft PR
+with exit 15), and its promotion is never undone. Otherwise its drift is
+reported, never acted on (§ "Unexplained promotion").
 
 **A PR the gate can establish is behind is never reported ready** — under any
 cap, at any round, however clean everything else is. That is the property all
@@ -1751,8 +1894,9 @@ that loops indefinitely:
    neither `UNKNOWN` nor — with the graph reporting 0 — still `BEHIND`, both
    of which are *unknown-for-now* and re-polled rather than promoted on
    (conflicts and an out-of-date head are yours to resolve — see "Base
-   reconciliation" at the end of step 5; a merge with the base plus
-   re-verification is a round), and no findings remain
+   reconciliation" at the end of step 5; a server-side update-branch is a
+   catch-up that spends no round, while the local-merge fallback is a round),
+   and no findings remain
    unresolved — including the low-priority ones deferred into this stage,
    which count as resolved once their box is ticked with the outcome. A
    finding carried in the PR body has no inline thread to answer, so its
@@ -1766,19 +1910,19 @@ that loops indefinitely:
    its failing checks in a snapshot and promoted anyway —
    harmon-devkit#384):
 
-   The four flags after `--head` are, in order (each continuation
+   The gate inputs are (each continuation
    backslash below is the last byte on its line — a comment after one
    un-escapes the newline and runs the gate half-built):
 
    - `--record <dir>` — the same dev-flow-v2 record directory §5's
      `render-dev-flow.sh` calls read; required, never skippable.
-   - `--integrator-result <file>` — the LAST dispatched integrator agent's
-     validated `result.integrator` for this exact head — never a stale or a
-     different-head result. A null `codex_cycle` inside it (the resolved
-     integration cap was 0) is how the gate itself learns the Codex
-     condition is waived; there is no separate disabled flag to pass or
-     avoid, so the condition can never be skipped by silence nor by a false
-     claim.
+   - `--integrator-result <file>` — for dispatched integrators, the LAST
+     agent's validated `result.integrator` for this exact head. Supply it
+     whenever that path was used: an invalid supplied result is never masked
+     by checker evidence. For the orchestrator-driven Codex path, omit this
+     flag and supply `--codex-recheck` instead; no recording-pass dispatch is
+     needed. At a resolved cap of 0, retain the result with null `codex_cycle`
+     to express the waiver; checker-only evidence requires a real clean cycle.
    - `--integration-cap <n>` — required, not advisory (harmon-devkit#685;
      harmon-devkit#639 gauntlet challenge round 3): the resolved integration
      cap, cross-checked against `codex_cycle`'s own cap-0/cycle-ceiling
@@ -1805,7 +1949,7 @@ that loops indefinitely:
      only for a result that reports no split at all, which is one that never
      classified its cycles and is therefore held to the original
      single-counter rule.
-   - `--codex-recheck <state file>` — the integrator's own
+   - `--codex-recheck <state file>` — the orchestrator's or integrator's
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
      path §2's settle recipe resolves. Re-confirms a clean `codex_cycle`
@@ -1816,12 +1960,20 @@ that loops indefinitely:
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
      --record <dir> \
-     --integrator-result <file> \
      --integration-cap <n> \
      --integration-exempt-cap <n> \
      --remediation-cap <n> \
      --codex-recheck <state file>
    ```
+
+   For a dispatched integrator (including every cap-0 run), add
+   `--integrator-result <file>` to that command. Without either evidence
+   input, or with a non-clean or head-mismatched checker state, the gate is
+   indeterminate. Checker-only passes name `cycle_evidence.kind: checker-state`
+   and its path/cycle in the gate verdict; supplied-result passes name
+   `integrator-result`. Existing recorded integrator passes and their findings
+   remain validated and must bind to the gated cycle/head; switching inputs
+   does not drop adjudication or settlement obligations.
 
    `--head` is the head whose CI, Codex result, comments, and deferred
    findings you just adjudicated — from your own round record, never
@@ -1968,10 +2120,11 @@ that loops indefinitely:
    `promotion: {head, promoted_at, gate_fingerprint}` to `run.json`, `head`
    and `gate_fingerprint` copied verbatim from the confirmed reads above,
    never re-derived. This is the write side of an invariant the readiness
-   gate's own `--integrator-result` and `--head` checks already enforce on
-   the read side (a schema-valid envelope's `head` — and, transitively, its
-   `codex_cycle.accepted.reviewed_commit` — can never disagree with the head
-   the gate just confirmed), so a `promotion` entry can never legitimately
+   gate's `--head` check and evidence binding already enforce on the read side:
+   a supplied `--integrator-result` binds its schema-valid envelope's `head`
+   and `codex_cycle.accepted.reviewed_commit`; checker-only evidence binds the
+   live state head or proven `carry.attests_head` to that same gated head.
+   Thus a `promotion` entry can never legitimately
    name a head other than this one.
    If the open PR is non-draft on a changed head or content snapshot, or any
    other confirmation result cannot

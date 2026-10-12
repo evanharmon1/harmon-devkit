@@ -357,6 +357,64 @@ equivalents: `/codex:review` and
 allowed after the flags), plus `/codex:status` / `/codex:result` for
 background runs.
 
+### Envelope mode (dev-flow v2 runs)
+
+Inside an orchestrated dev-flow v2 run, a confidence pass is normally
+assembled by `/review`'s `challenger`/`reviewer` role agent from the task's
+ordinary output — and for every Codex finder today, that is the only producer
+that works (see the fail-closed note below). `--envelope` is an additional
+mode in which the runner produces the pass itself, binding, validating and
+publishing it with no role agent, so any harness that can run the task can use
+it for a finder whose runner publishes. The flag shape, shown for the Codex
+finder — which on today's CLI **fails closed** and publishes no pass (below,
+harmon-devkit#1365):
+
+```bash
+task challenge -- --model gpt-5.6-sol --envelope \
+  --run-id <run> --head "$(git rev-parse HEAD)" --stage challenge --round 1 \
+  --slot codex-adversarial --tier frontier --record-dir <run-record-dir> \
+  --base main
+```
+
+Envelope mode drives Codex through the same `codex exec review` invocation as
+an ordinary run, never plain `codex exec`. The review subcommand's
+command-running session records `approval_policy: never` (its outer banner
+prints `approval: on-request`, which is not what governs the commands), while
+plain `codex exec` runs its commands on-request, and a command the model
+marked as escalated left the sandbox with no prompt — which is why it was
+rejected. The review subcommand enforces no
+output schema, so the payload schema is requested in the prompt and the
+runner accepts only exactly one JSON object (bare, or alone in one fenced
+block); anything else publishes nothing. A pass becomes evidence only when the
+supervising orchestrator validates it and appends its receipt.
+
+**Codex envelope mode currently fails closed.** On Codex CLI 0.162.1,
+`codex exec review` answers in its own review prose and ignores the requested
+JSON, so a Codex envelope run publishes no pass — never a false one. A
+schema-enforcing, approval-never Codex path is
+[harmon-devkit#1365](https://github.com/evanharmon1/harmon-devkit/issues/1365);
+until it lands, Codex passes stay with the `challenger`/`reviewer` role agents.
+How local Codex review passes are approved is tracked in
+[harmon-devkit#1366](https://github.com/evanharmon1/harmon-devkit/issues/1366).
+
+`task challenge:copilot` / `task review:copilot` take the same flags plus
+`--model <model>`, which is pinned into the vendor invocation (a model in
+`FINDER_REVIEW_COPILOT_ARGS` is refused there), and envelope mode adds
+`--silent` so stdout carries only the answer. The envelope flags come
+**before** the target and focus text, and envelope mode accepts only a
+branch-scoped `--base` whose merge base is the default branch's.
+
+On success the runner's stdout is exactly one line — the published
+`passes/<stage>-r<round>-<slot>.json`, a path the caller can also derive from
+the flags it passed — and Codex's own narration goes to stderr (`task`'s
+grouped output interleaves the two, so parse the script's stdout, not the
+task's). Every refusal exits non-zero with nothing published under a `.json`
+name. The runner never writes `run.json`: appending the pass receipt is the
+caller's step, and a pass nobody receipted is an orphan that counts for
+nothing. A destination that already exists is refused rather than overwritten.
+The contract is `/review` § "Dispatch and receipt"; the trust argument is
+`ai/schemas/README.md` § "Finder-produced envelopes".
+
 ### Duration and backgrounding
 
 A round is **minutes, not seconds** — 5–15 is ordinary and passing ten is not

@@ -15,11 +15,11 @@
 #
 # Usage:
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-#       --record DIR --integrator-result FILE --integration-cap N
-#       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+#       --record DIR --integration-cap N
+#       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-#       --record DIR --integrator-result FILE --integration-cap N
-#       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+#       --record DIR --integration-cap N
+#       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #   readiness-gate.sh behind --repo OWNER/REPO --pr N
 #
@@ -39,7 +39,7 @@
 # `check`'s value.
 #
 # Exit codes:
-#   0  pass — every condition held; the fingerprint is on stdout
+#   0  pass — every condition held; fingerprint and cycle_evidence are on stdout
 #   1  fail — a readiness condition is definitively not met
 #   2  indeterminate — a fetch failed, data is malformed, GitHub has not
 #      populated an answer yet, or the arguments are unusable. Unknown never
@@ -71,7 +71,13 @@
 #   finder-indeterminate, promotion-head-mismatch,
 #   behind-base-unknown, merge-state-stale,
 #   integration-exit-indeterminate, integration-record-unbound,
-#   usage                                                    (indeterminate)
+#   checker-fast-path-unavailable, usage                     (indeterminate)
+#
+# A pass's cycle_evidence names the evidence kind (integrator-result or
+# checker-state) and its file path. Checker-state evidence also reports the
+# cycle ordinal; a cap-0 run requires an integrator result.
+# checker-fast-path-unavailable requires dispatching an integrator and supplying
+# --integrator-result; re-polling cannot replace missing integration evidence.
 #
 # `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
 # so a genuinely behind head never reaches the cache branch, and a cache that
@@ -145,10 +151,10 @@
 # file a current integrator run produces — writes nothing else; it is not
 # exempt from the "gate writes nothing" claim above, only the one caller
 # that legitimately re-runs another script's read path instead of reading a
-# file directly. Omitting the flag skips this one extra guard, exactly like
-# --integration-cap below, rather than assuming freshness of any particular
-# kind — but every real caller (integrate/SKILL.md's own
-# §6) always supplies it.
+# file directly. Without --integrator-result the same live check is the primary cycle
+# evidence: no recording pass is required, and the final gate verdict names
+# the checker state. A supplied result remains authoritative for its own
+# validation obligations; the checker never masks an invalid result.
 
 set -euo pipefail
 
@@ -156,14 +162,14 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-      --record DIR --integrator-result FILE --integration-cap N
+      --record DIR --integration-cap N
       --remediation-cap N [--integration-exempt-cap N]
-      [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
+      [--integrator-result FILE] [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
       [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-      --record DIR --integrator-result FILE --integration-cap N
+      --record DIR --integration-cap N
       --remediation-cap N [--integration-exempt-cap N]
-      [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
+      [--integrator-result FILE] [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
   readiness-gate.sh behind --repo OWNER/REPO --pr N
@@ -177,19 +183,29 @@ post-promotion compare. --record DIR is the dev-flow-v2 record directory
 (run.json plus adjudications/*.json) render-dev-flow.mjs projects deferred-
 finding settlement from, and this script separately reads run.json's own
 settlements[] from for the applied-disposition check below.
+--record is always required. Supply --integrator-result FILE, --codex-recheck
+STATE_FILE, or both. Without an integrator result, the checker must return
+terminal-clean for this repo/PR/head and active run; its cycle spend is checked
+against the resolved caps and the pass verdict names that state as evidence.
+Checker-only is a clean-run fast path: no integrator pass or integration
+adjudication, only Codex bodies or exact review triggers on top-level/review surfaces,
+record policy.json resolving integration finders to codex-cloud alone, and
+exactly one clean charged checker cycle, zero exempt cycles and no settlements,
+and no inline review
+comments. The state's finder must be null or match the trusted registry's
+codex-cloud reserve profile field by field, including actor 199175422.
+Cycle spend comes from charged_cycles + exempt_cycles; state without
+these counters is refused. Carry retains the reviewed cycle's state.
+Otherwise dispatch an
+integrator and supply --integrator-result. The gate reads checks, thread
+replies and deferred settlements live in either path. No recording-pass
+envelope is fabricated. A cap-0 run still needs an
+integrator result with null codex_cycle: checker evidence never waives a cycle.
 --integrator-result FILE is the dispatched integrator agent's schema-valid
-result.envelope (role integrator) for this exact head; its payload's
-codex_cycle carries the current-head Codex verdict when the resolved
-integration cap is not 0, or is null when it is — a null codex_cycle is how
-the Codex condition is waived, so there is no separate disabled flag. Both
---record and --integrator-result are always required; there is no mode
-where either is skippable. The envelope is also bound to the active run
-before anything else about it is trusted (specs/dev-flow-v2.md:177-185): this
-script reads --record's own run.json for run_id/initiated_by and passes them
-to the schema validator as --run-id/--initiated-by, so a schema-valid
-envelope whose own .run disagrees — evidence from a superseded or resumed
-run that happens to present the same head — is refused exactly like a
-malformed one, never silently accepted on head equality alone.
+result.envelope (role integrator) for this exact head. When supplied, it is
+always validated and bound to run.json's run_id/initiated_by, even alongside
+checker evidence; invalid or non-clean results never fall back to the checker.
+Its codex_cycle is null only for a resolved integration cap of 0.
 --integration-cap N is required (harmon-devkit#685; made mandatory rather
 than advisory in harmon-devkit#639 gauntlet challenge round 3): it enforces
 that a cap of 0 pairs only with a null codex_cycle, that a positive cap
@@ -208,14 +224,12 @@ an over-cap run would still promote — enforcement is not something a caller
 opts into. The resolved value is the caller's (this script does not read
 .devflow.toml), and the same resolution that yields --integration-cap yields
 this one.
---codex-recheck STATE_FILE is optional and, when codex_cycle reports a clean
-exit_code 0, re-confirms it read-only by re-running check-codex-cloud-
-review.sh's own `check` against STATE_FILE (the same on-disk state the
-dispatched integrator agent drove) rather than trusting a result that may
-have gone stale since. Omitting it skips this one extra guard — unlike
---integration-cap, this one remains advisory, since resuming it needs an
-on-disk state file that can genuinely be absent for operational reasons the
-caller does not control; every real caller supplies it anyway.
+--codex-recheck STATE_FILE invokes check-codex-cloud-review.sh check against
+live GitHub state. It is required for checker-only evidence and for a supplied
+integrator result carrying a clean Codex cycle; a cached result alone cannot
+prove the cycle is still clean. The checker owns accepted-verdict classification
+and carry proof, while this gate checks identity, caps and the remaining
+readiness conditions. A non-clean or head-mismatched state is indeterminate.
 --codex-repo-dir DIR is the checkout the --codex-recheck re-check computes
 patch identities in when the cycle state carries a verdict forward from an
 earlier head (harmon-init#752). It defaults to the working directory. A
@@ -383,13 +397,13 @@ check | audit)
     valid_sha "$head" || die "--head must be a full 40-hex commit"
     [ -n "$record_dir" ] || usage
     [ -d "$record_dir" ] || die "--record $record_dir is not a directory"
-    # Always required, never a mode switch: the integrator result's own
-    # codex_cycle (null vs. non-null) is what says whether the Codex
-    # condition applies this pass, so there is no separate disabled flag for
-    # the condition to be skippable by silence, or by a false claim, on.
-    [ -n "$integrator_result" ] || usage
-    [ -f "$integrator_result" ] ||
-        die "--integrator-result $integrator_result does not exist"
+    # A supplied result is always validated; checker evidence never masks a
+    # missing or invalid explicitly supplied result.
+    [ -n "$integrator_result" ] || [ -n "$codex_recheck_state" ] || usage
+    if [ -n "$integrator_result" ]; then
+        [ -f "$integrator_result" ] ||
+            die "--integrator-result $integrator_result does not exist"
+    fi
     # Required, not advisory (harmon-devkit#639 gauntlet challenge round 3):
     # a null codex_cycle with --integration-cap omitted used to be silently
     # trusted as "the resolved cap must have been 0", but that is the
@@ -633,6 +647,9 @@ exit_condition() {
 behind_base_ref=
 behind_by=
 behind_base_oid=
+# The remedy every behind-base message names (harmon-devkit#1360): the
+# server-side catch-up is the default, the local merge only its fallback.
+behind_remedy="catch up with update-branch.sh (GitHub update-branch in merge mode, guarded by the expected head) by default; fall back to a local merge under the full round gate only on a conflict or a ruleset refusal (SKILL.md, 'Base reconciliation')"
 establish_behind() {
     establish_scalars="$1"
     establish_phase="$2"
@@ -752,27 +769,25 @@ compute_fingerprint() {
         indeterminate malformed-data "hashing produced an empty fingerprint"
 }
 
-# Re-confirms a cached codex_cycle.exit_code 0 against live GitHub state,
-# read-only, rather than trusting it unconditionally — see the --codex-recheck
-# paragraph in the header comment for why. Called only for exit_code 0
-# (harmon-devkit#639 gauntlet challenge round 1, finding 3): 10/11/12/13
-# already fail or stay non-terminal on their own, and a null codex_cycle has
-# nothing cached to go stale.
+# Checks live GitHub state, read-only: primary evidence on the checker-only
+# path, or freshness confirmation for a supplied codex_cycle.exit_code 0.
+# Supplied non-clean and null cycles retain their own handling below.
 recheck_codex_freshness() {
+    local recheck_state_input="${checker_state_snapshot:-$codex_recheck_state}"
     [ -n "$codex_recheck_state" ] ||
-        indeterminate codex-stale "codex_cycle reports a clean exit_code 0 but no --codex-recheck was given to reconfirm it against current GitHub state — a clean result can go stale between the integrator pass and this gate"
+        indeterminate codex-stale "no --codex-recheck was given to confirm current-head Codex evidence against live GitHub state"
     [ -x "$codex_checker" ] ||
         die "$codex_checker is missing or not executable — cannot honor --codex-recheck"
-    [ -f "$codex_recheck_state" ] ||
-        indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot reconfirm the cached clean result"
-    state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
-    state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
-    state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
+    [ -f "$recheck_state_input" ] ||
+        indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot confirm live Codex evidence"
+    state_repo="$(jq -r '.repo // empty' "$recheck_state_input" 2>/dev/null)"
+    state_pr="$(jq -r '.pr // empty' "$recheck_state_input" 2>/dev/null)"
+    state_head="$(jq -r '.head // empty' "$recheck_state_input" 2>/dev/null)"
     # harmon-init#752: a cycle can attest a LATER head than its own, so the
     # state's head legitimately differs from the gated one — but only when the
     # state itself says so. The claim is the state's, never the caller's, and
     # the checker re-derives the identity behind it on the very next line.
-    state_attests="$(jq -r '.carry.attests_head // empty' "$codex_recheck_state" 2>/dev/null)"
+    state_attests="$(jq -r '.carry.attests_head // empty' "$recheck_state_input" 2>/dev/null)"
     [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] &&
         { [ "$state_head" = "$head" ] || [ "$state_attests" = "$head" ]; } ||
         indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}${state_attests:+ (attesting $state_attests)}, not the gated $repo#$pr@$head"
@@ -782,7 +797,7 @@ recheck_codex_freshness() {
     # run can replace the shared same-head state, so without the run id this
     # call would happily validate a foreign run's cycle. `active_run_id` is
     # read from --record's run.json well before this runs.
-    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
+    codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
         codex_recheck_exit=$?
     # harmon-devkit#508: exit 16 means the checker could not READ the evidence,
     # not that the cached clean result went stale. This is the exact shape the
@@ -809,10 +824,10 @@ recheck_codex_freshness() {
         # run can replace the shared same-head state, and an unscoped retry
         # would accept that foreign run's cycle and settlements instead of
         # refusing the ownership mismatch.
-        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
+        codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
-            indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"
+            indeterminate codex-transient-read "live Codex check could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating unknown evidence as stale: $codex_recheck_output"
     fi
     # Codex cloud-review cycle 3 on PR harmon-devkit#1125, finding 4067133481
     # (confirmed P2): 16 got its own handling above and 15 did not, so a live
@@ -829,10 +844,13 @@ recheck_codex_freshness() {
     # the remedy is to report the blocker, never to re-poll. Same wording and
     # same recovery route as the cached arm.
     if [ "$codex_recheck_exit" -eq 15 ]; then
-        fail_condition codex-quota-exhausted "recheck of the cached clean Codex cycle came back quota-exhausted (check-codex-cloud-review.sh exited 15): the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115): $codex_recheck_output"
+        fail_condition codex-quota-exhausted "live Codex check came back quota-exhausted (check-codex-cloud-review.sh exited 15): the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115): $codex_recheck_output"
+    fi
+    if [ "$codex_recheck_exit" -eq 10 ]; then
+        fail_condition codex-not-clean "live Codex check reports findings — adjudicate them before gating (check-codex-cloud-review.sh exited 10): $codex_recheck_output"
     fi
     [ "$codex_recheck_exit" -eq 0 ] ||
-        indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
+        indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
 }
 
 # `behind` is the read-only preflight the reserved-cycle rule needs. Before
@@ -861,7 +879,7 @@ if [ "$command_name" = behind ]; then
             '{status:"level",behind_by:0,base:$base,head:$head}'
         exit 0
     fi
-    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — reconcile before spending the reserved cycle"
+    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}, before spending the reserved cycle"
     exit 1
 fi
 
@@ -1227,7 +1245,7 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 establish_behind "$scalars" "before evaluating"
 if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
-        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
+        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}; then CI, and carry or one fresh current-head cycle"
 fi
 # AUDIT needs a THIRD answer, because the two obvious ones are both wrong.
 # Failing routes §2's unexplained-promotion flow to its undo path and reverses
@@ -1410,9 +1428,9 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
 # unresolved until a human resolves them.
 fetch_fingerprint_surfaces
 
-# 9. The current-head Codex cloud-review cycle — evaluated from the
-# dispatched integrator agent's own schema-valid result, run AFTER the
-# fingerprint surfaces are captured, deliberately: activity the agent's own
+# 9. The current-head Codex cloud-review cycle — from a schema-valid
+# integrator result or, on the clean-run fast path, live checker state.
+# Evaluated AFTER the fingerprint surfaces are captured, deliberately: activity the agent's own
 # fresh evidence collection already classified sits inside the baseline
 # fingerprint, and activity landing after that pass sits outside it, where
 # the post-promotion compare flags it. Classification belongs to the agent
@@ -1432,73 +1450,115 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
     indeterminate malformed-data "run.json carries no run_id"
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
-# The run's known finding universe, so the validator's
-# checkAppliedDispositionsKnownFindingIds actually runs here
-# (harmon-devkit#685: "nested integrator passes' applied_dispositions ids are
-# validated against the run's known finding universe"). That check is gated
-# on --known-ids, and this gate — the production caller — was not passing it,
-# so a clean integrator pass could claim dispositions for findings that never
-# existed and still authorize promotion; only impossible integration ids were
-# caught, by the flagless half of the check. Challenge round 2, confirmed.
-#
-# The universe is every finding the record's own PASSES produced — the ids
-# raised under `passes/`, and nothing else. An adjudication is a judgement
-# ABOUT a finding, never evidence that one was produced: integrate cycle 2 on
-# PR #800 showed that harvesting adjudication ids too lets a fabricated
-# same-run adjudication whitelist an arbitrary id, since
-# `render-dev-flow readiness-input` explicitly continues past an adjudication
-# row with no pass behind it. Narrowing to passes removes that class rather
-# than patching it — every legitimately adjudicated finding was raised by a
-# pass, so a complete record already contains it, and a record missing that
-# pass is incomplete in a way the gate should fail closed on. An id in
-# neither the passes nor the gated payload's own findings[] (which the
-# validator checks separately) names nothing the record can account for.
-#
-# `--record` is the dev-flow-v2 record directory the review stage retains
-# and this stage consumes, so both subdirectories are its documented
-# contents, not an assumption about the caller.
-# A plain glob and jq, never find/xargs: this script must keep running on
-# the minimal toolset its own no-GNU-timeout path already restricts PATH to,
-# and jq is the only thing here that is not a shell builtin.
-# mktemp, never a $$-derived name: on a shared host $TMPDIR is world-writable
-# and a PID-derived path is predictable, so `>` would follow a symlink an
-# attacker planted there and truncate whatever the invoking user can write.
-# Challenge round 3 (P2), confirmed.
-known_ids_file="$(mktemp "${TMPDIR:-/tmp}/readiness-gate-known-ids.XXXXXX")" ||
-    indeterminate malformed-data "could not create a temporary file for the run's known finding ids"
-# `|| :` so the trap's own last command always succeeds: this script's
-# verdict IS its exit code, and a cleanup that fails — `rm` missing from a
-# restricted PATH, a read-only TMPDIR — must never be what the caller reads
-# instead of fail/indeterminate/pass.
-trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
-{
-    for known_ids_doc in "$record_dir"/passes/*.json; do
-        [ -f "$known_ids_doc" ] || continue
-        # SEMANTICALLY validate each pass before trusting its ids, rather
-        # than approximating validity with a status/role filter of our own.
-        # `status: "completed"` does not establish it — a structurally valid
-        # pass whose `counts` disagree with its findings is rejected by
-        # validate-result-schemas.mjs while render-dev-flow's readiness-input,
-        # which is only structural, lets it through (integrate cycle 3 on
-        # PR #800). Running the real validator is both stricter and less code:
-        # it subsumes the blocked-role rule this filter used to hand-roll,
-        # including the distinction that a blocked confidence-role pass
-        # carries no findings while a blocked integrator legitimately does.
-        node "$validate_result_schemas" envelope "$known_ids_doc" \
-            --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
-            >/dev/null 2>&1 || continue
-        jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
+if [ -z "$integrator_result" ]; then
+    jq -e '.stage_transitions[-1].stage == "integration" and
+      ([.finder_selection[]? | select(.stage == "integration")] | length == 0)' \
+        "$run_json" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "the active stage is not integration or the run selected integration finders; dispatch an integrator and supply --integrator-result"
+    # The clean-run fast path has no integration work to adjudicate and
+    # exactly one configured finder. Anything else needs an integrator.
+    for checker_pass in "$record_dir"/passes/*.json; do
+        [ -f "$checker_pass" ] || continue
+        checker_role="$(jq -er '.role' "$checker_pass")" ||
+            indeterminate malformed-data "cannot read recorded pass $checker_pass"
+        [ "$checker_role" != integrator ] ||
+            indeterminate checker-fast-path-unavailable "the record holds an integrator pass; dispatch an integrator and supply --integrator-result"
     done
-} | jq -Rn '[inputs | select(. != "")] | unique' >"$known_ids_file" 2>/dev/null || true
-# An unreadable or absent record leaves an EMPTY universe rather than no
-# check: an empty FILE would make the validator's own --known-ids parse fail
-# (a usage error), where an empty ARRAY is the honest "this run has produced
-# no findings the record can account for" — and still enforcing.
-[ -s "$known_ids_file" ] || printf '[]\n' >"$known_ids_file"
-node "$validate_result_schemas" envelope "$integrator_result" \
-    --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
-    --known-ids "$known_ids_file" >/dev/null 2>&1 ||
-    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by), or names an applied disposition outside the run's known finding universe"
+    for checker_adj in "$record_dir"/adjudications/*.json; do
+        [ -f "$checker_adj" ] || continue
+        checker_stage="$(jq -er '.stage' "$checker_adj")" ||
+            indeterminate malformed-data "cannot read adjudication $checker_adj"
+        [ "$checker_stage" != integration ] ||
+            indeterminate checker-fast-path-unavailable "the record holds an integration adjudication; dispatch an integrator and supply --integrator-result"
+    done
+    jq -e '.stages.integration.finders == ["codex-cloud"]' \
+        "$record_dir/policy.json" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "resolved integration finders are not proven to be codex-cloud alone; dispatch an integrator and supply --integrator-result"
+    # Closed allowlist: do not parse finding prose or exempt the caller.
+    # Empty review bodies carry no prose; every top-level comment counts.
+    non_codex_findings="$(jq -cn --argjson top "$fp_top" --argjson reviews "$fp_reviews" \
+        --argjson bot "$codex_actor_id" '
+      [((($top | add // [])[]),
+        (($reviews | add // [])[] | select((.body // "") != ""))) |
+        select(.user.id != $bot) |
+        select(((.body // "") | gsub("^\\s+|\\s+$"; "")) != "@codex review")]
+    ')" || indeterminate malformed-data "PR comment and review bodies could not be classified"
+    [ "$(jq 'length' <<<"$non_codex_findings")" -eq 0 ] ||
+        indeterminate checker-fast-path-unavailable "the PR carries bodies outside Codex comments and exact review triggers; dispatch an integrator and supply --integrator-result"
+    [ "$(jq 'add // [] | length' <<<"$fp_inline")" -eq 0 ] ||
+        indeterminate checker-fast-path-unavailable "the PR carries inline review comments; dispatch an integrator and supply --integrator-result"
+
+fi
+if [ -n "$integrator_result" ]; then
+    # The run's known finding universe, so the validator's
+    # checkAppliedDispositionsKnownFindingIds actually runs here
+    # (harmon-devkit#685: "nested integrator passes' applied_dispositions ids are
+    # validated against the run's known finding universe"). That check is gated
+    # on --known-ids, and this gate — the production caller — was not passing it,
+    # so a clean integrator pass could claim dispositions for findings that never
+    # existed and still authorize promotion; only impossible integration ids were
+    # caught, by the flagless half of the check. Challenge round 2, confirmed.
+    #
+    # The universe is every finding the record's own PASSES produced — the ids
+    # raised under `passes/`, and nothing else. An adjudication is a judgement
+    # ABOUT a finding, never evidence that one was produced: integrate cycle 2 on
+    # PR #800 showed that harvesting adjudication ids too lets a fabricated
+    # same-run adjudication whitelist an arbitrary id, since
+    # `render-dev-flow readiness-input` explicitly continues past an adjudication
+    # row with no pass behind it. Narrowing to passes removes that class rather
+    # than patching it — every legitimately adjudicated finding was raised by a
+    # pass, so a complete record already contains it, and a record missing that
+    # pass is incomplete in a way the gate should fail closed on. An id in
+    # neither the passes nor the gated payload's own findings[] (which the
+    # validator checks separately) names nothing the record can account for.
+    #
+    # `--record` is the dev-flow-v2 record directory the review stage retains
+    # and this stage consumes, so both subdirectories are its documented
+    # contents, not an assumption about the caller.
+    # A plain glob and jq, never find/xargs: this script must keep running on
+    # the minimal toolset its own no-GNU-timeout path already restricts PATH to,
+    # and jq is the only thing here that is not a shell builtin.
+    # mktemp, never a $$-derived name: on a shared host $TMPDIR is world-writable
+    # and a PID-derived path is predictable, so `>` would follow a symlink an
+    # attacker planted there and truncate whatever the invoking user can write.
+    # Challenge round 3 (P2), confirmed.
+    known_ids_file="$(mktemp "${TMPDIR:-/tmp}/readiness-gate-known-ids.XXXXXX")" ||
+        indeterminate malformed-data "could not create a temporary file for the run's known finding ids"
+    # `|| :` so the trap's own last command always succeeds: this script's
+    # verdict IS its exit code, and a cleanup that fails — `rm` missing from a
+    # restricted PATH, a read-only TMPDIR — must never be what the caller reads
+    # instead of fail/indeterminate/pass.
+    trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
+    {
+        for known_ids_doc in "$record_dir"/passes/*.json; do
+            [ -f "$known_ids_doc" ] || continue
+            # SEMANTICALLY validate each pass before trusting its ids, rather
+            # than approximating validity with a status/role filter of our own.
+            # `status: "completed"` does not establish it — a structurally valid
+            # pass whose `counts` disagree with its findings is rejected by
+            # validate-result-schemas.mjs while render-dev-flow's readiness-input,
+            # which is only structural, lets it through (integrate cycle 3 on
+            # PR #800). Running the real validator is both stricter and less code:
+            # it subsumes the blocked-role rule this filter used to hand-roll,
+            # including the distinction that a blocked confidence-role pass
+            # carries no findings while a blocked integrator legitimately does.
+            node "$validate_result_schemas" envelope "$known_ids_doc" \
+                --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
+                >/dev/null 2>&1 || continue
+            jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
+        done
+    } | jq -Rn '[inputs | select(. != "")] | unique' >"$known_ids_file" 2>/dev/null || true
+    # An unreadable or absent record leaves an EMPTY universe rather than no
+    # check: an empty FILE would make the validator's own --known-ids parse fail
+    # (a usage error), where an empty ARRAY is the honest "this run has produced
+    # no findings the record can account for" — and still enforcing.
+    [ -s "$known_ids_file" ] || printf '[]\n' >"$known_ids_file"
+    node "$validate_result_schemas" envelope "$integrator_result" \
+        --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
+        --known-ids "$known_ids_file" >/dev/null 2>&1 ||
+        indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by), or names an applied disposition outside the run's known finding universe"
+
+fi
 
 # harmon-devkit#685: "promotion.head equals the head of the final integrator
 # result and its accepted-cycle reviewed commit; a stale integration pass
@@ -1524,18 +1584,90 @@ record_promotion_head="$(jq -r '.promotion.head // ""' "$run_json" 2>/dev/null)"
 if [ -n "$record_promotion_head" ] && [ "$record_promotion_head" != "$head" ]; then
     indeterminate promotion-head-mismatch "run.json records promotion.head $record_promotion_head, not the gated $head — a stale integration pass cannot certify a newer promoted head (harmon-devkit#685)"
 fi
-integrator_role="$(jq -er '.role | select(type == "string")' \
-    "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result carries no role"
-[ "$integrator_role" = integrator ] ||
-    indeterminate codex-indeterminate "--integrator-result names role $integrator_role, not integrator"
-envelope_head="$(jq -er '.head | select(type == "string")' \
-    "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result carries no head"
-[ "$envelope_head" = "$head" ] ||
-    indeterminate codex-indeterminate "integrator result is for head $envelope_head, not the gated $head — dispatch a fresh pass against this head"
-codex_cycle="$(jq -c '.payload.codex_cycle' "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result payload is unreadable"
+if [ -n "$integrator_result" ]; then
+    integrator_role="$(jq -er '.role | select(type == "string")' \
+        "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result carries no role"
+    [ "$integrator_role" = integrator ] ||
+        indeterminate codex-indeterminate "--integrator-result names role $integrator_role, not integrator"
+    envelope_head="$(jq -er '.head | select(type == "string")' \
+        "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result carries no head"
+    [ "$envelope_head" = "$head" ] ||
+        indeterminate codex-indeterminate "integrator result is for head $envelope_head, not the gated $head — dispatch a fresh pass against this head"
+    codex_cycle="$(jq -c '.payload.codex_cycle' "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result payload is unreadable"
+else
+    # No synthetic integrator envelope: the checker owns verdict collection,
+    # and its state owns cycle spend. Live checks, threads and settlements are
+    # evaluated by this gate in both paths.
+    [ -f "$script_dir/trusted-registry.sh" ] ||
+        indeterminate checker-fast-path-unavailable "trusted-registry.sh is missing; cannot confirm the checker finder profile"
+    # shellcheck source=trusted-registry.sh
+    . "$script_dir/trusted-registry.sh"
+    checker_profile_dir="$(mktemp -d "${TMPDIR:-/tmp}/readiness-gate-profile.XXXXXX")" ||
+        indeterminate checker-fast-path-unavailable "cannot create a temporary directory for checker evidence"
+    trap 'rm -rf "$checker_profile_dir" 2>/dev/null || :' EXIT
+    checker_state_snapshot="$checker_profile_dir/state.json"
+    cp "$codex_recheck_state" "$checker_state_snapshot" ||
+        indeterminate codex-stale "cannot snapshot --codex-recheck for live evidence"
+    jq -e '.phase == "attached" or .phase == "terminal"' "$checker_state_snapshot" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker evidence is not attached or terminal"
+    # Both the checker and cycle construction use this private snapshot;
+    # a concurrent reservation cannot replace the state between those reads.
+    recheck_codex_freshness
+    resolve_trusted_registry "$repo" "$pr" "$checker_profile_dir/registry.json" ||
+        indeterminate checker-fast-path-unavailable "cannot resolve the trusted registry for checker evidence"
+    resolve_finder_profile "$checker_profile_dir/registry.json" codex-cloud \
+        "$checker_profile_dir/profile.json" ||
+        indeterminate checker-fast-path-unavailable "cannot resolve the trusted Codex finder profile"
+    # Fixed legacy defaults of check-codex-cloud-review.sh, not caller state.
+    cat >"$checker_profile_dir/legacy.json" <<'LEGACY'
+{"slug":"codex-cloud","actor_id":"199175422","actor_login":"chatgpt-codex-connector[bot]","trigger_mechanism":"review-comment","trigger_body":"@codex review","reviewer_login":null,"surfaces":["reaction","comment","review","inline"],"head_binding":"reviewed-commit-line","verdict_mode":"clean-sentence","clean_verdict":"codex review: didn't find any major issues.","actionable_pattern":null,"severity_marker":"\\bp[0-9]+\\b","metadata_line":"^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$","about_summary":"about codex","heading":"^#{1,6}[^a-z0-9]*codex review$","carrier_sentence":"here are some automated review suggestions for this pull request.","success_reaction":"+1","pending_reaction":"eyes"}
+LEGACY
+    jq -e --slurpfile trusted "$checker_profile_dir/profile.json" \
+        --slurpfile legacy "$checker_profile_dir/legacy.json" '
+          ($trusted[0] | {
+            slug:.slug, actor_id:(.trusted_actor_id | tostring), actor_login:.trusted_actor_login,
+            trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+            reviewer_login:.collection.trigger.reviewer_login,
+            surfaces:.collection.terminal_signals.surfaces,
+            head_binding:.collection.terminal_signals.head_binding,
+            verdict_mode:.collection.terminal_signals.verdict_mode,
+            clean_verdict:.collection.terminal_signals.clean_verdict,
+            actionable_pattern:.collection.terminal_signals.actionable_pattern,
+            severity_marker:.collection.terminal_signals.severity_marker,
+            metadata_line:.collection.terminal_signals.metadata_line,
+            about_summary:.collection.terminal_signals.about_summary,
+            heading:.collection.terminal_signals.heading,
+            carrier_sentence:.collection.terminal_signals.carrier_sentence,
+            success_reaction:.collection.terminal_signals.success_reaction,
+            pending_reaction:.collection.terminal_signals.pending_reaction
+          }) as $expected |
+          $expected.actor_id == "199175422" and
+          $expected.actor_login == "chatgpt-codex-connector[bot]" and
+          ($expected.surfaces | index("comment") != null) and
+          ($expected.surfaces | index("review") != null) and
+          (if .finder == null then $expected == $legacy[0] else .finder == $expected end)
+          ' "$checker_state_snapshot" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker finder profile differs from the trusted Codex reserve profile; dispatch an integrator and supply --integrator-result"
+    codex_cycle="$(jq -ce --arg head "$head" '
+      def uint: type == "number" and . >= 0 and . == floor;
+      select(has("charged_cycles") and has("exempt_cycles"))
+      | select((.charged_cycles | uint) and (.exempt_cycles | uint))
+      | select((.charged_cycles + .exempt_cycles) > 0)
+      | . as $state
+      | {head:$head, cycle:(.charged_cycles + .exempt_cycles), exit_code:0,
+         charged:.charged_cycles, exempt:.exempt_cycles}
+        + (if $state.carry != null then
+             {carried:($state.carry + {origin_head:$state.head})} else {} end)
+      ' "$checker_state_snapshot" 2>/dev/null)" ||
+        indeterminate malformed-data "checker state carries invalid cycle counters"
+    jq -e '.charged_cycles == 1 and .exempt_cycles == 0 and (.settled // []) == []' \
+        "$checker_state_snapshot" >/dev/null 2>&1 ||
+        indeterminate checker-fast-path-unavailable "checker evidence is not exactly one clean charged cycle with zero exempt cycles and no settlements; dispatch an integrator and supply --integrator-result"
+fi
+cycle_state_file="${checker_state_snapshot:-$codex_recheck_state}"
 if [ "$codex_cycle" != null ]; then
     cycle_head="$(jq -er '.head | select(type == "string")' \
         <<<"$codex_cycle" 2>/dev/null)" ||
@@ -1607,11 +1739,11 @@ if [ "$codex_cycle" != null ]; then
             # charged column into the exempt one and walk past both ceilings.
             # Where the durable checker state is supplied, it is the record of
             # what was actually reserved, and the reported split must match it.
-            if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+            if [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ]; then
                 state_charged="$(jq -er '.charged_cycles | select(type == "number")' \
-                    "$codex_recheck_state" 2>/dev/null)" || state_charged=
+                    "$cycle_state_file" 2>/dev/null)" || state_charged=
                 state_exempt="$(jq -er '.exempt_cycles | select(type == "number")' \
-                    "$codex_recheck_state" 2>/dev/null)" || state_exempt=
+                    "$cycle_state_file" 2>/dev/null)" || state_exempt=
                 # A result that CLAIMS a split owes durable proof of it. State
                 # written before these counters existed carries neither — but a
                 # producer old enough to have written that state also omits the
@@ -1654,16 +1786,16 @@ if [ "$codex_cycle" != null ]; then
     # the state does not record, and it may not omit one the state does: the
     # disclosure exists precisely so a head attested without a reviewer reading
     # it is visible, and a disclosure that can be dropped discloses nothing.
-    if [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ]; then
+    if [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ]; then
         state_attests_head="$(jq -r '.carry.attests_head // empty' \
-            "$codex_recheck_state" 2>/dev/null)" || state_attests_head=
+            "$cycle_state_file" 2>/dev/null)" || state_attests_head=
         if [ "$state_attests_head" = "$head" ]; then
             jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1 ||
                 indeterminate codex-carried-unproven "the checker state records that $head is attested by a cycle for an earlier commit, but codex_cycle discloses no carried record — a result that omits the carry asserts a reviewer read this head when none did"
         fi
     fi
     if jq -e 'has("carried")' <<<"$codex_cycle" >/dev/null 2>&1; then
-        [ -n "$codex_recheck_state" ] && [ -f "$codex_recheck_state" ] ||
+        [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ] ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict but no --codex-recheck state was supplied to confirm it against — a carry means no reviewer read this head, so the claim cannot rest on the result alone"
         # Challenge round 2, finding `challenge-r2-codex-adversarial-3`
         # (confirmed P2): spot-checking two fields let a schema-valid result
@@ -1680,18 +1812,18 @@ if [ "$codex_cycle" != null ]; then
             <<<"$codex_cycle" 2>/dev/null)" ||
             indeterminate codex-carried-unproven "codex_cycle claims a carried-forward verdict with no origin_head"
         state_cycle_head="$(jq -er '.head | select(type == "string")' \
-            "$codex_recheck_state" 2>/dev/null)" || state_cycle_head=
+            "$cycle_state_file" 2>/dev/null)" || state_cycle_head=
         jq -e --argjson cycle "$codex_cycle" \
             '(.carry // null) as $state
              | ($cycle.carried | del(.origin_head)) as $claimed
              | ($state != null) and ($state == $claimed)' \
-            "$codex_recheck_state" >/dev/null 2>&1 ||
-            indeterminate codex-carried-unproven "codex_cycle's carried record does not match the checker state's byte for byte — claimed $(jq -c '.carried | del(.origin_head)' <<<"$codex_cycle"), recorded $(jq -c '.carry // null' "$codex_recheck_state")"
+            "$cycle_state_file" >/dev/null 2>&1 ||
+            indeterminate codex-carried-unproven "codex_cycle's carried record does not match the checker state's byte for byte — claimed $(jq -c '.carried | del(.origin_head)' <<<"$codex_cycle"), recorded $(jq -c '.carry // null' "$cycle_state_file")"
         [ "$cycle_carried_origin" = "$state_cycle_head" ] ||
             indeterminate codex-carried-unproven "codex_cycle says the verdict was carried from $cycle_carried_origin but the checker state's cycle is ${state_cycle_head:-none}"
     fi
     case "$codex_exit" in
-    0) recheck_codex_freshness ;;
+    0) [ -z "$integrator_result" ] || recheck_codex_freshness ;;
     *) exit_condition codex "$codex_exit" "the current-head Codex cycle" ;;
     esac
 elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
@@ -1705,130 +1837,134 @@ fi
 # condition is genuinely waived for this pass; that is a statement about
 # codex_cycle specifically, not about the pass as a whole.
 
-# 8b. Per-finder cloud conditions (#804). finder_cycles[] carries every
-# configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud,
-# etc.) that the integrator drove. Each entry must be terminal-clean
-# (exit_code 0) for the correct head. The codex-cloud entry is redundant
-# with codex_cycle above and is not re-checked; non-codex finders are
-# checked here.
-finder_cycles="$(jq -c '.payload.finder_cycles // []' "$integrator_result" 2>/dev/null)" || true
-finder_cycles_len="$(jq -r 'length' <<<"$finder_cycles" 2>/dev/null)" || finder_cycles_len=0
-if [ "$finder_cycles_len" -gt 0 ]; then
-    for fc_idx in $(seq 0 $((finder_cycles_len - 1))); do
-        fc_slug="$(jq -r ".[$fc_idx].finder // \"unknown\"" <<<"$finder_cycles")"
-        [ "$fc_slug" = "codex-cloud" ] && continue
-        fc_head="$(jq -r ".[$fc_idx].head // empty" <<<"$finder_cycles" 2>/dev/null)" ||
-            indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
-        [ "$fc_head" = "$head" ] ||
-            indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
-        # harmon-init#752: a `carried` claim on a non-codex finder used to be
-        # refused here. Integration cycle 3 (finding
-        # `integration-r3-codex-cloud-2`) moved that rule into the result
-        # schema, which the validation at step 8 above enforces before this
-        # loop runs — so the shape cannot reach this point.
-        fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
-            indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
-        case "$fc_exit" in
-        0) ;; # terminal-clean — condition passes
-        *) exit_condition finder "$fc_exit" "finder_cycles[$fc_idx] ($fc_slug)" ;;
-        esac
-    done
-fi
+applied_dispositions='[]'
+if [ -n "$integrator_result" ]; then
+    # 8b. Per-finder cloud conditions (#804). finder_cycles[] carries every
+    # configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud,
+    # etc.) that the integrator drove. Each entry must be terminal-clean
+    # (exit_code 0) for the correct head. The codex-cloud entry is redundant
+    # with codex_cycle above and is not re-checked; non-codex finders are
+    # checked here.
+    finder_cycles="$(jq -c '.payload.finder_cycles // []' "$integrator_result" 2>/dev/null)" || true
+    finder_cycles_len="$(jq -r 'length' <<<"$finder_cycles" 2>/dev/null)" || finder_cycles_len=0
+    if [ "$finder_cycles_len" -gt 0 ]; then
+        for fc_idx in $(seq 0 $((finder_cycles_len - 1))); do
+            fc_slug="$(jq -r ".[$fc_idx].finder // \"unknown\"" <<<"$finder_cycles")"
+            [ "$fc_slug" = "codex-cloud" ] && continue
+            fc_head="$(jq -r ".[$fc_idx].head // empty" <<<"$finder_cycles" 2>/dev/null)" ||
+                indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
+            [ "$fc_head" = "$head" ] ||
+                indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
+            # harmon-init#752: a `carried` claim on a non-codex finder used to be
+            # refused here. Integration cycle 3 (finding
+            # `integration-r3-codex-cloud-2`) moved that rule into the result
+            # schema, which the validation at step 8 above enforces before this
+            # loop runs — so the shape cannot reach this point.
+            fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
+                indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
+            case "$fc_exit" in
+            0) ;; # terminal-clean — condition passes
+            *) exit_condition finder "$fc_exit" "finder_cycles[$fc_idx] ($fc_slug)" ;;
+            esac
+        done
+    fi
 
-# 9a. The pass's own findings[] is unconditional evidence, independent of
-# codex_cycle — a null or clean codex_cycle says nothing about a NEW
-# top-level human finding the integrator surfaced this same pass (review
-# round 2 gauntlet challenge, harmon-devkit#639): a badged finding outside
-# an inline thread has no reply linkage, so no other condition here (the
-# thread-reply-linkage check is inline-only, the fingerprint only detects
-# CHANGE, deferred-findings only covers findings already carried from an
-# earlier stage) can ever catch it. Any non-empty findings[] on the pass
-# being gated is exactly what "the orchestrator has not adjudicated away"
-# (ai/agents/integrator.md §7) means — it is unresolved by construction,
-# whatever verdict the pass claims.
-findings_json="$(jq -c '.payload.findings // []' "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result payload is unreadable"
-findings_count="$(jq -r 'length' <<<"$findings_json" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result findings could not be read"
-if [ "$findings_count" -gt 0 ]; then
-    finding_ids="$(jq -r '[.[].id] | join(", ")' <<<"$findings_json")"
-    fail_condition unresolved-integrator-findings "the gated pass's own findings[] is non-empty: $finding_ids — adjudicate and re-dispatch before promoting"
-fi
+    # 9a. The pass's own findings[] is unconditional evidence, independent of
+    # codex_cycle — a null or clean codex_cycle says nothing about a NEW
+    # top-level human finding the integrator surfaced this same pass (review
+    # round 2 gauntlet challenge, harmon-devkit#639): a badged finding outside
+    # an inline thread has no reply linkage, so no other condition here (the
+    # thread-reply-linkage check is inline-only, the fingerprint only detects
+    # CHANGE, deferred-findings only covers findings already carried from an
+    # earlier stage) can ever catch it. Any non-empty findings[] on the pass
+    # being gated is exactly what "the orchestrator has not adjudicated away"
+    # (ai/agents/integrator.md §7) means — it is unresolved by construction,
+    # whatever verdict the pass claims.
+    findings_json="$(jq -c '.payload.findings // []' "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result payload is unreadable"
+    findings_count="$(jq -r 'length' <<<"$findings_json" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result findings could not be read"
+    if [ "$findings_count" -gt 0 ]; then
+        finding_ids="$(jq -r '[.[].id] | join(", ")' <<<"$findings_json")"
+        fail_condition unresolved-integrator-findings "the gated pass's own findings[] is non-empty: $finding_ids — adjudicate and re-dispatch before promoting"
+    fi
 
-# 9b. Every applied disposition that touches a DEFERRED finding must have a
-# matching settlement in run.json, regardless of the disposition's outcome
-# (harmon-devkit#685: "the moment an integrator pass applies fix|decline|file
-# to a deferred finding, the matching append-only settlement exists"). This
-# is scoped to deferred findings ONLY, never to a finding this same
-# integration pass discovered fresh (review round 2 gauntlet challenge,
-# harmon-devkit#639): a fresh integration-stage finding was never carried
-# with disposition `defer` by any adjudication document, so a settlement for
-# it is exactly the "settlement for a finding never dispositioned defer"
-# render-dev-flow.mjs's own cross-document consistency check rejects as
-# invalid — requiring one here would make such a finding impossible to
-# ever pass this gate, resolved or not. readiness_input's own
-# deferred_findings (settled ∪ unsettled) is the authoritative set of
-# finding ids that are genuinely deferred; read straight from run.json for
-# the settlement lookup itself rather than the projection, since this check
-# additionally needs applied_dispositions from a DIFFERENT document (the
-# integrator result), so the cross-reference happens here, not in the
-# projection.
-deferred_ids="$(jq -c '[.deferred_findings.settled[].finding_id,
+    # 9b. Every applied disposition that touches a DEFERRED finding must have a
+    # matching settlement in run.json, regardless of the disposition's outcome
+    # (harmon-devkit#685: "the moment an integrator pass applies fix|decline|file
+    # to a deferred finding, the matching append-only settlement exists"). This
+    # is scoped to deferred findings ONLY, never to a finding this same
+    # integration pass discovered fresh (review round 2 gauntlet challenge,
+    # harmon-devkit#639): a fresh integration-stage finding was never carried
+    # with disposition `defer` by any adjudication document, so a settlement for
+    # it is exactly the "settlement for a finding never dispositioned defer"
+    # render-dev-flow.mjs's own cross-document consistency check rejects as
+    # invalid — requiring one here would make such a finding impossible to
+    # ever pass this gate, resolved or not. readiness_input's own
+    # deferred_findings (settled ∪ unsettled) is the authoritative set of
+    # finding ids that are genuinely deferred; read straight from run.json for
+    # the settlement lookup itself rather than the projection, since this check
+    # additionally needs applied_dispositions from a DIFFERENT document (the
+    # integrator result), so the cross-reference happens here, not in the
+    # projection.
+    deferred_ids="$(jq -c '[.deferred_findings.settled[].finding_id,
     .deferred_findings.unsettled[].finding_id]' <<<"$readiness_input" 2>/dev/null)" ||
-    indeterminate malformed-data "readiness-input's deferred_findings could not be read"
-applied_dispositions="$(jq -c '.payload.applied_dispositions // []' \
-    "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result payload is unreadable"
-# The disposition travels with the finding_id through this whole check, not
-# just the id alone (Codex cloud-review cycle on PR harmon-devkit#758): an
-# id-only match would accept run.json recording "declined" for a finding
-# applied_dispositions calls "fixed" — both documents individually
-# schema-valid, the deferred projection reads settled, and the gate would
-# promote over contradictory evidence about how the finding was actually
-# resolved.
-settleable_tsv="$(jq -r --argjson deferred "$deferred_ids" \
-    '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") |
+        indeterminate malformed-data "readiness-input's deferred_findings could not be read"
+    applied_dispositions="$(jq -c '.payload.applied_dispositions // []' \
+        "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result payload is unreadable"
+    # The disposition travels with the finding_id through this whole check, not
+    # just the id alone (Codex cloud-review cycle on PR harmon-devkit#758): an
+    # id-only match would accept run.json recording "declined" for a finding
+    # applied_dispositions calls "fixed" — both documents individually
+    # schema-valid, the deferred projection reads settled, and the gate would
+    # promote over contradictory evidence about how the finding was actually
+    # resolved.
+    settleable_tsv="$(jq -r --argjson deferred "$deferred_ids" \
+        '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") |
      . as $d | select($deferred | index($d.finding_id) != null) | [$d.finding_id, $d.disposition] | @tsv' \
-    <<<"$applied_dispositions" 2>/dev/null)"
-if [ -n "$settleable_tsv" ]; then
-    # $run_json is already resolved and proven to exist above, for the
-    # active-run binding — reused here rather than re-checked.
-    settlements="$(jq -c '.settlements // []' "$run_json" 2>/dev/null)" ||
-        indeterminate malformed-data "run.json's settlements could not be read"
-    while IFS=$'\t' read -r finding_id disposition; do
-        [ -n "$finding_id" ] || continue
-        jq -e --arg id "$finding_id" --arg disp "$disposition" \
-            'any(.[]; .finding_id == $id and .disposition == $disp)' \
-            <<<"$settlements" >/dev/null 2>&1 ||
-            fail_condition disposition-unsettled "applied_dispositions names deferred finding $finding_id as $disposition but run.json's settlements[] has no entry with that id and disposition"
-    done <<<"$settleable_tsv"
-fi
+        <<<"$applied_dispositions" 2>/dev/null)"
+    if [ -n "$settleable_tsv" ]; then
+        # $run_json is already resolved and proven to exist above, for the
+        # active-run binding — reused here rather than re-checked.
+        settlements="$(jq -c '.settlements // []' "$run_json" 2>/dev/null)" ||
+            indeterminate malformed-data "run.json's settlements could not be read"
+        while IFS=$'\t' read -r finding_id disposition; do
+            [ -n "$finding_id" ] || continue
+            jq -e --arg id "$finding_id" --arg disp "$disposition" \
+                'any(.[]; .finding_id == $id and .disposition == $disp)' \
+                <<<"$settlements" >/dev/null 2>&1 ||
+                fail_condition disposition-unsettled "applied_dispositions names deferred finding $finding_id as $disposition but run.json's settlements[] has no entry with that id and disposition"
+        done <<<"$settleable_tsv"
+    fi
 
-# 9c. The pass itself must be a completed, clean one — independent of
-# whether the Codex condition above was waived (Codex cloud-review cycle on
-# PR harmon-devkit#758). Everything above reads PARTS of the result
-# (codex_cycle, findings[], applied_dispositions) and re-derives the rest
-# live, so a schema-valid envelope with status:"blocked" (the agent stopped
-# in its §1 before ever reading the threads or the top-level comments) or a
-# verdict of "pending" (CI unsettled when it looked, so it skipped the
-# cycle without driving one — a null codex_cycle that is NOT a cap-0
-# waiver) carrying empty findings[] passes every check above under
-# --integration-cap 0: the empty lists mean "never collected", not "nothing
-# found", and 9a's top-level-finding catch is only as good as the pass that
-# populated it. The validator already ties verdict:"clean" to green
-# required checks, a null-or-terminal-clean cycle, and empty
-# unanswered_thread_roots, so requiring it here is what makes those
-# guarantees apply to the gated pass at all.
-integrator_status="$(jq -er '.status | select(type == "string")' \
-    "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result carries no status"
-[ "$integrator_status" = completed ] ||
-    fail_condition integrator-not-clean "integrator result status is $integrator_status, not completed — the pass never finished collecting evidence; re-dispatch against this head"
-integrator_verdict="$(jq -er '.payload.verdict | select(type == "string")' \
-    "$integrator_result" 2>/dev/null)" ||
-    indeterminate malformed-data "integrator result carries no verdict"
-[ "$integrator_verdict" = clean ] ||
-    fail_condition integrator-not-clean "integrator result verdict is $integrator_verdict, not clean — only a completed clean pass for this head can be gated; re-dispatch after what it is waiting on or reporting is settled"
+    # 9c. The pass itself must be a completed, clean one — independent of
+    # whether the Codex condition above was waived (Codex cloud-review cycle on
+    # PR harmon-devkit#758). Everything above reads PARTS of the result
+    # (codex_cycle, findings[], applied_dispositions) and re-derives the rest
+    # live, so a schema-valid envelope with status:"blocked" (the agent stopped
+    # in its §1 before ever reading the threads or the top-level comments) or a
+    # verdict of "pending" (CI unsettled when it looked, so it skipped the
+    # cycle without driving one — a null codex_cycle that is NOT a cap-0
+    # waiver) carrying empty findings[] passes every check above under
+    # --integration-cap 0: the empty lists mean "never collected", not "nothing
+    # found", and 9a's top-level-finding catch is only as good as the pass that
+    # populated it. The validator already ties verdict:"clean" to green
+    # required checks, a null-or-terminal-clean cycle, and empty
+    # unanswered_thread_roots, so requiring it here is what makes those
+    # guarantees apply to the gated pass at all.
+    integrator_status="$(jq -er '.status | select(type == "string")' \
+        "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result carries no status"
+    [ "$integrator_status" = completed ] ||
+        fail_condition integrator-not-clean "integrator result status is $integrator_status, not completed — the pass never finished collecting evidence; re-dispatch against this head"
+    integrator_verdict="$(jq -er '.payload.verdict | select(type == "string")' \
+        "$integrator_result" 2>/dev/null)" ||
+        indeterminate malformed-data "integrator result carries no verdict"
+    [ "$integrator_verdict" = clean ] ||
+        fail_condition integrator-not-clean "integrator result verdict is $integrator_verdict, not clean — only a completed clean pass for this head can be gated; re-dispatch after what it is waiting on or reporting is settled"
+
+fi
 
 # 9d. Remediation loops against the resolved remediation cap
 # (harmon-devkit#685: "integration -> implement -> integration loops are
@@ -1925,15 +2061,16 @@ try {
   process.exit(0);
 }
 const { passes, adjudications } = loadRunDir(record);
-const result = JSON.parse((await import("node:fs")).readFileSync(gated, "utf8"));
+const fs = await import("node:fs");
+const result = gated ? JSON.parse(fs.readFileSync(gated, "utf8")) : null;
 const bindOf = (envelope) => ({ round: envelope.payload?.integration_round ?? null, cycle: envelope.payload?.codex_cycle?.cycle ?? null, head: envelope.head ?? null });
 const latest = passes
   .filter((p) => p.envelope.role === "integrator")
   .map((p) => bindOf(p.envelope))
   .sort((x, y) => x.round - y.round)
   .at(-1) ?? null;
-const want = bindOf(result);
-const owed = want.cycle !== null || latest !== null;
+const want = result ? bindOf(result) : null;
+const owed = result && (want.cycle !== null || latest !== null);
 const bound = !owed || (latest !== null && latest.round === want.round && latest.cycle === want.cycle && latest.head === want.head);
 const docs = adjudications.map((a) => a.doc).filter((d) => d?.stage === "integration");
 const filed = docs.flatMap((d) => d.adjudications)
@@ -2088,7 +2225,7 @@ recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")"
 establish_behind "$recheck" "immediately before the verdict"
 if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
-        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
+        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — ${behind_remedy}; then re-run"
 else
     # Assign, never merely set: a retarget to a level base (or a rewritten
     # base) between the two comparisons would otherwise leave the earlier
@@ -2164,7 +2301,7 @@ assert_closing_linkage "$final" "final snapshot"
 jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
 jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null ||
-    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; reconcile and re-run"
+    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; ${behind_remedy}; then re-run"
 [ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
 # Same three-way handling as the recheck above — writing only the DIRTY arm
@@ -2193,10 +2330,22 @@ else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
 fi
+# The checker-only verdict attests these exact checked bytes. A newer
+# reservation or state edit invalidates it, even when the PR head is unchanged.
+if [ -z "$integrator_result" ]; then
+    cmp -s "$codex_recheck_state" "$checker_state_snapshot" ||
+        indeterminate codex-stale "checker state changed during the gate — re-run the gate against the current state"
+fi
 jq -cn \
     --arg head "$head" \
     --arg fingerprint "$fingerprint" \
     --arg condition "$verdict_condition" \
     --arg detail "$verdict_detail" \
+    --arg checker_state "$codex_recheck_state" \
+    --arg integrator_result "$integrator_result" \
+    --argjson cycle "$codex_cycle" \
     '{status:"pass",condition:$condition,head:$head,fingerprint:$fingerprint,
-      detail:$detail}'
+      detail:$detail}
+     + {cycle_evidence:(if $integrator_result != "" then
+          {kind:"integrator-result",path:$integrator_result}
+        else {kind:"checker-state",path:$checker_state,cycle:$cycle.cycle} end)}'
