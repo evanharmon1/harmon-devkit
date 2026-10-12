@@ -3297,7 +3297,10 @@ echo "==> attach's GitHub calls are budgeted by the persisted timeout, not the d
 # run_gh's timeout wrapper cuts the stalled call off after ~2s. If it fell
 # back to the unmodified 15-minute default (the #223 bug applied to attach),
 # the remaining budget would be minutes wide, so the call would run an order
-# of magnitude longer (~60s) and the assertion below would fail.
+# of magnitude longer (~60s) and the assertion below would fail; the 15s
+# threshold must stay well below run_gh's per-call limit in
+# check-codex-cloud-review.sh, or an unbounded attach could also finish
+# under it.
 trigger_id=123
 request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 write_defaults
@@ -3319,6 +3322,8 @@ attach_rc=$?
 elapsed_seconds=$((SECONDS - start_seconds))
 set -e
 rm -f "${fixtures}/slow-endpoint" "${fixtures}/slow-sec"
+grep -Fq "issues/comments/${trigger_id}" "$log" ||
+    fail "attach never reached the trigger fetch it is meant to bound"
 [ "$elapsed_seconds" -lt 15 ] ||
     fail "attach did not bound its call to the persisted 5-minute window (${elapsed_seconds}s, rc=$attach_rc)"
 
