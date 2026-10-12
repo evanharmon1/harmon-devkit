@@ -1,0 +1,26 @@
+{
+  "run_id": "run-integration-catch-up-after-tell-is-not-a-remediation-push",
+  "initiated_by": "human",
+  "stage_transitions": [
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T00:00:00Z",
+      "exit": "remediating"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-10-08T01:01:00Z",
+      "exit": "fixed"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-10-08T01:02:00Z",
+      "remediation": {
+        "head": "0202020202020202020202020202020202020202",
+        "findings": [
+          "integration-r1-codex-cloud-1"
+        ]
+      }
+    }
+  ]
+}

@@ -1648,6 +1648,18 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 //   after a tell cycle is accepted only when that cycle recorded a delete or
 //   restructure remedy and nothing it kept (`retain`); otherwise the record is
 //   indeterminate.
+// - A REMEDIATION PUSH is what the run record says it is, never what a
+//   cycle's `charged` flag suggests (harmon-devkit#1386): the integration
+//   transition that re-enters integration after a push records
+//   `remediation: {head, findings}`. A head move with no such record — a
+//   server-side catch-up, a carry — is never a remediation push. A push
+//   follows the latest cycle holding any finding it names. After that cycle
+//   closed a clean streak of two (the fixing ceiling), a push whose findings
+//   are all P2/P3 is refused (indeterminate); one naming a confirmed P0/P1 is
+//   accepted, and that P0/P1 has already broken the streak. A record with an
+//   unrecorded integration re-entry cannot classify a head move that leaves a
+//   tell or a converged cycle, so such a move is indeterminate rather than
+//   assumed to be a catch-up.
 // - `capped`: the clean streak is broken and the charged cycles have reached
 //   the integration cap. `continue` otherwise; a single clean cycle is
 //   `continue`/`last_cycle_clean`, because one terminal clean cycle with every
@@ -1714,6 +1726,42 @@ function loadIntegrationRounds(runDir, validatorPath) {
   return [...byRound.values()].sort((x, y) => x.round - y.round);
 }
 
+// Reads the explicit remediation-push records (harmon-devkit#1386) from the
+// run record's own stage_transitions: every integration entry after the first
+// is one integration -> implement -> integration loop (the count
+// readiness-gate.sh holds against --remediation-cap), and the loop's push is
+// recorded on that re-entry. A loop without the record is counted, not
+// guessed at.
+function loadRemediationPushes(runRecord) {
+  const transitions = runRecord.stage_transitions ?? [];
+  if (!Array.isArray(transitions)) {
+    throw integrationIndeterminate("run.json's stage_transitions is present but not an array — remediation pushes cannot be read", "remediation-malformed");
+  }
+  const pushes = [];
+  let unrecorded = 0;
+  let integrationSeen = false;
+  for (const [index, t] of transitions.entries()) {
+    const reentry = t?.stage === "integration" && integrationSeen;
+    if (t?.stage === "integration") integrationSeen = true;
+    const rem = t?.remediation;
+    if (rem === undefined) {
+      if (reentry) unrecorded++;
+      continue;
+    }
+    if (!reentry) {
+      throw integrationIndeterminate(`stage_transitions[${index}] records a remediation push, but only an integration re-entry can`, "remediation-misplaced");
+    }
+    const wellFormed =
+      rem !== null && typeof rem === "object" && typeof rem.head === "string" && /^[0-9a-f]{40}$/.test(rem.head) &&
+      Array.isArray(rem.findings) && rem.findings.every((id) => typeof id === "string" && id !== "");
+    if (!wellFormed) {
+      throw integrationIndeterminate(`stage_transitions[${index}].remediation is not {head: <40-hex>, findings: [<finding id>, …]}`, "remediation-malformed");
+    }
+    pushes.push({ index, head: rem.head, findings: rem.findings });
+  }
+  return { pushes, unrecorded };
+}
+
 // Any late round folded into an existing cycle — a round with no completed
 // cycle of its own, or a same-ordinal re-dispatch — contributes only its
 // adjudicated P0/P1 entries, which make the cycle gating; its P2/P3 entries
@@ -1724,11 +1772,22 @@ function foldLateRound(cycle, entries) {
   if (gating.length > 0) cycle.clean = false;
 }
 
-function computeIntegrationExit(rounds, integrationCap) {
+function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0 } = {}) {
   const cycles = [];
   let streak = 0;
   let ordinal = 0;
   let awaiting = null;
+  // What a remediation push is judged against: the cycle each adjudicated
+  // round landed in (null before the first cycle), each adjudicated finding's
+  // round and entry, and the heads a carry attested.
+  const cycleOfRound = new Map();
+  const findingIndex = new Map();
+  const carriedHeads = new Set();
+  for (const r of rounds) {
+    for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.set(e.finding_id, { round: r.round, entry: e });
+    const carried = r.pass.envelope.payload?.codex_cycle;
+    if (carried?.carried) carriedHeads.add(carried.head);
+  }
   for (const r of rounds) {
     const findings = r.pass.envelope.payload?.findings ?? [];
     if (!r.adjudication && findings.length > 0) {
@@ -1759,6 +1818,7 @@ function computeIntegrationExit(rounds, integrationCap) {
       // attempt. It folds into the latest completed cycle; before any, it
       // only breaks the streak.
       if (latest) foldLateRound(latest, entries);
+      cycleOfRound.set(r.round, latest ?? null);
       if (roundGating) streak = 0;
       continue;
     }
@@ -1768,6 +1828,7 @@ function computeIntegrationExit(rounds, integrationCap) {
       }
       latest.rounds.push(r.round);
       foldLateRound(latest, entries);
+      cycleOfRound.set(r.round, latest);
       if (roundGating) streak = 0;
       continue;
     }
@@ -1786,26 +1847,71 @@ function computeIntegrationExit(rounds, integrationCap) {
       clean: !roundGating,
     };
     cycles.push(cycle);
+    cycleOfRound.set(r.round, cycle);
     streak = cycle.clean ? streak + 1 : 0;
   }
 
   const isTell = (c) => c.cycle >= 2 && c.entries.length > 0 && c.entries.every((e) => e.checkpoint?.attacks_remediation === true);
-  for (let i = 0; i + 1 < cycles.length; i++) {
-    const tell = cycles[i];
-    const next = cycles[i + 1];
-    // A next cycle on the same head, or one that charged nothing (an exempt
-    // base merge), followed no remediation push.
-    if (!isTell(tell) || next.head === tell.head || next.charged <= tell.charged) continue;
-    // A push remedy counts only when the entry's disposition IS that remedy:
-    // `fix` with remedy `delete` is a hardening push wearing a delete label
-    // (#1272 challenge round 1; the validator refuses the pairing).
-    const remedies = tell.entries.map((e) => e.checkpoint.remedy);
-    const pushed = tell.entries.some((e) => PUSH_REMEDIES.includes(e.checkpoint.remedy) && e.disposition === e.checkpoint.remedy);
-    if (!remedies.every((m) => TELL_REMEDIES.includes(m)) || !pushed) {
+  // The clean streak each cycle closes, from the final clean flags (a late
+  // P0/P1 folded into a cycle has already made it gating).
+  const streakAt = new Map();
+  cycles.reduce((run, c) => {
+    const next = c.clean ? run + 1 : 0;
+    streakAt.set(c, next);
+    return next;
+  }, 0);
+  const motivated = new Set();
+  for (const push of pushes) {
+    if (carriedHeads.has(push.head)) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, a head a carry attested — a carry is never a remediation push`, "remediation-head-carried");
+    }
+    let after = null;
+    for (const id of push.findings) {
+      const found = findingIndex.get(id);
+      if (!found) {
+        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, which no integration adjudication holds`, "remediation-finding-unknown");
+      }
+      const c = cycleOfRound.get(found.round) ?? null;
+      if (c && (!after || c.cycle > after.cycle)) after = c;
+    }
+    // A push naming only findings from before the first cycle, or none (the
+    // local-merge fallback reconciliation), follows no cycle to judge.
+    if (!after) continue;
+    motivated.add(after);
+    if (isTell(after)) {
+      // A push remedy counts only when the entry's disposition IS that remedy:
+      // `fix` with remedy `delete` is a hardening push wearing a delete label
+      // (#1272 challenge round 1; the validator refuses the pairing).
+      const remedies = after.entries.map((e) => e.checkpoint.remedy);
+      const pushed = after.entries.some((e) => PUSH_REMEDIES.includes(e.checkpoint.remedy) && e.disposition === e.checkpoint.remedy);
+      if (!remedies.every((m) => TELL_REMEDIES.includes(m)) || !pushed) {
+        throw integrationIndeterminate(
+          `cycle ${after.cycle} met the tell, but a remediation push followed it (${push.head}) without a recorded delete or restructure remedy — the tell licenses no hardening push`,
+          "tell-remediation-unrecorded",
+        );
+      }
+    }
+    const gating = push.findings.some((id) => isGatingEntry(findingIndex.get(id).entry));
+    if (streakAt.get(after) >= 2 && !gating) {
       throw integrationIndeterminate(
-        `cycle ${tell.cycle} met the tell, but a remediation push followed it (cycle ${next.cycle} reviewed ${next.head}) without a recorded delete or restructure remedy — the tell licenses no hardening push`,
-        "tell-remediation-unrecorded",
+        `cycle ${after.cycle} closed two consecutive clean cycles, but a remediation push followed it (${push.head}) for P2/P3 findings only — the fixing ceiling allows no further remediation push for P2s`,
+        "fixing-ceiling",
       );
+    }
+  }
+  // With an unrecorded integration re-entry, a head move out of a tell or a
+  // converged cycle that no recorded push explains may be that loop's push:
+  // it can be neither judged nor assumed to be a catch-up.
+  if (unrecorded > 0) {
+    for (let i = 0; i + 1 < cycles.length; i++) {
+      const from = cycles[i];
+      if (cycles[i + 1].head === from.head || motivated.has(from)) continue;
+      if (isTell(from) || streakAt.get(from) >= 2) {
+        throw integrationIndeterminate(
+          `the head moved after cycle ${from.cycle} (${from.head} -> ${cycles[i + 1].head}) and the record holds ${unrecorded} integration re-entr${unrecorded === 1 ? "y" : "ies"} without a remediation record — cannot tell a catch-up from an unrecorded remediation push`,
+          "remediation-unrecorded",
+        );
+      }
     }
   }
 
@@ -1836,7 +1942,8 @@ function computeIntegrationExit(rounds, integrationCap) {
 // compute. Throws ExitIndeterminate (with a `code`) on anything it cannot
 // establish.
 function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
-  return computeIntegrationExit(loadIntegrationRounds(loadRunDir(dir), validatorPath), integrationCap);
+  const runDir = loadRunDir(dir);
+  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, loadRemediationPushes(runDir.runRecord));
 }
 
 // ---------------------------------------------------------------------------
@@ -2100,7 +2207,11 @@ async function main() {
   if (args.stage === "integration") {
     let verdict;
     try {
-      verdict = computeIntegrationExit(loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR), resolved.rounds.integration);
+      verdict = computeIntegrationExit(
+        loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
+        resolved.rounds.integration,
+        loadRemediationPushes(runDir.runRecord),
+      );
     } catch (err) {
       if (err instanceof ExitIndeterminate) return indeterminate(args, err.message, err.code ?? null);
       throw err;

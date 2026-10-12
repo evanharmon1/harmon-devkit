@@ -993,8 +993,12 @@ const trajectory = (disposition) => [
   round(2, 2, 2, [entry(2, "P2", disposition, { attacks_remediation: true, remedy: "delete" })]),
   round(3, 3, 3, []),
 ];
-assert.throws(() => computeIntegrationExit(trajectory("fix"), 4), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
-assert.equal(computeIntegrationExit(trajectory("delete"), 4).outcome, "converged");
+// The pushes are the explicit run-record entries (harmon-devkit#1386).
+const pushes = { pushes: [{ index: 2, head: head(2), findings: [entry(1).finding_id] }, { index: 4, head: head(3), findings: [entry(2).finding_id] }], unrecorded: 0 };
+assert.throws(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
+assert.equal(computeIntegrationExit(trajectory("delete"), 4, pushes).outcome, "converged");
+// The same head move with no push recorded is a catch-up, never judged as a fix push.
+assert.equal(computeIntegrationExit(trajectory("fix"), 4, { pushes: pushes.pushes.slice(0, 1), unrecorded: 0 }).outcome, "converged");
 console.log("tell-guard disposition check OK");
 '
 

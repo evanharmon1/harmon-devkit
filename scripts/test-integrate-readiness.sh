@@ -4866,6 +4866,12 @@ assert_gate 2 indeterminate integration-record-unbound
 echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
 write_defaults
 write_record_with_integration_entries 2
+# Both pushes are recorded on their integration re-entries (harmon-devkit#1386):
+# the engine judges a recorded push, never a head move inferred from `charged`.
+jq --arg first "$stale_head_sha" --arg second "$head_sha" '
+  .stage_transitions[10].remediation = {head:$first, findings:["integration-r1-codex-cloud-1"]}
+  | .stage_transitions[14].remediation = {head:$second, findings:["integration-r2-codex-cloud-1"]}' \
+    "${record_dir}/run.json" >"${record_dir}/run.json.tmp" && mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
 write_integration_cycle 1 3333333333333333333333333333333333333333 1 P1 fix none
 write_integration_cycle 2 "$stale_head_sha" 2 P2 fix '{"attacks_remediation":true,"remedy":"retain"}'
 write_integration_cycle 3 "$head_sha" 3 P2 decline '{"attacks_remediation":false}'

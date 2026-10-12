@@ -2033,8 +2033,11 @@ fi
 # 9f. The integration record (harmon-devkit#1272), read directly — never a
 # verdict reason, never an inference about fix pushes (challenge-r5 replaced
 # the round-4 verdict allowlist). (c) Any engine indeterminate — a push after
-# a tell cycle without a delete/restructure remedy, a cycle-ordinal hole, an
-# invalid record — is indeterminate. (b) Any integration adjudication entry
+# a tell cycle without a delete/restructure remedy, a P2-only push past the
+# fixing ceiling, a head move the record's remediation pushes cannot classify
+# (harmon-devkit#1386: the engine reads run.json's stage_transitions[]
+# remediation records, never `charged`), a cycle-ordinal hole, an invalid
+# record — is indeterminate. (b) Any integration adjudication entry
 # holding an adjudicated P0 or P1 whose disposition is file or defer fails:
 # filing settles P2s only. (a) An integration pass with findings and no
 # adjudication never reaches this step: step 6's readiness-input projection

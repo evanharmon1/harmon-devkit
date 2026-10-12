@@ -409,6 +409,25 @@ cmp -s "$state/runs/run-e/run.json" "$tmp/run-e.json" || fail "a close dated bef
 (cd "$repo" && node "$writer" lock release --slate s12 --session alice) >/dev/null
 pass "a close dated before the active stage began is refused"
 
+# -- remediation push record (harmon-devkit#1386) ------------------------------
+new_run run-f
+write_plan s13 20:run-f
+rf() { (cd "$repo" && node "$writer" transition --slate s13 --session alice --run-id run-f "$@"); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    rf --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+fix_head=cccccccccccccccccccccccccccccccccccccccc
+expect_refused "remediation outside an integration re-entry" "only on a transition that re-enters integration" \
+    rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1
+rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z >/dev/null
+rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
+    --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1,integration-r1-human-2 >/dev/null
+[ "$(jq -c '.stage_transitions[-1].remediation' "$state/runs/run-f/run.json")" = \
+    "{\"head\":\"$fix_head\",\"findings\":[\"integration-r1-codex-cloud-1\",\"integration-r1-human-2\"]}" ] ||
+    fail "the integration re-entry did not record the remediation push"
+(cd "$repo" && node "$writer" lock release --slate s13 --session alice) >/dev/null
+pass "a remediation push is recorded on the integration re-entry, and refused anywhere else"
+
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane
 new_run run-d

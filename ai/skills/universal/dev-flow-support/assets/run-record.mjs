@@ -5,6 +5,7 @@
 //
 // Usage:
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
+//                               [--remediation-head SHA --remediation-findings ID,ID,...]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other --note TEXT [--ruling FILE] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote      --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
@@ -37,6 +38,12 @@
 // non-promotion terminal outcome (if the run is still open) and then moves
 // the run's orchestrator files from
 // `slates/<slate>/orchestrator/<run-id>/` into `runs/<run-id>/orchestrator/`.
+//
+// `--remediation-head`/`--remediation-findings` record an integration
+// remediation push on the transition that re-enters integration after it
+// (harmon-devkit#1386): the head the push put on the branch and the
+// integration finding ids it answers. dev-flow-exit.mjs --stage integration
+// classifies head moves from that record only.
 //
 // `--ruling FILE` appends ` [ruling <path> sha256=<hex>]` to the intervention
 // note: run.schema.json closes intervention items, so the digest travels in
@@ -519,14 +526,35 @@ function rulingSuffix(common, file) {
   return ` [ruling ${shown} sha256=${sha256File(absolute)}]`
 }
 
+// remediationRecord — the explicit remediation-push record (harmon-devkit#1386),
+// written on the transition that re-enters integration after the push: the
+// pushed head and the integration finding ids it answers (an empty list only
+// for the local-merge fallback reconciliation). A server-side catch-up or a
+// carry is not a push and records nothing. Both flags or neither.
+function remediationRecord(record, stage, args) {
+  const head = args['remediation-head']
+  const findings = args['remediation-findings']
+  if (head === undefined && findings === undefined) return null
+  if (head === undefined || findings === undefined) {
+    throw new UsageError('--remediation-head and --remediation-findings are given together')
+  }
+  if (stage !== 'integration' || !record.stage_transitions.some((t) => t.stage === 'integration')) {
+    throw new Refusal('a remediation push is recorded only on a transition that re-enters integration')
+  }
+  if (!/^[0-9a-f]{40}$/.test(head)) throw new UsageError('--remediation-head must be a 40-hex SHA')
+  const ids = findings.trim() === '' ? [] : findings.split(',').map((id) => id.trim())
+  return { head, findings: ids }
+}
+
 const MUTATORS = {
   transition(record, args) {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
     const stage = args.stage
     if (typeof stage !== 'string' || stage === '') throw new UsageError('--stage is required')
     guardTimestamp(record, args.at)
+    const remediation = remediationRecord(record, stage, args)
     closeLastExit(record, args.exit, { required: true })
-    record.stage_transitions.push({ stage, entered_at: args.at })
+    record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
     // dev-flow-exit reads the active stage from the receipts sequence, so the
     // transition and its receipt land in the same candidate.
     record.receipts = [...(record.receipts ?? []), { kind: 'transition', stage, entered_at: args.at }]
@@ -648,6 +676,7 @@ function recordWrite(command, args) {
 const VALUE_FLAGS = new Set([
   'slate', 'session', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
+  'remediation-head', 'remediation-findings',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 
