@@ -2031,6 +2031,28 @@ function checkLaneAssemblies(document, errors) {
   }
 }
 
+// checkRemediationPushes — a remediation push is recorded on the integration
+// transition that re-enters integration after it (harmon-devkit#1386): the
+// first integration entry follows no remediation loop, so it never carries
+// one, and no other stage does. Findings are unique so one push answers each
+// finding once.
+function checkRemediationPushes(document, errors) {
+  let integrationSeen = false
+  for (const [index, transition] of (document.stage_transitions ?? []).entries()) {
+    const remediation = transition.remediation
+    const reentry = transition.stage === 'integration' && integrationSeen
+    if (transition.stage === 'integration') integrationSeen = true
+    if (remediation === undefined || remediation === null || typeof remediation !== 'object') continue
+    if (!reentry) {
+      errors.push(`$run.stage_transitions[${index}].remediation: is permitted only on an integration transition that re-enters integration`)
+    }
+    const findings = Array.isArray(remediation.findings) ? remediation.findings : []
+    if (new Set(findings).size !== findings.length) {
+      errors.push(`$run.stage_transitions[${index}].remediation.findings: finding ids must be unique`)
+    }
+  }
+}
+
 // isChronologicallyBefore A B — true iff timestamp A is strictly before B.
 // Compares via Date, not raw string ordering: two otherwise-identical
 // instants can be spelled with or without a fractional-seconds suffix
@@ -3565,6 +3587,7 @@ function main() {
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
       checkLaneAssemblies(instance, errors)
+      checkRemediationPushes(instance, errors)
       checkRunChronology(instance, errors)
       // --no-adjudications asserts "confirmed zero", which runs the SAME
       // checks as one-or-more --adjudication documents, just against the
