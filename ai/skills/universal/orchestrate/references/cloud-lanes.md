@@ -31,6 +31,9 @@ the claim transaction before launch, and passes the branch to the brief.
 Pushes to a `claude/*` name other than the session's assigned branch were
 accepted in every session tried, but the platform does not promise it; the
 brief therefore makes a refused push a BLOCKED report.
+`assets/fence-check.sh` needs a schema-bound brief, so it cannot check a cloud
+lane; compare `git diff --name-only <base>...<head>` against the planned lane
+fence instead before the readiness gate.
 
 | Field | Launch-time source |
 | --- | --- |
