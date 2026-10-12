@@ -71,18 +71,16 @@ try {
   if (runPath !== join(dirname(state), 'run.json')) fail('run path is not canonical for the monitor');
   validateFile('run', runPath, 'existing run record');
   let run = read(runPath);
-  if (run.run_id !== marker.run_id || !run.stage_transitions.some((t) => t.stage === marker.stage)) fail('marker is not bound to run stage');
   const roundName = `${marker.stage}-r${marker.round}`;
   const adjudicationPath = join(dirname(runPath), 'adjudications', `${roundName}.json`);
   if (!existsSync(adjudicationPath)) fail(`round ${roundName} has no retained adjudication`);
-  // validateFile('run') above validates every retained adjudication through
-  // the shared writer's strict context; bind the named artifact's coordinates.
+  // The shared writer's strict run validation validates this adjudication.
   const adjudication = read(adjudicationPath);
-  if (adjudication.run_id !== marker.run_id || adjudication.stage !== marker.stage || adjudication.round !== marker.round) fail(`round ${roundName} adjudication does not bind the marker`);
   const passesDir = join(dirname(runPath), 'passes');
   const passes = existsSync(passesDir) ? readdirSync(passesDir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name) : [];
-  if (!passes.some((name) => name.startsWith(`${roundName}-`) && name.endsWith('.json')
-      && run.receipts?.some((receipt) => receipt.kind === 'pass' && receipt.file === name.slice(0, -5)))) fail(`round ${roundName} has no retained pass with a run receipt`);
+  const receiptedPasses = (run.receipts ?? []).filter((receipt) => receipt.kind === 'pass' && receipt.file.startsWith(`${roundName}-`))
+    .map((receipt) => `${receipt.file}.json`);
+  if (!receiptedPasses.some((name) => passes.includes(name))) fail(`round ${roundName} has no retained pass with a run receipt`);
   const event = `evidence-${marker.destination}-${marker.stage}-r${marker.round}-s${marker.sequence}`;
   const persistedFile = join(dirname(state), `${event}.body.md`);
   let persistedBody;
@@ -106,7 +104,19 @@ try {
   if (fences.length !== 1 || /^\s*<!-- dev-flow-v2-evidence:/m.test(summary)) fail('body must contain exactly one fenced JSON projection and no evidence marker');
   const payload = fences[0][1];
   const projection = JSON.parse(payload);
-  if (projection.run_id !== marker.run_id || projection.stage !== marker.stage || projection.round !== marker.round || projection.reviewed_head !== o.head) fail('projection does not bind marker and reviewed head');
+  // One invariant binds the published round to all retained review evidence.
+  const bindings = [
+    { source: 'projection', run_id: projection.run_id, stage: projection.stage, round: projection.round, head: projection.reviewed_head },
+    { source: 'adjudication', run_id: adjudication.run_id, stage: adjudication.stage, round: adjudication.round, head: adjudication.reviewed_head },
+    ...receiptedPasses.map((name) => {
+      const pass = passes.includes(name) ? read(join(passesDir, name)) : {};
+      return { source: name, run_id: pass.run?.run_id,
+        stage: pass.role === 'integrator' ? 'integration' : pass.payload?.stage,
+        round: pass.role === 'integrator' ? pass.payload?.integration_round : pass.payload?.round, head: pass.head };
+    }),
+  ];
+  const mismatch = bindings.find((binding) => binding.run_id !== marker.run_id || binding.stage !== marker.stage || binding.round !== marker.round || binding.head !== o.head);
+  if (run.run_id !== marker.run_id || !run.stage_transitions.some((t) => t.stage === marker.stage) || mismatch) fail(`round evidence binding mismatch: ${mismatch?.source ?? 'run'} head ${mismatch?.head ?? 'missing'}; expected --head ${o.head} for ${marker.run_id}/${roundName}`);
   // Caller contract; the harvester authenticates the whole body and reads
   // retained local evidence rather than parsing this current-grammar fence.
   if (!Array.isArray(projection.passes) || !projection.passes.every((pass) => Array.isArray(pass?.payload?.findings))) fail('projection requires passes with payload.findings arrays');

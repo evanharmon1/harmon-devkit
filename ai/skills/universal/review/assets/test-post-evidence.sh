@@ -282,10 +282,27 @@ const adjudicationFile=join(dirname(run),'adjudications/challenge-r1.json');
 const retainedAdjudication=readFileSync(adjudicationFile,'utf8');
 reset(); put(adjudicationFile,{...read(adjudicationFile),round:0}); invoke(2,'validation');
 assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0); writeFileSync(adjudicationFile,retainedAdjudication);
-reset(); put(adjudicationFile,{...read(adjudicationFile),round:2}); invoke(2,'adjudication does not bind the marker');
+reset(); put(adjudicationFile,{...read(adjudicationFile),round:2}); invoke(2,'round evidence binding mismatch');
 assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0); writeFileSync(adjudicationFile,retainedAdjudication);
 console.log('PASS: a round-1-only run refuses round 2; invalid or misbound adjudications and absent/unreceipted passes refuse before reserve or POST');
-reset(); writeFileSync(bodyFile,summary.replace(head,'0'.repeat(40))); invoke(2,'projection does not bind');
+// All retained heads must equal the projection and the requested head.
+const otherHead='b'.repeat(40);
+reset(); const headBArgs=[...argv]; headBArgs[headBArgs.indexOf('--head')+1]=otherHead;
+writeFileSync(bodyFile,`\`\`\`json\n${JSON.stringify({...projection,reviewed_head:otherHead})}\n\`\`\`\n`);
+const oldRound=invoke(2,'adjudication head '+head,join(assets,'post-evidence.sh'),headBArgs);
+assert.ok(oldRound.stderr.includes('expected --head '+otherHead));
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+// A matching first pass cannot hide a mismatched later receipted pass.
+reset(); const secondPass=join(dirname(run),'passes/challenge-r1-second.json');
+put(secondPass,{...read(passFile),head:otherHead});
+const twoPasses=read(run); twoPasses.receipts.push({kind:'pass',file:'challenge-r1-second'}); put(run,twoPasses);
+const divergentPass=invoke(2,'challenge-r1-second.json head '+otherHead);
+assert.ok(divergentPass.stderr.includes('expected --head '+head));
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0); rmSync(secondPass);
+invoke(2,'challenge-r1-second.json head missing'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+console.log('PASS: head-A round cannot publish as head B; every receipted pass must share the adjudication/projection head before reserve or POST');
+
+reset(); writeFileSync(bodyFile,summary.replace(head,'0'.repeat(40))); invoke(2,'round evidence binding mismatch');
 for(const field of ['passes']) {
   reset(); const incomplete={...projection}; delete incomplete[field];
   writeFileSync(bodyFile,`\`\`\`json\n${JSON.stringify(incomplete)}\n\`\`\`\n`);
