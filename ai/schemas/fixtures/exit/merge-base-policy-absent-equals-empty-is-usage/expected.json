@@ -1,0 +1,4 @@
+{
+  "usage_error": true,
+  "stderr_contains": "\"--merge-base-policy-absent=…\" is not accepted"
+}

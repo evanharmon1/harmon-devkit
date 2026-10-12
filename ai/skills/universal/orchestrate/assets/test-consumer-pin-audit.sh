@@ -1134,11 +1134,14 @@ echo "== the recipe invokes the materialized reader, not the branch task target 
 # A branch-controlled `devflow:policy` target can drop `--closure`, so routing
 # the trusted resolution through it defeats the closure entirely; and a
 # Taskfile-only change never entered the closure path at all.
+# harmon-devkit#1345: the trusted reader is the materialized merge-base copy,
+# qualified by its capability marker, and invoked by path without --closure.
 # shellcheck disable=SC2016 # the literal recipe text is the assertion
-if grep -Fq 'node "$mb_dir/${reader}" resolve --closure' "$INTEGRATE_MD"; then
-    ok "the closure recipe invokes the materialized reader by path"
+if grep -Fq 'mb_reader="$(trusted_copy "$mb_dir/${reader}")"' "$INTEGRATE_MD" &&
+    grep -Fq 'node "$mb_reader" resolve \' "$INTEGRATE_MD"; then
+    ok "the closure recipe invokes the selected trusted reader by path"
 else
-    bad "the closure recipe does not invoke the materialized reader by path"
+    bad "the closure recipe does not invoke the selected trusted reader by path"
 fi
 # harmon-devkit#974: the reader's repository path differs between this source
 # tree, a consumer's flattened .claude/skills/ tree, and any merge base
@@ -1155,7 +1158,13 @@ if grep -Fq 'scripts/devflow-policy.mjs; do' "$INTEGRATE_MD"; then
 else
     bad "the closure recipe dropped the pre-#974 layout, so an in-flight branch cannot resolve its own merge base"
 fi
-if grep -Fq 'task devflow:policy -- resolve --closure' "$INTEGRATE_MD"; then
+# The trusted block runs from the merge-base computation to its closing fence,
+# comments excluded (one names the target it forbids); the ordinary-review
+# path elsewhere legitimately uses the task target.
+trusted_block="$(sed -n '/^base="$(git merge-base HEAD "$base_ref")"/,/^```$/p' "$INTEGRATE_MD" | grep -v '^ *#')"
+if [ -z "$trusted_block" ]; then
+    bad "could not find the trusted merge-base recipe block"
+elif grep -Fq 'task devflow:policy' <<<"$trusted_block"; then
     bad "the closure recipe still routes through the branch task target"
 else
     ok "the closure recipe no longer routes through the branch task target"
