@@ -45,16 +45,18 @@ Launch from the target checkout in a new Herdr tab using the lane-launch section
 editor environment. In its terminal, or under a pseudo-terminal, run:
 
 ```sh
-script -qec 'claude --cloud "$(cat brief.md)"' launch.log </dev/null
+script -qec 'claude --cloud "$(cat <run-dir>/<lane>/brief.md)"' <run-dir>/<lane>/launch.log </dev/null
 ```
 
 This is the verified Linux `script` form. The brief must come from a file:
 `script -c` re-parses its argument, and inline backtick-quoted brief text ran
 locally in the spike. Never interpolate the brief into that command string.
-A Herdr terminal can instead run `claude --cloud "$(cat brief.md)"` directly.
+A Herdr terminal can instead run `claude --cloud "$(cat <run-dir>/<lane>/brief.md)"` directly.
 Without a terminal it refuses with `Error: --cloud requires an interactive
 terminal.` Capture `Created cloud session: <title>`, the `View:` session URL and
-`Resume with: claude --teleport <session-id>` from the launch output.
+`Resume with: claude --teleport <session-id>` from the launch output. Keep the
+rendered brief and `launch.log` in the run directory: until the draft PR exists,
+`launch.log` is the record of the session ID, and a resumed driver reads it there.
 
 ## Message, watch and take back
 
