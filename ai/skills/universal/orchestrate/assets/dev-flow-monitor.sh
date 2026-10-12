@@ -557,6 +557,23 @@ reserve)
         mv "$init_tmp" "$state"
     fi
     if [ "$action" = "comment" ]; then
+        # Exact comment re-arms recover a crash after reserve/post/register.
+        # Recheck today's allowlist above before adopting yesterday's intent;
+        # a changed actor/marker/body/head never gets a second reservation.
+        existing="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
+        if [ -n "$existing" ]; then
+            jq -e --arg head "$expected_head" --arg actor "$trusted_actor_id" \
+                --arg run "$run_id" --arg role "$evidence_role" --arg finder "$evidence_finder" \
+                --arg marker "$marker" --arg digest "$payload_digest" '
+                .action == "comment" and .expected_head == $head and
+                (.state == "reserved" or .state == "adopted") and
+                .comment_auth.trusted_actor_id == $actor and .comment_auth.run_id == $run and
+                .comment_auth.role == $role and .comment_auth.finder == $finder and
+                .comment_auth.marker == $marker and .comment_auth.payload_digest == $digest
+            ' <<<"$existing" >/dev/null || die "comment re-arm conflicts with reservation bindings"
+            printf 'reserved %s\n' "$event"
+            exit 0
+        fi
         jq -e --arg marker "$marker" '
             [.actions[] | select(
                 .action == "comment" and .comment_auth.marker == $marker
@@ -601,18 +618,24 @@ reconcile)
     reservation="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
     [ -n "$reservation" ] || die "unknown reservation $event"
     reservation_state="$(jq -r '.state' <<<"$reservation")"
+    expected_action="$(jq -r '.action' <<<"$reservation")"
     case "$reservation_state" in
     adopted)
-        # A stale re-arm must adopt the durable result, not retry a write
-        # already known to have landed.
-        printf 'adopt %s\n' "$event"
-        exit 0
+        if [ "$expected_action" = "comment" ]; then
+            # An adopted ID is durable, but its GitHub content remains mutable.
+            # Revalidate the supplied complete set instead of certifying edits.
+            :
+        else
+            # A stale re-arm must adopt the durable result, not retry a write
+            # already known to have landed.
+            printf 'adopt %s\n' "$event"
+            exit 0
+        fi
         ;;
     reserved) ;;
     *) die "reservation $event is not actionable" ;;
     esac
     status="$(jq -r '.status // empty' "$observed")"
-    expected_action="$(jq -r '.action' <<<"$reservation")"
     expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
     comment_id=""
     if [ "$expected_action" = "comment" ] && { [ "$status" = "landed" ] || [ "$status" = "absent" ]; }; then
@@ -676,6 +699,13 @@ reconcile)
         ' "$state" >/dev/null || die "cannot reconcile $event out of reservation order"
         ;;
     esac
+    if [ "$reservation_state" = "adopted" ] && [ "$expected_action" = "comment" ]; then
+        [ "$status" = "landed" ] &&
+            [ "$comment_id" = "$(jq -r '.postcondition.comment_id' <<<"$reservation")" ] ||
+            die "adopted comment postcondition changed or disappeared"
+        printf 'adopt %s\n' "$event"
+        exit 0
+    fi
     case "$status" in
     landed)
         jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '

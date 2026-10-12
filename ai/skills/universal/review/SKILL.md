@@ -349,6 +349,43 @@ actor, marker, and digest bindings, hashes their bodies, and adopts the lowest
 authenticated match. Post once only after `reconcile` proves the candidate set
 has no authenticated match and returns `retry`; `block` is terminal.
 
+Every round comment starts on its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.
+The marker has exactly five fields: the run ID, a run-stage enum value, a
+positive round, sequence 1, and destination `issue`. The helper handles one
+round comment within a 60,000-byte budget; oversized or split projections are
+refused, never posted partially. The general marker grammar (including PR
+rollups with `round:null`) remains in `ai/schemas/README.md`.
+
+Write the marker object alone to `marker.json`, and the sanitized Markdown
+summary plus exactly one fenced JSON verification-bound projection to
+`round.md`, both in your own scratch directory. That projection must name
+`run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope.
+Scan the complete final comment, including the canonical marker line, before
+calling the helper; scanning and projection adjudication remain caller-owned.
+
+```sh
+assets/post-evidence.sh --repo <owner/repo> --repo-root <checkout> \
+  --run <record>/run.json --branch <branch> --generation <generation> \
+  --active-state <active-state> --head <reviewed-head> --actor-id <actor-id> \
+  --role <challenger|reviewer> --finder <finder> --issue <issue-number> \
+  --marker-file <scratch>/marker.json --body-file <scratch>/round.md \
+  --scratch-dir <scratch>
+```
+
+This is an orchestrator-owned publication helper, never a role-agent write.
+It validates the marker and run record before reserving, reads a complete
+bounded candidate set (at most ten 100-comment pages; a full final page
+blocks), and posts only on monitor `retry`. It adopts the monitor's lowest
+authenticated match and revalidates the readback on every re-arm. A failed
+or ambiguous post is resumed with the same arguments, never by a direct
+comment write. Its stdout is the adopted comment ID. For registration it
+hashes the exact fenced JSON bytes, distinct from the monitor's whole-comment
+digest, and appends `evidence_registrations` with its canonical chain digest.
+It validates the candidate with `run --receipts` and all local adjudications,
+renames it over the canonical run record, and validates that readback. Exact
+existing ID/marker/actor/payload matches are adopted without appending;
+conflicts block and a login rename never changes the immutable chain.
+
 After adoption, append the canonical comment ID, immutable actor ID, display
 login, `sha256:` body digest, and marker fields to
 `run.json.evidence_comments` only when it is absent. On re-arm, first search by
