@@ -30,8 +30,11 @@ The orchestrator chooses `claude/<lane-slug>` before launch, records it in the
 plan's lane assignment like any lane, refreshes the claim to that branch with
 the claim transaction before launch, and passes the branch to the brief.
 Pushes to a `claude/*` name other than the platform's session branch were
-accepted in every session tried, but the platform does not promise it; the
-brief therefore makes a refused push a BLOCKED report. Before launch, require
+accepted in every session tried, but the platform does not promise it. A
+blocked lane, including one whose push is refused, pushes nothing: its only
+GitHub channel is a gated push, and the CLI cannot read session replies. No push
+by the deadline is therefore indeterminate, and the operator reads the reason on
+the session page, the one out-of-band channel. Before launch, require
 that the remote has no `refs/heads/claude/<lane-slug>`
 (`git ls-remote --exit-code origin refs/heads/claude/<lane-slug>` finds nothing);
 if it exists, choose a new slug, so the first head the watcher reports is this
