@@ -1403,7 +1403,8 @@ node "$support_dir/run-record.mjs" transition --slate <slate> --session <session
 That writes `remediation: {head, findings}` on the re-entry entry of
 `stage_transitions[]`, and the validator refuses it anywhere else. `head` is
 the SHA the push put on the branch. `findings` lists the integration
-adjudication finding ids the push answers. An empty list
+adjudication finding ids the push answers; it may also name challenge or
+review findings deferred to integration (`disposition: defer`). An empty list
 (`--remediation-findings ""`) marks a pure base-reconciliation push, the
 local-merge fallback that fixes no finding. The engine places each push in
 time, never by where its findings came from:

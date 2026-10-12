@@ -1733,8 +1733,9 @@ function loadIntegrationRounds(runDir, validatorPath) {
 // is one integration -> implement -> integration loop (the count
 // readiness-gate.sh holds against --remediation-cap), and the loop's push is
 // recorded on that re-entry. A loop without the record is counted, not
-// guessed at.
-function loadRemediationPushes(runRecord) {
+// guessed at. A push may also answer a challenge or review finding deferred
+// to integration, so those stages' adjudications are indexed by id too.
+function loadRemediationPushes(runRecord, adjudications = []) {
   const transitions = runRecord.stage_transitions ?? [];
   if (!Array.isArray(transitions)) {
     throw integrationIndeterminate("run.json's stage_transitions is present but not an array — remediation pushes cannot be read", "remediation-malformed");
@@ -1765,7 +1766,12 @@ function loadRemediationPushes(runRecord) {
     }
     pushes.push({ index, head: rem.head, findings: rem.findings, at });
   }
-  return { pushes, unrecorded };
+  const confidence = new Map();
+  for (const a of adjudications) {
+    if (a.doc?.stage !== "challenge" && a.doc?.stage !== "review") continue;
+    for (const e of Array.isArray(a.doc.adjudications) ? a.doc.adjudications : []) confidence.set(e.finding_id, e);
+  }
+  return { pushes, unrecorded, confidence };
 }
 
 // Any late round folded into an existing cycle — a round with no completed
@@ -1863,7 +1869,7 @@ function roundHead(r) {
   return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
 }
 
-function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0 } = {}) {
+function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map() } = {}) {
   const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds);
   // A remediation push is judged only by the rounds that completed before
   // its re-entry and reviewed another head, never by its findings' origin: a
@@ -1905,8 +1911,15 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
     }
     const before = rounds.filter((r) => settledAt(r) <= push.at);
     for (const id of push.findings) {
-      if (!findingIndex.has(id)) {
-        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, which no integration adjudication holds`, "remediation-finding-unknown");
+      if (findingIndex.has(id)) continue;
+      // A challenge or review finding is answerable during integration only
+      // when it was deferred there.
+      const deferred = confidence.get(id);
+      if (!deferred) {
+        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, which no adjudication holds`, "remediation-finding-unknown");
+      }
+      if (deferred.disposition !== "defer") {
+        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, a confidence-stage finding adjudicated ${deferred.disposition}, not deferred to integration`, "remediation-finding-not-deferred");
       }
     }
     // The state before the push: only rounds that reviewed another head.
@@ -1970,7 +1983,7 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
 // establish.
 function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
   const runDir = loadRunDir(dir);
-  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, loadRemediationPushes(runDir.runRecord));
+  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, loadRemediationPushes(runDir.runRecord, runDir.adjudications));
 }
 
 // ---------------------------------------------------------------------------
@@ -2237,7 +2250,7 @@ async function main() {
       verdict = computeIntegrationExit(
         loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
         resolved.rounds.integration,
-        loadRemediationPushes(runDir.runRecord),
+        loadRemediationPushes(runDir.runRecord, runDir.adjudications),
       );
     } catch (err) {
       if (err instanceof ExitIndeterminate) return indeterminate(args, err.message, err.code ?? null);

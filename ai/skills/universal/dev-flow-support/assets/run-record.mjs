@@ -42,7 +42,8 @@
 // `--remediation-head`/`--remediation-findings` record an integration
 // remediation push on the transition that re-enters integration after it
 // (harmon-devkit#1386): the head the push put on the branch and the
-// integration finding ids it answers. dev-flow-exit.mjs --stage integration
+// finding ids it answers (integration findings, or challenge/review findings
+// deferred to integration). dev-flow-exit.mjs --stage integration
 // classifies head moves from that record only.
 //
 // `--ruling FILE` appends ` [ruling <path> sha256=<hex>]` to the intervention
@@ -543,6 +544,9 @@ function remediationRecord(record, stage, args) {
   }
   if (!/^[0-9a-f]{40}$/.test(head)) throw new UsageError('--remediation-head must be a 40-hex SHA')
   const ids = findings.trim() === '' ? [] : findings.split(',').map((id) => id.trim())
+  // Integration findings, or challenge/review findings deferred to integration.
+  const bad = ids.find((id) => !/^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$/.test(id))
+  if (bad !== undefined) throw new UsageError(`--remediation-findings: ${JSON.stringify(bad)} is not a challenge, review or integration finding id`)
   return { head, findings: ids }
 }
 

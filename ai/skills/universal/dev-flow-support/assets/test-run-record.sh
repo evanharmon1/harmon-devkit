@@ -421,9 +421,9 @@ expect_refused "remediation outside an integration re-entry" "only on a transiti
     rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1
 rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z >/dev/null
 rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
-    --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1,integration-r1-human-2 >/dev/null
+    --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1,challenge-r1-codex-adversarial-2 >/dev/null
 [ "$(jq -c '.stage_transitions[-1].remediation' "$state/runs/run-f/run.json")" = \
-    "{\"head\":\"$fix_head\",\"findings\":[\"integration-r1-codex-cloud-1\",\"integration-r1-human-2\"]}" ] ||
+    "{\"head\":\"$fix_head\",\"findings\":[\"integration-r1-codex-cloud-1\",\"challenge-r1-codex-adversarial-2\"]}" ] ||
     fail "the integration re-entry did not record the remediation push"
 (cd "$repo" && node "$writer" lock release --slate s13 --session alice) >/dev/null
 pass "a remediation push is recorded on the integration re-entry, and refused anywhere else"
