@@ -58,7 +58,7 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --trusted-actor-id <id>      Repeatable. Trusted-orchestrator GitHub actor
                                ids. Gates which comments may name a run AND is
                                passed through to the harvester. Overrides the
-                               repository registry when supplied.
+                               remote repository registry when supplied.
   --trusted-actors-file <path> A JSON {"trusted_actor_ids": [...]} document,
                                passed through to the harvester. Explicit trust
                                flags override agent-registry.json; otherwise
@@ -715,21 +715,30 @@ function discoverRun(args, trustedActorIds) {
 // ---------------------------------------------------------------------------
 
 // Authority comes only from configured orchestrator IDs, never the authenticated
-// reader. Explicit flags override the local repository registry; discovery and
-// harvesting receive the same resolved set, including when a registry supplies it.
+// reader. Default discovery uses the target repository's default-branch registry,
+// never the caller's checkout. Explicit flags override discovery selection only;
+// the harvester still authenticates each write against its historical registry.
 function resolveTrustedActorArgs(args) {
   const passthrough = []
   const ids = new Set()
-  let registryPath = null
+  let registrySource = null
   if (args.trustedActorIds.length === 0 && !args.trustedActorsFile) {
-    const root = repoRoot()
-    if (!root) throw new UsageError('cannot resolve the repository root for agent-registry.json; supply an explicit trust flag')
-    registryPath = path.join(root, 'agent-registry.json')
     let doc
     try {
-      doc = JSON.parse(readFileSync(registryPath, 'utf8'))
+      const metadata = ghJson(['api', `repos/${args.repo}`])
+      const branch = metadata?.default_branch
+      if (typeof branch !== 'string' || branch.trim().length === 0) {
+        throw new Error('repository metadata has no default_branch')
+      }
+      const file = ghJson(['api', `repos/${args.repo}/contents/agent-registry.json?ref=${encodeURIComponent(branch)}`])
+      if (file?.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string' ||
+          typeof file.sha !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(file.sha)) {
+        throw new Error('registry Contents response must contain a base64 file and blob SHA')
+      }
+      doc = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'))
+      registrySource = `${args.repo}@${branch} (${file.sha})`
     } catch (error) {
-      throw new UsageError(`could not read/parse agent-registry.json at ${registryPath}: ${error.message}; supply an explicit trust flag`)
+      throw new UsageError(`could not read/parse ${args.repo}'s default-branch agent-registry.json: ${error.message}`)
     }
     const configured = doc?.trusted_orchestrator_actor_ids
     if (!Array.isArray(configured) || configured.length === 0) {
@@ -801,8 +810,8 @@ function resolveTrustedActorArgs(args) {
   // hostile marker when the ignored-marker count is nonzero (review round 3,
   // confirmed P2).
   const listed = [...ids].sort((a, b) => a - b).join(', ')
-  const from = registryPath
-    ? ` from ${registryPath} trusted_orchestrator_actor_ids`
+  const from = registrySource
+    ? ` from ${registrySource} agent-registry.json trusted_orchestrator_actor_ids`
     : ` from explicit trust flags${args.trustedActorsFile ? ` (including ${args.trustedActorsFile})` : ''}`
   return { passthrough, ids, source: `actor id(s) ${listed}${from}` }
 }
@@ -1392,8 +1401,9 @@ function renderMarkdown(report) {
     l.push(`- Tampered comments (trusted author, structural anomaly, not forged): ${report.measurements.integrity.tampered_comments}`)
   }
   l.push(
-    `- Trust evaluation: ${safe(report.source.trusted_actors)} — the currently configured set, **not** the run's kickoff-time registry revision, so an orchestrator trusted at kickoff and removed since would read as untrusted here (harmon-devkit#741)`
+    `- Trust evaluation: ${safe(report.source.trusted_actors)} — discovery uses this selected set; the harvester authenticates each evidence write against the registry revision current at that write's time`
   )
+  l.push('Explicit flags can widen discovery only and never widen what the harvester authenticates.')
   if (report.source.ignored_markers.length === 0) {
     l.push('- Untrusted evidence markers ignored during discovery: 0')
   } else {
@@ -1519,7 +1529,7 @@ function run(argv) {
         if (untrustedMarkers.length > 0) {
           const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
           parts.push(
-            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since this tool authenticates against the currently configured ids rather than the run's kickoff-time registry revision (harmon-devkit#741)`
+            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set while the harvester authenticates evidence writes against their historical registry revisions`
           )
         }
         if (corrupted.length > 0) {

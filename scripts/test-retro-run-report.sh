@@ -120,6 +120,20 @@ pr)
     ;;
 api)
     case "$*" in
+    */contents/agent-registry.json?ref=*)
+        if [ "${GH_FAIL_REGISTRY:-0}" = 1 ] || [ ! -f "${GH_REGISTRY_JSON:-/nonexistent}" ]; then
+            echo 'gh stub: HTTP 404 reading remote registry' >&2
+            exit 1
+        fi
+        node -e '
+          const fs = require("node:fs")
+          console.log(JSON.stringify({type:"file", encoding:"base64", sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            content:fs.readFileSync(process.argv[1]).toString("base64")}))
+        ' "$GH_REGISTRY_JSON"
+        ;;
+    *repos/o/r)
+        printf '{"default_branch":"%s"}\n' "${GH_DEFAULT_BRANCH:-trunk}"
+        ;;
     */issues/*/comments*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
         if status="$(issue_failure_status "$n")"; then
@@ -460,8 +474,8 @@ contains "$ERR" "999999" &&
 contains "$ERR" "trust root that changed after the run" &&
     ok "the message names the historical-trust-root case as well as the redirect case" ||
     bad "the message treats an untrusted marker as necessarily hostile"
-contains "$ERR" "741" &&
-    ok "the message names the kickoff-time pinning gap" || bad "the pinning gap is not named"
+contains "$ERR" "historical registry revisions" &&
+    ok "the message distinguishes discovery from historical authentication" || bad "historical authentication is not named"
 contains "$ERR" "do NOT conclude the session has no run record" &&
     ok "the message forbids the absence claim" || bad "the message permits a false absence claim"
 
@@ -1214,30 +1228,32 @@ contains "$(cat "$d/gh.log")" "api user" &&
     bad "the tool consulted the authenticated account — there must be no implicit trust root" ||
     ok "no implicit trust root: the authenticated account is never consulted"
 
-# Resolve the registry from an isolated Git checkout, never from this suite's
-# own checkout. A nested cwd also proves root discovery rather than cwd lookup.
+# Keep a conflicting local checkout to prove discovery trusts only the target
+# repository registry served by gh, independently of the caller's checkout.
 run_registry_report() {
     local dir="$1"
     shift
     RC=0
     OUT="$(cd "$dir/repo/nested" && PATH="$dir/bin:$PATH" GH_LOG="$dir/gh.log" \
         STATS_LOG="$dir/stats.log" GH_PR_JSON="$dir/pr.json" GH_COMMENTS_DIR="$dir/comments" \
-        GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" --stats-script "$dir/stats.mjs" \
+        GH_USER_ID="$ACTOR" GH_REGISTRY_JSON="$dir/remote-registry.json" \
+        node "$REPORT" --repo o/r --pr "$PR" --stats-script "$dir/stats.mjs" \
         "$@" 2>"$dir/stderr")" || RC=$?
     ERR="$(cat "$dir/stderr")"
 }
 
-echo "==> registry trust resolves at the Git root and reaches discovery and harvesting"
+echo "==> registry trust comes from --repo default branch and reaches discovery and harvesting"
 d="$TMPROOT/registry"
 scaffold "$d" further-along "body"
 mkdir -p "$d/repo/nested"
 git -C "$d/repo" init -q
-printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
 run_registry_report "$d"
 [ "$RC" -eq 0 ] && contains "$OUT" "### Evidence integrity" &&
-    contains "$OUT" "$d/repo/agent-registry.json trusted_orchestrator_actor_ids" &&
+    contains "$OUT" "o/r@trunk (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) agent-registry.json trusted_orchestrator_actor_ids" &&
     contains "$(cat "$d/stats.log")" "--trusted-actor-id $ACTOR" &&
-    ok "registry source is disclosed and the trusted author selects the run" ||
+    ok "remote repo/ref/blob source is disclosed and conflicting local registry is ignored" ||
     bad "registry trust failed: rc=$RC, err=$ERR, out=$OUT"
 contains "$(cat "$d/gh.log")" "api user" &&
     bad "registry trust consulted the authenticated caller" ||
@@ -1247,11 +1263,11 @@ run_registry_report "$d" --json
     ok "JSON evidence preserves the registry source" || bad "JSON registry source absent: $ERR"
 
 # Removing the once-trusted author must not turn existing evidence into absence.
-printf '{"trusted_orchestrator_actor_ids":[424242]}' >"$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[424242]}' >"$d/remote-registry.json"
 run_registry_report "$d"
 [ "$RC" -eq 11 ] && contains "$ERR" "$ACTOR" && contains "$ERR" "trust root that changed after the run" &&
     ok "an author removed from the registry is indeterminate" || bad "removed author accepted: rc=$RC, err=$ERR"
-printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
 COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
 run_registry_report "$d"
 [ "$RC" -eq 11 ] && contains "$ERR" "999999" &&
@@ -1270,8 +1286,8 @@ run_registry_report "$d"
 marker_file "$d/c1" evidence run-6001-further-along challenge pr -
 set_comments "$d/comments" "$PR" "$d/c1"
 
-# Usage failures happen before GitHub discovery, even when the logged-in user
-# would have been trusted. All malformed forms must fail rather than coerce.
+# The metadata/Contents reads precede discovery; usage failures never fetch PR
+# or evidence markers, even when the logged-in user would have been trusted. All malformed forms must fail rather than coerce.
 for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
     '{broken' '{"trusted_orchestrator_actor_ids":true}' \
     '{"trusted_orchestrator_actor_ids":[true]}' '{"trusted_orchestrator_actor_ids":["37220977"]}' \
@@ -1280,20 +1296,30 @@ for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
     '{"trusted_orchestrator_actor_ids":[1,1]}' \
     '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}'; do
     if [ "$registry" = missing ]; then
-        rm "$d/repo/agent-registry.json"
+        rm "$d/remote-registry.json"
     else
-        printf '%s' "$registry" >"$d/repo/agent-registry.json"
+        printf '%s' "$registry" >"$d/remote-registry.json"
     fi
     : >"$d/gh.log"
     run_registry_report "$d"
-    [ "$RC" -eq 2 ] && contains "$ERR" "agent-registry.json" && [ ! -s "$d/gh.log" ] &&
-        ok "invalid or absent registry fails closed before API reads: $registry" ||
+    [ "$RC" -eq 2 ] && contains "$ERR" "agent-registry.json" &&
+        ! contains "$(cat "$d/gh.log")" 'pr view' && ! contains "$(cat "$d/gh.log")" '/comments' &&
+        ok "invalid or absent remote registry fails closed before discovery: $registry" ||
         bad "registry did not fail closed: $registry, rc=$RC, err=$ERR"
 done
 
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+GH_FAIL_REGISTRY=1 run_registry_report "$d"
+[ "$RC" -eq 2 ] && contains "$ERR" 'could not read/parse' && contains "$ERR" 'HTTP 404' &&
+    ok "a failed remote registry read is a usage error with no local fallback" ||
+    bad "remote failure did not fail closed: rc=$RC, err=$ERR"
+contains "$(cat "$d/gh.log")" 'contents/agent-registry.json?ref=trunk' &&
+    ok "registry lookup uses the target default branch, not a hardcoded main" ||
+    bad "registry lookup omitted the default-branch ref"
+
 # Explicit flags override, rather than widen, the registry. An invalid registry
 # is ignored too, while an invalid explicit override still fails closed.
-printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/remote-registry.json"
 run_registry_report "$d" --trusted-actor-id "$ACTOR"
 [ "$RC" -eq 0 ] && contains "$OUT" 'from explicit trust flags' &&
     ! contains "$(cat "$d/stats.log")" '--trusted-actor-id 999999' &&
@@ -1303,15 +1329,15 @@ run_registry_report "$d" --trusted-actor-id "$ACTOR"
 [ "$RC" -eq 11 ] && ok "registry-only author is untrusted under an explicit override" ||
     bad "registry widened the explicit override: rc=$RC, err=$ERR"
 set_comments "$d/comments" "$PR" "$d/c1"
-printf '{broken' >"$d/repo/agent-registry.json"
+printf '{broken' >"$d/remote-registry.json"
 printf '{"trusted_actor_ids":[%s]}' "$ACTOR" >"$d/actors.json"
 run_registry_report "$d" --trusted-actors-file "$d/actors.json"
 [ "$RC" -eq 0 ] && contains "$OUT" "including $d/actors.json" &&
     ok "explicit actors file bypasses malformed registry" || bad "actors-file override failed: $ERR"
 run_registry_report "$d" --trusted-actor-id "$ACTOR"
 [ "$RC" -eq 0 ] && ok "explicit ID bypasses malformed registry" || bad "ID override failed: $ERR"
-printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/repo/agent-registry.json"
-run_registry_report "$d" --trusted-actors-file "$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+run_registry_report "$d" --trusted-actors-file "$d/remote-registry.json"
 [ "$RC" -eq 2 ] && ok "invalid explicit override never falls back to valid registry" ||
     bad "invalid explicit override fell back: rc=$RC, err=$ERR"
 
@@ -1484,9 +1510,10 @@ contains "$OUT" "**Adjudication overrides are not covered here.**" &&
     bad "an empty overrides section could be read as 'nothing was overridden'"
 contains "$OUT" 'never "the orchestrator overrode nothing"' &&
     ok "the wrong reading is named explicitly" || bad "the wrong reading is not ruled out"
-contains "$OUT" "kickoff-time registry revision" &&
-    ok "evidence integrity states the trust-pinning limitation" ||
-    bad "the trust-pinning limitation is not stated where integrity is read"
+contains "$OUT" "registry revision current at that write's time" &&
+    contains "$OUT" "Explicit flags can widen discovery only and never widen what the harvester authenticates." &&
+    ok "evidence integrity distinguishes discovery selection from historical authentication" ||
+    bad "the discovery/authentication distinction is missing"
 
 echo "==> the skill's documented command is runnable as written"
 grep -qF 'the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`' ai/skills/universal/retro/SKILL.md &&

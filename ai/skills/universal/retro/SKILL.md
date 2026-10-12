@@ -123,8 +123,9 @@ same as the GraphQL query in §4.
 
 **A configured trust root is required.** With neither explicit trust flag,
 the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`
-at the current checkout's Git repository root (including when invoked from a
-subdirectory). A missing registry, invalid JSON, or a missing, empty or malformed
+in `--repo` at its default-branch head through the GitHub Contents API, never
+from the caller's working tree. An unreadable or missing remote registry,
+invalid JSON, or a missing, empty or malformed
 field fails closed with a usage error. The array must contain positive safe JSON
 integer actor IDs, without duplicates or finder actor identities. The helper never defaults to the authenticated account:
 authority comes from configuration, so a reader cannot authenticate their own
@@ -134,8 +135,10 @@ retrospective merely by logging in.
 (a JSON `{"trusted_actor_ids": [...]}` document) explicitly override the registry.
 When both flags are supplied their IDs are combined, preserving the existing
 flag behavior; the registry is not read or merged into that set. Discovery and
-the harvester receive the same resolved IDs. The report's evidence-integrity
-section names the source and IDs used.
+the harvester receive the same selected IDs. Explicit flags can widen discovery
+only and never widen what the harvester authenticates. The report's
+evidence-integrity section names the actual source and IDs used: registry
+`<repo>@<default-branch> (<blob sha>)`, or explicit flags.
 
 Other useful arguments: `--run <run_id>` when you already know it (a run that
 capped before its PR existed has no PR to discover from — its record is on the
@@ -256,9 +259,11 @@ revision history lists that `run_id` in `lanes[]`.
    ignored because the author is not in that set. A nonzero ignored count is
    either a misconfigured trust root, a trust root that moved since the run,
    or somebody trying to redirect the report; all three are worth a line in
-   the retro. Note the stated limitation: authentication here is against the
-   currently configured registry IDs (or explicit flag overrides), not the run's kickoff-time registry revision
-   (harmon-devkit#741), so a removed-since orchestrator reads as untrusted.
+   the retro. Discovery uses the named registry at repo@ref or the explicit
+   flag selection. The harvester authenticates each evidence write against the
+   registry revision current at that write's time; explicit flags do not widen
+   that authenticated trust root. A removed-since orchestrator can be excluded
+   by discovery's selection even though their historical evidence remains valid.
 9. `### Not measurable from this run's evidence` — the measurements this retro
    is expected to make that today's evidence surface cannot supply, each naming
    the issue that would close it. Carry these into §5 as-is rather than
