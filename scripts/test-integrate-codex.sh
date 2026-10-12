@@ -7974,6 +7974,103 @@ for bad_case in "real|parallel" "real|with-push x" "garbage|with-push" "empty|wi
         fail "the snippet must never reach the trigger on $bad_kind/$bad_value: $snippet_out"
 done
 
+# integration-r1-codex-cloud-1: /integrate decides the timing BEFORE its checks
+# watch, or every value inherits the watch's wait and behaves like after-ci.
+# The skill's own §2 snippet is run as written for each value, and its place
+# in the procedure is pinned ahead of the watch and the dispatch.
+echo "==> /integrate resolves the review order before its checks watch, for each value"
+integrate_md="$repo_root/ai/skills/universal/integrate/SKILL.md"
+skill_timing_snippet="$(awk '
+    /^ *```sh$/ { block = ""; inside = 1; next }
+    /^ *```$/ && inside { if (block ~ /trigger-timing/) { printf "%s", block; exit } inside = 0; next }
+    inside { block = block $0 "\n" }
+' "$integrate_md")"
+grep -Fq 'trigger-timing' <<<"$skill_timing_snippet" ||
+    fail "could not extract the trigger-timing snippet from $integrate_md"
+! grep -Fq '| jq' <<<"$skill_timing_snippet" ||
+    fail "the skill's snippet must not pipe the helper into jq: $skill_timing_snippet"
+for skill_case in "after-ci 0 after-ci" "after-ci 1 after-ci" "with-push 0 with-push" \
+    "with-push 1 with-push" "after-ci-first 0 after-ci" "after-ci-first 1 with-push"; do
+    set -- $skill_case
+    skill_run="${skill_timing_snippet//<review_trigger>/$1}"
+    skill_run="${skill_run//<remediation pushes so far>/$2}"
+    skill_out="$(skill_dir="$repo_root/ai/skills/universal/integrate" bash -c "set -u
+$skill_run
+echo \"ORDER=\$order\"" 2>&1)" ||
+        fail "the skill's timing snippet must resolve $1 after $2 remediation push(es): $skill_out"
+    grep -Fq "ORDER=$3" <<<"$skill_out" ||
+        fail "$1 after $2 remediation push(es) must order $3 in /integrate: $skill_out"
+done
+skill_run="${skill_timing_snippet//<review_trigger>/parallel}"
+skill_run="${skill_run//<remediation pushes so far>/0}"
+set +e
+skill_out="$(skill_dir="$repo_root/ai/skills/universal/integrate" bash -c "$skill_run
+echo DISPATCHED" 2>&1)"
+skill_rc=$?
+set -e
+[ "$skill_rc" -ne 0 ] && ! grep -Fq DISPATCHED <<<"$skill_out" ||
+    fail "the skill's timing snippet must stop on an unknown review_trigger: rc=$skill_rc $skill_out"
+# Position: §1 hands off to the timing decision, which is §2's first bullet,
+# ahead of the checks watch and of the integrator dispatch that reads it.
+watch_line="$(grep -n '^## 2\. Watch$' "$integrate_md" | cut -d: -f1)"
+adjudicate_line="$(grep -n '^## 3\. ' "$integrate_md" | cut -d: -f1)"
+timing_line="$(grep -n "^- \*\*Decide when this head's review is requested BEFORE the checks watch\*\*" \
+    "$integrate_md" | cut -d: -f1)"
+checks_line="$(grep -n '^- Checks (under a `with-push` order this runs alongside' "$integrate_md" | cut -d: -f1)"
+dispatch_line="$(grep -n '^- \*\*For dispatched integration, retain the integrator agent' "$integrate_md" | cut -d: -f1)"
+handoff_line="$(grep -n 'decide the review$' "$integrate_md" | cut -d: -f1)"
+[ -n "$watch_line" ] && [ -n "$adjudicate_line" ] && [ -n "$timing_line" ] &&
+    [ -n "$checks_line" ] && [ -n "$dispatch_line" ] && [ -n "$handoff_line" ] ||
+    fail "the timing, watch and dispatch anchors must all exist in $integrate_md"
+[ "$handoff_line" -lt "$watch_line" ] && [ "$timing_line" -eq "$((watch_line + 2))" ] &&
+    [ "$timing_line" -lt "$checks_line" ] && [ "$checks_line" -lt "$dispatch_line" ] &&
+    [ "$dispatch_line" -lt "$adjudicate_line" ] ||
+    fail "the timing decision must open §2, ahead of the checks watch and the dispatch (lines $handoff_line/$watch_line/$timing_line/$checks_line/$dispatch_line/$adjudicate_line)"
+timing_bullet="$(sed -n "${timing_line},$((checks_line - 1))p" "$integrate_md")"
+grep -Fq '`order == after-ci` — today'"'"'s sequence, unchanged: run the checks watch' <<<"$timing_bullet" &&
+    grep -Fq '`order == with-push` — dispatch the integrator for this head NOW,' <<<"$timing_bullet" &&
+    grep -Fq 'alongside the checks watch, never after it' <<<"$timing_bullet" ||
+    fail "the timing bullet must place after-ci after the watch and with-push alongside it"
+
+# integration-r1-codex-cloud-2: under with-push every PR-side finder is
+# triggered before any of them is polled.
+echo "==> the integrator triggers every finder before polling under with-push"
+trigger_all_line="$(grep -n 'Under a `with-push` order with more than one PR-side finder, trigger them' \
+    "$integrator_md" | cut -d: -f1)"
+poll_loop_line="$(grep -nF 'window_end=$((SECONDS + 900))' "$integrator_md" | cut -d: -f1)"
+per_finder_line="$(grep -n '^### Per-finder cycles (#804)$' "$integrator_md" | cut -d: -f1)"
+[ -n "$trigger_all_line" ] && [ -n "$poll_loop_line" ] && [ -n "$per_finder_line" ] &&
+    [ "$trigger_all_line" -lt "$poll_loop_line" ] && [ "$poll_loop_line" -lt "$per_finder_line" ] ||
+    fail "the trigger-all-first rule must precede the poll loop (lines $trigger_all_line/$poll_loop_line/$per_finder_line)"
+per_finder_text="$(sed -n "${per_finder_line},\$p" "$integrator_md")"
+grep -Fq 'these triggers are posted together with' <<<"$per_finder_text" ||
+    fail "the per-finder section must point back to the trigger-all-first rule"
+
+# integration-r1-codex-cloud-3: attempt-1 state written before review_trigger
+# existed records none; it ran today's serial order, so it reads as after-ci.
+echo "==> an attempt-2 retry against pre-review_trigger state is accepted as after-ci"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --run-id run-a >/dev/null
+jq 'del(.review_trigger) | .phase = "attached" | .trigger_comment_id = 4242 |
+    .requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+legacy_state="$(cat "$state")"
+set +e
+legacy_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 --run-id run-a --review-trigger with-push 2>&1)"
+legacy_rc=$?
+set -e
+[ "$legacy_rc" -ne 0 ] && grep -Fq 'reserved under (after-ci)' <<<"$legacy_out" ||
+    fail "a with-push retry against pre-field state must be refused as after-ci: rc=$legacy_rc $legacy_out"
+[ "$(cat "$state")" = "$legacy_state" ] || fail "a refused retry must leave the state untouched"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 2 --run-id run-a --review-trigger after-ci >/dev/null ||
+    fail "an after-ci retry against pre-field state must be accepted"
+[ "$(jq -r '.attempt' "$state")/$(jq -r '.review_trigger' "$state")" = 2/after-ci ] ||
+    fail "the retry must record attempt 2 under after-ci: $(jq -c '{attempt, review_trigger}' "$state")"
+
 # The timing never touches the charge: a review spent on a head whose CI then
 # fails still charges `integration` under every value (the CI-failed exempt
 # charge is tracked separately), and reserve reads no CI to decide it.

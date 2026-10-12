@@ -223,8 +223,10 @@ of three values, absent meaning `after-ci`:
 
 `check-codex-cloud-review.sh trigger-timing --review-trigger <value>
 --remediation <n>` is the one statement of that table — it prints the order
-for THIS cycle, `after-ci` or `with-push` — and the integrator agent's §3 runs
-it rather than re-reading the list above. The value decides timing only. The
+for THIS cycle, `after-ci` or `with-push`. This skill runs it at the very start
+of §2, BEFORE the checks watch, because that is what decides when the cycle
+is dispatched; the integrator agent's §3 runs it again for the cycle it
+drives. Neither re-reads the list above. The value decides timing only. The
 readiness gate is unchanged under all three (every check concluded green AND a
 terminal clean current-head review); carry and the base-merge exemption apply
 exactly as stated here; it decides only WHEN a review is requested — it never
@@ -765,11 +767,41 @@ and compare against the local branch and HEAD. Requirements, all hard:
   checkout at all: stop, report what the remote CI shows, and hand the fix
   decision to the maintainer.
 
-Once the PR is confirmed `OPEN` and the checkout matches, begin the checks
-watch. Leave Project fields unchanged; §7 records why they are manual.
+Once the PR is confirmed `OPEN` and the checkout matches, decide the review
+timing (§2's first bullet), then begin the checks watch. Leave Project fields unchanged; §7 records why they are manual.
 
 ## 2. Watch
 
+- **Decide when this head's review is requested BEFORE the checks watch**
+  (harmon-devkit#1376). The watch below waits for CI to settle; whatever is
+  dispatched after it inherits that wait, so a timing decided there makes
+  every value behave like `after-ci`. Resolve the order for this head from the
+  resolved `stages.integration.review_trigger` and this stage's remediation
+  pushes so far, captured and checked rather than piped:
+
+  ```sh
+  timing="$("$skill_dir/assets/check-codex-cloud-review.sh" trigger-timing \
+      --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")" || exit
+  order="$(jq -er '.order' <<<"$timing")" || exit
+  case "$order" in
+  after-ci | with-push) ;;
+  *)
+      echo "unknown review order '$order' — do not dispatch or trigger"
+      exit 1
+      ;;
+  esac
+  ```
+
+  - `order == after-ci` — today's sequence, unchanged: run the checks watch
+    to settled-green first, then dispatch the integrator (or drive the cycle
+    yourself on the clean-run fast path). This is `after-ci` on every head,
+    and `after-ci-first` on the PR's first head.
+  - `order == with-push` — dispatch the integrator for this head NOW,
+    alongside the checks watch, never after it: it reserves and triggers
+    with the push and settles CI itself (its §3/§4). The watch below still
+    runs, and readiness still needs both, but it gates nothing about when
+    the review is requested. This is `with-push` on every head, and
+    `after-ci-first` after a remediation push.
 - Start every watch round by re-fetching the PR head and draft state
   (`gh pr view <n> --repo "$repo" --json headRefOid,state,isDraft`) and
   confirming the head still matches local HEAD — after a push, run/log lookups
@@ -915,7 +947,9 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     undo war against a writer you cannot attribute has no bounded exit, and a
     standing promotion is recoverable by a human in a way a corrupted audit
     trail is not.
-- Checks: poll `gh pr checks <n> --repo "$repo"` on an interval (or run
+- Checks (under a `with-push` order this runs alongside the dispatch the
+  first bullet already made, never ahead of it): poll
+  `gh pr checks <n> --repo "$repo"` on an interval (or run
   `--watch` only under an external timeout) so the wait has a real
   deadline — an unbounded `--watch` on a hung runner stalls the loop
   forever. After ~30 minutes of a check neither passing nor failing, treat
@@ -1072,7 +1106,9 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   existing live-checker and counter-validation errors remain explicit.
   The fast path does not detect badges, match replies or derive dispositions.
 - **For dispatched integration, retain the integrator agent
-  (`ai/agents/integrator.md`) and its validated result.** It settles checks and
+  (`ai/agents/integrator.md`) and its validated result.** Dispatch it when the
+  first bullet of this section says: after the checks watch settles under an
+  `after-ci` order, with the push under a `with-push` order. It settles checks and
   lists unanswered threads at every cap, and drives the current-head Codex
   cycle only where the cap is not 0 (at 0 its brief says so and it skips
   its §4, reporting `codex_cycle: null` — the result §6's gate still

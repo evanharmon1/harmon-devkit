@@ -2457,10 +2457,13 @@ reserve)
         # that the change never asked for. Carry attempt 1's verdict.
         charge_class=$(jq -r '.charge // "charged"' "$state_file")
         charge_reason=$(jq -r '.charge_reason // ""' "$state_file")
-        # The same cycle keeps the trigger it was reserved under.
-        recorded_review_trigger=$(jq -r '.review_trigger // empty' "$state_file")
+        # The same cycle keeps the trigger it was reserved under. State written
+        # before the field existed records none, and that cycle ran today's
+        # serial order, so it reads as `after-ci` — otherwise a retry that
+        # passes `--review-trigger after-ci` against it would be refused.
+        recorded_review_trigger=$(jq -r '.review_trigger // "after-ci"' "$state_file")
         [ -z "$review_trigger" ] || [ "$review_trigger" = "$recorded_review_trigger" ] ||
-            die "--review-trigger $review_trigger disagrees with the trigger attempt 1 was reserved under (${recorded_review_trigger:-none})"
+            die "--review-trigger $review_trigger disagrees with the trigger attempt 1 was reserved under ($recorded_review_trigger)"
         review_trigger=$recorded_review_trigger
     fi
     if [ "$attempt" = "2" ]; then

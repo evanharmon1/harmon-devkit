@@ -400,6 +400,20 @@ link broke, and a `;`-separated tail keeps running after a failure and
 reports on a cycle that never happened.
 Run the poll loop strictly sequentially in the foreground, never as a background task.
 
+**Under a `with-push` order with more than one PR-side finder, trigger them
+all before you poll any of them** (harmon-devkit#1376). The poll loop below
+can hold a reviewer window of 15 minutes or more; running it for codex-cloud
+first and only then triggering the next finder ("Per-finder cycles" below)
+requests that finder's review one whole window after the push, which is
+exactly the delay `with-push` exists to remove. So split the two halves: for
+this head, run every configured finder's reserve → read → trigger sequence
+first — codex-cloud's exactly as below, each other finder's as "Per-finder
+cycles" gives it — and only then poll each one's `check` to its own terminal
+result. Each finder's sequence is still its own non-chainable steps with its
+own exit checks, and one finder's refusal posts nothing for that finder
+without stopping the others. With codex-cloud alone, or under an `after-ci`
+order, nothing changes: drive the cycle exactly as written.
+
 **Compare the persisted `.run_id` with this run's before reusing any state.**
 Same-head attached state from ANOTHER run (or from before run scoping, which
 records no owner) is not this run's history: resuming it would attribute that
@@ -801,6 +815,10 @@ jq -e --arg head "<head>" \
 
 `review_trigger` covers every PR-side finder alike: §3's `order` decides when
 each finder's review is requested, exactly as it does for codex-cloud.
+
+Under a `with-push` order these triggers are posted together with
+codex-cloud's, before any polling (§4, "trigger them all before you poll
+any of them"); this section's `check` loop runs after all of them are out.
 
 **Every finder trigger runs the §4 order: reservation held → the
 `state,isDraft,headRefOid` read → trigger → attach.** That holds for the
