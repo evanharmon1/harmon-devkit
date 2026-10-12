@@ -3192,6 +3192,39 @@ function verifiedFindingMeasurements(rounds) {
   return { counts, fingerprints, unavailableRounds };
 }
 
+// Legacy evidence predates the full adjudication schema. Normalize only the
+// fields this projection consumes, for both JSON and table rendering.
+function projectAdjudicationEntries(doc) {
+  if (doc != null && (typeof doc !== "object" || Array.isArray(doc))) {
+    throw new EvidenceError("adjudication document must be a plain object");
+  }
+  if (doc?.adjudications === undefined) return [];
+  if (!Array.isArray(doc.adjudications)) throw new EvidenceError("adjudications must be an array");
+  return doc.adjudications.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new EvidenceError("adjudication entry must be a plain object");
+    }
+    for (const field of ["finding_id", "disposition", "adjudicated_priority"]) {
+      if (typeof entry[field] !== "string") throw new EvidenceError(`adjudication ${field} must be a string`);
+    }
+    const reviewerPriority = entry.reviewer_priority === undefined ? null : entry.reviewer_priority;
+    if (reviewerPriority !== null && typeof reviewerPriority !== "string") {
+      throw new EvidenceError("adjudication reviewer_priority must be a string or null");
+    }
+    const override = entry.override === undefined ? null : entry.override;
+    if (override !== null && (typeof override !== "object" || Array.isArray(override) || typeof override.reason !== "string")) {
+      throw new EvidenceError("adjudication override must be an object with a string reason or null");
+    }
+    return {
+      finding_id: entry.finding_id,
+      reviewer_priority: reviewerPriority,
+      adjudicated_priority: entry.adjudicated_priority,
+      disposition: entry.disposition,
+      override: override === null ? null : { reason: override.reason },
+    };
+  });
+}
+
 function renderTrajectory(run) {
   // Chronological (by comment id — ascending id IS creation order on
   // GitHub, the same fact buildRunDirectory's own chronology already
@@ -3215,26 +3248,30 @@ function renderTrajectory(run) {
     interventions: run.state.interventions,
     settlements: run.state.settlements,
     splits: run.state.splits,
-    rounds: rounds.map((r) => ({
-      stage: r.stage,
-      round: r.round,
-      pass_count: Array.isArray(r.payload.passes) ? r.payload.passes.length : 0,
-      blocked_passes: Array.isArray(r.payload.blockedPasses) ? r.payload.blockedPasses.length : 0,
-      adjudication_count: r.payload.adjudication ? 1 : 0,
-      finding_count: Array.isArray(r.payload.passes)
-        ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
-        : 0,
-      has_adjudication: Boolean(r.payload.adjudication),
-      ...(Array.isArray(r.payload.findingAttributions) && r.payload.findingAttributions.length > 0
-        ? { finding_attributions: r.payload.findingAttributions }
-        : {}),
-      ...(r.payload.incomplete ? { status: "capped" } : {}),
-      provenance_measurement: Array.isArray(r.payload.findingAttributions)
-        ? (r.payload.findingAttributions.every((finding) => isVerifiedAttributionStatus(finding.provenance_status)) ? "verified" : "unverified")
-        : ((Array.isArray(r.payload.passes)
-            ? r.payload.passes.reduce((n, p) => n + (((p.payload && p.payload.findings) || []).length), 0)
-            : 0) === 0 ? "not-applicable" : "unavailable"),
-    })),
+    rounds: rounds.map((r) => {
+      const adjudications = projectAdjudicationEntries(r.payload.adjudication);
+      return {
+        stage: r.stage,
+        round: r.round,
+        pass_count: Array.isArray(r.payload.passes) ? r.payload.passes.length : 0,
+        blocked_passes: Array.isArray(r.payload.blockedPasses) ? r.payload.blockedPasses.length : 0,
+        adjudication_count: r.payload.adjudication ? 1 : 0,
+        finding_count: Array.isArray(r.payload.passes)
+          ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
+          : 0,
+        has_adjudication: Boolean(r.payload.adjudication),
+        ...(adjudications.length > 0 ? { adjudications } : {}),
+        ...(Array.isArray(r.payload.findingAttributions) && r.payload.findingAttributions.length > 0
+          ? { finding_attributions: r.payload.findingAttributions }
+          : {}),
+        ...(r.payload.incomplete ? { status: "capped" } : {}),
+        provenance_measurement: Array.isArray(r.payload.findingAttributions)
+          ? (r.payload.findingAttributions.every((finding) => isVerifiedAttributionStatus(finding.provenance_status)) ? "verified" : "unverified")
+          : ((Array.isArray(r.payload.passes)
+              ? r.payload.passes.reduce((n, p) => n + (((p.payload && p.payload.findings) || []).length), 0)
+              : 0) === 0 ? "not-applicable" : "unavailable"),
+      };
+    }),
     findings_by_class_and_provenance: verifiedMeasurements.counts,
     findings_by_verified_fingerprint: verifiedMeasurements.fingerprints,
     provenance_unavailable_rounds: verifiedMeasurements.unavailableRounds,
@@ -3282,6 +3319,9 @@ function renderTrajectoryTable(trajectory) {
   lines.push("rounds:");
   for (const r of trajectory.rounds) {
     lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
+    for (const entry of projectAdjudicationEntries(r)) {
+      lines.push(`    ${JSON.stringify(entry.finding_id)}: reviewer=${entry.reviewer_priority === null ? "not-applicable" : JSON.stringify(entry.reviewer_priority)} adjudicated=${JSON.stringify(entry.adjudicated_priority)} disposition=${JSON.stringify(entry.disposition)}${entry.override ? ` override: ${JSON.stringify(entry.override.reason)}` : ""}`);
+    }
   }
   lines.push("integration: not measured from local evidence");
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
@@ -3955,7 +3995,14 @@ function cliRun(args) {
     console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}${report.legacy_also_present ? "\nlegacy-also-present: true" : ""}`);
     return 0;
   }
-  const trajectory = renderTrajectory(run);
+  let trajectory;
+  try {
+    trajectory = renderTrajectory(run);
+  } catch (err) {
+    if (!(err instanceof EvidenceError)) throw err;
+    console.error(`dev-flow-stats: indeterminate: run "${args.run}" — ${err.message}`);
+    return 3;
+  }
   console.log(args.json ? JSON.stringify(trajectory, null, 2) : renderTrajectoryTable(trajectory));
   return 0;
 }

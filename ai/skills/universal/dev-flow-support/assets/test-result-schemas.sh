@@ -1158,6 +1158,46 @@ run_context_case \
     "is not adjudicated in any supplied --adjudication document" \
     --adjudication "$settlement_cross_check_adjudication"
 
+# Raw schema consumers must reject bad issue shapes without semantic context.
+node --input-type=module - "$schemas_dir" "$fixtures_dir" <<'NODE'
+import { readFileSync } from 'node:fs'
+import { createSchemaValidator } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
+const [schemas, fixtures] = process.argv.slice(2)
+const schema = JSON.parse(readFileSync(`${schemas}/adjudication.schema.json`, 'utf8'))
+const engine = createSchemaValidator(schema)
+for (const name of ['split-reference-zero', 'split-reference-non-issue']) {
+  const data = JSON.parse(readFileSync(`${fixtures}/adjudication.schema/invalid/${name}.json`, 'utf8'))
+  if (engine.validate(data, schema, '$adjudication').length === 0) throw new Error(`schema accepted ${name}`)
+}
+const data = JSON.parse(readFileSync(`${fixtures}/adjudication.schema/valid/split-mechanism-filed-as-issue.json`, 'utf8'))
+for (const value of ['649', 'owner/repo#649']) {
+  data.adjudications[0].reference.value = value
+  if (engine.validate(data, schema, '$adjudication').length > 0) throw new Error(`schema rejected ${value}`)
+}
+NODE
+
+# Stage intervals include their start and exclude the next transition. A
+# later occurrence and an active final occurrence both remain valid.
+for timestamp in 2026-09-01T10:10:00Z 2026-09-01T12:29:59Z; do
+    jq --arg timestamp "$timestamp" '.splits[0].split_at = $timestamp' \
+        "$fixtures_dir/run.schema/valid/split-recorded.json" >"$test_tmp/split-time.json"
+    if ! out="$(node "$validator" run "$test_tmp/split-time.json" 2>&1)"; then
+        fail "split inside stage rejected: $out"
+    fi
+done
+jq '.splits[0].split_at = "2026-09-01T12:30:00Z"' \
+    "$fixtures_dir/run.schema/valid/split-recorded.json" >"$test_tmp/split-time.json"
+run_context_case "a split at the next transition belongs to the new stage" \
+    run "$test_tmp/split-time.json" "must fall within an occurrence of stage review"
+jq '.stage_transitions += [{"stage":"verify","entered_at":"2026-09-01T12:40:00Z","exit":"green"},
+    {"stage":"review","entered_at":"2026-09-01T12:50:00Z"}] |
+    .stage_transitions[6].exit = "fixed" | .splits[0].split_at = "2026-09-01T13:00:00Z"' \
+    "$fixtures_dir/run.schema/valid/split-recorded.json" >"$test_tmp/split-time.json"
+if ! out="$(node "$validator" run "$test_tmp/split-time.json" 2>&1)"; then
+    fail "split in repeated, active stage rejected: $out"
+fi
+echo "PASS: split raw issue shape and stage intervals validated"
+
 split_cross_check_adjudication="$fixtures_dir/run.schema/invalid/split-cross-check.adjudication.json"
 
 # The run-level splits[] projection and the per-finding `split` adjudications
