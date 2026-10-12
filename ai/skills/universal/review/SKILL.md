@@ -362,7 +362,9 @@ actor, marker, and digest bindings, hashes their bodies, and adopts the lowest
 authenticated match. Post once only after `reconcile` proves the candidate set
 has no authenticated match and returns `retry`; `block` is terminal.
 
-Every round comment starts on its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.
+For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.
+For an oversized round, follow the split procedure above by hand; the helper
+refuses oversized or split projections.
 The helper requires a canonical `run-<issue>-<name>` identity and refuses
 `--issue` unless it matches that run's issue number.
 The marker has exactly five fields: the run ID, a run-stage enum value, a

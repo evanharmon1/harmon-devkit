@@ -10849,7 +10849,7 @@ run_vendored "AC5: round-push.sh runs" "round-push: a mode is required" \
 run_vendored "AC5: post-evidence.sh runs" "usage: post-evidence.sh" \
     "$AC5_SKILLS/review/assets/post-evidence.sh" bash
 expect_ok "review names the first-line JSON marker and publication helper" \
-    grep -qF 'Every round comment starts on its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.' \
+    grep -qF 'For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.' \
     "$AC5_SKILLS/review/SKILL.md"
 run_vendored "AC5: dev-flow-monitor.sh runs" "dev-flow-monitor.sh state-path --run-id" \
     "$AC5_SKILLS/orchestrate/assets/dev-flow-monitor.sh" bash

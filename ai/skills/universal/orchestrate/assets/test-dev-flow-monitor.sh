@@ -265,9 +265,6 @@ if "$MONITOR" orchestrator-dir --slate-id epic-1 --run-id run-x --repo-root "$FI
 fi
 pass "orchestrator-dir resolves the common directory and refuses unsafe or missing keys"
 
-echo ""
-echo "=== All dev-flow-monitor trust contract tests passed ==="
-
 # Unlocked/concurrent callers retain duplicate-event refusal. The full helper
 # test exercises a lock-holder resume and overlapping serialized callers.
 setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
@@ -284,3 +281,6 @@ update_origin_registry "$FIXTURE_REPO" '{"trusted_orchestrator_actor_ids": [6789
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-rearm" "test-branch" "12345" "evt-rearm" || true)"
 grep -q 'not trusted' <<<"$output" || fail "re-arm trusted a removed actor"
 pass "unlocked re-arm refuses duplicate events and rechecks the governing allowlist"
+
+echo ""
+echo "=== All dev-flow-monitor trust contract tests passed ==="
