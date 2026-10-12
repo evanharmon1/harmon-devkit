@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// dev-flow-capability: merge-base-absent-v1
+// (The marker trusted callers select a governing copy by — dev-flow-support
+// SKILL.md, step 0, "First adoption". Keep the line exact.)
+//
 // devflow-policy.mjs — the shared v2 `.devflow.toml` reader.
 //
 // Every Dev flow v2 consumer (the exit script, the round-push broker, the
@@ -2378,6 +2382,39 @@ function cliDetect(args) {
   return isV2 ? 0 : 1;
 }
 
+// readBranchPolicy PATH — the one rule for a --policy file: its parsed
+// document, or null (the built-in fallback) when the path has no directory
+// entry at all in a parent that resolves to a directory; anything else that
+// cannot be read or parsed throws a PolicyError. dev-flow-exit.mjs loads
+// --policy through this too, so the engine and this reader resolve the same
+// governing policy for every merge-base state (harmon-devkit#1345).
+export function readBranchPolicy(policyPath) {
+  try {
+    return loadTomlFile(policyPath);
+  } catch (err) {
+    // Only a path with no directory entry takes the built-in fallback.
+    // ENOENT from reading can also mean an existing dangling symlink.
+    if (err?.code !== "ENOENT") throw new PolicyError(`could not read/parse --policy: ${err.message}`);
+    try {
+      lstatSync(policyPath);
+    } catch (statErr) {
+      if (statErr?.code !== "ENOENT") throw new PolicyError(`could not inspect --policy: ${statErr.message}`);
+      try {
+        // Fallback requires an absent final entry in a resolvable parent directory.
+        if (!statSync(realpathSync(path.dirname(policyPath))).isDirectory()) {
+          throw new PolicyError("parent is not a directory");
+        }
+      } catch (parentErr) {
+        throw new PolicyError(
+          `could not read/parse --policy: parent directory cannot be resolved: ${parentErr.message}`,
+        );
+      }
+      return null;
+    }
+    throw new PolicyError(`could not read/parse --policy: ${err.message}`);
+  }
+}
+
 function cliResolve(args) {
   if (!args.policy) {
     console.error("devflow-policy resolve: --policy <file> is required");
@@ -2385,41 +2422,10 @@ function cliResolve(args) {
   }
   let doc;
   try {
-    doc = loadTomlFile(args.policy);
+    doc = readBranchPolicy(args.policy);
   } catch (err) {
-    // Only a path with no directory entry takes the built-in fallback.
-    // ENOENT from reading can also mean an existing dangling symlink.
-    if (err?.code === "ENOENT") {
-      try {
-        lstatSync(args.policy);
-      } catch (statErr) {
-        if (statErr?.code === "ENOENT") {
-          try {
-            // Fallback requires an absent final entry in a resolvable parent directory.
-            if (!statSync(realpathSync(path.dirname(args.policy))).isDirectory()) {
-              throw new PolicyError("parent is not a directory");
-            }
-          } catch (parentErr) {
-            console.error(
-              `devflow-policy: could not read/parse --policy: parent directory cannot be resolved: ${parentErr.message}`,
-            );
-            return 2;
-          }
-          doc = null;
-        } else {
-          console.error(
-            `devflow-policy: could not inspect --policy: ${statErr.message}`,
-          );
-          return 2;
-        }
-      }
-    }
-    if (doc !== null) {
-      console.error(
-        `devflow-policy: could not read/parse --policy: ${err.message}`,
-      );
-      return 2;
-    }
+    console.error(`devflow-policy: ${err.message}`);
+    return 2;
   }
 
   let mergeBaseDoc = null;
@@ -2430,7 +2436,7 @@ function cliResolve(args) {
     );
     return 2;
   }
-  if (args["merge-base-policy"]) {
+  if (args["merge-base-policy"] !== undefined) {
     try {
       mergeBaseDoc = loadTomlFile(args["merge-base-policy"]);
     } catch (err) {
@@ -2765,8 +2771,34 @@ function tryDelegateToClosure(argv) {
   return result.status === null ? 1 : result.status;
 }
 
+// mergeBaseUsageError ARGV — the merge-base argument checks, on the raw argv
+// so main() runs them BEFORE --closure delegation: an older closure would skip
+// them, and an empty --merge-base-policy would then let the branch policy
+// govern (harmon-devkit#1345, review round 1). Pure argument checks: they need
+// nothing from the closure. Same order and messages as before the move. An
+// equals spelling of either option is refused here too (integration cycle 1):
+// `--merge-base-policy=` carries an empty value past the separate-word check.
+function mergeBaseUsageError(argv) {
+  const equalsForm = argv.find((a) => a.startsWith("--merge-base-policy=") || a.startsWith("--merge-base-policy-absent="));
+  if (equalsForm !== undefined) {
+    return `"${equalsForm.slice(0, equalsForm.indexOf("=") + 1)}…" is not accepted — pass --merge-base-policy <file> or a bare --merge-base-policy-absent`;
+  }
+  const given = argv.some((a) => a === "--merge-base-policy" || a.startsWith("--merge-base-policy="));
+  const absent = argv.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="));
+  if (given && absent) return "--merge-base-policy-absent cannot be combined with --merge-base-policy";
+  if (argv.some((a, i) => a === "--merge-base-policy" && argv[i + 1] === "")) {
+    return "--merge-base-policy must be a non-empty file path";
+  }
+  return null;
+}
+
 function main() {
   const argv = process.argv.slice(2);
+  const mergeBaseError = mergeBaseUsageError(argv);
+  if (mergeBaseError) {
+    console.error(`devflow-policy: ${mergeBaseError}`);
+    return 2;
+  }
   const delegated = tryDelegateToClosure(argv);
   if (delegated !== null) return delegated;
 
@@ -2797,9 +2829,6 @@ function main() {
     // Validate the tier inputs' own syntax up front, so a malformed one is a
     // usage error (exit 2) rather than a policy refusal (exit 1).
     if (cmd === "resolve") {
-      if (args["merge-base-policy"] && args["merge-base-policy-absent"]) {
-        throw new PolicyError("--merge-base-policy-absent cannot be combined with --merge-base-policy");
-      }
       tierInputsFromArgs(args);
     }
   } catch (err) {

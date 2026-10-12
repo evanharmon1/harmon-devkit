@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Prose-contract tests for the two rendered implementer brief templates:
+# Prose-contract tests for the local and cloud implementer brief templates:
 # the implement skill's base contract and the orchestrator's dev-flow-v2
-# lane superset. Both are rendered with fixture values and asserted against
+# lane superset, plus the cloud launch contract. They use fixture values to assert
 # their mandatory sections, their external source catalogs, and the strings
 # a dispatched worker has historically needed and not been given.
 set -euo pipefail
@@ -200,7 +200,7 @@ grep -Fq 'plain shell `&` backgrounding is not persistent evidence' \
     "$rendered_file" ||
     fail "ordinary shell backgrounding can masquerade as persistence"
 
-grep -Fq 'every end-to-end, PR-owning implementation lane' \
+grep -Fq 'every local end-to-end, PR-owning implementation lane' \
     ai/skills/universal/orchestrate/SKILL.md ||
     fail "lane template is not scoped to PR-owning dispatches"
 grep -Fq 'bounded remediation implementers, use their schema-bound role briefs' \
@@ -1450,6 +1450,31 @@ for backed in \
     *) fail "herdr.md advertises something the template does not carry: $backed" ;;
     esac
 done
+
+# Cloud briefs are a separate launch-time contract, without the local envelope.
+python3 - <<'CLOUD'
+import pathlib, re
+root = pathlib.Path("ai/skills/universal/orchestrate")
+text = (root / "assets/cloud-lane-brief.md").read_text()
+fields = {
+    "lane-name": "cloud-fixture", "branch": "claude/cloud-fixture", "run-id": "fixture-run",
+    "issue-url": "https://github.com/owner/repo/issues/1",
+    "deadline": "2099-01-01T00:00:00Z", "policy-projection": "fixture-policy",
+    "file-scope-fence": "docs/**", "verified-facts-and-rulings": "None.",
+    "gate-commands": "task verify", "gate-bounds-override": "standard; 60 minutes",
+    "github-rest-read-path": "gh-api-read",
+}
+assert set(re.findall(r"\{\{([^}]*)\}\}", text)) == set(fields), "cloud field contract drift"
+catalog = (root / "references/cloud-lanes.md").read_text()
+assert all("| `{{" + field + "}}` |" in catalog for field in fields), "cloud catalog drift"
+rendered = re.sub(r"\{\{([^}]*)\}\}", lambda m: fields[m[1]], text)
+assert "final commit message" in rendered, "cloud report channel missing"
+for heading in ("Identity and boundaries", "File-scope fence", "Gates and review handoff", "Reporting protocol"):
+    assert "## " + heading in rendered.splitlines(), "missing cloud section: " + heading
+assert ".lane-report.md" not in rendered, "local report-file instruction in cloud brief"
+assert chr(64) + "codex" not in rendered.lower(), "literal Codex trigger in cloud brief"
+print("cloud-lane brief template: ok")
+CLOUD
 
 echo "implementer-brief template: ok"
 echo "lane-brief template: ok"

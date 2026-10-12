@@ -313,8 +313,10 @@ legacy shape or the v1 shape, and never resolves either by hand
 its refusal names the markers it actually found, so no procedure here has to
 restate an older shape's vocabulary in order to reject it.
 
-**On an ordinary review** — the change under review touches none of
-`dev-flow-support/assets/devflow-policy.mjs`, `dev-flow-support/assets/lib/toml-lite.mjs`, `.devflow.toml`,
+**On an ordinary review** — the change under review touches nothing under
+`dev-flow-support/assets/` (the reader `devflow-policy.mjs`, `lib/toml-lite.mjs`,
+`lib/merge-base-policy.sh`, and the exit engine `dev-flow-exit.mjs` with the
+modules, validator and `schemas/` it loads), nor `.devflow.toml`,
 `agent-registry.json`, `Taskfile.yml`, or `taskfiles/` —
 `task devflow:policy -- resolve --policy .devflow.toml --registry
 agent-registry.json --taskfile-dir . --json` (add `--rigor <level>` for an
@@ -361,27 +363,87 @@ done
 [ -n "$reader" ] || exit 1   # a merge base with no reader is a blocker, never
                              # grounds to fall back to the branch's own copy
 
-# Materialize the reader AT THE MERGE BASE'S OWN RELATIVE PATH, so its
-# ES-module import of ./lib/toml-lite.mjs resolves and --closure's probe finds
-# the entrypoint where it expects it.
+# Materialize the merge base's whole asset directory AT ITS OWN RELATIVE PATH,
+# so the reader's ES-module imports resolve, --closure's probe finds the
+# entrypoint where it expects it, and the helper and the exit engine (with its
+# validator and schemas) sit beside it, all from the merge base.
 reader_dir="$(dirname "$reader")"
-mkdir -p "$mb_dir/$reader_dir/lib"
-git show "${base}:${reader}"                    >"$mb_dir/${reader}"
-git show "${base}:${reader_dir}/lib/toml-lite.mjs" >"$mb_dir/${reader_dir}/lib/toml-lite.mjs"
-git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
+git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 1
+
+# trusted_copy COPY picks every governing copy this skill runs: the merge
+# base's own copy if it declares the capability marker, else nothing. It is
+# byte for byte dev-flow-support step 0's definition (a test keeps the two
+# identical). A merge base that predates the marker cannot govern this path:
+# the stage stops as indeterminate and the maintainer decides
+# (dev-flow-support step 0, "First adoption").
+trusted_copy() {
+    [ -f "$1" ] && grep -Fq 'dev-flow-capability: merge-base-absent-v1' "$1" && printf '%s' "$1"
+    return 0
+}
+mb_reader="$(trusted_copy "$mb_dir/${reader}")"
+[ -n "$mb_reader" ] || exit 1   # indeterminate
+
+# The merge base may have NO .devflow.toml (a branch that adds it). Ask, never
+# infer it from a failed `git show`: the shared helper looks it up with a
+# checked tree read, materializes it when present, and answers one word. On
+# "absent" it has already confirmed the materialized reader supports
+# --merge-base-policy-absent — an older reader that accepts any option would
+# ignore the flag and let the branch policy govern, so it stops (exit 1)
+# instead. Any non-zero status is a blocker, never "absent". The helper is a
+# governing file too, so trusted_copy picks it.
+mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh")"
+[ -n "$mb_helper" ] || exit 1   # indeterminate
+
+# mb_args — sets mb_policy, the governing merge-base arguments FOR THE CURRENT
+# HEAD. Call it immediately before every reader or engine invocation: a push
+# that adds or removes .devflow.toml changes the answer, so a value computed
+# for an earlier head is stale.
+mb_args() {
+    local mb_state
+    mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || return 1
+    case "$mb_state" in
+    present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
+    absent) mb_policy=(--merge-base-policy-absent) ;;
+    none) mb_policy=() ;; # neither side has a policy: pass neither flag
+    *) return 1 ;;
+    esac
+}
 
 # Always extract the merge-base registry — it is a repository file, so it
 # exists at the merge base whether or not THIS change edits it, and the
 # resolution needs it to cross-validate finder and role references.
 git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
-# Invoke the MATERIALIZED reader by path, never through `task devflow:policy`:
+# Invoke the SELECTED reader by path, never through `task devflow:policy`:
 # the task target is branch-controlled, so routing through it lets the branch
-# choose the command line that is supposed to constrain it.
-node "$mb_dir/${reader}" resolve --closure "$mb_dir" \
-    --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
+# choose the command line that is supposed to constrain it. No --closure: the
+# selected copy is already the trusted merge-base one.
+mb_args || exit 1
+node "$mb_reader" resolve \
+    --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
     --merge-base-registry "$mb_dir/agent-registry.json" \
     --registry agent-registry.json --taskfile-dir . --json
 ```
+
+**Carry the absent-base state; never improvise it, and never reuse it across
+heads.** `mb_args` recomputes `mb_policy` for the current head immediately
+before every reader or exit-engine call — a remediation push that adds or
+removes `.devflow.toml` changes it, so a value computed for an earlier head is
+stale. It is the one governing argument for each such call —
+`--merge-base-policy <file>` when the merge base has a policy,
+`--merge-base-policy-absent` when it has none but the branch adds one, so the
+built-in fallback governs rather than the branch's own new file
+(harmon-devkit#1345), and nothing at all when neither side has a policy (the
+helper's `none`: the reader refuses the absent flag without an existing
+`--policy` file and resolves the built-in fallback by itself). The mapping is
+the helper's, so the two recipes cannot diverge. The
+helper `dev-flow-support/assets/lib/merge-base-policy.sh` is the same one
+`dev-flow-support`'s step 0 calls, so the whole stage chain resolves the same
+governing policy. It is a governing file in its own right: the recipe runs the
+merge base's copy, and a merge base that predates it follows `dev-flow-support`
+step 0's **First adoption** rule, which is the one statement of it. Both readers
+refuse an **empty** `--merge-base-policy` with usage status 2 (an unset `$mb_dir` or `$base` is a caller bug, never "no
+merge-base policy"), and refuse it combined with
+`--merge-base-policy-absent`.
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
 reader imports `dev-flow-support/assets/lib/toml-lite.mjs`, so extracting the entrypoint alone
@@ -459,7 +521,9 @@ itself, not only the data it reads, since a branch could otherwise lower its
 own gate by editing the resolution code instead of the config. A merge base
 predating the reader's own existence has nothing to materialize into
 `$mb_dir/scripts/`, and the reader refuses rather than falling back to the
-branch copy; that is a blocker, not a shape to work around.
+branch copy; that is a blocker, not a shape to work around. The recipe above
+no longer passes `--closure`: it runs the merge-base copy `trusted_copy`
+selected by path, which runs no branch code either (harmon-devkit#1345).
 
 The merge base is the **one** place an older shape is ever read, and only by
 the reader's own historical decoder — an immutable commit cannot be migrated,
@@ -1339,7 +1403,40 @@ validated against its integrator pass — and before any remediation push, run
 ```
 
 (`$support_dir` resolved as at the top of this skill) and act on its
-`outcome`. It counts completed cycles — exempt included; a carry, an
+`outcome`.
+
+**When the run resolved its policy through the merge-base path above, the
+exit runs the MERGE BASE's engine, never `"$support_dir/dev-flow-exit.sh"`.**
+That path is taken whenever the change touches the engine too, since it sits
+under `dev-flow-support/assets/` on the list above.
+The engine decides the verdict, so it governs exactly as the reader does: a
+branch that edits `dev-flow-exit.mjs` could ignore the merge-base argument or
+lower its own caps, and carrying `mb_policy` into the branch's engine
+constrains nothing. The merge-base recipe above already materialized the
+engine beside the reader, from the same merge-base tree, so the engine
+imports that same reader; `trusted_copy` qualifies it, and it runs by path
+with the same arguments in every merge-base state:
+
+```sh
+# $mb_dir, $reader_dir, trusted_copy and mb_args are defined in the merge-base
+# recipe above; $record_dir is the run's record directory. mb_args runs again
+# here, so the exit uses the CURRENT head's merge-base state.
+mb_args || exit 1
+exit_args=(--run "$record_dir" --stage integration --policy .devflow.toml
+    ${mb_policy[@]+"${mb_policy[@]}"} --json)
+mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs")"
+[ -n "$mb_engine" ] || exit 1   # indeterminate: dev-flow-support step 0, "First adoption"
+node "$mb_engine" "${exit_args[@]}"
+```
+
+The engine is invoked directly rather than through the branch engine's
+`--closure` delegation: the branch's module, and everything in its `main()`
+ahead of the delegation, would already have run, and a branch can delete the
+delegation outright. The engine reads `--policy` through the reader's own
+`readBranchPolicy`, so for `present`, `absent` and `none` alike it resolves
+the governing policy the reader resolved: a missing `.devflow.toml` with no
+merge-base argument is the built-in fallback in both. It refuses an empty
+`--merge-base-policy` as a usage error (exit 1). It counts completed cycles — exempt included; a carry, an
 incomplete attempt, and a retry add none — separately from remediation
 pushes, and treats a cycle as clean when it adjudicates to zero P0/P1. A
 confirmed P0/P1 from any reviewer, a late human review included, breaks the
@@ -1361,7 +1458,13 @@ the document without it.
   no further remediation push for P2s. Settle every remaining finding without
   a push — declined with evidence, or filed together in one follow-up issue —
   reply in each affected thread, `settle` the non-inline ones, tick the
-  deferred entries, and go to the readiness gate.
+  deferred entries, and go to the readiness gate. The engine enforces it as
+  an invariant: while converged no P0/P1 is outstanding, so every recorded fix
+  push after a cycle that closed two consecutive clean cycles is refused
+  (indeterminate, `fixing-ceiling`) until a later cycle — or a late review
+  folded into one — records a P0/P1 that breaks the streak. A pure base
+  reconciliation (empty findings) stays allowed, because the readiness gate
+  never promotes a behind or conflicting head.
 - **`diverging`** is the tell: every finding of a cycle at or after cycle 2
   attacks an earlier remediation push. Stop the fix loop and offer the three
   dispositions — **delete** the added surface, **restructure** it to an
@@ -1369,8 +1472,8 @@ the document without it.
   follow-up — recorded as the `remedy` on the table. Never another hardening
   push; a `retain` on an individual finding does not license one. A push that
   deletes or restructures is permitted within the remediation cap; the engine
-  refuses (indeterminate) a record where a remediation push follows a tell
-  cycle without a recorded `delete` or `restructure` remedy.
+  refuses (indeterminate) a record where a recorded remediation push (below)
+  follows a tell cycle without a recorded `delete` or `restructure` remedy.
   `tell_with_gating_findings` is an escalation that keeps the PR draft and
   leads with descoping — recommend removing the added surface first, with the
   findings and provenance as evidence.
@@ -1381,6 +1484,44 @@ the document without it.
   cycle.
 - **`capped`** with gating findings is stop condition 2 — escalate, PR stays
   draft. Indeterminate is never a pass: fix the record or escalate.
+
+**Record every remediation push explicitly** (harmon-devkit#1386). The
+engine classifies a head move from the run record, never from a cycle's
+`charged` flag. Each remediation push is one `integration -> implement ->
+integration` loop, and the transition that re-enters integration after the
+push records it:
+
+```sh
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --run-id <run> \
+  --stage integration --exit <how implement ended> \
+  --remediation-head <pushed SHA> --remediation-findings <finding id>,<finding id>
+```
+
+That writes `remediation: {head, findings}` on the re-entry entry of
+`stage_transitions[]`, and the validator refuses it anywhere else. `head` is
+the SHA the push put on the branch. `findings` lists the integration
+adjudication finding ids the push answers; it may also name challenge or
+review findings deferred to integration (`disposition: defer`). An empty list
+(`--remediation-findings ""`) marks a pure base-reconciliation push, the
+local-merge fallback that fixes no finding. The engine places each push in
+time, never by where its findings came from:
+
+- The push is placed at its re-entry's `entered_at` and judged by exactly
+  the rounds whose integrator pass settled before it (`settled_at`), leaving
+  out any round that reviewed the pushed head itself: under the tell rule
+  above, or under the fixing ceiling.
+- Its `head` must be accounted for: never reviewed before the push, and —
+  unless it is the latest push, still awaiting review — reviewed, carried, or
+  superseded by a catch-up whose cycle ran before the next push.
+- A carry may attest only a pure base reconciliation. A push with findings
+  changed the reviewed diff, so a carry of its head is indeterminate
+  (`remediation-head-carried`).
+
+A **server-side catch-up** (update-branch) is never a remediation push, so it
+records nothing and never re-enters integration. **Every** integration
+re-entry records its own push: once any cycle or carry exists, a re-entry
+without this field is indeterminate (`remediation-unrecorded`), whatever the
+other pushes say.
 
 The readiness gate reads the integration record itself, never a verdict
 reason, and infers nothing about fix pushes. An integration pass with

@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// dev-flow-capability: merge-base-absent-v1
+// (The marker trusted callers select a governing copy by — dev-flow-support
+// SKILL.md, step 0, "First adoption": this engine takes
+// --merge-base-policy-absent, treats a missing --policy as the built-in
+// fallback, and refuses malformed merge-base arguments before --closure
+// delegation. Keep the line exact; bump the suffix only with the rule.)
+//
 // dev-flow-exit.mjs — deterministic confidence-stage exit computation, and
 // the integration stage's exit (`--stage integration`, harmon-devkit#1272:
 // see "Integration stage" below — a separate path that reads only the
@@ -12,7 +19,8 @@
 //
 // CLI:
 //   node dev-flow-exit.mjs --run <dir> --stage <challenge|review|integration> \
-//     --policy <file> [--rigor <level>] [--merge-base-policy <file>] \
+//     --policy <file> [--rigor <level>] \
+//     [--merge-base-policy <file> | --merge-base-policy-absent] \
 //     [--current-head <sha>] [--history <file> | --repo-root <dir>] \
 //     [--heads <file>] [--closure <dir>] [--validator <path>]
 //     [--verification-only] [--json]
@@ -23,6 +31,16 @@
 // structurally complete — that check belongs entirely to `devflow-policy.mjs
 // resolve`, run once, before a caller ever invokes this script (see
 // ai/schemas/README.md).
+//
+// --merge-base-policy-absent (harmon-devkit#1345) says the merge base has no
+// .devflow.toml at all — a branch that adds it — so the built-in fallback
+// governs, exactly as devflow-policy.mjs resolves it; without it, a caller
+// whose merge base has no policy could only omit --merge-base-policy and let
+// the branch's own policy govern. It cannot be combined with
+// --merge-base-policy, and an empty --merge-base-policy is refused rather
+// than read as "no merge-base policy" (an unset shell variable is a caller
+// bug, never a decision). Each refusal is a usage error, exit 1 — not the
+// reader's 2, which this engine reserves for an indeterminate verdict.
 //
 // Exit codes: 0 continue, 20 converged, 21 diverging, 22 capped,
 // 2 indeterminate, 1 usage/parse error.
@@ -1648,6 +1666,20 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 //   after a tell cycle is accepted only when that cycle recorded a delete or
 //   restructure remedy and nothing it kept (`retain`); otherwise the record is
 //   indeterminate.
+// - A REMEDIATION PUSH is what the run record says it is, never what a
+//   cycle's `charged` flag suggests (harmon-devkit#1386): the integration
+//   transition that re-enters integration after a push records
+//   `remediation: {head, findings}`. A head move with no such record — a
+//   server-side catch-up — is never a remediation push. A push is placed in
+//   time by its re-entry's entered_at and judged by the rounds whose
+//   settled_at precedes it (and that reviewed another head). Its head must
+//   be accounted for: reviewed or carried, or superseded by a catch-up's
+//   review, before the next push. After the latest cycle before it
+//   closed a clean streak of two (the fixing ceiling), every fix push is
+//   refused (indeterminate): a confirmed P0/P1 would have broken the streak,
+//   so none is outstanding. A carry may attest only a pure base reconciliation (a push
+//   with no findings). Every integration re-entry owes its own record; with
+//   review history to classify, an unrecorded one is indeterminate.
 // - `capped`: the clean streak is broken and the charged cycles have reached
 //   the integration cap. `continue` otherwise; a single clean cycle is
 //   `continue`/`last_cycle_clean`, because one terminal clean cycle with every
@@ -1714,6 +1746,52 @@ function loadIntegrationRounds(runDir, validatorPath) {
   return [...byRound.values()].sort((x, y) => x.round - y.round);
 }
 
+// Reads the explicit remediation-push records (harmon-devkit#1386) from the
+// run record's own stage_transitions: every integration entry after the first
+// is one integration -> implement -> integration loop (the count
+// readiness-gate.sh holds against --remediation-cap), and the loop's push is
+// recorded on that re-entry. A loop without the record is counted, not
+// guessed at. A push may also answer a challenge or review finding deferred
+// to integration, so those stages' adjudications are indexed by id too.
+function loadRemediationPushes(runRecord, adjudications = []) {
+  const transitions = runRecord.stage_transitions ?? [];
+  if (!Array.isArray(transitions)) {
+    throw integrationIndeterminate("run.json's stage_transitions is present but not an array — remediation pushes cannot be read", "remediation-malformed");
+  }
+  const pushes = [];
+  let unrecorded = 0;
+  let integrationSeen = false;
+  for (const [index, t] of transitions.entries()) {
+    const reentry = t?.stage === "integration" && integrationSeen;
+    if (t?.stage === "integration") integrationSeen = true;
+    const rem = t?.remediation;
+    if (rem === undefined) {
+      if (reentry) unrecorded++;
+      continue;
+    }
+    if (!reentry) {
+      throw integrationIndeterminate(`stage_transitions[${index}] records a remediation push, but only an integration re-entry can`, "remediation-misplaced");
+    }
+    const wellFormed =
+      rem !== null && typeof rem === "object" && typeof rem.head === "string" && /^[0-9a-f]{40}$/.test(rem.head) &&
+      Array.isArray(rem.findings) && rem.findings.every((id) => typeof id === "string" && id !== "");
+    if (!wellFormed) {
+      throw integrationIndeterminate(`stage_transitions[${index}].remediation is not {head: <40-hex>, findings: [<finding id>, …]}`, "remediation-malformed");
+    }
+    const at = typeof t.entered_at === "string" ? Date.parse(t.entered_at) : NaN;
+    if (Number.isNaN(at)) {
+      throw integrationIndeterminate(`stage_transitions[${index}] records a remediation push without a readable entered_at — the push cannot be placed in time`, "remediation-malformed");
+    }
+    pushes.push({ index, head: rem.head, findings: rem.findings, at });
+  }
+  const confidence = new Map();
+  for (const a of adjudications) {
+    if (a.doc?.stage !== "challenge" && a.doc?.stage !== "review") continue;
+    for (const e of Array.isArray(a.doc.adjudications) ? a.doc.adjudications : []) confidence.set(e.finding_id, e);
+  }
+  return { pushes, unrecorded, confidence };
+}
+
 // Any late round folded into an existing cycle — a round with no completed
 // cycle of its own, or a same-ordinal re-dispatch — contributes only its
 // adjudicated P0/P1 entries, which make the cycle gating; its P2/P3 entries
@@ -1724,8 +1802,12 @@ function foldLateRound(cycle, entries) {
   if (gating.length > 0) cycle.clean = false;
 }
 
-function computeIntegrationExit(rounds, integrationCap) {
+// Assembles completed cycles from integration rounds in order (the rules in
+// the section comment above), plus the review history: every head a new
+// completed cycle reviewed or a carry attested, with the round that did it.
+function assembleIntegrationCycles(rounds) {
   const cycles = [];
+  const reviewed = [];
   let streak = 0;
   let ordinal = 0;
   let awaiting = null;
@@ -1754,6 +1836,8 @@ function computeIntegrationExit(rounds, integrationCap) {
     }
     const completed = cc !== null && !cc.carried && (cc.exit_code === 0 || cc.exit_code === 10);
     const latest = cycles.at(-1);
+    if (cc?.carried) reviewed.push({ head: cc.head, kind: "carry", at: settledAt(r) });
+    else if (completed && cc.cycle !== latest?.cycle) reviewed.push({ head: cc.head, kind: "cycle", at: settledAt(r) });
     if (!completed) {
       // No cycle of its own: a cap-0 pass, a carried head, an incomplete
       // attempt. It folds into the latest completed cycle; before any, it
@@ -1788,23 +1872,103 @@ function computeIntegrationExit(rounds, integrationCap) {
     cycles.push(cycle);
     streak = cycle.clean ? streak + 1 : 0;
   }
+  return { cycles, reviewed, streak, awaiting };
+}
+
+// When a round completed: its integrator pass's settled_at (required by
+// result.integrator.schema.json).
+function settledAt(r) {
+  return Date.parse(r.pass.envelope.payload?.settled_at);
+}
+
+// The head a round reviewed: its cycle's head (a carry's attested head), or
+// the pass head when it carries no cycle.
+function roundHead(r) {
+  return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
+}
+
+function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map() } = {}) {
+  const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds);
+  // A remediation push is judged only by the rounds that completed before
+  // its re-entry and reviewed another head, never by its findings' origin: a
+  // finding first adjudicated on the pushed head, or later, never authorizes
+  // the push.
+  const findingIndex = new Set();
+  for (const r of rounds) {
+    for (const e of r.adjudication?.doc.adjudications ?? []) findingIndex.add(e.finding_id);
+  }
 
   const isTell = (c) => c.cycle >= 2 && c.entries.length > 0 && c.entries.every((e) => e.checkpoint?.attacks_remediation === true);
-  for (let i = 0; i + 1 < cycles.length; i++) {
-    const tell = cycles[i];
-    const next = cycles[i + 1];
-    // A next cycle on the same head, or one that charged nothing (an exempt
-    // base merge), followed no remediation push.
-    if (!isTell(tell) || next.head === tell.head || next.charged <= tell.charged) continue;
-    // A push remedy counts only when the entry's disposition IS that remedy:
-    // `fix` with remedy `delete` is a hardening push wearing a delete label
-    // (#1272 challenge round 1; the validator refuses the pairing).
-    const remedies = tell.entries.map((e) => e.checkpoint.remedy);
-    const pushed = tell.entries.some((e) => PUSH_REMEDIES.includes(e.checkpoint.remedy) && e.disposition === e.checkpoint.remedy);
-    if (!remedies.every((m) => TELL_REMEDIES.includes(m)) || !pushed) {
+  // Every integration -> implement -> integration loop owes its own record:
+  // with review history to classify, an unrecorded loop leaves some head
+  // move unexplainable as a push or a catch-up.
+  if (unrecorded > 0 && reviewed.length > 0) {
+    throw integrationIndeterminate(
+      `the record holds ${unrecorded} integration re-entr${unrecorded === 1 ? "y" : "ies"} without a remediation record — every remediation loop records its push, or no head move can be told from a catch-up`,
+      "remediation-unrecorded",
+    );
+  }
+  for (const [k, push] of pushes.entries()) {
+    // A push is placed in time by its re-entry's entered_at and judged by
+    // exactly the rounds that completed before it. Its head only has to be
+    // accounted for: never reviewed before it, and — unless it is the latest
+    // push, still awaiting review — reviewed or carried, or superseded by a
+    // catch-up's review, before the next push.
+    const nextAt = k + 1 < pushes.length ? pushes[k + 1].at : Infinity;
+    if (reviewed.some((e) => e.at <= push.at && e.head === push.head)) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, a head already reviewed before that push`, "remediation-head-order");
+    }
+    const following = reviewed.filter((e) => e.at > push.at && e.at <= nextAt);
+    if (following.length === 0 && k !== pushes.length - 1) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${push.head}, but no cycle or carry reviewed anything before the next push`, "remediation-head-unreviewed");
+    }
+    // A carry attests an identical diff, so it can follow only a pure base
+    // reconciliation (no findings); a fix push changed the diff.
+    if (following.some((e) => e.kind === "carry" && e.head === push.head) && push.findings.length > 0) {
+      throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] answers findings, yet a carry attested its head ${push.head} — a fix push changes the reviewed diff`, "remediation-head-carried");
+    }
+    const before = rounds.filter((r) => settledAt(r) <= push.at);
+    for (const id of push.findings) {
+      if (findingIndex.has(id)) continue;
+      // A challenge or review finding is answerable during integration only
+      // when it was deferred there.
+      const deferred = confidence.get(id);
+      if (!deferred) {
+        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, which no adjudication holds`, "remediation-finding-unknown");
+      }
+      if (deferred.disposition !== "defer") {
+        throw integrationIndeterminate(`the remediation push recorded at stage_transitions[${push.index}] names ${id}, a confidence-stage finding adjudicated ${deferred.disposition}, not deferred to integration`, "remediation-finding-not-deferred");
+      }
+    }
+    // The state before the push: only rounds that reviewed another head.
+    const prefix = assembleIntegrationCycles(before.filter((r) => roundHead(r) !== push.head));
+    const prior = prefix.cycles.at(-1) ?? null;
+    // A pure base reconciliation, or a push before the first cycle, has
+    // nothing to judge. The reconciliation stays open after convergence: a
+    // conflicting base can be reconciled only by the local-merge fallback,
+    // and the readiness gate never promotes a BEHIND or DIRTY head.
+    if (push.findings.length === 0 || !prior) continue;
+    if (isTell(prior)) {
+      // A push remedy counts only when the entry's disposition IS that remedy:
+      // `fix` with remedy `delete` is a hardening push wearing a delete label
+      // (#1272 challenge round 1; the validator refuses the pairing).
+      const remedies = prior.entries.map((e) => e.checkpoint.remedy);
+      const pushed = prior.entries.some((e) => PUSH_REMEDIES.includes(e.checkpoint.remedy) && e.disposition === e.checkpoint.remedy);
+      if (!remedies.every((m) => TELL_REMEDIES.includes(m)) || !pushed) {
+        throw integrationIndeterminate(
+          `cycle ${prior.cycle} met the tell, but a remediation push followed it (${push.head}) without a recorded delete or restructure remedy — the tell licenses no hardening push`,
+          "tell-remediation-unrecorded",
+        );
+      }
+    }
+    // While converged there is no outstanding P0/P1: one would have broken
+    // the streak. So every fix push after it is refused; a new P0/P1 enters
+    // as a finding in a cycle, ends the converged state, and the next push is
+    // judged against that cycle.
+    if (prefix.streak >= 2) {
       throw integrationIndeterminate(
-        `cycle ${tell.cycle} met the tell, but a remediation push followed it (cycle ${next.cycle} reviewed ${next.head}) without a recorded delete or restructure remedy — the tell licenses no hardening push`,
-        "tell-remediation-unrecorded",
+        `cycle ${prior.cycle} closed two consecutive clean cycles, but a remediation push followed it (${push.head}) — the fixing ceiling allows no further remediation push until a cycle records a P0/P1`,
+        "fixing-ceiling",
       );
     }
   }
@@ -1836,7 +2000,8 @@ function computeIntegrationExit(rounds, integrationCap) {
 // compute. Throws ExitIndeterminate (with a `code`) on anything it cannot
 // establish.
 function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
-  return computeIntegrationExit(loadIntegrationRounds(loadRunDir(dir), validatorPath), integrationCap);
+  const runDir = loadRunDir(dir);
+  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, loadRemediationPushes(runDir.runRecord, runDir.adjudications));
 }
 
 // ---------------------------------------------------------------------------
@@ -2009,6 +2174,19 @@ function tryDelegateToClosure(argv) {
       }
     }
   }
+  // Same hazard as devflow-policy.mjs's own --closure guard: a trusted copy
+  // written before --merge-base-policy-absent ignores it and lets the
+  // branch's policy govern the exit — the one outcome the flag prevents.
+  if (passthrough.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="))) {
+    const src = readTrustedSource();
+    if (!src) return 1;
+    if (!src.includes("merge-base-policy-absent")) {
+      console.error(
+        `dev-flow-exit: the --closure reader (${trustedScript}) predates --merge-base-policy-absent and would silently drop it, letting the branch policy govern — refusing`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`dev-flow-exit: could not exec the --closure reader: ${result.error.message}`);
@@ -2017,8 +2195,48 @@ function tryDelegateToClosure(argv) {
   return result.status === null ? 1 : result.status;
 }
 
+// mergeBaseUsageError ARGS — the merge-base argument checks. Presence, not
+// truthiness: an empty --merge-base-policy (an unset variable in the caller)
+// must never fall through to "no merge-base policy", which lets the branch's
+// own policy govern (harmon-devkit#1345). main() runs them on the raw argv
+// BEFORE --closure delegation, because an older closure would skip them; they
+// are pure argument checks and need nothing from the closure.
+function mergeBaseUsageError(args) {
+  const given = args["merge-base-policy"] !== undefined;
+  const absent = args["merge-base-policy-absent"] !== undefined;
+  if (absent && args["merge-base-policy-absent"] !== true) return "--merge-base-policy-absent takes no value";
+  if (given && absent) return "--merge-base-policy-absent cannot be combined with --merge-base-policy";
+  if (given && (args["merge-base-policy"] === "" || args["merge-base-policy"] === true)) {
+    return "--merge-base-policy must be a non-empty file path";
+  }
+  return null;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
+  // `--key=value` is refused, ahead of --closure delegation too, and so are
+  // the merge-base argument checks below (harmon-devkit#1345, review round 1). parseArgs
+  // keeps such a token whole as the option NAME, so `--merge-base-policy=` or
+  // `--merge-base-policy-absent=false` would be an unknown key, slip past the
+  // presence checks below, and let the branch policy govern (harmon-devkit#1345,
+  // challenge round 1). No caller spells an option that way; the repeatable
+  // finder flags are the one exception, because extractRepeatable parses both
+  // spellings of them.
+  const eqForm = argv.find(
+    (a) =>
+      a.startsWith("--") && a.includes("=") && !a.startsWith("--add-finder=") && !a.startsWith("--select-finder="),
+  );
+  if (eqForm !== undefined) {
+    console.error(
+      `dev-flow-exit: "${eqForm.slice(0, eqForm.indexOf("=") + 1)}…" is not accepted — pass the option and its value as separate arguments`,
+    );
+    return 1;
+  }
+  const mergeBaseError = mergeBaseUsageError(parseArgs(argv));
+  if (mergeBaseError) {
+    console.error(`dev-flow-exit: ${mergeBaseError}`);
+    return 1;
+  }
   const delegated = tryDelegateToClosure(argv);
   if (delegated !== null) return delegated;
 
@@ -2026,7 +2244,7 @@ async function main() {
   // top-level imports, above. Resolves relative to THIS file, same as a
   // static import would; the only difference that matters is WHEN it runs.
   const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
-  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection } =
+  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection, readBranchPolicy } =
     await import("./devflow-policy.mjs");
 
   // --add-finder / --select-finder are repeatable and must be lifted out
@@ -2048,10 +2266,18 @@ async function main() {
     return 1;
   }
 
+  // mergeBaseUsageError already refused every malformed merge-base argument,
+  // ahead of --closure delegation.
+  const mergeBasePolicyGiven = args["merge-base-policy"] !== undefined;
+  const mergeBasePolicyAbsent = args["merge-base-policy-absent"] !== undefined;
+
   let policyDoc, mergeBaseDoc;
   try {
-    policyDoc = parseToml(readFileSync(args.policy, "utf8"));
-    if (args["merge-base-policy"]) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
+    // The reader's own rule: a missing --policy is the built-in fallback, so
+    // the engine resolves the same governing policy as the reader in every
+    // merge-base state, including a repository with no policy anywhere.
+    policyDoc = readBranchPolicy(args.policy);
+    if (mergeBasePolicyGiven) mergeBaseDoc = parseToml(readFileSync(args["merge-base-policy"], "utf8"));
   } catch (err) {
     console.error(`dev-flow-exit: could not read/parse policy inputs: ${err.message}`);
     return 1;
@@ -2059,7 +2285,7 @@ async function main() {
 
   let resolved;
   try {
-    resolved = resolvePolicy(policyDoc, { rigor: args.rigor, mergeBaseDoc });
+    resolved = resolvePolicy(policyDoc, { rigor: args.rigor, mergeBaseDoc, mergeBasePolicyAbsent });
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
       console.error(`dev-flow-exit: ${err.message}`);
@@ -2100,7 +2326,11 @@ async function main() {
   if (args.stage === "integration") {
     let verdict;
     try {
-      verdict = computeIntegrationExit(loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR), resolved.rounds.integration);
+      verdict = computeIntegrationExit(
+        loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
+        resolved.rounds.integration,
+        loadRemediationPushes(runDir.runRecord, runDir.adjudications),
+      );
     } catch (err) {
       if (err instanceof ExitIndeterminate) return indeterminate(args, err.message, err.code ?? null);
       throw err;

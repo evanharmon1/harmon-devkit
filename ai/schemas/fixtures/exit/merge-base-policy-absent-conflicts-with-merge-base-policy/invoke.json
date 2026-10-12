@@ -1,0 +1,5 @@
+{
+  "stage": "review",
+  "merge-base-policy": "policy.toml",
+  "merge-base-policy-absent": true
+}
