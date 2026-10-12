@@ -4107,6 +4107,9 @@ function writeScenario(name, db) {
     [241, "string-adjudications", "not-an-array"],
     [242, "null-adjudication-entry", [null]],
     [243, "multiline-override", adjudication.adjudications],
+    [244, "newline-finding-id", adjudication.adjudications],
+    [245, "non-object-override", adjudication.adjudications],
+    [246, "missing-reviewer-priority", adjudication.adjudications],
   ]) {
     const variantId = "run-" + number + "-" + name;
     const variantPayload = structuredClone(reviewPayload);
@@ -4114,6 +4117,9 @@ function writeScenario(name, db) {
     variantPayload.adjudication.run_id = variantId;
     variantPayload.adjudication.adjudications = structuredClone(entries);
     if (name === "multiline-override") variantPayload.adjudication.adjudications[0].override.reason = "first\\nreview r99: forged";
+    if (name === "newline-finding-id") variantPayload.adjudication.adjudications[0].finding_id = "review-r1-codex-verification-1\\nreview r99: forged";
+    if (name === "non-object-override") variantPayload.adjudication.adjudications[0].override = "not-an-object";
+    if (name === "missing-reviewer-priority") delete variantPayload.adjudication.adjudications[0].reviewer_priority;
     const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, variantPayload, at);
     const variantBody = { ...runBody, run_id: variantId, stage_transitions: lifecycleTo("review", at),
       evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(variantPayload)))],
@@ -4171,16 +4177,16 @@ for scenario in adjudication-overrides local-adjudication-overrides; do
       {finding_id: "review-r1-codex-verification-2", reviewer_priority: "P3", adjudicated_priority: "P3", disposition: "decline", override: null}
     ]' >/dev/null || fail "$scenario: adjudication details or existing round fields lost: $out"
     table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${record_args[@]}" --trusted-actor-id 9001)"
-    grep -Fq 'review-r1-codex-verification-1: reviewer=P2 adjudicated=P1 disposition=fix override: "An ordinary invocation loses retained evidence"' <<<"$table" || fail "$scenario: table omitted upward override: $table"
-    grep -Fq 'review-r1-codex-verification-2: reviewer=P3 adjudicated=P3 disposition=decline' <<<"$table" || fail "$scenario: table omitted unchanged adjudication: $table"
+    grep -Fq '"review-r1-codex-verification-1": reviewer="P2" adjudicated="P1" disposition="fix" override: "An ordinary invocation loses retained evidence"' <<<"$table" || fail "$scenario: table omitted upward override: $table"
+    grep -Fq '"review-r1-codex-verification-2": reviewer="P3" adjudicated="P3" disposition="decline"' <<<"$table" || fail "$scenario: table omitted unchanged adjudication: $table"
     if [ "$scenario" = adjudication-overrides ]; then
         echo "$out" | jq -e '.rounds[1].adjudications == [{finding_id: "integration-r1-codex-cloud-1", reviewer_priority: null, adjudicated_priority: "P2", disposition: "file", override: null}]' >/dev/null || fail "$scenario: integration reviewer priority was not preserved as null: $out"
-        grep -Fq 'integration-r1-codex-cloud-1: reviewer=not-applicable adjudicated=P2 disposition=file' <<<"$table" || fail "$scenario: integration detail missing: $table"
+        grep -Fq '"integration-r1-codex-cloud-1": reviewer=not-applicable adjudicated="P2" disposition="file"' <<<"$table" || fail "$scenario: integration detail missing: $table"
     fi
 done
 
-echo "== C1: malformed legacy adjudications are indeterminate in JSON and table =="
-for scenario in string-adjudications null-adjudication-entry; do
+echo "== C2: invalid legacy adjudications are indeterminate in JSON and table =="
+for scenario in string-adjudications null-adjudication-entry non-object-override; do
     export DFSTATS_DB="$tmp/scenarios/$scenario.json"
     run_id="$(meta "$scenario" .meta.runId)"
     for format in json table; do
@@ -4190,9 +4196,24 @@ for scenario in string-adjudications null-adjudication-entry; do
         out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 "${format_args[@]}" 2>&1)"
         rc=$?
         set -e
-        [ "$rc" -eq 3 ] && grep -Fq 'expected an array of plain objects' <<<"$out" && ! grep -Fq 'TypeError' <<<"$out" ||
+        [ "$rc" -eq 3 ] && grep -Fq 'dev-flow-stats: indeterminate:' <<<"$out" && ! grep -Fq 'TypeError' <<<"$out" ||
             fail "$scenario ($format): malformed adjudications were not indeterminate, rc=$rc: $out"
     done
+done
+
+echo "== C2a: finding IDs are escaped and absent reviewer priorities normalize to null =="
+for scenario in newline-finding-id missing-reviewer-priority; do
+    export DFSTATS_DB="$tmp/scenarios/$scenario.json"
+    run_id="$(meta "$scenario" .meta.runId)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+    table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001)"
+    if [ "$scenario" = newline-finding-id ]; then
+        echo "$out" | jq -e '.rounds[0].adjudications[0].finding_id == "review-r1-codex-verification-1\nreview r99: forged"' >/dev/null || fail "$scenario: JSON changed the finding ID: $out"
+        grep -Fxq '    "review-r1-codex-verification-1\nreview r99: forged": reviewer="P2" adjudicated="P1" disposition="fix" override: "An ordinary invocation loses retained evidence"' <<<"$table" || fail "$scenario: finding ID forged table rows: $table"
+    else
+        echo "$out" | jq -e '.rounds[0].adjudications[0] | has("reviewer_priority") and .reviewer_priority == null' >/dev/null || fail "$scenario: missing reviewer priority was not normalized: $out"
+        grep -Fxq '    "review-r1-codex-verification-1": reviewer=not-applicable adjudicated="P1" disposition="fix" override: "An ordinary invocation loses retained evidence"' <<<"$table" || fail "$scenario: table omitted not-applicable: $table"
+    fi
 done
 
 echo "== C1: multiline override reason is JSON-escaped on one table line =="
@@ -4201,7 +4222,7 @@ run_id="$(meta multiline-override .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds[0].adjudications[0].override.reason == "first\nreview r99: forged"' >/dev/null || fail "multiline override: JSON changed the reason: $out"
 table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001)"
-grep -Fxq '    review-r1-codex-verification-1: reviewer=P2 adjudicated=P1 disposition=fix override: "first\nreview r99: forged"' <<<"$table" || fail "multiline override: reason forged table rows: $table"
+grep -Fxq '    "review-r1-codex-verification-1": reviewer="P2" adjudicated="P1" disposition="fix" override: "first\nreview r99: forged"' <<<"$table" || fail "multiline override: reason forged table rows: $table"
 
 echo "== happy path: --run trajectory renders a clean ready-for-review run =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
