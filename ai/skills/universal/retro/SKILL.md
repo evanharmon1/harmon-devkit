@@ -141,8 +141,9 @@ The trusted set, from the registry at `<repo>@<ref> (<blob sha>)` or from explic
 Current-format evidence authenticates against exactly that set. Legacy evidence
 is additionally intersected with the registry revision in effect when it was
 written. An explicit flag set is trusted as given and can widen what is
-authenticated, so pass it only deliberately. An orchestrator removed from the
-allowlist since a run reads as indeterminate (fail closed). The report's
+authenticated, so pass it only deliberately. Under the default registry trust
+set, an orchestrator removed from the allowlist since a run reads as
+indeterminate (fail closed). The report's
 evidence-integrity section names the actual source and IDs used.
 
 Other useful arguments: `--run <run_id>` when you already know it (a run that

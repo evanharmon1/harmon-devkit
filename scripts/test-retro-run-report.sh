@@ -1294,7 +1294,15 @@ for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
     '{"trusted_orchestrator_actor_ids":[0]}' '{"trusted_orchestrator_actor_ids":[-1]}' \
     '{"trusted_orchestrator_actor_ids":[1.5]}' '{"trusted_orchestrator_actor_ids":[9007199254740992]}' \
     '{"trusted_orchestrator_actor_ids":[1,1]}' \
-    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}'; do
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":1}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":true}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":null}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":{}}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":1.5}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":0}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":9007199254740992}]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"trusted_actor_id":"bad"}]}'; do
     if [ "$registry" = missing ]; then
         rm "$d/remote-registry.json"
     else
@@ -1308,6 +1316,10 @@ for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
         bad "registry did not fail closed: $registry, rc=$RC, err=$ERR"
 done
 
+printf '{"trusted_orchestrator_actor_ids":[%s],"finders":[{"trusted_actor_id":555555},{"slug":"local"}]}' "$ACTOR" >"$d/remote-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 0 ] && ok "a valid noncolliding numeric finder and identity-less local finder remain usable" ||
+    bad "valid finder identities were refused: rc=$RC, err=$ERR"
 printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
 GH_FAIL_REGISTRY=1 run_registry_report "$d"
 [ "$RC" -eq 2 ] && contains "$ERR" 'could not read/parse' && contains "$ERR" 'HTTP 404' &&
@@ -1514,6 +1526,7 @@ contains "$OUT" "- Trust evaluation:" &&
     contains "$OUT" "Current-format evidence authenticates against exactly that set." &&
     contains "$OUT" "Legacy evidence is additionally intersected with the registry revision in effect when it was written." &&
     contains "$OUT" "An explicit flag set is trusted as given and can widen what is authenticated" &&
+    contains "$OUT" "Under the default registry trust set, an orchestrator removed" &&
     contains "$OUT" "removed from the allowlist since a run reads as indeterminate (fail closed)" &&
     ok "bulleted evidence integrity states the evidence-format-specific trust rule" ||
     bad "the report's trust rule is missing or inaccurate"
@@ -2022,6 +2035,20 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' && contains "$OUT" 'Legacy also present: `true`' && contains "$OUT" "PR binding: bound to PR #$PR" &&
     ok "the text report preserves untrusted marker anomaly facts" ||
     bad "evidence-only text output dropped untrusted marker facts: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> evidence-only Markdown discloses the actual default or explicit trust source"
+mkdir -p "$d/repo/nested"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 0 ] && contains "$OUT" "- Trust source:" &&
+    contains "$OUT" "o/r@trunk (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)" &&
+    ok "evidence-only text includes the remote registry repo/ref/blob source" ||
+    bad "evidence-only registry source missing: rc=$RC, err=$ERR, out=$OUT"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && contains "$OUT" "- Trust source: actor id(s) $ACTOR from explicit flags" &&
+    ! contains "$OUT" "o/r@trunk" &&
+    ok "evidence-only text includes explicit flags without claiming a registry source" ||
+    bad "evidence-only explicit source missing or inaccurate: rc=$RC, err=$ERR, out=$OUT"
 
 echo "==> an explicitly selected evidence-only run discloses that it is unbound"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \

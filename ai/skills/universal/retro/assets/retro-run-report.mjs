@@ -753,11 +753,25 @@ function resolveTrustedActorArgs(args) {
       if (ids.has(id)) {
         throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids must contain unique entries, got duplicate ${id}`)
       }
-      if (Array.isArray(doc.finders) && doc.finders.some((finder) => finder?.trusted_actor_id === String(id))) {
-        throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids includes finder actor ${id}; finder identities cannot authenticate orchestrator evidence`)
-      }
       ids.add(id)
       passthrough.push('--trusted-actor-id', String(id))
+    }
+    if (Array.isArray(doc.finders)) {
+      for (const finder of doc.finders) {
+        // Local finders need not declare a GitHub identity. Any declared one
+        // must be valid before it can be compared with the orchestrator set.
+        if (!finder || !Object.hasOwn(finder, 'trusted_actor_id')) continue
+        const raw = finder.trusted_actor_id
+        const finderId = typeof raw === 'string' && /^[1-9][0-9]*$/.test(raw)
+          ? Number(raw)
+          : typeof raw === 'number' ? raw : NaN
+        if (!Number.isSafeInteger(finderId) || finderId < 1) {
+          throw new UsageError(`agent-registry.json finder trusted_actor_id must be a positive safe integer or integer string, got ${JSON.stringify(raw)}`)
+        }
+        if (ids.has(finderId)) {
+          throw new UsageError(`agent-registry.json trusted_orchestrator_actor_ids includes finder actor ${finderId}; finder identities cannot authenticate orchestrator evidence`)
+        }
+      }
     }
   }
   for (const id of args.trustedActorIds) {
@@ -1403,7 +1417,7 @@ function renderMarkdown(report) {
     l.push(`- Tampered comments (trusted author, structural anomaly, not forged): ${report.measurements.integrity.tampered_comments}`)
   }
   l.push(
-    `- Trust evaluation: ${safe(report.source.trusted_actors)}. This trusted set is passed to the harvester. Current-format evidence authenticates against exactly that set. Legacy evidence is additionally intersected with the registry revision in effect when it was written. An explicit flag set is trusted as given and can widen what is authenticated, so pass it only deliberately. An orchestrator removed from the allowlist since a run reads as indeterminate (fail closed).`
+    `- Trust evaluation: ${safe(report.source.trusted_actors)}. This trusted set is passed to the harvester. Current-format evidence authenticates against exactly that set. Legacy evidence is additionally intersected with the registry revision in effect when it was written. An explicit flag set is trusted as given and can widen what is authenticated, so pass it only deliberately. Under the default registry trust set, an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed).`
   )
   if (report.source.ignored_markers.length === 0) {
     l.push('- Untrusted evidence markers ignored during discovery: 0')
@@ -1630,6 +1644,7 @@ function run(argv) {
       console.log(`## Run evidence — run \`${safe(runId)}\``)
       console.log('')
       console.log(`- Status: \`evidence-only\``)
+      console.log(`- Trust source: ${safe(evidenceOnly.source.trusted_actors)}`)
       console.log(`- Issue: #${evidenceOnly.issue}`)
       console.log(`- Authenticated marker facts: \`${JSON.stringify(evidenceOnly.marker_facts)}\``)
       console.log(`- Untrusted marker facts: \`${JSON.stringify(evidenceOnly.untrusted_marker_facts)}\``)
