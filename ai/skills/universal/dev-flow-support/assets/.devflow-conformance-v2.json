@@ -2412,6 +2412,240 @@
           }
         ]
       }
+    },
+    {
+      "name": "review-trigger-absent-resolves-after-ci",
+      "basis": "branch",
+      "config_replacements": [["\nreview_trigger = \"after-ci\"\n", "\n"]],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "review-trigger-after-ci-is-the-shipped-value",
+      "basis": "branch",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "review-trigger-with-push-resolves",
+      "basis": "branch",
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"\n", "review_trigger = \"with-push\"\n"]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "stages": {
+            "integration": {
+              "review_trigger": "with-push"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "review-trigger-after-ci-first-resolves",
+      "basis": "branch",
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"", "review_trigger = \"after-ci-first\""]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci-first"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "review-trigger-unknown-value-is-refused",
+      "basis": "branch",
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"\n", "review_trigger = \"parallel\"\n"]
+      ],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [
+          {
+            "code": "invalid_value",
+            "subject": "[stage.integration].review_trigger"
+          }
+        ]
+      }
+    },
+    {
+      "name": "review-trigger-non-string-is-refused",
+      "basis": "branch",
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"", "review_trigger = [\"with-push\"]"]
+      ],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [
+          {
+            "code": "invalid_value",
+            "subject": "[stage.integration].review_trigger"
+          }
+        ]
+      }
+    },
+    {
+      "name": "review-trigger-outside-integration-is-refused",
+      "basis": "branch",
+      "config_replacements": [
+        [
+          "finders = [\"codex-verification\"]",
+          "finders = [\"codex-verification\"]\nreview_trigger = \"with-push\""
+        ]
+      ],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [
+          {
+            "code": "unsupported_key",
+            "subject": "[stage.review].review_trigger"
+          }
+        ]
+      }
+    },
+    {
+      "name": "absent-policy-review-trigger-is-after-ci",
+      "basis": "absent",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "config_source": "built-in-fallback",
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "self-edit-cannot-choose-its-own-review-trigger",
+      "basis": "merge-base",
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"\n", "review_trigger = \"with-push\"\n"]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "config_source": "merge-base",
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "forensic-min-rounds-2-holds-under-after-ci",
+      "basis": "branch",
+      "overrides": ["rigor=forensic"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "selections": {
+            "rigor": {
+              "value": "forensic",
+              "source": "explicit"
+            }
+          },
+          "rounds": {
+            "min_rounds": 2
+          },
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "forensic-min-rounds-2-holds-under-with-push",
+      "basis": "branch",
+      "overrides": ["rigor=forensic"],
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"\n", "review_trigger = \"with-push\"\n"]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "selections": {
+            "rigor": {
+              "value": "forensic",
+              "source": "explicit"
+            }
+          },
+          "rounds": {
+            "min_rounds": 2
+          },
+          "stages": {
+            "integration": {
+              "review_trigger": "with-push"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "forensic-min-rounds-2-holds-under-after-ci-first",
+      "basis": "branch",
+      "overrides": ["rigor=forensic"],
+      "config_replacements": [
+        ["review_trigger = \"after-ci\"", "review_trigger = \"after-ci-first\""]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "selections": {
+            "rigor": {
+              "value": "forensic",
+              "source": "explicit"
+            }
+          },
+          "rounds": {
+            "min_rounds": 2
+          },
+          "stages": {
+            "integration": {
+              "review_trigger": "after-ci-first"
+            }
+          }
+        }
+      }
     }
   ]
 }

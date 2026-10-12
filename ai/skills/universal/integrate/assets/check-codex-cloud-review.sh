@@ -77,6 +77,8 @@ Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
                                      [--previous-head SHA] [--run-id ID]
                                      [--integration-cap N] [--integration-exempt-cap N]
+                                     [--review-trigger after-ci|with-push|after-ci-first]
+  check-codex-cloud-review.sh trigger-timing --review-trigger after-ci|with-push|after-ci-first --remediation N
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh carry --state FILE --head SHA [--run-id ID] [--repo-dir DIR]
@@ -112,6 +114,23 @@ the gate as the only backstop.
 --run-id scopes the totals to one run. The state file outlives the run that
 wrote it, so a second run against the same PR would otherwise inherit the
 first run's spend; naming a different run starts the totals again.
+
+--review-trigger records the resolved [stage.integration].review_trigger on
+the cycle (harmon-devkit#1376), and attempt 2 refuses a value its attempt 1
+was not reserved under. It decides only WHEN a review is requested: under
+`with-push` and `after-ci-first` a review can be requested before CI on its
+head concludes, and a review spent on a head whose CI then fails still
+charges `integration` exactly like any other cycle. No cycle is classified
+from CI evidence; charging that case to the exempt ceiling is tracked
+separately (#1406).
+
+`trigger-timing` answers WHEN this cycle's review is requested, for the
+recorded value and the number of remediation (integration-stage fix) pushes
+made so far: `after-ci` waits for CI green on every head, `with-push` requests
+with every push, and `after-ci-first` waits on the PR's first head (no
+remediation push yet) and requests with the push after that. It reads and
+writes nothing and prints `{review_trigger, remediation, order}` where order
+is `after-ci` or `with-push`.
 
 `carry` (harmon-init#752) answers one question before a cycle is reserved:
 does the previously reviewed clean verdict still attest THIS head? It does
@@ -252,6 +271,8 @@ run_id=
 repo_dir=.
 integration_cap=
 integration_exempt_cap=
+review_trigger=
+remediation=
 requested_at_arg=
 # harmon-devkit#573: the finder's usage-limit reply, once `check` has seen it.
 # Empty until the comment surface has actually been fetched and scanned, which
@@ -279,7 +300,7 @@ eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --repo-dir)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --review-trigger | --remediation | --repo-dir)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -297,6 +318,8 @@ while [ "$#" -gt 0 ]; do
         --repo-dir) repo_dir=$2 ;;
         --integration-cap) integration_cap=$2 ;;
         --integration-exempt-cap) integration_exempt_cap=$2 ;;
+        --review-trigger) review_trigger=$2 ;;
+        --remediation) remediation=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
@@ -321,6 +344,7 @@ done
 # the `*)` arm of the dispatch below, which is `usage` anyway.
 case "$command_name" in
 reap) [ -n "$root_dir" ] || usage ;;
+trigger-timing) ;;
 *) [ -n "$state_file" ] || usage ;;
 esac
 valid_repo() {
@@ -916,7 +940,9 @@ read_state() {
       (.boundary_source == null or
         (.boundary_source == "check-suite" or .boundary_source == "commit-date")) and
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
-      (.check_suite_boundary == null or (.check_suite_boundary | type == "string"))
+      (.check_suite_boundary == null or (.check_suite_boundary | type == "string")) and
+      (.review_trigger == null or .review_trigger == "after-ci" or
+        .review_trigger == "with-push" or .review_trigger == "after-ci-first")
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -2021,7 +2047,35 @@ classify_cycle_charge() {
     return 0
 }
 
+# harmon-devkit#1376: the three [stage.integration].review_trigger values.
+valid_review_trigger() {
+    case "$1" in after-ci | with-push | after-ci-first) return 0 ;; *) return 1 ;; esac
+}
+
 case "$command_name" in
+trigger-timing)
+    # harmon-devkit#1376: a pure answer, so the ordering each value implies is
+    # decided in one tested place instead of by every caller's reading.
+    [ -n "$review_trigger" ] && [ -n "$remediation" ] || usage
+    valid_review_trigger "$review_trigger" ||
+        die "--review-trigger must be one of after-ci, with-push, after-ci-first"
+    valid_uint_or_zero "$remediation" || die "--remediation must be a non-negative integer"
+    case "$review_trigger" in
+    after-ci) trigger_order=after-ci ;;
+    with-push) trigger_order=with-push ;;
+    after-ci-first)
+        if [ "$remediation" = "0" ]; then
+            trigger_order=after-ci
+        else
+            trigger_order=with-push
+        fi
+        ;;
+    esac
+    jq -cn --arg trigger "$review_trigger" --argjson remediation "$remediation" \
+        --arg order "$trigger_order" \
+        '{review_trigger:$trigger, remediation:$remediation, order:$order}'
+    ;;
+
 reserve)
     [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$head" ] && [ -n "$attempt" ] ||
         usage
@@ -2030,6 +2084,8 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
+    [ -z "$review_trigger" ] || valid_review_trigger "$review_trigger" ||
+        die "--review-trigger must be one of after-ci, with-push, after-ci-first"
     # harmon-devkit#1189: right after a push GitHub routinely reports the
     # previous head for a few seconds, so a reservation taken immediately
     # refused a benign race — and a caller that masked that refusal posted the
@@ -2401,6 +2457,14 @@ reserve)
         # that the change never asked for. Carry attempt 1's verdict.
         charge_class=$(jq -r '.charge // "charged"' "$state_file")
         charge_reason=$(jq -r '.charge_reason // ""' "$state_file")
+        # The same cycle keeps the trigger it was reserved under. State written
+        # before the field existed records none, and that cycle ran today's
+        # serial order, so it reads as `after-ci` — otherwise a retry that
+        # passes `--review-trigger after-ci` against it would be refused.
+        recorded_review_trigger=$(jq -r '.review_trigger // "after-ci"' "$state_file")
+        [ -z "$review_trigger" ] || [ "$review_trigger" = "$recorded_review_trigger" ] ||
+            die "--review-trigger $review_trigger disagrees with the trigger attempt 1 was reserved under ($recorded_review_trigger)"
+        review_trigger=$recorded_review_trigger
     fi
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
@@ -2561,6 +2625,7 @@ reserve)
         --arg run_id "$run_id" \
         --arg base_sha "$reserve_base_sha" \
         --argjson first_trigger_comment_id "$payload_first_trigger_comment_id" \
+        --arg review_trigger "$review_trigger" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -2576,7 +2641,8 @@ reserve)
           charged_cycles:$charged_cycles,
           exempt_cycles:$exempt_cycles,
           run_id:(if $run_id == "" then null else $run_id end),
-          base_sha:(if $base_sha == "" then null else $base_sha end)
+          base_sha:(if $base_sha == "" then null else $base_sha end),
+          review_trigger:(if $review_trigger == "" then null else $review_trigger end)
         }')
     write_state "$state_file" "$payload" || {
         restore_spend

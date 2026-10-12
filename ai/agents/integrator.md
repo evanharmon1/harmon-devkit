@@ -66,6 +66,17 @@ A workable brief names:
   older brief that names neither is one whose cycles were all charged, and the
   gate holds it to the single-counter rule; do not synthesize the split
   yourself when the brief does not carry a run id.
+- **the resolved `stages.integration.review_trigger`, and how many
+  remediation pushes this stage has made so far** (harmon-devkit#1376). The
+  first is `after-ci`, `with-push`, or `after-ci-first`, read from the
+  resolved policy; the second is the orchestrator's count of integration-stage
+  fix pushes. Together they decide WHEN this cycle's review is requested (§3)
+  — never whether a cycle runs, and never how many. Pass the value to
+  `reserve` as `--review-trigger` on every attempt-1 reservation, which
+  records it on the cycle; it changes no charge (§4). A
+  brief that names neither is an `after-ci` brief — today's order, which
+  never requests a review before CI is green — so run that order and pass
+  `--review-trigger after-ci`; do not infer a faster one.
 - **`applied_dispositions` to echo forward**, if the orchestrator wants them
   present on a clean verdict — a list of `{finding_id, disposition}` it has
   already decided and applied in an earlier round. You copy this list into
@@ -141,7 +152,7 @@ substitute is exactly the failure mode `check-codex-cloud-review.sh`'s own
 header warns about (a poller that misses a clean top-level result and reports
 an already-green attempt incomplete).
 
-## 3. Reap stale state, then settle checks before reserving anything
+## 3. Reap stale state, then read checks — settling them first under `after-ci`
 
 Run the state sweep unconditionally — it only removes state for PRs that have
 since closed or merged, so it is always safe:
@@ -150,11 +161,52 @@ since closed or merged, so it is always safe:
 "$helper" reap --root "$(git rev-parse --git-path integrate-codex)"
 ```
 
-Do not reserve or post the trigger until every required check has settled.
-The attempt window starts when the trigger is created, so posting during CI
-would consume the reviewer's promised post-CI response window. Verify every
-required CI check has concluded non-failing for the exact head your brief
-named:
+**When this cycle's review is requested is the brief's `review_trigger`,
+never your judgement** (harmon-devkit#1376). Ask the checker which order
+applies to THIS cycle — it is one tested place, so no reading of the values
+below can drift from another:
+
+```sh
+timing="$("$helper" trigger-timing --review-trigger "<review_trigger>" \
+    --remediation "<remediation pushes so far>")" || exit
+order="$(jq -er '.order' <<<"$timing")" || exit
+case "$order" in
+after-ci | with-push) ;;
+*)
+    echo "unknown review order '$order' — do not reserve or trigger"
+    exit 1
+    ;;
+esac
+```
+
+Capture the helper's answer before parsing it, never pipe it: a pipeline
+reports its last command's status, so a failed helper would leave an empty
+`order` behind a zero exit and the cycle would be triggered before CI
+settled. Every way of not knowing the order stops here: a helper that
+fails, an answer `jq` cannot read, or an order other than the two
+`trigger-timing` prints (`after-ci-first` always resolves to one of them).
+
+- **`after-ci`** — the serial order, settled green on this head first.
+  Do not reserve or post the trigger until every required check has settled.
+  The attempt window
+  starts when the trigger is created, so posting during CI would consume the
+  reviewer's promised post-CI response window.
+- **`with-push`** — request the review with the push: reserve and trigger
+  without waiting for CI, and settle CI alongside the cycle. Both still have
+  to end green and terminal-clean before the orchestrator's readiness gate
+  passes; only the ordering changed.
+
+`after-ci-first` is not a third order: on the PR's first head (no remediation
+push yet) it answers `after-ci`, and on every head a remediation push produced
+it answers `with-push`. A CI re-run on an unchanged head is **not** a push, so
+it never starts a cycle: the head's cycle is the one already in state, and §4
+resumes it rather than reserving another (`reserve` refuses a second attempt-1
+request for the same head). Whatever the order, it decides only WHEN the one
+cycle this pass owes is requested — never a cycle the rounds policy does not
+require, and never a second request for a head beyond the one bounded
+attempt-2 retry §4 already describes.
+
+Under either order, read the checks for the exact head your brief named:
 
 ```sh
 checks="$(gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link 2>/dev/null)"
@@ -282,10 +334,24 @@ merely `pending` (neither failed nor settled) belongs in `checks_ready`
 ## 4. Drive cloud review cycles (skip entirely when the cap is 0)
 
 If your brief states the resolved `[rounds].integration` cap is 0, **or §3's
-`checks_ready` is not `true`**, skip this whole section. Report
-`codex_cycle: null` and move to §5 — triggering before CI settles would spend
-the reviewer's promised post-CI response window on an incomplete head,
-exactly what §3 already refuses to reserve for.
+order is `after-ci` and its `checks_ready` is not `true`**, skip this whole
+section. Report `codex_cycle: null` and move to §5 — under `after-ci`,
+triggering before CI settles would spend the reviewer's promised post-CI
+response window on an incomplete head, exactly what §3 already refuses to
+reserve for. Under `with-push` an unsettled — or failed — `checks_ready` is
+no reason to skip: the review is requested with the push, and CI is settled
+alongside it.
+
+**A CI failure never abandons a review already requested.** Under
+`with-push`, when CI fails while this cycle's review is pending, keep polling
+the cycle exactly as below until `check` reaches a terminal result, or report
+it incomplete with the exit code it last returned — never stop early because
+CI went red, and never re-trigger because CI was re-run. The failed check is
+§3's `$failed_required` finding as always. A review spent on a head whose CI
+then fails still charges `integration`, like any other cycle — never adjust a
+counter by your own reading of CI. Charging that case to the exempt ceiling
+instead is tracked separately (#1406). Report the counters `reserve` and
+`check` leave in state, as always.
 
 Otherwise, persist state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
@@ -333,6 +399,20 @@ collapse them into one `&&`/`;` chain. A chain that fails partway hides which
 link broke, and a `;`-separated tail keeps running after a failure and
 reports on a cycle that never happened.
 Run the poll loop strictly sequentially in the foreground, never as a background task.
+
+**Under a `with-push` order with more than one PR-side finder, trigger them
+all before you poll any of them** (harmon-devkit#1376). The poll loop below
+can hold a reviewer window of 15 minutes or more; running it for codex-cloud
+first and only then triggering the next finder ("Per-finder cycles" below)
+requests that finder's review one whole window after the push, which is
+exactly the delay `with-push` exists to remove. So split the two halves: for
+this head, run every configured finder's reserve → read → trigger sequence
+first — codex-cloud's exactly as below, each other finder's as "Per-finder
+cycles" gives it — and only then poll each one's `check` to its own terminal
+result. Each finder's sequence is still its own non-chainable steps with its
+own exit checks, and one finder's refusal posts nothing for that finder
+without stopping the others. With codex-cloud alone, or under an `after-ci`
+order, nothing changes: drive the cycle exactly as written.
 
 **Compare the persisted `.run_id` with this run's before reusing any state.**
 Same-head attached state from ANOTHER run (or from before run scoping, which
@@ -417,7 +497,8 @@ Three cases, mutually exclusive:
   state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
-      --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>")
+      --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
+      --review-trigger "<review_trigger>")
   reserve_exit=0
   "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   if [ "$reserve_exit" -eq 18 ]; then
@@ -717,7 +798,8 @@ explicit `--actor-id`:
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 reserve_args=(--state "$state_finder" --repo "$repo" --pr <n> \
     --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
-    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>")
+    --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
+    --review-trigger "<review_trigger>")
 reserve_exit=0
 "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
 if [ "$reserve_exit" -eq 18 ]; then
@@ -730,6 +812,13 @@ jq -e --arg head "<head>" \
     '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
     <<<"$pr_now" >/dev/null || exit
 ```
+
+`review_trigger` covers every PR-side finder alike: §3's `order` decides when
+each finder's review is requested, exactly as it does for codex-cloud.
+
+Under a `with-push` order these triggers are posted together with
+codex-cloud's, before any polling (§4, "trigger them all before you poll
+any of them"); this section's `check` loop runs after all of them are out.
 
 **Every finder trigger runs the §4 order: reservation held → the
 `state,isDraft,headRefOid` read → trigger → attach.** That holds for the

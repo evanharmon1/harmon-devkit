@@ -271,6 +271,12 @@ def v2_normalize(resolved: dict, sources: dict, basis: str) -> dict:
             "cache": issue.get("cache"),
         },
         "pin": {"status": resolved["pin"]["status"]},
+        "rounds": {"min_rounds": resolved["rounds"].get("min_rounds")},
+        "stages": {
+            "integration": {
+                "review_trigger": resolved["stages"]["integration"].get("review_trigger"),
+            },
+        },
         "disclosures": sorted(
             ({"code": item["code"], "role": item["role"]} for item in resolved["disclosures"]),
             key=lambda item: (item["code"], V2_ROLES.index(item["role"])),
@@ -446,6 +452,20 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
             errors.append({"code": "migration_required", "subject": "schema_version"})
         elif "is retired (ADR 2026-09-30 D8)" in result.stderr and "operator tier instruction" in result.stderr:
             errors.append({"code": "tier_retired", "subject": "override"})
+        elif result.returncode == 1 and (
+            invalid := re.search(r"devflow-policy: (\[[^\]\s]+\]\.[a-z_]+) must be one of \[", result.stderr)
+        ):
+            errors.append({"code": "invalid_value", "subject": invalid.group(1)})
+        elif result.returncode == 1 and (
+            unsupported := re.search(
+                r"devflow-policy: (\[[^\]\s]+\]) has invalid keys; unsupported: ([a-z_]+)$",
+                result.stderr,
+                re.M,
+            )
+        ):
+            errors.append(
+                {"code": "unsupported_key", "subject": f"{unsupported.group(1)}.{unsupported.group(2)}"}
+            )
         else:
             failures.append(f"{name}: unclassified reader failure: {result.stderr.strip()}")
 

@@ -173,7 +173,9 @@ description       = "Rigor: maximum scrutiny at every role — irreversible fail
 # as `integration_exempt` — instead of `integration`. Exempt is not free: a
 # busy base branch could otherwise spend a whole run re-reviewing code nobody
 # changed. A merge that resolves a conflict, or that touches any file the
-# change under review touches, is ordinary work and charges normally. The
+# change under review touches, is ordinary work and charges normally. A cycle
+# requested before CI on a head that CI then fails is the other exempt case
+# ([stage.integration].review_trigger below). The
 # ceiling is derived, not authored — on the operating path it equals
 # `integration`, 0 included, so disabling cloud review leaves no cycle of
 # either kind. A historical (legacy/v1) merge-base decode is the exception: it
@@ -375,7 +377,8 @@ harnesses = ["claude-code"]   # (preference) — live every run:
 # ── Stages — stage → registry actors ────────────────────────────────────────
 # Monomorphic keys; the KEY carries the semantics, the value is always a
 # plain array of agent-registry.json slugs (never commands — those live one
-# hop away, behind the registry entry's Taskfile target):
+# hop away, behind the registry entry's Taskfile target). The one scalar is
+# [stage.integration].review_trigger, documented beside it below:
 #   finders           (all-of) every listed finder returns a completed pass at
 #                     the same reviewed_head or the round is incomplete
 #                     (finder_unavailable after one retry — never a round
@@ -412,6 +415,30 @@ finders = ["codex-verification"]
 [stage.integration]
 finders = ["codex-cloud"]
 # finder_fallbacks = []
+# review_trigger: WHEN the integration stage requests its PR-side reviews
+# (every finder above) relative to CI on the head. Absent = "after-ci".
+#   "after-ci"        wait for CI to conclude green, then request — on the
+#                     PR's first head and after every remediation push
+#   "with-push"       request with every push; CI runs alongside
+#   "after-ci-first"  wait for CI on the PR's first head, then request; after
+#                     a remediation push, request with the push
+# Trade-off: after-ci never spends a review on a head CI then fails, but every
+# cycle pays CI time plus the reviewer window back to back; the other two
+# trade an occasional wasted cycle for wall-clock time. Timing only: the
+# readiness gate is unchanged (checks green AND a terminal clean current-head
+# review), and carry and the base-merge exemption apply exactly as above.
+# Cap note: under with-push or after-ci-first, a cycle whose head's CI then
+# concludes FAILED spends integration_exempt, not integration — decided from
+# the CI conclusion on that exact head when the cycle is classified, never by
+# judgement; an indeterminate CI result charges integration normally. Its
+# findings are still adjudicated, and the fix push still spends remediation.
+# A CI-only infrastructure re-run never re-requests a review.
+# It decides only WHEN a review is requested: it never suppresses a cycle the
+# resolved [rounds.*] policy requires and never adds a request beyond it — the
+# one legitimate second cycle on an unchanged head is the one forensic's
+# min_rounds = 2 requires. It takes effect only where the vendored integration
+# stage implements it; until then every request waits for CI, as after-ci.
+review_trigger = "after-ci"
 
 # ── Strategies — how the work is organized ──────────────────────────────────
 # topology/planning/delegation/coordination semantics and the
