@@ -81,8 +81,8 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --record-dir <path>          Parent directory containing <run_id>/run.json;
                                passed through unchanged to the harvester.
   --local-unverified           After run-not-found only, read --record-dir/--run
-                               as unverified local data (exit 13). Requires both
-                               flags. Ignored when authenticated evidence exists.
+                               as unverified local data (exit 13); refused local
+                               records exit 14. Requires both flags. Ignored when authenticated evidence exists.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -720,6 +720,30 @@ function discoverRun(args, trustedActorIds) {
     malformed,
     ignoredHints,
     unverifiedBodyRunIds: [...bodyDiscovery.runTokens.keys()].sort()
+  }
+}
+
+// Ordinary discovery and the local guard share the same refusal and diagnostics.
+function requireDeterminateDiscovery(args, trusted, discovered) {
+  if (discovered.runId) return
+  const corrupted = discovered.malformed.filter((m) => m.trusted)
+  if (discovered.untrusted.length > 0 || corrupted.length > 0) {
+    const parts = []
+    if (discovered.untrusted.length > 0) {
+      const runs = [...new Set(discovered.untrusted.map((m) => m.run_id))].sort().map((id) => JSON.stringify(id)).join(', ')
+      parts.push(
+        `${discovered.untrusted.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set and an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed)`
+      )
+    }
+    if (corrupted.length > 0) {
+      parts.push(
+        `${corrupted.length} marker(s) from a TRUSTED actor that do not parse (${[...new Set(corrupted.map((m) => m.reason))].join('; ')}) — a trusted orchestrator's own evidence, truncated or edited, which is corrupted evidence rather than absence`
+      )
+    }
+    throw new IndeterminateError(
+      `PR #${args.pr} and its linked issues carry ${parts.join('; and ')}. Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`,
+      { untrusted: discovered.untrusted, malformed: discovered.malformed, ignoredHints: discovered.ignoredHints }
+    )
   }
 }
 
@@ -1589,6 +1613,7 @@ function run(argv) {
   if (!runId) {
     try {
       const discovered = discoverRun(args, trusted.ids)
+      requireDeterminateDiscovery(args, trusted, discovered)
       pr = discovered.pr
       runId = discovered.runId
       runIdFrom = discovered.source
@@ -1608,35 +1633,6 @@ function run(argv) {
     reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
     reportIgnoredHints(ignoredHints)
     if (!runId) {
-      // "No trusted marker" and "no marker at all" are different answers, and
-      // only the second one licenses the fallback. Markers that exist but do
-      // not authenticate are either a redirect attempt or a trust root that
-      // has MOVED since the run — an orchestrator trusted at kickoff and
-      // removed since is exactly the case the evidence contract protects, and
-      // this tool cannot tell the two apart because it authenticates against
-      // the caller's set rather than the run's kickoff-time registry revision
-      // (harmon-devkit#741). Reporting either as "no run record" would
-      // reinterpret a run that plainly happened as one that did not
-      // (review round 1, confirmed P1).
-      const corrupted = malformedMarkers.filter((m) => m.trusted)
-      if (untrustedMarkers.length > 0 || corrupted.length > 0) {
-        const parts = []
-        if (untrustedMarkers.length > 0) {
-          const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().map((id) => JSON.stringify(id)).join(', ')
-          parts.push(
-            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set and an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed)`
-          )
-        }
-        if (corrupted.length > 0) {
-          parts.push(
-            `${corrupted.length} marker(s) from a TRUSTED actor that do not parse (${[...new Set(corrupted.map((m) => m.reason))].join('; ')}) — a trusted orchestrator's own evidence, truncated or edited, which is corrupted evidence rather than absence`
-          )
-        }
-        console.error(
-          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${parts.join('; and ')}. Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
-        )
-        return 11
-      }
       console.error(
         `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.map((id) => JSON.stringify(id)).join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
       )
@@ -1691,7 +1687,19 @@ function run(argv) {
     // The opt-in may replace only the ordinary exit-10 outcome. Read-only
     // discovery guards that local read; it never selects a run or mutates --run.
     if (args.localUnverified) {
-      const discovered = args.pr === undefined ? null : discoverRun(args, trusted.ids)
+      let discovered = null
+      if (args.pr !== undefined) {
+        try {
+          discovered = discoverRun(args, trusted.ids)
+          requireDeterminateDiscovery(args, trusted, discovered)
+        } catch (error) {
+          if (!(error instanceof IndeterminateError)) throw error
+          reportIgnoredMarkers(error.untrusted, error.malformed)
+          reportIgnoredHints(error.ignoredHints)
+          console.error(`${TOOL}: indeterminate — ${error.message}`)
+          return 11
+        }
+      }
       const corrupted = discovered?.malformed.filter((marker) => marker.trusted) || []
       if (corrupted.length > 0) {
         reportIgnoredMarkers(discovered.untrusted, discovered.malformed)

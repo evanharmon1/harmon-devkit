@@ -2475,6 +2475,40 @@ GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
     contains "$ERR" '"untrusted\nlocal run.json refused"' && ! printf '%s\n' "$ERR" | grep '^local run.json' >/dev/null &&
     ok "JSON-encoded untrusted id cannot forge local-refusal exit or diagnostic line" || bad "forged refusal: $RC $ERR"
 
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && [ "$ERR" = "$forged_err" ] &&
+    ok "untrusted-only PR guard retains ordinary discovery indeterminate stderr" || bad "untrusted discovery downgraded: $RC $ERR"
+
+echo "==> documented local-mode absence and guard error exits"
+run_report "$trusted_dir" --repo o/r --run no-local-record --record-dir "$d/records" \
+    --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 10 ] && [ -z "$OUT" ] && contains "$ERR" 'run-not-found' &&
+    ok "missing opt-in local record preserves exit 10" || bad "missing local exit: $RC $ERR"
+run_report "$trusted_dir" --repo o/r --run no-local-record --record-dir "$d/records" \
+    --stats-script "$trusted_dir/stats.mjs" --local-unverified --as-of 2026-08-30T09:00:00Z
+[ "$RC" -eq 2 ] && [ -z "$OUT" ] && contains "$ERR" '--as-of is unavailable' &&
+    ok "attempted local as-of is usage exit 2 even when local record is missing" || bad "missing local as-of: $RC $ERR"
+GH_FAIL_ISSUE="$PR" GH_FAIL_ISSUE_STATUS=503 \
+    GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 1 ] && [ -z "$OUT" ] && contains "$ERR" 'HTTP 503' &&
+    ok "operational PR-comment guard failure exits 1" || bad "operational guard failure: $RC $ERR"
+set_comments "$trusted_dir/comments" "$PR"
+write_file "$trusted_dir/body" 'Refs #999999'
+make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
+GH_FAIL_ISSUE=999999 GH_FAIL_ISSUE_STATUS=503 \
+    GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
+    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'could not be read reliably' &&
+    ok "indeterminate hint guard read exits 11" || bad "hint guard failure: $RC $ERR"
+node "$REPORT" --help >"$trusted_dir/help.txt"
+grep -q 'records exit 14' "$trusted_dir/help.txt" &&
+    ok "local flag help documents refusal exit 14" || bad "local help omits exit 14"
+
 grep -q '| 14 | Refused local record:' ai/skills/universal/retro/SKILL.md &&
     grep -q 'Never describe this local refusal as GitHub evidence tampering' ai/skills/universal/retro/SKILL.md &&
     ! grep -q 'stderr names `local run.json`' ai/skills/universal/retro/SKILL.md &&
