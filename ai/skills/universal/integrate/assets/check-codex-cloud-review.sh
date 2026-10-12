@@ -122,11 +122,13 @@ head's CI then concludes FAILED spends `integration_exempt` rather than
 `integration`. The CI conclusion is not known at reservation, so the cycle is
 charged then (unknown charges) and classified from evidence when the next
 attempt-1 cycle on a different head is reserved: `reserve` reads the CI
-conclusion on that exact earlier head (`readiness-gate.sh ci`) and, only on
-positive proof of failure, moves the cycle from `charged_cycles` to
-`exempt_cycles` before checking the new cycle against its ceiling. Green,
-pending, cancelled-only, unreadable, a different run's state, an undeclared or
-zero exempt ceiling, or a spent one all leave it charged. Under `after-ci`, or
+conclusion on that exact earlier head (`readiness-gate.sh ci`: the latest
+attempt of each workflow run for that SHA) and, only when a latest run
+concluded `failure` and none is still running, moves the cycle from
+`charged_cycles` to `exempt_cycles` before checking the new cycle against its
+ceiling. Green, pending, cancelled, no runs, unreadable, a different run's
+state, an undeclared or zero exempt ceiling, or a spent one all leave it
+charged. Under `after-ci`, or
 when no value was recorded, no cycle is ever classified this way: no review is
 requested before CI is green. The record is `prior_ci_charge` on the new state.
 
@@ -2075,9 +2077,10 @@ valid_review_trigger() {
 # was known then, and it stays charged unless every condition below holds —
 # the state is this run's, its recorded trigger requests before CI, it is
 # still charged, an exempt ceiling is declared and has room, and the CI read
-# on that exact head succeeds and reports a failed check. A cancelled run is
-# not a failure (`readiness-gate.sh ci` explains why), and pending, green or
-# unreadable CI all charge.
+# on that exact head succeeds and concludes `failed` — a latest workflow-run
+# attempt concluded failure and none is still pending. Cancelled, pending,
+# green, no runs or unreadable CI all charge (`readiness-gate.sh ci` states
+# which conclusions are never proof, and why).
 #
 # Sets prior_ci_payload (JSON, or null when no classification applies) and
 # moves one cycle from carried_charged to carried_exempt on proof.
@@ -2109,10 +2112,12 @@ classify_prior_ci_charge() {
             --head "$prior_ci_head" 2>/dev/null) || prior_ci_status=$?
         if [ "$prior_ci_status" -ne 0 ] ||
             ! jq -e --arg h "$prior_ci_head" \
-                '.status == "ci" and .head == $h and (.failed | type == "array")' \
+                '.status == "ci" and .head == $h and (.failed | type == "array") and
+                 (.conclusion | type == "string")' \
                 <<<"$prior_ci_out" >/dev/null 2>&1; then
             prior_ci_reason="CI on $prior_ci_head could not be established; charged"
-        elif jq -e '.failed | length > 0' <<<"$prior_ci_out" >/dev/null; then
+        elif jq -e '.conclusion == "failed" and (.failed | length > 0)' \
+            <<<"$prior_ci_out" >/dev/null; then
             prior_ci_failed=$(jq -c '.failed | .[0:20]' <<<"$prior_ci_out")
             prior_ci_outcome=exempt
             prior_ci_reason="CI on $prior_ci_head concluded failed"

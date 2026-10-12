@@ -242,11 +242,12 @@ of a head CI then rejects for wall-clock time, and that cycle spends
 judgement: `reserve --review-trigger <value>` records the value on the cycle,
 which is charged at reservation because its CI is not known yet, and the next
 attempt-1 reservation on a later head reads the CI conclusion on that exact
-earlier head (`readiness-gate.sh ci`, the gate's own collapsed check list) and
-moves the cycle to `exempt_cycles` only on positive proof of a failed check —
-before checking the new cycle against its ceiling, so the freed budget is
-usable. Indeterminate CI charges normally, and so do green, still-running, or
-cancelled-only CI, a different run's state, and an exempt ceiling that is
+earlier head (`readiness-gate.sh ci`: the latest attempt of each workflow run
+for that SHA) and moves the cycle to `exempt_cycles` only when a latest run
+concluded `failure` and none is still queued or running — before checking the
+new cycle against its ceiling, so the freed budget is usable. Indeterminate CI
+charges normally, and so do green, still-running, cancelled, or
+re-run-to-green CI, a different run's state, and an exempt ceiling that is
 undeclared, 0, or spent. Under `after-ci` no review is requested before CI is
 green, so no cycle is ever exempted for a CI failure. The cycle's findings are
 still adjudicated, and the fix push still spends `remediation`. The new

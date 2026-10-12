@@ -222,24 +222,12 @@ repos/*/compare/*)
 # Must sort before the bare-commit pattern below, which its trailing `*`
 # would otherwise also match.
 repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
-# harmon-devkit#1376: the CI read `readiness-gate.sh ci` makes for one commit.
-# Keyed by SHA; a commit with no check-runs fixture is an unreadable read.
-repos/*/commits/*/check-runs*)
-    ci_sha="${endpoint#*/commits/}"
-    file="check-runs-${ci_sha%%/*}.pages.json"
-    [ -f "$GH_FIXTURES/$file" ] || exit 96
-    ;;
-repos/*/commits/*/statuses*)
-    ci_sha="${endpoint#*/commits/}"
-    file="statuses-${ci_sha%%/*}.pages.json"
-    [ -f "$GH_FIXTURES/$file" ] || {
-        printf '%s\n' '[[]]'
-        exit 0
-    }
-    ;;
+# harmon-devkit#1376: the workflow runs `readiness-gate.sh ci` reads for one
+# commit. Keyed by SHA; a commit with no fixture is an unreadable read.
 repos/*/actions/runs\?head_sha=*)
-    printf '%s\n' '[{"workflow_runs":[]}]'
-    exit 0
+    ci_sha="${endpoint#*head_sha=}"
+    file="workflow-runs-${ci_sha%%&*}.pages.json"
+    [ -f "$GH_FIXTURES/$file" ] || exit 96
     ;;
 repos/*/commits/*)
     jq -cn \
@@ -7937,21 +7925,37 @@ fi
 
 # The CI-failed exemption. A cycle reserved under with-push / after-ci-first is
 # charged at reservation (its CI is unknown) and classified from the CI
-# conclusion on its own head when the next head's cycle is reserved.
+# conclusion on its own head when the next head's cycle is reserved. The
+# evidence is the latest attempt of each workflow run for that exact SHA.
 ci_prev=4444444444444444444444444444444444444444
 ci_new=5555555555555555555555555555555555555555
-ci_runs_failed='[{"name":"build","status":"completed","conclusion":"failure","check_suite":{"id":11},"app":{"id":15368}},
-    {"name":"lint","status":"completed","conclusion":"success","check_suite":{"id":12},"app":{"id":15368}}]'
-ci_runs_green='[{"name":"build","status":"completed","conclusion":"success","check_suite":{"id":11},"app":{"id":15368}}]'
+
+# wf_run NAME ID STATUS CONCLUSION [ATTEMPT] [WORKFLOW_ID] [PRS_JSON] [SHA] —
+# one workflow run as GitHub reports it: its latest attempt's status and
+# conclusion, on $ci_prev, scoped to this PR unless PRS_JSON says otherwise.
+wf_run() {
+    wf_prs=${7:-}
+    [ -n "$wf_prs" ] || wf_prs='[{"number":493}]'
+    jq -cn --arg name "$1" --argjson id "$2" --arg status "$3" --arg conclusion "$4" \
+        --argjson attempt "${5:-1}" --argjson wf "${6:-$2}" \
+        --argjson prs "$wf_prs" --arg sha "${8:-$ci_prev}" \
+        '{id:$id, name:$name, workflow_id:$wf, event:"pull_request",
+          status:$status, conclusion:(if $conclusion == "" then null else $conclusion end),
+          run_attempt:$attempt, head_sha:$sha, head_branch:"feature", pull_requests:$prs}'
+}
+# wf_runs RUN... — the paginated --slurp payload holding those runs.
+wf_runs() {
+    jq -cs '[{total_count:length, workflow_runs:.}]' <<<"$(printf '%s\n' "$@")"
+}
+ci_runs_failed="$(wf_runs "$(wf_run build 11 completed failure)" "$(wf_run lint 12 completed success)")"
+ci_runs_green="$(wf_runs "$(wf_run build 11 completed success)" "$(wf_run lint 12 completed success)")"
 
 # $1 recorded review trigger ("" records none), $2 exempt ceiling, $3 the
-# previous head's check runs ("" leaves its CI unreadable), $4 run id of the
-# second reservation (default run-a), $5 the previous head's commit statuses
-# (default none).
+# previous head's workflow-runs payload ("" leaves its CI unreadable), $4 run
+# id of the second reservation (default run-a).
 ci_reserve() {
     write_defaults
-    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/check-runs-*.pages.json \
-        "${fixtures}"/statuses-*.pages.json
+    rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/workflow-runs-*.pages.json
     ci_trigger_args=()
     [ -z "$1" ] || ci_trigger_args=(--review-trigger "$1")
     printf '%s' "$ci_prev" >"${fixtures}/head"
@@ -7962,9 +7966,7 @@ ci_reserve() {
     jq '.phase = "attached" | .trigger_comment_id = 4242 |
         .requested_at = .reserved_at' "$state" >"${state}.next"
     mv "${state}.next" "$state"
-    [ -z "$3" ] || printf '[{"total_count":1,"check_runs":%s}]\n' "$3" \
-        >"${fixtures}/check-runs-${ci_prev}.pages.json"
-    [ -z "${5:-}" ] || printf '[%s]\n' "$5" >"${fixtures}/statuses-${ci_prev}.pages.json"
+    [ -z "$3" ] || printf '%s\n' "$3" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
     printf '%s' "$ci_new" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
         --head "$ci_new" --attempt 1 --run-id "${4:-run-a}" \
@@ -7973,7 +7975,9 @@ ci_reserve() {
 }
 
 # $1 label, $2 charged_cycles, $3 exempt_cycles, $4 prior_ci_charge.outcome
-# ("null" when no classification may apply at all)
+# ("null" when no classification may apply at all), $5 a substring the
+# recorded reason must carry — pinning WHY, so a fixture that silently failed
+# to build cannot pass a "charged" case for the wrong reason.
 assert_ci_charge() {
     [ "$(jq -r '.charged_cycles' "$state")" = "$2" ] ||
         fail "$1: expected charged_cycles $2, got $(jq -c '{charged_cycles, exempt_cycles, prior_ci_charge}' "$state")"
@@ -7981,6 +7985,9 @@ assert_ci_charge() {
         fail "$1: expected exempt_cycles $3, got $(jq -c '{charged_cycles, exempt_cycles, prior_ci_charge}' "$state")"
     [ "$(jq -r '.prior_ci_charge.outcome // "null"' "$state")" = "$4" ] ||
         fail "$1: expected prior_ci_charge.outcome $4, got $(jq -c '.prior_ci_charge' "$state")"
+    [ -z "${5:-}" ] || jq -e --arg want "$5" '.prior_ci_charge.reason | contains($want)' \
+        "$state" >/dev/null ||
+        fail "$1: expected a reason naming '$5', got $(jq -c '.prior_ci_charge' "$state")"
     # The NEW cycle is classified on its own terms and is never exempted by
     # its predecessor's CI.
     [ "$(jq -r '.charge' "$state")" = charged ] ||
@@ -7989,14 +7996,14 @@ assert_ci_charge() {
 
 echo "==> with-push: a cycle whose head's CI concluded failed is exempt"
 ci_reserve with-push 4 "$ci_runs_failed"
-assert_ci_charge "with-push CI failed" 1 1 exempt
+assert_ci_charge "with-push CI failed" 1 1 exempt "concluded failed"
 [ "$(jq -r '.prior_ci_charge.head' "$state")" = "$ci_prev" ] ||
     fail "the classification must name the head whose CI decided it: $(jq -c '.prior_ci_charge' "$state")"
 [ "$(jq -c '.prior_ci_charge.failed' "$state")" = '["build"]' ] ||
-    fail "the classification must name the failed check: $(jq -c '.prior_ci_charge' "$state")"
+    fail "the classification must name the failed workflow: $(jq -c '.prior_ci_charge' "$state")"
 [ "$(jq -r '.review_trigger' "$state")" = with-push ] ||
     fail "the new cycle must record its own review trigger"
-grep -Fq "commits/${ci_prev}/check-runs" "$log" ||
+grep -Fq "actions/runs?head_sha=${ci_prev}" "$log" ||
     fail "the CI conclusion must be read on the exact previous head"
 "$helper" show --state "$state" >/dev/null ||
     fail "a state carrying review_trigger and prior_ci_charge must stay readable"
@@ -8008,51 +8015,84 @@ fi
 
 echo "==> with-push: a cycle whose head's CI concluded green is charged"
 ci_reserve with-push 4 "$ci_runs_green"
-assert_ci_charge "with-push CI green" 2 0 charged
+assert_ci_charge "with-push CI green" 2 0 charged "(passed)"
 
 echo "==> with-push: an unreadable CI result charges normally"
 ci_reserve with-push 4 ""
-assert_ci_charge "with-push CI unreadable" 2 0 charged
+assert_ci_charge "with-push CI unreadable" 2 0 charged "could not be established"
 case "$(jq -r '.prior_ci_charge.reason' "$state")" in
 *"could not be established"*) ;;
 *) fail "an unreadable CI read must say so: $(jq -c '.prior_ci_charge' "$state")" ;;
 esac
 
-echo "==> with-push: an empty check list is indeterminate and charges"
-ci_reserve with-push 4 '[]'
-assert_ci_charge "with-push CI empty" 2 0 charged
+echo "==> with-push: a commit with no workflow runs at all charges"
+ci_reserve with-push 4 "$(wf_runs)"
+assert_ci_charge "with-push no runs" 2 0 charged "(none)"
 
-echo "==> with-push: CI still running with no failure charges"
-ci_reserve with-push 4 '[{"name":"build","status":"in_progress","conclusion":null,"check_suite":{"id":11},"app":{"id":15368}}]'
-assert_ci_charge "with-push CI pending" 2 0 charged
+echo "==> with-push: a failure beside a still-running workflow is not yet a conclusion"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure)" \
+    "$(wf_run lint 12 in_progress "")")"
+assert_ci_charge "with-push failure plus pending" 2 0 charged "(pending)"
 
-echo "==> with-push: runs cancelled by a superseding push are not a CI failure"
-ci_reserve with-push 4 '[{"name":"build","status":"completed","conclusion":"cancelled","check_suite":{"id":11},"app":{"id":15368}}]'
-assert_ci_charge "with-push CI cancelled" 2 0 charged
+echo "==> challenge-r1 repro 1: a failed run superseded by a newer queued run charges"
+# A repeated delivery of the same workflow queues a new run that has no check
+# runs yet; its predecessor's failure is not this head's conclusion.
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 7)" \
+    "$(wf_run build 15 queued "" 1 7)")"
+assert_ci_charge "failed run superseded by a queued one" 2 0 charged "(pending)"
 
-echo "==> with-push: a failure superseded by a green re-run charges"
-# The gate's own latest-suite collapse decides, so a re-run that went green
-# is not read as the failure it replaced.
-ci_reserve with-push 4 '[{"name":"build","status":"completed","conclusion":"failure","check_suite":{"id":11},"app":{"id":15368}},
-    {"name":"build","status":"completed","conclusion":"success","check_suite":{"id":13},"app":{"id":15368}}]'
-assert_ci_charge "with-push CI re-run green" 2 0 charged
+echo "==> challenge-r1 repro 2: a run cancelled after one of its jobs failed charges"
+# The run's own conclusion is `cancelled`; the failed job inside it is not the
+# run's verdict, and a cancellation says nothing about the code.
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed cancelled)")"
+assert_ci_charge "cancelled after a job failed" 2 0 charged "(other)"
 
-echo "==> with-push: a failed commit status is a CI failure"
-ci_reserve with-push 4 "$ci_runs_green" run-a '[{"id":7,"context":"ci/external","state":"failure"}]'
-assert_ci_charge "with-push status failure" 1 1 exempt
+echo "==> a failed attempt whose re-run attempt is running charges"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 in_progress "" 2)")"
+assert_ci_charge "re-run attempt in progress" 2 0 charged "(pending)"
+
+echo "==> a failed attempt whose re-run attempt turned green is not exempt"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed success 2)")"
+assert_ci_charge "re-run attempt green" 2 0 charged "(passed)"
+
+echo "==> a newer green delivery of the same workflow supersedes its failure"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 7)" \
+    "$(wf_run build 15 completed success 1 7)")"
+assert_ci_charge "failure superseded by green delivery" 2 0 charged "(passed)"
+
+echo "==> timed_out, skipped, neutral, stale and action_required are never failure proof"
+for not_proof in timed_out skipped neutral stale action_required; do
+    ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed "$not_proof")")"
+    assert_ci_charge "conclusion $not_proof" 2 0 charged "(other)"
+done
+
+echo "==> a failure in a run shared with another PR is not proof"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 \
+    '[{"number":493},{"number":999}]')")"
+assert_ci_charge "ambiguous run failure" 2 0 charged "(other)"
+
+echo "==> a failure in a run scoped to another PR is dropped"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 '[{"number":999}]')" \
+    "$(wf_run lint 12 completed success)")"
+assert_ci_charge "other-PR run failure" 2 0 charged "(passed)"
+
+echo "==> a failed run for a different commit is not this head's CI"
+ci_reserve with-push 4 "$(wf_runs "$(wf_run build 11 completed failure 1 11 \
+    '[{"number":493}]' "$ci_new")" "$(wf_run lint 12 completed success)")"
+assert_ci_charge "other-commit run failure" 2 0 charged "(passed)"
 
 echo "==> after-ci-first: a cycle whose head's CI concluded failed is exempt"
 ci_reserve after-ci-first 4 "$ci_runs_failed"
-assert_ci_charge "after-ci-first CI failed" 1 1 exempt
+assert_ci_charge "after-ci-first CI failed" 1 1 exempt "concluded failed"
 
 echo "==> after-ci-first: a cycle whose head's CI concluded green is charged"
 ci_reserve after-ci-first 4 "$ci_runs_green"
-assert_ci_charge "after-ci-first CI green" 2 0 charged
+assert_ci_charge "after-ci-first CI green" 2 0 charged "(passed)"
 
 echo "==> after-ci: a CI failure never exempts a cycle"
 ci_reserve after-ci 4 "$ci_runs_failed"
 assert_ci_charge "after-ci CI failed" 2 0 null
-! grep -Fq "commits/${ci_prev}/check-runs" "$log" ||
+! grep -Fq "actions/runs?head_sha=${ci_prev}" "$log" ||
     fail "after-ci must not read CI to classify a cycle at all"
 
 echo "==> no recorded review trigger: a CI failure never exempts a cycle"
@@ -8061,18 +8101,18 @@ assert_ci_charge "no trigger CI failed" 2 0 null
 
 echo "==> a zero exempt ceiling charges a CI-failed cycle"
 ci_reserve with-push 0 "$ci_runs_failed"
-assert_ci_charge "with-push zero exempt ceiling" 2 0 charged
+assert_ci_charge "with-push zero exempt ceiling" 2 0 charged "no exempt ceiling applies"
 
 echo "==> a different run's state cannot license a CI exemption"
 ci_reserve with-push 4 "$ci_runs_failed" run-b
-assert_ci_charge "with-push foreign run" 1 0 charged
+assert_ci_charge "with-push foreign run" 1 0 charged "different run"
 [ "$(jq -r '.run_id' "$state")" = run-b ] || fail "fixture: run-b should own the state"
 
 echo "==> a CI-failed cycle frees the charged budget the next cycle needs"
 # Integration cap 1: the first cycle spent it, so without the reclassification
 # the second reservation would be refused as over the cap.
 write_defaults
-rm -f "$state" "${state%.json}.spend.json"
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/workflow-runs-*.pages.json
 printf '%s' "$ci_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
     --attempt 1 --run-id run-a --integration-cap 1 --integration-exempt-cap 1 \
@@ -8080,14 +8120,13 @@ printf '%s' "$ci_prev" >"${fixtures}/head"
 jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
-printf '[{"total_count":1,"check_runs":%s}]\n' "$ci_runs_failed" \
-    >"${fixtures}/check-runs-${ci_prev}.pages.json"
+printf '%s\n' "$ci_runs_failed" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
 printf '%s' "$ci_new" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_new" \
     --attempt 1 --run-id run-a --integration-cap 1 --integration-exempt-cap 1 \
     --review-trigger with-push >/dev/null ||
     fail "the CI-failed cycle must free the one charged cycle for the fix head"
-assert_ci_charge "budget freed" 1 1 exempt
+assert_ci_charge "budget freed" 1 1 exempt "concluded failed"
 
 echo "==> attempt 2 keeps the review trigger its cycle was reserved under"
 write_defaults
@@ -8121,10 +8160,9 @@ echo "==> with-push: a CI infrastructure re-run never re-requests a review"
 # caller re-triggering on the re-run would need — is refused, and nothing is
 # spent.
 write_defaults
-rm -f "$state" "${state%.json}.spend.json"
+rm -f "$state" "${state%.json}.spend.json" "${fixtures}"/workflow-runs-*.pages.json
 printf '%s' "$ci_prev" >"${fixtures}/head"
-printf '[{"total_count":1,"check_runs":%s}]\n' "$ci_runs_failed" \
-    >"${fixtures}/check-runs-${ci_prev}.pages.json"
+printf '%s\n' "$ci_runs_failed" >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
     --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
     --review-trigger with-push >/dev/null
@@ -8132,9 +8170,9 @@ jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 rerun_before="$(cat "$state")"
-# The infrastructure re-run lands: the same head's CI is now green.
-printf '[{"total_count":1,"check_runs":%s}]\n' "$ci_runs_green" \
-    >"${fixtures}/check-runs-${ci_prev}.pages.json"
+# The infrastructure re-run lands: the same run's second attempt is running.
+wf_runs "$(wf_run build 11 in_progress "" 2)" "$(wf_run lint 12 completed success)" \
+    >"${fixtures}/workflow-runs-${ci_prev}.pages.json"
 set +e
 rerun_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
     --head "$ci_prev" --attempt 1 --run-id run-a --integration-cap 4 \

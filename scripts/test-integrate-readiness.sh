@@ -4874,8 +4874,10 @@ assert_gate 2 indeterminate integration-exit-indeterminate
 grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
     fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
 
-# harmon-devkit#1376: `ci` reports one commit's CI conclusion from the gate's
-# own collapsed check list, for the Codex checker's CI-failed exemption.
+# harmon-devkit#1376: `ci` reports whether one commit's GitHub Actions CI
+# concluded failed — the latest attempt of each workflow run for that exact
+# SHA — as evidence for the Codex checker's CI-failed exemption. It is not
+# the checks condition, so it reads workflow runs, never check runs.
 # $1 expected exit, $2 expected conclusion ("" when none is printed)
 run_ci() {
     set +e
@@ -4888,54 +4890,64 @@ run_ci() {
     [ -z "$2" ] || [ "$(gate_field conclusion)" = "$2" ] ||
         fail "ci: expected conclusion $2: $gate_out"
 }
+# ci_runs RUN_JSON... — write the workflow-runs fixture for $head_sha, each run
+# given as {name,id,status,conclusion[,workflow_id,run_attempt,pull_requests]}.
+ci_runs() {
+    printf '%s\n' "$@" | jq -cs --arg head "$head_sha" '
+      [{total_count:length, workflow_runs:map(
+        {event:"pull_request", head_sha:$head, head_branch:"feature-branch",
+         pull_requests:[{number:493}], workflow_id:.id, run_attempt:1} + .)}]' \
+        >"${fixtures}/workflow-runs.pages.json"
+}
 
-echo "==> ci: a failed check run is a failed conclusion, naming the check"
+echo "==> ci: a latest run that concluded failure, with none pending, is failed"
 write_defaults
-jq -cn '[{total_count:2,check_runs:[
-    {name:"build",status:"completed",conclusion:"success"},
-    {name:"lint",status:"completed",conclusion:"failure"}]}]' \
-    >"${fixtures}/check-runs.pages.json"
+ci_runs '{"name":"build","id":11,"status":"completed","conclusion":"success"}' \
+    '{"name":"lint","id":12,"status":"completed","conclusion":"failure"}'
 run_ci 0 failed
 [ "$(printf '%s\n' "$gate_out" | tail -n 1 | jq -c '.failed')" = '["lint"]' ] ||
-    fail "ci must name the failed check: $gate_out"
+    fail "ci must name the failed workflow: $gate_out"
 [ "$(gate_field head)" = "$head_sha" ] || fail "ci must name the commit it read: $gate_out"
 
-echo "==> ci: the default green fixture is a passed conclusion"
+echo "==> ci: all-green runs are passed"
 write_defaults
+ci_runs '{"name":"build","id":11,"status":"completed","conclusion":"success"}'
 run_ci 0 passed
 
-echo "==> ci: a failed latest legacy status is a failed conclusion"
+echo "==> ci: a failure beside a pending run is pending, not failed"
 write_defaults
-jq -cn '[[{context:"ci/legacy",state:"success",id:1},
-          {context:"ci/legacy",state:"error",id:3}]]' \
-    >"${fixtures}/statuses.pages.json"
-run_ci 0 failed
+ci_runs '{"name":"build","id":11,"status":"completed","conclusion":"failure"}' \
+    '{"name":"lint","id":12,"status":"queued","conclusion":null}'
+run_ci 0 pending
 
-echo "==> ci: a cancelled run is not a failure"
+echo "==> ci: a failed run superseded by a newer queued delivery is pending"
 write_defaults
-jq -cn '[{total_count:1,check_runs:[
-    {name:"build",status:"completed",conclusion:"cancelled"}]}]' \
-    >"${fixtures}/check-runs.pages.json"
-printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
+ci_runs '{"name":"build","id":11,"workflow_id":7,"status":"completed","conclusion":"failure"}' \
+    '{"name":"build","id":15,"workflow_id":7,"status":"queued","conclusion":null}'
+run_ci 0 pending
+
+echo "==> ci: a run cancelled after a job failed is not failed"
+write_defaults
+ci_runs '{"name":"build","id":11,"status":"completed","conclusion":"cancelled"}'
 run_ci 0 other
 [ "$(printf '%s\n' "$gate_out" | tail -n 1 | jq -c '.failed')" = '[]' ] ||
     fail "a cancelled run must not be reported failed: $gate_out"
 
-echo "==> ci: a still-running check with no failure is pending"
+echo "==> ci: a re-run attempt that turned green is passed"
 write_defaults
-jq -cn '[{total_count:1,check_runs:[
-    {name:"build",status:"in_progress",conclusion:null}]}]' \
-    >"${fixtures}/check-runs.pages.json"
-printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
-run_ci 0 pending
+ci_runs '{"name":"build","id":11,"run_attempt":2,"status":"completed","conclusion":"success"}'
+run_ci 0 passed
 
-echo "==> ci: no checks at all is indeterminate, never a conclusion"
+echo "==> ci: no workflow runs at all is none, never a conclusion"
 write_defaults
-printf '%s\n' '[{"total_count":0,"check_runs":[]}]' >"${fixtures}/check-runs.pages.json"
-printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
+run_ci 0 none
+
+echo "==> ci: an unreadable workflow-runs read is indeterminate"
+write_defaults
+printf '%s\n' '{"not":"pages"}' >"${fixtures}/workflow-runs.pages.json"
 run_ci 2 ""
-[ "$(gate_field condition)" = checks-indeterminate ] ||
-    fail "an empty check list must be checks-indeterminate: $gate_out"
+[ "$(gate_field condition)" = malformed-data ] ||
+    fail "a malformed workflow-runs payload must be malformed-data: $gate_out"
 
 echo "==> ci: a missing --head is a usage error"
 set +e
