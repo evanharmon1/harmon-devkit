@@ -43,9 +43,8 @@ Gate bounds and tier: {{gate-bounds-override}}
 Run each long gate command above detached, with its log outside the repository:
 `nohup bash -c '<gate command>; echo GATE-EXIT=$?' > /tmp/gate.log 2>&1 & disown`,
 then poll through `GATE-EXIT=`. Report the exact result and any unavailable gate;
-a timeout or missing exit line is indeterminate. The orchestrator runs Codex
-challenge/review from its own logged-in pane and sends authorized fixes here.
-Apply only those confirmed fixes, then rerun the relevant gates and push.
+a timeout or missing exit line is indeterminate. After your push and report, stop: the orchestrator reviews
+the pushed head and makes any confirmed fixes itself, not through this session.
 
 ## Reporting protocol
 

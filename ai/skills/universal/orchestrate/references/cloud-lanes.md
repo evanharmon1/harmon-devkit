@@ -152,8 +152,10 @@ a PR. The orchestrator fetches that exact pushed head into its review worktree
 and runs the confidence stages through `/review` against that head (its finders
 run `task challenge` and `task review` from the logged-in pane), so the run keeps
 its normal caps and adjudication records.
-It sends confirmed fixes with `claude -p --cloud`, re-fetches the returned head,
-and verifies the round gates. It then runs `task security`, opens the draft
+Confirmed fixes follow `/review`'s ordinary remediation: a reserved agent run, a
+fresh bounded implementer in a local worktree of the planned branch, and a push
+through `round-push.sh`. The cloud session is never re-messaged to apply a fix;
+its work ends at its first report. The orchestrator then runs `task security`, opens the draft
 with `gh pr create --draft --head <planned-branch>`, verifies draft/head state,
 and integrates through the normal readiness gate. The PR body records
 `reviewed from <host> at <head>`, naming the host and full reviewed SHA along
