@@ -2258,7 +2258,7 @@ run_report "$d" "${local_args[@]}" --local-unverified
     ok "local report has distinct exit 13 and absent adjudications are not recorded" || bad "local fallback: $RC $ERR"
 if printf '%s\n' "$OUT" | node -e '
   let text=""; process.stdin.on("data", d => text += d); process.stdin.on("end", () => {
-    const label="unverified (local record, no trusted GitHub evidence marker)"
+    const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
     const lines=text.trim().split("\n").filter(Boolean)
     if (!lines[0].startsWith("## ") || lines.some(line => !line.includes(label))) process.exit(1)
   })
@@ -2268,7 +2268,7 @@ printf '%s' "$OUT" >"$d/local.json"
 node -e '
   const r=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))
   if (r.status!=="local-unverified" || r.verified!==false || r.measurements.length===0 ||
-      r.measurements.some(m=>m.provenance!=="unverified (local record, no trusted GitHub evidence marker)")) process.exit(1)
+      r.measurements.some(m=>m.provenance!=="unverified (local record, not authenticated by a trusted GitHub evidence marker)")) process.exit(1)
 ' "$d/local.json" && ok "JSON measurements carry provenance and verified false" || bad "JSON local provenance"
 run_report "$d" "${local_args[@]}"
 [ "$RC" -eq "$default_rc" ] && [ "$OUT" = "$default_out" ] && [ "$ERR" = "$default_err" ] &&
@@ -2301,11 +2301,23 @@ run_report "$d" --repo o/r --run not-file --record-dir "$d/records" --local-unve
 [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json is not a regular file' &&
     ok "directory run.json is a typed refusal without rendering" || bad "non-file record: $RC $ERR"
 
+echo "==> containment accepts a filesystem-root parent"
+node -e '
+  const fs=require("node:fs"), vm=require("node:vm"), path=require("node:path")
+  const source=fs.readFileSync(process.argv[1],"utf8")
+  const fn=source.match(/function isLocalPathInside\(parent, resolved\) \{[\s\S]*?\n\}/)
+  if (!fn) process.exit(1)
+  const inside=vm.runInNewContext("("+fn[0]+")", {path})
+  if (!inside("/","/run-6000-fresh-kickoff/run.json") ||
+      !inside("/selected","/selected/run-6000-fresh-kickoff/run.json") ||
+      inside("/selected","/outside/run.json")) process.exit(1)
+' "$REPORT" && ok "actual containment helper accepts root and refuses an escape" || bad "root containment failed"
+
 echo "==> all local line terminators are folded before rendering"
 node -e '
   const fs=require("node:fs"), file=process.argv[1]
   const record=JSON.parse(fs.readFileSync(file,"utf8"))
-  const terminators=["\r","\n","\r\n","\u2028","\u2029","\u0085"]
+  const terminators=["\r","\n","\r\n","\u2028","\u2029","\u0085","\u000b","\u000c"]
   record.interventions=[{kind:"other",at:record.started_at,
     note:terminators.map(t=>t+"## Run evidence injected VERIFIED").join("")}]
   fs.writeFileSync(file,JSON.stringify(record))
@@ -2314,10 +2326,10 @@ run_report "$d" "${local_args[@]}" --local-unverified
 printf '%s' "$OUT" >"$d/terminators.txt"
 [ "$RC" -eq 13 ] && node -e '
   const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-  const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085]/).filter(line=>line.trim())
-  const label="unverified (local record, no trusted GitHub evidence marker)"
+  const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/).filter(line=>line.trim())
+  const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
   if (!text.includes("injected VERIFIED") || lines.some(line=>!line.includes(label))) process.exit(1)
-' "$d/terminators.txt" && ok "CR/LF/CRLF/LS/PS/NEL cannot forge unlabelled local lines" || bad "local terminator injection: $RC $ERR"
+' "$d/terminators.txt" && ok "CR/LF/CRLF/LS/PS/NEL/VT/FF cannot forge unlabelled local lines" || bad "local terminator injection: $RC $ERR"
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
 echo "==> local notes render HTML and entities as literal text"
@@ -2333,9 +2345,9 @@ for note in '<br>' '<details><summary>verified</summary>' '&lt;br&gt;'; do
     [ "$RC" -eq 13 ] && node -e '
       const text=require("node:fs").readFileSync(process.argv[1],"utf8")
       const literal=process.argv[2].replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-      const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085]/).filter(line=>line.trim())
+      const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/).filter(line=>line.trim())
       if (!text.includes(literal) || /[<>]/.test(text) ||
-          lines.some(line=>!line.includes("unverified (local record, no trusted GitHub evidence marker)"))) process.exit(1)
+          lines.some(line=>!line.includes("unverified (local record, not authenticated by a trusted GitHub evidence marker)"))) process.exit(1)
     ' "$d/html.txt" "$note" && ok "local note $note is inert literal text with labelled lines" || bad "HTML note injection: $RC $ERR"
 done
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
@@ -2344,9 +2356,9 @@ echo "==> untrusted markers do not imply marker absence"
 evidence_marker_file "$d/untrusted-marker" run-6000-fresh-kickoff challenge issue 1
 COMMENT_ACTOR=999 set_comments "$d/comments" 6000 "$d/untrusted-marker"
 GH_COMMENTS_DIR="$d/comments" run_report "$d" "${local_args[@]}" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" 'no trusted GitHub evidence marker' &&
+[ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
     ! contains "$OUT" 'no GitHub evidence marker' &&
-    ok "untrusted-marker local report claims only absence of trusted markers" || bad "false marker-absence claim: $RC $ERR"
+    ok "local provenance makes no unsupported marker-absence claim" || bad "false marker-absence claim: $RC $ERR"
 set_comments "$d/comments" 6000
 
 echo "==> --pr binds markerless local records"
@@ -2360,9 +2372,17 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     ok "local record bound to another PR is refused" || bad "local PR mismatch: $RC $ERR"
 make_pr_json "$d/pr.json" "$d/body"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
-    --repo o/r --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" 'no trusted GitHub evidence marker' &&
+    --repo evanharmon1/harmon-devkit --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
     ok "matching local PR with no marker renders as unverified" || bad "matching local PR refused: $RC $ERR"
+
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
+    --repo o/r --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'PR URL does not name the requested repository' &&
+    ok "matching PR number in another repository is refused" || bad "foreign local PR accepted: $RC $ERR"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
+    --repo EVANHARMON1/HARMON-DEVKIT --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 13 ] && ok "local PR repository binding is case-insensitive" || bad "normalized local PR refused: $RC $ERR"
 
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$PR" --run run-6000-fresh-kickoff --record-dir "$d/records" --local-unverified
@@ -2407,7 +2427,7 @@ for flag in off on; do
     if [ "$flag" = off ]; then a3_out="$OUT" a3_err="$ERR" a3_rc="$RC"; fi
 done
 [ "$RC" -eq 0 ] && [ "$RC" -eq "$a3_rc" ] && [ "$OUT" = "$a3_out" ] && [ "$ERR" = "$a3_err" ] &&
-    contains "$OUT" 'run-6000-fresh-kickoff' && ! contains "$OUT" 'local record, no trusted' &&
+    contains "$OUT" 'run-6000-fresh-kickoff' && ! contains "$OUT" 'local record, not authenticated' &&
     ok "A3 flag preserves explicit verified run despite another trusted PR run" || bad "A3 verified path changed: $RC $ERR"
 make_stats "$trusted_dir/stats.mjs" 1
 for flag in off on; do
@@ -2420,6 +2440,17 @@ for flag in off on; do
 done
 [ "$RC" -eq 10 ] && [ "$RC" -eq "$missing_rc" ] && [ "$OUT" = "$missing_out" ] && [ "$ERR" = "$missing_err" ] &&
     ok "A1 trusted PR guard prevents unrelated local fallback without selecting another run" || bad "trusted PR missing fell back: $RC $ERR"
+
+echo "==> a trusted marker naming the requested missing run is deleted-entry tampering"
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --stats-script "$trusted_dir/stats.mjs"
+deleted_out="$OUT" deleted_err="$ERR" deleted_rc="$RC"
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6001-further-along \
+    --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ "$deleted_rc" -eq 11 ] && [ "$OUT" = "$deleted_out" ] && [ "$ERR" = "$deleted_err" ] &&
+    contains "$ERR" 'deleted-entry tampering' &&
+    ok "same-run trusted guard preserves ordinary deleted-entry stderr and exit 11" || bad "deleted entry downgraded: $RC $ERR"
 
 echo "==> local guard uses full read-only discovery"
 set_comments "$trusted_dir/comments" "$PR"

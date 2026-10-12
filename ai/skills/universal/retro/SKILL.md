@@ -204,7 +204,7 @@ fourth time.
 | 10 · `run-not-found` | an id supplied with `--run` was not found; **discovery never ran** | Fall back for the measurements, but do **not** say the session has no run record — nothing looked. Say the supplied id was not found, and consider that it may be mistyped or that the record lives on the issue. §5's `run-not-found` provenance wording is the matching phrasing |
 | 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; a trusted actor's own marker that does not parse; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding and quote the reason from stderr. **Draft** the follow-up issue — do not create it unless asked, exactly as §5 requires of every other follow-up. Never downgrade any of these to "no run record" |
 | 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
-| 13 | `local-unverified` — opt-in schema-validated local record, without a trusted GitHub evidence marker | Paste only with **unverified (local record, no trusted GitHub evidence marker)** on the heading and every measured line. Never treat it as authenticated evidence or a clean verified result |
+| 13 | `local-unverified` — opt-in schema-validated local record, not authenticated by a trusted GitHub evidence marker | Paste only with **unverified (local record, not authenticated by a trusted GitHub evidence marker)** on the heading and every measured line. Never treat it as authenticated evidence or a clean verified result |
 | 14 | Refused local record: schema failure, `run_id` mismatch, PR mismatch, path or symlink escape, or not a regular file | Report a **refused local record**, quote the reason, then fall back for measurements. Never describe this local refusal as GitHub evidence tampering |
 
 `no-run-record` is the ordinary pre-v2 session and costs the retro only its
@@ -228,23 +228,23 @@ otherwise no report is rendered. With `--pr`, read-only discovery must find no
 trusted marker on the PR or its discovered issues before a local read.
 Indeterminate discovery, including untrusted-only markers or malformed
 markers treated as corrupted evidence, blocks the local read with exit 11.
-That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr` is
-refused with exit 14; a record naming no PR explicitly says it is not bound
-to the requested PR.
+That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr`, or whose PR URL
+names a different repository from `--repo`, is refused with exit 14. A record
+naming no PR explicitly says it is not bound to the requested PR.
 A missing local record retains exit 10 on the ordinary path. An attempted
 local read with `--as-of` is a usage error (exit 2), even if the local record
 is missing. A guard read failure uses the existing error exits: operational
 GitHub failures exit 1; discovery integrity errors or indeterminate hint
 reads exit 11. A malformed trusted marker found by the guard also exits 11.
 Exit 13 is distinct from success, and
-both Markdown and JSON carry **unverified (local record, no trusted GitHub evidence
-marker)** on every measured entry. Missing `adjudications/` means **not
+both Markdown and JSON carry **unverified (local record, not authenticated
+by a trusted GitHub evidence marker)** on every measured entry. Missing `adjudications/` means **not
 recorded**, never zero adjudication rounds. Local adjudications, findings and
 convergence are not authenticated or measured here. Local reads do not support
 `--as-of`; they report the current snapshot only.
 
 For §5 provenance after exit 13, say: "Retro of the session on `<date>`;
-measurements are unverified (local record, no trusted GitHub evidence marker), read
+measurements are unverified (local record, not authenticated by a trusted GitHub evidence marker), read
 from `<parent>/<id>/run.json`; adjudication rounds absent from the retained
 record are not recorded." Never attribute these measurements to GitHub
 evidence or call this a verified retro.

@@ -30,7 +30,7 @@
 //       marker naming a run the harvester cannot find (deleted-entry
 //       tampering). Nothing is rendered; the reason is on stderr. Never
 //       report a clean retro on this path, and never fall back to memory.
-//   13  local-unverified — opt-in local record, no trusted GitHub evidence marker.
+//   13  local-unverified — opt-in local record, not authenticated by a trusted GitHub evidence marker.
 //       Never a verified report or an authenticated trajectory.
 //   14  refused local record — invalid local input, never evidence tampering.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
@@ -1208,7 +1208,7 @@ function safe(value) {
   return String(value ?? '')
     .replace(/<!--/g, '&lt;!--')
     .replace(/-->/g, '--&gt;')
-    .replace(/\r\n|[\r\n\u2028\u2029\u0085]/g, ' ')
+    .replace(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/g, ' ')
 }
 
 function cell(value) {
@@ -1504,13 +1504,18 @@ function reportIgnoredHints(ignoredHints) {
 // Local-only data never enters measure(), policy parsing, or authentication.
 // Validate a snapshot of the bytes we render, not a file that may change after
 // validation. The shipped run validator checks both shape and semantics.
-const LOCAL_PROVENANCE = 'unverified (local record, no trusted GitHub evidence marker)'
+const LOCAL_PROVENANCE = 'unverified (local record, not authenticated by a trusted GitHub evidence marker)'
 
 function localSafe(value) {
   return safe(String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;'))
+}
+
+function isLocalPathInside(parent, resolved) {
+  const relative = path.relative(parent, resolved)
+  return !relative.startsWith('..') && !path.isAbsolute(relative)
 }
 
 function renderLocalUnverified(args, runId) {
@@ -1524,7 +1529,7 @@ function renderLocalUnverified(args, runId) {
   if (!existsSync(file)) return null
   // Symlinks must not redirect the local read outside the selected parent.
   const resolved = realpathSync(file)
-  if (!resolved.startsWith(`${parent}${path.sep}`)) {
+  if (!isLocalPathInside(parent, resolved)) {
     throw new LocalRefusalError('local run.json resolves outside --record-dir')
   }
   if (!statSync(resolved).isFile()) throw new LocalRefusalError('local run.json is not a regular file')
@@ -1550,6 +1555,16 @@ function renderLocalUnverified(args, runId) {
   if (record.run_id !== runId) throw new LocalRefusalError('local run.json run_id differs from --run')
   if (args.pr !== undefined && record.pr && record.pr.number !== args.pr) {
     throw new LocalRefusalError(`local run.json records PR #${record.pr.number}, not the requested #${args.pr}`)
+  }
+  if (record.pr) {
+    const expected = `https://github.com/${args.repo}/pull/${record.pr.number}`
+    let normalized
+    try { normalized = new URL(record.pr.url).href.replace(/\/+$/, '').toLowerCase() } catch {
+      throw new LocalRefusalError('local run.json PR URL is invalid')
+    }
+    if (normalized !== expected.toLowerCase()) {
+      throw new LocalRefusalError('local run.json PR URL does not name the requested repository and PR')
+    }
   }
 
   const measurements = []
@@ -1585,6 +1600,10 @@ function renderLocalUnverified(args, runId) {
     `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
     ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
   ].join('\n')
+}
+
+function deletedEntryReason(missing, source) {
+  return `${missing}, but a trusted evidence marker (${source}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.`
 }
 
 function run(argv) {
@@ -1680,9 +1699,9 @@ function run(argv) {
     // from --run carries no such claim, but structured record-missing does:
     // the harvester authenticated its marker before finding the local gap.
     if (harvested.missingKind === 'record-missing' || !args.run) {
-      console.error(
-        `${TOOL}: indeterminate — ${harvested.missing}${!args.run ? `, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.` : '. Authenticated evidence exists, but its named local record is absent.'}`
-      )
+      const reason = !args.run ? deletedEntryReason(harvested.missing, runIdFrom)
+        : `${harvested.missing}. Authenticated evidence exists, but its named local record is absent.`
+      console.error(`${TOOL}: indeterminate — ${reason}`)
       return 11
     }
     // The opt-in may replace only the ordinary exit-10 outcome. Read-only
@@ -1705,6 +1724,12 @@ function run(argv) {
       if (corrupted.length > 0) {
         reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
         throw new IndeterminateError('trusted discovery evidence is malformed; local data cannot replace it')
+      }
+      if (discovered?.runId === runId) {
+        reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
+        reportIgnoredHints(discovered.ignoredHints)
+        console.error(`${TOOL}: indeterminate — ${deletedEntryReason(harvested.missing, discovered.source)}`)
+        return 11
       }
       if (!discovered?.runId) {
         if (discovered) {
