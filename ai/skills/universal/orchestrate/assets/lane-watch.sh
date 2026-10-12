@@ -10,7 +10,7 @@
 #   OBSERVATION-DEGRADED <lane>: <detail>
 #
 # Append :cloud to a lane:branch:nonce:owner/repo spec for a lane with no local
-# worktree. Its branch is already learned from GitHub; only GitHub branch/PR
+# worktree. Its branch is the one the orchestrator named; only GitHub branch/PR
 # state is read, never herdr agent state, pane output, or .lane-report.md.
 #
 # Both POST-PROMOTION-ACTIVITY's and POST-PROMOTION-CLOSED's trailing

@@ -28,12 +28,14 @@ only that the template can pass it.
 The orchestrator chooses `claude/<lane-slug>` before launch, records it in the
 plan's lane assignment like any lane, refreshes the claim to that branch with
 the claim transaction before launch, and passes the branch to the brief.
-Pushes to a `claude/*` name other than the session's assigned branch were
+Pushes to a `claude/*` name other than the platform's session branch were
 accepted in every session tried, but the platform does not promise it; the
 brief therefore makes a refused push a BLOCKED report.
 `assets/fence-check.sh` needs a schema-bound brief, so it cannot check a cloud
-lane; compare `git diff --name-only <base>...<head>` against the planned lane
-fence instead before the readiness gate.
+lane; before the readiness gate, check instead that every changed path, both the
+source and the destination of any rename or copy, is inside the planned lane
+fence (`git diff -C --find-copies-harder --name-status <base>...<head>` lists them,
+as fence-check.sh does).
 
 | Field | Launch-time source |
 | --- | --- |
