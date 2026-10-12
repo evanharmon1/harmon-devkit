@@ -165,7 +165,6 @@ d=read(data); d.ambiguous=false; put(data,d);
 rmSync(bodyFile); invoke(0,'',join(assets,'post-evidence.sh'),noBodyArgs);
 assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments.length,1);
 writeFileSync(bodyFile,summary+'changed'); invoke(2,'caller body differs'); assert.equal(read(data).posts,1);
-assert.deepEqual(read(state).actions[0].comment_auth.destination,{repo:'example/repo',issue:'1'});
 reset({fetchFailure:true}); invoke(2,'Command failed'); d=read(data); d.fetchFailure=false; put(data,d);
 rmSync(bodyFile); invoke(0,'',join(assets,'post-evidence.sh'),noBodyArgs); assert.equal(read(data).posts,1);
 reset(); rmSync(state); invoke(); assert.equal(read(data).posts,1);
@@ -272,7 +271,7 @@ reset(); writeFileSync(bodyFile,'x'.repeat(60001)+summary); invoke(2,'single-seg
 reset({fetchFailure:true}); invoke(2,'Command failed'); assert.equal(read(data).posts,0);
 reset({fullPages:true}); invoke(2,'bounded destination read'); assert.equal(read(data).posts,0);
 console.log('PASS: invalid marker/payload, oversized comment, failed and incomplete fetch never post');
-reset(); invoke(); record=read(run); record.evidence_comments[0].digest='sha256:'+'0'.repeat(64); put(run,record); invoke(2,'Command failed'); assert.equal(read(data).posts,1);
+reset(); invoke(); record=read(run); record.evidence_comments[0].digest='sha256:'+'0'.repeat(64); put(run,record); invoke(2,'validation'); assert.equal(read(data).posts,1);
 reset(); invoke(); const changed=read(markerFile); changed.round=2; put(markerFile,changed); invoke(2,'projection does not bind');
 console.log('PASS: invalid run registration and changed projection refuse');
 // Consumer layout, no repository-root runtime dependencies; source sibling

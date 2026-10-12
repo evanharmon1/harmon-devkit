@@ -25,7 +25,7 @@ Usage:
     [--trusted-actor-id ID --repo-root DIR \
      --evidence-role ROLE --evidence-finder FINDER \
      --marker TEXT --payload-digest SHA256 \
-     --destination-repo OWNER/REPO --destination-issue N --comment-lock-fd N]
+     --comment-lock-fd N]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
     --active-state FILE --run-id ID --branch BRANCH --generation N \
     [--repo-root DIR]
@@ -236,8 +236,6 @@ assembly_plan=""
 max_agent_runs=""
 slate_id=""
 nonce=""
-destination_repo=""
-destination_issue=""
 comment_lock_fd=""
 
 while [ "$#" -gt 0 ]; do
@@ -312,14 +310,6 @@ while [ "$#" -gt 0 ]; do
         ;;
     --nonce)
         nonce="${2:-}"
-        shift 2
-        ;;
-    --destination-repo)
-        destination_repo="${2:-}"
-        shift 2
-        ;;
-    --destination-issue)
-        destination_issue="${2:-}"
         shift 2
         ;;
     --comment-lock-fd)
@@ -549,11 +539,6 @@ reserve)
         die "assembly plan is permitted only for an assembly reservation"
     fi
     if [ "$action" = "comment" ]; then
-        if [ -n "$destination_repo$destination_issue" ]; then
-            [[ "$destination_repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] &&
-                [[ "$destination_issue" =~ ^[1-9][0-9]*$ ]] ||
-                die "comment destination requires a repository and positive issue number"
-        fi
         [[ "$trusted_actor_id" =~ ^[1-9][0-9]*$ ]] || die "comment reservation requires a trusted actor id"
         [ -n "$marker" ] || die "comment reservation requires a deterministic marker"
         [[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "comment reservation requires a SHA-256 payload digest"
@@ -615,14 +600,12 @@ except BlockingIOError:
 PY
             jq -e --arg head "$expected_head" --arg actor "$trusted_actor_id" \
                 --arg run "$run_id" --arg role "$evidence_role" --arg finder "$evidence_finder" \
-                --arg marker "$marker" --arg digest "$payload_digest" \
-                --arg dest_repo "$destination_repo" --arg dest_issue "$destination_issue" '
+                --arg marker "$marker" --arg digest "$payload_digest" '
                 .action == "comment" and .expected_head == $head and
                 (.state == "reserved" or .state == "adopted") and
                 .comment_auth.trusted_actor_id == $actor and .comment_auth.run_id == $run and
                 .comment_auth.role == $role and .comment_auth.finder == $finder and
-                .comment_auth.marker == $marker and .comment_auth.payload_digest == $digest and
-                (.comment_auth.destination // null) == (if $dest_repo != "" then {repo:$dest_repo,issue:$dest_issue} else null end)
+                .comment_auth.marker == $marker and .comment_auth.payload_digest == $digest
             ' <<<"$existing" >/dev/null || die "comment re-arm conflicts with reservation bindings"
             printf 'reserved %s\n' "$event"
             exit 0
@@ -644,7 +627,6 @@ PY
         --arg actor "$trusted_actor_id" --arg registry_revision "${governing_revision:-}" \
         --arg marker "$marker" --arg digest "$payload_digest" \
         --arg run "$run_id" --arg role "$evidence_role" --arg finder "$evidence_finder" \
-        --arg dest_repo "$destination_repo" --arg dest_issue "$destination_issue" \
         --argjson assembly_plan "$assembly_plan_json" '
             .actions += [{
                 event: $event,
@@ -660,7 +642,7 @@ PY
                     finder: $finder,
                     marker: $marker,
                     payload_digest: $digest
-                } + (if $dest_repo != "" then {destination:{repo:$dest_repo,issue:$dest_issue}} else {} end) else null end)
+                } else null end)
             }]
         ' "$state" >"$tmp"
     mv "$tmp" "$state"

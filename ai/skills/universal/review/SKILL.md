@@ -265,8 +265,8 @@ filled the slot — a role agent's result persisted in `passes/`, or a runner's
 published file — re-validate it with the same `envelope --receipt` call
 against the captured run, then append
 `{"kind": "pass", "file": "<stage>-r<round>-<slot>"}` (the filename without
-`.json`) to `run.json`'s `receipts`, and only then enter verification below. A
-pass you have not receipted is an **orphan**: it is never evidence, the exit
+`.json`) to `run.json`'s `receipts` under the shared mutex and validated-write
+path below, and only then enter verification below. A pass you have not receipted is an **orphan**: it is never evidence, the exit
 computation rejects it, and its finding ids reserve nothing. A runner in
 envelope mode that exited non-zero published nothing under a `.json` name. A
 retry refused because its destination already exists means an earlier attempt — typically
@@ -308,12 +308,23 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
-Before replacing `run.json`, write the complete candidate beside it and run
-`dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>` with every adjudication
-document the candidate depends on. Rename the candidate over `run.json` only
-after that validation passes. Immediately after every replacement of
-`run.json`, run `dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --receipts <run.json>` with those
-same adjudication documents to validate the canonical readback.
+Every `run.json` replacement, including pass receipts, evidence registrations
+and stage transitions, must perform its read-modify-write inside
+`run-record.mjs`'s `withMutex(runPath, ...)` (`run.json.wlock`) and publish
+through `writeValidated('run', runPath, document)`. Read and validate the
+existing record with `validateFile` while holding that mutex. Never replace
+it from an unlocked read or a separate hand-written rename recipe.
+The shared validated writer owns candidate validation, atomic rename and
+canonical readback with the record's receipts and current local adjudications.
+The following validation obligations are implemented by that shared writer:
+Before replacing `run.json`, write the complete candidate beside it through
+`writeValidated`, whose internal validation invokes
+`dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>`
+with the current local adjudication documents.
+Rename the candidate over `run.json` only through the shared writer,
+after that validation passes. Its canonical readback invokes
+`dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --receipts <run.json>`
+with the current adjudication documents before the locked operation returns.
 `--receipts <same-record>` binds the stage named by every supplied
 adjudication document to a transition receipt already present in that
 record, enforcing the binding here at write time rather than only later
@@ -390,7 +401,8 @@ bounded candidate set (at most ten 100-comment pages; a full final page
 blocks), and posts only on monitor `retry`. It adopts the monitor's lowest
 authenticated match and revalidates the readback on every re-arm. A failed
 or ambiguous post is resumed with the same destination and scope, never by a
-direct comment write. The reservation binds both repo and issue number.
+direct comment write. The helper binds the destination repository to origin
+and the issue to the run identity.
 After a successful reservation, the exact comment bytes persist atomically
 beside it as `<event>.body.md`. That copy is authoritative only while the
 event reservation exists; an orphan copy is replaced. On re-arm omit `--body-file` to reuse that copy, or supply the identical body. A changed
@@ -398,14 +410,17 @@ caller body or destination refuses. Its stdout is the adopted comment ID. For re
 hashes the exact posted whole-comment body, matching the harvester's current
 marker authentication, and appends `evidence_registrations` with its canonical chain digest.
 Registration takes `run-record.mjs`'s shared `run.json.wlock` mutex and uses
-its `writeValidated` candidate/validation/rename/readback path, preserving
-concurrent run-record updates. Validation binds receipts and all local adjudications. Exact
+its `writeValidated` candidate/validation/rename/readback path. This
+registration is serialized with other writers using that same mutex.
+Validation binds receipts and all local adjudications. Exact
 existing ID/marker/actor/payload matches are adopted without appending;
 conflicts block and a login rename never changes the immutable chain.
 
 After adoption, append the canonical comment ID, immutable actor ID, display
 login, `sha256:` body digest, and marker fields to
-`run.json.evidence_comments` only when it is absent. On re-arm, first search by
+`run.json.evidence_comments` only when it is absent, reading and comparing
+under that shared mutex and publishing through its validated writer. On
+re-arm, first search by
 both comment ID and canonical marker: when ID, immutable actor ID, digest, and
 every marker field match exactly, adopt the existing entry without appending;
 display login is non-authoritative metadata and never participates in evidence
@@ -494,7 +509,8 @@ other readiness condition still applies unchanged).
 ### Stage advance write
 
 Without that recorded upward override, an `action: advance` result is the sole
-authority to advance the run record. Re-read `run.json`. First recognize and
+authority to advance the run record. Take the shared `run.json.wlock` mutex
+and read/validate `run.json` inside it. First recognize and
 validate an exact already-applied current-to-next transition; adopt it and
 complete the remaining readback, publication, and next-stage steps without
 appending a second transition. Otherwise require the last transition to name
@@ -508,11 +524,10 @@ the same complete candidate, append exactly
 matching `{"kind":"transition","stage":"<next>","entered_at":"<same timestamp>"}`
 receipt to `receipts`. Never
 append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
-transition shape. Write the close and append to a complete candidate beside
-`run.json`, validate that candidate with every adjudication document it
-depends on, then atomically rename it over `run.json` only after validation
-passes. Validate the canonical readback as required above before publishing
-evidence or entering the next stage.
+transition shape. Publish the close and append together through
+`run-record.mjs`'s `writeValidated('run', runPath, document)` while still
+holding the shared mutex. Its validated canonical readback must succeed
+before publishing evidence or entering the next stage.
 
 This advance recipe covers stages whose resolved cap is at least `1`. The next
 stage is `review` after a terminal `challenge`; a terminal `review` enters

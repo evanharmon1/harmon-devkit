@@ -19,7 +19,7 @@ done
 # modules can distinguish imports from direct CLI execution.
 js_source="$(
     cat <<'JS'
-import { readFileSync, writeFileSync, readdirSync, renameSync, rmSync, mkdtempSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, rmSync, mkdtempSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
@@ -49,8 +49,7 @@ try {
       ? ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 9]
       : ['pipe', 'pipe', 'pipe'] }).trim();
   const monitor = join(assetDir, '../../orchestrate/assets/dev-flow-monitor.sh');
-  const validator = join(assetDir, '../../dev-flow-support/assets/validate-result-schemas.mjs');
-  const { withMutex, writeValidated } = await import(pathToFileURL(join(assetDir, '../../dev-flow-support/assets/run-record.mjs')).href);
+  const { withMutex, validateFile, writeValidated } = await import(pathToFileURL(join(assetDir, '../../dev-flow-support/assets/run-record.mjs')).href);
   const marker = read(o['marker-file']);
   const stages = ['kickoff', 'claim', 'explore', 'plan', 'implement', 'verify', 'challenge', 'review', 'security', 'integration'];
   if (!marker || typeof marker !== 'object' || Array.isArray(marker)
@@ -70,10 +69,7 @@ try {
   const runPath = realpathSync(o.run);
   const state = sh('bash', [monitor, 'state-path', '--repo-root', o['repo-root'], '--run-id', marker.run_id]);
   if (runPath !== join(dirname(state), 'run.json')) fail('run path is not canonical for the monitor');
-  const adjDir = join(dirname(runPath), 'adjudications');
-  const adjudications = readdirSync(adjDir).filter((f) => f.endsWith('.json')).sort().flatMap((f) => ['--adjudication', join(adjDir, f)]);
-  const validate = (file) => sh('node', [validator, 'run', file, '--receipts', file, ...adjudications]);
-  validate(runPath);
+  validateFile('run', runPath, 'existing run record');
   let run = read(runPath);
   if (run.run_id !== marker.run_id || !run.stage_transitions.some((t) => t.stage === marker.stage)) fail('marker is not bound to run stage');
   const event = `evidence-${marker.destination}-${marker.stage}-r${marker.round}-s${marker.sequence}`;
@@ -112,7 +108,7 @@ try {
   const common = ['--active-state', o['active-state'], '--run-id', marker.run_id, '--branch', o.branch, '--generation', o.generation, '--repo-root', o['repo-root']];
   const digest = sha(body);
   sh('bash', [monitor, 'reserve', '--state', state, '--event', event, '--action', 'comment', '--expected-head', o.head, '--writer', 'feature-owner', ...common, '--trusted-actor-id', o['actor-id'], '--evidence-role', o.role, '--evidence-finder', o.finder, '--marker', markerLine, '--payload-digest', digest,
-    '--destination-repo', o.repo, '--destination-issue', o.issue, '--comment-lock-fd', '9']);
+    '--comment-lock-fd', '9']);
   // Only a successful reservation makes these bytes authoritative. Publish
   // the complete copy atomically before any external POST can begin.
   if (persistedBody === undefined) {
@@ -165,7 +161,7 @@ try {
     // including its marker, prose and fenced JSON.
     const payloadDigest = `sha256:${sha(comment.body)}`;
     withMutex(runPath, () => {
-      validate(runPath);
+      validateFile('run', runPath, 'existing run record');
       run = read(runPath);
       const existing = run.evidence_comments.filter((c) => c.id === id || canon(c.marker) === canon(marker));
       if (existing.length) {
@@ -178,7 +174,6 @@ try {
         run.evidence_comments.push({ id, author_actor_id: actor.id, login: content.login, digest: payloadDigest, marker });
         writeValidated('run', runPath, run);
       }
-      validate(runPath);
     });
     process.stdout.write(`${id}\n`);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
