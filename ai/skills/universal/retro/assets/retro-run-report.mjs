@@ -64,12 +64,14 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                flags override agent-registry.json; otherwise
                                trusted_orchestrator_actor_ids is required there.
   --as-of <iso8601>            Reconstruct the RUN RECORD and its comment
-                               evidence as of this instant. Discovery inputs
-                               GitHub does not version are NOT reconstructed
-                               and stay current-state: the linked-issue set
-                               (the PR's closing and body references) and the PR body
-                               the disclosed caps are read from. The report
-                               says so wherever it uses one.
+                               evidence as of this instant. These inputs stay
+                               current-state: the linked-issue set (the PR's
+                               closing and body references), the PR body the
+                               disclosed caps are read from, and the default
+                               discovery trust root (default-branch registry).
+                               Replay trusts the default allowlist as it is now;
+                               the harvester still applies write-time registry
+                               revisions to legacy evidence.
   --stats-script <path>        Override harvester discovery (tests, or a
                                checkout that keeps it somewhere else).
   --record-dir <path>          Parent directory containing <run_id>/run.json;
@@ -812,7 +814,7 @@ function resolveTrustedActorArgs(args) {
   const listed = [...ids].sort((a, b) => a - b).join(', ')
   const from = registrySource
     ? ` from ${registrySource} agent-registry.json trusted_orchestrator_actor_ids`
-    : ` from explicit trust flags${args.trustedActorsFile ? ` (including ${args.trustedActorsFile})` : ''}`
+    : ` from explicit flags${args.trustedActorsFile ? ` (including ${args.trustedActorsFile})` : ''}`
   return { passthrough, ids, source: `actor id(s) ${listed}${from}` }
 }
 
@@ -1197,7 +1199,7 @@ function renderMarkdown(report) {
   if (report.as_of) {
     l.push(`- Reconstructed as of: ${safe(report.as_of)} — **the run record and its comment evidence only.**`)
     l.push(
-      '  Discovery inputs GitHub does not version are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references plus same-repository non-closing references and run-id issue numbers parsed from its body, which decide which issues a fallback search reaches) and the **PR body** the disclosed caps above come from. Re-linking an issue, or editing the body, changes those even for a fixed cutoff.'
+      '  These inputs are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references plus same-repository non-closing references and run-id issue numbers parsed from its body, which decide which issues a fallback search reaches), the **PR body** the disclosed caps above come from, and the **default discovery trust root** (the target repository\'s default-branch-head registry, when no explicit trust flags are supplied). A replay with --as-of trusts the default allowlist as it is now, while the harvester still applies write-time registry revisions to legacy evidence. Re-linking an issue, editing the body, or changing that allowlist changes those inputs even for a fixed cutoff.'
     )
   }
   l.push('')
@@ -1401,7 +1403,7 @@ function renderMarkdown(report) {
     l.push(`- Tampered comments (trusted author, structural anomaly, not forged): ${report.measurements.integrity.tampered_comments}`)
   }
   l.push(
-    `- Trust evaluation: ${safe(report.source.trusted_actors)}. The trusted set, from this registry or explicit \`--trusted-actor-id\`/\`--trusted-actors-file\` flags, is passed to the harvester. Current-format evidence authenticates against exactly that set. Legacy evidence is additionally intersected with the registry revision in effect when it was written. An explicit flag set is trusted as given and can widen what is authenticated, so pass it only deliberately. An orchestrator removed from the allowlist since a run reads as indeterminate (fail closed).`
+    `- Trust evaluation: ${safe(report.source.trusted_actors)}. This trusted set is passed to the harvester. Current-format evidence authenticates against exactly that set. Legacy evidence is additionally intersected with the registry revision in effect when it was written. An explicit flag set is trusted as given and can widen what is authenticated, so pass it only deliberately. An orchestrator removed from the allowlist since a run reads as indeterminate (fail closed).`
   )
   if (report.source.ignored_markers.length === 0) {
     l.push('- Untrusted evidence markers ignored during discovery: 0')

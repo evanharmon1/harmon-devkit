@@ -1321,7 +1321,7 @@ contains "$(cat "$d/gh.log")" 'contents/agent-registry.json?ref=trunk' &&
 # is ignored too, while an invalid explicit override still fails closed.
 printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/remote-registry.json"
 run_registry_report "$d" --trusted-actor-id "$ACTOR"
-[ "$RC" -eq 0 ] && contains "$OUT" 'from explicit trust flags' &&
+[ "$RC" -eq 0 ] && contains "$OUT" 'from explicit flags' && ! contains "$OUT" 'from this registry' &&
     ! contains "$(cat "$d/stats.log")" '--trusted-actor-id 999999' &&
     ok "explicit ID overrides the registry without merging" || bad "flag override failed: $ERR"
 COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
@@ -1653,6 +1653,10 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 contains "$OUT" "the run record and its comment evidence only" &&
     ok "the report narrows what --as-of reconstructs" ||
     bad "--as-of still implies it reconstructs everything"
+contains "$OUT" "default discovery trust root" &&
+    contains "$OUT" "trusts the default allowlist as it is now" &&
+    ok "as-of disclosure names current default trust and legacy write-time revisions" ||
+    bad "as-of disclosure omits the current trust root"
 contains "$OUT" "linked-issue set" &&
     ok "the linked-issue set is named as current-state in the output, not just the docs" ||
     bad "the un-versioned linked-issue input is not disclosed in the report"

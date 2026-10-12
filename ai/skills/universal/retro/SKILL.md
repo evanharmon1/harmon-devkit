@@ -172,18 +172,21 @@ cutoff visibility under `--as-of`; the engine has no opinion on any of that.
 
 **`--as-of <iso8601>` reconstructs the run record and its comment evidence at
 that instant — and nothing else.** Comments are filtered by the cutoff, and
-the harvester replays the record's append-only chain to it. But two discovery
-inputs are things GitHub does not version, so they are read as they stand now
-and are **not** reconstructed:
+the harvester replays the record's append-only chain to it. Three other inputs
+are read as they stand now and are **not** reconstructed:
 
 - the **linked-issue set** (the PR's closing references plus the same-repository
   non-closing references and run-id issue numbers in its body), which decides
   which issues a fallback search reaches — re-linking an issue or editing the
   body changes a historical read;
 - the **PR body** the disclosed caps come from, which is mutable and
-  unauthenticated anyway (§2).
+  unauthenticated anyway (§2);
+- the **default discovery trust root** from the target repository's
+  default-branch-head registry, when neither explicit trust flag is supplied.
+  A replay with `--as-of` trusts the default allowlist as it is now, while the
+  harvester still applies write-time registry revisions to legacy evidence.
 
-The report states both wherever it uses one, so a reader never has to infer
+The report states these wherever it uses one, so a reader never has to infer
 the boundary. This is the honest form of the guarantee rather than a wider one
 the mechanism cannot keep: three separate review rounds each found another
 current-state input feeding a promise of total immutability, so the promise
