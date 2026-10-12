@@ -3,7 +3,48 @@
 # Node handles byte-exact JSON/digests; sibling assets remain portable when vendored.
 set -euo pipefail
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-exec node --input-type=module - "$asset_dir" "$@" <<'JS'
+# Use the POSIX advisory lock from Python's standard library on Linux/macOS.
+# The inherited descriptor stays open for the WHOLE Node transaction and the
+# kernel releases it on exit/crash; there is no stale PID lock to reclaim.
+# No-argument usage still comes from the Node argument validator below.
+run_file=""
+arguments=("$@")
+for ((i = 0; i + 1 < ${#arguments[@]}; i++)); do
+    if [ "${arguments[$i]}" = "--run" ]; then
+        run_file="${arguments[$((i + 1))]}"
+        break
+    fi
+done
+runner=(node --input-type=module - "$asset_dir" "$@")
+if [ -n "$run_file" ]; then
+    command -v python3 >/dev/null 2>&1 || {
+        echo 'post-evidence: python3 is required for the publication lock' >&2
+        exit 2
+    }
+    runner=(python3 -c '
+import fcntl, os, sys, time
+run = os.path.realpath(sys.argv[1])
+if not os.path.isfile(run):
+    sys.exit("post-evidence: run file does not exist")
+fd = os.open(os.path.join(os.path.dirname(run), "post-evidence.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+if fd != 9:
+    os.dup2(fd, 9)
+    os.close(fd)
+os.set_inheritable(9, True)
+deadline = time.monotonic() + 30
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.stderr.write("post-evidence: publication lock unavailable after 30 seconds\n")
+            sys.exit(2)
+        time.sleep(0.1)
+os.execvp(sys.argv[2], sys.argv[2:])
+' "$run_file" "${runner[@]}")
+fi
+exec "${runner[@]}" <<'JS'
 import { readFileSync, writeFileSync, readdirSync, renameSync, rmSync, mkdtempSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -18,14 +59,20 @@ try {
     if (!args[i].startsWith('--') || !names.includes(name) || !args[i + 1] || options[name]) fail('invalid or duplicate argument');
     options[name] = args[i + 1];
   }
-  if (names.some((name) => !options[name])) fail('usage: post-evidence.sh --repo OWNER/REPO --repo-root DIR --run FILE --branch NAME --generation N --active-state FILE --head SHA --actor-id ID --role ROLE --finder FINDER --issue N --marker-file FILE --body-file FILE --scratch-dir DIR');
+  if (names.filter((name) => name !== 'body-file').some((name) => !options[name])) fail('usage: post-evidence.sh --repo OWNER/REPO --repo-root DIR --run FILE --branch NAME --generation N --active-state FILE --head SHA --actor-id ID --role ROLE --finder FINDER --issue N --marker-file FILE [--body-file FILE] --scratch-dir DIR');
   const o = options;
   const sha = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
   const canon = (v) => v === null || typeof v !== 'object' ? JSON.stringify(v)
     : Array.isArray(v) ? `[${v.map(canon).join(',')}]`
       : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`;
   const read = (file) => JSON.parse(readFileSync(file, 'utf8'));
-  const sh = (cmd, argv) => execFileSync(cmd, argv, { cwd: o['repo-root'], encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).trim();
+  // The monitor proves re-arm authority through the same open description.
+  // The POST transport retains it too: if Node crashes while HTTP is still
+  // in flight, that mutator must finish before another caller can publish.
+  const sh = (cmd, argv) => execFileSync(cmd, argv, { cwd: o['repo-root'], encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+    stdio: (cmd === 'bash' && argv[0] === monitor) || (cmd === 'gh' && argv.includes('-F'))
+      ? ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 9]
+      : ['pipe', 'pipe', 'pipe'] }).trim();
   const monitor = join(assetDir, '../../orchestrate/assets/dev-flow-monitor.sh');
   const validator = join(assetDir, '../../dev-flow-support/assets/validate-result-schemas.mjs');
   const marker = read(o['marker-file']);
@@ -39,14 +86,6 @@ try {
   // This helper publishes a single round comment. Oversized/split projections
   // remain a caller-side projection operation, never a partial registration.
   const markerLine = `<!-- dev-flow-v2-evidence: ${JSON.stringify({ run_id: marker.run_id, stage: marker.stage, round: marker.round, sequence: marker.sequence, destination: marker.destination })} -->`;
-  const summary = readFileSync(o['body-file'], 'utf8');
-  const fences = [...summary.matchAll(/```json\r?\n([\s\S]*?)\r?\n```/g)];
-  if (fences.length !== 1 || summary.includes('dev-flow-v2-evidence:')) fail('body must contain exactly one fenced JSON projection and no evidence marker');
-  const payload = fences[0][1];
-  const projection = JSON.parse(payload);
-  if (projection.run_id !== marker.run_id || projection.stage !== marker.stage || projection.round !== marker.round || projection.reviewed_head !== o.head) fail('projection does not bind marker and reviewed head');
-  const body = `${markerLine}\n\n${summary}`;
-  if (Buffer.byteLength(body, 'utf8') > 60000) fail('comment exceeds single-segment budget; split the projection before publication');
   if (!/^[^/\s]+\/[^/\s]+$/.test(o.repo) || !/^[0-9a-f]{40}$/.test(o.head)
       || !/^[1-9][0-9]*$/.test(o['actor-id']) || !Number.isSafeInteger(Number(o['actor-id']))
       || !/^[1-9][0-9]*$/.test(o.issue)) fail('invalid repository, head, actor or issue');
@@ -59,15 +98,37 @@ try {
   validate(runPath);
   let run = read(runPath);
   if (run.run_id !== marker.run_id || !run.stage_transitions.some((t) => t.stage === marker.stage)) fail('marker is not bound to run stage');
+  const event = `evidence-${marker.destination}-${marker.stage}-r${marker.round}-s${marker.sequence}`;
+  const persistedFile = join(dirname(state), `${event}.body.md`);
+  let persistedBody;
+  try { persistedBody = readFileSync(persistedFile, 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const suppliedBody = o['body-file'] ? `${markerLine}\n\n${readFileSync(o['body-file'], 'utf8')}` : undefined;
+  if (persistedBody !== undefined && suppliedBody !== undefined && persistedBody !== suppliedBody) fail('caller body differs from persisted reserved body');
+  const body = persistedBody ?? suppliedBody;
+  if (body === undefined) fail('body-file is required for a new publication');
+  if (!body.startsWith(`${markerLine}\n\n`)) fail('persisted body does not bind the canonical marker');
+  const summary = body.slice(markerLine.length + 2);
+  const fences = [...summary.matchAll(/```json\r?\n([\s\S]*?)\r?\n```/g)];
+  if (fences.length !== 1 || summary.includes('dev-flow-v2-evidence:')) fail('body must contain exactly one fenced JSON projection and no evidence marker');
+  const payload = fences[0][1];
+  const projection = JSON.parse(payload);
+  if (projection.run_id !== marker.run_id || projection.stage !== marker.stage || projection.round !== marker.round || projection.reviewed_head !== o.head) fail('projection does not bind marker and reviewed head');
+  if (!Array.isArray(projection.passes) || !projection.passes.every((pass) => Array.isArray(pass?.payload?.findings))
+      || !Array.isArray(projection.findingAttributions)) fail('projection requires passes with payload.findings and verified findingAttributions arrays');
+  if (Buffer.byteLength(body, 'utf8') > 60000) fail('comment exceeds single-segment budget; split the projection before publication');
   const origin = sh('git', ['remote', 'get-url', 'origin']);
   const repoURL = sh('gh', ['repo', 'view', origin, '--json', 'url', '-q', '.url']);
   if (repoURL.toLowerCase() !== `https://github.com/${o.repo}`.toLowerCase()) fail('repository does not match origin');
   const actor = JSON.parse(sh('gh', ['api', 'user']));
   if (actor.id !== Number(o['actor-id'])) fail('authenticated actor does not match requested actor');
-  const event = `evidence-${marker.destination}-${marker.stage}-r${marker.round}-s${marker.sequence}`;
   const common = ['--active-state', o['active-state'], '--run-id', marker.run_id, '--branch', o.branch, '--generation', o.generation, '--repo-root', o['repo-root']];
   const digest = sha(body);
-  sh('bash', [monitor, 'reserve', '--state', state, '--event', event, '--action', 'comment', '--expected-head', o.head, '--writer', 'feature-owner', ...common, '--trusted-actor-id', o['actor-id'], '--evidence-role', o.role, '--evidence-finder', o.finder, '--marker', markerLine, '--payload-digest', digest]);
+  // Persist before reserving: a crash after reserve can always recover the
+  // exact bytes. A crash before reserve has caused no external side effect.
+  if (persistedBody === undefined) writeFileSync(persistedFile, body, { flag: 'wx', mode: 0o600 });
+  sh('bash', [monitor, 'reserve', '--state', state, '--event', event, '--action', 'comment', '--expected-head', o.head, '--writer', 'feature-owner', ...common, '--trusted-actor-id', o['actor-id'], '--evidence-role', o.role, '--evidence-finder', o.finder, '--marker', markerLine, '--payload-digest', digest,
+    '--destination-repo', o.repo, '--destination-issue', o.issue, '--comment-lock-fd', '9']);
   const scratch = mkdtempSync(join(realpathSync(o['scratch-dir']), 'post-evidence-'));
   try {
     const bodyFile = join(scratch, 'body.md');

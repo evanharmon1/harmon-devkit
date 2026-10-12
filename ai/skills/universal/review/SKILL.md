@@ -329,8 +329,11 @@ the validated source facts to `verdict.json.verified_findings` by finding ID and
 publish only the verified or corrected provenance and fingerprint values,
 never the producer's superseded assertions. A missing, unverified, duplicate,
 or mismatched projection is a blocker, not permission to fall back to raw
-envelopes. Include that verified projection, the round's adjudication JSON, and
-its exit projection, then append the human table from
+envelopes. Combine the verified projection, the round's adjudication JSON and
+its exit projection in ONE fenced JSON object, never separate JSON fences.
+Its `passes` array contains envelopes with verified/corrected
+`payload.findings`; `findingAttributions` contains the verified attribution
+projection the harvester reads. Then append the human table from
 `dev-flow-support/assets/render-dev-flow.sh round-table --record <record> --stage <stage>
 --round <N>`.
 
@@ -359,7 +362,9 @@ rollups with `round:null`) remains in `ai/schemas/README.md`.
 Write the marker object alone to `marker.json`, and the sanitized Markdown
 summary plus exactly one fenced JSON verification-bound projection to
 `round.md`, both in your own scratch directory. That projection must name
-`run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope.
+`run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope,
+a `passes` array with `payload.findings` arrays, and a `findingAttributions`
+array containing the verified finding measurements.
 Scan the complete final comment, including the canonical marker line, before
 calling the helper; scanning and projection adjudication remain caller-owned.
 
@@ -373,12 +378,21 @@ assets/post-evidence.sh --repo <owner/repo> --repo-root <checkout> \
 ```
 
 This is an orchestrator-owned publication helper, never a role-agent write.
+It requires Python 3's POSIX `fcntl` standard library and holds an exclusive
+per-run `post-evidence.lock` (Linux/macOS, no separate lock utility)
+across reserve, reconcile, POST and registration. A second caller waits at
+most 30 seconds or refuses; it cannot post concurrently. Monitor re-arm is
+restricted to the holder of that inherited lock descriptor; ordinary callers
+retain the duplicate-event refusal.
 It validates the marker and run record before reserving, reads a complete
 bounded candidate set (at most ten 100-comment pages; a full final page
 blocks), and posts only on monitor `retry`. It adopts the monitor's lowest
 authenticated match and revalidates the readback on every re-arm. A failed
-or ambiguous post is resumed with the same arguments, never by a direct
-comment write. Its stdout is the adopted comment ID. For registration it
+or ambiguous post is resumed with the same destination and scope, never by a
+direct comment write. The reservation binds both repo and issue number.
+The exact comment bytes persist beside it as `<event>.body.md`; on re-arm
+omit `--body-file` to reuse that copy, or supply the identical body. A changed
+caller body or destination refuses. Its stdout is the adopted comment ID. For registration it
 hashes the exact fenced JSON bytes, distinct from the monitor's whole-comment
 digest, and appends `evidence_registrations` with its canonical chain digest.
 It validates the candidate with `run --receipts` and all local adjudications,

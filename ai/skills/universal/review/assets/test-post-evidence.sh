@@ -7,8 +7,8 @@ trap 'rm -rf "$test_tmp"' EXIT
 exec_arg="$asset_dir"
 node --input-type=module - "$exec_arg" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 const [assets, tmp] = process.argv.slice(2);
@@ -47,6 +47,11 @@ const a = process.argv.slice(2);
 if (a[0] === 'repo') { console.log('https://github.com/example/repo'); process.exit(0); }
 if (a[1] === 'user') { console.log(JSON.stringify({id:12345,login:d.login})); process.exit(0); }
 if (a.includes('-F')) {
+  if(!fs.fstatSync(9).isFile()) process.exit(9);
+  // An append-only transport audit cannot lose a POST through competing
+  // read/modify/write updates of the fake GitHub JSON store.
+  fs.appendFileSync(p+'.posts',process.pid+'\\n');
+  if(d.delayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,d.delayMs);
   d.posts++;
   if (!fs.existsSync(d.monitor) || !JSON.parse(fs.readFileSync(d.monitor)).actions.length) process.exit(9);
   const body = fs.readFileSync(a[a.indexOf('-F')+1].slice(6),'utf8');
@@ -74,16 +79,20 @@ const baseRun = { schema:2,run_id:runID,initiated_by:'human',started_at:at,
 const markerFile = join(tmp, 'marker.json');
 const bodyFile = join(tmp, 'summary.md');
 const marker = {run_id:runID,stage:'challenge',round:1,sequence:1,destination:'issue'};
-const payload = JSON.stringify({run_id:runID,stage:'challenge',round:1,reviewed_head:head,findings:[]}, null, 2);
+const projection = {run_id:runID,stage:'challenge',round:1,reviewed_head:head,
+  passes:[{payload:{findings:[]}}],findingAttributions:[]};
+const payload = JSON.stringify(projection, null, 2);
 const summary = `Round evidence\n\n\`\`\`json\n${payload}\n\`\`\`\n`;
 const body = `<!-- dev-flow-v2-evidence: ${JSON.stringify(marker)} -->\n\n${summary}`;
 function reset(extra={}) {
+  rmSync(data+'.posts',{force:true});
+  rmSync(join(dirname(state),'evidence-issue-challenge-r1-s1.body.md'),{force:true});
   put(run,baseRun); put(state,{version:1,cursor:null,actions:[]}); put(markerFile,marker); writeFileSync(bodyFile,summary);
   put(data,{monitor:state,posts:0,comments:[],login:'writer',...extra});
 }
 const argv = ['--repo','example/repo','--repo-root',repo,'--run',run,'--branch','test','--generation','1','--active-state',active,'--head',head,'--actor-id','12345','--role','challenger','--finder','codex','--issue','1','--marker-file',markerFile,'--body-file',bodyFile,'--scratch-dir',tmp];
-function invoke(expected=0, needle='', helper=join(assets,'post-evidence.sh')) {
-  const r=spawnSync('bash',[helper,...argv],{env,encoding:'utf8'});
+function invoke(expected=0, needle='', helper=join(assets,'post-evidence.sh'), invocationArgs=argv) {
+  const r=spawnSync('bash',[helper,...invocationArgs],{env,encoding:'utf8'});
   assert.equal(r.status,expected,r.stderr);
   if(needle) assert.ok(r.stderr.includes(needle),r.stderr);
   return r;
@@ -106,6 +115,34 @@ console.log('PASS: canonical first line parses with harvester regex; fenced dige
 reset({ambiguous:true}); invoke(2,'Command failed'); assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments.length,0);
 d=read(data); d.ambiguous=false; put(data,d); invoke(); assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments[0].id,'200');
 console.log('PASS: crash after POST before reconciliation adopts without another write');
+const bodyArg=argv.indexOf('--body-file');
+const noBodyArgs=argv.filter((_,i)=>i!==bodyArg&&i!==bodyArg+1);
+reset({ambiguous:true}); invoke(2,'Command failed');
+assert.equal(readFileSync(join(dirname(state),'evidence-issue-challenge-r1-s1.body.md'),'utf8'),body);
+const changedIssue=[...noBodyArgs]; changedIssue[changedIssue.indexOf('--issue')+1]='2';
+invoke(2,'re-arm conflicts',join(assets,'post-evidence.sh'),changedIssue); assert.equal(read(data).posts,1);
+const changedRepo=[...noBodyArgs]; changedRepo[changedRepo.indexOf('--repo')+1]='example/other';
+invoke(2,'repository does not match',join(assets,'post-evidence.sh'),changedRepo); assert.equal(read(data).posts,1);
+d=read(data); d.ambiguous=false; put(data,d);
+rmSync(bodyFile); invoke(0,'',join(assets,'post-evidence.sh'),noBodyArgs);
+assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments.length,1);
+writeFileSync(bodyFile,summary+'changed'); invoke(2,'caller body differs'); assert.equal(read(data).posts,1);
+assert.deepEqual(read(state).actions[0].comment_auth.destination,{repo:'example/repo',issue:'1'});
+reset({fetchFailure:true}); invoke(2,'Command failed'); d=read(data); d.fetchFailure=false; put(data,d);
+rmSync(bodyFile); invoke(0,'',join(assets,'post-evidence.sh'),noBodyArgs); assert.equal(read(data).posts,1);
+console.log('PASS: crash recovery uses persisted bytes with no caller body; destination/body changes refuse before POST');
+reset({delayMs:400});
+const concurrent=()=>new Promise((resolve,reject)=>{
+  const child=spawn('bash',[join(assets,'post-evidence.sh'),...argv],{env});
+  let stdout='',stderr=''; child.stdout.on('data',(s)=>stdout+=s); child.stderr.on('data',(s)=>stderr+=s);
+  child.on('error',reject); child.on('close',(status)=>resolve({status,stdout,stderr}));
+});
+const concurrentResults=await Promise.all([concurrent(),concurrent()]);
+for(const result of concurrentResults) assert.equal(result.status,0,result.stderr);
+assert.equal(read(data).posts,1); assert.equal(read(data).comments.length,1);
+assert.equal(readFileSync(data+'.posts','utf8').trim().split('\n').length,1);
+assert.equal(read(run).evidence_registrations.length,1); assert.equal(read(state).actions.length,1);
+console.log('PASS: two concurrent invocations serialize the complete transaction: exactly one comment and registration');
 reset({comments:[{id:50,user:{id:999,login:'untrusted'},body}]}); invoke(); assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments[0].id,'200');
 reset({comments:[{id:90,user:{id:12345,login:'writer'},body},{id:70,user:{id:12345,login:'writer'},body}]}); invoke(); assert.equal(read(data).posts,0); assert.equal(read(run).evidence_comments[0].id,'70');
 console.log('PASS: untrusted marker cannot suppress post; lowest authenticated duplicate is registered');
@@ -117,6 +154,11 @@ for(const bad of [{...marker,extra:1},{...marker,round:null},{...marker,destinat
  reset(); put(markerFile,bad); invoke(2,'marker grammar'); assert.equal(read(data).posts,0); assert.equal(read(state).actions.length,0);
 }
 reset(); writeFileSync(bodyFile,summary.replace(head,'0'.repeat(40))); invoke(2,'projection does not bind');
+for(const field of ['passes','findingAttributions']) {
+  reset(); const incomplete={...projection}; delete incomplete[field];
+  writeFileSync(bodyFile,`\`\`\`json\n${JSON.stringify(incomplete)}\n\`\`\`\n`);
+  invoke(2,'projection requires'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+}
 reset(); writeFileSync(bodyFile,'x'.repeat(60001)+summary); invoke(2,'single-segment budget');
 reset({fetchFailure:true}); invoke(2,'Command failed'); assert.equal(read(data).posts,0);
 reset({fullPages:true}); invoke(2,'bounded destination read'); assert.equal(read(data).posts,0);
