@@ -267,7 +267,7 @@ for(const field of ['passes']) {
   writeFileSync(bodyFile,`\`\`\`json\n${JSON.stringify(incomplete)}\n\`\`\`\n`);
   invoke(2,'projection requires'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
 }
-reset(); writeFileSync(bodyFile,'x'.repeat(60001)+summary); invoke(2,'single-segment budget');
+reset(); writeFileSync(bodyFile,'x'.repeat(60001)+summary); invoke(2,'60,000-byte single-comment budget');
 reset({fetchFailure:true}); invoke(2,'Command failed'); assert.equal(read(data).posts,0);
 reset({fullPages:true}); invoke(2,'bounded destination read'); assert.equal(read(data).posts,0);
 console.log('PASS: invalid marker/payload, oversized comment, failed and incomplete fetch never post');

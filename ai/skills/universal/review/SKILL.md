@@ -347,15 +347,16 @@ verified/corrected `payload.findings`. Then append the human table from
 `dev-flow-support/assets/render-dev-flow.sh round-table --record <record> --stage <stage>
 --round <N>`.
 
-Scan and redact the complete verification-bound projection first. If the final
-destination limit would be exceeded, split the sanitized projection
+Scan and redact the complete verification-bound projection first. If the comment
+would exceed the 60,000-byte single-comment budget, split the sanitized projection
 deterministically into an ordered sequence, reserving room in every segment for
 its canonical run/stage/round/sequence marker. Splitting is a projection-layer
 operation and must finish before reserving any comment. Append each unique
 sequence marker, scan the exact segment again, compute its digest, then reserve,
 post, and reconcile segments strictly in sequence; each reservation binds the
 active run generation, head, role, finder, actor ID, registry revision, marker,
-and exact segment digest. Never reserve an oversized unsplit body. On re-arm,
+and exact segment digest. Never reserve an oversized unsplit body: split any
+body that would exceed the 60,000-byte single-comment budget. On re-arm,
 fetch the complete bounded candidate set for that segment and pass it to
 `reconcile`; the monitor validates the candidates' run, head, role, finder,
 actor, marker, and digest bindings, hashes their bodies, and adopts the lowest
@@ -363,8 +364,8 @@ authenticated match. Post once only after `reconcile` proves the candidate set
 has no authenticated match and returns `retry`; `block` is terminal.
 
 For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.
-For an oversized round, follow the split procedure above by hand; the helper
-refuses oversized or split projections.
+For a round exceeding the 60,000-byte single-comment budget, follow the split
+procedure above by hand; the helper posts single comments only.
 The helper requires a canonical `run-<issue>-<name>` identity and refuses
 `--issue` unless it matches that run's issue number.
 The marker has exactly five fields: the run ID, a run-stage enum value, a

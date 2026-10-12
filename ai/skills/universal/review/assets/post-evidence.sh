@@ -99,7 +99,7 @@ try {
   // Caller contract; the harvester authenticates the whole body and reads
   // retained local evidence rather than parsing this current-grammar fence.
   if (!Array.isArray(projection.passes) || !projection.passes.every((pass) => Array.isArray(pass?.payload?.findings))) fail('projection requires passes with payload.findings arrays');
-  if (Buffer.byteLength(body, 'utf8') > 60000) fail('comment exceeds single-segment budget; split the projection before publication');
+  if (Buffer.byteLength(body, 'utf8') > 60000) fail('comment exceeds the 60,000-byte single-comment budget; split it by hand per review/SKILL.md (the helper posts single comments only)');
   const origin = sh('git', ['remote', 'get-url', 'origin']);
   const repoURL = sh('gh', ['repo', 'view', origin, '--json', 'url', '-q', '.url']);
   if (repoURL.toLowerCase() !== `https://github.com/${o.repo}`.toLowerCase()) fail('repository does not match origin');
