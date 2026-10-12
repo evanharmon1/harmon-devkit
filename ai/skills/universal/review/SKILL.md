@@ -380,8 +380,7 @@ summary plus exactly one fenced JSON verification-bound projection to
 `run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope,
 a `passes` array with `payload.findings` arrays (the caller's projection
 contract).
-Scan the complete final comment, including the canonical marker line, before
-calling the helper; scanning and projection adjudication remain caller-owned.
+The helper scans the exact final comment, including its canonical marker line, with `gitleaks stdin --no-banner --redact` and the repository's `.gitleaks.toml` when present, refusing detections, scanner failures or a missing scanner before any reservation or POST; projection adjudication remains caller-owned.
 
 ```sh
 assets/post-evidence.sh --repo <owner/repo> --repo-root <checkout> \

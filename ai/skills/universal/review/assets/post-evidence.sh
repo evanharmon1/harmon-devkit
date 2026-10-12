@@ -121,6 +121,16 @@ try {
   // retained local evidence rather than parsing this current-grammar fence.
   if (!Array.isArray(projection.passes) || !projection.passes.every((pass) => Array.isArray(pass?.payload?.findings))) fail('projection requires passes with payload.findings arrays');
   if (Buffer.byteLength(body, 'utf8') > 60000) fail('comment exceeds the 60,000-byte single-comment budget; split it by hand per review/SKILL.md (the helper posts single comments only)');
+  // Scan the exact bytes that will be reserved and posted, marker included.
+  const scanArgs = ['stdin', '--no-banner', '--redact'];
+  const scanConfig = join(o['repo-root'], '.gitleaks.toml');
+  if (existsSync(scanConfig)) scanArgs.push('--config', scanConfig);
+  try {
+    execFileSync('gitleaks', scanArgs, { cwd: o['repo-root'], input: body, encoding: 'utf8', stdio: ['pipe', 'ignore', 'ignore'] });
+  } catch (error) {
+    if (error.code === 'ENOENT') fail('gitleaks is required on PATH to scan evidence before reservation');
+    fail(`gitleaks secret scan refused comment (detection or scanner failure, exit ${error.status ?? 'unknown'}); no reservation or POST`);
+  }
   const origin = sh('git', ['remote', 'get-url', 'origin']);
   const repoURL = sh('gh', ['repo', 'view', origin, '--json', 'url', '-q', '.url']);
   if (repoURL.toLowerCase() !== `https://github.com/${o.repo}`.toLowerCase()) fail('repository does not match origin');
@@ -158,8 +168,8 @@ try {
       fail('candidate set exceeds bounded destination read');
     };
     const reconcile = (comments) => {
-      const candidates = comments.filter((c) => typeof c.body === 'string' && c.body.split(/\r?\n/, 1)[0] === markerLine)
-        .map((c) => ({ comment_id: c.id, actor_id: c.user.id, run_id: marker.run_id, head: o.head, role: o.role, finder: o.finder, marker: markerLine, payload_digest: sha(c.body), body: c.body }));
+      const candidates = comments.filter((c) => Number.isSafeInteger(c.user?.id) && c.user.id > 0 && typeof c.body === 'string' && c.body.split(/\r?\n/, 1)[0] === markerLine)
+        .map((c) => ({ comment_id: c.id, actor_id: c.user?.id ?? null, run_id: marker.run_id, head: o.head, role: o.role, finder: o.finder, marker: markerLine, payload_digest: sha(c.body), body: c.body }));
       const matched = candidates.some((c) => c.actor_id === actor.id);
       if (candidates.some((c) => c.actor_id !== actor.id)) process.stderr.write('post-evidence: untrusted matching marker ignored\n');
       writeFileSync(observed, JSON.stringify({ status: matched ? 'landed' : 'absent', event, action: 'comment', head: o.head, comments: candidates }));
@@ -177,7 +187,7 @@ try {
     const action = read(state).actions.find((a) => a.event === event);
     const id = action?.postcondition?.comment_id;
     const comment = comments.find((c) => String(c.id) === id);
-    if (!comment || comment.user.id !== actor.id || comment.body !== body) fail('adopted comment readback conflicts with reservation');
+    if (!comment || comment.user?.id !== actor.id || comment.body !== body) fail('adopted comment readback conflicts with reservation');
     // Current-grammar evidence authentication covers the exact posted body,
     // including its marker, prose and fenced JSON.
     const payloadDigest = `sha256:${sha(comment.body)}`;

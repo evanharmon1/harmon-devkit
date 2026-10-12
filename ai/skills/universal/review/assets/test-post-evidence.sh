@@ -7,7 +7,7 @@ trap 'rm -rf "$test_tmp"' EXIT
 exec_arg="$asset_dir"
 node --input-type=module - "$exec_arg" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, rmSync, readdirSync, symlinkSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -35,6 +35,7 @@ command('git', ['-C', repo, 'add', 'agent-registry.json']);
 command('git', ['-C', repo, 'commit', '-qm', 'initial registry']);
 command('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/example/repo']);
 cpSync(join(assets,'../../../../..','.devflow.toml'),join(repo,'.devflow.toml'));
+cpSync(join(assets,'../../../../..','.gitleaks.toml'),join(repo,'.gitleaks.toml'));
 const head = command('git', ['-C', repo, 'rev-parse', 'HEAD']);
 command('git', ['-C', repo, 'update-ref', 'refs/remotes/origin/main', head]);
 command('git', ['-C', repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
@@ -76,6 +77,19 @@ if (d.fullPages) { console.log(JSON.stringify(Array.from({length:100},()=>({id:1
 emit(d.comments);
 `);
 chmodSync(join(bin, 'gh'), 0o755);
+writeFileSync(join(bin,'gitleaks'),`#!/usr/bin/env node
+const fs=require('node:fs');
+const p=process.env.POST_EVIDENCE_TEST_DATA;
+const d=JSON.parse(fs.readFileSync(p,'utf8'));
+const body=fs.readFileSync(0,'utf8');
+const args=process.argv.slice(2);
+if(args[0]!=='stdin'||!args.includes('--no-banner')||!args.includes('--redact')) process.exit(9);
+fs.appendFileSync(p+'.scans',JSON.stringify({args,body})+'\\n');
+if(d.scanDetection) { console.error('SYNTHETIC_DETECTED_VALUE'); process.exit(1); }
+if(d.scanFailure) process.exit(2);
+`);
+chmodSync(join(bin,'gitleaks'),0o755);
+
 const runID = 'run-1-evidence-test';
 const active = command('bash', [monitor, 'active-path', '--branch', 'test', '--repo-root', repo]);
 const state = command('bash', [monitor, 'state-path', '--run-id', runID, '--repo-root', repo]);
@@ -102,6 +116,7 @@ const summary = `Round evidence\n\n\`\`\`json\n${payload}\n\`\`\`\n`;
 const body = `<!-- dev-flow-v2-evidence: ${JSON.stringify(marker)} -->\n\n${summary}`;
 function reset(extra={}) {
   rmSync(data+'.posts',{force:true});
+  rmSync(data+'.scans',{force:true});
   rmSync(join(dirname(state),'evidence-issue-challenge-r1-s1.body.md'),{force:true});
   put(run,baseRun); put(state,{version:1,cursor:null,actions:[]}); put(markerFile,marker); writeFileSync(bodyFile,summary);
   put(data,{monitor:state,head,posts:0,comments:[],login:'writer',...extra});
@@ -116,6 +131,11 @@ function invoke(expected=0, needle='', helper=join(assets,'post-evidence.sh'), i
 reset();
 invoke();
 let d=read(data); assert.equal(d.posts,1); assert.equal(d.comments[0].body,body);
+const scanned=JSON.parse(readFileSync(data+'.scans','utf8').trim());
+assert.equal(scanned.body,body);
+assert.equal(scanned.args[scanned.args.indexOf('--config')+1],join(repo,'.gitleaks.toml'));
+console.log('PASS: clean gitleaks scan receives exact marker-inclusive body and repo config before publication');
+
 // Execute the ACTUAL harvester regex, rather than maintaining a test copy.
 const harvester = readFileSync(join(assets,'../../retro/assets/dev-flow-stats.mjs'),'utf8');
 const literal = harvester.match(/^const EVIDENCE_SUMMARY_MARKER_RE = (\/.*\/);$/m)[1];
@@ -251,6 +271,27 @@ invoke(2,'issue does not match',join(assets,'post-evidence.sh'),otherIssue);
 assert.equal(read(data).posts,0); assert.equal(read(state).actions.length,0);
 console.log('PASS: destination issue must match canonical run identity before reservation or POST');
 
+reset({scanDetection:true}); const detected=invoke(2,'gitleaks secret scan refused');
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+assert.ok(!detected.stderr.includes('SYNTHETIC_DETECTED_VALUE')); assert.ok(!detected.stdout.includes('SYNTHETIC_DETECTED_VALUE'));
+reset({scanFailure:true}); invoke(2,'gitleaks secret scan refused'); assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+// Retain every required command except gitleaks, including the fake gh.
+const scannerMissingBin=join(tmp,'scanner-missing-bin'); mkdirSync(scannerMissingBin);
+for(const dir of env.PATH.split(':')) {
+  if(!dir||!existsSync(dir)) continue;
+  for(const name of readdirSync(dir)) {
+    if(name==='gitleaks'||existsSync(join(scannerMissingBin,name))) continue;
+    try { symlinkSync(join(dir,name),join(scannerMissingBin,name)); } catch(error) { if(error.code!=='EEXIST') throw error; }
+  }
+}
+reset(); const scanPath=env.PATH;
+try {env.PATH=scannerMissingBin; invoke(2,'gitleaks is required on PATH');}
+finally {env.PATH=scanPath;}
+assert.equal(read(state).actions.length,0); assert.equal(read(data).posts,0);
+console.log('PASS: detections, scanner failures and missing gitleaks refuse before reserve/POST without printing matched values');
+reset({comments:[{id:40,user:null,body},{id:41,user:{login:'deleted'},body}]}); invoke();
+assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments[0].id,'200');
+console.log('PASS: null or missing author IDs are unauthenticated candidates, never adopted');
 reset({comments:[{id:50,user:{id:999,login:'untrusted'},body}]}); invoke(); assert.equal(read(data).posts,1); assert.equal(read(run).evidence_comments[0].id,'200');
 reset({comments:[{id:90,user:{id:12345,login:'writer'},body},{id:70,user:{id:12345,login:'writer'},body}]}); invoke(); assert.equal(read(data).posts,0); assert.equal(read(run).evidence_comments[0].id,'70');
 console.log('PASS: untrusted marker cannot suppress post; lowest authenticated duplicate is registered');
