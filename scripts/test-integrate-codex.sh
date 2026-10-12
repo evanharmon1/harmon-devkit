@@ -3291,10 +3291,10 @@ jq -cn \
 echo "==> attach's GitHub calls are budgeted by the persisted timeout, not the default (harmon-devkit#223 challenge round 1)"
 # `run_gh`'s per-call timeout budget is driven by \$timeout_min for every
 # command, including attach — not just the commands that reference the flag
-# by name. Persist a non-default 5-minute timeout, leave only ~2s of that
+# by name. Persist a non-default 5-minute timeout, leave only ~5s of that
 # window, and stall attach's trigger-comment fetch for 60s (via slow-sec,
 # harmon-devkit#1387). If attach threads the persisted 5 minutes through,
-# run_gh's timeout wrapper cuts the stalled call off after ~2s. If it fell
+# run_gh's timeout wrapper cuts the stalled call off after ~5s. If it fell
 # back to the unmodified 15-minute default (the #223 bug applied to attach),
 # the remaining budget would be minutes wide, so the call would run an order
 # of magnitude longer (~60s) and the assertion below would fail; the 15s
@@ -3308,7 +3308,7 @@ rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --timeout-min 5 >/dev/null
-near_deadline_epoch=$(($(date -u '+%s') - (5 * 60 - 2)))
+near_deadline_epoch=$(($(date -u '+%s') - (5 * 60 - 5)))
 near_deadline="$(jq -nr --argjson e "$near_deadline_epoch" '$e | todateiso8601')"
 jq --arg reserved "$near_deadline" '.reserved_at = $reserved' \
     "$state" >"${state}.next"
@@ -3323,7 +3323,7 @@ elapsed_seconds=$((SECONDS - start_seconds))
 set -e
 rm -f "${fixtures}/slow-endpoint" "${fixtures}/slow-sec"
 grep -Fq "issues/comments/${trigger_id}" "$log" ||
-    fail "attach never reached the trigger fetch it is meant to bound"
+    fail "attach never reached the trigger fetch it is meant to bound (rc=$attach_rc)"
 [ "$elapsed_seconds" -lt 15 ] ||
     fail "attach did not bound its call to the persisted 5-minute window (${elapsed_seconds}s, rc=$attach_rc)"
 
