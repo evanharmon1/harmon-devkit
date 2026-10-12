@@ -226,6 +226,19 @@ if [ "$exit_status" -eq 1 ] && grep -Fq -- '--merge-base-policy must be a non-em
 else
     err "the exit engine delegated an empty --merge-base-policy to its --closure (exit $exit_status)"
 fi
+for spelling in --merge-base-policy= --merge-base-policy-absent=; do
+    set +e
+    node "$support/devflow-policy.mjs" resolve --closure "$scratch/anyclosure" --policy "$fixtures/policy.toml" \
+        "$spelling" --json >"$scratch/early-eq.out" 2>"$scratch/early-eq.err"
+    eq_status=$?
+    set -e
+    if [ "$eq_status" -eq 2 ] && grep -Fq -- "\"$spelling…\" is not accepted" "$scratch/early-eq.err" &&
+        ! grep -Fq STUB-CLOSURE-RAN "$scratch/early-eq.out"; then
+        echo "  ✓ the reader refuses $spelling before delegating"
+    else
+        err "the reader delegated $spelling to its --closure (exit $eq_status)"
+    fi
+done
 
 # The library refuses an absent merge base that also supplies a merge-base
 # document, with otherwise valid v2 documents (finding 6).
@@ -461,7 +474,7 @@ run_recipe() {
             --taskfile-dir "$dir" --json
         ;;
     integrate)
-        node "$dir/scripts/devflow-policy.mjs" resolve --closure "$dir" \
+        node "$dir/scripts/devflow-policy.mjs" resolve \
             --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
             --merge-base-registry "$dir/agent-registry.json" \
             --registry agent-registry.json --taskfile-dir . --json
@@ -518,6 +531,15 @@ fs.writeFileSync(process.argv[2], lines.join("\n"));
 ' "$support/dev-flow-exit.mjs" "$scratch/stale-engine.mjs"
 printf '%s\n' '// --run --stage --policy --json --merge-base-policy --merge-base-policy-absent' \
     'process.stdout.write("STALE-PIN-RAN\n");' >"$scratch/stale-pin.mjs"
+# The stale reader is the current one without the marker; it announces itself
+# only when run as the entry point, since the engine imports it as a sibling.
+node -e '
+const fs = require("fs");
+const lines = fs.readFileSync(process.argv[1], "utf8").split("\n")
+  .filter((l) => !l.includes("dev-flow-capability: merge-base-absent-v1"));
+lines.splice(1, 0, "if (process.argv[1]?.endsWith(\"devflow-policy.mjs\")) process.stderr.write(\"STALE-READER-RAN\\n\");");
+fs.writeFileSync(process.argv[2], lines.join("\n"));
+' "$support/devflow-policy.mjs" "$scratch/stale-reader.mjs"
 stale_out="$(node "$scratch/stale-engine.mjs" 2>&1 || true)"
 if grep -Fq -- '--merge-base-policy-absent' "$scratch/stale-engine.mjs" &&
     ! grep -Fq 'dev-flow-capability' "$scratch/stale-engine.mjs" &&
@@ -537,6 +559,11 @@ fi
     cp "$scratch/stale-engine.mjs" "$assets_rel/dev-flow-exit.mjs"
     git commit -q -am "chore: merge base whose engine lacks the capability"
     git tag stalenone
+    git checkout -q mbnone
+    git checkout -q -b stale-reader
+    cp "$scratch/stale-reader.mjs" "$assets_rel/devflow-policy.mjs"
+    git commit -q -am "chore: merge base whose reader lacks the capability"
+    git tag stalereader
     git checkout -q mbnone
     cp "$exfix/policy.toml" .devflow.toml
     git add .devflow.toml
@@ -567,15 +594,16 @@ at() {
 # run_integrate_chain BASE — the reader's JSON lands in chain-reader.json, the
 # engine's in chain-exit.json; returns the engine's status, or 90 on a stop.
 run_integrate_chain() {
-    local base="$1" reader_dir="$assets_rel" mb_dir="$scratch/chain-mb" mb_helper mb_state mb_engine
+    local base="$1" reader_dir="$assets_rel" mb_dir="$scratch/chain-mb" mb_reader mb_helper mb_state mb_engine
     local -a exit_args
-    rm -rf "$mb_dir" "$scratch/chain-reader.json" "$scratch/chain-exit.json"
+    rm -rf "$mb_dir" "$scratch/chain-reader.json" "$scratch/chain-reader.err" "$scratch/chain-exit.json"
     mkdir -p "$mb_dir"
     git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || return 90
+    mb_reader="$(trusted_copy "$mb_dir/${reader_dir}/devflow-policy.mjs" "${pinned_mb_reader:-}")"
+    [ -n "$mb_reader" ] || return 90
     mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
     [ -n "$mb_helper" ] || return 90
-    mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader_dir}/devflow-policy.mjs" \
-        "$mb_dir/devflow.toml" .devflow.toml)" || return 90
+    mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || return 90
     case "$mb_state" in
     present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
     absent) mb_policy=(--merge-base-policy-absent) ;;
@@ -584,8 +612,8 @@ run_integrate_chain() {
     esac
     # No registry here: the reader then exits 3 (unchecked references) but
     # still prints the resolution, and only its governing caps are compared.
-    node "$mb_dir/${reader_dir}/devflow-policy.mjs" resolve --closure "$mb_dir" \
-        --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} --json >"$scratch/chain-reader.json" 2>/dev/null
+    node "$mb_reader" resolve \
+        --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} --json >"$scratch/chain-reader.json" 2>"$scratch/chain-reader.err"
     exit_args=(--run "$exfix/run" --stage integration --policy .devflow.toml
         ${mb_policy[@]+"${mb_policy[@]}"} --json)
     mb_engine="$(trusted_copy "$mb_dir/${reader_dir}/dev-flow-exit.mjs" "${pinned_mb_engine:-}")"
@@ -602,24 +630,29 @@ process.stdout.write(String(eval(process.argv[2])));
 }
 
 # The table: case, merge base (checkout), branch policy ("-" none), engine pin
-# ("-" none, good, stale), the cap the reader must resolve, and the verdict the
-# engine must reach under it ("stop": indeterminate, and no engine runs). A
-# stale copy never runs, whichever side supplies it.
-while read -r name rev policy pin cap verdict; do
+# ("-" none, good, stale), reader pin ("-" none, good), the cap the reader must
+# resolve, and the verdict the engine must reach under it ("stop":
+# indeterminate, and no engine runs). A stale copy never runs, whichever side
+# supplies it.
+while read -r name rev policy pin rpin cap verdict; do
     case "$pin" in
     good) pin_path="$support/dev-flow-exit.mjs" ;;
     stale) pin_path="$scratch/stale-pin.mjs" ;;
     *) pin_path="" ;;
     esac
+    rpin_path=""
+    [ "$rpin" = good ] && rpin_path="$support/devflow-policy.mjs"
     set +e
-    (cd "$exrepo" && at "$rev" "$policy" && pinned_mb_engine="$pin_path" run_integrate_chain "$rev") \
+    (cd "$exrepo" && at "$rev" "$policy" &&
+        pinned_mb_engine="$pin_path" pinned_mb_reader="$rpin_path" run_integrate_chain "$rev") \
         2>"$scratch/chain.err"
     st=$?
     set -e
     got_cap="$(json_field "$scratch/chain-reader.json" r.rounds.integration)"
     got_verdict="$(json_field "$scratch/chain-exit.json" r.outcome)"
     ran_stale=no
-    grep -Fqs -e STALE-ENGINE-RAN -e STALE-PIN-RAN "$scratch/chain.err" "$scratch/chain-exit.json" && ran_stale=yes
+    grep -Fqs -e STALE-ENGINE-RAN -e STALE-PIN-RAN -e STALE-READER-RAN \
+        "$scratch/chain.err" "$scratch/chain-reader.err" "$scratch/chain-exit.json" && ran_stale=yes
     if [ "$verdict" = stop ]; then
         if [ "$st" -eq 90 ] && [ ! -e "$scratch/chain-exit.json" ] && [ "$ran_stale" = no ]; then
             echo "  ✓ $name: stops as indeterminate, and no engine runs"
@@ -632,15 +665,17 @@ while read -r name rev policy pin cap verdict; do
         err "$name: reader cap '$got_cap' (want $cap), engine '$got_verdict' exit $st (want $verdict), stale ran: $ran_stale: $(head -2 "$scratch/chain.err")"
     fi
 done <<EOF
-present mbpresent $scratch/branch-cap5.toml - 2 capped
-absent mbnone $exfix/policy.toml - 4 continue
-none mbnone - - 4 continue
-branch-deletes-policy mbpresent - - 2 capped
-stale-copy-and-stale-pin stalenone $exfix/policy.toml stale - stop
-stale-copy-no-pin stalenone - - - stop
-stale-copy-good-pin-absent stalenone $exfix/policy.toml good 4 continue
-stale-copy-good-pin-none stalenone - good 4 continue
-stale-copy-good-pin-branch-deletes-policy stalepresent - good 2 capped
+present mbpresent $scratch/branch-cap5.toml - - 2 capped
+absent mbnone $exfix/policy.toml - - 4 continue
+none mbnone - - - 4 continue
+branch-deletes-policy mbpresent - - - 2 capped
+stale-copy-and-stale-pin stalenone $exfix/policy.toml stale - - stop
+stale-copy-no-pin stalenone - - - - stop
+stale-copy-good-pin-absent stalenone $exfix/policy.toml good - 4 continue
+stale-copy-good-pin-none stalenone - good - 4 continue
+stale-copy-good-pin-branch-deletes-policy stalepresent - good - 2 capped
+stale-reader-no-pin stalereader $exfix/policy.toml - - - stop
+stale-reader-good-reader-pin-absent stalereader $exfix/policy.toml - good 4 continue
 EOF
 
 # A branch engine that always converges must not change the verdict.

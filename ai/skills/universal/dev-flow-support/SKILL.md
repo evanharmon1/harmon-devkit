@@ -140,6 +140,9 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      mb_helper="$(trusted_copy "$(dirname "$mb_reader")/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
      [ -n "$mb_helper" ] ||
          { echo "step 0 indeterminate: neither the merge base's lib/merge-base-policy.sh nor an operator pin declares the capability" >&2; exit 2; }
+     mb_reader="$(trusted_copy "$mb_reader" "${pinned_mb_reader:-}")"
+     [ -n "$mb_reader" ] ||
+         { echo "step 0 indeterminate: neither the merge base's devflow-policy.mjs nor an operator pin declares the capability" >&2; exit 2; }
      mb_state="$(bash "$mb_helper" "$mb" "$mb_reader" "$closure/.devflow.toml" .devflow.toml)" ||
          { echo "step 0 stopped: merge-base policy lookup failed or the reader is too old" >&2; exit 2; }
      case "$mb_state" in
@@ -180,7 +183,8 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      them only the materialized merge-base policy, registry and target list.
      Only when no such pin exists is tier resolution **indeterminate**: stop
      and report it. Never fall back to the branch copy.
-     **The same rule governs `lib/merge-base-policy.sh`**, here and in
+     **The same rule governs `devflow-policy.mjs` and
+     `lib/merge-base-policy.sh`**, here and in
      `/integrate`'s merge-base recipe, **and `dev-flow-exit.mjs`** in
      `/integrate`'s integration-exit recipe; both point at this sentence
      rather than restating it. A branch that edits the helper could answer
@@ -190,8 +194,9 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
      qualifies **iff its source declares the capability marker**, the exact
      line `dev-flow-capability: merge-base-absent-v1` (which the engine and
      the helper carry as a comment). Run the merge base's copy when it
-     qualifies; otherwise the operator pin (`$pinned_mb_helper`,
-     `$pinned_mb_engine`, a path outside the candidate branch) when it
+     qualifies; otherwise the operator pin (`$pinned_mb_reader`,
+     `$pinned_mb_helper`, `$pinned_mb_engine`, a path outside the candidate
+     branch) when it
      qualifies, under exactly the same check; otherwise resolution is
      **indeterminate**: stop and report it. Never run the branch's copy, and
      never judge a copy by which flag names its source mentions.

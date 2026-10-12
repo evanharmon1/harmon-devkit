@@ -374,7 +374,10 @@ git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 
 # exactly as dev-flow-support's step 0 recipe does: that is the First adoption
 # rule's one implementation (the merge base's copy if it declares the
 # capability marker, else the pin under the same check, else nothing, and the
-# caller stops as indeterminate).
+# caller stops as indeterminate). The reader is a governing copy too: a merge
+# base whose reader predates the capability runs the operator's pin.
+mb_reader="$(trusted_copy "$mb_dir/${reader}" "${pinned_mb_reader:-}")"
+[ -n "$mb_reader" ] || exit 1   # indeterminate
 
 # The merge base may have NO .devflow.toml (a branch that adds it). Ask, never
 # infer it from a failed `git show`: the shared helper looks it up with a
@@ -386,7 +389,7 @@ git archive --format=tar "$base" -- "$reader_dir" | tar -x -C "$mb_dir" || exit 
 # governing file too, so trusted_copy picks it.
 mb_helper="$(trusted_copy "$mb_dir/${reader_dir}/lib/merge-base-policy.sh" "${pinned_mb_helper:-}")"
 [ -n "$mb_helper" ] || exit 1   # indeterminate
-mb_state="$(bash "$mb_helper" "$base" "$mb_dir/${reader}" "$mb_dir/devflow.toml" .devflow.toml)" || exit 1
+mb_state="$(bash "$mb_helper" "$base" "$mb_reader" "$mb_dir/devflow.toml" .devflow.toml)" || exit 1
 case "$mb_state" in
 present) mb_policy=(--merge-base-policy "$mb_dir/devflow.toml") ;;
 absent) mb_policy=(--merge-base-policy-absent) ;;
@@ -398,10 +401,12 @@ esac
 # exists at the merge base whether or not THIS change edits it, and the
 # resolution needs it to cross-validate finder and role references.
 git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
-# Invoke the MATERIALIZED reader by path, never through `task devflow:policy`:
+# Invoke the SELECTED reader by path, never through `task devflow:policy`:
 # the task target is branch-controlled, so routing through it lets the branch
-# choose the command line that is supposed to constrain it.
-node "$mb_dir/${reader}" resolve --closure "$mb_dir" \
+# choose the command line that is supposed to constrain it. No --closure: the
+# selected copy is already the trusted one, and --closure "$mb_dir" would hand
+# a pinned reader's run back to the merge base's copy it replaced.
+node "$mb_reader" resolve \
     --policy .devflow.toml ${mb_policy[@]+"${mb_policy[@]}"} \
     --merge-base-registry "$mb_dir/agent-registry.json" \
     --registry agent-registry.json --taskfile-dir . --json
@@ -501,7 +506,10 @@ itself, not only the data it reads, since a branch could otherwise lower its
 own gate by editing the resolution code instead of the config. A merge base
 predating the reader's own existence has nothing to materialize into
 `$mb_dir/scripts/`, and the reader refuses rather than falling back to the
-branch copy; that is a blocker, not a shape to work around.
+branch copy; that is a blocker, not a shape to work around. The recipe above
+no longer passes `--closure`: it runs the copy `trusted_copy` selected by
+path, which runs no branch code either, and lets an operator-pinned reader
+replace a merge-base reader that predates the capability (harmon-devkit#1345).
 
 The merge base is the **one** place an older shape is ever read, and only by
 the reader's own historical decoder — an immutable commit cannot be migrated,

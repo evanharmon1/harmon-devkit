@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// dev-flow-capability: merge-base-absent-v1
+// (The marker trusted callers select a governing copy by — dev-flow-support
+// SKILL.md, step 0, "First adoption". Keep the line exact.)
+//
 // devflow-policy.mjs — the shared v2 `.devflow.toml` reader.
 //
 // Every Dev flow v2 consumer (the exit script, the round-push broker, the
@@ -2771,8 +2775,14 @@ function tryDelegateToClosure(argv) {
 // so main() runs them BEFORE --closure delegation: an older closure would skip
 // them, and an empty --merge-base-policy would then let the branch policy
 // govern (harmon-devkit#1345, review round 1). Pure argument checks: they need
-// nothing from the closure. Same order and messages as before the move.
+// nothing from the closure. Same order and messages as before the move. An
+// equals spelling of either option is refused here too (integration cycle 1):
+// `--merge-base-policy=` carries an empty value past the separate-word check.
 function mergeBaseUsageError(argv) {
+  const equalsForm = argv.find((a) => a.startsWith("--merge-base-policy=") || a.startsWith("--merge-base-policy-absent="));
+  if (equalsForm !== undefined) {
+    return `"${equalsForm.slice(0, equalsForm.indexOf("=") + 1)}…" is not accepted — pass --merge-base-policy <file> or a bare --merge-base-policy-absent`;
+  }
   const given = argv.some((a) => a === "--merge-base-policy" || a.startsWith("--merge-base-policy="));
   const absent = argv.some((a) => a === "--merge-base-policy-absent" || a.startsWith("--merge-base-policy-absent="));
   if (given && absent) return "--merge-base-policy-absent cannot be combined with --merge-base-policy";
