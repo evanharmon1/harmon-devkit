@@ -568,6 +568,8 @@ in the cloud reference; the `brief` validator governs local PR-owning lanes. See
 environment limits, and the orchestrator-owned review and PR handoff. This mode
 replaces local worktree, agent-settle, and report-file handling for that lane;
 claims, policy resolution, fences, and readiness duties still bind.
+The orchestrator names the cloud lane's `claude/*` branch before launch, so the
+lane is planned, fenced and claimed like any other.
 
 ## Persistent supervision
 

@@ -1457,7 +1457,7 @@ import pathlib, re
 root = pathlib.Path("ai/skills/universal/orchestrate")
 text = (root / "assets/cloud-lane-brief.md").read_text()
 fields = {
-    "lane-name": "cloud-fixture", "run-id": "fixture-run",
+    "lane-name": "cloud-fixture", "branch": "claude/cloud-fixture", "run-id": "fixture-run",
     "issue-url": "https://github.com/owner/repo/issues/1",
     "deadline": "2099-01-01T00:00:00Z", "policy-projection": "fixture-policy",
     "file-scope-fence": "docs/cloud-report.md", "verified-facts-and-rulings": "None.",

@@ -24,12 +24,18 @@ use this render check instead: require every catalog field in the template,
 substitute once, refuse any unreplaced `{{…}}`, require all four sections, and
 refuse local report-file instructions or a literal Codex trigger.
 Run this check on the rendered file before every launch; the template test pins
-only that the template can pass it. Do not fabricate a branch, worktree, report
-sentinel or branch-bound claim envelope: the platform chooses the `claude/*` branch.
+only that the template can pass it.
+The orchestrator chooses `claude/<lane-slug>` before launch, records it in the
+plan's lane assignment like any lane, refreshes the claim to that branch with
+the claim transaction before launch, and passes the branch to the brief.
+Pushes to a `claude/*` name other than the session's assigned branch were
+accepted in every session tried, but the platform does not promise it; the
+brief therefore makes a refused push a BLOCKED report.
 
 | Field | Launch-time source |
 | --- | --- |
 | `{{lane-name}}` | Lane plan |
+| `{{branch}}` | Orchestrator-chosen `claude/<lane-slug>` in the plan's lane assignment |
 | `{{run-id}}` | Active run |
 | `{{issue-url}}` | Canonical claimed issue URL |
 | `{{deadline}}` | Run start plus resolved wall-clock ceiling |
@@ -73,16 +79,16 @@ completion. There is no CLI way to read replies and no interactive attach:
 Use `-p` to message; Herdr cannot list, prompt or read this lane as an agent.
 Do not use local agent-settle waits or pane sentinels for it.
 
-Watch through GitHub. Snapshot `git ls-remote origin 'refs/heads/claude/*'`
-before launch and compare after the lane pushes. Correlate the new branch with
-the lane's issue, brief and pushed report; multiple unexplained candidates are
-indeterminate, never a reason to guess. Once learned, pass the branch to:
+Watch the known branch from the plan through GitHub:
 
 ```sh
 bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state \
   --registry <kickoff-registry-snapshot> <deadline> \
-  '<lane>:<claude/slug>:<nonce>:<owner/repo>:cloud'
+  '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud'
 ```
+
+For a `:cloud` lane, the nonce is any per-lane token (for example the lane name),
+because the watcher validates its shape but does not read it.
 
 The final `:cloud` selects GitHub-only observation: `BRANCH` reports pushed-head
 changes or a deduplicated `BRANCH <lane>: absent` on a 404, `PR` reports the
@@ -94,7 +100,7 @@ agent read is used. A branch observation proves a push, not a passed gate: read
 the lane's report and verify the exact head before proceeding. The lane reports
 through its pushed branch, then the PR body section or comment when a PR exists;
 never through `.lane-report.md`. The orchestrator's claim refresh through the
-claim transaction records the learned branch, the draft's ordinary `pr` / `pr_bindings`
+claim transaction records the chosen branch, the draft's ordinary `pr` / `pr_bindings`
 record the PR, and the session URL goes in the PR body.
 
 `claude --teleport <session-id>` in a local terminal of the same repository
@@ -122,14 +128,14 @@ With network level Custom plus `semgrep.dev`, the cloud lane can run
 `task security` itself. State the configured environment and the gates actually
 run; do not infer success from a pushed branch or an expired wait.
 
-The lane implements, runs the gates it can, commits and pushes its assigned
+The lane implements, runs the gates it can, commits and pushes the orchestrator-chosen
 branch through the repository's push gates, reports, and stops without opening
 a PR. The orchestrator fetches that exact pushed head into its review worktree
 and runs the resolved `task challenge` and `task review` stages
 from its logged-in pane, retaining their normal caps and adjudication records.
 It sends confirmed fixes with `claude -p --cloud`, re-fetches the returned head,
 and verifies the round gates. It then runs `task security`, opens the draft
-with `gh pr create --draft --head <learned-branch>`, verifies draft/head state,
+with `gh pr create --draft --head <planned-branch>`, verifies draft/head state,
 and integrates through the normal readiness gate. The PR body records
 `reviewed from <host> at <head>`, naming the host and full reviewed SHA along
 with stage results, policy disclosure and deferred findings. The orchestrator
