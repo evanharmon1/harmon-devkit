@@ -120,6 +120,20 @@ pr)
     ;;
 api)
     case "$*" in
+    */contents/agent-registry.json?ref=*)
+        if [ "${GH_FAIL_REGISTRY:-0}" = 1 ] || [ ! -f "${GH_REGISTRY_JSON:-/nonexistent}" ]; then
+            echo 'gh stub: HTTP 404 reading remote registry' >&2
+            exit 1
+        fi
+        node -e '
+          const fs = require("node:fs")
+          console.log(JSON.stringify({type:"file", encoding:"base64", sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            content:fs.readFileSync(process.argv[1]).toString("base64")}))
+        ' "$GH_REGISTRY_JSON"
+        ;;
+    *repos/o/r)
+        printf '{"default_branch":"%s"}\n' "${GH_DEFAULT_BRANCH:-trunk}"
+        ;;
     */issues/*/comments*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
         if status="$(issue_failure_status "$n")"; then
@@ -309,8 +323,8 @@ set_comments() {
 run_report() {
     local dir="$1" arg has_trust=0
     shift
-    # The asset has no default trust root by design, so every ordinary case
-    # supplies one; a case testing the trust boundary passes its own.
+    # Legacy cases supply explicit IDs independently of the checkout registry.
+    # Registry cases below invoke the asset without this convenience wrapper.
     for arg in "$@"; do
         case "$arg" in
         --trusted-actor-id | --trusted-actors-file) has_trust=1 ;;
@@ -460,8 +474,8 @@ contains "$ERR" "999999" &&
 contains "$ERR" "trust root that changed after the run" &&
     ok "the message names the historical-trust-root case as well as the redirect case" ||
     bad "the message treats an untrusted marker as necessarily hostile"
-contains "$ERR" "741" &&
-    ok "the message names the kickoff-time pinning gap" || bad "the pinning gap is not named"
+contains "$ERR" "discovery uses the selected set" && contains "$ERR" "indeterminate (fail closed)" &&
+    ok "the message states removed-author discovery is indeterminate" || bad "removed-author trust rule is not named"
 contains "$ERR" "do NOT conclude the session has no run record" &&
     ok "the message forbids the absence claim" || bad "the message permits a false absence claim"
 
@@ -1214,19 +1228,135 @@ contains "$(cat "$d/gh.log")" "api user" &&
     bad "the tool consulted the authenticated account — there must be no implicit trust root" ||
     ok "no implicit trust root: the authenticated account is never consulted"
 
-echo "==> a run with no trust root at all is a usage error, never a default"
-d="$TMPROOT/notrust"
+# Keep a conflicting local checkout to prove discovery trusts only the target
+# repository registry served by gh, independently of the caller's checkout.
+run_registry_report() {
+    local dir="$1"
+    shift
+    RC=0
+    OUT="$(cd "$dir/repo/nested" && PATH="$dir/bin:$PATH" GH_LOG="$dir/gh.log" \
+        STATS_LOG="$dir/stats.log" GH_PR_JSON="$dir/pr.json" GH_COMMENTS_DIR="$dir/comments" \
+        GH_USER_ID="$ACTOR" GH_REGISTRY_JSON="$dir/remote-registry.json" \
+        node "$REPORT" --repo o/r --pr "$PR" --stats-script "$dir/stats.mjs" \
+        "$@" 2>"$dir/stderr")" || RC=$?
+    ERR="$(cat "$dir/stderr")"
+}
+
+echo "==> registry trust comes from --repo default branch and reaches discovery and harvesting"
+d="$TMPROOT/registry"
 scaffold "$d" further-along "body"
-RC=0
-OUT="$(PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
-    node "$REPORT" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" 2>"$d/stderr")" || RC=$?
-ERR="$(cat "$d/stderr")"
-[ "$RC" -eq 2 ] && ok "exit 2" || bad "expected exit 2, got $RC: $ERR"
-contains "$ERR" "at least one --trusted-actor-id" &&
-    ok "the message says a trust root is required" || bad "the usage error does not name the missing trust root"
-contains "$ERR" "741" &&
-    ok "the message names where a configured allowlist will come from" ||
-    bad "the usage error does not point at the registry allowlist issue"
+mkdir -p "$d/repo/nested"
+git -C "$d/repo" init -q
+printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/repo/agent-registry.json"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 0 ] && contains "$OUT" "### Evidence integrity" &&
+    contains "$OUT" "o/r@trunk (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) agent-registry.json trusted_orchestrator_actor_ids" &&
+    contains "$(cat "$d/stats.log")" "--trusted-actor-id $ACTOR" &&
+    ok "remote repo/ref/blob source is disclosed and conflicting local registry is ignored" ||
+    bad "registry trust failed: rc=$RC, err=$ERR, out=$OUT"
+contains "$(cat "$d/gh.log")" "api user" &&
+    bad "registry trust consulted the authenticated caller" ||
+    ok "registry trust never consults the authenticated caller"
+run_registry_report "$d" --json
+[ "$RC" -eq 0 ] && contains "$OUT" 'trusted_orchestrator_actor_ids' &&
+    ok "JSON evidence preserves the registry source" || bad "JSON registry source absent: $ERR"
+
+# Removing the once-trusted author must not turn existing evidence into absence.
+printf '{"trusted_orchestrator_actor_ids":[424242]}' >"$d/remote-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 11 ] && contains "$ERR" "$ACTOR" && contains "$ERR" "trust root that changed after the run" &&
+    ok "an author removed from the registry is indeterminate" || bad "removed author accepted: rc=$RC, err=$ERR"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+run_registry_report "$d"
+[ "$RC" -eq 11 ] && contains "$ERR" "999999" &&
+    ok "an unknown author is not trusted by the registry" || bad "unknown author accepted: rc=$RC, err=$ERR"
+# The login is the trusted login even though the immutable ID is unknown.
+# Embed the trusted ID in the payload too: neither self-assertion grants trust.
+write_file "$d/c1" "<!-- devflow:evidence v2 run_id=run-6001-further-along stage=challenge dest=pr round=- seq=1 -->
+\`\`\`json
+{\"actor_id\":$ACTOR,\"trusted_orchestrator_actor_ids\":[$ACTOR]}
+\`\`\`"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+run_registry_report "$d"
+[ "$RC" -eq 11 ] && contains "$ERR" "999999" &&
+    ok "forged trusted login and payload actor do not replace the API author ID" ||
+    bad "forged author accepted: rc=$RC, err=$ERR"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+
+# The metadata/Contents reads precede discovery; usage failures never fetch PR
+# or evidence markers, even when the logged-in user would have been trusted. All malformed forms must fail rather than coerce.
+for registry in missing '{}' '{"trusted_orchestrator_actor_ids":[]}' null \
+    '{broken' '{"trusted_orchestrator_actor_ids":true}' \
+    '{"trusted_orchestrator_actor_ids":[true]}' '{"trusted_orchestrator_actor_ids":["37220977"]}' \
+    '{"trusted_orchestrator_actor_ids":[0]}' '{"trusted_orchestrator_actor_ids":[-1]}' \
+    '{"trusted_orchestrator_actor_ids":[1.5]}' '{"trusted_orchestrator_actor_ids":[9007199254740992]}' \
+    '{"trusted_orchestrator_actor_ids":[1,1]}' \
+    '{"trusted_orchestrator_actor_ids":[1],"finders":[{"slug":"bot","trusted_actor_id":"1"}]}'; do
+    if [ "$registry" = missing ]; then
+        rm "$d/remote-registry.json"
+    else
+        printf '%s' "$registry" >"$d/remote-registry.json"
+    fi
+    : >"$d/gh.log"
+    run_registry_report "$d"
+    [ "$RC" -eq 2 ] && contains "$ERR" "agent-registry.json" &&
+        ! contains "$(cat "$d/gh.log")" 'pr view' && ! contains "$(cat "$d/gh.log")" '/comments' &&
+        ok "invalid or absent remote registry fails closed before discovery: $registry" ||
+        bad "registry did not fail closed: $registry, rc=$RC, err=$ERR"
+done
+
+echo "==> default registry discovery accepts the real registry's null and string finder identities"
+node -e '
+  const fs = require("node:fs")
+  const registry = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+  if (!registry.finders.some((f) => f.trusted_actor_id === null) ||
+      !registry.finders.some((f) => typeof f.trusted_actor_id === "string")) {
+    throw new Error("real registry fixture must include null and string finder identities")
+  }
+  registry.trusted_orchestrator_actor_ids = [Number(process.argv[3])]
+  fs.writeFileSync(process.argv[2], JSON.stringify(registry))
+' "$PWD/agent-registry.json" "$d/remote-registry.json" "$ACTOR"
+: >"$d/gh.log"
+run_registry_report "$d"
+[ "$RC" -eq 0 ] && contains "$(cat "$d/gh.log")" 'pr view' &&
+    contains "$(cat "$d/gh.log")" '/comments' &&
+    ok "no-flag discovery runs with real-shaped null/string finder identities" ||
+    bad "real-shaped registry refused before discovery: rc=$RC, err=$ERR"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+GH_FAIL_REGISTRY=1 run_registry_report "$d"
+[ "$RC" -eq 2 ] && contains "$ERR" 'could not read/parse' && contains "$ERR" 'HTTP 404' &&
+    ok "a failed remote registry read is a usage error with no local fallback" ||
+    bad "remote failure did not fail closed: rc=$RC, err=$ERR"
+contains "$(cat "$d/gh.log")" 'contents/agent-registry.json?ref=trunk' &&
+    ok "registry lookup uses the target default branch, not a hardcoded main" ||
+    bad "registry lookup omitted the default-branch ref"
+
+# Explicit flags override, rather than widen, the registry. An invalid registry
+# is ignored too, while an invalid explicit override still fails closed.
+printf '{"trusted_orchestrator_actor_ids":[999999]}' >"$d/remote-registry.json"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && contains "$OUT" 'from explicit flags' && ! contains "$OUT" 'from this registry' &&
+    ! contains "$(cat "$d/stats.log")" '--trusted-actor-id 999999' &&
+    ok "explicit ID overrides the registry without merging" || bad "flag override failed: $ERR"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 11 ] && ok "registry-only author is untrusted under an explicit override" ||
+    bad "registry widened the explicit override: rc=$RC, err=$ERR"
+set_comments "$d/comments" "$PR" "$d/c1"
+printf '{broken' >"$d/remote-registry.json"
+printf '{"trusted_actor_ids":[%s]}' "$ACTOR" >"$d/actors.json"
+run_registry_report "$d" --trusted-actors-file "$d/actors.json"
+[ "$RC" -eq 0 ] && contains "$OUT" "including $d/actors.json" &&
+    ok "explicit actors file bypasses malformed registry" || bad "actors-file override failed: $ERR"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && ok "explicit ID bypasses malformed registry" || bad "ID override failed: $ERR"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+run_registry_report "$d" --trusted-actors-file "$d/remote-registry.json"
+[ "$RC" -eq 2 ] && ok "invalid explicit override never falls back to valid registry" ||
+    bad "invalid explicit override fell back: rc=$RC, err=$ERR"
 
 echo "==> an arbitrary trusted actor id is honoured on its own"
 d="$TMPROOT/trusted"
@@ -1397,14 +1527,23 @@ contains "$OUT" "**Adjudication overrides are not covered here.**" &&
     bad "an empty overrides section could be read as 'nothing was overridden'"
 contains "$OUT" 'never "the orchestrator overrode nothing"' &&
     ok "the wrong reading is named explicitly" || bad "the wrong reading is not ruled out"
-contains "$OUT" "kickoff-time registry revision" &&
-    ok "evidence integrity states the trust-pinning limitation" ||
-    bad "the trust-pinning limitation is not stated where integrity is read"
+contains "$OUT" "- Trust evaluation:" &&
+    contains "$OUT" "Current-format evidence authenticates against exactly that set." &&
+    contains "$OUT" "Legacy evidence is additionally intersected with the registry revision in effect when it was written." &&
+    contains "$OUT" "An explicit flag set is trusted as given and can widen what is authenticated" &&
+    contains "$OUT" "Under the default registry trust set, an orchestrator removed" &&
+    contains "$OUT" "removed from the allowlist since a run reads as indeterminate (fail closed)" &&
+    ok "bulleted evidence integrity states the evidence-format-specific trust rule" ||
+    bad "the report's trust rule is missing or inaccurate"
 
 echo "==> the skill's documented command is runnable as written"
-grep -qE -- '--trusted-actor-id|--trusted-actors-file' < <(grep -A 3 'assets/retro-run-report.mjs --repo' ai/skills/universal/retro/SKILL.md) &&
-    ok "the documented command carries the required trust root" ||
-    bad "copying the documented command would exit 2 before doing any work"
+grep -qF 'the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`' ai/skills/universal/retro/SKILL.md &&
+    ok "the documented command uses the configured registry trust root" ||
+    bad "the skill does not document registry trust resolution"
+! grep -qE 'will carry the allowlist|#741 will supply|until it does' \
+    ai/skills/universal/retro/SKILL.md "$REPORT" &&
+    ok "helper and skill no longer describe the registry allowlist as pending" ||
+    bad "pending allowlist text remains"
 
 echo "==> a terminal run with no interventions IS reported unattended"
 d="$TMPROOT/unattended"
@@ -1532,6 +1671,10 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 contains "$OUT" "the run record and its comment evidence only" &&
     ok "the report narrows what --as-of reconstructs" ||
     bad "--as-of still implies it reconstructs everything"
+contains "$OUT" "default trust set" &&
+    contains "$OUT" "trusts the default allowlist as it is now" &&
+    ok "as-of disclosure includes the current trust-set strings" ||
+    bad "as-of disclosure omits the current trust root"
 contains "$OUT" "linked-issue set" &&
     ok "the linked-issue set is named as current-state in the output, not just the docs" ||
     bad "the un-versioned linked-issue input is not disclosed in the report"
@@ -1897,6 +2040,20 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' && contains "$OUT" 'Legacy also present: `true`' && contains "$OUT" "PR binding: bound to PR #$PR" &&
     ok "the text report preserves untrusted marker anomaly facts" ||
     bad "evidence-only text output dropped untrusted marker facts: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> evidence-only Markdown discloses the actual default or explicit trust source"
+mkdir -p "$d/repo/nested"
+printf '{"trusted_orchestrator_actor_ids":[%s]}' "$ACTOR" >"$d/remote-registry.json"
+run_registry_report "$d"
+[ "$RC" -eq 0 ] && contains "$OUT" "- Trust source:" &&
+    contains "$OUT" "o/r@trunk (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)" &&
+    ok "evidence-only text includes the remote registry repo/ref/blob source" ||
+    bad "evidence-only registry source missing: rc=$RC, err=$ERR, out=$OUT"
+run_registry_report "$d" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && contains "$OUT" "- Trust source: actor id(s) $ACTOR from explicit flags" &&
+    ! contains "$OUT" "o/r@trunk" &&
+    ok "evidence-only text includes explicit flags without claiming a registry source" ||
+    bad "evidence-only explicit source missing or inaccurate: rc=$RC, err=$ERR, out=$OUT"
 
 echo "==> an explicitly selected evidence-only run discloses that it is unbound"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \

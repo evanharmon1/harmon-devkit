@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.57.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.56.0...v0.57.0) (2026-10-12)
+
+
+### Features
+
+* **dev-flow:** record remediation pushes explicitly and enforce the integration fixing ceiling ([#1401](https://github.com/evanharmon1/harmon-devkit/issues/1401)) ([23fd8b0](https://github.com/evanharmon1/harmon-devkit/commit/23fd8b086581efe7c8cb04db64a9c1616da78859))
+* **orchestrate:** support explicitly requested cloud lanes ([#1385](https://github.com/evanharmon1/harmon-devkit/issues/1385)) ([9b1bc88](https://github.com/evanharmon1/harmon-devkit/commit/9b1bc88b46ebd23768ccac1fdf84e486ef2ff156))
+* **retro:** read the trusted-orchestrator allowlist from agent-registry.json ([#1392](https://github.com/evanharmon1/harmon-devkit/issues/1392)) ([e0b909d](https://github.com/evanharmon1/harmon-devkit/commit/e0b909d6ec9b9fe86e5a9565dc8e257abb4e8c06))
+* **retro:** render adjudication findings and overrides in run trajectories ([#1384](https://github.com/evanharmon1/harmon-devkit/issues/1384)) ([49b626a](https://github.com/evanharmon1/harmon-devkit/commit/49b626affb35bfdf1dcb7cce42817ae4f3df57c7))
+* **review:** emit validated result envelopes from the finder scripts ([#1374](https://github.com/evanharmon1/harmon-devkit/issues/1374)) ([426fe8a](https://github.com/evanharmon1/harmon-devkit/commit/426fe8aab1102193d3d4cbf1823a8b304db691db))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** carry an absent merge-base policy through step 0, integration and the exit engine ([#1381](https://github.com/evanharmon1/harmon-devkit/issues/1381)) ([0c11b67](https://github.com/evanharmon1/harmon-devkit/commit/0c11b67b4bb830b2a62951b8a8f41b65f18a7472))
+
 ## [0.56.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.55.0...v0.56.0) (2026-10-12)
 
 
