@@ -227,9 +227,12 @@ for THIS cycle, `after-ci` or `with-push` — and the integrator agent's §3 run
 it rather than re-reading the list above. The value decides timing only. The
 readiness gate is unchanged under all three (every check concluded green AND a
 terminal clean current-head review); carry and the base-merge exemption apply
-exactly as stated here; it never suppresses a cycle the resolved rounds policy
-requires and never requests one beyond it (forensic's `min_rounds = 2` is the
-one legitimate second cycle on an unchanged head); and a CI-only
+exactly as stated here; it decides only WHEN a review is requested — it never
+suppresses a cycle the resolved rounds policy requires and never adds a
+request beyond what that policy requires. Whether the rounds policy requires a
+second cycle on an unchanged head (the maintainer's ruling names forensic's
+`min_rounds = 2` as the one case where it could) is decided by the rounds
+policy and the exit engine, never by this setting; and a CI-only
 infrastructure re-run is not a push, so it never re-requests a review —
 `reserve` refuses a second attempt-1 request for a head it already holds.
 When CI fails while a review requested alongside it is pending, the cycle

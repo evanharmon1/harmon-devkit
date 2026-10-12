@@ -167,9 +167,24 @@ applies to THIS cycle — it is one tested place, so no reading of the values
 below can drift from another:
 
 ```sh
-order="$("$helper" trigger-timing --review-trigger "<review_trigger>" \
-    --remediation "<remediation pushes so far>" | jq -r '.order')" || exit
+timing="$("$helper" trigger-timing --review-trigger "<review_trigger>" \
+    --remediation "<remediation pushes so far>")" || exit
+order="$(jq -er '.order' <<<"$timing")" || exit
+case "$order" in
+after-ci | with-push) ;;
+*)
+    echo "unknown review order '$order' — do not reserve or trigger"
+    exit 1
+    ;;
+esac
 ```
+
+Capture the helper's answer before parsing it, never pipe it: a pipeline
+reports its last command's status, so a failed helper would leave an empty
+`order` behind a zero exit and the cycle would be triggered before CI
+settled. Every way of not knowing the order stops here: a helper that
+fails, an answer `jq` cannot read, or an order other than the two
+`trigger-timing` prints (`after-ci-first` always resolves to one of them).
 
 - **`after-ci`** — the serial order, settled green on this head first.
   Do not reserve or post the trigger until every required check has settled.

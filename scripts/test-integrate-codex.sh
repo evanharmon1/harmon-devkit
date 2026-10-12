@@ -7911,6 +7911,69 @@ if "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head
     fail "reserve must refuse an unknown --review-trigger"
 fi
 
+# review-r4-codex-verification-1: the integrator's own §3 snippet must stop —
+# never fall through to a trigger — whenever the order cannot be known. It is
+# extracted from the agent file and run as written, so the test fails if the
+# documented recipe regresses to piping the helper into jq.
+echo "==> the integrator's trigger-timing snippet stops on any unknown order"
+integrator_md="$repo_root/ai/agents/integrator.md"
+timing_snippet="$(awk '
+    /^```sh$/ { block = ""; inside = 1; next }
+    /^```$/ && inside { if (block ~ /trigger-timing/) { printf "%s", block; exit } inside = 0; next }
+    inside { block = block $0 "\n" }
+' "$integrator_md")"
+grep -Fq 'trigger-timing' <<<"$timing_snippet" ||
+    fail "could not extract the trigger-timing snippet from $integrator_md"
+! grep -Fq '| jq' <<<"$timing_snippet" ||
+    fail "the snippet must not pipe the helper into jq: $timing_snippet"
+# $1 the helper to run, $2 the review_trigger value, $3 remediation pushes.
+# Prints what the snippet left behind, then TRIGGERED if it fell through.
+run_timing_snippet() {
+    snippet_run="${timing_snippet//<review_trigger>/$2}"
+    snippet_run="${snippet_run//<remediation pushes so far>/$3}"
+    helper="$1" bash -c "set -u
+$snippet_run
+echo \"ORDER=\$order\"
+echo TRIGGERED" 2>&1
+}
+set +e
+snippet_out="$(run_timing_snippet "$helper" with-push 0)"
+snippet_rc=$?
+set -e
+[ "$snippet_rc" -eq 0 ] && grep -Fq 'ORDER=with-push' <<<"$snippet_out" &&
+    grep -Fq TRIGGERED <<<"$snippet_out" ||
+    fail "a valid trigger must reach the trigger with its order: rc=$snippet_rc $snippet_out"
+snippet_out="$(run_timing_snippet "$helper" after-ci-first 0)" ||
+    fail "after-ci-first on the first head must resolve: $snippet_out"
+grep -Fq 'ORDER=after-ci' <<<"$snippet_out" ||
+    fail "after-ci-first on the first head must order after-ci: $snippet_out"
+# A malformed value makes the real helper fail; a stub stands in for a helper
+# that answers garbage or an order outside the two it can print.
+bad_timing_helper="${test_tmp}/bad-timing-helper"
+for bad_case in "real|parallel" "real|with-push x" "garbage|with-push" "empty|with-push" \
+    "unknown|with-push"; do
+    bad_kind="${bad_case%%|*}"
+    bad_value="${bad_case#*|}"
+    case "$bad_kind" in
+    real) bad_helper="$helper" ;;
+    garbage) printf '#!/usr/bin/env bash\necho not-json\n' >"$bad_timing_helper" ;;
+    empty) printf '#!/usr/bin/env bash\necho "{}"\n' >"$bad_timing_helper" ;;
+    unknown) printf '#!/usr/bin/env bash\necho "{\\"order\\":\\"sometimes\\"}"\n' >"$bad_timing_helper" ;;
+    esac
+    [ "$bad_kind" = real ] || {
+        chmod +x "$bad_timing_helper"
+        bad_helper="$bad_timing_helper"
+    }
+    set +e
+    snippet_out="$(run_timing_snippet "$bad_helper" "$bad_value" 0)"
+    snippet_rc=$?
+    set -e
+    [ "$snippet_rc" -ne 0 ] ||
+        fail "the snippet must stop on $bad_kind/$bad_value, got rc 0: $snippet_out"
+    ! grep -Fq TRIGGERED <<<"$snippet_out" ||
+        fail "the snippet must never reach the trigger on $bad_kind/$bad_value: $snippet_out"
+done
+
 # The timing never touches the charge: a review spent on a head whose CI then
 # fails still charges `integration` under every value (the CI-failed exempt
 # charge is tracked separately), and reserve reads no CI to decide it.
