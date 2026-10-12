@@ -2223,6 +2223,99 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Opt-in local records: use the real harvester to prove marker absence is the
+# prerequisite, and the shipped validator to reject malformed local input.
+# ---------------------------------------------------------------------------
+echo "==> local-only record is opt-in and carries provenance on every measurement"
+d="$TMPROOT/local-unverified"
+make_permissive_gh "$d"
+mkdir -p "$d/records/run-6000-fresh-kickoff"
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+local_args=(--repo o/r --run run-6000-fresh-kickoff --record-dir "$d/records")
+run_report "$d" "${local_args[@]}"
+default_out="$OUT" default_err="$ERR" default_rc="$RC"
+[ "$RC" -eq 10 ] && contains "$ERR" run-not-found && [ -z "$OUT" ] &&
+    ok "default local fixture still returns run-not-found exit 10" || bad "default changed: $RC $ERR"
+run_report "$d" "${local_args[@]}" --local-unverified
+[ "$RC" -eq 13 ] && contains "$OUT" 'not recorded — adjudications/ is absent' &&
+    ok "local report has distinct exit 13 and absent adjudications are not recorded" || bad "local fallback: $RC $ERR"
+if printf '%s\n' "$OUT" | node -e '
+  let text=""; process.stdin.on("data", d => text += d); process.stdin.on("end", () => {
+    const label="unverified (local record, no GitHub evidence marker)"
+    const lines=text.trim().split("\n").filter(Boolean)
+    if (!lines[0].startsWith("## ") || lines.some(line => !line.includes(label))) process.exit(1)
+  })
+'; then ok "heading and every measured line carry exact local provenance"; else bad "missing local provenance"; fi
+run_report "$d" "${local_args[@]}" --local-unverified --json
+printf '%s' "$OUT" >"$d/local.json"
+node -e '
+  const r=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))
+  if (r.status!=="local-unverified" || r.verified!==false || r.measurements.length===0 ||
+      r.measurements.some(m=>m.provenance!=="unverified (local record, no GitHub evidence marker)")) process.exit(1)
+' "$d/local.json" && ok "JSON measurements carry provenance and verified false" || bad "JSON local provenance"
+run_report "$d" "${local_args[@]}"
+[ "$RC" -eq "$default_rc" ] && [ "$OUT" = "$default_out" ] && [ "$ERR" = "$default_err" ] &&
+    ok "no-flag output stays byte-for-byte unchanged after opt-in reads" || bad "default output changed"
+
+printf '{}\n' >"$d/records/run-6000-fresh-kickoff/run.json"
+run_report "$d" "${local_args[@]}" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'failed schema validation' &&
+    ok "schema-invalid record is refused without rendering" || bad "invalid record rendered: $RC $ERR"
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+mkdir -p "$d/records/wrong-id"
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/wrong-id/run.json"
+run_report "$d" --repo o/r --run wrong-id --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'run_id differs' &&
+    ok "schema-valid record with mismatched run id is refused" || bad "mismatch rendered: $RC $ERR"
+run_report "$d" "${local_args[@]}" --local-unverified --as-of 2026-08-30T09:00:00Z
+[ "$RC" -eq 2 ] && [ -z "$OUT" ] && contains "$ERR" '--as-of is unavailable' &&
+    ok "local reads cannot claim historical reconstruction" || bad "local as-of accepted: $RC $ERR"
+run_report "$d" --repo o/r --run '../outside' --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 2 ] && [ -z "$OUT" ] && ok "local run ids cannot traverse directories" || bad "local traversal accepted"
+mkdir -p "$d/records/linked"
+ln -s "$FIXTURES/fresh-kickoff.json" "$d/records/linked/run.json"
+run_report "$d" --repo o/r --run linked --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
+    ok "local symlinks cannot escape record parent" || bad "escaping symlink accepted: $RC $ERR"
+
+# Exercise both authenticated success and authenticated missing-record with
+# --run: neither may render the local record. Existing fixtures supply the
+# same verified trajectory consumed throughout this suite.
+echo "==> trusted evidence ignores the local flag"
+make_gh "$d"
+make_trajectory "$FIXTURES/fresh-kickoff.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs"
+verified_out="$OUT" verified_err="$ERR"
+run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs" --local-unverified
+[ "$RC" -eq 0 ] && [ "$OUT" = "$verified_out" ] && [ "$ERR" = "$verified_err" ] &&
+    ok "verified path ignores local flag byte-for-byte" || bad "verified path changed: $RC $ERR"
+# Trusted marker discovery does not need local inputs; the flag must be
+# ignored even when the caller provided no --run or --record-dir.
+trusted_dir="$TMPROOT/local-flag-trusted-marker"
+scaffold "$trusted_dir" further-along "body"
+evidence_marker_file "$trusted_dir/c1" run-6001-further-along challenge pr -
+set_comments "$trusted_dir/comments" "$PR" "$trusted_dir/c1"
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --stats-script "$trusted_dir/stats.mjs"
+trusted_out="$OUT" trusted_err="$ERR"
+GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
+    run_report "$trusted_dir" --repo o/r --pr "$PR" --stats-script "$trusted_dir/stats.mjs" --local-unverified
+[ "$RC" -eq 0 ] && [ "$OUT" = "$trusted_out" ] && [ "$ERR" = "$trusted_err" ] &&
+    ok "trusted marker discovery ignores local flag without requiring local inputs" || bad "trusted marker flag changed output: $RC $ERR"
+
+printf '%s\n' '{"status":"record-missing"}' >"$d/missing.json"
+make_stats "$d/stats.mjs" 1 "$d/missing.json"
+run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && ok "authenticated record-missing never falls back" || bad "authenticated missing rendered"
+make_stats "$d/stats.mjs" 3
+run_report "$d" "${local_args[@]}" --stats-script "$d/stats.mjs" --local-unverified
+[ "$RC" -eq 11 ] && [ -z "$OUT" ] && ok "indeterminate evidence never falls back" || bad "indeterminate rendered"
+grep -q '| 13 | `local-unverified`' ai/skills/universal/retro/SKILL.md &&
+    grep -q 'After \*\*only\*\* exit 10 `no-run-record` or `run-not-found`' ai/skills/universal/retro/SKILL.md &&
+    ok "skill documents distinct code and permitted local fallback" || bad "local exit documentation missing"
+
+# ---------------------------------------------------------------------------
 
 echo ""
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"

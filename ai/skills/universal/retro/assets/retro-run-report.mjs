@@ -30,6 +30,8 @@
 //       marker naming a run the harvester cannot find (deleted-entry
 //       tampering). Nothing is rendered; the reason is on stderr. Never
 //       report a clean retro on this path, and never fall back to memory.
+//   13  local-unverified — opt-in local record, no GitHub evidence marker.
+//       Never a verified report or an authenticated trajectory.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
 // Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
@@ -42,7 +44,8 @@
 // that was never recorded (challenge round 1, confirmed P1).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +79,9 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                checkout that keeps it somewhere else).
   --record-dir <path>          Parent directory containing <run_id>/run.json;
                                passed through unchanged to the harvester.
+  --local-unverified           After run-not-found only, read --record-dir/--run
+                               as unverified local data (exit 13). Requires both
+                               flags. Ignored when authenticated evidence exists.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -135,6 +141,9 @@ function parseArgs(argv) {
         break
       case '--record-dir':
         args.recordDir = take()
+        break
+      case '--local-unverified':
+        args.localUnverified = true
         break
       case '--json':
         args.json = true
@@ -1468,6 +1477,78 @@ function reportIgnoredHints(ignoredHints) {
   }
 }
 
+// Local-only data never enters measure(), policy parsing, or authentication.
+// Validate a snapshot of the bytes we render, not a file that may change after
+// validation. The shipped run validator checks both shape and semantics.
+const LOCAL_PROVENANCE = 'unverified (local record, no GitHub evidence marker)'
+
+function renderLocalUnverified(args, runId) {
+  if (!args.run || !args.recordDir) throw new UsageError('--local-unverified requires --run and --record-dir for a local read')
+  if (args.asOf) throw new UsageError('--as-of is unavailable for local-unverified records; rerun without it')
+  if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
+    throw new UsageError('--local-unverified requires a run id naming one directory')
+  }
+  const parent = realpathSync(args.recordDir)
+  const file = path.join(parent, runId, 'run.json')
+  if (!existsSync(file)) return null
+  // Symlinks must not redirect the local read outside the selected parent.
+  const resolved = realpathSync(file)
+  if (!resolved.startsWith(`${parent}${path.sep}`)) {
+    throw new IndeterminateError('local run.json resolves outside --record-dir')
+  }
+  const bytes = readFileSync(resolved, 'utf8')
+  const validator = path.join(ASSET_DIR, '..', '..', 'dev-flow-support', 'assets', 'validate-result-schemas.mjs')
+  if (!existsSync(validator)) throw new OperationalError('local run schema validator is unavailable')
+  const snapshot = mkdtempSync(path.join(tmpdir(), 'retro-local-'))
+  let record
+  try {
+    const snapshotFile = path.join(snapshot, 'run.json')
+    writeFileSync(snapshotFile, bytes)
+    const validation = spawnSync(process.execPath, [validator, 'run', snapshotFile], {
+      encoding: 'utf8', maxBuffer: MAX_SYNC_BUFFER_BYTES
+    })
+    if (validation.error) throw new OperationalError(`local run schema validator failed: ${validation.error.message}`)
+    if (validation.status !== 0) {
+      throw new IndeterminateError(`local run.json failed schema validation: ${(validation.stderr || '').trim()}`)
+    }
+    record = JSON.parse(bytes)
+  } finally {
+    rmSync(snapshot, { recursive: true, force: true })
+  }
+  if (record.run_id !== runId) throw new IndeterminateError('local run.json run_id differs from --run')
+
+  const measurements = []
+  const add = (measurement, value) => measurements.push({ measurement, value, provenance: LOCAL_PROVENANCE })
+  add('Started at', record.started_at)
+  add('Initiated by', record.initiated_by)
+  add('Outcome', record.outcome ?? 'not recorded')
+  add('PR recorded locally', record.pr ? `#${record.pr.number} (${record.pr.url})` : 'not recorded')
+  for (const transition of record.stage_transitions) {
+    add('Stage entry', `${transition.stage} at ${transition.entered_at}; exit: ${transition.exit ?? 'not recorded'}`)
+  }
+  add('Adjudication rounds', existsSync(path.join(path.dirname(resolved), 'adjudications'))
+    ? 'not measured — local adjudications are not authenticated'
+    : 'not recorded — adjudications/ is absent')
+  add('Findings and convergence', 'not measured — no authenticated adjudication evidence')
+  if (record.interventions.length === 0) add('Interventions', 'none recorded')
+  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}`)
+  if (record.settlements.length === 0) add('Settlements', 'none recorded')
+  for (const entry of record.settlements) {
+    add('Settlement recorded locally', `${entry.finding_id}: ${entry.disposition} at ${entry.settled_at}; ${entry.reference.type} ${entry.reference.value}`)
+  }
+  add('Promotion recorded locally', record.promotion
+    ? `${record.promotion.head} at ${record.promotion.promoted_at}; fingerprint ${record.promotion.gate_fingerprint}`
+    : 'not recorded')
+  const report = {
+    schema: 'retro-run-report.v1', status: 'local-unverified', verified: false,
+    run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
+  }
+  return args.json ? JSON.stringify(report, null, 2) : [
+    `## Run evidence — run \`${safe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
+    ...measurements.map((entry) => `- ${entry.measurement}: ${safe(entry.value)} — ${entry.provenance}`)
+  ].join('\n')
+}
+
 function run(argv) {
   const args = parseArgs(argv)
   if (args.help) {
@@ -1593,6 +1674,13 @@ function run(argv) {
         `${TOOL}: indeterminate — ${harvested.missing}${!args.run ? `, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.` : '. Authenticated evidence exists, but its named local record is absent.'}`
       )
       return 11
+    }
+    if (args.localUnverified) {
+      const local = renderLocalUnverified(args, runId)
+      if (local !== null) {
+        console.log(local)
+        return 13
+      }
     }
     console.error(`${TOOL}: ${harvested.missing}; use the retro's fallback procedure`)
     return 10
