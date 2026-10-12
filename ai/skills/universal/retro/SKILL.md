@@ -134,11 +134,16 @@ retrospective merely by logging in.
 `--trusted-actor-id <id>` (repeatable) and `--trusted-actors-file <path>`
 (a JSON `{"trusted_actor_ids": [...]}` document) explicitly override the registry.
 When both flags are supplied their IDs are combined, preserving the existing
-flag behavior; the registry is not read or merged into that set. Discovery and
-the harvester receive the same selected IDs. Explicit flags can widen discovery
-only and never widen what the harvester authenticates. The report's
-evidence-integrity section names the actual source and IDs used: registry
-`<repo>@<default-branch> (<blob sha>)`, or explicit flags.
+flag behavior; the registry is not read or merged into that set.
+
+The trusted set, from the registry at `<repo>@<ref> (<blob sha>)` or from explicit
+`--trusted-actor-id`/`--trusted-actors-file` flags, is passed to the harvester.
+Current-format evidence authenticates against exactly that set. Legacy evidence
+is additionally intersected with the registry revision in effect when it was
+written. An explicit flag set is trusted as given and can widen what is
+authenticated, so pass it only deliberately. An orchestrator removed from the
+allowlist since a run reads as indeterminate (fail closed). The report's
+evidence-integrity section names the actual source and IDs used.
 
 Other useful arguments: `--run <run_id>` when you already know it (a run that
 capped before its PR existed has no PR to discover from — its record is on the
@@ -259,11 +264,8 @@ revision history lists that `run_id` in `lanes[]`.
    ignored because the author is not in that set. A nonzero ignored count is
    either a misconfigured trust root, a trust root that moved since the run,
    or somebody trying to redirect the report; all three are worth a line in
-   the retro. Discovery uses the named registry at repo@ref or the explicit
-   flag selection. The harvester authenticates each evidence write against the
-   registry revision current at that write's time; explicit flags do not widen
-   that authenticated trust root. A removed-since orchestrator can be excluded
-   by discovery's selection even though their historical evidence remains valid.
+   the retro. Read the selected source and the evidence-format-specific trust
+   rule stated in §1 when interpreting these counts.
 9. `### Not measurable from this run's evidence` — the measurements this retro
    is expected to make that today's evidence surface cannot supply, each naming
    the issue that would close it. Carry these into §5 as-is rather than

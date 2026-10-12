@@ -474,8 +474,8 @@ contains "$ERR" "999999" &&
 contains "$ERR" "trust root that changed after the run" &&
     ok "the message names the historical-trust-root case as well as the redirect case" ||
     bad "the message treats an untrusted marker as necessarily hostile"
-contains "$ERR" "historical registry revisions" &&
-    ok "the message distinguishes discovery from historical authentication" || bad "historical authentication is not named"
+contains "$ERR" "discovery uses the selected set" && contains "$ERR" "indeterminate (fail closed)" &&
+    ok "the message states removed-author discovery is indeterminate" || bad "removed-author trust rule is not named"
 contains "$ERR" "do NOT conclude the session has no run record" &&
     ok "the message forbids the absence claim" || bad "the message permits a false absence claim"
 
@@ -1510,10 +1510,13 @@ contains "$OUT" "**Adjudication overrides are not covered here.**" &&
     bad "an empty overrides section could be read as 'nothing was overridden'"
 contains "$OUT" 'never "the orchestrator overrode nothing"' &&
     ok "the wrong reading is named explicitly" || bad "the wrong reading is not ruled out"
-contains "$OUT" "registry revision current at that write's time" &&
-    contains "$OUT" "Explicit flags can widen discovery only and never widen what the harvester authenticates." &&
-    ok "evidence integrity distinguishes discovery selection from historical authentication" ||
-    bad "the discovery/authentication distinction is missing"
+contains "$OUT" "- Trust evaluation:" &&
+    contains "$OUT" "Current-format evidence authenticates against exactly that set." &&
+    contains "$OUT" "Legacy evidence is additionally intersected with the registry revision in effect when it was written." &&
+    contains "$OUT" "An explicit flag set is trusted as given and can widen what is authenticated" &&
+    contains "$OUT" "removed from the allowlist since a run reads as indeterminate (fail closed)" &&
+    ok "bulleted evidence integrity states the evidence-format-specific trust rule" ||
+    bad "the report's trust rule is missing or inaccurate"
 
 echo "==> the skill's documented command is runnable as written"
 grep -qF 'the helper reads `trusted_orchestrator_actor_ids` from `agent-registry.json`' ai/skills/universal/retro/SKILL.md &&

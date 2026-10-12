@@ -716,8 +716,8 @@ function discoverRun(args, trustedActorIds) {
 
 // Authority comes only from configured orchestrator IDs, never the authenticated
 // reader. Default discovery uses the target repository's default-branch registry,
-// never the caller's checkout. Explicit flags override discovery selection only;
-// the harvester still authenticates each write against its historical registry.
+// never the caller's checkout. Explicit flags override the selected set passed
+// to the harvester; its evidence-format-specific trust rule is reported below.
 function resolveTrustedActorArgs(args) {
   const passthrough = []
   const ids = new Set()
@@ -1401,9 +1401,8 @@ function renderMarkdown(report) {
     l.push(`- Tampered comments (trusted author, structural anomaly, not forged): ${report.measurements.integrity.tampered_comments}`)
   }
   l.push(
-    `- Trust evaluation: ${safe(report.source.trusted_actors)} — discovery uses this selected set; the harvester authenticates each evidence write against the registry revision current at that write's time`
+    `- Trust evaluation: ${safe(report.source.trusted_actors)}. The trusted set, from this registry or explicit \`--trusted-actor-id\`/\`--trusted-actors-file\` flags, is passed to the harvester. Current-format evidence authenticates against exactly that set. Legacy evidence is additionally intersected with the registry revision in effect when it was written. An explicit flag set is trusted as given and can widen what is authenticated, so pass it only deliberately. An orchestrator removed from the allowlist since a run reads as indeterminate (fail closed).`
   )
-  l.push('Explicit flags can widen discovery only and never widen what the harvester authenticates.')
   if (report.source.ignored_markers.length === 0) {
     l.push('- Untrusted evidence markers ignored during discovery: 0')
   } else {
@@ -1529,7 +1528,7 @@ function run(argv) {
         if (untrustedMarkers.length > 0) {
           const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
           parts.push(
-            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set while the harvester authenticates evidence writes against their historical registry revisions`
+            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set and an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed)`
           )
         }
         if (corrupted.length > 0) {
