@@ -89,7 +89,8 @@ refute_exists() {
 
 # `pwd -P` because macOS mktemp hands back /var/... while git reports the
 # physical /private/var/... — the two must agree for the path assertions below.
-test_tmp="$(cd "$(mktemp -d -t harmon-init-worktree-XXXXXX)" && pwd -P)"
+# The template contains "scratch" so every run exercises a TMPDIR-derived path containing "scratch" (#1388).
+test_tmp="$(cd "$(mktemp -d -t harmon-init-worktree-scratch-XXXXXX)" && pwd -P)"
 # The sentinel lives OUTSIDE $test_tmp because the cleanup below removes that
 # directory, and this file has to outlive it to be read on the way out.
 WORKTREE_TIMEOUT_SENTINEL="$(mktemp -t harmon-init-worktree-timeout-XXXXXX)"
@@ -329,11 +330,6 @@ rm_wt scratch >/dev/null || fail "worktree-rm.sh failed on a clean tree"
 refute_exists "$fixture/.worktrees/scratch" "worktree-rm.sh left the directory behind"
 if grep -Fxq "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain); then
     fail "worktree-rm.sh left a stale registry record"
-fi
-
-if [ "${WORKTREE_TEST_SUBCASE:-}" = "scratch-rm" ]; then
-    echo "worktree subcase scratch-rm OK"
-    exit 0
 fi
 
 # ── dirty-tree refusal ───────────────────────────────────────────────
@@ -994,7 +990,7 @@ if new half-made >/dev/null 2>&1; then
 fi
 rm -f "$shared_hooks/post-checkout"
 refute_exists "$fixture/.worktrees/half-made" "a partially created worktree was not rolled back"
-if grep -q "half-made" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/half-made" < <(git -C "$fixture" worktree list --porcelain); then
     fail "a partially created worktree stayed in the registry"
 fi
 if git -C "$fixture" show-ref --verify --quiet refs/heads/half-made; then
@@ -1143,7 +1139,7 @@ fi
 # discarding the last reference to it is exactly what the stale-record guard
 # below makes deliberate.
 rm_wt keeper --force >/dev/null || fail "worktree-rm.sh could not clear the keeper's own stale record"
-if grep -q "keeper" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/keeper" < <(git -C "$fixture" worktree list --porcelain); then
     fail "worktree-rm.sh left the keeper's stale record behind"
 fi
 git -C "$fixture" branch -D keeper goer >/dev/null 2>&1 || true
@@ -2286,7 +2282,7 @@ refute_exists "$fixture/.worktrees/rollback-remote" "the failed remote-only atta
 if git -C "$fixture" show-ref --verify --quiet refs/heads/rollback-remote; then
     fail "the failed remote-only attach left its pre-created branch behind"
 fi
-if grep -q "rollback-remote" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -Fxq "worktree $fixture/.worktrees/rollback-remote" < <(git -C "$fixture" worktree list --porcelain); then
     fail "the failed remote-only attach left a registry record behind"
 fi
 git -C "$fixture" push -q origin :refs/heads/rollback-remote
@@ -3579,20 +3575,5 @@ grep -qi 'removed' "$rm_trunc_log" &&
 rm -rf "$trunc_shim"
 
 echo "    worktree:rm target resolution: outside-cone, moved-record, and no-match all refuse without claiming a removal (#963)"
-
-if [ -z "${WORKTREE_TEST_SUBCASE:-}" ]; then
-    echo "==> worktree:rm registry assertion passes when TMPDIR contains 'scratch' (#1388)"
-    scratch_subcase_tmp="$(cd "$(mktemp -d -t harmon-init-scratch-XXXXXX)" && pwd -P)"
-    subcase_status=0
-    (
-        export WORKTREE_TEST_SUBCASE="scratch-rm"
-        export TMPDIR="$scratch_subcase_tmp"
-        bash "$repo/scripts/test-worktree.sh"
-    ) || subcase_status=$?
-    rm -rf "$scratch_subcase_tmp"
-    if [ "$subcase_status" -ne 0 ]; then
-        fail "worktree removal regression failed when TMPDIR contains 'scratch' (#1388)"
-    fi
-fi
 
 echo "worktree entrypoint OK: create → hooks verified → deps installed → removed"
