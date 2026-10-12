@@ -130,8 +130,8 @@ Git directory with `git rev-parse --git-common-dir`; a linked worktree's `.git`
 path is a file and is never the shared-state root. Planning is orchestrator
 judgement written down, not a new autonomous planner: the schema, validator,
 and append-only recompute rule make its deterministic parts checkable.
-A second writer of the same `plan.json` is a blocker, not a race to lock
-against.
+A second writer of the same `plan.json` is a blocker: the slate lock in
+§ "Durable orchestrator state" refuses it, by slate id and by the work itself.
 
 Build and publish the plan in this order:
 
@@ -186,10 +186,19 @@ Build and publish the plan in this order:
    the full tier procedure (step 0 included) and append a validated revision
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
-6. **Emit and validate.** Write the closed record and validate it with
+6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
+   slate lock with its explicit issue set:
+   `dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
+   --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
+   milestone-backed slate (the milestone exists only in the lock). A second
+   orchestrator naming the same work is refused here, before it can publish a
+   plan or dispatch anything. Then write the closed record and validate it with
    `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
-   a graph/projection mismatch, an ownership error, or a cap violation.
+   a graph/projection mismatch, an ownership error, or a cap violation. Both
+   writers refuse while the canonical plan names an issue outside the
+   reservation, so a later revision that adds issues widens the reservation
+   with `lock acquire --issues` first.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -205,6 +214,89 @@ Build and publish the plan in this order:
    candidate with the `plan` kind, rename it over the canonical record, then
    validate the canonical readback. Either validation or rename failure is a
    blocker; dispatch and merge-queue mutation remain paused.
+   The mechanical half of a base move — bump `base_sha`, retire done issues
+   and their lanes, extend the chain — is
+   `dev-flow-support/assets/plan-revise.mjs base-move`, which runs exactly
+   that sequence. It refuses, naming the paths or issues, whenever the move
+   needs judgment: the new commits touch a live lane's fence or candidate
+   files, or a done issue releases a dependent. Fence expansions, overlap
+   choices and wave changes stay yours; write them as a complete revision.
+
+## Durable orchestrator state
+
+Everything you need in order to resume lives under the Git common directory,
+never in the session scratchpad. A scratchpad does not survive a session
+restart, and one that was wiped mid-slate took every dispatch file, ruling
+and watcher script with it (harmon-devkit#1296). The scratchpad is for
+throwaway work only.
+
+- **Run records:** `<git-common-dir>/dev-flow-v2/runs/<run-id>/run.json`,
+  beside `monitor.json`.
+- **Slate plan:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json`.
+- **Your own working files** — dispatch files, rendered briefs, ruling files,
+  watcher state:
+  `<git-common-dir>/dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/`,
+  keyed by run id and attempt nonce the way lane reports are.
+  `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
+  --nonce NONCE` prints the path.
+
+Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
+it supports, never a hand edit:
+
+- `transition`, which also appends the matching transition receipt;
+- `intervention`;
+- `bind-pr`;
+- `close`.
+
+Promotion is decided out of the readiness gate by the session that owns
+integration — the orchestrator in an orchestrated run, the `/integrate`
+session in a solo run — and that session records it with `run-record.mjs
+promote`.
+
+A run belongs to exactly one slate. Its first helper write needs the run to be
+a lane in some revision of that slate's plan, and records the slate in
+`runs/<run-id>/owner-slate`; every later write must name the same slate. Each write builds
+a candidate, validates it with `validate-result-schemas.mjs run --receipts`
+plus every adjudication document in the run directory, renames it over
+`run.json` and validates the readback. A refused edge, a promotion dated
+before the last transition, a promotion over an unsettled deferred finding,
+or any entry written after the run has ended — promoted, capped, escalated or
+abandoned — therefore never lands. The rest of the
+record keeps its existing writers:
+
+- the kickoff record — this skill, at activation;
+- pass receipts, evidence registrations, splits and stage-advance
+  transitions — `/review`'s own write recipe;
+- settlements — `/integrate`.
+
+Each of those writers runs the same candidate, validate, rename and readback
+sequence. Point an intervention that rests on a ruling file at it with
+`--ruling FILE`: the note records the file's SHA-256. That digest identifies
+the bytes you relied on. It does not protect them: the note lives in a
+lane-writable record and nothing verifies it automatically, so an edit is
+caught only by someone who re-hashes the file and compares. `close` records a non-promotion outcome if
+the run is still open, then moves the run's orchestrator directory into
+`runs/<run-id>/orchestrator/`, so a stale dispatch file can never mislead a
+later session. Files under `.git/` never show in `git status`.
+
+Both writers take the **slate lock** (`run-record.mjs lock
+acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
+with the slate's milestone and issue set. While another session holds the
+same slate, the same milestone, or any of the same issues — under any slate
+id — every write is refused. Take it before publishing the plan (§ Planning
+step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
+implicit lock taken at a first write records no milestone, and a plan
+published before its reservation can overwrite another session's plan. Release it when the slate
+ends. `--force
+--reason` breaking a dead session's lock is an operator decision; name it in
+the handoff.
+
+Durable means *this clone*: the common directory survives restarts, `/clear`
+and worktree removal, but not a fresh clone, a rebuilt devcontainer without a
+persistent volume, or an ephemeral cloud session. GitHub evidence stays the
+cross-machine record. Every worktree shares the directory, so a lane *can*
+edit these files; re-hashing a ruling file against its recorded digest is the
+only check that an edit happened.
 
 ## Lane briefs
 
@@ -264,7 +356,7 @@ table before their intended sections.
 | `{{codex-model-id}}` | Model id the Codex pane was launched with, or `n/a` for a non-Codex harness |
 | `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true`. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
-| `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad; never the scratchpad root |
+| `{{scratch-dir}}` | Per-lane subdirectory of the scratchpad, for throwaway files only — nothing needed to resume lives there; never the scratchpad root |
 | `{{repo-tier}}` | `light`, `standard`, or `heavy` — resolved by the base template's strongest-signal-wins procedure, never by matching a row's description |
 | `{{gate-bounds-override}}` | Repository's own measured gate bounds, or `None — use the base template's table.` |
 | `{{gate-commands}}` | The repository's actual gate invocations, one per line |
