@@ -4116,6 +4116,9 @@ function writeScenario(name, db) {
     [250, "numeric-reviewer-priority", adjudication.adjudications],
     [251, "non-string-override-reason", adjudication.adjudications],
     [252, "array-override", adjudication.adjudications],
+    [253, "string-adjudication-document", adjudication.adjudications],
+    [254, "array-adjudication-document", adjudication.adjudications],
+    [255, "extra-override-field", adjudication.adjudications],
   ]) {
     const variantId = "run-" + number + "-" + name;
     const variantPayload = structuredClone(reviewPayload);
@@ -4132,6 +4135,9 @@ function writeScenario(name, db) {
     if (name === "numeric-reviewer-priority") variantPayload.adjudication.adjudications[0].reviewer_priority = 2;
     if (name === "non-string-override-reason") variantPayload.adjudication.adjudications[0].override = { reason: 123 };
     if (name === "array-override") variantPayload.adjudication.adjudications[0].override = [];
+    if (name === "string-adjudication-document") variantPayload.adjudication = "not-an-object";
+    if (name === "array-adjudication-document") variantPayload.adjudication = [];
+    if (name === "extra-override-field") variantPayload.adjudication.adjudications[0].override.extra = "must not be projected";
     const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, variantPayload, at);
     const variantBody = { ...runBody, run_id: variantId, stage_transitions: lifecycleTo("review", at),
       evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", variantId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(variantPayload)))],
@@ -4200,7 +4206,8 @@ done
 echo "== C2/V1: invalid legacy adjudications are indeterminate in JSON and table =="
 for scenario in string-adjudications null-adjudication-entry non-object-override \
     non-string-finding-id non-string-disposition non-string-adjudicated-priority \
-    numeric-reviewer-priority non-string-override-reason array-override; do
+    numeric-reviewer-priority non-string-override-reason array-override \
+    string-adjudication-document array-adjudication-document; do
     export DFSTATS_DB="$tmp/scenarios/$scenario.json"
     run_id="$(meta "$scenario" .meta.runId)"
     for format in json table; do
@@ -4213,6 +4220,7 @@ for scenario in string-adjudications null-adjudication-entry non-object-override
         [ "$rc" -eq 3 ] && grep -Fq 'dev-flow-stats: indeterminate:' <<<"$out" && ! grep -Fq 'TypeError' <<<"$out" ||
             fail "$scenario ($format): malformed adjudications were not indeterminate, rc=$rc: $out"
         case "$scenario" in
+        string-adjudication-document | array-adjudication-document) expected_error='adjudication document must be a plain object' ;;
         non-string-finding-id) expected_error='adjudication finding_id must be a string' ;;
         non-string-disposition) expected_error='adjudication disposition must be a string' ;;
         non-string-adjudicated-priority) expected_error='adjudication adjudicated_priority must be a string' ;;
@@ -4223,6 +4231,12 @@ for scenario in string-adjudications null-adjudication-entry non-object-override
         grep -Fq "$expected_error" <<<"$out" || fail "$scenario ($format): wrong refusal branch: $out"
     done
 done
+
+echo "== I1: override projection retains only its reason =="
+export DFSTATS_DB="$tmp/scenarios/extra-override-field.json"
+run_id="$(meta extra-override-field .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[0].adjudications[0].override == {reason: "An ordinary invocation loses retained evidence"}' >/dev/null || fail "extra override field leaked into JSON: $out"
 
 echo "== C2a: finding IDs are escaped and absent reviewer priorities normalize to null =="
 for scenario in newline-finding-id missing-reviewer-priority; do

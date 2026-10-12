@@ -3195,6 +3195,9 @@ function verifiedFindingMeasurements(rounds) {
 // Legacy evidence predates the full adjudication schema. Normalize only the
 // fields this projection consumes, for both JSON and table rendering.
 function projectAdjudicationEntries(doc) {
+  if (doc != null && (typeof doc !== "object" || Array.isArray(doc))) {
+    throw new EvidenceError("adjudication document must be a plain object");
+  }
   if (doc?.adjudications === undefined) return [];
   if (!Array.isArray(doc.adjudications)) throw new EvidenceError("adjudications must be an array");
   return doc.adjudications.map((entry) => {
@@ -3217,7 +3220,7 @@ function projectAdjudicationEntries(doc) {
       reviewer_priority: reviewerPriority,
       adjudicated_priority: entry.adjudicated_priority,
       disposition: entry.disposition,
-      override,
+      override: override === null ? null : { reason: override.reason },
     };
   });
 }
