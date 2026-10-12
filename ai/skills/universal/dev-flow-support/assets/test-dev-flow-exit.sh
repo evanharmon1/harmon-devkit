@@ -1025,7 +1025,8 @@ assert.equal(authorizedCeiling(run(auth("challenge", 4)), "review", 3), 3);
 // A disabled stage (cap 0) is never lifted.
 assert.equal(authorizedCeiling(run(auth("review", 1)), "review", 0), 0);
 // A malformed entry authorizes nothing (fail closed: only ever a LOWER ceiling).
-for (const bad of [{ actor: "" }, { actor: "  " }, { instruction: "" }, { at: "" }, { round: 0 }, { round: "4" }, { stage: "remediation" }]) {
+// A malformed `at` is checked against run.schema.json'"'"'s instant pattern, not just for presence.
+for (const bad of [{ actor: "" }, { actor: "  " }, { instruction: "" }, { at: "" }, { at: "yesterday" }, { at: "2026-10-12" }, { at: "2026-10-12 00:00:00Z" }, { round: 0 }, { round: "4" }, { stage: "remediation" }]) {
   assert.equal(authorizedCeiling(run(auth("challenge", 4, bad)), "challenge", 3), 3, JSON.stringify(bad));
 }
 for (const field of ["stage", "round", "actor", "instruction", "at"]) {

@@ -3107,9 +3107,11 @@ stage findings, which carry neither field at all).
 a ceiling the agent never raises on its own; a maintainer may still order one
 more round. `run.json`'s optional `cap_authorizations[]` records each such
 instruction as `{stage, round, actor, instruction, at}`: the stage
-(`challenge`, `review` or `integration`), the round it admits (for
-integration, the charged Codex cycle), who gave it, the instruction verbatim,
-and when. An entry records a human instruction; an agent never writes one on
+(`challenge`, `review` or `integration`), the round it admits, who gave it,
+the instruction verbatim, and when. For integration that round is a
+**charged Codex cycle**, the counter the integration cap bounds, never an
+integration pass round: a retry folds into its cycle and an exempt cycle
+charges nothing, so the two numbers differ. An entry records a human instruction; an agent never writes one on
 its own judgement, and nothing writes one to make a recorded round fit.
 `validate-result-schemas.mjs run` rejects an entry with any field missing or
 blank and a second entry for the same `(stage, round)`. Whether the round
@@ -3123,8 +3125,11 @@ other: in the stage's own computation, in the cross-stage over-cap scan a
 later stage runs, and in the capped-final-round exit, which now applies at
 the highest authorized round. For integration, the escalation threshold moves
 to that round. Without an authorization the round is still `indeterminate`.
-The renderer projects an admitted round as `round n/cap (authorized)`, as on
-`blocker-comment`'s Spent line, and still refuses an unauthorized one.
+The renderer projects an admitted challenge or review round as
+`round n/cap (authorized)`, as on `blocker-comment`'s Spent line, and still
+refuses an unauthorized one. It applies no integration cap check of its own
+and never labels an integration pass round. Integration cycle accounting
+belongs to the exit engine alone, which `readiness-gate.sh` already runs.
 `policy.json`'s `rounds` are never rewritten to admit a round, and nothing
 reads a raised copy as authority. The effective ceiling is computed in memory
 and reported beside the resolved cap as the verdict's `authorized_ceiling`,

@@ -9,7 +9,9 @@
 // (own-stage check, cross-stage scan, the capped-final-round exit and the
 // integration escalation) and render-dev-flow.mjs (the cap-consistency check
 // and the `round n/cap (authorized)` projection) both call it, so the two
-// engines cannot disagree about which rounds are admitted.
+// cannot disagree about which challenge or review rounds are admitted. An
+// integration authorization names a charged Codex cycle, which only the exit
+// engine derives; the renderer applies no integration cap check of its own.
 //
 // Invariants:
 //   - The resolved cap is never rewritten. The ceiling is computed in memory
@@ -30,6 +32,8 @@
 // Pure functions over plain values; no imports, no top-level side effects.
 
 const STAGES = new Set(["challenge", "review", "integration"]);
+// The same instant pattern run.schema.json requires of `at`.
+const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
 
 function nonBlank(value) {
   return typeof value === "string" && /\S/.test(value);
@@ -45,7 +49,8 @@ function isWellFormed(entry) {
     entry.round >= 1 &&
     nonBlank(entry.actor) &&
     nonBlank(entry.instruction) &&
-    nonBlank(entry.at)
+    typeof entry.at === "string" &&
+    TIMESTAMP.test(entry.at)
   );
 }
 

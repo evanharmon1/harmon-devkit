@@ -742,6 +742,11 @@ function buildFindingIndex(record, options = {}) {
   return entries
 }
 
+// The stages whose adjudication round IS the counter their cap bounds. The
+// integration cap counts charged Codex cycles, which only the exit engine
+// derives (see validateCrossDocumentConsistency).
+const CAP_COUNTED_STAGES = ['challenge', 'review']
+
 const EXPECTED_REFERENCE_TYPE = { fix: 'sha', decline: 'comment_id', file: 'issue_number' }
 // issue_number: a bare positive integer (same-repo) or an owner/repo#N
 // qualified form (cross-repository) -- kept in sync with
@@ -790,13 +795,20 @@ function validateCrossDocumentConsistency(record, options = {}) {
   // run.json's cap_authorizations[] authorizes it and every round between
   // (lib/cap-authorizations.mjs, the predicate dev-flow-exit.mjs shares —
   // harmon-devkit#1239); the cap itself is still the resolved value.
+  //
+  // Confidence stages only. An integration adjudication's round is its pass
+  // round, but the integration cap (and an integration authorization) counts
+  // charged Codex cycles: a retry folds into its cycle and an exempt cycle
+  // charges nothing, so a pass round says nothing about the cap. Integration
+  // cycle accounting is the exit engine's alone (computeIntegrationExit, which
+  // readiness-gate.sh runs); a second counter here could only disagree with it.
   if (record.policy?.rounds) {
     const maxRoundByStage = new Map()
     for (const { doc } of record.adjudications) {
       const current = maxRoundByStage.get(doc.stage) ?? 0
       if (doc.round > current) maxRoundByStage.set(doc.stage, doc.round)
     }
-    for (const stage of ['challenge', 'review', 'integration', 'remediation']) {
+    for (const stage of CAP_COUNTED_STAGES) {
       const cap = record.policy.rounds[stage]
       const maxRound = maxRoundByStage.get(stage)
       if (cap !== undefined && maxRound !== undefined && maxRound > authorizedCeiling(record.run, stage, cap)) {
@@ -1281,6 +1293,9 @@ function renderDeferredFindings(record) {
 // over-cap round never reaches here: validateCrossDocumentConsistency
 // refuses the record first.
 function roundLabel(record, doc) {
+  // Only where the labelled number is the counter the authorization names: a
+  // confidence round. An integration pass round is not a charged cycle.
+  if (!CAP_COUNTED_STAGES.includes(doc.stage)) return `round ${doc.round}`
   const cap = record.policy?.rounds?.[doc.stage]
   return isAuthorizedOverCap(record.run, doc.stage, doc.round, cap) ? `round ${doc.round}/${cap} (authorized)` : `round ${doc.round}`
 }
@@ -1457,7 +1472,13 @@ function renderBlockerComment(record, options = {}) {
   // that one stage; record.policy.rounds only supplies the matching cap.
   // Both are validated required above, so this always renders now.
   const spentCap = record.policy.rounds[lastTransition.stage]
-  const spentAuthorized = isAuthorizedOverCap(record.run, lastTransition.stage, verdict.rounds_counted, spentCap) ? ' (authorized)' : ''
+  // An integration verdict's rounds_counted counts cycles, not charged cycles,
+  // so it is never labelled against an integration authorization.
+  const spentAuthorized =
+    CAP_COUNTED_STAGES.includes(lastTransition.stage) &&
+    isAuthorizedOverCap(record.run, lastTransition.stage, verdict.rounds_counted, spentCap)
+      ? ' (authorized)'
+      : ''
   lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${spentCap}${spentAuthorized}`)
   lines.push('- Unresolved:')
   if (unresolved.length === 0 && unadjudicatedFindings.length === 0) {
