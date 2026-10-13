@@ -2072,7 +2072,9 @@ classify_cycle_charge() {
 # is empty, as it is for a fork PR's runs — one on the PR's head branch AND
 # head repository. A run that names other PRs is theirs even on the same branch
 # (two PRs from one branch), and a fork PR's same-named branch in the base
-# repository is not evidence either. A head failed only when the newest run of some
+# repository is not evidence either. A run counts only when its own head_sha is
+# the cycle head, whatever the query asked for (review-r1-codex-verification-1).
+# A head failed only when the newest run of some
 # workflow and event concluded `failure` and no run is still pending;
 # cancelled, timed_out, skipped, neutral, stale, action_required and the rest
 # never prove a failure, and a listing that is unreadable or incomplete proves
@@ -2096,8 +2098,9 @@ ci_head_verdict() {
         return 0
     fi
     ci_result=$(jq -c -n --slurpfile pages "$ci_tmp/runs.json" --slurpfile pr "$ci_tmp/pr.json" \
-        --arg repo "$state_repo" --argjson number "$state_pr" '
+        --arg repo "$state_repo" --argjson number "$state_pr" --arg head "$state_head" '
         ($pages[0]) as $p | ($pr[0]) as $pr | ($repo | ascii_downcase) as $repo_lc
+        | ($head | ascii_downcase) as $head_lc
         | if ($p | type) != "array" or ($p | length) == 0 or
              ($p | any(type != "object" or (.workflow_runs | type) != "array"))
           then {verdict:"not-failed", detail:"the workflow-run listing is not a readable page set"}
@@ -2106,7 +2109,7 @@ ci_head_verdict() {
             then {verdict:"not-failed", detail:"the workflow-run listing is incomplete"}
             else ($pr.head.ref // "") as $branch
             | ((($pr.head.repo // {}).full_name // "") | ascii_downcase) as $head_repo
-            | [$all[] | select(
+            | [$all[] | select(((.head_sha // "") | ascii_downcase) == $head_lc) | select(
                 if ((.pull_requests // []) | length) > 0 then
                   (.pull_requests | any(.number == $number and
                     (((.base.repo // {}).url // "") | ascii_downcase | endswith("/repos/" + $repo_lc))))

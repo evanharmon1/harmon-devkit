@@ -218,8 +218,22 @@ repos/*/compare/*)
 # would otherwise also match.
 repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
 # harmon-devkit#1406: the workflow runs for a head SHA, read only when a
-# with-push / after-ci-first `check` settles its cycle's charge.
-repos/*/actions/runs*) file=actions-runs.pages.json ;;
+# with-push / after-ci-first `check` settles its cycle's charge. The query
+# must name the expected head (`actions-runs-head`, else the PR head); any
+# other is recorded in `runs-head-mismatch`, which run_ci_check fails on — a
+# refused read alone would only read as "charged" and hide the wrong query.
+repos/*/actions/runs*)
+    runs_expected="$(cat "$GH_FIXTURES/actions-runs-head" 2>/dev/null || cat "$GH_FIXTURES/head")"
+    runs_queried="${endpoint#*head_sha=}"
+    runs_queried="${runs_queried%%&*}"
+    if [ "$endpoint" = "$runs_queried" ] || [ "$runs_queried" != "$runs_expected" ]; then
+        printf 'queried %s, expected head_sha=%s\n' "$endpoint" "$runs_expected" \
+            >>"$GH_FIXTURES/runs-head-mismatch"
+        echo "gh stub: actions/runs queried for the wrong head: $endpoint" >&2
+        exit 96
+    fi
+    file=actions-runs.pages.json
+    ;;
 repos/*/commits/*)
     jq -cn \
         --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
@@ -318,6 +332,7 @@ write_defaults() {
         >"${fixtures}/check-suites.pages.json"
     printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
         >"${fixtures}/actions-runs.pages.json"
+    rm -f "${fixtures}/actions-runs-head" "${fixtures}/runs-head-mismatch"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
         '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
         base64 | tr -d '\n' >"${fixtures}/registry.b64"
@@ -8209,6 +8224,8 @@ run_ci_check() {
         $ci_run_flag 2>/dev/null)"
     check_rc=$?
     set -e
+    [ ! -f "${fixtures}/runs-head-mismatch" ] ||
+        fail "the CI read queried the wrong head: $(cat "${fixtures}/runs-head-mismatch")"
 }
 
 # $1 expected charged/exempt split, $2 case label.
@@ -8390,6 +8407,32 @@ rmdir "${state%.json}.spend.json"
 [ "$check_rc" -eq 2 ] || fail "a failed sidecar write must stop the verdict, got rc $check_rc: $check_out"
 [ "$(cat "$state")" = "$unsettled_state" ] ||
     fail "a failed sidecar write must restore the state: $(jq -c '{charge, charged_cycles, exempt_cycles, ci_exempt}' "$state")"
+
+# review-r1-codex-verification-1: the listing is trusted only for runs whose
+# own head_sha is the cycle head, whatever the query asked for.
+echo "==> a failed run whose head_sha is a different commit leaves the cycle charged"
+ci_cycle with-push 4
+ci_runs "$(ci_run 11 7 completed failure '.head_sha = "1111111111111111111111111111111111111111"')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "a failed run on another commit"
+# Positive control: the same listing with the cycle head's SHA settles exempt.
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+run_ci_check
+assert_ci_charge 0/1 "the same failed run on the cycle head"
+
+echo "==> the CI read queries the cycle head, and the mock fails loudly on any other"
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+printf '%s' 2222222222222222222222222222222222222222 >"${fixtures}/actions-runs-head"
+set +e
+mock_out="$(run_ci_check 2>&1)"
+mock_rc=$?
+set -e
+[ "$mock_rc" -ne 0 ] && grep -Fq 'queried the wrong head' <<<"$mock_out" ||
+    fail "the actions/runs mock must fail loudly on a head it was not told to expect: rc=$mock_rc $mock_out"
+rm -f "${fixtures}/actions-runs-head" "${fixtures}/runs-head-mismatch"
 
 echo "==> after-ci never settles a cycle exempt for a CI failure, and reads no CI"
 ci_cycle after-ci 4
