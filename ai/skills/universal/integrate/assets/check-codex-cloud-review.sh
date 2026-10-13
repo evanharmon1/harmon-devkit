@@ -2650,8 +2650,17 @@ reserve)
         # reserved under and any CI settlement `check` already made on it, so
         # `check` can still move it back if that settlement stops holding.
         payload_ci_exempt=$(jq -c '.ci_exempt // null' "$state_file")
-        [ -n "$integration_exempt_cap" ] ||
-            integration_exempt_cap=$(jq -r '.integration_exempt_cap // empty' "$state_file")
+        # challenge-r2-codex-adversarial-1: a retry may only RESTATE that
+        # ceiling, as it may only restate the trigger — a different one would
+        # let `check` settle this cycle against a ceiling it was never reserved
+        # under. Recorded "none" is a value too. Only state written before the
+        # field existed (no key at all) adopts the flag, as for the trigger.
+        if [ "$(jq -r 'has("integration_exempt_cap")' "$state_file")" = true ]; then
+            recorded_exempt_cap=$(jq -r '.integration_exempt_cap // empty' "$state_file")
+            [ -z "$integration_exempt_cap" ] || [ "$integration_exempt_cap" = "$recorded_exempt_cap" ] ||
+                die "--integration-exempt-cap $integration_exempt_cap disagrees with the exempt ceiling attempt 1 was reserved under (${recorded_exempt_cap:-none})"
+            integration_exempt_cap=$recorded_exempt_cap
+        fi
     fi
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer

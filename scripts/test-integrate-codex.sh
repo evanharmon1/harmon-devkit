@@ -8252,6 +8252,39 @@ mv "${state}.next" "$state"
 [ "$(jq -c '[.charge, .integration_exempt_cap, (.ci_exempt != null), .charged_cycles, .exempt_cycles]' "$state")" = '["exempt",4,true,0,1]' ] ||
     fail "attempt 2 must keep the settled charge: $(jq -c '{charge, integration_exempt_cap, ci_exempt, charged_cycles, exempt_cycles}' "$state")"
 
+# challenge-r2-codex-adversarial-1: attempt 2 may only restate the exempt
+# ceiling attempt 1 recorded, exactly as it may only restate the trigger.
+# $1 attempt 1's ceiling ("" = undeclared), $2 attempt 2's flag value ("" = omitted).
+ci_retry() {
+    ci_cycle with-push "$1"
+    jq '.requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    retry_before="$(cat "$state")"
+    retry_flag=
+    [ -z "$2" ] || retry_flag="--integration-exempt-cap $2"
+    set +e
+    # shellcheck disable=SC2086 # one optional flag pair, deliberately split
+    retry_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 2 --run-id run-a --integration-cap 4 $retry_flag 2>&1)"
+    retry_rc=$?
+    set -e
+}
+for retry_case in "4|0" "|4"; do
+    echo "==> attempt 2 refuses an exempt ceiling attempt 1 was not reserved under (${retry_case})"
+    ci_retry "${retry_case%%|*}" "${retry_case#*|}"
+    [ "$retry_rc" -ne 0 ] &&
+        grep -Fq 'disagrees with the exempt ceiling attempt 1 was reserved under' <<<"$retry_out" ||
+        fail "attempt 2 must refuse a different exempt ceiling: rc=$retry_rc $retry_out"
+    [ "$(cat "$state")" = "$retry_before" ] || fail "a refused retry must leave the state untouched"
+done
+for retry_flag_value in 4 ""; do
+    echo "==> attempt 2 with the recorded exempt ceiling ${retry_flag_value:-omitted} keeps it"
+    ci_retry 4 "$retry_flag_value"
+    [ "$retry_rc" -eq 0 ] || fail "attempt 2 restating or omitting the ceiling must succeed: $retry_out"
+    [ "$(jq -c '[.attempt, .integration_exempt_cap]' "$state")" = '[2,4]' ] ||
+        fail "attempt 2 must keep the recorded ceiling: $(jq -c '{attempt, integration_exempt_cap}' "$state")"
+done
+
 echo "==> a flaky failure re-run to green moves the cycle back to charged"
 ci_cycle with-push 4
 reserved_reason="$(jq -r '.charge_reason' "$state")"
