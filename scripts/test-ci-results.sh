@@ -45,6 +45,7 @@ reject_required "an empty result set" success
 build_workflow="${repo}/.github/workflows/build.yml"
 workflow="${repo}/.github/workflows/closing-keywords.yml"
 grep -Fq 'types: [opened, edited, synchronize, reopened]' "$workflow" || fail 'metadata guard must re-check every PR edit'
+grep -q '^  merge_group:$' "$workflow" || fail 'guard must emit the required check for merge groups'
 grep -q '^  closing-keywords:$' "$workflow" || fail 'guard must retain the required closing-keywords check context'
 grep -Fq 'group: closing-keywords-${{ github.event.pull_request.number }}' "$workflow" || fail 'guard needs independent per-PR concurrency'
 if grep -Eq '^  closing-keywords:|needs:.*closing-keywords|needs\.closing-keywords\.result|CLOSING_KEYWORDS_RESULT' "$build_workflow"; then

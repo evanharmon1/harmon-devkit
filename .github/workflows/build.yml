@@ -8,6 +8,8 @@ on:
     # Body/title edits rerun the cheap required closing-keywords.yml guard,
     # plus Tracking Guard and Release Content Guard for eligible PRs. Build
     # stays on code events; closing-keyword edits are checked for every PR.
+    # A PR retargeted onto main needs a push or reopen to run Build; required
+    # verify/security checks stay pending (fail-closed) until then.
     types: [opened, synchronize, reopened]
     branches:
       - main

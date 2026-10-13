@@ -5,6 +5,7 @@ on:
     types: [opened, edited, synchronize, reopened]
     branches:
       - main
+  merge_group:
 
 # Metadata edits cancel only this cheap guard, never Build & Validate.
 concurrency:
