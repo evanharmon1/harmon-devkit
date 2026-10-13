@@ -272,7 +272,7 @@ const exitFor = (slate, rec, stage, current, verificationOnly, policyToml = join
   writer(slate)('ledger', '--stage', stage)
   const out = run('bash', [exitEngine, '--run', rec, '--stage', stage, '--policy', policyToml,
     '--rigor', read(join(rec, 'policy.json')).rigor.level, '--current-head', current,
-    '--history', join(rec, 'history.json'), '--heads', join(rec, 'heads.json'), '--repo-root', repo, '--json',
+    '--history', join(rec, `history.${stage}.json`), '--heads', join(rec, 'heads.json'), '--repo-root', repo, '--json',
     ...(verificationOnly ? ['--verification-only'] : [])])
   const json = out.stdout ? JSON.parse(out.stdout) : null
   if (json !== null) put(join(rec, verificationOnly ? 'verification.json' : 'verdict.json'), json)
@@ -290,7 +290,9 @@ let v = adjudicateRound(slateArgs, record, 'challenge', 1, head, adjudication('c
 assert.equal(v.status, 20, JSON.stringify(v.json) + v.stderr)
 assert.equal(v.json.outcome, 'converged')
 assert.deepEqual(read(join(record, 'verdict.json')), v.json)
-assert.deepEqual(read(join(record, 'history.json')), [])
+assert.deepEqual(read(join(record, 'history.challenge.json')), [])
+assert.equal(existsSync(join(record, 'history.json')), false)
+const challengeLedger = readFileSync(join(record, 'history.challenge.json'), 'utf8')
 assert.equal(read(join(record, 'heads.json'))[head].parent, base)
 assert.match(write('adjudicate', '--file', adjFile(`${RUN}-challenge-r1`, adjudication('challenge', 1, []))), /no change/)
 refused(slateArgs, ['receipt', '--pass', passFile('challenge-r1-again', envelope('challenger', 'challenge', 1, challengeFinder, [], { producer: { harness: 'codex-cli', model: 'again', tier: 'frontier' } }))], /immutable/)
@@ -426,7 +428,10 @@ v = adjudicateRound(slateArgs, record, 'review', 2, head, adjudication('review',
 assert.equal(v.status, 20, JSON.stringify(v.json))
 publish('review', 2, 'reviewer', reviewFinder)
 assert.equal(read(runJson).evidence_comments.length, 3)
-pass('review continues on a P2-only round (its provenance and fingerprint verified against the ledger) and converges on the empty round 2; every round carries its marker')
+assert.equal(readFileSync(join(record, 'history.challenge.json'), 'utf8'), challengeLedger)
+assert.deepEqual(read(join(record, 'history.review.json')), [])
+assert.equal(existsSync(join(record, 'history.json')), false)
+pass('review continues on a P2-only round (its provenance and fingerprint verified against the ledger) and converges on the empty round 2; every round carries its marker; the review ledger is its own history.review.json and leaves history.challenge.json untouched')
 
 write('intervention', '--kind', 'asked', '--note', 'maintainer confirmed deferring the P2 to integration')
 write('transition', '--stage', 'security', '--exit', 'converged: empty_round after review round 2/' + policy.rounds.review)
@@ -543,7 +548,7 @@ const d2 = commitAll('fix: a')
 const repeat = finding(2, 3, 'round:1', `repeat-of:${finding(1, 2).id}`)
 dWrite('receipt', '--pass', passFile('diverge-r2', envelope('challenger', 'challenge', 2, challengeFinder, [repeat], { runId: DRUN, reviewed: d2 })))
 v = adjudicateRound(dSlate, dIdentity.record_directory, 'challenge', 2, d2, adjudication('challenge', 2, [p1(2, repeat.id, 'a.txt:3')], { runId: DRUN, reviewed: d2 }))
-assert.deepEqual(read(join(dIdentity.record_directory, 'history.json')),
+assert.deepEqual(read(join(dIdentity.record_directory, 'history.challenge.json')),
   [{ round: 1, path: 'a b.txt', added_lines: [2, 3], deleted_lines: [2], renamed_from: null }])
 const repeated = v.verification.rounds.find((round) => round.round === 2).findings[0]
 assert.deepEqual([repeated.provenance_status, repeated.verified_provenance, repeated.fingerprint_status],
@@ -551,9 +556,10 @@ assert.deepEqual([repeated.provenance_status, repeated.verified_provenance, repe
 assert.equal(v.status, 21, JSON.stringify(v.json))
 assert.equal(v.json.outcome, 'diverging')
 dPublish('challenge', 2, 'challenger', challengeFinder)
-const liveLedger = readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8')
+const liveLedger = readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8')
 refused(dSlate, ['ledger', '--stage', 'review'], /ledger is for stage review, but the run's active stage is challenge/)
-assert.equal(readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8'), liveLedger)
+assert.equal(readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8'), liveLedger)
+assert.equal(existsSync(join(dIdentity.record_directory, 'history.review.json')), false)
 pass("the writer's ledger verifies a round-2 repeat-of finding on round 1's own fix, so repeat_after_fix fires (diverging); ledger refuses a stage that is not active")
 
 // Stopped at that blocker: close records the outcome, the lock is released,
@@ -562,9 +568,9 @@ dWrite('close', '--outcome', 'escalated', '--exit', 'diverging: repeat_after_fix
 releaseLock(dIdentity.slate_id)
 assert.equal(read(join(dIdentity.record_directory, 'run.json')).outcome, 'escalated')
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
-const closedLedger = readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8')
+const closedLedger = readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8')
 refused(dSlate, ['ledger', '--stage', 'challenge'], /run already ended with outcome escalated/)
-assert.equal(readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8'), closedLedger)
+assert.equal(readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8'), closedLedger)
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)

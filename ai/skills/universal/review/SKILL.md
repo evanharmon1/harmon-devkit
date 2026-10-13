@@ -70,8 +70,8 @@ runner's). An ordinary interactive session with no validated brief envelope
 runs the inline `task challenge` / `task review` procedure instead, and writes
 the record itself as `/implement` § 6a describes: `run-record.mjs solo-init`
 reserves a single-lane run, `receipt` and `adjudicate` publish each round's
-pass and adjudication, `ledger` materializes the `history.json` and
-`heads.json` this skill's verification call reads, `transition` advances the
+pass and adjudication, `ledger` materializes the per-stage
+`history.<stage>.json` and the shared `heads.json` the verification call reads, `transition` advances the
 stage, and this skill's
 `assets/post-evidence.sh` posts and registers the round's evidence marker.
 Either way it is one `run.json` with `passes/`, `adjudications/` and trusted

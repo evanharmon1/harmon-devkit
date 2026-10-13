@@ -573,13 +573,14 @@ on with the inline procedure.
    `mb_args` supplying the merge-base flags), never the branch's
    `dev-flow-exit.sh`. Every command below is written to satisfy it:
    1. `ledger --stage <stage>` materializes the exit engine's evidence from the
-      branch's own commits: `<record>/history.json` (the change ledger of each
-      fix between consecutive reviewed heads) and `<record>/heads.json` (the
-      branch's head map).
+      branch's own commits: `<record>/history.<stage>.json` (that stage's
+      change ledger of each fix between consecutive reviewed heads — one file
+      per stage, never shared) and `<record>/heads.json` (the branch's head
+      map, shared by both stages).
    2. `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage <stage>
       --policy .devflow.toml --rigor <recorded rigor> [<merge-base flags>]
       --current-head <head> --history
-      <record>/history.json --heads <record>/heads.json --repo-root .
+      <record>/history.<stage>.json --heads <record>/heads.json --repo-root .
       --verification-only --json`. Only `action: adjudicate` authorizes
       adjudication; its verified provenance and fingerprints are what the
       round comment publishes.

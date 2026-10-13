@@ -466,8 +466,9 @@ node "$support/run-record.mjs" adjudicate --slate solo-<run-id> --session <sessi
 `<session>` is the session name `/claim` recorded on its claim comment.
 `receipt` admits only a completed pass for a configured slot of the active
 stage's next unadjudicated round, reviewing the branch's current head; `ledger`
-writes the `history.json` and `heads.json` the exit engine's verification call
-reads. A run that stops at a blocker is ended with `close` and its slate lock
+writes the stage's `history.<stage>.json` and the shared `heads.json` the exit
+engine's verification call reads (`--history <record>/history.<stage>.json
+--heads <record>/heads.json`). A run that stops at a blocker is ended with `close` and its slate lock
 released with `lock release`.
 
 `receipt` takes the pass whoever produced it: an envelope-mode runner's

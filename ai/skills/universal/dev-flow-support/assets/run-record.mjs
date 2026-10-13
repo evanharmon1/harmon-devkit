@@ -710,7 +710,7 @@ function recordWrite(command, args) {
 //              adjudications/, and re-validates run.json with it, removing it
 //              again if the record no longer validates.
 //   ledger     materializes the exit engine's evidence inputs for one stage
-//              from the branch's own commits: history.json (the change ledger,
+//              from the branch's own commits: history.<stage>.json (the change ledger,
 //              one entry per file the fix between consecutive reviewed heads
 //              touched) and heads.json (the branch's first-parent head map).
 
@@ -1287,7 +1287,10 @@ const SIDE_EFFECTS = {
       const [commit, parent] = line.split(' ')
       map[commit] = { parent: parent ?? null }
     }
-    for (const [file, value] of [['history.json', history], ['heads.json', map]]) {
+    // The ledger is per stage (its entries carry only round and path, so one
+    // file across stages would mix challenge and review rounds); the head map
+    // is stage-independent and shared.
+    for (const [file, value] of [[`history.${stage}.json`, history], ['heads.json', map]]) {
       const target = join(runDir, file)
       const temporary = `${target}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
       writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`)
