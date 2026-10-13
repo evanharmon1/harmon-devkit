@@ -9,7 +9,7 @@ on:
 
 # Metadata edits cancel only this cheap guard, never Build & Validate.
 concurrency:
-  group: closing-keywords-${{ github.event.pull_request.number }}
+  group: closing-keywords-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
