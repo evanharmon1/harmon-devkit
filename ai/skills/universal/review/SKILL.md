@@ -62,6 +62,22 @@ assembly must review the latest implement transition's exact
 different head blocks until the feature owner records the actual assembly
 rather than certifying an unauthenticated tree.
 
+## Which path produces the record
+
+**Both paths produce it, and it is the same record.** In an orchestrated run
+this skill writes it from the role agents' passes (or an envelope-mode
+runner's). An ordinary interactive session with no validated brief envelope
+runs the inline `task challenge` / `task review` procedure instead, and writes
+the record itself as `/implement` § 6a describes: `run-record.mjs solo-init`
+reserves a single-lane run, `receipt` and `adjudicate` publish each round's
+pass and adjudication, `transition` advances the stage, and this skill's
+`assets/post-evidence.sh` posts and registers the round's evidence marker.
+Either way it is one `run.json` with `passes/`, `adjudications/` and trusted
+evidence markers, validated by the same validator; nothing downstream branches
+on which path wrote it. A session that never ran a confidence stage — or could
+not record one (the fork topology above, or a `solo-init` refusal) — has no
+record, and neither stage treats that as an error.
+
 ## Stage invariants
 
 Every confidence stage carries the mandatory round-two scaffolding checkpoint

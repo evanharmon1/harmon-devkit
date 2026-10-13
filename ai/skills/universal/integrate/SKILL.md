@@ -69,6 +69,20 @@ instructions would answer by invoking this skill again makes that especially
 concrete — it recurses instead of stopping. Stopping is what makes the
 migration visible; a stage that finds another way to finish hides it.
 
+**Which path produced the record does not matter to this skill.** An
+orchestrated run's record comes from `/review` and its role agents; an
+ordinary interactive session's comes from `/implement` § 6a, which records the
+inline `task challenge` / `task review` stages in a real single-lane run
+(`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
+`bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
+`policy.json`, `passes/` and `adjudications/`, so `--record` takes either
+directory unchanged, and a solo session records promotion with `run-record.mjs
+promote --slate solo-<run-id> --session <its session>`. Where no record exists
+because the confidence stages never ran (or could not be recorded), that is
+not an error and not grounds to fabricate one: evaluate `AGENTS.md`
+§ Readiness gate condition by condition and say in the PR body that the run
+has no record.
+
 A consumer that has not advanced its pin still has the retired single-stage
 skill at the pin it is on, which is exactly why the pin waits for the policy;
 `orchestrate/assets/consumer-pin-audit.sh` is the check that the two agree. harmon-devkit's

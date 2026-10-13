@@ -11244,6 +11244,26 @@ for writer_test in test-run-record.sh test-plan-revise.sh; do
         grep -qF "./ai/skills/universal/dev-flow-support/assets/$writer_test" "$repo/Taskfile.yml"
 done
 
+# harmon-devkit#1183: the inline confidence-stage path records a real run, and
+# every stage skill says which path produces the record, so a lane cannot be
+# surprised at the integrate gate.
+REVIEW_MD="$repo/ai/skills/universal/review/SKILL.md"
+INTEGRATE_MD="$repo/ai/skills/universal/integrate/SKILL.md"
+expect_ok "review: names both paths that produce the run record (#1183)" \
+    grep -qF '**Both paths produce it, and it is the same record.**' "$REVIEW_MD"
+expect_ok "integrate: accepts the record from either path (#1183)" \
+    grep -qF '**Which path produced the record does not matter to this skill.**' "$INTEGRATE_MD"
+expect_ok "integrate: a missing record is not an error and is never fabricated (#1183)" \
+    grep -qF 'not an error and not grounds to fabricate one' "$INTEGRATE_MD"
+expect_ok "implement: the inline path records a solo run (#1183)" \
+    grep -qF '### 6a. Recording the inline stages (solo run)' "$IMPL_MD"
+expect_ok "implement: the inline path reserves through run-record.mjs solo-init (#1183)" \
+    grep -qF 'node "$support_dir/run-record.mjs" solo-init' "$IMPL_MD"
+expect_ok "implement: skipping the confidence stages reserves nothing (#1183)" \
+    grep -qF '**No stages, no record.**' "$IMPL_MD"
+expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
+    grep -qF './scripts/test-inline-record.sh' "$repo/Taskfile.yml"
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

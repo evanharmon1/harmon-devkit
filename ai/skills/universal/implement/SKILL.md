@@ -411,7 +411,9 @@ prevents). If the identity is present but topology or compatibility fails, the
 inline procedure remains the fallback and the orchestrator flags the absence
 of v2 evidence at PR-open confirmation. An ordinary session with no validated
 brief envelope also uses the inline procedure and never asks `/review` to
-invent authenticated run state.
+invent authenticated run state. Instead it creates a **real** run itself and
+records the inline stages in it ([§ 6a](#6a-recording-the-inline-stages-solo-run)),
+so `/integrate` and `/retro` read the same record an orchestrated run leaves.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the security
@@ -468,6 +470,84 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
   review and `gh pr create` takes the findings with it. Match on location plus
   substance so a re-reported finding is not recorded twice — a stage exits on a
   clean re-run, so an unchanged deferred finding is reported again by design.
+
+### 6a. Recording the inline stages (solo run)
+
+An ordinary session on the inline procedure (no validated brief envelope)
+records its confidence stages in a **real dev-flow-v2 run** — the same
+`run.json`, `passes/`, `adjudications/` and evidence markers the orchestrated
+path writes, through the same tested writers and validators, never a second
+format (harmon-devkit#1183, the #973 decision). This is what lets `/integrate`'s
+readiness gate start with `--record` and `/retro` find a trusted evidence
+marker. Every writer below is `dev-flow-support/assets/run-record.mjs` unless
+named otherwise; resolve it physically as the review skill describes.
+
+**No stages, no record.** Reserve the run on entering the first confidence
+stage whose resolved cap is at least 1, and not before. A session that skips
+both stages (both caps 0, or a repository that runs none) reserves nothing, and
+no stage treats the absence as an error: `/integrate` uses `AGENTS.md`'s
+readiness procedure condition by condition, and `/retro` reports exit 10
+`no-run-record`. The same holds where recording is unavailable — `origin` is
+not the repository the PR targets (the evidence helper binds its destination
+to `origin`), or `solo-init` refuses (below): say so in the PR body and carry
+on with the inline procedure.
+
+1. **Reserve.** Save step 3's `devflow-policy.mjs resolve --json` output to a
+   scratch file, then:
+
+   ```sh
+   node "$support_dir/run-record.mjs" solo-init --session <session> \
+     --run-id run-<issue>-<slug> --issue <issue> --title <issue title> \
+     --url <issue url> --branch <branch> --base <merge base> --policy <file>
+   ```
+
+   It prints the run identity (`run_id`, `slate_id`, `generation`,
+   `active_state_path`, `record_directory`, `policy_projection`) — keep it;
+   every later write names `--slate <slate_id> --session <session> --run-id
+   <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan, slate lock
+   on the issue, owner binding), `policy.json`, a kickoff `run.json`, and the
+   branch's active pointer. It **refuses** a branch whose active pointer names
+   another run (an orchestrated lane is never superseded), an issue another
+   session holds, or a run id that is not `run-<issue>-…`; a refusal is a stop
+   for recording, never something to work around. Re-running it is
+   idempotent.
+2. **Walk to the stage.** `transition --stage claim`, then `implement`,
+   `verify` and `challenge`, each with `--exit` naming how the stage being
+   left ended (the claim, the commit, `VERIFY-EXIT=0`).
+3. **One pass per configured finder slot, per round.** Capture the head first.
+   Where the finder's runner publishes in envelope mode, run it so
+   (`task challenge -- --envelope --run-id … --head … --stage challenge
+   --round <n> --slot <finder> --tier <challenger tier> --record-dir <record>
+   --base <default branch>`). Otherwise — every Codex finder today,
+   harmon-devkit#1365 — run the task as usual and have the
+   `challenger`/`reviewer` role agent assemble `result.<role>` from its output,
+   or, where the harness has no role agent, assemble it yourself the way the
+   role would: decode the finder's badges against its registry `severity_map`,
+   and set `producer` to **your own** harness, model and tier — the finder's
+   CLI did not produce the envelope. Then `receipt --pass <file>`: it
+   validates the pass against the run (identity, stage, earlier finding ids,
+   produced within the stage), publishes it no-clobber as
+   `passes/<stage>-r<n>-<slot>.json`, and appends its receipt.
+4. **Adjudicate, compute the exit, publish.** Adjudicate exactly as above, then
+   `adjudicate --file <doc>` publishes `adjudications/<stage>-r<n>.json` after
+   validating it against the round's receipted passes. Run
+   `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage <stage>
+   --policy .devflow.toml --current-head <head> --repo-root . --json`, keep its
+   JSON as `<record>/verdict-<stage>-r<n>.json`, and treat a verdict that
+   disagrees with your reading of the exit rules as a blocker to resolve, not
+   a number to override. Publish the round's evidence comment on the issue
+   exactly as `review/SKILL.md` § "Verify, adjudicate, publish, exit"
+   specifies — `render-dev-flow.sh round-table`, one fenced JSON projection,
+   `review/assets/post-evidence.sh` with the identity's `--generation` and
+   `--active-state` and your own `gh api user` id as `--actor-id`.
+5. **Advance and hand off.** Leave a stage with `transition --stage <next>
+   --exit "<rule>: <detail>"` (review after challenge, `security` after
+   review, `integration` once the draft PR exists), and `bind-pr` the draft.
+   Publish the PR-body projection with `render-dev-flow.sh publish` as
+   `/review` does. `/integrate` then takes `--record <record_directory>` and
+   records promotion with `promote`; release the slate lock
+   (`run-record.mjs lock release --slate <slate_id> --session <session>`) once
+   the run has ended.
 
 ## 7. Security gate
 

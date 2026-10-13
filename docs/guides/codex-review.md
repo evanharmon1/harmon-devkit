@@ -440,6 +440,30 @@ nothing. A destination that already exists is refused rather than overwritten.
 The contract is `/review` § "Dispatch and receipt"; the trust argument is
 `ai/schemas/README.md` § "Finder-produced envelopes".
 
+### Recording an inline session's rounds (solo run)
+
+Outside an orchestrated run, an interactive session that runs `task challenge`
+/ `task review` records them in a real dev-flow v2 run of its own, so
+`/integrate`'s readiness gate has a `--record` to read and `/retro` finds a
+trusted evidence marker (harmon-devkit#1183). The procedure is `/implement`
+§ 6a; the writers are `run-record.mjs` subcommands in
+`dev-flow-support/assets/`:
+
+```bash
+node "$support/run-record.mjs" solo-init --session <session> \
+  --run-id run-<issue>-<slug> --issue <issue> --title <title> --url <issue url> \
+  --branch <branch> --base <merge base> --policy <resolved policy json>
+node "$support/run-record.mjs" receipt    --slate solo-<run-id> --session <session> --run-id <run-id> --pass <envelope>
+node "$support/run-record.mjs" adjudicate --slate solo-<run-id> --session <session> --run-id <run-id> --file <adjudication>
+```
+
+`receipt` takes the pass whoever produced it: an envelope-mode runner's
+published file, a role agent's result, or — for a Codex finder, which has no
+working envelope mode yet — the session's own assembly of `result.<role>` from
+the task's output, with `producer` naming the session rather than Codex.
+A session that never runs either stage reserves nothing, and nothing treats
+the missing record as an error.
+
 ### Duration and backgrounding
 
 A round is **minutes, not seconds** — 5–15 is ordinary and passing ten is not

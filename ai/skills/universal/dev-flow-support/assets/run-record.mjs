@@ -10,6 +10,10 @@
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote      --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
+//   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
+//                               --branch NAME --base SHA --policy FILE [--registry-revision SHA] [--at TS]
+//   run-record.mjs receipt      --slate ID --session ID --run-id ID --pass FILE
+//   run-record.mjs adjudicate   --slate ID --session ID --run-id ID --file FILE
 //   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,N,...]
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock status  --slate ID
@@ -674,6 +678,397 @@ function recordWrite(command, args) {
 }
 
 // ---------------------------------------------------------------------------
+// Solo runs: the inline confidence-stage path (harmon-devkit#1183, #973)
+// ---------------------------------------------------------------------------
+//
+// An interactive session with no orchestrator still runs its confidence
+// stages, and the #973 decision is that it records them in a REAL run, the
+// same files the orchestrated path writes, never a second format. These three
+// commands are the only writers that path needs beyond `transition`,
+// `bind-pr` and `promote` above; each validates with the same validator and
+// publishes through the same no-clobber or candidate/rename/readback steps.
+//
+//   solo-init  reserves a minimal single-lane run: a one-lane slate
+//              `solo-<run-id>` (its own plan, lock and owner binding, so every
+//              existing writer accepts the run unchanged), the resolved policy
+//              projection as policy.json, a kickoff run.json, and the branch's
+//              active pointer through orchestrate's dev-flow-monitor.sh. It
+//              never supersedes another run's active pointer.
+//   receipt    validates one challenger/reviewer pass against the run, puts it
+//              at passes/<stage>-r<round>-<slot>.json (no-clobber), and appends
+//              its {kind:"pass"} receipt. A runner in envelope mode already
+//              published there; a role agent's or the session's own result is
+//              copied in.
+//   adjudicate validates one round's adjudication document against that
+//              round's receipted passes, publishes it (no-clobber) under
+//              adjudications/, and re-validates run.json with it, removing it
+//              again if the record no longer validates.
+
+const SOLO_ROLES = ['orchestrator', 'implementer', 'challenger', 'reviewer', 'integrator']
+const CONFIDENCE_STAGES = new Set(['challenge', 'review'])
+
+export function soloSlate(runId) {
+  return `solo-${runId}`
+}
+
+function git(args, cwd = process.cwd()) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+}
+
+function monitorPath() {
+  const monitor = resolve(ASSET_DIR, '..', '..', 'orchestrate', 'assets', 'dev-flow-monitor.sh')
+  if (!existsSync(monitor)) {
+    throw new Refusal(`${monitor} is missing; vendor the universal skill category as a unit`)
+  }
+  return monitor
+}
+
+function activePointerPath(root, branch) {
+  return join(root, 'active', `${createHash('sha256').update(branch, 'utf8').digest('hex')}.json`)
+}
+
+// publishExclusive — write `content` to `target` only if it does not exist,
+// through a dot-file beside it and link(2); an existing target is adopted
+// when it holds exactly these bytes and refused otherwise.
+function publishExclusive(target, content, label) {
+  mkdirSync(dirname(target), { recursive: true })
+  if (existsSync(target)) {
+    if (!readFileSync(target).equals(Buffer.from(content))) {
+      throw new Refusal(`${target} already exists with different content; a published ${label} is never overwritten`)
+    }
+    return false
+  }
+  const temporary = join(dirname(target), `.${label.replace(/[^a-z]/g, '')}.${process.pid}.${randomBytes(4).toString('hex')}`)
+  writeFileSync(temporary, content)
+  try {
+    linkSync(temporary, target)
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    if (!readFileSync(target).equals(Buffer.from(content))) {
+      throw new Refusal(`${target} was published concurrently with different content; refusing`)
+    }
+    return false
+  } finally {
+    unlinkSync(temporary)
+  }
+  return true
+}
+
+function planPolicy(policy) {
+  const fail = (what) => {
+    throw new Refusal(`--policy is not a resolved policy projection (devflow-policy.mjs resolve): ${what}`)
+  }
+  const rounds = policy?.rounds
+  const breadth = policy?.breadth
+  if (typeof policy?.rigor?.level !== 'string') fail('no rigor.level')
+  if (!rounds || !breadth) fail('no rounds or breadth')
+  if (typeof policy?.strategy?.name !== 'string') fail('no strategy.name')
+  const role_tiers = {}
+  for (const role of SOLO_ROLES) {
+    const tier = policy?.roles?.[role]?.tier
+    if (typeof tier !== 'string') fail(`no roles.${role}.tier`)
+    role_tiers[role] = tier
+  }
+  return {
+    rigor: policy.rigor.level,
+    rigor_source: policy.rigor.source ?? policy.rigor.chosen_by ?? 'default_rigor',
+    caps: Object.fromEntries(['challenge', 'review', 'integration', 'remediation', 'min_rounds', 'wall_clock_min'].map((k) => [k, rounds[k]])),
+    breadth: { max_agent_runs: breadth.max_agent_runs, max_parallel_agents: breadth.max_parallel_agents },
+    strategy: policy.strategy.name,
+    strategy_source: policy.strategy.source ?? 'default_strategy',
+    role_tiers,
+    operator_pins: [],
+  }
+}
+
+function governingRegistryRevision(repoRoot) {
+  let ref
+  try {
+    ref = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot).replace(/^refs\/remotes\//, '')
+  } catch {
+    throw new Refusal('could not resolve the default branch (refs/remotes/origin/HEAD is unset); pass --registry-revision')
+  }
+  const revision = git(['log', '-1', '--format=%H', ref, '--', 'agent-registry.json'], repoRoot)
+  if (!/^[0-9a-f]{40}$/.test(revision)) throw new Refusal(`no agent-registry.json revision on ${ref}; pass --registry-revision`)
+  return revision
+}
+
+function soloInit(args) {
+  const { common, root } = stateRoot()
+  const session = requireId('session', args.session)
+  const runId = requireId('run-id', args['run-id'])
+  const issue = Number(args.issue)
+  if (!Number.isSafeInteger(issue) || issue < 1) throw new UsageError('--issue must be a positive integer')
+  if (!new RegExp(`^run-${issue}-[A-Za-z0-9._-]+$`).test(runId)) {
+    throw new UsageError(`--run-id must be the canonical run-${issue}-<name> identity for issue ${issue}`)
+  }
+  for (const flag of ['title', 'url', 'branch', 'policy']) {
+    if (typeof args[flag] !== 'string' || args[flag].trim() === '') throw new UsageError(`--${flag} is required`)
+  }
+  const branch = args.branch
+  if (!/^[0-9a-f]{40}$/.test(args.base ?? '')) throw new UsageError('--base must be a 40-hex SHA')
+  const at = resolveAt(args.at)
+  const repoRoot = git(['rev-parse', '--show-toplevel'])
+  const policy = readJson(args.policy, '--policy')
+  const plannedPolicy = planPolicy(policy)
+  const slate = soloSlate(runId)
+  const runDir = join(root, 'runs', runId)
+
+  // Refuse before any write: a solo run never supersedes the run already
+  // active on this branch, and a run id stays bound to one branch.
+  const active = activePointerPath(root, branch)
+  const current = existsSync(active) ? readJson(active, 'active run pointer') : null
+  if (current !== null && current.run_id !== runId) {
+    throw new Refusal(`branch ${branch} already has active run ${current.run_id} (generation ${current.generation}); a solo run never supersedes another run`)
+  }
+  const binding = join(runDir, 'branch.json')
+  if (existsSync(binding) && readJson(binding, 'run branch binding').branch !== branch) {
+    throw new Refusal(`run ${runId} is already bound to branch ${readJson(binding, 'run branch binding').branch}, not ${branch}`)
+  }
+  assertRunOwner(root, slate, runId)
+
+  const lock = acquireSlateLock({ root, slate, session, issues: [issue] })
+  try {
+    const planFile = join(root, 'slates', slate, 'plan.json')
+    mkdirSync(dirname(planFile), { recursive: true })
+    withMutex(planFile, () => {
+      if (existsSync(planFile)) {
+        const plan = currentPlan(root, slate)
+        if (!plan.lanes.some((lane) => lane.run_id === runId && lane.issue === issue && lane.branch === branch)) {
+          throw new Refusal(`${planFile} exists but does not plan run ${runId} for issue ${issue} on ${branch}`)
+        }
+        return
+      }
+      const reason = `solo run reserved by interactive session ${session} (inline confidence stages, harmon-devkit#1183)`
+      const content = {
+        seq: 0,
+        at,
+        reason,
+        plan: {
+          base_sha: args.base,
+          policy: plannedPolicy,
+          dispatcher: { kind: 'interactive', parallel_cap: plannedPolicy.breadth.max_parallel_agents, foreman_max_parallel: null },
+          issues: [{ number: issue, title: args.title, url: args.url, verdict: 'valid', candidate_files: ['**'], blocked_by: [] }],
+          overlaps: [],
+          waves: [{ number: 1, issues: [issue] }],
+          lanes: [{ lane: 'solo', issue, wave: 1, branch, run_id: runId, fence: ['**'], expansions: [] }],
+        },
+      }
+      writeValidated('plan', planFile, {
+        schema: 1,
+        slate_id: slate,
+        revisions: [{ ...content, prev_digest: 'genesis', digest: chainDigest(content, 'genesis') }],
+      })
+    })
+    bindRunToSlate(root, slate, runId)
+  } catch (error) {
+    if (lock.created === true) releaseSlateLock({ root, slate, session })
+    throw error
+  }
+
+  // policy.json is the projection itself; the one field the renderer needs
+  // and a default resolution leaves unset is the rigor source it discloses.
+  const projection = { ...policy, rigor: { ...policy.rigor, source: policy.rigor.source ?? plannedPolicy.rigor_source } }
+  publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
+  const canonical = join(runDir, 'run.json')
+  withMutex(canonical, () => {
+    if (existsSync(canonical)) {
+      const record = readJson(canonical, 'run record')
+      if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+      validateFile('run', canonical, `existing ${canonical}`)
+      return
+    }
+    writeValidated('run', canonical, {
+      schema: 2,
+      run_id: runId,
+      initiated_by: 'human',
+      started_at: at,
+      stage_transitions: [
+        {
+          stage: 'kickoff',
+          entered_at: at,
+          exit: `resolved: rigor ${plannedPolicy.rigor} (${plannedPolicy.rigor_source}), strategy ${plannedPolicy.strategy} (${plannedPolicy.strategy_source}); solo run for session ${session}`,
+        },
+      ],
+      receipts: [],
+      interventions: [],
+      outcome: null,
+      pr: null,
+      evidence_comments: [],
+      evidence_registrations: [],
+      pr_bindings: [],
+      outcome_transitions: [],
+      settlements: [],
+      promotion: null,
+    })
+  })
+
+  let generation
+  if (current !== null) {
+    generation = current.generation
+  } else {
+    const revision = args['registry-revision'] ?? governingRegistryRevision(repoRoot)
+    if (!/^[0-9a-f]{40}$/.test(revision)) throw new UsageError('--registry-revision must be a 40-hex SHA')
+    try {
+      generation = Number(
+        execFileSync('bash', [monitorPath(), 'activate', '--active-state', active, '--run-id', runId, '--branch', branch,
+          '--expected-generation', '0', '--registry-revision', revision, '--writer', 'feature-owner', '--repo-root', repoRoot], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim(),
+      )
+    } catch (error) {
+      throw new Refusal(`activation refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+    }
+  }
+  return JSON.stringify({
+    run_id: runId,
+    slate_id: slate,
+    session,
+    branch,
+    generation,
+    active_state_path: active,
+    record_directory: runDir,
+    policy_projection: join(runDir, 'policy.json'),
+    common_dir: common,
+  })
+}
+
+function runValidatorWith(argv) {
+  try {
+    execFileSync(process.execPath, [VALIDATOR, ...argv], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return null
+  } catch (error) {
+    return `${error.stderr || ''}${error.stdout || ''}`.trim() || `validator exited ${error.status}`
+  }
+}
+
+function withJsonTemp(runDir, value, fn) {
+  const file = join(runDir, `.context.${process.pid}.${randomBytes(4).toString('hex')}.json`)
+  writeFileSync(file, JSON.stringify(value))
+  try {
+    return fn(file)
+  } finally {
+    unlinkSync(file)
+  }
+}
+
+function receiptedPassNames(record) {
+  return (record.receipts ?? []).filter((receipt) => receipt.kind === 'pass').map((receipt) => receipt.file)
+}
+
+const SIDE_EFFECTS = {
+  receipt(record, args, { runDir }) {
+    if (typeof args.pass !== 'string' || args.pass === '') throw new UsageError('--pass is required')
+    guardTimestamp(record, resolveAt(undefined))
+    const envelope = readJson(args.pass, 'pass')
+    const bytes = readFileSync(args.pass)
+    if (envelope?.role !== 'challenger' && envelope?.role !== 'reviewer') {
+      throw new Refusal('--pass must be a challenger or reviewer result envelope')
+    }
+    const { stage, round } = envelope.payload ?? {}
+    const slot = envelope.payload?.slot ?? envelope.payload?.finder
+    if (!CONFIDENCE_STAGES.has(stage) || !Number.isSafeInteger(round) || round < 1 || typeof slot !== 'string') {
+      throw new Refusal('--pass names no confidence stage, positive round and slot')
+    }
+    const name = `${stage}-r${round}-${slot}`
+    requireId('pass name', name)
+    const canonical = join(runDir, 'passes', `${name}.json`)
+    if (receiptedPassNames(record).includes(name)) {
+      if (!existsSync(canonical) || !readFileSync(canonical).equals(bytes)) {
+        throw new Refusal(`pass ${name} is already receipted with different content; a receipted pass is immutable`)
+      }
+      return null
+    }
+    const active = record.stage_transitions.at(-1)
+    if (active.stage !== stage) throw new Refusal(`pass ${name} is for stage ${stage}, but the run's active stage is ${active.stage}`)
+    // The exit engine rejects evidence from outside the run's span; refuse it
+    // here, before it takes a slot, rather than leave an orphan it ignores.
+    if (typeof envelope.produced_at !== 'string' || !TIMESTAMP.test(envelope.produced_at) || isBefore(envelope.produced_at, active.entered_at)) {
+      throw new Refusal(`pass ${name} was produced at ${JSON.stringify(envelope.produced_at)}, before stage ${stage} began (${active.entered_at})`)
+    }
+    const knownIds = receiptedPassNames(record).flatMap((file) => {
+      const path = join(runDir, 'passes', `${file}.json`)
+      if (!existsSync(path)) throw new Refusal(`run.json receipts pass ${file}, but ${path} does not exist`)
+      return (readJson(path, 'receipted pass').payload?.findings ?? []).map((finding) => finding.id)
+    })
+    const failure = withJsonTemp(runDir, knownIds, (known) =>
+      runValidatorWith(['envelope', args.pass, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt']),
+    )
+    if (failure !== null) throw new Refusal(`pass ${args.pass} failed receipt validation; nothing was published:\n${failure}`)
+    publishExclusive(canonical, bytes, 'pass')
+    record.receipts = [...(record.receipts ?? []), { kind: 'pass', file: name }]
+    return { write: true, summary: `pass receipt ${name}` }
+  },
+  adjudicate(record, args, { runDir, canonical: runPath }) {
+    if (typeof args.file !== 'string' || args.file === '') throw new UsageError('--file is required')
+    guardTimestamp(record, resolveAt(undefined))
+    const document = readJson(args.file, 'adjudication')
+    const bytes = readFileSync(args.file)
+    if (document?.run_id !== record.run_id) throw new Refusal(`adjudication names run ${JSON.stringify(document?.run_id)}, not ${record.run_id}`)
+    const { stage, round } = document
+    if (!CONFIDENCE_STAGES.has(stage) || !Number.isSafeInteger(round) || round < 1) {
+      throw new Refusal('adjudication names no confidence stage and positive round')
+    }
+    const name = `${stage}-r${round}`
+    const target = join(runDir, 'adjudications', `${name}.json`)
+    if (existsSync(target)) {
+      if (!readFileSync(target).equals(bytes)) throw new Refusal(`${target} already exists with different content; a round is adjudicated once`)
+      return null
+    }
+    const passes = receiptedPassNames(record)
+      .filter((file) => file.startsWith(`${name}-`))
+      .map((file) => join(runDir, 'passes', `${file}.json`))
+    if (passes.length === 0) throw new Refusal(`round ${name} has no receipted pass to adjudicate`)
+    const directory = join(runDir, 'adjudications')
+    const known = existsSync(directory)
+      ? readdirSync(directory)
+          .filter((file) => file.endsWith('.json') && file !== `${name}.json`)
+          .flatMap((file) => (readJson(join(directory, file), 'adjudication').adjudications ?? []).map((entry) => entry.finding_id))
+      : []
+    const failure = withJsonTemp(runDir, known, (knownFile) =>
+      runValidatorWith(['adjudication', args.file, ...passes.flatMap((pass) => ['--pass', pass]),
+        '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-adjudicated', knownFile, '--receipt']),
+    )
+    if (failure !== null) throw new Refusal(`adjudication ${args.file} failed receipt validation; nothing was published:\n${failure}`)
+    publishExclusive(target, bytes, 'adjudication')
+    const readback = runValidator('run', runPath)
+    if (readback !== null) {
+      unlinkSync(target)
+      throw new Refusal(`run.json does not validate with ${name}; the adjudication was withdrawn:\n${readback}`)
+    }
+    return { write: false, summary: `adjudication ${name}` }
+  },
+}
+
+function sideEffectWrite(command, args) {
+  const { root } = stateRoot()
+  const slate = requireId('slate', args.slate)
+  const session = requireId('session', args.session)
+  const runId = requireId('run-id', args['run-id'])
+  assertRunOwner(root, slate, runId)
+  const lock = acquireSlateLock({ root, slate, session })
+  try {
+    bindRunToSlate(root, slate, runId)
+  } catch (error) {
+    if (lock.created === true) releaseSlateLock({ root, slate, session })
+    throw error
+  }
+  const runDir = join(root, 'runs', runId)
+  const canonical = join(runDir, 'run.json')
+  const summary = withMutex(canonical, () => {
+    const record = readJson(canonical, 'run record')
+    if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+    validateFile('run', canonical, `existing ${canonical}`)
+    const result = SIDE_EFFECTS[command](record, args, { runDir, canonical })
+    if (result === null) return null
+    if (result.write) writeValidated('run', canonical, record)
+    return result.summary
+  })
+  return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -681,6 +1076,7 @@ const VALUE_FLAGS = new Set([
   'slate', 'session', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
+  'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 
@@ -769,8 +1165,10 @@ function main(argv) {
     const [sub, ...flags] = rest
     return lockCommand(sub, parseScopeFlags(parseFlags(flags)))
   }
+  if (command === 'solo-init') return soloInit(parseFlags(rest))
+  if (Object.hasOwn(SIDE_EFFECTS, command ?? '')) return sideEffectWrite(command, parseFlags(rest))
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
-    throw new UsageError('run-record.mjs transition|intervention|bind-pr|promote|close|lock … (see the header)')
+    throw new UsageError('run-record.mjs transition|intervention|bind-pr|promote|close|solo-init|receipt|adjudicate|lock … (see the header)')
   }
   return recordWrite(command, parseScopeFlags(parseFlags(rest)))
 }
