@@ -1989,6 +1989,11 @@ finders use `integrate-<finder slug>/<owner>/<repo>/<pr>.json` under the same
 must pass its guard; a missing file prints the no-cycle-state notice so a
 wrong path cannot skip the guard silently.
 
+Pass `--state` only once this run has reserved its own cycle (the state's
+`run_id` is this run's). At integration cap 0 or before this run's first
+reservation, omit `--state`: there is no cycle of this run to settle, and
+state left by an earlier run must not block reconciliation.
+
 The helper's exits are the invariant, stated once (0 caught up, printing the
 new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
 retarget; 15 not a draft; 16 refused for any other reason; 17 unsettled cycle,

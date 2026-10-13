@@ -45,6 +45,10 @@
 #   Repeat --state for every configured PR-side finder; every named state is
 #   guarded. Absent state means no open cycle and prints a one-line notice.
 #   Omitting --state preserves legacy behaviour without this ordering guard.
+#   Pass --state only once this run has reserved its own cycle (the state's
+#   run_id is this run's). At integration cap 0 or before the first reservation,
+#   omit --state: no cycle of this run needs settlement, and an earlier run's
+#   state must not block reconciliation.
 #
 #   The catch-up runs at the readiness gate, on a draft. A PR that is no
 #   longer a draft has been handed to a human, and is caught up only when the
@@ -116,6 +120,10 @@ says the maintainer asked for this catch-up. Exit codes: 0 caught up,
 Callers should pass --state once per configured PR-side finder; repeats guard
 every named state. A superseded cycle does not block the captured head.
 Missing state means no open cycle and prints a one-line notice on stderr.
+Pass --state only once this run has reserved its own cycle (the state's run_id
+is this run's). At integration cap 0 or before the first reservation, omit
+--state: no cycle of this run needs settlement, and an earlier run's state
+must not block reconciliation.
 EOF
     exit 2
 }

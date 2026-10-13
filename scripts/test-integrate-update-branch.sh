@@ -554,6 +554,9 @@ for needle in \
     'git rev-parse --path-format=absolute --git-path' \
     'integrate-codex/<owner>/<repo>/<pr>.json' \
     'Pass one `--state` per configured PR-side finder' \
+    'Pass `--state` only once this run has reserved its own cycle' \
+    'At integration cap 0 or before this run' \
+    'state left by an earlier run must not block reconciliation' \
     'A cycle for a superseded head does not block reconciliation' \
     '--state "$state_file"' \
     '17 unsettled cycle' \
