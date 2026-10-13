@@ -4063,6 +4063,98 @@ function writeScenario(name, db) {
   }
 }
 
+// #1444: retained ledger evidence verifies a repeat on round 1's fix,
+// including ancestry when the reviewed heads are absent from this checkout.
+{
+  const runId = "run-238-ledger";
+  const at = "2026-09-01T00:00:00Z";
+  const events = [1, 2].map((round) => evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", round, 1, at));
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: lifecycleTo("review", at), interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, promotion: null,
+    evidence_comments: events.map((ev, index) => ({
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: index + 1, sequence: 1 },
+    })),
+    receipts: [{ kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }, { kind: "pass", file: "review-r2" }],
+  };
+  const runDir = path.join("${tmp}", "local-records", runId);
+  mkdirSync(path.join(runDir, "passes"), { recursive: true });
+  mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+  writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+  for (const round of [1, 2]) {
+    const finding = {
+      id: "review-r" + round + "-codex-verification-1", line: 10,
+      provenance: round === 1 ? "original" : "round:1",
+      fingerprint: round === 1 ? "new" : "repeat-of:review-r1-codex-verification-1",
+    };
+    const envelope = pass("codex-verification", [finding]);
+    envelope.run.run_id = runId;
+    envelope.head = String(round).repeat(40);
+    envelope.payload.round = round;
+    envelope.payload.reviewed_head = envelope.head;
+    writeFileSync(path.join(runDir, "passes", "review-r" + round + ".json"), JSON.stringify(envelope, null, 2));
+    writeFileSync(path.join(runDir, "adjudications", "review-r" + round + ".json"), JSON.stringify({
+      schema: 2, run_id: runId, stage: "review", round, reviewed_head: envelope.head,
+      adjudications: [{ finding_id: finding.id, reviewer_priority: "P2", adjudicated_priority: "P2",
+        disposition: round === 1 ? "fix" : "defer", reason: "fixture reason", evidence: "fixture evidence", override: null }],
+    }, null, 2));
+  }
+  writeFileSync(path.join(runDir, "history.review.json"), JSON.stringify([{ round: 1,
+    path: "ai/skills/universal/retro/assets/dev-flow-stats.mjs", added_lines: [10], deleted_lines: [10] }]));
+  writeFileSync(path.join(runDir, "heads.json"), JSON.stringify({
+    ["2".repeat(40)]: { parent: "1".repeat(40) }, ["1".repeat(40)]: { parent: null },
+  }));
+  writeScenario("verified-ledger", { issues: [{ number: 238, pull_request: null }], comments: { "238": events },
+    commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+
+  // Same anchors and round numbers in both stages: only challenge has
+  // a ledger. A shared/stage-less ledger would falsely verify review too.
+  const mixedId = "run-239-stage-ledgers";
+  const mixedDir = path.join("${tmp}", "local-records", mixedId);
+  const mixedEvents = ["challenge", "review"].flatMap((stage) => [1, 2].map((round) =>
+    evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", mixedId, stage, "issue", round, 1, at)));
+  const mixedBody = { ...runBody, run_id: mixedId,
+    stage_transitions: chain(["kickoff", "claim", "implement", "verify", "challenge", "review"].map((stage, index, stages) => ({
+      stage, entered_at: at, ...(index < stages.length - 1 ? { exit: "fixture transition to " + stages[index + 1] } : {}),
+    }))),
+    evidence_comments: mixedEvents.map((ev, index) => ({
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body),
+      marker: { run_id: mixedId, stage: index < 2 ? "challenge" : "review", destination: "issue", round: index % 2 + 1, sequence: 1 },
+    })),
+    receipts: ["challenge", "review"].flatMap((stage) => [{ kind: "transition", stage },
+      { kind: "pass", file: stage + "-r1" }, { kind: "pass", file: stage + "-r2" }]),
+  };
+  mkdirSync(path.join(mixedDir, "passes"), { recursive: true });
+  mkdirSync(path.join(mixedDir, "adjudications"), { recursive: true });
+  writeFileSync(path.join(mixedDir, "run.json"), JSON.stringify({ ...mixedBody, ...deriveDefaultChains(mixedBody) }, null, 2));
+  for (const stage of ["challenge", "review"]) {
+    for (const round of [1, 2]) {
+      const finder = stage === "challenge" ? "codex-adversarial" : "codex-verification";
+      const envelope = JSON.parse(readFileSync(path.join(runDir, "passes", "review-r" + round + ".json"), "utf8")
+        .replaceAll("review-r", stage + "-r").replaceAll("codex-verification", finder));
+      envelope.run.run_id = mixedId;
+      envelope.role = stage === "challenge" ? "challenger" : "reviewer";
+      envelope.payload.stage = stage;
+      if (stage === "challenge") envelope.payload.attack_scenarios = [{
+        id: "fixture-attack", description: "fixture line-change attribution", outcome: "surfaced-finding",
+        finding_id: envelope.payload.findings[0].id,
+      }];
+      writeFileSync(path.join(mixedDir, "passes", stage + "-r" + round + ".json"), JSON.stringify(envelope));
+      const adjudication = JSON.parse(readFileSync(path.join(runDir, "adjudications", "review-r" + round + ".json"), "utf8")
+        .replaceAll("review-r", stage + "-r").replaceAll("codex-verification", finder));
+      adjudication.run_id = mixedId;
+      adjudication.stage = stage;
+      writeFileSync(path.join(mixedDir, "adjudications", stage + "-r" + round + ".json"), JSON.stringify(adjudication));
+    }
+  }
+  writeFileSync(path.join(mixedDir, "history.challenge.json"), readFileSync(path.join(runDir, "history.review.json")));
+  writeFileSync(path.join(mixedDir, "heads.json"), readFileSync(path.join(runDir, "heads.json")));
+  writeScenario("stage-ledgers", { issues: [{ number: 239, pull_request: null }], comments: { "239": mixedEvents },
+    commits: {}, meta: { runId: mixedId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+}
+
 // #753: retain adjudication priorities, dispositions and override reasons in
 // both legacy comment payloads and current local-record trajectories.
 {
@@ -4900,10 +4992,79 @@ jq '.adjudications = [{finding_id:"review-r1-codex-verification-1",reviewer_prio
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
 echo "$out" | jq -e '.rounds[0].provenance_measurement == "unverified" and .rounds[0].finding_attributions == [{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"repeat-of:review-r1-codex-verification-1",fingerprint_status:"unverified"}] and .findings_by_class_and_provenance == {} and .findings_by_verified_fingerprint == {} and .provenance_unavailable_rounds == [{stage:"review",round:1}]' >/dev/null ||
     fail "unverified finding projection: attribution was mislabeled or counted as verified: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
+grep -Fq 'Findings by class and provenance: unavailable for round(s) 1 — no matching verified `verdict.json` projection exists; raw producer assertions are not substituted.' <<<"$report_out" ||
+    fail "no-ledger retro wording changed: $report_out"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
 
+echo "== C1: each stage verifies only against its own ledger =="
+export DFSTATS_DB="$tmp/scenarios/stage-ledgers.json"
+run_id="$(meta stage-ledgers .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '[.rounds[] | select(.stage == "challenge") | .provenance_measurement] == ["verified","verified"] and [.rounds[] | select(.stage == "review") | .provenance_measurement] == ["unverified","unverified"] and .findings_by_stage_class_and_provenance == {challenge:{"correctness/original":1,"correctness/round:1":1},review:{}} and .provenance_unavailable_rounds == [{stage:"review",round:1},{stage:"review",round:2}]' >/dev/null ||
+    fail "challenge ledger was used to verify review, or not used for challenge: $out"
+
+echo "== #1444: frozen per-stage history and heads verify round-2 repeats and render retro rows =="
+export DFSTATS_DB="$tmp/scenarios/verified-ledger.json"
+run_id="$(meta verified-ledger .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[1].provenance_measurement == "verified" and .rounds[1].finding_attributions == [{id:"review-r2-codex-verification-1",provenance:"round:1",provenance_status:"verified",fingerprint:"repeat-of:review-r1-codex-verification-1",fingerprint_status:"verified"}] and .findings_by_class_and_provenance == {"correctness/original":1,"correctness/round:1":1} and .findings_by_verified_fingerprint == {new:1,"repeat-of:review-r1-codex-verification-1":1} and .provenance_unavailable_rounds == []' >/dev/null ||
+    fail "retained ledger did not verify the repeat: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq '| correctness | original | 1 |' <<<"$report_out" && grep -Fq '| correctness | round:1 | 1 |' <<<"$report_out" && ! grep -Fq 'Findings by class and provenance: unavailable' <<<"$report_out" ||
+    fail "verified ledger retro did not render class/provenance rows: $report_out"
+
+echo "== #1444: a retained head map without history leaves provenance unverified =="
+mv "$tmp/local-records/$run_id/history.review.json" "$tmp/local-records/$run_id/history.review.json.saved"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[1].provenance_measurement == "unverified" and .rounds[1].finding_attributions[0].fingerprint_status == "unverified" and .findings_by_class_and_provenance == {}' >/dev/null ||
+    fail "heads without a change ledger fabricated provenance: $out"
+mv "$tmp/local-records/$run_id/history.review.json.saved" "$tmp/local-records/$run_id/history.review.json"
+
+echo "== C1: stage-less history is ignored and keeps unverified retro wording =="
+mv "$tmp/local-records/$run_id/history.review.json" "$tmp/local-records/$run_id/history.json"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '[.rounds[].provenance_measurement] == ["unverified","unverified"] and .rounds[1].finding_attributions[0].fingerprint_status == "unverified" and .findings_by_class_and_provenance == {}' >/dev/null ||
+    fail "stage-less history was consumed: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq 'Findings by class and provenance: unavailable for round(s) 1, 2 — no matching verified `verdict.json` projection exists; raw producer assertions are not substituted.' <<<"$report_out" ||
+    fail "stage-less history changed unverified retro wording: $report_out"
+mv "$tmp/local-records/$run_id/history.json" "$tmp/local-records/$run_id/history.review.json"
+
+echo "== #1444: malformed optional ledger evidence is indeterminate =="
+for file in history.review.json heads.json; do
+    mv "$tmp/local-records/$run_id/$file" "$tmp/local-records/$run_id/$file.saved"
+    printf '{broken' >"$tmp/local-records/$run_id/$file"
+    set +e
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "malformed $file: expected indeterminate, got rc=$rc: $out"
+    mv "$tmp/local-records/$run_id/$file.saved" "$tmp/local-records/$run_id/$file"
+done
+
+echo "== C1: optional ledger links outside the selected run are refused, including another run =="
+for ledger_location in "$tmp" "$tmp/local-records/ledger-donor"; do
+    mkdir -p "$ledger_location"
+    for file in history.review.json heads.json; do
+        mv "$tmp/local-records/$run_id/$file" "$tmp/local-records/$run_id/$file.saved"
+        cp "$tmp/local-records/$run_id/$file.saved" "$ledger_location/$file"
+        ln -s "$ledger_location/$file" "$tmp/local-records/$run_id/$file"
+        set +e
+        out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+        rc=$?
+        set -e
+        [ "$rc" -eq 3 ] && grep -Fq '(selected run) escapes --record-dir through a symbolic link' <<<"$out" ||
+            fail "escaping $file at $ledger_location: expected selected-run containment refusal, got rc=$rc: $out"
+        rm "$tmp/local-records/$run_id/$file"
+        mv "$tmp/local-records/$run_id/$file.saved" "$tmp/local-records/$run_id/$file"
+    done
+done
+
 echo "== duplicate evidence-comment ids are indeterminate before registration indexing =="
+export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
+run_id="$(meta evidence-grammar .meta.runId)"
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
