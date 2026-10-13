@@ -41,8 +41,10 @@
 #
 #   Callers should pass --state and run a final checker `check` before this
 #   helper. An existing cycle must record a clean verdict for the captured
-#   head (or its carried head); absent state means no open cycle. Omitting
-#   --state preserves the legacy behaviour, without this ordering guard.
+#   head (or its carried head). A superseded cycle does not block this head.
+#   Repeat --state for every configured PR-side finder; every named state is
+#   guarded. Absent state means no open cycle and prints a one-line notice.
+#   Omitting --state preserves legacy behaviour without this ordering guard.
 #
 #   The catch-up runs at the readiness gate, on a draft. A PR that is no
 #   longer a draft has been handed to a human, and is caught up only when the
@@ -111,7 +113,9 @@ says the maintainer asked for this catch-up. Exit codes: 0 caught up,
 2 usage, 10 ruleset refusal, 11 conflict, 12 stale head,
 13 indeterminate (including no timeout/gtimeout on PATH), 14 retarget,
 15 not a draft, 16 refused otherwise, 17 unsettled cycle (run final check first).
-Callers should pass --state; missing state means no open cycle.
+Callers should pass --state once per configured PR-side finder; repeats guard
+every named state. A superseded cycle does not block the captured head.
+Missing state means no open cycle and prints a one-line notice on stderr.
 EOF
     exit 2
 }
@@ -149,7 +153,7 @@ base=
 wait_sec=180
 interval_sec=5
 maintainer_requested=0
-checker_state=
+checker_states=()
 
 [ "$#" -gt 0 ] || usage
 while [ "$#" -gt 0 ]; do
@@ -168,7 +172,7 @@ while [ "$#" -gt 0 ]; do
         --interval) interval_sec=$2 ;;
         --state)
             [ -n "$2" ] || refuse "--state requires a checker-state file path"
-            checker_state=$2
+            checker_states+=("$2")
             ;;
         esac
         shift 2
@@ -190,20 +194,26 @@ valid_uint "$wait_sec" || refuse "--wait must be a non-negative integer"
 valid_uint "$interval_sec" || refuse "--interval must be a non-negative integer"
 
 # State is an ordering guard, not a replacement for check's live evidence
-# scan. Bind the verdict to this PR and cycle; a stale clean marker from an
-# earlier head or a still-reserved cycle cannot authorize a catch-up.
-if [ -n "$checker_state" ] && { [ -e "$checker_state" ] || [ -L "$checker_state" ]; }; then
+# scan. Only a cycle or carry for the captured head needs a clean verdict;
+# an older cycle superseded by a push cannot attest this head anyway.
+for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
+    if [ ! -e "$checker_state" ] && [ ! -L "$checker_state" ]; then
+        printf 'update-branch: no-cycle-state: guard found no cycle state at %s\n' "$checker_state" >&2
+        continue
+    fi
     if ! jq -se --arg repo "$repo" --argjson pr "$pr" --arg head "$head" '
         length == 1 and (.[0] |
           type == "object" and .repo == $repo and .pr == $pr and
-          .phase == "attached" and .last_reviewed_verdict == "clean" and
+          (.version == 1 or .version == 2) and
           (.head | type == "string" and test("^[0-9a-f]{40}$")) and
-          .last_reviewed_head == .head and
-          ((.carry.attests_head // .head) == $head))
+          (if .head == $head or .carry.attests_head == $head then
+             .phase == "attached" and .last_reviewed_verdict == "clean" and
+             .last_reviewed_head == .head
+           else true end))
     ' "$checker_state" >/dev/null 2>&1; then
         finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
     fi
-fi
+done
 
 timeout_bin=
 if command -v timeout >/dev/null 2>&1; then

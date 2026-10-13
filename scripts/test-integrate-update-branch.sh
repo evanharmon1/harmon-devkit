@@ -161,7 +161,7 @@ no_put() {
 
 checker_json() {
     jq -cn --arg h "$head_sha" --argjson verdict "$1" \
-        '{repo:"o/r",pr:7,head:$h,phase:"attached",
+        '{version:2,repo:"o/r",pr:7,head:$h,phase:"attached",
           last_reviewed_head:$h,last_reviewed_verdict:$verdict}'
 }
 
@@ -189,15 +189,26 @@ expect "after final check" 0 ""
 echo "==> absent state permits catch-up with no open cycle"
 reset
 run_default --state "${fixtures}/absent.json"
-expect "no open cycle" 0 ""
+expect "no open cycle" 0 "guard found no cycle state"
 [ "$out" = "$new_sha" ] || fail "no open cycle printed '$out'"
 
-echo "==> invalid, foreign, reserved and stale clean state fails closed"
+echo "==> superseded cycle state does not block reconciliation of a new head"
+for verdict in '"clean"' '"findings"' null; do
+    reset
+    checker_json "$verdict" | jq -c --arg old "$other_sha" \
+        '.head = $old | .last_reviewed_head = $old' >"${fixtures}/state.json"
+    run_default --state "${fixtures}/state.json"
+    expect "superseded cycle ($verdict)" 0 ""
+    [ "$out" = "$new_sha" ] || fail "superseded cycle printed '$out'"
+done
+
+echo "==> invalid, foreign, reserved and stale verdict markers fail closed"
 for filter in \
     '.repo = "other/repo"' '.pr = 8' \
     '.phase = "reserved"' '.phase = null' \
-    '.head = "'"$other_sha"'"' '.last_reviewed_head = "'"$other_sha"'"' \
-    'del(.last_reviewed_head)' '.carry = {attests_head:"'"$other_sha"'"}' \
+    '.last_reviewed_head = "'"$other_sha"'"' \
+    'del(.last_reviewed_head)' \
+    '.version = 99' '.version = "2"' 'del(.version)' \
     'null' '{}'; do
     reset
     checker_json '"clean"' | jq -c "$filter" >"${fixtures}/state.json"
@@ -226,6 +237,52 @@ checker_json '"clean"' | jq -c --arg old "$other_sha" --arg current "$head_sha" 
 run_default --state "${fixtures}/state.json"
 expect "clean carried cycle" 0 ""
 [ "$out" = "$new_sha" ] || fail "clean carried cycle printed '$out'"
+
+echo "==> an unsettled carry for the captured head refuses catch-up"
+reset
+checker_json '"findings"' | jq -c --arg old "$other_sha" --arg current "$head_sha" \
+    '.head = $old | .last_reviewed_head = $old | .carry = {attests_head:$current}' \
+    >"${fixtures}/state.json"
+run_default --state "${fixtures}/state.json"
+expect "unsettled carried cycle" 17 "unsettled-cycle"
+no_put "unsettled carried cycle"
+
+echo "==> every repeated state is guarded, regardless of argument order"
+for order in first last; do
+    reset
+    checker_json '"clean"' >"${fixtures}/clean.json"
+    checker_json '"findings"' >"${fixtures}/unsettled.json"
+    if [ "$order" = first ]; then
+        run_default --state "${fixtures}/unsettled.json" --state "${fixtures}/clean.json"
+    else
+        run_default --state "${fixtures}/clean.json" --state "${fixtures}/unsettled.json"
+    fi
+    expect "repeated states ($order)" 17 "unsettled-cycle"
+    [ ! -s "$log" ] || fail "repeated states reached gh: $(cat "$log")"
+done
+reset
+checker_json '"clean"' >"${fixtures}/clean.json"
+checker_json '"clean"' >"${fixtures}/another-clean.json"
+run_default --state "${fixtures}/clean.json" --state "${fixtures}/another-clean.json"
+expect "two clean finder states" 0 ""
+[ "$out" = "$new_sha" ] || fail "two clean finder states printed '$out'"
+
+echo "==> checker-supported versions and quota metadata remain allowed"
+for version in 1 2; do
+    reset
+    checker_json '"clean"' | jq -c --argjson version "$version" \
+        '.version = $version | .quota_exhausted_at = "2026-10-13T01:00:00Z"' \
+        >"${fixtures}/state.json"
+    run_default --state "${fixtures}/state.json"
+    expect "supported version $version, quota metadata" 0 ""
+    [ "$out" = "$new_sha" ] || fail "supported version printed '$out'"
+done
+reset
+checker_json '"findings"' | jq -c --arg old "$other_sha" \
+    '.head = $old | .last_reviewed_head = $old | .version = 99' >"${fixtures}/state.json"
+run_default --state "${fixtures}/state.json"
+expect "unsupported superseded state" 17 "unsettled-cycle"
+no_put "unsupported superseded state"
 
 echo "==> a clean catch-up prints GitHub's merge head"
 reset
@@ -492,8 +549,12 @@ for needle in \
     'through the same helper with `--maintainer-requested`' \
     '(`assets/update-branch.sh`, a GitHub write that moves the head)' \
     'assets/update-branch.sh --repo <repo> --pr <n>' \
-    '**Settle before catching up.** Run a final checker `check` on the current head' \
+    '**Settle before catching up.** When a cycle or carry attests the current head' \
     'require its clean result before the catch-up moves the head' \
+    'git rev-parse --path-format=absolute --git-path' \
+    'integrate-codex/<owner>/<repo>/<pr>.json' \
+    'Pass one `--state` per configured PR-side finder' \
+    'A cycle for a superseded head does not block reconciliation' \
     '--state "$state_file"' \
     '17 unsettled cycle' \
     'A server-side catch-up spends no remediation round.' \

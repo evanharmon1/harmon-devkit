@@ -1955,14 +1955,16 @@ evanharmon1/harmon-init#1311 the base moved five times in one session and the
 branch was merged three times; two were mid-stage reactions that re-reviewed
 source which had not changed and found nothing.
 
-**Settle before catching up.** Run a final checker `check` on the current
-head after settling every finding, and require its clean result before the
-catch-up moves the head. Replies and `settle` alone do not refresh the recorded
+**Settle before catching up.** When a cycle or carry attests the current head,
+run a final checker `check` after settling every finding, and require its clean
+result before the catch-up moves the head. Replies and `settle` alone do not refresh the recorded
 verdict; catching up while it still says `findings` makes both `check` and
 `carry` refuse the moved head (harmon-devkit#1390). Pass `--state` to the
-helper: it refuses an existing cycle without a recorded clean verdict (17),
-telling the caller to run a final `check` first. Absent state means no open
-cycle; omitting `--state` preserves legacy behaviour without this guard.
+helper: it refuses a cycle or carry for the captured head without a recorded
+clean verdict (17), telling the caller to run a final `check` first. A cycle
+for a superseded head does not block reconciliation before the new head's
+review. Absent state means no open cycle and prints a one-line notice;
+omitting `--state` preserves legacy behaviour without this guard.
 The guard checks recorded state only, so the final live `check` remains owed.
 
 **Standard path — GitHub update-branch, on the server.** When the base merges
@@ -1974,9 +1976,18 @@ already refuses to promote without green checks on that exact `headRefOid`
 never `gh pr update-branch` or a raw call:
 
 ```sh
+state_file="$(git rev-parse --path-format=absolute --git-path \
+  integrate-codex/<owner>/<repo>/<pr>.json)"
 new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
   --head <captured headRefOid> --base <captured baseRefName> --state "$state_file")"
 ```
+
+Compute the path from the lane worktree. Pass one `--state` per configured
+PR-side finder, repeating the argument: Codex uses the path above, and other
+finders use `integrate-<finder slug>/<owner>/<repo>/<pr>.json` under the same
+`git rev-parse --path-format=absolute --git-path` lookup. Every named state
+must pass its guard; a missing file prints the no-cycle-state notice so a
+wrong path cannot skip the guard silently.
 
 The helper's exits are the invariant, stated once (0 caught up, printing the
 new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
