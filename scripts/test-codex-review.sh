@@ -30,6 +30,10 @@ trap 'rm -rf "$test_tmp"' EXIT
 mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
+printf 'OpenAI Codex (test)\n--------\n' >&2
+[ -z "${STUB_EFFORT-high}" ] || printf 'reasoning effort: %s\n' "${STUB_EFFORT-high}" >&2
+printf '%s\n' '--------' user >&2
+[ -z "${STUB_AFTER_BANNER:-}" ] || printf '%s\n' "$STUB_AFTER_BANNER" >&2
 printf 'STUB-ARGS:'
 printf ' %s' "$@"
 printf '\n'
@@ -137,6 +141,44 @@ grep -q -- "--model gpt-5.6-terra" <<<"$out" || fail "explicit review model did 
 grep -q -- "--config model_reasoning_effort=medium" <<<"$out" || fail "explicit review reasoning did not reach Codex: $out"
 grep -q "base branch 'origin/develop'" <<<"$out" || fail "explicit model/reasoning consumed the target: $out"
 grep -q "inspect dispatch" <<<"$out" || fail "explicit model/reasoning consumed the focus text: $out"
+
+echo "==> effort: match is recorded without a warning, including strict mode"
+out="$(STUB_EFFORT=high run review --reasoning high --require-effort)" || fail "matching effort refused: $out"
+grep -q 'requested=high effective=high source=banner matched=true' <<<"$out" || fail "missing match record"
+! grep -q 'WARNING: Codex reasoning effort' <<<"$out" || fail "matching effort warned"
+
+echo "==> effort: managed override warns by default and fails only under strict mode"
+out="$(STUB_EFFORT=medium run challenge --reasoning high)" || fail "default mismatch changed exit status: $out"
+grep -q 'WARNING: Codex reasoning effort mismatch: requested=high effective=medium' <<<"$out" || fail "missing mismatch warning"
+grep -q 'source=banner matched=false' <<<"$out" || fail "missing mismatch record"
+rc=0
+out="$(STUB_EFFORT=medium run review --reasoning high --require-effort)" || rc=$?
+[ "$rc" -eq 1 ] || fail "strict mismatch exited $rc"
+grep -q 'requested=high effective=medium' <<<"$out" || fail "strict error does not name efforts"
+grep -q -- '--require-effort refuses' <<<"$out" || fail "missing strict refusal"
+
+echo "==> effort: absent or conflicting readouts stay unknown; strict refuses them"
+for banner in '' $'high\nreasoning effort: medium'; do
+    out="$(STUB_EFFORT="$banner" run review)" || fail "unknown changed default exit status"
+    grep -q 'effective=unknown source=unknown matched=false' <<<"$out" || fail "unknown effort was assumed: $out"
+    rc=0
+    out="$(STUB_EFFORT="$banner" run review --require-effort)" || rc=$?
+    [ "$rc" -eq 1 ] || fail "strict unknown exited $rc"
+done
+
+echo "==> effort: later reviewer prose cannot impersonate a startup readout"
+out="$(STUB_EFFORT=medium STUB_AFTER_BANNER=$'user\nreasoning effort: high' run review)" || fail "later readout failed"
+grep -q 'effective=medium source=banner matched=false' <<<"$out" || fail "later prose altered readout"
+
+echo "==> effort: parsing precedes line truncation and CLI failures retain their status"
+out="$(STUB_EFFORT=high CODEX_REVIEW_MAX_STDERR_BYTES=1 run review --require-effort)" || fail "truncated banner lost effort"
+grep -q 'effective=high source=banner matched=true' <<<"$out" || fail "truncation changed effort"
+for strict in '' --require-effort; do
+    rc=0
+    # An empty unquoted expansion supplies no flag; this is intentional.
+    out="$(STUB_EFFORT=medium STUB_EXIT=7 run review $strict)" || rc=$?
+    [ "$rc" -eq 7 ] || fail "effort check replaced CLI exit 7 with $rc"
+done
 
 echo "==> invalid explicit model and reasoning arguments fail before Codex"
 if out="$(run review --model 2>&1)"; then
@@ -750,6 +792,9 @@ mkdir -p "${env_root}/bin"
 # holds a "timed-out" original open while its retry runs to completion.
 cat >"${env_root}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
+printf 'OpenAI Codex (test)\n--------\n' >&2
+[ -z "${STUB_EFFORT-high}" ] || printf 'reasoning effort: %s\n' "${STUB_EFFORT-high}" >&2
+printf '%s\n' '--------' user >&2
 printf 'argv=%s\n' "$*" >>"${STUB_LOG:-/dev/null}"
 cd_dir=
 while [ $# -gt 0 ]; do
@@ -866,6 +911,26 @@ grep -Fq 'The result.challenger JSON Schema:' "${env_root}/prompt" && grep -Fq '
     fail "the payload schema is not requested in the prompt"
 grep -q "immutable diff ${env_base}...${env_head}" "${env_root}/prompt" || fail "scope not rewritten to captured SHAs"
 grep -q 'challenge-r1-codex-adversarial-1' "${env_root}/prompt" || fail "binding instructions missing from the prompt"
+
+echo "==> envelope effort: metadata lives outside passes and preserves envelope schema"
+effort_file="${record}/finder-effort/challenge-r1-codex-adversarial.json"
+jq -e '. == {requested: "high", effective: "high", source: "banner", matched: true}' "$effort_file" >/dev/null || fail "missing matched metadata"
+[ "$(find "${record}/finder-effort" -type f | wc -l)" -eq 1 ] || fail "metadata temporary remains"
+
+for effort in medium ''; do
+    reset_record
+    STUB_EFFORT="$effort" STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || fail "default mismatch envelope failed"
+    effective="${effort:-unknown}"
+    jq -e --arg effective "$effective" '.requested == "high" and .effective == $effective and .matched == false and
+        .source == (if $effective == "unknown" then "unknown" else "banner" end)' "$effort_file" >/dev/null || fail "wrong mismatch/unknown metadata"
+    [ "$(find "${record}/passes" -type f | wc -l)" -eq 1 ] || fail "metadata appeared in passes"
+    reset_record
+    rc=0
+    STUB_EFFORT="$effort" STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge --require-effort >/dev/null 2>"${env_root}/err" || rc=$?
+    [ "$rc" -eq 1 ] || fail "strict envelope mismatch exited $rc"
+    grep -q "requested=high effective=$effective" "${env_root}/err" || fail "strict envelope error omits effort"
+    assert_nothing_published 'strict effort refusal'
+done
 
 echo "==> envelope: null optionals in an answer are normalized away, then validated"
 reset_record
@@ -1004,7 +1069,7 @@ payload "${env_root}/orig.json" challenge 1 codex-adversarial '.findings[0].evid
 payload "${env_root}/retry.json" challenge 1 codex-adversarial '.findings[0].evidence = "retry"'
 gate="${env_root}/gate"
 rm -f "$gate" "${gate}.waiting"
-STUB_GATE="$gate" STUB_PAYLOAD="${env_root}/orig.json" envelope_run challenge >"${env_root}/orig.out" 2>"${env_root}/orig.err" &
+STUB_EFFORT=medium STUB_GATE="$gate" STUB_PAYLOAD="${env_root}/orig.json" envelope_run challenge >"${env_root}/orig.out" 2>"${env_root}/orig.err" &
 orig_pid=$!
 for _ in $(seq 1 300); do
     [ -e "${gate}.waiting" ] && break
@@ -1021,6 +1086,7 @@ wait "$orig_pid" || rc=$?
     fail "the late original was not refused at publication (rc $rc): $(cat "${env_root}/orig.err")"
 [ "$(cat "$pass_file")" = "$retry_bytes" ] && jq -e '.payload.findings[0].evidence == "retry"' "$pass_file" >/dev/null ||
     fail "the late original replaced the retry's pass"
+jq -e ' .effective == "high" and .matched == true' "$effort_file" >/dev/null || fail "late original replaced retry effort"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
 
 echo "==> envelope: a change to any governing input is refused"
