@@ -3512,7 +3512,7 @@ ning"
             fail "worktree:rm resolved a spanning path on a git without -z (#963): $(cat "$rm_oldgit")"
         grep -q 'cannot look up' "$rm_oldgit" ||
             fail "the pre-2.36 path did not refuse registry lookup (#963): $(cat "$rm_oldgit")"
-        grep -Fqi 'removed:' "$rm_oldgit" &&
+        grep -qi '^Worktree removed:' "$rm_oldgit" &&
             fail "the pre-2.36 refusal still claimed a removal (#963): $(cat "$rm_oldgit")"
         git -C "$fixture" worktree remove --force "$oldgit_tree"
     else
@@ -3570,7 +3570,7 @@ rm_trunc_log="$test_tmp/rm-truncated.log"
     fail "worktree:rm succeeded on a registry read that failed (#963): $(cat "$rm_trunc_log")"
 grep -q 'could not read the worktree registry completely' "$rm_trunc_log" ||
     fail "a failed registry read did not fail closed (#963): $(cat "$rm_trunc_log")"
-grep -qi 'removed' "$rm_trunc_log" &&
+grep -qi '^Worktree removed:' "$rm_trunc_log" &&
     fail "a failed registry read still claimed a removal (#963): $(cat "$rm_trunc_log")"
 rm -rf "$trunc_shim"
 
