@@ -217,6 +217,23 @@ repos/*/compare/*)
 # Must sort before the bare-commit pattern below, which its trailing `*`
 # would otherwise also match.
 repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
+# harmon-devkit#1406: the workflow runs for a head SHA, read only when a
+# with-push / after-ci-first `check` settles its cycle's charge. The query
+# must name the expected head (`actions-runs-head`, else the PR head); any
+# other is recorded in `runs-head-mismatch`, which run_ci_check fails on — a
+# refused read alone would only read as "charged" and hide the wrong query.
+repos/*/actions/runs*)
+    runs_expected="$(cat "$GH_FIXTURES/actions-runs-head" 2>/dev/null || cat "$GH_FIXTURES/head")"
+    runs_queried="${endpoint#*head_sha=}"
+    runs_queried="${runs_queried%%&*}"
+    if [ "$endpoint" = "$runs_queried" ] || [ "$runs_queried" != "$runs_expected" ]; then
+        printf 'queried %s, expected head_sha=%s\n' "$endpoint" "$runs_expected" \
+            >>"$GH_FIXTURES/runs-head-mismatch"
+        echo "gh stub: actions/runs queried for the wrong head: $endpoint" >&2
+        exit 96
+    fi
+    file=actions-runs.pages.json
+    ;;
 repos/*/commits/*)
     jq -cn \
         --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
@@ -313,6 +330,9 @@ write_defaults() {
     # file.
     printf '%s\n' '[{"total_count":0,"check_suites":[]}]' \
         >"${fixtures}/check-suites.pages.json"
+    printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
+        >"${fixtures}/actions-runs.pages.json"
+    rm -f "${fixtures}/actions-runs-head" "${fixtures}/runs-head-mismatch"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
         '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
         base64 | tr -d '\n' >"${fixtures}/registry.b64"
@@ -4992,7 +5012,11 @@ while IFS= read -r flag; do
     # A parsed flag consumes its value and moves on, so the command fails on
     # something LATER (a missing state file, a bad repo) — never by printing
     # usage. An unparsed one prints the usage block and exits 2 immediately.
-    probe_out="$("$helper" show --state /nonexistent/state.json "$flag" probe 2>&1 || true)"
+    # `--read-only` (harmon-devkit#1406) is the one switch that takes no value.
+    probe_value=probe
+    [ "$flag" != --read-only ] || probe_value=
+    # shellcheck disable=SC2086 # an empty probe value must vanish, not be ""
+    probe_out="$("$helper" show --state /nonexistent/state.json "$flag" $probe_value 2>&1 || true)"
     case "$probe_out" in
     *"Usage:"*)
         fail "flag $flag appears in the usage text but is not parsed (missing from the outer allowlist?)"
@@ -8077,13 +8101,13 @@ set -e
 [ "$(jq -r '.attempt' "$state")/$(jq -r '.review_trigger' "$state")" = 2/after-ci ] ||
     fail "the retry must record attempt 2 under after-ci: $(jq -c '{attempt, review_trigger}' "$state")"
 
-# The timing never touches the charge: a review spent on a head whose CI then
-# fails still charges `integration` under every value (the CI-failed exempt
-# charge is tracked separately), and reserve reads no CI to decide it.
+# `reserve` never reads CI: every new cycle is charged there under every value,
+# and only a later terminal `check` can settle a CI-failed with-push /
+# after-ci-first cycle to the exempt ceiling (harmon-devkit#1406, below).
 ci_prev=4444444444444444444444444444444444444444
 ci_new=5555555555555555555555555555555555555555
 for timing_value in with-push after-ci-first after-ci; do
-    echo "==> $timing_value: a review spent on a CI-failed head still charges integration"
+    echo "==> $timing_value: reserve charges every new cycle and reads no CI"
     write_defaults
     rm -f "$state" "${state%.json}.spend.json"
     printf '%s' "$ci_prev" >"${fixtures}/head"
@@ -8157,6 +8181,453 @@ grep -Fq 'refusing an uncontrolled duplicate trigger for this head' <<<"$rerun_o
     fail "the refusal must be the duplicate-trigger guard: $rerun_out"
 [ "$(cat "$state")" = "$rerun_before" ] ||
     fail "a refused re-run reservation must leave the cycle state untouched"
+
+# harmon-devkit#1406: a terminal `check --run-id` settles a with-push /
+# after-ci-first cycle's charge from the latest CI evidence on its head.
+#
+# $1 review trigger; $2 exempt ceiling ("" leaves it undeclared); $3 the
+# remediation pushes so far (omitted: no --remediation). Leaves an attached
+# run-a cycle whose finder has already reacted +1.
+ci_cycle() {
+    write_defaults
+    rm -f "$state" "${state%.json}.spend.json"
+    ci_exempt_flag=
+    [ -z "$2" ] || ci_exempt_flag="--integration-exempt-cap $2"
+    [ -z "${3:-}" ] || ci_exempt_flag="$ci_exempt_flag --remediation $3"
+    # shellcheck disable=SC2086 # optional flag pairs, deliberately split
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+        --attempt 1 --run-id run-a --integration-cap 4 $ci_exempt_flag \
+        --review-trigger "$1" >/dev/null
+    jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+    jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+        '[[{id:9401,user:{id:$id,login:$login,type:"User"},
+            content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+        >"${fixtures}/reactions.pages.json"
+}
+
+# One workflow run of PR 493 at the head. $1 id, $2 workflow id, $3 status,
+# $4 conclusion; $5 an optional jq edit applied to the run.
+ci_run() {
+    jq -cn --argjson id "$1" --argjson wf "$2" --arg status "$3" --arg conclusion "$4" \
+        --arg head "$head_sha" '{
+          id:$id, workflow_id:$wf, name:"CI", event:"pull_request", head_sha:$head,
+          status:$status, conclusion:(if $conclusion == "" then null else $conclusion end),
+          head_branch:"feature", head_repository:{full_name:"example/repo"},
+          pull_requests:[{number:493, base:{repo:{url:"https://api.github.com/repos/example/repo"}}}]
+        }' | jq -c "${5:-.}"
+}
+
+# The listing GitHub returns for the head: the runs given, one per argument.
+ci_runs() {
+    printf '%s\n' "$@" | jq -cs '[{total_count:length, workflow_runs:.}]' \
+        >"${fixtures}/actions-runs.pages.json"
+}
+
+# check as the run that owns the state ($1 overrides the run id; "" omits it).
+run_ci_check() {
+    ci_run_flag="--run-id ${1-run-a}"
+    [ -n "${1-run-a}" ] || ci_run_flag=
+    set +e
+    # shellcheck disable=SC2086 # one optional flag pair, deliberately split
+    check_out="$("$helper" check --state "$state" --actor-id "$actor_id" \
+        --actor-login "$actor_login" --timeout-min 15 --now '2026-07-31T08:01:00Z' \
+        $ci_run_flag 2>/dev/null)"
+    check_rc=$?
+    set -e
+    [ ! -f "${fixtures}/runs-head-mismatch" ] ||
+        fail "the CI read queried the wrong head: $(cat "${fixtures}/runs-head-mismatch")"
+}
+
+# $1 expected charged/exempt split, $2 case label.
+assert_ci_charge() {
+    actual="$(jq -r '"\(.charged_cycles)/\(.exempt_cycles)"' "$state")"
+    [ "$actual" = "$1" ] ||
+        fail "$2: expected charged/exempt $1, got $actual ($(jq -r '.charge_reason' "$state"))"
+    spend="$(jq -r '.["run-a"] | "\(.charged)/\(.exempt)"' "${state%.json}.spend.json")"
+    [ "$spend" = "$1" ] || fail "$2: the run-spend sidecar must agree, got $spend"
+}
+
+ci_failed="$(ci_run 11 7 completed failure)"
+ci_green="$(ci_run 11 7 completed success)"
+
+# Thread 4260347189: what decides it is the cycle's EFFECTIVE order. with-push
+# is with-push on every head; after-ci-first is after-ci on the PR's first head
+# (and when --remediation was not supplied) and with-push after a remediation push.
+for ci_order_case in "with-push||with-push" "with-push|0|with-push" "after-ci-first|1|with-push" \
+    "after-ci-first|0|after-ci" "after-ci-first||after-ci"; do
+    ci_trigger="${ci_order_case%%|*}"
+    ci_rest="${ci_order_case#*|}"
+    ci_remediation="${ci_rest%%|*}"
+    ci_order="${ci_rest#*|}"
+    echo "==> $ci_trigger after '${ci_remediation:-no}' remediation push(es) records order $ci_order"
+    ci_cycle "$ci_trigger" 4 "$ci_remediation"
+    [ "$(jq -r '.review_order' "$state")" = "$ci_order" ] ||
+        fail "$ci_order_case: expected review_order $ci_order, got $(jq -r '.review_order' "$state")"
+    ci_runs "$ci_failed" "$(ci_run 12 8 completed success)"
+    run_ci_check
+    assert_status 0 clean
+    if [ "$ci_order" = with-push ]; then
+        assert_ci_charge 0/1 "$ci_order_case CI-failed head"
+        [ "$(jq -r '.charge' "$state")" = exempt ] &&
+            [ "$(jq -c '.ci_exempt.failed_runs' "$state")" = '["CI #11"]' ] ||
+            fail "$ci_order_case: the exempt charge must name the failed run: $(jq -c '{charge, ci_exempt}' "$state")"
+    else
+        assert_ci_charge 1/0 "$ci_order_case: an after-ci cycle never settles exempt"
+    fi
+done
+
+echo "==> attempt 2 refuses a remediation count that changes the recorded order"
+ci_cycle after-ci-first 4 0
+jq '.requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+order_before="$(cat "$state")"
+set +e
+order_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 2 --run-id run-a --remediation 1 2>&1)"
+order_rc=$?
+set -e
+[ "$order_rc" -ne 0 ] && grep -Fq 'but attempt 1 was reserved under after-ci' <<<"$order_out" ||
+    fail "attempt 2 must refuse an order attempt 1 was not reserved under: rc=$order_rc $order_out"
+[ "$(cat "$state")" = "$order_before" ] || fail "a refused retry must leave the state untouched"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 2 --run-id run-a --remediation 0 >/dev/null ||
+    fail "attempt 2 restating the remediation count must succeed"
+[ "$(jq -r '.review_order' "$state")" = after-ci ] || fail "attempt 2 must keep the recorded order"
+# The cases below start from a settled with-push cycle.
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+run_ci_check
+assert_ci_charge 0/1 "a settled with-push cycle"
+
+echo "==> a settled charge is idempotent: unchanged evidence writes nothing"
+settled_state="$(cat "$state")"
+settled_spend="$(cat "${state%.json}.spend.json")"
+run_ci_check
+assert_status 0 clean
+[ "$(cat "$state")" = "$settled_state" ] &&
+    [ "$(cat "${state%.json}.spend.json")" = "$settled_spend" ] ||
+    fail "a re-check on unchanged evidence must leave state and sidecar byte-identical"
+
+echo "==> attempt 2 of a settled cycle keeps its settlement and its exempt ceiling"
+jq '.requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 2 --run-id run-a >/dev/null
+[ "$(jq -c '[.charge, .integration_exempt_cap, (.ci_exempt != null), .charged_cycles, .exempt_cycles]' "$state")" = '["exempt",4,true,0,1]' ] ||
+    fail "attempt 2 must keep the settled charge: $(jq -c '{charge, integration_exempt_cap, ci_exempt, charged_cycles, exempt_cycles}' "$state")"
+
+# challenge-r2-codex-adversarial-1: attempt 2 may only restate the exempt
+# ceiling attempt 1 recorded, exactly as it may only restate the trigger.
+# $1 attempt 1's ceiling ("" = undeclared), $2 attempt 2's flag value ("" = omitted).
+ci_retry() {
+    ci_cycle with-push "$1"
+    jq '.requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    retry_before="$(cat "$state")"
+    retry_flag=
+    [ -z "$2" ] || retry_flag="--integration-exempt-cap $2"
+    set +e
+    # shellcheck disable=SC2086 # one optional flag pair, deliberately split
+    retry_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 2 --run-id run-a --integration-cap 4 $retry_flag 2>&1)"
+    retry_rc=$?
+    set -e
+}
+for retry_case in "4|0" "|4"; do
+    echo "==> attempt 2 refuses an exempt ceiling attempt 1 was not reserved under (${retry_case})"
+    ci_retry "${retry_case%%|*}" "${retry_case#*|}"
+    [ "$retry_rc" -ne 0 ] &&
+        grep -Fq 'disagrees with the exempt ceiling attempt 1 was reserved under' <<<"$retry_out" ||
+        fail "attempt 2 must refuse a different exempt ceiling: rc=$retry_rc $retry_out"
+    [ "$(cat "$state")" = "$retry_before" ] || fail "a refused retry must leave the state untouched"
+done
+for retry_flag_value in 4 ""; do
+    echo "==> attempt 2 with the recorded exempt ceiling ${retry_flag_value:-omitted} keeps it"
+    ci_retry 4 "$retry_flag_value"
+    [ "$retry_rc" -eq 0 ] || fail "attempt 2 restating or omitting the ceiling must succeed: $retry_out"
+    [ "$(jq -c '[.attempt, .integration_exempt_cap]' "$state")" = '[2,4]' ] ||
+        fail "attempt 2 must keep the recorded ceiling: $(jq -c '{attempt, integration_exempt_cap}' "$state")"
+done
+
+echo "==> a flaky failure re-run to green moves the cycle back to charged"
+ci_cycle with-push 4
+reserved_reason="$(jq -r '.charge_reason' "$state")"
+ci_runs "$ci_failed"
+run_ci_check
+assert_ci_charge 0/1 "before the re-run"
+# The same run id, its latest attempt now green.
+ci_runs "$(ci_run 11 7 completed success '.run_attempt = 2')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "flake re-run to green"
+[ "$(jq -r '.charge' "$state")/$(jq -r '.ci_exempt' "$state")" = charged/null ] &&
+    [ "$(jq -r '.charge_reason' "$state")" = "$reserved_reason" ] ||
+    fail "the revert must restore the reservation's charge: $(jq -c '{charge, charge_reason, ci_exempt}' "$state")"
+
+echo "==> a CI-green head stays charged"
+ci_cycle with-push 4
+ci_runs "$ci_green"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "CI-green head"
+
+# Indeterminate evidence charges: a run still pending beside the failure,
+# conclusions that never prove a failure, an empty or incomplete listing, an
+# unreadable one, and a failed run superseded by a newer run of its workflow.
+for ci_case in pending cancelled timed_out action_required neutral skipped stale \
+    no-runs incomplete unreadable superseded; do
+    echo "==> indeterminate CI evidence ($ci_case) stays charged"
+    ci_cycle with-push 4
+    case "$ci_case" in
+    pending) ci_runs "$ci_failed" "$(ci_run 12 8 in_progress '')" ;;
+    no-runs) ci_runs ;;
+    incomplete)
+        ci_runs "$ci_failed"
+        jq '.[0].total_count = 2' "${fixtures}/actions-runs.pages.json" \
+            >"${fixtures}/actions-runs.pages.json.next"
+        mv "${fixtures}/actions-runs.pages.json.next" "${fixtures}/actions-runs.pages.json"
+        ;;
+    unreadable)
+        ci_runs "$ci_failed"
+        printf '%s' 'actions/runs' >"${fixtures}/fail-endpoint"
+        ;;
+    superseded) ci_runs "$ci_failed" "$(ci_run 12 7 completed success)" ;;
+    *) ci_runs "$(ci_run 11 7 completed "$ci_case")" ;;
+    esac
+    run_ci_check
+    assert_status 0 clean
+    assert_ci_charge 1/0 "$ci_case"
+done
+
+# integration-r1-codex-cloud-3: pending is read from the newest run of each
+# workflow and event, exactly as failure is.
+echo "==> an obsolete queued run superseded by a newer failed run settles exempt"
+ci_cycle with-push 4
+ci_runs "$(ci_run 11 7 queued '')" "$(ci_run 12 7 completed failure)"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 0/1 "obsolete queued run, newer failed run"
+echo "==> a newest run of the failed workflow still pending keeps the cycle charged"
+ci_cycle with-push 4
+ci_runs "$ci_failed" "$(ci_run 12 7 in_progress '')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "older failed run, newer run still pending"
+
+echo "==> a fork PR's same-named branch in the base repository is not evidence"
+ci_cycle with-push 4
+jq '.head.ref = "feature" | .head.repo = {full_name:"fork/repo"}' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+base_branch_failure="$(ci_run 11 7 completed failure '.event = "push" | .pull_requests = []')"
+ci_runs "$base_branch_failure"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "base-repository branch named like the fork's"
+# Positive control: the same run on the fork's own head repository is this PR's.
+ci_cycle with-push 4
+jq '.head.ref = "feature" | .head.repo = {full_name:"fork/repo"}' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+ci_runs "$(jq -c '.head_repository.full_name = "fork/repo"' <<<"$base_branch_failure")"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 0/1 "the fork's own head-branch run"
+# Nor does a pull_requests entry naming PR 493 of another repository count.
+ci_cycle with-push 4
+ci_runs "$(ci_run 11 7 completed failure '.head_branch = "other" |
+    .pull_requests[0].base.repo.url = "https://api.github.com/repos/someone/else"')"
+run_ci_check
+assert_ci_charge 1/0 "another repository's PR 493"
+
+# challenge-r1-codex-adversarial-1: two PRs from one branch share its head
+# branch and head repository, so a run that names another PR must stay that
+# PR's, even when it is the newer run of the same workflow and event.
+echo "==> another PR's newer failed run on the same branch is not this PR's evidence"
+ci_cycle with-push 4
+jq '.head.ref = "feature" | .head.repo = {full_name:"example/repo"}' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+ci_runs "$ci_green" "$(ci_run 12 7 completed failure '.pull_requests[0].number = 494')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "another PR's run on the same branch"
+
+# challenge-r1-codex-adversarial-2: the state is written before the sidecar, and
+# a sidecar write that fails restores the state, so the two never disagree.
+echo "==> a sidecar write that fails leaves the settled state as it was"
+ci_cycle with-push 4
+ci_runs "$ci_green"
+run_ci_check
+assert_ci_charge 1/0 "before the failed sidecar write"
+unsettled_state="$(cat "$state")"
+rm -f "${state%.json}.spend.json"
+mkdir "${state%.json}.spend.json"
+ci_runs "$ci_failed"
+run_ci_check
+rmdir "${state%.json}.spend.json"
+[ "$check_rc" -eq 2 ] || fail "a failed sidecar write must stop the verdict, got rc $check_rc: $check_out"
+[ "$(cat "$state")" = "$unsettled_state" ] ||
+    fail "a failed sidecar write must restore the state: $(jq -c '{charge, charged_cycles, exempt_cycles, ci_exempt}' "$state")"
+
+# review-r1-codex-verification-1: the listing is trusted only for runs whose
+# own head_sha is the cycle head, whatever the query asked for.
+echo "==> a failed run whose head_sha is a different commit leaves the cycle charged"
+ci_cycle with-push 4
+ci_runs "$(ci_run 11 7 completed failure '.head_sha = "1111111111111111111111111111111111111111"')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "a failed run on another commit"
+# Positive control: the same listing with the cycle head's SHA settles exempt.
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+run_ci_check
+assert_ci_charge 0/1 "the same failed run on the cycle head"
+
+echo "==> the CI read queries the cycle head, and the mock fails loudly on any other"
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+printf '%s' 2222222222222222222222222222222222222222 >"${fixtures}/actions-runs-head"
+set +e
+mock_out="$(run_ci_check 2>&1)"
+mock_rc=$?
+set -e
+[ "$mock_rc" -ne 0 ] && grep -Fq 'queried the wrong head' <<<"$mock_out" ||
+    fail "the actions/runs mock must fail loudly on a head it was not told to expect: rc=$mock_rc $mock_out"
+rm -f "${fixtures}/actions-runs-head" "${fixtures}/runs-head-mismatch"
+
+# Thread 4260347198: a pull_request run naming this PR among others cannot be
+# attributed, and its presence keeps the head charged — whether it failed or is
+# still pending beside another run of this PR that failed.
+echo "==> a run naming this PR among others never proves a failure"
+ci_two_prs='.pull_requests += [{number:494, base:{repo:{url:"https://api.github.com/repos/example/repo"}}}]'
+ci_cycle with-push 4
+ci_runs "$(ci_run 11 7 completed failure "$ci_two_prs")"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "an ambiguous failed run"
+ci_cycle with-push 4
+ci_runs "$ci_failed" "$(ci_run 12 8 in_progress '' "$ci_two_prs")"
+run_ci_check
+assert_ci_charge 1/0 "an ambiguous pending run beside a failure"
+
+# Thread 4260347206: pull_requests[] decides ownership only for pull_request
+# events; any other event is this PR's only on its head branch and repository.
+echo "==> a push run is scoped by branch and repository, never by pull_requests"
+ci_cycle with-push 4
+jq '.head.ref = "feature" | .head.repo = {full_name:"example/repo"}' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+ci_runs "$(ci_run 11 7 completed failure '.event = "push" | .pull_requests[0].number = 494')"
+run_ci_check
+assert_ci_charge 0/1 "a push run on this branch naming a sibling PR"
+ci_cycle with-push 4
+jq '.head.ref = "feature" | .head.repo = {full_name:"example/repo"}' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+ci_runs "$(ci_run 11 7 completed failure '.event = "push" | .head_branch = "other"')"
+run_ci_check
+assert_ci_charge 1/0 "a push run on another branch naming this PR"
+
+# Thread 4260347217: a settlement interrupted after the state write leaves the
+# sidecar stale; the next terminal check on unchanged evidence repairs it.
+echo "==> unchanged evidence repairs a stale run-spend sidecar"
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+run_ci_check
+assert_ci_charge 0/1 "settled before the sidecar goes stale"
+repair_state="$(cat "$state")"
+jq '.["run-a"] = {charged:1, exempt:0}' "${state%.json}.spend.json" >"${state}.spend.next"
+mv "${state}.spend.next" "${state%.json}.spend.json"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 0/1 "the repaired sidecar"
+[ "$(cat "$state")" = "$repair_state" ] || fail "repairing the sidecar must leave the state as it was"
+
+# Threads 4260347229/-240: the readiness gate's recheck is `check --read-only`,
+# and `ci-split` reports the split CI implies; neither writes anything.
+echo "==> check --read-only and ci-split write nothing, even when CI evidence changed"
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+ro_state="$(cat "$state")"
+ro_spend="$(cat "${state%.json}.spend.json")"
+set +e
+check_out="$("$helper" check --state "$state" --actor-id "$actor_id" --actor-login "$actor_login" \
+    --timeout-min 15 --now '2026-07-31T08:01:00Z' --run-id run-a --read-only 2>/dev/null)"
+check_rc=$?
+set -e
+assert_status 0 clean
+split_out="$("$helper" ci-split --state "$state" --run-id run-a)" ||
+    fail "ci-split must answer for this run's state"
+[ "$(jq -c '[.recorded, .settled]' <<<"$split_out")" = '[{"charged":1,"exempt":0},{"charged":0,"exempt":1}]' ] ||
+    fail "ci-split must report the recorded and the CI-settled split: $split_out"
+[ "$(cat "$state")" = "$ro_state" ] && [ "$(cat "${state%.json}.spend.json")" = "$ro_spend" ] ||
+    fail "check --read-only and ci-split must leave the state and sidecar byte-identical"
+[ ! -e "${state}.lock" ] || fail "a read-only check must release its advisory lock"
+if "$helper" ci-split --state "$state" --run-id run-b >/dev/null 2>&1; then
+    fail "ci-split must refuse another run's state"
+fi
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --read-only >/dev/null 2>&1; then
+    fail "--read-only must be refused outside check"
+fi
+[ "$(cat "$state")" = "$ro_state" ] || fail "a refused --read-only reserve must leave the state untouched"
+# The ordinary check then settles it, and ci-split agrees with the state.
+run_ci_check
+assert_ci_charge 0/1 "the direct check after the read-only one"
+[ "$("$helper" ci-split --state "$state" --run-id run-a | jq -c '.recorded == .settled')" = true ] ||
+    fail "after settling, ci-split must report no difference"
+
+echo "==> after-ci never settles a cycle exempt for a CI failure, and reads no CI"
+ci_cycle after-ci 4
+ci_runs "$ci_failed"
+: >"$log"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "after-ci"
+! grep -Fq 'actions/runs' "$log" || fail "after-ci must read no CI to settle a charge"
+
+echo "==> no exempt ceiling — undeclared, 0, or spent — leaves the failed cycle charged"
+for ci_cap in "" 0; do
+    ci_cycle with-push "$ci_cap"
+    ci_runs "$ci_failed"
+    run_ci_check
+    assert_ci_charge 1/0 "exempt ceiling '${ci_cap:-undeclared}'"
+done
+ci_cycle with-push 4
+jq '.charged_cycles = 1 | .exempt_cycles = 4' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq '.["run-a"] = {charged:1, exempt:4}' "${state%.json}.spend.json" >"${state}.spend.next"
+mv "${state}.spend.next" "${state%.json}.spend.json"
+ci_runs "$ci_failed"
+run_ci_check
+assert_ci_charge 1/4 "spent exempt ceiling"
+
+echo "==> a base-merge exemption is never re-settled from CI"
+ci_cycle with-push 4
+jq '.charge = "exempt" | .charge_reason = "base merge touched no file under review" |
+    .charged_cycles = 0 | .exempt_cycles = 1' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq '.["run-a"] = {charged:0, exempt:1}' "${state%.json}.spend.json" >"${state}.spend.next"
+mv "${state}.spend.next" "${state%.json}.spend.json"
+ci_runs "$ci_green"
+run_ci_check
+assert_ci_charge 0/1 "base-merge exemption on a green head"
+[ "$(jq -r '.ci_exempt' "$state")" = null ] || fail "a base-merge exemption must not gain a CI record"
+
+echo "==> an unscoped check settles nothing, and another run's check touches nothing"
+ci_cycle with-push 4
+ci_runs "$ci_failed"
+run_ci_check ""
+assert_status 0 clean
+assert_ci_charge 1/0 "unscoped check"
+foreign_before="$(cat "$state")"
+run_ci_check run-b
+[ "$check_rc" -eq 2 ] || fail "another run's check must be refused, got rc $check_rc: $check_out"
+[ "$(cat "$state")" = "$foreign_before" ] || fail "another run's check must leave the state untouched"
+assert_ci_charge 1/0 "another run's check"
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

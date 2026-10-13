@@ -19,9 +19,10 @@ on:
   merge_group:
   workflow_dispatch:
 
+# Metadata edits cancel only this cheap guard, never Build & Validate.
 concurrency:
-  group: closing-keywords-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: closing-keywords-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
