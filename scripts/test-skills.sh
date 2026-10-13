@@ -11271,6 +11271,8 @@ expect_ok "integrate: the solo promote example carries every required argument (
     grep -qF -- '--run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh' "$INTEGRATE_MD"
 expect_ok "integrate: a run without a record uses AGENTS.md's hand-run readiness procedure (#1183 r2-1)" \
     grep -qF '**The scripted gate applies only when a record exists.**' "$INTEGRATE_MD"
+expect_ok "review: the verification call reads the per-stage ledger and the shared head map (#1183 R4)" \
+    grep -qF -- '--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only' "$REVIEW_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
     grep -qF './scripts/test-inline-record.sh' "$repo/Taskfile.yml"
 

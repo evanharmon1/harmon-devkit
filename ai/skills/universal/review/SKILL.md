@@ -299,9 +299,13 @@ is a blocker, never a smaller round disguised as complete.
 
 Before adjudication, run `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage
 <stage> --policy <policy> --current-head <head> --repo-root <trusted-repo>
---history <record>/history.json --heads <record>/heads.json --verification-only
+--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only
 --json`, capturing both its status and JSON projection. Materialize the trusted history and head map from the feature-owner's
-verified branch state before dispatch; never let a finder supply them. Its
+verified branch state before dispatch; never let a finder supply them. The
+change ledger is per stage — `<record>/history.<stage>.json` for the stage
+being verified, never a shared `history.json`, because its entries carry only
+round and path — and the head map `<record>/heads.json` is shared by both
+stages (`run-record.mjs ledger --stage <stage>` writes both). Its
 provenance and fingerprint corrections are preconditions, not an advisory
 reviewer assertion. A recognized terminal nonzero status with a valid blocker
 projection is handled as that blocker. Any other command failure, missing or
