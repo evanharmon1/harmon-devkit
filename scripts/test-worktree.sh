@@ -2603,7 +2603,7 @@ git -C "$fixture" commit -qm "chore: add package.json" >"$test_tmp/commit.log" 2
         fail "committing package.json in the fixture failed"
     }
 new node-tree >/dev/null || fail "worktree-new.sh failed on a Node repo"
-grep -qx "install --frozen-lockfile $fixture/.worktrees/node-tree" "$pnpm_marker" 2>/dev/null ||
+grep -Fxq "install --frozen-lockfile $fixture/.worktrees/node-tree" "$pnpm_marker" 2>/dev/null ||
     fail "worktree-new.sh did not run 'pnpm install --frozen-lockfile' inside the new tree"
 rm_wt node-tree >/dev/null || fail "cleanup of the node tree failed"
 
@@ -2618,7 +2618,7 @@ git -C "$fixture" add -A
 LEFTHOOK=0 git -C "$fixture" commit -qm "chore: workspace without a root manifest" >"$test_tmp/commit.log" 2>&1 ||
     fail "committing the workspace-only layout failed"
 new workspace-tree >/dev/null || fail "worktree-new.sh failed on a manifest-less pnpm workspace"
-grep -qx "install $fixture/.worktrees/workspace-tree" "$pnpm_marker" 2>/dev/null ||
+grep -Fxq "install $fixture/.worktrees/workspace-tree" "$pnpm_marker" 2>/dev/null ||
     fail "worktree-new.sh skipped pnpm install for a pnpm-workspace.yaml-only repo"
 rm_wt workspace-tree >/dev/null || fail "cleanup of the workspace tree failed"
 printf '{"name":"fixture","private":true}\n' >"$fixture/package.json"
@@ -2677,7 +2677,7 @@ det_assert_installer() {
     # exist).
     for det_name in pnpm npm yarn bun; do
         if [ "$det_name" = "$1" ]; then
-            grep -qx "$2 $3" "$test_tmp/$det_name-invoked" 2>/dev/null ||
+            grep -Fxq "$2 $3" "$test_tmp/$det_name-invoked" 2>/dev/null ||
                 fail "worktree-new.sh did not run '$det_name $2' inside $3"
         elif [ -s "$test_tmp/$det_name-invoked" ]; then
             fail "worktree-new.sh invoked $det_name in a tree whose manager is '${1:-none}'"
@@ -2884,7 +2884,7 @@ chmod +x "$shared_hooks/post-checkout"
 : >"$pnpm_marker"
 : >"$test_tmp/post-checkout.log"
 new ordered-tree >/dev/null || fail "worktree-new.sh failed with a dependency-using post-checkout hook"
-grep -qx "post-checkout $fixture/.worktrees/ordered-tree" "$test_tmp/post-checkout.log" 2>/dev/null ||
+grep -Fxq "post-checkout $fixture/.worktrees/ordered-tree" "$test_tmp/post-checkout.log" 2>/dev/null ||
     fail "post-checkout did not run in the new tree after provisioning"
 rm_wt ordered-tree >/dev/null || fail "cleanup of the ordered tree failed"
 rm -f "$shared_hooks/post-checkout"
@@ -2923,7 +2923,7 @@ tail -f /dev/null >"$test_tmp/hostile-stdin" &
 WORKTREE_STDIN_HOLDER=$!
 new no-install-tree --no-install <"$test_tmp/hostile-stdin" >/dev/null ||
     fail "worktree-new.sh --no-install failed under a non-EOF stdin"
-grep -qx "post-checkout-eof $fixture/.worktrees/no-install-tree" "$test_tmp/post-checkout.log" 2>/dev/null ||
+grep -Fxq "post-checkout-eof $fixture/.worktrees/no-install-tree" "$test_tmp/post-checkout.log" 2>/dev/null ||
     fail "the deferred post-checkout never reached EOF on its stdin — is it still tied to the caller's stdin? (harmon-init#802)"
 kill "$WORKTREE_STDIN_HOLDER" 2>/dev/null || true
 wait "$WORKTREE_STDIN_HOLDER" 2>/dev/null || true
@@ -3115,9 +3115,9 @@ fi
 # Anchored on the LOCATION clause, not on the path alone: the real path also
 # appears in the `git worktree remove` remedy, so a bare substring match stays
 # green even when the clause names the constructed path instead (mutant N3).
-grep -q "names the worktree at $outside_root/parked" "$rm_out" ||
+grep -Fq "names the worktree at $(printf '%q' "$outside_root/parked")" "$rm_out" ||
     fail "the refusal did not name where the worktree actually is (#963): $(cat "$rm_out")"
-grep -q "names the worktree at $fixture/.worktrees/parked" "$rm_out" &&
+grep -Fq "names the worktree at $(printf '%q' "$fixture/.worktrees/parked")" "$rm_out" &&
     fail "the refusal located the worktree at the constructed path, which does not exist (#963): $(cat "$rm_out")"
 # The refusal must NOT hand over `git worktree remove`: that command applies
 # none of this script's guards — it deletes ignored files such as .env and
@@ -3150,7 +3150,7 @@ rm_moved="$test_tmp/rm-moved.log"
 if rm_wt movedrec >"$rm_moved" 2>&1; then
     fail "worktree:rm reported success for a record name whose directory moved (#963): $(cat "$rm_moved")"
 fi
-grep -q "names the worktree at $fixture/.worktrees/movednew" "$rm_moved" ||
+grep -Fq "names the worktree at $(printf '%q' "$fixture/.worktrees/movednew")" "$rm_moved" ||
     fail "the refusal did not name the moved worktree's current directory (#963): $(cat "$rm_moved")"
 grep -q 'no worktree or admin record named' "$rm_moved" &&
     fail "the record name resolved to nothing — resolution no longer matches admin-record names (#963): $(cat "$rm_moved")"
@@ -3182,7 +3182,7 @@ rm_mainbase="$test_tmp/rm-mainbase.log"
 if rm_wt "$main_base" >"$rm_mainbase" 2>&1; then
     fail "worktree:rm accepted the main checkout's own basename (#963): $(cat "$rm_mainbase")"
 fi
-grep -q "names the worktree at $fixture " "$rm_mainbase" &&
+grep -Fq "names the worktree at $(printf '%q' "$fixture")" "$rm_mainbase" &&
     fail "worktree:rm resolved the main checkout as a removable worktree (#963): $(cat "$rm_mainbase")"
 grep -q "no worktree or admin record named" "$rm_mainbase" ||
     fail "the main checkout's basename did not fall through to the no-match branch (#963): $(cat "$rm_mainbase")"
@@ -3198,7 +3198,7 @@ rm_samebase="$test_tmp/rm-samebase.log"
 if rm_wt "$main_base" >"$rm_samebase" 2>&1; then
     fail "worktree:rm reported success for a same-basename linked worktree (#963): $(cat "$rm_samebase")"
 fi
-grep -q "names the worktree at $samebase_root/$main_base" "$rm_samebase" ||
+grep -Fq "names the worktree at $(printf '%q' "$samebase_root/$main_base")" "$rm_samebase" ||
     fail "resolution missed a linked worktree sharing the main checkout's basename (#963): $(cat "$rm_samebase")"
 git -C "$fixture" worktree remove --force "$samebase_root/$main_base"
 
@@ -3268,9 +3268,9 @@ if rm_wt twin >"$rm_amb" 2>&1; then
 fi
 grep -q 'is ambiguous' "$rm_amb" ||
     fail "an ambiguous name did not report ambiguity (#963): $(cat "$rm_amb")"
-grep -q "$amb_root/a/twin" "$rm_amb" && grep -q "$amb_root/b/twin" "$rm_amb" ||
+grep -Fxq "  $(printf '%q' "$amb_root/a/twin")" "$rm_amb" && grep -Fxq "  $(printf '%q' "$amb_root/b/twin")" "$rm_amb" ||
     fail "the ambiguity refusal did not name both colliding worktrees (#963): $(cat "$rm_amb")"
-grep -q 'bystander' "$rm_amb" &&
+grep -Fxq "  $(printf '%q' "$amb_root/unrelated/bystander")" "$rm_amb" &&
     fail "the ambiguity refusal listed an unrelated worktree as a collision (#963): $(cat "$rm_amb")"
 git -C "$fixture" worktree remove --force "$amb_root/a/twin"
 git -C "$fixture" worktree remove --force "$amb_root/b/twin"
@@ -3319,7 +3319,7 @@ git -C "$fixture" worktree add -q "$outcone_list/stray" -b feat/outcone-listing 
     fail "could not create the #963 out-of-cone listing fixture"
 rm_list2="$test_tmp/rm-listing-outcone.log"
 rm_wt definitely-absent-name >"$rm_list2" 2>&1 || true
-grep -qE "^  \(not removable here\)  .*$outcone_list/stray" "$rm_list2" ||
+grep -Fxq "  (not removable here)  $(printf '%q' "$outcone_list/stray")" "$rm_list2" ||
     fail "the listing advertised an out-of-cone worktree under a name this command cannot take (#963): $(cat "$rm_list2")"
 git -C "$fixture" worktree remove --force "$outcone_list/stray"
 git -C "$fixture" worktree remove --force ".worktrees/feat/deep"
@@ -3512,7 +3512,7 @@ ning"
             fail "worktree:rm resolved a spanning path on a git without -z (#963): $(cat "$rm_oldgit")"
         grep -q 'cannot look up' "$rm_oldgit" ||
             fail "the pre-2.36 path did not refuse registry lookup (#963): $(cat "$rm_oldgit")"
-        grep -qi 'removed' "$rm_oldgit" &&
+        grep -Fqi 'removed:' "$rm_oldgit" &&
             fail "the pre-2.36 refusal still claimed a removal (#963): $(cat "$rm_oldgit")"
         git -C "$fixture" worktree remove --force "$oldgit_tree"
     else
