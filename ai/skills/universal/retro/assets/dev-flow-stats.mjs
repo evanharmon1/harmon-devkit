@@ -1641,7 +1641,7 @@ function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds, eff
 // Published round payloads carry reviewed heads, but no per-fix change
 // ledger. Heads alone cannot establish line provenance, so reconstruction
 // leaves attribution unverified. Local records can supply the retained
-// history.json/heads.json pair through the frozen snapshot below.
+// history.<stage>.json/heads.json through the frozen snapshot below.
 // ---------------------------------------------------------------------------
 
 function buildRunDirectory(runRecord, roundEvidence, destDir) {
@@ -2113,7 +2113,7 @@ function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, polic
     exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath,
     "--current-head", currentHead, "--repo-root", repoRoot, "--verification-only", "--json",
   ];
-  for (const [flag, file] of [["--history", "history.json"], ["--heads", "heads.json"]]) {
+  for (const [flag, file] of [["--history", `history.${stage}.json`], ["--heads", "heads.json"]]) {
     const source = path.join(ledgerDir, file);
     if (existsSync(source)) argv.push(flag, source);
   }
@@ -2195,10 +2195,11 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // Optional provenance evidence belongs to the same frozen record as
     // the passes. Never synthesize an empty ledger when one is absent, and
     // copy present bytes unchanged so the engine reports malformed evidence.
-    for (const file of ["history.json", "heads.json"]) {
+    // Stage-less history.json has no stage binding and is never consumed.
+    for (const file of ["history.challenge.json", "history.review.json", "heads.json"]) {
       const candidate = path.join(runDir, file);
       if (existsSync(candidate)) {
-        const source = resolveContainedPath(root, candidate, `${runId}/${file}`);
+        const source = resolveContainedPath(runDir, candidate, `${runId}/${file} (selected run)`);
         copyFileSync(source, path.join(engineSnapshotDir, file));
       }
     }
