@@ -148,10 +148,10 @@
 # never a state file this script creates or owns. `check` takes only a
 # transient advisory lock beside STATE_FILE (mkdir/rmdir, non-blocking) and,
 # for a state file already carrying a persisted timeout_min — every state
-# file a current integrator run produces — rewrites only what a terminal
-# verdict records: the reviewed-head marker, identical on a re-check, and a
-# with-push / after-ci-first cycle's charge when newer CI evidence settles it
-# differently (harmon-devkit#1406, re-compared after the recheck); it is not
+# file a current integrator run produces — writes nothing else: it runs
+# `check --read-only`, which records no marker and settles no charge, and the
+# CI-settled charge is compared through `ci-split`, read-only too
+# (harmon-devkit#1406, step 11 below); it is not
 # exempt from the "gate writes nothing" claim above, only the one caller
 # that legitimately re-runs another script's read path instead of reading a
 # file directly. Without --integrator-result the same live check is the primary cycle
@@ -800,7 +800,7 @@ recheck_codex_freshness() {
     # run can replace the shared same-head state, so without the run id this
     # call would happily validate a foreign run's cycle. `active_run_id` is
     # read from --record's run.json well before this runs.
-    codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
+    codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" --read-only 2>&1)" ||
         codex_recheck_exit=$?
     # harmon-devkit#508: exit 16 means the checker could not READ the evidence,
     # not that the cached clean result went stale. This is the exact shape the
@@ -827,7 +827,7 @@ recheck_codex_freshness() {
         # run can replace the shared same-head state, and an unscoped retry
         # would accept that foreign run's cycle and settlements instead of
         # refusing the ownership mismatch.
-        codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" 2>&1)" ||
+        codex_recheck_output="$("$codex_checker" check --state "$recheck_state_input" --actor-id "$codex_actor_id" --run-id "$active_run_id" --repo-dir "$codex_repo_dir" --read-only 2>&1)" ||
             codex_recheck_exit=$?
         [ "$codex_recheck_exit" -ne 16 ] ||
             indeterminate codex-transient-read "live Codex check could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating unknown evidence as stale: $codex_recheck_output"
@@ -1826,22 +1826,7 @@ if [ "$codex_cycle" != null ]; then
             indeterminate codex-carried-unproven "codex_cycle says the verdict was carried from $cycle_carried_origin but the checker state's cycle is ${state_cycle_head:-none}"
     fi
     case "$codex_exit" in
-    0)
-        if [ -n "$integrator_result" ]; then
-            recheck_codex_freshness
-            # harmon-devkit#1406: that live `check` settles a with-push or
-            # after-ci-first cycle's charge from the latest CI evidence, so it
-            # can move the cycle between the two counters after the split
-            # above was confirmed — a flaky failure re-run to green is the
-            # case. The result then reports spend the state no longer records.
-            if [ -n "${cycle_charged:-}" ] && [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ]; then
-                resettled_split="$(jq -r '"\(.charged_cycles)/\(.exempt_cycles)"' \
-                    "$cycle_state_file" 2>/dev/null)" || resettled_split=
-                [ "$resettled_split" = "$cycle_charged/$cycle_exempt" ] ||
-                    indeterminate codex-cap-mismatch "the live Codex check re-settled this cycle's charge from newer CI evidence: codex_cycle reports charged/exempt $cycle_charged/$cycle_exempt but the checker state now records ${resettled_split:-unreadable counters} — dispatch the integrator again so its result reports the settled spend"
-            fi
-        fi
-        ;;
+    0) [ -z "$integrator_result" ] || recheck_codex_freshness ;;
     *) exit_condition codex "$codex_exit" "the current-head Codex cycle" ;;
     esac
 elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
@@ -2289,6 +2274,20 @@ fi
 # content fingerprint by design, and a pass printed over red CI is exactly
 # the failure this script exists to make impossible.
 evaluate_checks
+
+# 11b. harmon-devkit#1406: a with-push cycle's charge is settled from CI
+# evidence by the integrator's own `check`, never by this gate. So ask the
+# checker, read-only, what split the latest CI implies — AFTER the final checks
+# read, so no evidence older than it can leave an exemption standing on a
+# ready verdict (thread 4260347252) — and refuse a state that records another.
+if [ "$codex_cycle" != null ] && [ -n "${cycle_state_file:-}" ] && [ -f "$cycle_state_file" ]; then
+    [ -x "$codex_checker" ] ||
+        indeterminate codex-cap-mismatch "$codex_checker is missing — cannot confirm the cycle's CI-settled charge"
+    ci_split_out="$("$codex_checker" ci-split --state "$cycle_state_file" --run-id "$active_run_id" 2>/dev/null)" ||
+        indeterminate codex-cap-mismatch "cannot derive the cycle's CI-settled charge from $cycle_state_file"
+    jq -e '.recorded == .settled' <<<"$ci_split_out" >/dev/null 2>&1 ||
+        indeterminate codex-cap-mismatch "the cycle's charge is not settled from the latest CI evidence: the checker state records $(jq -c '.recorded' <<<"$ci_split_out" 2>/dev/null) but CI implies $(jq -c '.settled' <<<"$ci_split_out" 2>/dev/null) ($(jq -r '.detail' <<<"$ci_split_out" 2>/dev/null)) — run the checker's \`check --run-id\` to settle it, then dispatch the integrator again or re-run this gate"
+fi
 
 # 12. The LAST network read, and it reapplies EVERY scalar gate rather than
 # just identity. Checking only head/base

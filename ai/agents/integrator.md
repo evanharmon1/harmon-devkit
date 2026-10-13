@@ -350,10 +350,11 @@ the cycle exactly as below until `check` reaches a terminal result, or report
 it incomplete with the exit code it last returned — never stop early because
 CI went red, and never re-trigger because CI was re-run. The failed check is
 §3's `$failed_required` finding as always. A review spent on a head whose CI
-then fails spends the exempt ceiling instead of `integration`
-(harmon-devkit#1406), but that is the checker's call, never yours: `check
---run-id` settles the charge from the latest CI on the cycle head each time
-it reaches a terminal result. So under a `with-push` order, once the cycle is
+then fails spends the exempt ceiling instead of `integration` when the
+cycle's order was `with-push` (harmon-devkit#1406) — which is why `reserve`
+takes `--remediation`, so it records that order — but that is the checker's
+call, never yours: `check --run-id` settles the charge from the latest CI on
+the cycle head each time it reaches a terminal result. So under a `with-push` order, once the cycle is
 terminal AND §3's checks have all concluded, run the `check` pair below once
 more before you report — CI that concluded after the review is then counted,
 and a failure re-run to green is moved back to charged. Never adjust a
@@ -505,7 +506,7 @@ Three cases, mutually exclusive:
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
-      --review-trigger "<review_trigger>")
+      --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
   reserve_exit=0
   "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   if [ "$reserve_exit" -eq 18 ]; then
@@ -806,7 +807,7 @@ state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 reserve_args=(--state "$state_finder" --repo "$repo" --pr <n> \
     --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
     --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
-    --review-trigger "<review_trigger>")
+    --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
 reserve_exit=0
 "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
 if [ "$reserve_exit" -eq 18 ]; then

@@ -242,31 +242,38 @@ infrastructure re-run is not a push, so it never re-requests a review —
 When CI fails while a review requested alongside it is pending, the cycle
 still waits for that review's terminal result, or is reported incomplete.
 
-**Under `with-push` and `after-ci-first`, a review spent on a head whose CI
-then fails spends `integration_exempt`, not `integration`**
-(harmon-devkit#1406). Requesting before CI concludes trades an occasional
-review of a head CI then rejects for wall-clock time; that review measured
-the head CI threw away rather than the change's difficulty, so it does not
-spend the cap that measures difficulty. Its findings are still adjudicated as
-usual, and the fix push still spends `remediation`. `reserve` reads no CI —
-it charges the cycle and records the declared exempt ceiling — and the
-checker's `check --run-id` settles the charge each time it reaches the
-cycle's terminal result, from the latest CI on that head: the cycle moves to
-`exempt_cycles` only when a latest run of this PR concluded `failure` and
-none is pending, and moves back when that stops holding (a flaky failure
-re-run to green). Only the PR's own runs count — runs whose `pull_requests`
-name it, or, for a run naming no PR, runs on its head branch **and** head
-repository — and pending, cancelled,
-unreadable or any other non-`failure` result charges. A carried cycle, a
-base-merge exemption, and a spent, 0 or undeclared exempt ceiling leave the
-charge where `reserve` put it. Because CI often concludes after the review,
-run `check` once more after CI settles and before reporting the counters, so
-they reflect the final evidence; the readiness gate's own recheck re-settles
-too, and refuses a result whose split it moved. Never adjust a counter by
-your own reading of CI. `reserve --review-trigger <value>` records the value
-on the cycle and refuses an attempt 2 reserved under a different one. Under
-`after-ci` no review is requested before CI is green at all, and no cycle is
-ever charged to `integration_exempt` for a CI failure.
+**A review requested with the push, on a head whose CI then fails, spends
+`integration_exempt`, not `integration`** (harmon-devkit#1406). That is every
+`with-push` cycle and every `after-ci-first` cycle after a remediation push —
+the cycles whose `trigger-timing` order is `with-push`. Requesting before CI
+concludes trades an occasional review of a head CI then rejects for
+wall-clock time; that review measured the head CI threw away rather than the
+change's difficulty, so it does not spend the cap that measures difficulty.
+Its findings are still adjudicated as usual, and the fix push still spends
+`remediation`. `reserve` reads no CI — it charges the cycle and records the
+declared exempt ceiling and the effective order (pass `--remediation <n>`
+with `--review-trigger`; an `after-ci-first` cycle reserved without it records
+`after-ci`) — and the checker's `check --run-id` settles the charge each time
+it reaches the cycle's terminal result, from the latest CI on that head: the
+cycle moves to `exempt_cycles` only when the newest run of some workflow of
+this PR concluded `failure` and no newest run is pending, and moves back when
+that stops holding (a flaky failure re-run to green). Only the PR's own runs
+count — a `pull_request` run naming exactly this PR (or, naming none, on its
+head branch **and** head repository), and any other event's run on its head
+branch **and** head repository; a run naming this PR among others keeps the
+head charged — and pending, cancelled, unreadable or any other non-`failure`
+result charges. A carried cycle, a base-merge exemption, and a spent, 0 or
+undeclared exempt ceiling leave the charge where `reserve` put it. Because CI
+often concludes after the review, run `check` once more after CI settles and
+before reporting the counters, so they reflect the final evidence. The
+readiness gate never settles a charge: after its final checks read it asks
+`ci-split` (read-only) what split the latest CI implies and is indeterminate
+(`codex-cap-mismatch`) when the state records another — run `check --run-id`
+to settle it. Never adjust a counter by your own reading of CI.
+`reserve --review-trigger <value>` records the value on the cycle and refuses
+an attempt 2 reserved under a different one. Under `after-ci` — and on
+`after-ci-first`'s first head — no review is requested before CI is green, and
+no such cycle is ever charged to `integration_exempt` for a CI failure.
 
 **Before either ceiling, ask whether the cycle is needed at all**
 (harmon-init#752). The exemption above still runs the review — it spends a
@@ -708,8 +715,9 @@ plus exactly two of this skill's asset scripts by skill-directory path:
 `assets/gh-ro.sh`, the GET-only front door for the raw `gh api` reads below,
 and `assets/readiness-gate.sh`, which reads GitHub and — beyond the transient
 advisory lock its own `--codex-recheck` path takes beside that flag's state
-file, by re-invoking `check-codex-cloud-review.sh`'s own `check` subcommand
-read-only to reconfirm a clean codex_cycle is not stale — writes nothing.
+file, by re-invoking `check-codex-cloud-review.sh`'s own `check --read-only`
+to reconfirm a clean codex_cycle is not stale, and its read-only `ci-split`
+to compare the cycle's CI-settled charge — writes nothing.
 `--integrator-result` itself is a plain file the gate only ever reads, never
 locks. Dispatching the integrator
 agent is not one of these grants either: it is a separate trust boundary with
