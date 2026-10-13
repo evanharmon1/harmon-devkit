@@ -1,0 +1,78 @@
+name: Closing Keywords
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
+  merge_group:
+
+# Metadata edits cancel only this cheap guard, never Build & Validate.
+concurrency:
+  group: closing-keywords-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Metadata-only by design: this executes the trusted default-branch script,
+  # queries PR/issue data through read-only APIs, and never checks out a PR.
+  # It intentionally runs on forks too; no write-capable credential is present.
+  closing-keywords:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: No PR closing-reference check is needed for this trigger
+        if: github.event_name != 'pull_request'
+        run: echo "Closing-keyword guard applies to pull requests only."
+      - name: Require completed issues before a same-repo closing reference
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_COMMITS: ${{ github.event.pull_request.commits }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          commits_file=$(mktemp)
+          trap 'rm -f "$commits_file" ./check-closing-keywords.sh' EXIT
+          if [ "$PR_COMMITS" -gt 250 ]; then
+            echo "::error::PR has ${PR_COMMITS} commits, exceeding the 250-commit API limit; closing-keyword result is indeterminate" >&2
+            exit 1
+          fi
+          gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[].commit.message' > "$commits_file"
+          fetch_error=$(mktemp)
+          fetch_script() {
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/${GH_REPO}/contents/scripts/check-closing-keywords.sh?ref=$1" \
+              > ./check-closing-keywords.sh 2>"$fetch_error"
+          }
+          # Workflow definitions are taken from the default branch for PRs.
+          # Prefer that trusted program even if this PR edits it. The one
+          # bootstrap exception lets the introducing PR run only after a
+          # confirmed 404, and only for a same-repository head. A fork never
+          # executes head-controlled code; network/auth errors never fall back.
+          if ! fetch_script "$DEFAULT_BRANCH"; then
+            if grep -q '(HTTP 404)' "$fetch_error" && [ "$HEAD_REPO" = "$GH_REPO" ]; then
+              echo '::notice::default-branch guard script is absent; using same-repo PR head for bootstrap'
+              fetch_script "$HEAD_SHA"
+            else
+              cat "$fetch_error" >&2
+              echo '::error::trusted default-branch guard script is unavailable; refusing to execute PR code' >&2
+              exit 1
+            fi
+          fi
+          rm -f "$fetch_error"
+          chmod +x ./check-closing-keywords.sh
+          ./check-closing-keywords.sh --repo "$GH_REPO" \
+            --title-env PR_TITLE --body-env PR_BODY --commits-file "$commits_file"
