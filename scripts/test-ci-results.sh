@@ -42,7 +42,18 @@ reject_required "a malformed pair" success lint
 reject_required "an unsupported expectation" neutral lint=neutral
 reject_required "an empty result set" success
 
-workflow="${repo}/.github/workflows/build.yml"
+build_workflow="${repo}/.github/workflows/build.yml"
+workflow="${repo}/.github/workflows/closing-keywords.yml"
+grep -Fq 'types: [opened, edited, synchronize, reopened]' "$workflow" || fail 'metadata guard must re-check every PR edit'
+grep -q '^  merge_group:$' "$workflow" || fail 'guard must emit the required check for merge groups'
+grep -q '^  closing-keywords:$' "$workflow" || fail 'guard must retain the required closing-keywords check context'
+grep -Fq 'group: closing-keywords-${{ github.event.pull_request.number || github.ref }}' "$workflow" || fail 'guard needs independent per-PR or merge-group concurrency'
+if grep -Eq '^  closing-keywords:|needs:.*closing-keywords|needs\.closing-keywords\.result|CLOSING_KEYWORDS_RESULT' "$build_workflow"; then
+    fail 'Build must not contain or aggregate the standalone metadata guard'
+fi
+if grep -Eq '^    types:.*edited' "$build_workflow"; then
+    fail 'metadata edits must not restart Build'
+fi
 grep -q 'HEAD_REPO:.*head.repo.full_name' "$workflow" || fail 'bootstrap must compare the PR head repository'
 grep -q "grep -q '(HTTP 404)'" "$workflow" || fail 'bootstrap must require a confirmed default-branch 404'
 grep -Fq '[ "$HEAD_REPO" = "$GH_REPO" ]' "$workflow" || fail 'bootstrap must permit same-repo heads only'
