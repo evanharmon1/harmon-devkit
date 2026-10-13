@@ -278,12 +278,12 @@ revision history lists that `run_id` in `lanes[]`.
    remediation loop keeps **one** section holding all of its rounds), the
    interventions that landed while that stage was open, and — for a stage that
    found something — its findings by class and provenance plus its
-   adjudication overrides. Those last two are **only partly derivable today**:
-   the trajectory aggregates class/provenance across the whole run, so it is
-   attributed to a stage only when that stage is the sole one with findings
-   (harmon-devkit#779), and adjudication overrides are not exposed at all
-   (harmon-devkit#753). Each
-   affected stage section says which case it is in rather than leaving the line
+   adjudication overrides. The trajectory supplies verified class/provenance
+   counts keyed by stage; unavailable rounds are named, and unverified findings
+   are excluded from those counts. Older harvesters
+   expose only the run-wide aggregate, attributed to a stage only when that
+   stage is the sole one with findings. Adjudication overrides are not exposed
+   at all (harmon-devkit#753). Each affected stage section says which case it is in rather than leaving the line
    out; treat a "not derivable" line as a real gap in the retro, not as
    "nothing to report".
 4. `### Findings by class and provenance` — `class` from the reviewer's own

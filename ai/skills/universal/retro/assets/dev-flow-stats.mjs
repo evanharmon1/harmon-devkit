@@ -3157,9 +3157,11 @@ function isVerifiedAttributionStatus(status) {
 
 function verifiedFindingMeasurements(rounds) {
   const counts = {};
+  const countsByStage = {};
   const fingerprints = {};
   const unavailableRounds = [];
   for (const round of rounds) {
+    const stageCounts = countsByStage[round.stage] ??= {};
     const passes = Array.isArray(round.payload.passes) ? round.payload.passes : [];
     const findingCount = passes.reduce((total, pass) => total + (((pass.payload && pass.payload.findings) || []).length), 0);
     if (findingCount > 0 && !Array.isArray(round.payload.findingAttributions)) {
@@ -3177,6 +3179,7 @@ function verifiedFindingMeasurements(rounds) {
         if (attribution && isVerifiedAttributionStatus(attribution.provenance_status)) {
           const key = `${cls}/${attribution.provenance}`;
           counts[key] = (counts[key] || 0) + 1;
+          stageCounts[key] = (stageCounts[key] || 0) + 1;
         } else {
           unavailable = true;
         }
@@ -3189,7 +3192,7 @@ function verifiedFindingMeasurements(rounds) {
     }
     if (unavailable) unavailableRounds.push({ stage: round.stage, round: round.round });
   }
-  return { counts, fingerprints, unavailableRounds };
+  return { counts, countsByStage, fingerprints, unavailableRounds };
 }
 
 // Legacy evidence predates the full adjudication schema. Normalize only the
@@ -3273,6 +3276,7 @@ function renderTrajectory(run) {
       };
     }),
     findings_by_class_and_provenance: verifiedMeasurements.counts,
+    findings_by_stage_class_and_provenance: verifiedMeasurements.countsByStage,
     findings_by_verified_fingerprint: verifiedMeasurements.fingerprints,
     provenance_unavailable_rounds: verifiedMeasurements.unavailableRounds,
     // Retained exactly as recorded. This projection reports evidence; it
@@ -3328,6 +3332,13 @@ function renderTrajectoryTable(trajectory) {
     lines.push("");
     lines.push("findings by class/provenance:");
     for (const [k, v] of Object.entries(trajectory.findings_by_class_and_provenance)) lines.push(`  ${k}: ${v}`);
+  }
+  lines.push("");
+  lines.push("findings_by_stage_class_and_provenance:");
+  for (const [stage, counts] of Object.entries(trajectory.findings_by_stage_class_and_provenance)) {
+    lines.push(`  ${stage}:`);
+    if (Object.keys(counts).length === 0) lines.push("    no verified findings");
+    for (const [key, count] of Object.entries(counts)) lines.push(`    ${key}: ${count}`);
   }
   if (trajectory.provenance_unavailable_rounds.length > 0) lines.push(`provenance unavailable for: ${trajectory.provenance_unavailable_rounds.map((entry) => `${entry.stage} r${entry.round}`).join(", ")}`);
   if (trajectory.interventions.length > 0) {

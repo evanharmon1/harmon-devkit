@@ -1004,6 +1004,17 @@ function stageAt(transitions, at) {
   return current
 }
 
+function classProvenanceRows(counts) {
+  return Object.entries(counts || {})
+    .map(([key, count]) => {
+      const slash = key.indexOf('/')
+      return slash === -1
+        ? { class: key, provenance: 'unspecified', count }
+        : { class: key.slice(0, slash), provenance: key.slice(slash + 1), count }
+    })
+    .sort((a, b) => b.count - a.count || a.class.localeCompare(b.class) || a.provenance.localeCompare(b.provenance))
+}
+
 function measure(trajectory, policy) {
   const transitions = Array.isArray(trajectory.stage_transitions) ? trajectory.stage_transitions : []
   const rounds = Array.isArray(trajectory.rounds) ? trajectory.rounds : []
@@ -1094,22 +1105,16 @@ function measure(trajectory, policy) {
     }
   })
 
-  const classProvenance = Object.entries(trajectory.findings_by_class_and_provenance || {})
-    .map(([key, count]) => {
-      const slash = key.indexOf('/')
-      return slash === -1
-        ? { class: key, provenance: 'unspecified', count }
-        : { class: key.slice(0, slash), provenance: key.slice(slash + 1), count }
-    })
-    .sort((a, b) => b.count - a.count || a.class.localeCompare(b.class) || a.provenance.localeCompare(b.provenance))
+  const classProvenance = classProvenanceRows(trajectory.findings_by_class_and_provenance)
+  const stageCounts = trajectory.findings_by_stage_class_and_provenance
+  for (const stage of stages) {
+    stage.findings_by_class_and_provenance = stageCounts?.[stage.stage] === undefined
+      ? null
+      : classProvenanceRows(stageCounts[stage.stage])
+  }
 
-  // The acceptance criterion wants class/provenance INSIDE each stage
-  // section, and the trajectory only aggregates it run-wide. Where exactly
-  // one stage produced findings the aggregate is unambiguously that stage's,
-  // so attribute it and say so; where more than one did, no split is
-  // derivable from this evidence and the run-wide table stands with the gap
-  // named in each affected stage section (review round 2, adjudicated P2 —
-  // the remedy is a harvester change this lane may not make).
+  // Older harvesters expose only the run-wide aggregate. Keep their
+  // single-stage attribution and multi-stage gap when no stage map exists.
   const stagesWithFindings = [...new Set(stages.filter((st) => st.findings > 0).map((st) => st.stage))]
   const attribution =
     provenanceUnavailableRounds.length > 0
@@ -1165,7 +1170,8 @@ function unavailableMeasurements(measured) {
   // anyway would manufacture a follow-up for a measurement the report just
   // made — the skill carries every listed gap into improvements (cloud review
   // round 1, confirmed P2).
-  if (measured.class_provenance_attribution.scope === 'run') {
+  if (measured.class_provenance_attribution.scope === 'run' &&
+      measured.stages.some((stage) => stage.findings > 0 && stage.findings_by_class_and_provenance === null)) {
     gaps.push({
       measurement: 'findings by class and provenance, keyed by stage',
       reason:
@@ -1318,7 +1324,23 @@ function renderMarkdown(report) {
     )
     const attribution = report.measurements.class_provenance_attribution
     if (stage.findings > 0) {
-      if (stage.provenance_unavailable_rounds.length > 0) {
+      if (stage.findings_by_class_and_provenance !== null) {
+        if (stage.provenance_unavailable_rounds.length > 0) {
+          l.push(
+            `- Findings by class and provenance: unavailable for round(s) ${stage.provenance_unavailable_rounds.join(', ')} — no matching verified \`verdict.json\` projection exists; raw producer assertions are not substituted.`
+          )
+        }
+        if (stage.findings_by_class_and_provenance.length > 0) {
+          l.push(stage.provenance_unavailable_rounds.length > 0
+            ? '- Findings by class and provenance (partial verified projection):'
+            : '- Findings by class and provenance:')
+          for (const row of stage.findings_by_class_and_provenance) {
+            l.push(`  - ${cell(row.class)} / ${cell(row.provenance)}: ${row.count}`)
+          }
+        } else if (stage.provenance_unavailable_rounds.length === 0) {
+          l.push('- Findings by class and provenance: no verified findings recorded for this stage.')
+        }
+      } else if (stage.provenance_unavailable_rounds.length > 0) {
         l.push(
           `- Findings by class and provenance: unavailable for round(s) ${stage.provenance_unavailable_rounds.join(', ')} — no matching verified \`verdict.json\` projection exists; raw producer assertions are not substituted.`
         )
