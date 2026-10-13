@@ -5,7 +5,12 @@ on:
     branches:
       - main
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # Body/title edits rerun the cheap required closing-keywords.yml guard,
+    # plus Tracking Guard and Release Content Guard for eligible PRs. Build
+    # stays on code events; closing-keyword edits are checked for every PR.
+    # A PR retargeted onto main needs a push or reopen to run Build; required
+    # verify/security checks stay pending (fail-closed) until then.
+    types: [opened, synchronize, reopened]
     branches:
       - main
   merge_group:
@@ -57,6 +62,34 @@ jobs:
       - run: task test:agent-skill-links
       - run: task validate
       - run: task test:tasks
+
+  # The old lint job serialized ~18–22 minutes of checks. Keep the same
+  # Taskfile targets on every code change, in independent runner workspaces.
+  # verify requires every test job, including deliberate skips on forks.
+  test-contracts:
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          lint-tools: "true"
+          # Test fixtures exercise the secret scan as well as lint tools.
+          gitleaks: "true"
+      - name: Install devkit test tools
+        run: |
+          # yq comes from the setup action above (lint-tools: "true") — do not
+          # re-install it here.
+          # renovate: datasource=pypi depName=copier
+          COPIER_VERSION=9.18.2
+          python -m pip install "copier==${COPIER_VERSION}"
       # These run in local `verify` and must run here too, or CI is strictly
       # weaker than the local gate (harmon-init#962). Each is a unit test
       # needing no container, network, or credential.
@@ -119,6 +152,30 @@ jobs:
       - run: task test:groom-skill
       - run: task test:meta-install
       - run: task test:integrate-codex
+  test-helpers:
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          lint-tools: "true"
+          # Test fixtures exercise the secret scan as well as lint tools.
+          gitleaks: "true"
+      - name: Install devkit test tools
+        run: |
+          # yq comes from the setup action above (lint-tools: "true") — do not
+          # re-install it here.
+          # renovate: datasource=pypi depName=copier
+          COPIER_VERSION=9.18.2
+          python -m pip install "copier==${COPIER_VERSION}"
       - run: task test:ci-results
       - run: task test:status
       - run: task test:gh-scopes
@@ -133,6 +190,30 @@ jobs:
       - run: task test:setup-github-project
       - run: task test:sync-devkit-release
       - run: task test:hooks
+  test-skills:
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          lint-tools: "true"
+          # Test fixtures exercise the secret scan as well as lint tools.
+          gitleaks: "true"
+      - name: Install devkit test tools
+        run: |
+          # yq comes from the setup action above (lint-tools: "true") — do not
+          # re-install it here.
+          # renovate: datasource=pypi depName=copier
+          COPIER_VERSION=9.18.2
+          python -m pip install "copier==${COPIER_VERSION}"
       - run: task test:skills
       - run: task test:agents
       - run: task test:hygiene
@@ -153,67 +234,6 @@ jobs:
       - run: task test:devcontainer-changed
       - run: task test:bot-autonomy
       - run: task test:claim-release-merged
-
-  # Metadata-only by design: this executes the trusted default-branch script,
-  # queries PR/issue data through read-only APIs, and never checks out a PR.
-  # It intentionally runs on forks too; no write-capable credential is present.
-  closing-keywords:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: read
-      pull-requests: read
-    steps:
-      - name: No PR closing-reference check is needed for this trigger
-        if: github.event_name != 'pull_request'
-        run: echo "Closing-keyword guard applies to pull requests only."
-      - name: Require completed issues before a same-repo closing reference
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_COMMITS: ${{ github.event.pull_request.commits }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          commits_file=$(mktemp)
-          trap 'rm -f "$commits_file" ./check-closing-keywords.sh' EXIT
-          if [ "$PR_COMMITS" -gt 250 ]; then
-            echo "::error::PR has ${PR_COMMITS} commits, exceeding the 250-commit API limit; closing-keyword result is indeterminate" >&2
-            exit 1
-          fi
-          gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/commits" \
-            --jq '.[].commit.message' > "$commits_file"
-          fetch_error=$(mktemp)
-          fetch_script() {
-            gh api -H 'Accept: application/vnd.github.raw' \
-              "repos/${GH_REPO}/contents/scripts/check-closing-keywords.sh?ref=$1" \
-              > ./check-closing-keywords.sh 2>"$fetch_error"
-          }
-          # Workflow definitions are taken from the default branch for PRs.
-          # Prefer that trusted program even if this PR edits it. The one
-          # bootstrap exception lets the introducing PR run only after a
-          # confirmed 404, and only for a same-repository head. A fork never
-          # executes head-controlled code; network/auth errors never fall back.
-          if ! fetch_script "$DEFAULT_BRANCH"; then
-            if grep -q '(HTTP 404)' "$fetch_error" && [ "$HEAD_REPO" = "$GH_REPO" ]; then
-              echo '::notice::default-branch guard script is absent; using same-repo PR head for bootstrap'
-              fetch_script "$HEAD_SHA"
-            else
-              cat "$fetch_error" >&2
-              echo '::error::trusted default-branch guard script is unavailable; refusing to execute PR code' >&2
-              exit 1
-            fi
-          fi
-          rm -f "$fetch_error"
-          chmod +x ./check-closing-keywords.sh
-          ./check-closing-keywords.sh --repo "$GH_REPO" \
-            --title-env PR_TITLE --body-env PR_BODY --commits-file "$commits_file"
 
   security:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
@@ -240,7 +260,7 @@ jobs:
 
   verify:
     if: always()
-    needs: [lint, security, closing-keywords]
+    needs: [lint, test-contracts, test-helpers, test-skills, security]
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
@@ -252,8 +272,10 @@ jobs:
         if: env.IS_FORK == 'true'
         env:
           LINT_RESULT: ${{ needs.lint.result }}
+          TEST_CONTRACTS_RESULT: ${{ needs.test-contracts.result }}
+          TEST_HELPERS_RESULT: ${{ needs.test-helpers.result }}
+          TEST_SKILLS_RESULT: ${{ needs.test-skills.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-          CLOSING_KEYWORDS_RESULT: ${{ needs.closing-keywords.result }}
         run: |
           fail=0
           check_skipped() {
@@ -263,11 +285,10 @@ jobs:
             fi
           }
           check_skipped lint "$LINT_RESULT"
+          check_skipped test-contracts "$TEST_CONTRACTS_RESULT"
+          check_skipped test-helpers "$TEST_HELPERS_RESULT"
+          check_skipped test-skills "$TEST_SKILLS_RESULT"
           check_skipped security "$SECURITY_RESULT"
-          if [ "$CLOSING_KEYWORDS_RESULT" != "success" ]; then
-            echo "Job closing-keywords result: $CLOSING_KEYWORDS_RESULT (expected success)"
-            fail=1
-          fi
           if [ "$fail" -ne 0 ]; then
             exit 1
           fi
@@ -281,8 +302,10 @@ jobs:
         env:
           EXPECTED_RESULT: success
           LINT_RESULT: ${{ needs.lint.result }}
+          TEST_CONTRACTS_RESULT: ${{ needs.test-contracts.result }}
+          TEST_HELPERS_RESULT: ${{ needs.test-helpers.result }}
+          TEST_SKILLS_RESULT: ${{ needs.test-skills.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-          CLOSING_KEYWORDS_RESULT: ${{ needs.closing-keywords.result }}
-        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}" "closing-keywords=${CLOSING_KEYWORDS_RESULT}"
+        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "test-contracts=${TEST_CONTRACTS_RESULT}" "test-helpers=${TEST_HELPERS_RESULT}" "test-skills=${TEST_SKILLS_RESULT}" "security=${SECURITY_RESULT}"
 # Keep a literal final line after the inline Jinja conditionals above; with
 # trim_blocks enabled, ending on a block tag would strip the workflow's EOF newline.
