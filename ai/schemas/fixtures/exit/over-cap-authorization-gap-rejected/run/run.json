@@ -1,0 +1,27 @@
+{
+  "run_id": "run-capped-clean",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r2-codex-cli"
+    }
+  ],
+  "cap_authorizations": [
+    {
+      "stage": "review",
+      "round": 3,
+      "actor": "evanharmon1",
+      "instruction": "authorize round 3",
+      "at": "2026-09-29T12:00:00Z"
+    }
+  ]
+}

@@ -1431,6 +1431,8 @@ function ancestryRetainedRounds(rounds, currentHead, ancestryOpts) {
   return { withAncestry, retained };
 }
 
+// `cap` is the stage's effective ceiling: the resolved cap, or the higher
+// ceiling lib/cap-authorizations.mjs derives from authorized over-cap rounds.
 function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHead, ancestryOpts, ledger = null }) {
   const { withAncestry, retained } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
 
@@ -2246,6 +2248,9 @@ async function main() {
   const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
   const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection, readBranchPolicy } =
     await import("./devflow-policy.mjs");
+  // The over-cap authorization predicate (harmon-devkit#1239), deferred for
+  // the same reason as the two modules above.
+  const { authorizedCeiling } = await import("./lib/cap-authorizations.mjs");
 
   // --add-finder / --select-finder are repeatable and must be lifted out
   // before parseArgs, which is last-wins. See devflow-policy.mjs's own
@@ -2662,14 +2667,23 @@ async function main() {
 
   const cap = resolved.rounds[args.stage];
   const minRounds = effectiveMinRounds(resolved.rounds, cap);
+  // The highest round the run record admits for this stage: the resolved cap,
+  // lifted only by a contiguous run of maintainer authorizations in run.json's
+  // cap_authorizations[] (harmon-devkit#1239). `cap` itself is never changed;
+  // the ceiling is reported beside it and is what the capped-final-round exit
+  // applies at.
+  const ceiling = authorizedCeiling(runDir.runRecord, args.stage, cap);
 
   // Cap integrity applies before BOTH output modes. --verification-only is a
   // pre-adjudication projection, not permission to create/adjudicate a round
   // the resolved policy forbids. Check retained and raw evidence here, before
   // that mode can return successfully.
-  const overCapRound = rounds.find((r) => r.round > cap);
+  const overCapRound = rounds.find((r) => r.round > ceiling);
   if (overCapRound) {
-    return indeterminate(args, `round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap}) — trajectory inconsistent with its own policy`);
+    return indeterminate(
+      args,
+      `round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap})${ceiling > cap ? ` and its authorized ceiling (${ceiling})` : " with no recorded cap authorization"} — trajectory inconsistent with its own policy`,
+    );
   }
   if (cap === 0 && rounds.length > 0) {
     return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
@@ -2684,13 +2698,16 @@ async function main() {
   for (const otherStage of CONFIDENCE_STAGES) {
     const otherCap = resolved.rounds[otherStage];
     if (typeof otherCap !== "number" || otherCap === 0) continue; // cap 0 handled above
+    // An authorized over-cap round of another stage is ordinary evidence; the
+    // same predicate admits it here as in that stage's own computation.
+    const otherCeiling = authorizedCeiling(runDir.runRecord, otherStage, otherCap);
     const overCapPass = runDir.passes
       .map((p) => p.envelope.payload)
-      .find((p) => p && p.stage === otherStage && typeof p.round === "number" && p.round > otherCap);
+      .find((p) => p && p.stage === otherStage && typeof p.round === "number" && p.round > otherCeiling);
     if (overCapPass) {
       return indeterminate(args, `a ${otherStage} pass names round ${overCapPass.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
     }
-    const overCapAdj = runDir.adjudications.find((a) => a.doc.stage === otherStage && a.doc.round > otherCap);
+    const overCapAdj = runDir.adjudications.find((a) => a.doc.stage === otherStage && a.doc.round > otherCeiling);
     if (overCapAdj) {
       return indeterminate(args, `a ${otherStage} adjudication names round ${overCapAdj.doc.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
     }
@@ -2701,7 +2718,7 @@ async function main() {
     // the two halves of the same rule disagree (integrate cycle 4 on PR #800,
     // confirmed).
     const overCapSlotFailure = (Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []).find(
-      (sf) => sf.stage === otherStage && typeof sf.round === "number" && sf.round > otherCap,
+      (sf) => sf.stage === otherStage && typeof sf.round === "number" && sf.round > otherCeiling,
     );
     if (overCapSlotFailure) {
       return indeterminate(args, `a ${otherStage} slot_failures record names round ${overCapSlotFailure.round}, exceeding the resolved ${otherStage} cap (${otherCap}) — trajectory inconsistent with its own policy`);
@@ -2901,7 +2918,7 @@ async function main() {
               stage: args.stage,
               rounds,
               convergence: resolved.convergence,
-              cap,
+              cap: ceiling,
               minRounds,
               currentHead,
               ancestryOpts,
@@ -2946,6 +2963,8 @@ async function main() {
       remediation: resolved.rounds.remediation,
       min_rounds: resolved.rounds.min_rounds,
     };
+    // Beside the resolved cap, never in place of it (harmon-devkit#1239).
+    if (ceiling > cap) verification.authorized_ceiling = ceiling;
     // A retrospective read (reviewRetrospectiveDuringChallenge, above) is a
     // report on review's own already-retained history — never a request this
     // invocation may act on. Without this, the ordinary verification-only
@@ -2974,7 +2993,8 @@ async function main() {
       stage: args.stage,
       rounds,
       convergence: resolved.convergence,
-      cap,
+      // The capped-final-round exit applies at the highest authorized round.
+      cap: ceiling,
       minRounds,
       currentHead,
       ancestryOpts,
@@ -3031,6 +3051,10 @@ async function main() {
     verdict.partial_findings = incompleteRound ? incompleteRound.findings.map((finding) => finding.id) : [];
   }
   if (retentionChanged) verdict.retained_rounds = retainedRoundNumbers;
+  // The in-memory ceiling a maintainer's cap_authorizations[] lifted this
+  // stage to, reported beside the resolved cap (resolved_rounds, policy.json)
+  // rather than in place of it. Absent when nothing was authorized.
+  if (ceiling > cap) verdict.authorized_ceiling = ceiling;
 
   if (args.json) {
     console.log(JSON.stringify(verdict, null, 2));
