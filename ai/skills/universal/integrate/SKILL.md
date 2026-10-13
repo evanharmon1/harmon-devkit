@@ -1955,6 +1955,16 @@ evanharmon1/harmon-init#1311 the base moved five times in one session and the
 branch was merged three times; two were mid-stage reactions that re-reviewed
 source which had not changed and found nothing.
 
+**Settle before catching up.** Run a final checker `check` on the current
+head after settling every finding, and require its clean result before the
+catch-up moves the head. Replies and `settle` alone do not refresh the recorded
+verdict; catching up while it still says `findings` makes both `check` and
+`carry` refuse the moved head (harmon-devkit#1390). Pass `--state` to the
+helper: it refuses an existing cycle without a recorded clean verdict (17),
+telling the caller to run a final `check` first. Absent state means no open
+cycle; omitting `--state` preserves legacy behaviour without this guard.
+The guard checks recorded state only, so the final live `check` remains owed.
+
 **Standard path — GitHub update-branch, on the server.** When the base merges
 cleanly, GitHub makes the merge commit and the agent pushes nothing. A
 catch-up adds no authored bytes, so it is not a push and owes no round gate
@@ -1965,12 +1975,13 @@ never `gh pr update-branch` or a raw call:
 
 ```sh
 new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
-  --head <captured headRefOid> --base <captured baseRefName>)"
+  --head <captured headRefOid> --base <captured baseRefName> --state "$state_file")"
 ```
 
 The helper's exits are the invariant, stated once (0 caught up, printing the
 new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
-retarget; 15 not a draft; 16 refused for any other reason):
+retarget; 15 not a draft; 16 refused for any other reason; 17 unsettled cycle,
+run final `check` before retrying, never a local-merge fallback):
 
 - **Merge mode, guarded by the expected head.** It re-reads `baseRefName`
   first and stops on a retarget (14): `base-retargeted` applies and nothing is

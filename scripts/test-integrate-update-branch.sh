@@ -159,6 +159,74 @@ no_put() {
     ! grep -q -- '--method PUT' "$log" || fail "$1: a PUT was sent: $(cat "$log")"
 }
 
+checker_json() {
+    jq -cn --arg h "$head_sha" --argjson verdict "$1" \
+        '{repo:"o/r",pr:7,head:$h,phase:"attached",
+          last_reviewed_head:$h,last_reviewed_verdict:$verdict}'
+}
+
+echo "==> an unsettled cycle refuses catch-up before any GitHub call"
+for verdict in null '"findings"' '"pending"'; do
+    reset
+    checker_json "$verdict" >"${fixtures}/state.json"
+    run_default --state "${fixtures}/state.json"
+    expect "unsettled ($verdict)" 17 "run a final checker check first"
+    [ -z "$out" ] || fail "unsettled cycle printed a head"
+    [ ! -s "$log" ] || fail "unsettled cycle reached gh: $(cat "$log")"
+done
+
+echo "==> final check recording clean permits the same catch-up"
+reset
+checker_json '"findings"' >"${fixtures}/state.json"
+run_default --state "${fixtures}/state.json"
+expect "before final check" 17 "unsettled-cycle"
+checker_json '"clean"' >"${fixtures}/state.json"
+run_default --state "${fixtures}/state.json"
+expect "after final check" 0 ""
+[ "$out" = "$new_sha" ] || fail "settled cycle printed '$out'"
+[ "$(grep -c -- '--method PUT' "$log")" -eq 1 ] || fail "settled cycle did not send exactly one PUT"
+
+echo "==> absent state permits catch-up with no open cycle"
+reset
+run_default --state "${fixtures}/absent.json"
+expect "no open cycle" 0 ""
+[ "$out" = "$new_sha" ] || fail "no open cycle printed '$out'"
+
+echo "==> invalid, foreign, reserved and stale clean state fails closed"
+for filter in \
+    '.repo = "other/repo"' '.pr = 8' \
+    '.phase = "reserved"' '.phase = null' \
+    '.head = "'"$other_sha"'"' '.last_reviewed_head = "'"$other_sha"'"' \
+    'del(.last_reviewed_head)' '.carry = {attests_head:"'"$other_sha"'"}' \
+    'null' '{}'; do
+    reset
+    checker_json '"clean"' | jq -c "$filter" >"${fixtures}/state.json"
+    run_default --state "${fixtures}/state.json"
+    expect "invalid state ($filter)" 17 "unsettled-cycle"
+    [ ! -s "$log" ] || fail "invalid state reached gh: $(cat "$log")"
+done
+for content in '' '{broken' '{"repo":"o/r"} {"repo":"o/r"}'; do
+    reset
+    printf '%s\n' "$content" >"${fixtures}/state.json"
+    run_default --state "${fixtures}/state.json"
+    expect "unreadable state ($content)" 17 "unsettled-cycle"
+    [ ! -s "$log" ] || fail "unreadable state reached gh: $(cat "$log")"
+done
+reset
+ln -s "${fixtures}/missing.json" "${fixtures}/state.json"
+run_default --state "${fixtures}/state.json"
+expect "dangling state symlink" 17 "unsettled-cycle"
+no_put "dangling state symlink"
+
+echo "==> a clean carried cycle permits another catch-up on its attested head"
+reset
+checker_json '"clean"' | jq -c --arg old "$other_sha" --arg current "$head_sha" \
+    '.head = $old | .last_reviewed_head = $old | .carry = {attests_head:$current}' \
+    >"${fixtures}/state.json"
+run_default --state "${fixtures}/state.json"
+expect "clean carried cycle" 0 ""
+[ "$out" = "$new_sha" ] || fail "clean carried cycle printed '$out'"
+
 echo "==> a clean catch-up prints GitHub's merge head"
 reset
 run_default
@@ -191,6 +259,10 @@ run_helper --repo o/r --pr 7 --head "$head_sha"
 expect "missing base" 2 "--base is required"
 run_default --force
 expect "unknown flag" 2 "unrecognised argument"
+run_default --state
+expect "missing state value" 2 "Usage"
+run_default --state ''
+expect "empty state value" 2 "--state requires"
 [ ! -s "$log" ] || fail "a refused invocation reached gh: $(cat "$log")"
 
 echo "==> a retarget before the request stops without a PUT"
@@ -420,6 +492,10 @@ for needle in \
     'through the same helper with `--maintainer-requested`' \
     '(`assets/update-branch.sh`, a GitHub write that moves the head)' \
     'assets/update-branch.sh --repo <repo> --pr <n>' \
+    '**Settle before catching up.** Run a final checker `check` on the current head' \
+    'require its clean result before the catch-up moves the head' \
+    '--state "$state_file"' \
+    '17 unsettled cycle' \
     'A server-side catch-up spends no remediation round.' \
     'neither of them the run record' \
     '`- Base catch-up: <captured head> → <new head> (update-branch)`'; do
