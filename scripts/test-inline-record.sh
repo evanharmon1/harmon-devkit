@@ -233,6 +233,7 @@ const inadmissible = [
   ['wrong stage', envelope('reviewer', 'review', 1, reviewFinder, []), /the run's active stage is challenge/],
   ['blocked', envelope('challenger', 'challenge', 1, challengeFinder, [], { status: 'blocked' }), /status is "blocked"/],
   ['unconfigured slot', envelope('challenger', 'challenge', 1, 'not-a-finder', []), /slot not-a-finder is not a configured challenge finder/],
+  ['unsafe slot', envelope('challenger', 'challenge', 1, '../escape', []), /do not form a safe file name/],
   ['skipped round', envelope('challenger', 'challenge', 2, challengeFinder, []), /next unadjudicated challenge round is 1/],
   ['foreign head', envelope('challenger', 'challenge', 1, challengeFinder, [], { reviewed: base }), /reviewed [0-9a-f]{40}, not 1-solo's head/],
   ['future', envelope('challenger', 'challenge', 1, challengeFinder, [], { produced_at: '2999-01-01T00:00:00Z' }), /outside the stage's span/],
@@ -243,8 +244,9 @@ for (const [name, value, pattern] of inadmissible) {
 }
 refused(slateArgs, ['receipt', '--pass', passFile('foreign-run', envelope('challenger', 'challenge', 1, challengeFinder, [], { runId: 'run-9-other' }))], /failed receipt validation/)
 assert.equal(existsSync(join(record, 'passes')), false)
+assert.equal(existsSync(join(record, 'escape.json')), false)
 assert.deepEqual(read(runJson).receipts.filter((x) => x.kind === 'pass'), [])
-pass('receipt refuses a pass for another stage, a blocked one, an unconfigured slot, a skipped round, a foreign head, a future or stale one, or another run, publishing nothing')
+pass('receipt refuses a pass for another stage, a blocked one, an unconfigured or unsafe slot, a skipped round, a foreign head, a future or stale one, or another run, publishing nothing')
 
 assert.match(write('receipt', '--pass', challengePass), /recorded pass receipt challenge-r1-/)
 assert.equal(readFileSync(join(record, 'passes', `challenge-r1-${challengeFinder}.json`), 'utf8'), readFileSync(challengePass, 'utf8'))
@@ -549,7 +551,10 @@ assert.deepEqual([repeated.provenance_status, repeated.verified_provenance, repe
 assert.equal(v.status, 21, JSON.stringify(v.json))
 assert.equal(v.json.outcome, 'diverging')
 dPublish('challenge', 2, 'challenger', challengeFinder)
-pass("the writer's ledger verifies a round-2 repeat-of finding on round 1's own fix, so repeat_after_fix fires (diverging)")
+const liveLedger = readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8')
+refused(dSlate, ['ledger', '--stage', 'review'], /ledger is for stage review, but the run's active stage is challenge/)
+assert.equal(readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8'), liveLedger)
+pass("the writer's ledger verifies a round-2 repeat-of finding on round 1's own fix, so repeat_after_fix fires (diverging); ledger refuses a stage that is not active")
 
 // Stopped at that blocker: close records the outcome, the lock is released,
 // and the branch can take a fresh solo run, which supersedes the ended one.

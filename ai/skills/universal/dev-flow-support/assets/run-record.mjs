@@ -1171,8 +1171,12 @@ const SIDE_EFFECTS = {
     const bytes = readFileSync(args.pass)
     const slot = envelope?.payload?.slot ?? envelope?.payload?.finder
     const name = `${envelope?.payload?.stage}-r${envelope?.payload?.round}-${slot}`
+    // The name becomes a path: validate it before any path is built.
+    if (typeof slot !== 'string' || !SAFE_ID.test(slot) || !SAFE_ID.test(name)) {
+      throw new Refusal(`pass ${JSON.stringify(name)} is not admissible: its stage, round and slot do not form a safe file name`)
+    }
     const canonical = join(runDir, 'passes', `${name}.json`)
-    if (SAFE_ID.test(name) && receiptedPassNames(record).includes(name)) {
+    if (receiptedPassNames(record).includes(name)) {
       if (!existsSync(canonical) || !readFileSync(canonical).equals(bytes)) {
         throw new Refusal(`pass ${name} is already receipted with different content; a receipted pass is immutable`)
       }
@@ -1239,6 +1243,8 @@ const SIDE_EFFECTS = {
     const stage = args.stage
     if (!CONFIDENCE_STAGES.has(stage)) throw new UsageError('--stage must be challenge or review')
     guardTimestamp(record, resolveAt(undefined))
+    const active = record.stage_transitions.at(-1).stage
+    if (stage !== active) throw new Refusal(`ledger is for stage ${stage}, but the run's active stage is ${active}`)
     const heads = new Map()
     for (const file of receiptedPassNames(record).filter((name) => name.startsWith(`${stage}-r`))) {
       const pass = readJson(join(runDir, 'passes', `${file}.json`), 'receipted pass')

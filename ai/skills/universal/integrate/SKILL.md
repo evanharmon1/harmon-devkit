@@ -76,17 +76,24 @@ inline `task challenge` / `task review` stages in a real single-lane run
 (`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
-directory unchanged, and a solo session records promotion with `run-record.mjs
-promote --slate solo-<run-id> --session <its session>` — `<its session>` being
-the session name `/claim` recorded on its claim comment's `session:` line and
-`solo-init` persisted in the slate lock, the same value on every write — or a
-non-promotion ending with `close --outcome capped|escalated|abandoned`, then
-releases the slate lock with `run-record.mjs lock release` (`/implement`
-§ 6a step 6). Where no record exists
-because the confidence stages never ran (or could not be recorded), that is
-not an error and not grounds to fabricate one: evaluate `AGENTS.md`
-§ Readiness gate condition by condition and say in the PR body that the run
-has no record.
+directory unchanged, and a solo session records promotion with
+`run-record.mjs promote --slate solo-<run-id> --session <its session>
+--run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh
+fingerprint output>` — `<its session>` being the session name `/claim`
+recorded on its claim comment's `session:` line and `solo-init` persisted in
+the slate lock, the same value on every write — or a non-promotion ending with
+`close --slate solo-<run-id> --session <its session> --run-id <run-id>
+--outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
+lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
+session>` (`/implement` § 6a step 6).
+
+**The scripted gate applies only when a record exists.** `assets/readiness-gate.sh`
+requires `--record`, so everything below that runs it — the checker fast path,
+the integrator pass, the gate itself — is for a run that has a record. Where no
+record exists because the confidence stages never ran (or could not be
+recorded), that is not an error and not grounds to fabricate one: use
+`AGENTS.md` § Readiness gate's hand-run procedure instead, evaluating every
+condition there by hand, and say in the PR body that the run has no record.
 
 A consumer that has not advanced its pin still has the retired single-stage
 skill at the pin it is on, which is exactly why the pin waits for the policy;

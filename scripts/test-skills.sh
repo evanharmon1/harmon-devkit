@@ -11267,6 +11267,10 @@ expect_ok "implement: solo exit command passes the recorded rigor (#1183 r2-1)" 
     grep -qF -- '--policy .devflow.toml --rigor <recorded rigor> [<merge-base flags>]' "$IMPL_MD"
 expect_ok "implement: a solo round's head is fixed until adjudication (#1183 r2-2)" \
     grep -qF "**A round's head is fixed from its first receipt to its" "$IMPL_MD"
+expect_ok "integrate: the solo promote example carries every required argument (#1183 r2-3)" \
+    grep -qF -- '--run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh' "$INTEGRATE_MD"
+expect_ok "integrate: a run without a record uses AGENTS.md's hand-run readiness procedure (#1183 r2-1)" \
+    grep -qF '**The scripted gate applies only when a record exists.**' "$INTEGRATE_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
     grep -qF './scripts/test-inline-record.sh' "$repo/Taskfile.yml"
 

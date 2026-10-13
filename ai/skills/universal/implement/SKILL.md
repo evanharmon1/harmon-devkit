@@ -567,9 +567,11 @@ on with the inline procedure.
    `policy.json` `rigor.level` (`jq -r .rigor.level <record>/policy.json`),
    never a fresh default — **and, when the branch edits `.devflow.toml`,
    `agent-registry.json` or the policy reader, follows `AGENTS.md`'s
-   merge-base rule** (`dev-flow-support` step 0: the merge-base policy via
-   `--merge-base-policy`, or `--closure` with the materialized merge-base
-   reader). Every command below is written to satisfy it:
+   merge-base rule**: run the merge base's engine, materialized and invoked
+   directly by path exactly as `integrate/SKILL.md` § "Integration exit:
+   follow the engine, not memory" does it (its merge-base engine recipe, with
+   `mb_args` supplying the merge-base flags), never the branch's
+   `dev-flow-exit.sh`. Every command below is written to satisfy it:
    1. `ledger --stage <stage>` materializes the exit engine's evidence from the
       branch's own commits: `<record>/history.json` (the change ledger of each
       fix between consecutive reviewed heads) and `<record>/heads.json` (the

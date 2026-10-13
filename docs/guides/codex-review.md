@@ -450,6 +450,10 @@ trusted evidence marker (harmon-devkit#1183). The procedure is `/implement`
 `dev-flow-support/assets/`:
 
 ```bash
+# The vendored dev-flow-support assets, resolved physically as the skills do.
+for d in .agents/skills/dev-flow-support/assets .claude/skills/dev-flow-support/assets; do
+  [ -d "$d" ] && { support="$(cd "$d" && pwd -P)"; break; }
+done
 node "$support/run-record.mjs" solo-init --session <session> \
   --run-id run-<issue>-<slug> --issue <issue> --title <title> --url <issue url> \
   --branch <branch> --base <merge base> --policy <resolved policy json> \
