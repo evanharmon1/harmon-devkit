@@ -30,6 +30,9 @@
 //       marker naming a run the harvester cannot find (deleted-entry
 //       tampering). Nothing is rendered; the reason is on stderr. Never
 //       report a clean retro on this path, and never fall back to memory.
+//   13  local-unverified — opt-in local record, not authenticated by a trusted GitHub evidence marker.
+//       Never a verified report or an authenticated trajectory.
+//   14  refused local record — invalid local input, never evidence tampering.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
 // Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
@@ -42,7 +45,8 @@
 // that was never recorded (challenge round 1, confirmed P1).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -76,10 +80,15 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                checkout that keeps it somewhere else).
   --record-dir <path>          Parent directory containing <run_id>/run.json;
                                passed through unchanged to the harvester.
+  --local-unverified           After run-not-found only, read --record-dir/--run
+                               as unverified local data (exit 13); refused local
+                               records exit 14. Requires both flags. Ignored when
+                               authenticated evidence exists.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
 class OperationalError extends Error {}
+class LocalRefusalError extends Error {}
 // Evidence that exists but does not authenticate, or cannot be attributed to
 // one run. Distinct from "no evidence" — see the exit-code table above.
 class IndeterminateError extends Error {
@@ -135,6 +144,9 @@ function parseArgs(argv) {
         break
       case '--record-dir':
         args.recordDir = take()
+        break
+      case '--local-unverified':
+        args.localUnverified = true
         break
       case '--json':
         args.json = true
@@ -712,6 +724,30 @@ function discoverRun(args, trustedActorIds) {
   }
 }
 
+// Ordinary discovery and the local guard share the same refusal and diagnostics.
+function requireDeterminateDiscovery(args, trusted, discovered) {
+  if (discovered.runId) return
+  const corrupted = discovered.malformed.filter((m) => m.trusted)
+  if (discovered.untrusted.length > 0 || corrupted.length > 0) {
+    const parts = []
+    if (discovered.untrusted.length > 0) {
+      const runs = [...new Set(discovered.untrusted.map((m) => m.run_id))].sort().map((id) => JSON.stringify(id)).join(', ')
+      parts.push(
+        `${discovered.untrusted.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set and an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed)`
+      )
+    }
+    if (corrupted.length > 0) {
+      parts.push(
+        `${corrupted.length} marker(s) from a TRUSTED actor that do not parse (${[...new Set(corrupted.map((m) => m.reason))].join('; ')}) — a trusted orchestrator's own evidence, truncated or edited, which is corrupted evidence rather than absence`
+      )
+    }
+    throw new IndeterminateError(
+      `PR #${args.pr} and its linked issues carry ${parts.join('; and ')}. Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`,
+      { untrusted: discovered.untrusted, malformed: discovered.malformed, ignoredHints: discovered.ignoredHints }
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Trusted actor ids
 // ---------------------------------------------------------------------------
@@ -1166,16 +1202,13 @@ function unavailableMeasurements(measured) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-// Free text here is reviewer- and human-authored prose (intervention notes,
-// stage exits, disclosure details) that a reader may paste into a PR body or
-// comment. Neutralize marker sequences and fold newlines for the same reason
-// render-dev-flow.mjs does: an evidence note that quotes `<!--` would forge a
-// section boundary on the next parse.
+// Preserve verified text while neutralizing marker boundaries and folding
+// all line terminators. HTML escaping belongs to the local renderer only.
 function safe(value) {
   return String(value ?? '')
     .replace(/<!--/g, '&lt;!--')
     .replace(/-->/g, '--&gt;')
-    .replace(/\r?\n/g, ' ')
+    .replace(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/g, ' ')
 }
 
 function cell(value) {
@@ -1452,7 +1485,7 @@ function renderMarkdown(report) {
 function reportIgnoredMarkers(untrusted, malformed) {
   for (const marker of untrusted) {
     console.error(
-      `${TOOL}: ignoring an untrusted evidence marker naming run ${marker.run_id} on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}, actor ${marker.actor_id ?? 'unknown'})`
+      `${TOOL}: ignoring an untrusted evidence marker naming run ${JSON.stringify(marker.run_id)} on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}, actor ${marker.actor_id ?? 'unknown'})`
     )
   }
   for (const marker of malformed) {
@@ -1464,8 +1497,126 @@ function reportIgnoredMarkers(untrusted, malformed) {
 
 function reportIgnoredHints(ignoredHints) {
   for (const hint of ignoredHints) {
-    console.error(`${TOOL}: ignoring body discovery hint ${hint.hint} (${hint.tier}): ${hint.reason}`)
+    console.error(`${TOOL}: ignoring body discovery hint ${JSON.stringify(hint.hint)} (${hint.tier}): ${hint.reason}`)
   }
+}
+
+// Local-only data never enters measure(), policy parsing, or authentication.
+// Validate a snapshot of the bytes we render, not a file that may change after
+// validation. The shipped run validator checks both shape and semantics.
+const LOCAL_PROVENANCE = 'unverified (local record, not authenticated by a trusted GitHub evidence marker)'
+
+function localSafe(value) {
+  return safe(String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;'))
+    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, '')
+}
+
+function isLocalPathInside(parent, resolved) {
+  const relative = path.relative(parent, resolved)
+  return !(relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
+}
+
+function renderLocalUnverified(args, runId, requestedPr) {
+  if (!args.run || !args.recordDir) throw new UsageError('--local-unverified requires --run and --record-dir for a local read')
+  if (args.asOf) throw new UsageError('--as-of is unavailable for local-unverified records; rerun without it')
+  if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
+    throw new LocalRefusalError('local run.json path escapes the selected run directory; --run must name one directory')
+  }
+  const parent = realpathSync(args.recordDir)
+  const file = path.join(parent, runId, 'run.json')
+  if (!existsSync(file)) return null
+  // Symlinks must not redirect the local read outside the selected parent.
+  const resolved = realpathSync(file)
+  if (!isLocalPathInside(parent, resolved)) {
+    throw new LocalRefusalError('local run.json resolves outside --record-dir')
+  }
+  if (!statSync(resolved).isFile()) throw new LocalRefusalError('local run.json is not a regular file')
+  const bytes = readFileSync(resolved, 'utf8')
+  const validator = path.join(ASSET_DIR, '..', '..', 'dev-flow-support', 'assets', 'validate-result-schemas.mjs')
+  if (!existsSync(validator)) throw new OperationalError('local run schema validator is unavailable')
+  const snapshot = mkdtempSync(path.join(tmpdir(), 'retro-local-'))
+  let record
+  try {
+    const snapshotFile = path.join(snapshot, 'run.json')
+    writeFileSync(snapshotFile, bytes)
+    const validation = spawnSync(process.execPath, [validator, 'run', snapshotFile], {
+      encoding: 'utf8', maxBuffer: MAX_SYNC_BUFFER_BYTES
+    })
+    if (validation.error) throw new OperationalError(`local run schema validator failed: ${validation.error.message}`)
+    if (validation.signal || validation.status === null) {
+      throw new OperationalError(`local run schema validator failed: ${validation.signal ? `signal ${validation.signal}` : 'no exit status'}`)
+    }
+    if (validation.status !== 0) {
+      if (validation.status !== 1 || !/^FAIL: /m.test(validation.stderr || '')) {
+        throw new OperationalError(`local run schema validator failed without validation output: ${JSON.stringify((validation.stderr || '').trim())}`)
+      }
+      throw new LocalRefusalError(`local run.json failed schema validation: ${JSON.stringify((validation.stderr || '').trim())}`)
+    }
+    if (!/^run record OK(?: \(.*\))?\s*$/.test(validation.stdout || '')) {
+      throw new OperationalError('local run schema validator produced no validation output')
+    }
+    record = JSON.parse(bytes)
+  } finally {
+    rmSync(snapshot, { recursive: true, force: true })
+  }
+  if (record.run_id !== runId) throw new LocalRefusalError('local run.json run_id differs from --run')
+  if (args.pr !== undefined && record.pr && record.pr.number !== args.pr) {
+    throw new LocalRefusalError(`local run.json records PR #${record.pr.number}, not the requested #${args.pr}`)
+  }
+  if (record.pr && requestedPr) {
+    let normalized
+    let expected
+    try {
+      normalized = new URL(record.pr.url).href.replace(/\/+$/, '').toLowerCase()
+      expected = new URL(requestedPr.url).href.replace(/\/+$/, '').toLowerCase()
+    } catch {
+      throw new LocalRefusalError('local run.json PR URL is invalid')
+    }
+    if (normalized !== expected) {
+      throw new LocalRefusalError('local run.json PR URL does not name the requested repository and PR')
+    }
+  }
+
+  const measurements = []
+  const add = (measurement, value) => measurements.push({ measurement, value, provenance: LOCAL_PROVENANCE })
+  add('Started at', record.started_at)
+  add('Initiated by', record.initiated_by)
+  add('Outcome', record.outcome ?? 'not recorded')
+  add('PR recorded locally', record.pr ? `#${record.pr.number} (${record.pr.url})` : 'not recorded')
+  if (args.pr !== undefined && !record.pr) {
+    add('PR binding', `no PR is recorded locally; this record is not bound to PR #${args.pr}`)
+  }
+  for (const transition of record.stage_transitions) {
+    add('Stage entry', `${transition.stage} at ${transition.entered_at}; exit: ${transition.exit ?? 'not recorded'}`)
+  }
+  add('Adjudication rounds', existsSync(path.join(path.dirname(resolved), 'adjudications'))
+    ? 'not measured — local adjudications are not authenticated'
+    : 'not recorded — adjudications/ is absent')
+  add('Findings and convergence', 'not measured — no authenticated adjudication evidence')
+  if (record.interventions.length === 0) add('Interventions', 'none recorded')
+  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}`)
+  if (record.settlements.length === 0) add('Settlements', 'none recorded')
+  for (const entry of record.settlements) {
+    add('Settlement recorded locally', `${entry.finding_id}: ${entry.disposition} at ${entry.settled_at}; ${entry.reference.type} ${entry.reference.value}`)
+  }
+  add('Promotion recorded locally', record.promotion
+    ? `${record.promotion.head} at ${record.promotion.promoted_at}; fingerprint ${record.promotion.gate_fingerprint}`
+    : 'not recorded')
+  const report = {
+    schema: 'retro-run-report.v1', status: 'local-unverified', verified: false,
+    run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
+  }
+  return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
+    `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
+    ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
+  ].join('\n')
+}
+
+function deletedEntryReason(missing, source) {
+  return `${missing}, but a trusted evidence marker (${source}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.`
 }
 
 function run(argv) {
@@ -1495,6 +1646,7 @@ function run(argv) {
   if (!runId) {
     try {
       const discovered = discoverRun(args, trusted.ids)
+      requireDeterminateDiscovery(args, trusted, discovered)
       pr = discovered.pr
       runId = discovered.runId
       runIdFrom = discovered.source
@@ -1514,37 +1666,8 @@ function run(argv) {
     reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
     reportIgnoredHints(ignoredHints)
     if (!runId) {
-      // "No trusted marker" and "no marker at all" are different answers, and
-      // only the second one licenses the fallback. Markers that exist but do
-      // not authenticate are either a redirect attempt or a trust root that
-      // has MOVED since the run — an orchestrator trusted at kickoff and
-      // removed since is exactly the case the evidence contract protects, and
-      // this tool cannot tell the two apart because it authenticates against
-      // the caller's set rather than the run's kickoff-time registry revision
-      // (harmon-devkit#741). Reporting either as "no run record" would
-      // reinterpret a run that plainly happened as one that did not
-      // (review round 1, confirmed P1).
-      const corrupted = malformedMarkers.filter((m) => m.trusted)
-      if (untrustedMarkers.length > 0 || corrupted.length > 0) {
-        const parts = []
-        if (untrustedMarkers.length > 0) {
-          const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
-          parts.push(
-            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since discovery uses the selected set and an orchestrator removed from the allowlist since a run reads as indeterminate (fail closed)`
-          )
-        }
-        if (corrupted.length > 0) {
-          parts.push(
-            `${corrupted.length} marker(s) from a TRUSTED actor that do not parse (${[...new Set(corrupted.map((m) => m.reason))].join('; ')}) — a trusted orchestrator's own evidence, truncated or edited, which is corrupted evidence rather than absence`
-          )
-        }
-        console.error(
-          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${parts.join('; and ')}. Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
-        )
-        return 11
-      }
       console.error(
-        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
+        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.map((id) => JSON.stringify(id)).join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
       )
       return 10
     }
@@ -1589,10 +1712,49 @@ function run(argv) {
     // from --run carries no such claim, but structured record-missing does:
     // the harvester authenticated its marker before finding the local gap.
     if (harvested.missingKind === 'record-missing' || !args.run) {
-      console.error(
-        `${TOOL}: indeterminate — ${harvested.missing}${!args.run ? `, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.` : '. Authenticated evidence exists, but its named local record is absent.'}`
-      )
+      const reason = !args.run ? deletedEntryReason(harvested.missing, runIdFrom)
+        : `${harvested.missing}. Authenticated evidence exists, but its named local record is absent.`
+      console.error(`${TOOL}: indeterminate — ${reason}`)
       return 11
+    }
+    // The opt-in may replace only the ordinary exit-10 outcome. Read-only
+    // discovery guards that local read; it never selects a run or mutates --run.
+    if (args.localUnverified) {
+      let discovered = null
+      if (args.pr !== undefined) {
+        try {
+          discovered = discoverRun(args, trusted.ids)
+          requireDeterminateDiscovery(args, trusted, discovered)
+        } catch (error) {
+          if (!(error instanceof IndeterminateError)) throw error
+          reportIgnoredMarkers(error.untrusted, error.malformed)
+          reportIgnoredHints(error.ignoredHints)
+          console.error(`${TOOL}: indeterminate — ${error.message}`)
+          return 11
+        }
+      }
+      const corrupted = discovered?.malformed.filter((marker) => marker.trusted) || []
+      if (corrupted.length > 0) {
+        reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
+        throw new IndeterminateError('trusted discovery evidence is malformed; local data cannot replace it')
+      }
+      if (discovered?.runId === runId) {
+        reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
+        reportIgnoredHints(discovered.ignoredHints)
+        console.error(`${TOOL}: indeterminate — ${deletedEntryReason(harvested.missing, discovered.source)}`)
+        return 11
+      }
+      if (!discovered?.runId) {
+        if (discovered) {
+          reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
+          reportIgnoredHints(discovered.ignoredHints)
+        }
+        const local = renderLocalUnverified(args, runId, discovered?.pr || pr)
+        if (local !== null) {
+          console.log(local)
+          return 13
+        }
+      }
     }
     console.error(`${TOOL}: ${harvested.missing}; use the retro's fallback procedure`)
     return 10
@@ -1717,6 +1879,10 @@ function main() {
       console.error(`${TOOL}: ${error.message}`)
       console.error(USAGE)
       return 2
+    }
+    if (error instanceof LocalRefusalError) {
+      console.error(`${TOOL}: refused local record — ${error.message}`)
+      return 14
     }
     if (error instanceof IndeterminateError) {
       console.error(`${TOOL}: indeterminate — ${error.message}`)
