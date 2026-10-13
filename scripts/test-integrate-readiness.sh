@@ -676,7 +676,8 @@ if [ -n "${RECHECK_MUTATE_STATE:-}" ]; then
     if [ "${RECHECK_REPLACE_IDENTICAL:-0}" = 1 ]; then
         cp "$RECHECK_MUTATE_STATE" "$RECHECK_MUTATE_STATE.next"
     else
-        jq '.phase = "reserved" | .charged_cycles = 2' "$RECHECK_MUTATE_STATE" >"$RECHECK_MUTATE_STATE.next"
+        jq "${RECHECK_MUTATE_FILTER:-.phase = \"reserved\" | .charged_cycles = 2}" \
+            "$RECHECK_MUTATE_STATE" >"$RECHECK_MUTATE_STATE.next"
     fi
     mv "$RECHECK_MUTATE_STATE.next" "$RECHECK_MUTATE_STATE"
 fi
@@ -3330,6 +3331,43 @@ mv "${recheck_state}.next" "$recheck_state"
 run_gate_recheck_clean --integrator-result "$clean_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 0 pass ready
+
+# harmon-devkit#1406: a with-push / after-ci-first cycle whose head CI failed is
+# settled exempt by the checker. Two cycles under a charged cap of 1 pass when
+# the first one is that CI-failed exemption.
+ci_split_case() {
+    write_defaults
+    ci_split="$(jq -c '.cycle = 2 | .charged = 1 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+    clean_result="$(write_integrator_result "cap-ci-split-$1" "$ci_split")"
+    write_integration_cycle 1 3333333333333333333333333333333333333333 1 P2 decline none
+    jq '.payload.integration_round = 2' "$clean_result" >"${clean_result}.next" &&
+        mv "${clean_result}.next" "$clean_result"
+    cp "$clean_result" "${record_dir}/passes/integration-r2-codex-cloud.json"
+    jq '.charged_cycles = 1 | .exempt_cycles = 1 | .charge = "exempt" |
+        .ci_exempt = {reserved_reason:"first cycle", failed_runs:["CI #11"]}' \
+        "$recheck_state" >"${recheck_state}.next"
+    mv "${recheck_state}.next" "$recheck_state"
+}
+echo "==> a CI-failed exempt cycle passes the cap check against its own ceiling"
+ci_split_case ok
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 1 --integration-exempt-cap 1
+assert_gate 0 pass ready
+
+echo "==> a recheck that re-settles the charge makes the result's split codex-cap-mismatch"
+# The live check moved the cycle back to charged (a flaky failure re-run to
+# green) after the result was produced: the result's spend is stale.
+ci_split_case resettled
+export RECHECK_MUTATE_STATE="$recheck_state"
+export RECHECK_MUTATE_FILTER='.charged_cycles = 2 | .exempt_cycles = 0 | .charge = "charged" | .ci_exempt = null'
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+unset RECHECK_MUTATE_STATE RECHECK_MUTATE_FILTER
+assert_gate 2 indeterminate codex-cap-mismatch
+case "$gate_out" in
+*"re-settled this cycle's charge"*) ;;
+*) fail "the re-settled split must name the re-settlement: $gate_out" ;;
+esac
 
 echo "==> a claimed split with no durable counters is codex-cap-mismatch"
 # The result agreeing with itself is not evidence. A producer old enough to

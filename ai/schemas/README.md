@@ -1985,9 +1985,11 @@ including the built-in fallback and a historical decode — and a value outside
 default. It decides only *when* the integration stage requests its PR-side
 reviews relative to CI; the `integrate` skill and its checker own what that
 changes (`check-codex-cloud-review.sh trigger-timing`). Under `with-push` and
-`after-ci-first` a review spent on a head whose CI then fails still charges
-`integration`; charging it to the exempt ceiling instead is tracked
-separately (#1406).
+`after-ci-first` a review spent on a head whose CI then fails spends
+`integration_exempt` instead of `integration` (harmon-devkit#1406): the
+checker's run-scoped `check` settles that charge from the latest CI evidence
+on the head, so a result's `codex_cycle.exempt` can count such cycles beside
+base-merge ones. Under `after-ci` no cycle is ever exempt for a CI failure.
 
 **A strategy's own requirements are cross-checked against breadth, not just
 resolved and left unchecked.** `[strategy.orchestrate]` and

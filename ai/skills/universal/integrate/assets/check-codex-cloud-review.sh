@@ -117,12 +117,21 @@ first run's spend; naming a different run starts the totals again.
 
 --review-trigger records the resolved [stage.integration].review_trigger on
 the cycle (harmon-devkit#1376), and attempt 2 refuses a value its attempt 1
-was not reserved under. It decides only WHEN a review is requested: under
+was not reserved under. It decides WHEN a review is requested: under
 `with-push` and `after-ci-first` a review can be requested before CI on its
-head concludes, and a review spent on a head whose CI then fails still
-charges `integration` exactly like any other cycle. No cycle is classified
-from CI evidence; charging that case to the exempt ceiling is tracked
-separately (#1406).
+head concludes. `reserve` reads no CI; it records the declared exempt ceiling
+on the cycle so `check` can settle the charge (harmon-devkit#1406).
+
+`check --run-id` settles that charge each time it reaches a terminal result
+(clean or findings) for a `with-push` or `after-ci-first` cycle that `reserve`
+charged: when the latest CI on the cycle head concluded `failure` with no run
+pending, the cycle moves from `charged_cycles` to `exempt_cycles` (if the
+recorded exempt ceiling has room), and when that no longer holds — a flaky
+failure re-run to green — it moves back. Only this PR's workflow runs count:
+its `pull_request` runs, or runs on its head branch AND head repository.
+Anything unreadable, pending, cancelled or otherwise not `failure` charges.
+`after-ci`, a carried cycle and a base-merge exemption are never touched, and
+an unscoped `check` settles nothing.
 
 `trigger-timing` answers WHEN this cycle's review is requested, for the
 recorded value and the number of remediation (integration-stage fix) pushes
@@ -942,7 +951,12 @@ read_state() {
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
       (.check_suite_boundary == null or (.check_suite_boundary | type == "string")) and
       (.review_trigger == null or .review_trigger == "after-ci" or
-        .review_trigger == "with-push" or .review_trigger == "after-ci-first")
+        .review_trigger == "with-push" or .review_trigger == "after-ci-first") and
+      (.integration_exempt_cap == null or
+        (.integration_exempt_cap | type == "number" and . >= 0 and floor == .)) and
+      (.ci_exempt == null or ((.ci_exempt | type == "object") and
+        (.ci_exempt.reserved_reason | type == "string") and
+        (.ci_exempt.failed_runs | type == "array")))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -1294,6 +1308,7 @@ emit() {
         # match this case, so its own emits pass straight through.
         verify_carried_attestation
         mark_terminally_reviewed "$result"
+        settle_ci_charge
         ;;
     esac
     # harmon-init#752: `head` stays the CYCLE's head — the commit a reviewer
@@ -2047,6 +2062,163 @@ classify_cycle_charge() {
     return 0
 }
 
+# harmon-devkit#1406: did CI on this cycle's head FAIL? Sets ci_verdict to
+# `failed` or `not-failed` (anything that cannot be read is not-failed), with
+# ci_detail and, for a failure, ci_failed_runs (a JSON array of run labels).
+#
+# Every workflow run GitHub lists for the head SHA reports its LATEST attempt,
+# so a run re-run to green reads green. Only this PR's runs count: one whose
+# pull_requests[] names this PR in this repository, or one on the PR's head
+# branch AND head repository — so a fork PR's same-named branch in the base
+# repository is not evidence. A head failed only when the newest run of some
+# workflow and event concluded `failure` and no run is still pending;
+# cancelled, timed_out, skipped, neutral, stale, action_required and the rest
+# never prove a failure, and a listing that is unreadable or incomplete proves
+# nothing.
+ci_head_verdict() {
+    ci_verdict=not-failed
+    ci_failed_runs='[]'
+    ci_pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
+        ci_detail="the PR could not be read"
+        return 0
+    }
+    ci_tmp=$(mktemp -d -t codex-ci-XXXXXX) || {
+        ci_detail="cannot create a scratch directory for the CI read"
+        return 0
+    }
+    printf '%s' "$ci_pr_payload" >"$ci_tmp/pr.json"
+    if ! run_gh api --paginate --slurp \
+        "repos/$state_repo/actions/runs?head_sha=$state_head&per_page=100" >"$ci_tmp/runs.json"; then
+        rm -rf "$ci_tmp"
+        ci_detail="the workflow runs for $state_head could not be read"
+        return 0
+    fi
+    ci_result=$(jq -c -n --slurpfile pages "$ci_tmp/runs.json" --slurpfile pr "$ci_tmp/pr.json" \
+        --arg repo "$state_repo" --argjson number "$state_pr" '
+        ($pages[0]) as $p | ($pr[0]) as $pr | ($repo | ascii_downcase) as $repo_lc
+        | if ($p | type) != "array" or ($p | length) == 0 or
+             ($p | any(type != "object" or (.workflow_runs | type) != "array"))
+          then {verdict:"not-failed", detail:"the workflow-run listing is not a readable page set"}
+          else [$p[].workflow_runs[]] as $all
+          | if ($all | length) != $p[0].total_count or ($all | any(type != "object"))
+            then {verdict:"not-failed", detail:"the workflow-run listing is incomplete"}
+            else ($pr.head.ref // "") as $branch
+            | ((($pr.head.repo // {}).full_name // "") | ascii_downcase) as $head_repo
+            | [$all[] | select(
+                ((.pull_requests // []) | any(.number == $number and
+                  (((.base.repo // {}).url // "") | ascii_downcase | endswith("/repos/" + $repo_lc))))
+                or ($branch != "" and $head_repo != "" and .head_branch == $branch and
+                  ((((.head_repository // {}).full_name // "") | ascii_downcase) == $head_repo)))]
+              as $mine
+            | ([$mine[] | select(.status != "completed")] | length) as $pending
+            | [$mine | group_by([.workflow_id, .event])[] | max_by(.id)
+                | select(.conclusion == "failure") | "\(.name // "workflow") #\(.id)"] as $failed
+            | if $pending > 0 then
+                {verdict:"not-failed", detail:"\($pending) run(s) of this PR are still pending"}
+              elif ($failed | length) == 0 then
+                {verdict:"not-failed", detail:"no latest run of this PR concluded failure"}
+              else {verdict:"failed", detail:"concluded failure: \($failed | join(", "))",
+                    failed_runs:$failed} end
+            end
+          end') || ci_result='{"verdict":"not-failed","detail":"the CI evidence could not be parsed"}'
+    rm -rf "$ci_tmp"
+    ci_verdict=$(jq -r '.verdict' <<<"$ci_result")
+    ci_detail=$(jq -r '.detail' <<<"$ci_result")
+    ci_failed_runs=$(jq -c '.failed_runs // []' <<<"$ci_result")
+}
+
+# harmon-devkit#1406: settle a cycle's charge from CI evidence when `check`
+# reaches its terminal result. Under `with-push` and `after-ci-first` a review
+# can be spent on a head whose CI then fails; that cycle spends the exempt
+# ceiling instead of `integration`. It runs at every terminal `check`, not once,
+# so the answer always comes from the latest evidence: a failure later re-run
+# to green moves the cycle back to charged. Unchanged evidence writes nothing.
+#
+# Scoped to the run that owns the state (`check --run-id`, which already
+# refuses foreign or unowned state), and only to a cycle `reserve` charged:
+# after-ci, a carried cycle, a base-merge exemption, and an exempt ceiling that
+# is undeclared, 0 or spent all leave the charge where `reserve` put it. The
+# two counters move together, in the run-spend sidecar first and then in the
+# state, so their sum (the cycle ordinal) never changes; a write that fails
+# stops the verdict (exit 2) rather than reporting a charge that is not there.
+settle_ci_charge() {
+    [ "${command_name:-}" = check ] && [ -n "${run_id:-}" ] || return 0
+    [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
+    scc_state=$(jq -c '.' "$state_file") ||
+        die "cannot read the cycle state to settle its charge"
+    [ "$(jq -r '.run_id // empty' <<<"$scc_state")" = "$run_id" ] || return 0
+    [ "$(jq -r '.carry == null' <<<"$scc_state")" = true ] || return 0
+    case "$(jq -r '.review_trigger // "after-ci"' <<<"$scc_state")" in
+    with-push | after-ci-first) ;;
+    *) return 0 ;;
+    esac
+    scc_now=$(jq -r 'if .ci_exempt != null then "exempt" else "charged" end' <<<"$scc_state")
+    [ "$scc_now" = exempt ] || [ "$(jq -r '.charge // "charged"' <<<"$scc_state")" = charged ] ||
+        return 0
+    scc_charged=$(jq -r '.charged_cycles // empty' <<<"$scc_state")
+    scc_exempt=$(jq -r '.exempt_cycles // empty' <<<"$scc_state")
+    valid_uint_or_zero "$scc_charged" && valid_uint_or_zero "$scc_exempt" ||
+        die "persisted cycle counters are not non-negative integers (charged=$scc_charged exempt=$scc_exempt)"
+    scc_cap=$(jq -r '.integration_exempt_cap // empty' <<<"$scc_state")
+
+    ci_head_verdict
+    scc_want=charged
+    if [ "$ci_verdict" = failed ]; then
+        if [ "$scc_now" = exempt ] ||
+            { [ -n "$scc_cap" ] && [ "$((scc_exempt + 1))" -le "$scc_cap" ]; }; then
+            scc_want=exempt
+        fi
+    fi
+    [ "$scc_want" != "$scc_now" ] || return 0
+
+    if [ "$scc_want" = exempt ]; then
+        [ "$scc_charged" -ge 1 ] ||
+            die "this cycle is recorded charged but charged_cycles is 0; repair the state rather than settling against it"
+        scc_charged=$((scc_charged - 1))
+        scc_exempt=$((scc_exempt + 1))
+        scc_reason="CI on $state_head $ci_detail, with no run pending: this review was spent on a head CI rejected, so it spends integration_exempt"
+        scc_update='.ci_exempt = {reserved_reason:(.charge_reason // ""), failed_runs:$runs}
+            | .charge = "exempt" | .charge_reason = $reason'
+    else
+        [ "$scc_exempt" -ge 1 ] ||
+            die "this cycle is recorded CI-exempt but exempt_cycles is 0; repair the state rather than settling against it"
+        scc_charged=$((scc_charged + 1))
+        scc_exempt=$((scc_exempt - 1))
+        scc_reason=$(jq -r '.ci_exempt.reserved_reason' <<<"$scc_state")
+        scc_update='.charge = "charged" | .charge_reason = $reason | .ci_exempt = null'
+    fi
+    # Same layout `mark_terminally_reviewed` writes, so the next terminal
+    # `check` rewrites identical bytes — the readiness gate compares them.
+    scc_next=$(jq --arg reason "$scc_reason" --argjson runs "$ci_failed_runs" \
+        --argjson c "$scc_charged" --argjson e "$scc_exempt" \
+        "$scc_update | .charged_cycles = \$c | .exempt_cycles = \$e" <<<"$scc_state") ||
+        die "cannot compose the settled charge"
+
+    scc_spend="${state_file%.json}.spend.json"
+    scc_spend_snapshot=
+    [ ! -f "$scc_spend" ] || scc_spend_snapshot=$(cat "$scc_spend") ||
+        die "cannot read the run-spend sidecar $scc_spend to settle this cycle's charge"
+    { [ -n "$scc_spend_snapshot" ] || printf '{}' >"$scc_spend"; } &&
+        jq --arg r "$run_id" --argjson c "$scc_charged" --argjson e "$scc_exempt" \
+            '.[$r] = {charged: $c, exempt: $e}' "$scc_spend" >"${scc_spend}.next" 2>/dev/null &&
+        mv "${scc_spend}.next" "$scc_spend" || {
+        rm -f "${scc_spend}.next"
+        die "cannot record the settled charge in $scc_spend; the cycle's charge is left as it was"
+    }
+    printf '%s\n' "$scc_next" >"${state_file}.ci-next" 2>/dev/null &&
+        chmod 600 "${state_file}.ci-next" && mv "${state_file}.ci-next" "$state_file" || {
+        rm -f "${state_file}.ci-next"
+        if [ -n "$scc_spend_snapshot" ]; then
+            printf '%s' "$scc_spend_snapshot" >"$scc_spend" 2>/dev/null || true
+        else
+            rm -f "$scc_spend"
+        fi
+        die "cannot write the settled charge; the cycle's charge is left as it was"
+    }
+    printf 'codex-cloud-review: %s\n' \
+        "cycle on $state_head settled $scc_want from CI evidence ($ci_detail)" >&2
+}
+
 # harmon-devkit#1376: the three [stage.integration].review_trigger values.
 valid_review_trigger() {
     case "$1" in after-ci | with-push | after-ci-first) return 0 ;; *) return 1 ;; esac
@@ -2084,6 +2256,12 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
+    # harmon-devkit#1406: the exempt ceiling is persisted for `check`, so a
+    # value that is not a count must never reach the state.
+    for reserve_cap in "$integration_cap" "$integration_exempt_cap"; do
+        [ -z "$reserve_cap" ] || valid_uint_or_zero "$reserve_cap" ||
+            die "--integration-cap and --integration-exempt-cap must be non-negative integers"
+    done
     [ -z "$review_trigger" ] || valid_review_trigger "$review_trigger" ||
         die "--review-trigger must be one of after-ci, with-push, after-ci-first"
     # harmon-devkit#1189: right after a push GitHub routinely reports the
@@ -2363,6 +2541,7 @@ reserve)
     fi
     charge_class=charged
     charge_reason="no persisted prior reviewed head; charging"
+    payload_ci_exempt=null
     if [ "$attempt" = "1" ]; then
         # Attempt 1 of a head is a NEW cycle, and the only thing that spends a
         # ceiling. Classify it, then charge whichever counter it belongs to.
@@ -2465,6 +2644,12 @@ reserve)
         [ -z "$review_trigger" ] || [ "$review_trigger" = "$recorded_review_trigger" ] ||
             die "--review-trigger $review_trigger disagrees with the trigger attempt 1 was reserved under ($recorded_review_trigger)"
         review_trigger=$recorded_review_trigger
+        # harmon-devkit#1406: the same cycle keeps the exempt ceiling it was
+        # reserved under and any CI settlement `check` already made on it, so
+        # `check` can still move it back if that settlement stops holding.
+        payload_ci_exempt=$(jq -c '.ci_exempt // null' "$state_file")
+        [ -n "$integration_exempt_cap" ] ||
+            integration_exempt_cap=$(jq -r '.integration_exempt_cap // empty' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
@@ -2626,6 +2811,8 @@ reserve)
         --arg base_sha "$reserve_base_sha" \
         --argjson first_trigger_comment_id "$payload_first_trigger_comment_id" \
         --arg review_trigger "$review_trigger" \
+        --arg exempt_cap "$integration_exempt_cap" \
+        --argjson ci_exempt "$payload_ci_exempt" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -2642,7 +2829,9 @@ reserve)
           exempt_cycles:$exempt_cycles,
           run_id:(if $run_id == "" then null else $run_id end),
           base_sha:(if $base_sha == "" then null else $base_sha end),
-          review_trigger:(if $review_trigger == "" then null else $review_trigger end)
+          review_trigger:(if $review_trigger == "" then null else $review_trigger end),
+          integration_exempt_cap:(if $exempt_cap == "" then null else ($exempt_cap | tonumber) end),
+          ci_exempt:$ci_exempt
         }')
     write_state "$state_file" "$payload" || {
         restore_spend

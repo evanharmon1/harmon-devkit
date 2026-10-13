@@ -203,7 +203,9 @@ the **remediation cap** bounds how many fix pushes it may make.
 ONLY by a base merge that changed no file under review re-reads identical code
 by construction — it cannot find anything the previous cycle did not — so
 charging it would measure the base branch's traffic rather than this change's
-difficulty. Such a cycle is **exempt**: it runs, and it spends the separate
+difficulty. Such a cycle is **exempt** — as is a `with-push` or
+`after-ci-first` review spent on a head whose CI then failed (below,
+harmon-devkit#1406): it runs, and it spends the separate
 `rounds.integration_exempt` ceiling instead. Exempt is not free, and that
 second ceiling is why: a busy base branch could otherwise spend a whole run
 re-reviewing code nobody changed.
@@ -241,17 +243,29 @@ When CI fails while a review requested alongside it is pending, the cycle
 still waits for that review's terminal result, or is reported incomplete.
 
 **Under `with-push` and `after-ci-first`, a review spent on a head whose CI
-then fails still charges `integration`.** Requesting before CI concludes
-trades an occasional review of a head CI then rejects for wall-clock time, and
-that cycle is an ordinary cycle: it charges `integration` like any other, its
-findings are adjudicated as usual, and the fix push spends `remediation`.
-Nothing classifies a cycle from CI evidence, so a run whose charged cycles
-reach the integration cap escalates there whatever its last head's CI did —
-fail closed; the maintainer can authorize more cycles. Charging that case to
-the exempt ceiling instead is tracked separately (#1406). `reserve
---review-trigger <value>` records the value on the cycle for the record and
-refuses an attempt 2 reserved under a different one; it changes no charge.
-Under `after-ci` no review is requested before CI is green at all.
+then fails spends `integration_exempt`, not `integration`**
+(harmon-devkit#1406). Requesting before CI concludes trades an occasional
+review of a head CI then rejects for wall-clock time; that review measured
+the head CI threw away rather than the change's difficulty, so it does not
+spend the cap that measures difficulty. Its findings are still adjudicated as
+usual, and the fix push still spends `remediation`. `reserve` reads no CI —
+it charges the cycle and records the declared exempt ceiling — and the
+checker's `check --run-id` settles the charge each time it reaches the
+cycle's terminal result, from the latest CI on that head: the cycle moves to
+`exempt_cycles` only when a latest run of this PR concluded `failure` and
+none is pending, and moves back when that stops holding (a flaky failure
+re-run to green). Only the PR's own runs count — its `pull_request` runs, or
+runs on its head branch **and** head repository — and pending, cancelled,
+unreadable or any other non-`failure` result charges. A carried cycle, a
+base-merge exemption, and a spent, 0 or undeclared exempt ceiling leave the
+charge where `reserve` put it. Because CI often concludes after the review,
+run `check` once more after CI settles and before reporting the counters, so
+they reflect the final evidence; the readiness gate's own recheck re-settles
+too, and refuses a result whose split it moved. Never adjust a counter by
+your own reading of CI. `reserve --review-trigger <value>` records the value
+on the cycle and refuses an attempt 2 reserved under a different one. Under
+`after-ci` no review is requested before CI is green at all, and no cycle is
+ever charged to `integration_exempt` for a CI failure.
 
 **Before either ceiling, ask whether the cycle is needed at all**
 (harmon-init#752). The exemption above still runs the review — it spends a

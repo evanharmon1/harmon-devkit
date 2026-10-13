@@ -148,7 +148,10 @@
 # never a state file this script creates or owns. `check` takes only a
 # transient advisory lock beside STATE_FILE (mkdir/rmdir, non-blocking) and,
 # for a state file already carrying a persisted timeout_min — every state
-# file a current integrator run produces — writes nothing else; it is not
+# file a current integrator run produces — rewrites only what a terminal
+# verdict records: the reviewed-head marker, identical on a re-check, and a
+# with-push / after-ci-first cycle's charge when newer CI evidence settles it
+# differently (harmon-devkit#1406, re-compared after the recheck); it is not
 # exempt from the "gate writes nothing" claim above, only the one caller
 # that legitimately re-runs another script's read path instead of reading a
 # file directly. Without --integrator-result the same live check is the primary cycle
@@ -1823,7 +1826,22 @@ if [ "$codex_cycle" != null ]; then
             indeterminate codex-carried-unproven "codex_cycle says the verdict was carried from $cycle_carried_origin but the checker state's cycle is ${state_cycle_head:-none}"
     fi
     case "$codex_exit" in
-    0) [ -z "$integrator_result" ] || recheck_codex_freshness ;;
+    0)
+        if [ -n "$integrator_result" ]; then
+            recheck_codex_freshness
+            # harmon-devkit#1406: that live `check` settles a with-push or
+            # after-ci-first cycle's charge from the latest CI evidence, so it
+            # can move the cycle between the two counters after the split
+            # above was confirmed — a flaky failure re-run to green is the
+            # case. The result then reports spend the state no longer records.
+            if [ -n "${cycle_charged:-}" ] && [ -n "$cycle_state_file" ] && [ -f "$cycle_state_file" ]; then
+                resettled_split="$(jq -r '"\(.charged_cycles)/\(.exempt_cycles)"' \
+                    "$cycle_state_file" 2>/dev/null)" || resettled_split=
+                [ "$resettled_split" = "$cycle_charged/$cycle_exempt" ] ||
+                    indeterminate codex-cap-mismatch "the live Codex check re-settled this cycle's charge from newer CI evidence: codex_cycle reports charged/exempt $cycle_charged/$cycle_exempt but the checker state now records ${resettled_split:-unreadable counters} — dispatch the integrator again so its result reports the settled spend"
+            fi
+        fi
+        ;;
     *) exit_condition codex "$codex_exit" "the current-head Codex cycle" ;;
     esac
 elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
