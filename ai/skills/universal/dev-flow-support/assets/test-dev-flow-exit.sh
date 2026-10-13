@@ -1003,6 +1003,43 @@ assert.equal(computeIntegrationExit(trajectory("fix"), 4, { pushes: pushes.pushe
 console.log("tell-guard disposition check OK");
 '
 
+echo "== harmon-devkit#1406: a CI-failed exempt cycle neither hides a push nor spends the cap =="
+# A cycle whose head CI failed spends integration_exempt, so the charged count
+# can stand still across cycles (1, 1, 2 or 1, 1, 1). The push that follows it
+# is still the run record's remediation entry (#1401), never inferred from
+# the charged count, and `capped` reads only charged spend.
+node --input-type=module -e '
+import { computeIntegrationExit, ExitIndeterminate } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
+import assert from "node:assert/strict";
+const head = (n) => String(n).repeat(40);
+const round = (n, h, cycle, charged, entries) => ({
+  round: n,
+  pass: { envelope: { head: head(h), payload: { settled_at: `2026-10-08T00:${String(n * 10).padStart(2, "0")}:00Z`, findings: entries.map((e) => ({ id: e.finding_id })), codex_cycle: { head: head(h), cycle, charged, exempt: cycle - charged, exit_code: entries.length ? 10 : 0 } } } },
+  adjudication: { doc: { adjudications: entries } },
+});
+const entry = (n, priority, disposition, checkpoint) => ({ finding_id: `integration-r${n}-codex-cloud-1`, adjudicated_priority: priority, disposition, ...(checkpoint ? { checkpoint } : {}) });
+const at = (m) => Date.parse(`2026-10-08T00:${m}:00Z`);
+const pushes = { pushes: [{ index: 2, head: head(2), findings: [entry(1).finding_id], at: at(15) }, { index: 4, head: head(3), findings: [entry(2).finding_id], at: at(25) }], unrecorded: 0 };
+// Cycle 2 is the CI-failed exempt tell cycle; the hardening push after it is refused
+// whether cycle 3 charges (1, 1, 2) or is exempt too (1, 1, 1).
+for (const lastCharged of [2, 1]) {
+  const trajectory = (disposition) => [
+    round(1, 1, 1, 1, [entry(1, "P1", "fix")]),
+    round(2, 2, 2, 1, [entry(2, "P2", disposition, { attacks_remediation: true, remedy: "delete" })]),
+    round(3, 3, 3, lastCharged, []),
+  ];
+  assert.throws(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
+  assert.equal(computeIntegrationExit(trajectory("delete"), 4, pushes).outcome, "converged");
+}
+// Gating findings on an exempt cycle: one charged cycle of a cap of 2 is not capped,
+// although two cycles ran; charging the same cycle reaches the cap.
+const gating = (charged) => [round(1, 1, 1, 1, [entry(1, "P1", "fix")]), round(2, 2, 2, charged, [entry(2, "P1", "fix", { attacks_remediation: false, remedy: "fix" })])];
+const onePush = { pushes: pushes.pushes.slice(0, 1), unrecorded: 0 };
+assert.equal(computeIntegrationExit(gating(1), 2, onePush).outcome, "continue");
+assert.equal(computeIntegrationExit(gating(2), 2, onePush).outcome, "capped");
+console.log("CI-failed exempt cycle check OK");
+'
+
 echo "== harmon-devkit#1239: the shared over-cap authorization predicate =="
 # The corpus covers the engine end to end (capped-clean-at-authorized-round,
 # over-cap-*-rejected, cross-stage-authorized-*);

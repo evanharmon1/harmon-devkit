@@ -48,8 +48,10 @@ A workable brief names:
   (harmon-init#1326). `integration` charges only cycles that review something
   new; a cycle whose head differs from the last reviewed head ONLY by a base
   merge that changed no file under review re-reads identical code and spends
-  the exempt ceiling instead. You do not judge which it is — pass `--run-id`
-  to `reserve` and it classifies from evidence, keeping the running totals in
+  the exempt ceiling instead, as does a `with-push` / `after-ci-first` review
+  spent on a head whose CI then failed (harmon-devkit#1406, §4). You do not
+  judge which it is — pass `--run-id` to `reserve` and to every `check`, and
+  the checker classifies from evidence, keeping the running totals in
   its own state as `charged_cycles` / `exempt_cycles`. Pass BOTH ceilings on
   every reservation as well: `reserve` refuses a cycle that would exceed the
   one it belongs to, and that refusal is the only check that happens before
@@ -348,10 +350,16 @@ the cycle exactly as below until `check` reaches a terminal result, or report
 it incomplete with the exit code it last returned — never stop early because
 CI went red, and never re-trigger because CI was re-run. The failed check is
 §3's `$failed_required` finding as always. A review spent on a head whose CI
-then fails still charges `integration`, like any other cycle — never adjust a
-counter by your own reading of CI. Charging that case to the exempt ceiling
-instead is tracked separately (#1406). Report the counters `reserve` and
-`check` leave in state, as always.
+then fails spends the exempt ceiling instead of `integration` when the
+cycle's order was `with-push` (harmon-devkit#1406) — which is why `reserve`
+takes `--remediation`, so it records that order — but that is the checker's
+call, never yours: `check --run-id` settles the charge from the latest CI on
+the cycle head each time it reaches a terminal result. So under a `with-push` order, once the cycle is
+terminal AND §3's checks have all concluded, run the `check` pair below once
+more before you report — CI that concluded after the review is then counted,
+and a failure re-run to green is moved back to charged. Never adjust a
+counter by your own reading of CI. Report the counters `reserve` and `check`
+leave in state, as always.
 
 Otherwise, persist state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
@@ -498,7 +506,7 @@ Three cases, mutually exclusive:
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
-      --review-trigger "<review_trigger>")
+      --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
   reserve_exit=0
   "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   if [ "$reserve_exit" -eq 18 ]; then
@@ -799,7 +807,7 @@ state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 reserve_args=(--state "$state_finder" --repo "$repo" --pr <n> \
     --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
     --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
-    --review-trigger "<review_trigger>")
+    --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
 reserve_exit=0
 "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
 if [ "$reserve_exit" -eq 18 ]; then

@@ -672,6 +672,25 @@ chmod +x "${recheck_dir}/readiness-gate.sh"
 # cases that only need one fixed answer.
 cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'STUB'
 #!/bin/sh
+# harmon-devkit#1406: every invocation is logged beside the gh calls, so a case
+# can tell where in the gate's sequence the checker ran and with which flags.
+[ -z "${GH_LOG:-}" ] || printf 'CHECKER %s\n' "$*" >>"$GH_LOG"
+# `ci-split`: the recorded split is the state's; the CI-settled one is
+# $RECHECK_CI_SPLIT ("charged/exempt") when a case sets it, else the same.
+if [ "${1:-}" = ci-split ]; then
+    split_state=
+    while [ "$#" -gt 0 ]; do
+        [ "$1" != --state ] || split_state=$2
+        shift
+    done
+    jq -c --arg settled "${RECHECK_CI_SPLIT:-}" '
+        {charged:.charged_cycles, exempt:.exempt_cycles} as $r
+        | {recorded:$r, detail:"stub",
+           settled:(if $settled == "" then $r else
+             ($settled | split("/") | {charged:(.[0] | tonumber), exempt:(.[1] | tonumber)}) end)}' \
+        "$split_state"
+    exit 0
+fi
 if [ -n "${RECHECK_MUTATE_STATE:-}" ]; then
     if [ "${RECHECK_REPLACE_IDENTICAL:-0}" = 1 ]; then
         cp "$RECHECK_MUTATE_STATE" "$RECHECK_MUTATE_STATE.next"
@@ -3421,6 +3440,64 @@ mv "${recheck_state}.next" "$recheck_state"
 run_gate_recheck_clean --integrator-result "$clean_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 0 pass ready
+
+# harmon-devkit#1406: a with-push / after-ci-first cycle whose head CI failed is
+# settled exempt by the checker. Two cycles under a charged cap of 1 pass when
+# the first one is that CI-failed exemption.
+ci_split_case() {
+    write_defaults
+    ci_split="$(jq -c '.cycle = 2 | .charged = 1 | .exempt = 1' <<<"$(codex_cycle_json 0)")"
+    clean_result="$(write_integrator_result "cap-ci-split-$1" "$ci_split")"
+    write_integration_cycle 1 3333333333333333333333333333333333333333 1 P2 decline none
+    jq '.payload.integration_round = 2' "$clean_result" >"${clean_result}.next" &&
+        mv "${clean_result}.next" "$clean_result"
+    cp "$clean_result" "${record_dir}/passes/integration-r2-codex-cloud.json"
+    jq '.charged_cycles = 1 | .exempt_cycles = 1 | .charge = "exempt" |
+        .ci_exempt = {reserved_reason:"first cycle", failed_runs:["CI #11"]}' \
+        "$recheck_state" >"${recheck_state}.next"
+    mv "${recheck_state}.next" "$recheck_state"
+}
+echo "==> a CI-failed exempt cycle passes the cap check against its own ceiling"
+ci_split_case ok
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 1 --integration-exempt-cap 1
+assert_gate 0 pass ready
+
+echo "==> a state whose charge the latest CI would settle differently is codex-cap-mismatch"
+# The gate never settles a charge itself (threads 4260347229/-240): its recheck
+# runs `check --read-only`, and `ci-split` reports that CI now implies 2/0 (a
+# failure re-run to green) while the state still records 1/1.
+ci_split_case resettled
+: >"$log"
+state_before="$(cat "$recheck_state")"
+export RECHECK_CI_SPLIT=2/0
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+unset RECHECK_CI_SPLIT
+assert_gate 2 indeterminate codex-cap-mismatch
+case "$gate_out" in
+*"not settled from the latest CI evidence"*) ;;
+*) fail "the unsettled split must be named: $gate_out" ;;
+esac
+[ "$(cat "$recheck_state")" = "$state_before" ] || fail "the gate must leave the checker state byte-identical"
+gate_checks="$(grep '^CHECKER check ' "$log" || true)"
+[ -n "$gate_checks" ] || fail "the gate must have run its live recheck"
+! grep -v -- '--read-only' <<<"$gate_checks" >/dev/null ||
+    fail "every gate recheck must run check --read-only: $gate_checks"
+
+echo "==> the CI-settled charge is read after the gate's final checks read"
+# Thread 4260347252: a failed run re-run green between an early split read and
+# the final checks read would leave an exemption on a ready verdict, so the
+# split is read after the LAST check-runs fetch.
+ci_split_case ordered
+: >"$log"
+run_gate_recheck_clean --integrator-result "$clean_result" \
+    --integration-cap 2 --integration-exempt-cap 2
+assert_gate 0 pass ready
+split_line="$(grep -n '^CHECKER ci-split ' "$log" | tail -n 1 | cut -d: -f1)"
+checks_line="$(grep -n 'check-runs' "$log" | tail -n 1 | cut -d: -f1)"
+[ -n "$split_line" ] && [ -n "$checks_line" ] && [ "$split_line" -gt "$checks_line" ] ||
+    fail "ci-split must follow the final check-runs read (ci-split line ${split_line:-none}, last checks line ${checks_line:-none})"
 
 echo "==> a claimed split with no durable counters is codex-cap-mismatch"
 # The result agreeing with itself is not evidence. A producer old enough to
