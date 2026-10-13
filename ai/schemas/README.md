@@ -1437,6 +1437,13 @@ Markdown summary:
 <!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n|null>,"sequence":<n>,"destination":"<issue|pr>"} -->
 ```
 
+Use the review skill's `assets/post-evidence.sh` for a single issue-round
+comment (sequence 1). It emits the marker on the first line, authenticates
+the whole comment through the reserve-first monitor, and registers the exact
+posted whole-body digest through candidate validation and canonical readback.
+The monitor and registration authenticate the same body bytes; the chain has its own
+canonical digest as described below. Oversized/split projections are refused.
+
 The marker line carries one JSON object; any valid JSON serialization is accepted, while the displayed form is the canonical serialization emitted by the review skill. The object has exactly those five fields. `stage` uses the run-stage enum,
 `round` is a positive integer for an issue-side round and `null` for a PR-side
 rollup, and `sequence` is a positive integer. The marker authenticates which
@@ -1549,7 +1556,7 @@ is the authoritative index (evidence spec: "the issue-level index... SHALL
 anchor run discovery... SHALL reject deleted-entry tampering, never
 reinterpret it as a run that did not happen"). A harvester checks every
 listed entry against the comments it actually finds: a listed comment id
-that no longer exists, or whose current body no longer hashes to the
+that no longer exists, or whose current content no longer hashes under its marker grammar to the
 listed digest, invalidates the **whole run** as indeterminate — the same
 severity as a broken append-only chain, and for the same reason (a
 malicious or buggy deletion could otherwise hide exactly the round most
@@ -1562,7 +1569,7 @@ directly, for instance) still functions correctly.
 
 ### Segment reassembly
 
-A harvester collects every **trusted** (see below) comment sharing a
+For legacy comments, a harvester collects every **trusted** (see below) comment sharing a
 marker's `run_id`/`stage`/`dest`/`round`, sorts by `seq`, and requires the
 complete sequence with no gap starting at 1 — a `seq` 1 and 3 with no 2
 found is rejected as incomplete evidence (`ExitIndeterminate`-shaped:
@@ -1581,18 +1588,22 @@ Two different things share the name "digest" in this family, and
 the same object — worth naming precisely rather than conflating:
 
 - **Payload digest** (`run.schema.json`'s `evidence_comments[].digest`, and
-  `evidence_registrations[].payload_digest`) is the lowercase hex SHA-256 of
-  the **exact bytes** of the evidence payload as posted — for a
-  single-segment comment, the fenced JSON text; for a split comment, the
-  full reassembled text before parsing, not a re-serialization. Compute it
-  once at post time over the string that is about to be written, and verify
-  it by re-hashing the string actually read back — never a round-tripped
-  `JSON.stringify(JSON.parse(...))` of it, which is not guaranteed
-  byte-stable (key order, numeric formatting) across two implementations
-  (devkit's writer, Foreman's Python writer, this repo's harvester). A
+  `evidence_registrations[].payload_digest`) has canonical format
+  `sha256:<64 lowercase hex>` and authenticates the exact posted content:
+  - For **current-grammar** `dev-flow-v2-evidence` comments, it is SHA-256
+    of the **whole posted comment**, including its marker line, prose,
+    whitespace and fenced JSON. This is the body the harvester authenticates.
+    Each split comment's registration hashes that comment's complete body,
+    never the reassembled projection or just its fenced JSON.
+  - For **legacy** `devflow:<kind>` comments, it hashes the exact fenced
+    payload text: the fenced JSON text for one segment, or the full
+    reassembled text before parsing for a split payload.
+  Compute it over the exact string about to be posted and verify it by
+  re-hashing the corresponding text actually read back. Never hash a
+  round-tripped `JSON.stringify(JSON.parse(...))`, which is not guaranteed
+  byte-stable across implementations (key order, numeric formatting). A
   mismatch is tampered evidence (edited or corrupted), reported as such,
-  and never silently replayed. Canonical format `sha256:<64 lowercase
-  hex>` (with the algorithm prefix).
+  and never silently replayed.
 - **Chain digest** (every run-record append-only entry's own `digest`,
   including `evidence_registrations[]`/`pr_bindings[]`/
   `outcome_transitions[]`'s) authenticates the entry's own position and
