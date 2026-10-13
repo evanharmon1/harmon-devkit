@@ -545,17 +545,29 @@ on with the inline procedure.
    only a **completed** pass for a **configured** slot of the **active**
    stage's **next unadjudicated** round, reviewing the branch's **current
    head**, produced inside the stage's span; anything else is refused with
-   nothing published. An admitted pass is validated against the run
+   nothing published. **A round's head is fixed from its first receipt to its
+   adjudication**: push a fix only after the round is adjudicated, because a
+   pass reviewing a different head than the round's receipted passes is
+   refused (invalidating and re-running a moved round is harmon-devkit#1445). An admitted pass is validated against the run
    (identity, earlier finding ids), published no-clobber as
    `passes/<stage>-r<n>-<slot>.json`, and receipted.
 4. **Verify, adjudicate, compute the exit, publish** — the same sequence
-   `review/SKILL.md` § "Verify, adjudicate, publish, exit" runs:
+   `review/SKILL.md` § "Verify, adjudicate, publish, exit" runs.
+   **Invariant: every exit-engine call for a solo run takes its policy from
+   the reservation's recorded resolution** — `--rigor` is the run's
+   `policy.json` `rigor.level` (`jq -r .rigor.level <record>/policy.json`),
+   never a fresh default — **and, when the branch edits `.devflow.toml`,
+   `agent-registry.json` or the policy reader, follows `AGENTS.md`'s
+   merge-base rule** (`dev-flow-support` step 0: the merge-base policy via
+   `--merge-base-policy`, or `--closure` with the materialized merge-base
+   reader). Every command below is written to satisfy it:
    1. `ledger --stage <stage>` materializes the exit engine's evidence from the
       branch's own commits: `<record>/history.json` (the change ledger of each
       fix between consecutive reviewed heads) and `<record>/heads.json` (the
       branch's head map).
    2. `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage <stage>
-      --policy .devflow.toml --current-head <head> --history
+      --policy .devflow.toml --rigor <recorded rigor> [<merge-base flags>]
+      --current-head <head> --history
       <record>/history.json --heads <record>/heads.json --repo-root .
       --verification-only --json`. Only `action: adjudicate` authorizes
       adjudication; its verified provenance and fingerprints are what the

@@ -1046,11 +1046,20 @@ function branchHead(runDir) {
   }
 }
 
+// resolvedSlots — the stage's finder slots: the run's policy projection's
+// configured finders plus any the run's finder_selection added.
+function resolvedSlots(record, runDir, stage) {
+  const policy = readJson(join(runDir, 'policy.json'), 'run policy projection')
+  const selected = (record.finder_selection ?? []).filter((entry) => entry.stage === stage).flatMap((entry) => entry.effective ?? [])
+  return new Set([...(policy?.stages?.[stage]?.finders ?? []), ...selected])
+}
+
 // admitPass — the receipt invariant: a pass is evidence only when it is a
 // completed pass for a configured slot of the active stage, for that stage's
-// next unadjudicated round, of the branch head under review, produced inside
-// the stage's span. Anything else would take a slot the exit engine never
-// counts (and an immutable slot cannot be retried) or wedge the run.
+// next unadjudicated round, of the branch head under review — the same head
+// every pass already receipted for that round reviewed — produced inside the
+// stage's span. Anything else would take a slot the exit engine never counts
+// (and an immutable slot cannot be retried) or wedge the run.
 function admitPass(record, envelope, runDir) {
   const { stage, round, reviewed_head: reviewed } = envelope.payload ?? {}
   const slot = envelope.payload?.slot ?? envelope.payload?.finder
@@ -1064,12 +1073,18 @@ function admitPass(record, envelope, runDir) {
   if (envelope.status !== 'completed') refuse(`its status is ${JSON.stringify(envelope.status)}, not "completed"`)
   const active = record.stage_transitions.at(-1)
   if (active.stage !== stage) refuse(`the run's active stage is ${active.stage}`)
-  const policy = readJson(join(runDir, 'policy.json'), 'run policy projection')
-  const selected = (record.finder_selection ?? []).filter((entry) => entry.stage === stage).flatMap((entry) => entry.effective ?? [])
-  const slots = new Set([...(policy?.stages?.[stage]?.finders ?? []), ...selected])
+  const slots = resolvedSlots(record, runDir, stage)
   if (!slots.has(slot)) refuse(`slot ${slot} is not a configured ${stage} finder (${[...slots].join(', ') || 'none'})`)
   const next = Math.max(0, ...adjudicatedRounds(runDir, stage)) + 1
   if (round !== next) refuse(`the next unadjudicated ${stage} round is ${next}`)
+  // A round's head is fixed from its first receipt to its adjudication; a
+  // round whose head moved is invalidated and re-run, never mixed
+  // (harmon-devkit#1445 owns that invalidation).
+  const fixed = receiptedPassNames(record)
+    .filter((file) => file.startsWith(`${stage}-r${round}-`))
+    .map((file) => readJson(join(runDir, 'passes', `${file}.json`), 'receipted pass').payload?.reviewed_head)
+    .find((value) => value !== reviewed)
+  if (fixed !== undefined) refuse(`${stage} round ${round} is fixed at head ${fixed} by its receipted passes; a moved round is invalidated and re-run (harmon-devkit#1445), never mixed`)
   const { branch, head } = branchHead(runDir)
   if (envelope.head !== head || reviewed !== head) refuse(`it reviewed ${reviewed}, not ${branch}'s head ${head}`)
   const now = resolveAt(undefined)
@@ -1084,30 +1099,35 @@ function admitPass(record, envelope, runDir) {
 // reviewed heads changed each file (new-side added lines, old-side deleted
 // lines, and the rename source), in the shape dev-flow-exit.mjs verifies
 // provenance and fingerprints against.
+// Paths come only from `--name-status -z` (raw bytes, NUL-separated, never
+// quoted or prefixed), and each file's hunk headers from a diff limited to
+// that pathspec, so no presentation header is ever parsed for a path.
 function ledgerEntries(round, from, to) {
+  const diffArgs = ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-color', '--no-textconv', '-M']
+  const fields = git([...diffArgs, '--name-status', '-z', from, to]).split('\0').filter((field) => field !== '')
   const entries = []
-  let entry = null
-  const diff = git(['-c', 'core.quotepath=off', 'diff', '--no-ext-diff', '--no-color', '-M', '--unified=0', from, to])
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) {
-      entry = { round, path: null, added_lines: [], deleted_lines: [], renamed_from: null }
-      entries.push(entry)
-    } else if (entry && line.startsWith('rename from ')) {
-      entry.renamed_from = line.slice('rename from '.length)
-    } else if (entry && line.startsWith('rename to ')) {
-      entry.path = line.slice('rename to '.length)
-    } else if (entry && line.startsWith('+++ ')) {
-      if (line !== '+++ /dev/null') entry.path = line.slice('+++ b/'.length)
-    } else if (entry && line.startsWith('@@ ')) {
+  for (let index = 0; index < fields.length; ) {
+    const status = fields[index]
+    const renamed = /^[RC]/.test(status)
+    const source = fields[index + 1]
+    const path = renamed ? fields[index + 2] : source
+    index += renamed ? 3 : 2
+    // A deleted file has no new-side path; it can carry no later finding.
+    if (status === 'D') continue
+    const entry = { round, path, added_lines: [], deleted_lines: [], renamed_from: status.startsWith('R') ? source : null }
+    const pathspec = (value) => `:(literal)${value}`
+    const hunks = git([...diffArgs, '--unified=0', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--',
+      ...(renamed ? [pathspec(source)] : []), pathspec(path)])
+    for (const line of hunks.split('\n').filter((text) => text.startsWith('@@ '))) {
       const hunk = /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@/.exec(line)
       if (!hunk) throw new Refusal(`unparseable hunk header ${JSON.stringify(line)} between ${from} and ${to}`)
       const [oldStart, oldCount, newStart, newCount] = [hunk[1], hunk[2] ?? '1', hunk[3], hunk[4] ?? '1'].map(Number)
       for (let i = 0; i < oldCount; i += 1) entry.deleted_lines.push(oldStart + i)
       for (let i = 0; i < newCount; i += 1) entry.added_lines.push(newStart + i)
     }
+    entries.push(entry)
   }
-  // A deleted file has no new-side path; it can carry no later finding.
-  return entries.filter((e) => e.path !== null)
+  return entries
 }
 
 const SIDE_EFFECTS = {
@@ -1159,6 +1179,8 @@ const SIDE_EFFECTS = {
       .filter((file) => file.startsWith(`${name}-`))
       .map((file) => join(runDir, 'passes', `${file}.json`))
     if (passes.length === 0) throw new Refusal(`round ${name} has no receipted pass to adjudicate`)
+    const missing = [...resolvedSlots(record, runDir, stage)].filter((slot) => !receiptedPassNames(record).includes(`${name}-${slot}`))
+    if (missing.length > 0) throw new Refusal(`round ${name} is incomplete: no receipted pass for slot(s) ${missing.join(', ')}`)
     const directory = join(runDir, 'adjudications')
     const known = existsSync(directory)
       ? readdirSync(directory)

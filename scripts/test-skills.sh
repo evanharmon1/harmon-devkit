@@ -11261,6 +11261,12 @@ expect_ok "implement: the inline path reserves through run-record.mjs solo-init 
     grep -qF 'node "$support_dir/run-record.mjs" solo-init' "$IMPL_MD"
 expect_ok "implement: skipping the confidence stages reserves nothing (#1183)" \
     grep -qF '**No stages, no record.**' "$IMPL_MD"
+expect_ok "implement: solo exit-engine calls take the recorded resolution's rigor and the merge-base rule (#1183 r2-1)" \
+    grep -qF "**Invariant: every exit-engine call for a solo run takes its policy from" "$IMPL_MD"
+expect_ok "implement: solo exit command passes the recorded rigor (#1183 r2-1)" \
+    grep -qF -- '--policy .devflow.toml --rigor <recorded rigor> [<merge-base flags>]' "$IMPL_MD"
+expect_ok "implement: a solo round's head is fixed until adjudication (#1183 r2-2)" \
+    grep -qF "**A round's head is fixed from its first receipt to its" "$IMPL_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
     grep -qF './scripts/test-inline-record.sh' "$repo/Taskfile.yml"
 

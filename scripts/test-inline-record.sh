@@ -265,9 +265,11 @@ refused(slateArgs, ['adjudicate', '--file', adjFile('challenge-r2-early', adjudi
 // ledger and head map materialized by the writer, a verification-only call
 // before adjudication, the final call after it, persisted as verdict.json.
 const exitEngine = join(support, 'dev-flow-exit.sh')
+// Every call takes its rigor from the reservation's recorded resolution.
 const exitFor = (slate, rec, stage, current, verificationOnly) => {
   writer(slate)('ledger', '--stage', stage)
-  const out = run('bash', [exitEngine, '--run', rec, '--stage', stage, '--policy', join(repo, '.devflow.toml'), '--current-head', current,
+  const out = run('bash', [exitEngine, '--run', rec, '--stage', stage, '--policy', join(repo, '.devflow.toml'),
+    '--rigor', read(join(rec, 'policy.json')).rigor.level, '--current-head', current,
     '--history', join(rec, 'history.json'), '--heads', join(rec, 'heads.json'), '--repo-root', repo, '--json',
     ...(verificationOnly ? ['--verification-only'] : [])])
   const json = out.stdout ? JSON.parse(out.stdout) : null
@@ -499,11 +501,12 @@ pass('a promoted solo run releases its slate lock and refuses every later write'
 
 // A second run whose challenge stage diverges: round 2 repeats round 1's
 // finding on the very line round 1's fix added, which only the ledger can
-// verify, so repeat_after_fix fires.
+// verify, so repeat_after_fix fires. The file's name holds a space, which the
+// ledger must read from git's raw paths rather than a diff header.
 const DRUN = 'run-3-diverge'
 const DBRANCH = '3-diverge'
 sh('git', ['switch', '-q', '-c', DBRANCH, base])
-writeFileSync(join(repo, 'a.txt'), 'one\ntwo\nthree\n')
+writeFileSync(join(repo, 'a b.txt'), 'one\ntwo\nthree\n')
 const d1 = commitAll('feat: a')
 r = run('node', [runRecord, ...soloArgs({ runId: DRUN, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)
@@ -515,7 +518,7 @@ dWrite('transition', '--stage', 'implement', '--exit', 'claimed')
 dWrite('transition', '--stage', 'verify', '--exit', `committed ${d1}`)
 dWrite('transition', '--stage', 'challenge', '--exit', 'green')
 const finding = (round, line, provenance, fingerprint) => ({
-  id: `challenge-r${round}-${challengeFinder}-1`, path: 'a.txt', line, class: 'correctness', provenance, fingerprint,
+  id: `challenge-r${round}-${challengeFinder}-1`, path: 'a b.txt', line, class: 'correctness', provenance, fingerprint,
   priority: 'P1', recommended_disposition: 'fix', evidence: 'line two mishandles the edge case',
 })
 const p1 = (round, id, at) => ({ finding_id: id, reviewer_priority: 'P1', adjudicated_priority: 'P1', disposition: 'fix',
@@ -525,13 +528,13 @@ v = adjudicateRound(dSlate, dIdentity.record_directory, 'challenge', 1, d1, adju
 assert.equal(v.json.outcome, 'continue', JSON.stringify(v.json))
 const dPublish = publishFor({ ident: dIdentity, branch: DBRANCH, issue: 3 })
 dPublish('challenge', 1, 'challenger', challengeFinder)
-writeFileSync(join(repo, 'a.txt'), 'one\ntwo, fixed\na new guard\nthree\n')
+writeFileSync(join(repo, 'a b.txt'), 'one\ntwo, fixed\na new guard\nthree\n')
 const d2 = commitAll('fix: a')
 const repeat = finding(2, 3, 'round:1', `repeat-of:${finding(1, 2).id}`)
 dWrite('receipt', '--pass', passFile('diverge-r2', envelope('challenger', 'challenge', 2, challengeFinder, [repeat], { runId: DRUN, reviewed: d2 })))
 v = adjudicateRound(dSlate, dIdentity.record_directory, 'challenge', 2, d2, adjudication('challenge', 2, [p1(2, repeat.id, 'a.txt:3')], { runId: DRUN, reviewed: d2 }))
 assert.deepEqual(read(join(dIdentity.record_directory, 'history.json')),
-  [{ round: 1, path: 'a.txt', added_lines: [2, 3], deleted_lines: [2], renamed_from: null }])
+  [{ round: 1, path: 'a b.txt', added_lines: [2, 3], deleted_lines: [2], renamed_from: null }])
 const repeated = v.verification.rounds.find((round) => round.round === 2).findings[0]
 assert.deepEqual([repeated.provenance_status, repeated.verified_provenance, repeated.fingerprint_status],
   ['verified', 'round:1', 'verified'])
@@ -550,6 +553,40 @@ r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch:
 assert.equal(r.status, 0, r.stderr)
 assert.equal(JSON.parse(r.stdout).generation, 2)
 pass('a solo run stopped at a blocker is closed and its lock released; a fresh solo run then supersedes the ended one on the same branch')
+
+// A two-slot challenge stage: a round is adjudicated only once every resolved
+// slot has a receipted pass, and its head is fixed from the first receipt.
+const SRUN = 'run-8-slots'
+const SBRANCH = '8-slots'
+const twoSlotPolicy = join(tmp, 'policy-two-slots.json')
+const resolvedTwo = spawnSync('node', [join(support, 'devflow-policy.mjs'), 'resolve', '--policy', '.devflow.toml', '--registry', 'agent-registry.json',
+  '--add-finder', 'challenge:copilot-adversarial', '--json'], { cwd: repo, env, encoding: 'utf8' })
+assert.ok([0, 3].includes(resolvedTwo.status), resolvedTwo.stderr)
+writeFileSync(twoSlotPolicy, resolvedTwo.stdout)
+const [slotA, slotB] = read(twoSlotPolicy).stages.challenge.finders
+assert.deepEqual([slotA, slotB], [challengeFinder, 'copilot-adversarial'])
+sh('git', ['switch', '-q', '-c', SBRANCH, base])
+writeFileSync(join(repo, 'slots.txt'), 'first\n')
+const s1 = commitAll('feat: slots')
+r = run('node', [runRecord, ...soloArgs({ runId: SRUN, issue: 8, branch: SBRANCH }).map((a) => (a === policyFile ? twoSlotPolicy : a))])
+assert.equal(r.status, 0, r.stderr)
+const sIdentity = JSON.parse(r.stdout)
+const sSlate = ['--slate', sIdentity.slate_id, '--session', SESSION, '--run-id', SRUN]
+const sWrite = writer(sSlate)
+sWrite('transition', '--stage', 'claim')
+sWrite('transition', '--stage', 'implement', '--exit', 'claimed')
+sWrite('transition', '--stage', 'verify', '--exit', `committed ${s1}`)
+sWrite('transition', '--stage', 'challenge', '--exit', 'green')
+sWrite('receipt', '--pass', passFile('slots-a', envelope('challenger', 'challenge', 1, slotA, [], { runId: SRUN, reviewed: s1 })))
+refused(sSlate, ['adjudicate', '--file', adjFile('slots-r1', adjudication('challenge', 1, [], { runId: SRUN, reviewed: s1 }))],
+  /round challenge-r1 is incomplete: no receipted pass for slot\(s\) copilot-adversarial/)
+assert.equal(existsSync(join(sIdentity.record_directory, 'adjudications')), false)
+writeFileSync(join(repo, 'slots.txt'), 'first\nsecond\n')
+const s2 = commitAll('fix: slots')
+refused(sSlate, ['receipt', '--pass', passFile('slots-b', envelope('challenger', 'challenge', 1, slotB, [], { runId: SRUN, reviewed: s2 }))],
+  new RegExp(`challenge round 1 is fixed at head ${s1} by its receipted passes; .*harmon-devkit#1445`))
+assert.equal(existsSync(join(sIdentity.record_directory, 'passes', `challenge-r1-${slotB}.json`)), false)
+pass('a two-slot round is not adjudicated until every resolved slot has a pass, and a pass for a moved head is refused (harmon-devkit#1445)')
 
 JS
 echo "PASS: test-inline-record.sh"
