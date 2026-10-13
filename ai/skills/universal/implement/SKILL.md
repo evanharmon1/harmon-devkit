@@ -525,11 +525,17 @@ on with the inline procedure.
    issue another session holds — and a step that still fails afterwards undoes
    everything the call created. A refusal is a stop for recording, never
    something to work around. Re-running it is idempotent.
-2. **Walk to the stage.** The reservation happens where the confidence stages
-   begin, so the stages before it are recorded **retroactively, now**:
-   `transition --stage claim`, then `implement`, `verify` and `challenge`,
-   each with `--exit` naming how the stage being left ended (the claim, the
-   commit, `VERIFY-EXIT=0`). Their `entered_at` is the time of this write,
+2. **Walk to the stage.** **A solo run enters only the confidence stages
+   whose recorded cap is above 0, in order** — the run's `policy.json`
+   `rounds.challenge` and `rounds.review`; a cap-0 stage never opens and the
+   exit engine refuses a transition into it. So the first enabled stage is
+   entered at reservation, the next at that stage's handoff, and none at all
+   when both are 0 (no reservation — "No stages, no record" above). The
+   reservation happens where that first stage begins, so the stages before it
+   are recorded **retroactively, now**: `transition --stage claim`, then
+   `implement`, `verify` and the first enabled stage, each with `--exit`
+   naming how the stage being left ended (the claim, the commit,
+   `VERIFY-EXIT=0`). Their `entered_at` is the time of this write,
    not of the work; the exits carry the facts.
 3. **One pass per configured finder slot, per round.** Capture the head first.
    Where the finder's runner publishes in envelope mode, run it so
@@ -584,8 +590,9 @@ on with the inline procedure.
       projection, `review/assets/post-evidence.sh` with the identity's
       `--generation` and `--active-state` and the same `--actor-id`.
 5. **Advance and hand off.** Leave a stage with `transition --stage <next>
-   --exit "<rule>: <detail>"` (review after challenge, `security` after
-   review, `integration` once the draft PR exists), and `bind-pr` the draft.
+   --exit "<rule>: <detail>"` (the next enabled stage — `review` after
+   `challenge` only when review's cap is above 0 — otherwise `security`;
+   `integration` once the draft PR exists), and `bind-pr` the draft.
    Publish the PR-body projection with `render-dev-flow.sh publish` as
    `/review` does. `/integrate` then takes `--record <record_directory>` and
    records promotion with `promote`.

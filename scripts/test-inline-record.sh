@@ -266,9 +266,9 @@ refused(slateArgs, ['adjudicate', '--file', adjFile('challenge-r2-early', adjudi
 // before adjudication, the final call after it, persisted as verdict.json.
 const exitEngine = join(support, 'dev-flow-exit.sh')
 // Every call takes its rigor from the reservation's recorded resolution.
-const exitFor = (slate, rec, stage, current, verificationOnly) => {
+const exitFor = (slate, rec, stage, current, verificationOnly, policyToml = join(repo, '.devflow.toml')) => {
   writer(slate)('ledger', '--stage', stage)
-  const out = run('bash', [exitEngine, '--run', rec, '--stage', stage, '--policy', join(repo, '.devflow.toml'),
+  const out = run('bash', [exitEngine, '--run', rec, '--stage', stage, '--policy', policyToml,
     '--rigor', read(join(rec, 'policy.json')).rigor.level, '--current-head', current,
     '--history', join(rec, 'history.json'), '--heads', join(rec, 'heads.json'), '--repo-root', repo, '--json',
     ...(verificationOnly ? ['--verification-only'] : [])])
@@ -276,11 +276,11 @@ const exitFor = (slate, rec, stage, current, verificationOnly) => {
   if (json !== null) put(join(rec, verificationOnly ? 'verification.json' : 'verdict.json'), json)
   return { status: out.status, json, stderr: out.stderr }
 }
-const adjudicateRound = (slate, rec, stage, round, current, doc) => {
-  const verification = exitFor(slate, rec, stage, current, true)
+const adjudicateRound = (slate, rec, stage, round, current, doc, policyToml) => {
+  const verification = exitFor(slate, rec, stage, current, true, policyToml)
   assert.equal(verification.json?.action, 'adjudicate', JSON.stringify(verification.json) + verification.stderr)
   writer(slate)('adjudicate', '--file', adjFile(`${rec.split('/').at(-1)}-${stage}-r${round}`, doc))
-  const verdict = exitFor(slate, rec, stage, current, false)
+  const verdict = exitFor(slate, rec, stage, current, false, policyToml)
   put(join(rec, `verdict-${stage}-r${round}.json`), verdict.json)
   return { verification: verification.json, ...verdict }
 }
@@ -549,10 +549,14 @@ dWrite('close', '--outcome', 'escalated', '--exit', 'diverging: repeat_after_fix
 releaseLock(dIdentity.slate_id)
 assert.equal(read(join(dIdentity.record_directory, 'run.json')).outcome, 'escalated')
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
+const closedLedger = readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8')
+refused(dSlate, ['ledger', '--stage', 'challenge'], /run already ended with outcome escalated/)
+assert.equal(readFileSync(join(dIdentity.record_directory, 'history.json'), 'utf8'), closedLedger)
+assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)
 assert.equal(JSON.parse(r.stdout).generation, 2)
-pass('a solo run stopped at a blocker is closed and its lock released; a fresh solo run then supersedes the ended one on the same branch')
+pass('a solo run stopped at a blocker is closed and its lock released; ledger then refuses without rewriting it or re-taking the lock; a fresh solo run supersedes the ended one on the same branch')
 
 // A two-slot challenge stage, the second slot added per run with
 // --add-finder: the reservation persists that selection in run.json, a round
@@ -617,6 +621,50 @@ refused(sSlate, ['receipt', '--pass', passFile('slots-b-r2', envelope('challenge
   new RegExp(`challenge round 2 is fixed at head ${s2} by its receipted passes; .*harmon-devkit#1445`))
 assert.equal(existsSync(join(sRecord, 'passes', `challenge-r2-${slotB}.json`)), false)
 pass('a two-slot round is not adjudicated until every resolved slot has a pass, and a pass for a moved head is refused (harmon-devkit#1445)')
+
+// A solo run enters only the confidence stages whose recorded cap is above
+// 0, in order: under a policy that disables one stage, the run reserves at
+// the first enabled stage and hands off from it straight to security.
+const singleStage = ({ disabled, enabled, issue }) => {
+  const toml = join(repo, `.devflow-${enabled}-only.toml`)
+  const text = readFileSync(join(repo, '.devflow.toml'), 'utf8')
+  const zeroed = text.replace(new RegExp(`(\\[rounds\\.standard\\][^[]*?\\n${disabled}\\s*=\\s*)[0-9]+`), '$10')
+  assert.notEqual(zeroed, text)
+  writeFileSync(toml, zeroed)
+  const projectionFile = join(tmp, `policy-${enabled}-only.json`)
+  const resolvedSingle = spawnSync('node', [join(support, 'devflow-policy.mjs'), 'resolve', '--policy', toml, '--registry', 'agent-registry.json', '--json'], { cwd: repo, env, encoding: 'utf8' })
+  assert.ok([0, 3].includes(resolvedSingle.status), resolvedSingle.stderr)
+  writeFileSync(projectionFile, resolvedSingle.stdout)
+  const projection = read(projectionFile)
+  assert.deepEqual([projection.rounds[disabled], projection.rounds[enabled] > 0], [0, true])
+  const runId = `run-${issue}-${enabled}-only`
+  const branch = `${issue}-${enabled}-only`
+  sh('git', ['switch', '-q', '-c', branch, base])
+  writeFileSync(join(repo, `${enabled}.txt`), `${enabled} only\n`)
+  const tip = commitAll(`feat: ${enabled} only`)
+  r = run('node', [runRecord, ...soloArgs({ runId, issue, branch }).map((a) => (a === policyFile ? projectionFile : a))])
+  assert.equal(r.status, 0, r.stderr)
+  const ident = JSON.parse(r.stdout)
+  const slate = ['--slate', ident.slate_id, '--session', SESSION, '--run-id', runId]
+  const w = writer(slate)
+  w('transition', '--stage', 'claim')
+  w('transition', '--stage', 'implement', '--exit', 'claimed')
+  w('transition', '--stage', 'verify', '--exit', `committed ${tip}`)
+  w('transition', '--stage', enabled, '--exit', 'task verify VERIFY-EXIT=0')
+  w('receipt', '--pass', passFile(`${runId}-r1`, envelope(enabled === 'challenge' ? 'challenger' : 'reviewer', enabled, 1,
+    projection.stages[enabled].finders[0], [], { runId, reviewed: tip })))
+  const verdict = adjudicateRound(slate, ident.record_directory, enabled, 1, tip, adjudication(enabled, 1, [], { runId, reviewed: tip }), toml)
+  assert.equal(verdict.status, 20, JSON.stringify(verdict.json) + verdict.stderr)
+  w('transition', '--stage', 'security', '--exit', `converged: empty_round after ${enabled} round 1/${projection.rounds[enabled]}`)
+  const doc = read(join(ident.record_directory, 'run.json'))
+  assert.deepEqual(doc.stage_transitions.map((t) => t.stage), ['kickoff', 'claim', 'implement', 'verify', enabled, 'security'])
+  sh('node', [join(support, 'validate-result-schemas.mjs'), 'run', join(ident.record_directory, 'run.json'), '--receipts',
+    join(ident.record_directory, 'run.json'), '--adjudication', join(ident.record_directory, 'adjudications', `${enabled}-r1.json`)])
+}
+singleStage({ disabled: 'challenge', enabled: 'review', issue: 9 })
+pass('with challenge disabled (cap 0) a solo run enters review alone, converges it, and hands off to security')
+singleStage({ disabled: 'review', enabled: 'challenge', issue: 10 })
+pass('with review disabled (cap 0) a solo run enters challenge alone, converges it, and hands off to security')
 
 JS
 echo "PASS: test-inline-record.sh"

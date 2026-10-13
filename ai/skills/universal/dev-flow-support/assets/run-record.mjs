@@ -1207,6 +1207,7 @@ const SIDE_EFFECTS = {
   ledger(record, args, { runDir }) {
     const stage = args.stage
     if (!CONFIDENCE_STAGES.has(stage)) throw new UsageError('--stage must be challenge or review')
+    guardTimestamp(record, resolveAt(undefined))
     const heads = new Map()
     for (const file of receiptedPassNames(record).filter((name) => name.startsWith(`${stage}-r`))) {
       const pass = readJson(join(runDir, 'passes', `${file}.json`), 'receipted pass')
@@ -1274,15 +1275,23 @@ function sideEffectWrite(command, args) {
   }
   const runDir = join(root, 'runs', runId)
   const canonical = join(runDir, 'run.json')
-  const summary = withMutex(canonical, () => {
-    const record = readJson(canonical, 'run record')
-    if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
-    validateFile('run', canonical, `existing ${canonical}`)
-    const result = SIDE_EFFECTS[command](record, args, { runDir, canonical })
-    if (result === null) return null
-    if (result.write) writeValidated('run', canonical, record)
-    return result.summary
-  })
+  let summary
+  try {
+    summary = withMutex(canonical, () => {
+      const record = readJson(canonical, 'run record')
+      if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+      validateFile('run', canonical, `existing ${canonical}`)
+      const result = SIDE_EFFECTS[command](record, args, { runDir, canonical })
+      if (result === null) return null
+      if (result.write) writeValidated('run', canonical, record)
+      return result.summary
+    })
+  } catch (error) {
+    // A refused write never leaves behind a lock this call took (an ended
+    // run's released lock stays released).
+    if (lock.created === true) releaseSlateLock({ root, slate, session })
+    throw error
+  }
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
