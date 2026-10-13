@@ -8352,6 +8352,21 @@ for ci_case in pending cancelled timed_out action_required neutral skipped stale
     assert_ci_charge 1/0 "$ci_case"
 done
 
+# integration-r1-codex-cloud-3: pending is read from the newest run of each
+# workflow and event, exactly as failure is.
+echo "==> an obsolete queued run superseded by a newer failed run settles exempt"
+ci_cycle with-push 4
+ci_runs "$(ci_run 11 7 queued '')" "$(ci_run 12 7 completed failure)"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 0/1 "obsolete queued run, newer failed run"
+echo "==> a newest run of the failed workflow still pending keeps the cycle charged"
+ci_cycle with-push 4
+ci_runs "$ci_failed" "$(ci_run 12 7 in_progress '')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "older failed run, newer run still pending"
+
 echo "==> a fork PR's same-named branch in the base repository is not evidence"
 ci_cycle with-push 4
 jq '.head.ref = "feature" | .head.repo = {full_name:"fork/repo"}' "${fixtures}/pr.json" \

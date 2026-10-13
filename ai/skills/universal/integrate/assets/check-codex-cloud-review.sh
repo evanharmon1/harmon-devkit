@@ -2074,8 +2074,9 @@ classify_cycle_charge() {
 # (two PRs from one branch), and a fork PR's same-named branch in the base
 # repository is not evidence either. A run counts only when its own head_sha is
 # the cycle head, whatever the query asked for (review-r1-codex-verification-1).
-# A head failed only when the newest run of some
-# workflow and event concluded `failure` and no run is still pending;
+# A head failed only when the newest run of some workflow and event concluded
+# `failure` and no newest run is still pending (an obsolete run superseded by a
+# newer one of its workflow and event decides nothing either way);
 # cancelled, timed_out, skipped, neutral, stale, action_required and the rest
 # never prove a failure, and a listing that is unreadable or incomplete proves
 # nothing.
@@ -2116,9 +2117,13 @@ ci_head_verdict() {
                 else ($branch != "" and $head_repo != "" and .head_branch == $branch and
                   ((((.head_repository // {}).full_name // "") | ascii_downcase) == $head_repo)) end)]
               as $mine
-            | ([$mine[] | select(.status != "completed")] | length) as $pending
-            | [$mine | group_by([.workflow_id, .event])[] | max_by(.id)
-                | select(.conclusion == "failure") | "\(.name // "workflow") #\(.id)"] as $failed
+            # integration-r1-codex-cloud-3: pending and failure are both read
+            # from the NEWEST run of each workflow and event, so an obsolete
+            # queued run superseded by a newer one no longer masks its result.
+            | [$mine | group_by([.workflow_id, .event])[] | max_by(.id)] as $newest
+            | ([$newest[] | select(.status != "completed")] | length) as $pending
+            | [$newest[] | select(.conclusion == "failure")
+                | "\(.name // "workflow") #\(.id)"] as $failed
             | if $pending > 0 then
                 {verdict:"not-failed", detail:"\($pending) run(s) of this PR are still pending"}
               elif ($failed | length) == 0 then
