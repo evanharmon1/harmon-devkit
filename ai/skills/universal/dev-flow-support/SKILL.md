@@ -37,6 +37,7 @@ share lives here. Nothing is shipped through the harmon-init template.
 | `assets/lib/toml-lite.mjs` | the readers above | Restricted TOML parser. |
 | `assets/lib/merge-base-policy.sh` | step 0 below, integrate | Decide the governing merge-base argument for a reader run directly: `--merge-base-policy <file>` when the merge base has `.devflow.toml`, `--merge-base-policy-absent` when it has none but the branch adds one (and only for a reader that supports the flag), neither flag when no side has a policy; indeterminate otherwise. A governing file itself. |
 | `assets/lib/json-schema-subset.mjs` | the validators above | Hand-rolled JSON Schema subset validator. |
+| `assets/lib/cap-authorizations.mjs` | `dev-flow-exit.mjs`, `render-dev-flow.mjs` | The one predicate for a maintainer-authorized round above the resolved cap: derives the in-memory ceiling from `run.json`'s `cap_authorizations[]` (contiguous rounds only, never lifting a cap of 0) without touching `policy.json`. |
 | `assets/lib/run-exit-fixtures.mjs` | `assets/test-dev-flow-exit.sh` | Fixture driver for the stage-exit corpus. |
 | `assets/schemas/` | `validate-result-schemas.mjs`, `render-dev-flow.mjs` | The package's own copy of the shared JSON Schemas — the default schemas directory, so a vendored consumer validates without a separate schema sync. |
 

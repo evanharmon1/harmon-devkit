@@ -46,11 +46,11 @@
 # Run via `task test:devflow-conformance`. Needs node, python3, and task.
 set -euo pipefail
 
-SOURCE_REV="f93e0c2614f9e59c5031d5ac0f3c05bb989d5ca4"
+SOURCE_REV="1529af2ef3b8bb2957ca454fac0502cebaee1bff"
 REGISTRY_SOURCE_REV="81bbe78784c0b146e754e80030274ff95e10cf51"
-CORPUS_BLOB="3b2fc854eaac0002d81bf4576afe7f716ec85bd7"
-RUNNER_BLOB="bbe218be11ff87181fba20f164804870f28420c7"
-POLICY_BLOB="7e36129a43e0ae73c8a8c878e6055fdab8a1e6ab"
+CORPUS_BLOB="6db3a1882780586ff9d9909c50a5edc714d4cad6"
+RUNNER_BLOB="7513bc0d137fa7b1d7ee881426eabf3bc5409e9c"
+POLICY_BLOB="4709813e99dba75ec21721629fb4d62dbbf1c91f"
 REGISTRY_BLOB="27844622efb4a7f8508729e6b413170b67bd7b3f"
 
 # Resolved from this script's own location, not the caller's directory.

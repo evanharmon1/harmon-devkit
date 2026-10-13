@@ -1003,6 +1003,48 @@ assert.equal(computeIntegrationExit(trajectory("fix"), 4, { pushes: pushes.pushe
 console.log("tell-guard disposition check OK");
 '
 
+echo "== harmon-devkit#1239: the shared over-cap authorization predicate =="
+# The corpus covers the engine end to end (capped-clean-at-authorized-round,
+# over-cap-*-rejected, cross-stage-authorized-*);
+# these pin the predicate's own edges, which both engines inherit.
+node --input-type=module -e '
+import { authorizedCeiling, isAuthorizedOverCap } from "./ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs";
+import assert from "node:assert/strict";
+const auth = (stage, round, extra = {}) => ({ stage, round, actor: "maintainer", instruction: "do 1 more round", at: "2026-10-12T00:00:00Z", ...extra });
+const run = (...entries) => ({ cap_authorizations: entries });
+// No record, no array, or nothing authorized: the ceiling is the resolved cap.
+assert.equal(authorizedCeiling(null, "challenge", 3), 3);
+assert.equal(authorizedCeiling({}, "challenge", 3), 3);
+// Contiguous authorizations lift it one round at a time.
+assert.equal(authorizedCeiling(run(auth("challenge", 4), auth("challenge", 5)), "challenge", 3), 5);
+// A gap stops it: round 6 alone admits nothing above 3, and 4 + 6 admits 4.
+assert.equal(authorizedCeiling(run(auth("challenge", 6)), "challenge", 3), 3);
+assert.equal(authorizedCeiling(run(auth("challenge", 4), auth("challenge", 6)), "challenge", 3), 4);
+// Stage-scoped: a challenge authorization admits no review round.
+assert.equal(authorizedCeiling(run(auth("challenge", 4)), "review", 3), 3);
+// A disabled stage (cap 0) is never lifted.
+assert.equal(authorizedCeiling(run(auth("review", 1)), "review", 0), 0);
+// A malformed entry authorizes nothing (fail closed: only ever a LOWER ceiling).
+// A malformed `at` is checked against run.schema.json'"'"'s instant pattern, not just for presence.
+for (const bad of [{ actor: "" }, { actor: "  " }, { instruction: "" }, { at: "" }, { at: "yesterday" }, { at: "2026-10-12" }, { at: "2026-10-12 00:00:00Z" }, { round: 0 }, { round: "4" }, { stage: "remediation" }, { stage: "integration" }]) {
+  assert.equal(authorizedCeiling(run(auth("challenge", 4, bad)), "challenge", 3), 3, JSON.stringify(bad));
+}
+for (const field of ["stage", "round", "actor", "instruction", "at"]) {
+  const entry = auth("challenge", 4);
+  delete entry[field];
+  assert.equal(authorizedCeiling(run(entry), "challenge", 3), 3, `missing ${field}`);
+}
+assert.equal(authorizedCeiling({ cap_authorizations: "not an array" }, "challenge", 3), 3);
+// isAuthorizedOverCap: only rounds above the cap are "authorized".
+const r = run(auth("review", 5));
+assert.equal(isAuthorizedOverCap(r, "review", 5, 4), true);
+assert.equal(isAuthorizedOverCap(r, "review", 4, 4), false);
+assert.equal(isAuthorizedOverCap(r, "review", 6, 4), false);
+// Integration authorizations are not supported: an integration entry admits nothing.
+assert.equal(authorizedCeiling(run(auth("integration", 5)), "integration", 4), 4);
+console.log("cap-authorization predicate OK");
+'
+
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
 node ai/skills/universal/dev-flow-support/assets/lib/run-exit-fixtures.mjs
