@@ -58,7 +58,7 @@
 # Exit: 0 = ok, 1 = violation, 2 = indeterminate (refused to guess).
 set -euo pipefail
 
-# Resolve the sibling checker from THIS script's directory rather than $PWD:
+# Resolve the native source checker from THIS script's directory rather than $PWD:
 # the Taskfile always runs from the repo root, but a hand-run from a
 # subdirectory would otherwise fail with a confusing "no such file".
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
@@ -134,6 +134,11 @@ if ! repo="$(gh_rest_repo)"; then
     echo "guard:closing-keywords: could not resolve owner/repository from the current remote" >&2
     exit 2
 fi
+if ! host="$(gh_rest_host)"; then
+    echo "guard:closing-keywords: could not resolve the repository host; refusing to read issue metadata" >&2
+    exit 2
+fi
 
-"$script_dir/check-closing-keywords.sh" --repo "$repo" \
+# The skills source keeps track-work's stricter cross-repository closing policy.
+GH_HOST="$host" "$script_dir/../ai/skills/universal/track-work/assets/check-closing-keywords.sh" --repo "$repo" \
     --title-env PR_TITLE --body-env PR_BODY --commits-file "$commits_file"

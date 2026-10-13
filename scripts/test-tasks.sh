@@ -215,6 +215,20 @@ grep -Fxq 'merge-base..head' "$guard_git_args" ||
 [ "$(grep -c '^api repos/acme/repo/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1$' "$guard_gh_args")" -eq 1 ] ||
     fail "closing-keyword guard did not fetch missing PR metadata atomically"
 
+echo "==> native closing-keyword preflight rejects cross-repository references without API reads"
+guard_gh_calls="$(wc -l <"$guard_gh_args" | tr -d ' ')"
+out=$(PR_TITLE='fix: local change' PR_BODY='Closes acme/other#123' \
+    PATH="${guard_bin}:${PATH}" GIT_ARGS="$guard_git_args" GH_ARGS="$guard_gh_args" \
+    GH_REPO=acme/repo BASE_SHA=base HEAD_SHA=head \
+    task guard:closing-keywords 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "native closing-keyword preflight accepted a cross-repository closing reference"
+case "$out" in
+*'acme/other#123 is in another repository; use Refs instead of a closing keyword'*) ;;
+*) fail "native closing-keyword preflight rejected the reference for the wrong reason: $out" ;;
+esac
+[ "$(wc -l <"$guard_gh_args" | tr -d ' ')" -eq "$guard_gh_calls" ] ||
+    fail "native cross-repository closing rejection attempted an API read"
+
 out=$(env -u PR_TITLE -u PR_BODY PATH="${guard_bin}:${PATH}" \
     GH_NO_PR=1 GIT_ARGS="$guard_git_args" GH_ARGS="$guard_gh_args" GH_REPO=acme/repo \
     ISSUE_BODY_DIR="$guard_issues" BASE_SHA=base HEAD_SHA=head \

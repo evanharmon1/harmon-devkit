@@ -4,17 +4,10 @@ on:
   push:
     branches:
       - main
-  # No `edited`: it fires on a PR title/body edit, and the dev loop's readiness
-  # gate REQUIRES body edits (ticking `## Deferred findings`), so carrying it
-  # here made satisfying one gate condition invalidate another — every
-  # settlement restarted the whole matrix. `edited` also fires on a
-  # base-BRANCH change; dropping that re-run is deliberate. Retargeting a PR
-  # is rare, and a strict required-status-checks policy already forces an
-  # up-to-date head before merge, which lands as a `synchronize` this list
-  # does cover. Title/body-dependent guards keep `edited` in their OWN
-  # workflows: closing-keywords.yml and release-content-guard.yml.
+  # The native verify aggregate includes a closing-keywords job that reads PR
+  # title/body metadata, so edits must refresh its required result.
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
     branches:
       - main
   merge_group:

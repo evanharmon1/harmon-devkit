@@ -106,6 +106,20 @@ for stub_arg in "$@"; do
     esac
     stub_prev="${stub_arg}"
 done
+if [ "${1:-} ${2:-}" = 'issue view' ]; then
+    # The native skills-source backend uses the issue CLI; the generic checker
+    # below still uses REST, and its fixtures keep exercising that contract.
+    [ "${4:-}" = --repo ] && [ "${5:-}" = acme/repo ] || exit 64
+    [ -z "${GH_STUB_CALLS:-}" ] ||
+        printf 'native-issue-host=%s repo=%s\n' "${GH_HOST:-}" "$5" >>"${GH_STUB_CALLS}"
+    [ "${GH_STUB_FAIL:-0}" = 0 ] || exit 1
+    case "${3:-}" in
+    1) printf '%s\n' '- [x] completed' ;;
+    2) printf '%s\n' '- [ ] still open' ;;
+    *) exit 1 ;;
+    esac
+    exit 0
+fi
 [ "${1:-}" = api ] || {
     echo "proxy: non-REST gh command rejected: $*" >&2
     exit 64
@@ -683,8 +697,15 @@ grep -q 'ghe.example.com%3A' "$GH_STUB_CALLS" &&
     fail "the host leaked into the head query: $(grep '^api ' "$GH_STUB_CALLS" | tr '\n' ';')"
 # ...and the checker it hands off to was given the normalized OWNER/REPO too:
 # only that spelling reaches the issue read the verdict above came from.
-grep -q '^api repos/acme/repo/issues/1 .*--hostname ghe.example.com$' "$GH_STUB_CALLS" ||
-    fail "the checker was handed a host-qualified repository: $(grep '^api ' "$GH_STUB_CALLS" | tr '\n' ';')"
+if [ -f "$repo_root/ai/skills/universal/track-work/assets/check-closing-keywords.sh" ]; then
+    grep -Fxq 'issue view 1 --repo acme/repo --json body --jq .body // ""' "$GH_STUB_CALLS" ||
+        fail "native checker did not read the normalized issue repository: $(cat "$GH_STUB_CALLS")"
+    grep -Fxq 'native-issue-host=ghe.example.com repo=acme/repo' "$GH_STUB_CALLS" ||
+        fail "native issue read did not use the metadata host: $(cat "$GH_STUB_CALLS")"
+else
+    grep -q '^api repos/acme/repo/issues/1 .*--hostname ghe.example.com$' "$GH_STUB_CALLS" ||
+        fail "the checker was handed a host-qualified repository: $(grep '^api ' "$GH_STUB_CALLS" | tr '\n' ';')"
+fi
 unset GH_STUB_CALLS
 
 echo '==> no --hostname this suite ever handed gh carried a port'

@@ -43,6 +43,14 @@ reject_required "an unsupported expectation" neutral lint=neutral
 reject_required "an empty result set" success
 
 workflow="${repo}/.github/workflows/build.yml"
+yq -e '.jobs.verify.needs | contains(["closing-keywords"])' "$workflow" >/dev/null ||
+    fail 'native verify aggregate must retain its closing-keywords dependency'
+yq -e '.on.pull_request.types | contains(["edited"])' "$workflow" >/dev/null ||
+    fail 'required Build metadata job must refresh on PR title/body edits'
+yq -e '.jobs."closing-keywords".steps[].env | select(.PR_TITLE != null) | .PR_TITLE == "${{ github.event.pull_request.title }}"' "$workflow" >/dev/null ||
+    fail 'retained Build closing-keywords job must read the current event title'
+yq -e '.jobs."closing-keywords".steps[].env | select(.PR_BODY != null) | .PR_BODY == "${{ github.event.pull_request.body }}"' "$workflow" >/dev/null ||
+    fail 'retained Build closing-keywords job must read the current event body'
 grep -q 'HEAD_REPO:.*head.repo.full_name' "$workflow" || fail 'bootstrap must compare the PR head repository'
 grep -q "grep -q '(HTTP 404)'" "$workflow" || fail 'bootstrap must require a confirmed default-branch 404'
 grep -Fq '[ "$HEAD_REPO" = "$GH_REPO" ]' "$workflow" || fail 'bootstrap must permit same-repo heads only'
