@@ -187,9 +187,34 @@ blocks promotion rather than passing it.
    Confirm with `codex login status`.
 3. **Trust the repo in Codex** when prompted on first run. The committed
    `.codex/config.toml` raises the project-instruction budget to 64 KiB. Review
-   tasks default to `gpt-6.1-sol` with high reasoning for ordinary manual
+   tasks default to `gpt-6.1-sol` requesting high reasoning for ordinary manual
    invocation. Orchestrated calls pass their resolved values as leading
    `--model <model>` and `--reasoning <level>` arguments.
+   The requested effort is checked against Codex's startup banner after every
+   run. Administrator-managed config can override `--config`; the request
+   alone does not prove what ran. The runner emits a stderr record naming
+   `requested`, `effective`, `source` and `matched`. A missing or conflicting
+   readout records `effective=unknown`, `source=unknown`, `matched=false`.
+   Mismatched or unknown effort warns by default and preserves the CLI exit
+   status. Opt into a strict check with `--require-effort` before the target:
+
+   ```sh
+   task challenge -- --reasoning high --require-effort --base main
+   ```
+
+   Strict mode exits 1 on mismatched or unknown effort when Codex otherwise
+   succeeds; a failed CLI retains its original non-zero status. It publishes
+   no envelope pass on a strict refusal. Successful envelope runs also publish
+   `<record-dir>/finder-effort/<pass-stem>.json` with the four fields above,
+   independently of the envelope schema. Metadata is outside `passes/` and
+   `adjudications/`, so pass readers cannot mistake it for another result.
+   Only the invocation that publishes the immutable pass publishes its
+   metadata; a late retry loser cannot overwrite either artifact. Metadata is
+   advisory: if its link fails, a loud stderr warning names the metadata path,
+   and the published pass, stdout path and successful exit are retained. Failed runs
+   retain the stderr record and publish no effort sidecar. No user or managed
+   Codex config is modified by the guard.
+
 4. **For the automatic stop-gate only — the Claude Code codex plugin.** This
    repo's `.claude/settings.json` declares the `openai-codex` marketplace and
    enables `codex@openai-codex`, so Claude Code installs/offers the plugin

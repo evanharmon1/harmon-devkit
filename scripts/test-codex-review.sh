@@ -24,15 +24,22 @@ fail() {
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 
-# Stub codex: print the invocation so assertions can grep it. STUB_BIG_STDERR
+# Stub codex: record argv separately from stdout/stderr so filtered banner
+# output cannot splice into argument assertions. STUB_BIG_STDERR
 # and STUB_EXIT arm the payload-dump reproduction and a failing CLI; both are
 # off unless set, so every other test sees the plain stub.
 mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
-printf 'STUB-ARGS:'
-printf ' %s' "$@"
-printf '\n'
+printf 'OpenAI Codex (test)\n--------\n' >&2
+[ -z "${STUB_EFFORT-high}" ] || printf 'reasoning effort: %s\n' "${STUB_EFFORT-high}" >&2
+printf '%s\n' '--------' user >&2
+[ -z "${STUB_AFTER_BANNER:-}" ] || printf '%s\n' "$STUB_AFTER_BANNER" >&2
+{
+    printf 'STUB-ARGS:'
+    printf ' %s' "$@"
+    printf '\n'
+} >"$STUB_ARGV"
 if [ -n "${STUB_BIG_STDERR:-}" ]; then
     # One over-long stderr line (the models-JSON dump), ordinary narration
     # around it, and a long prose line on stdout standing in for a verdict.
@@ -48,6 +55,8 @@ CODEXSTUB
 chmod +x "${test_tmp}/bin/codex"
 PATH="${test_tmp}/bin:${PATH}"
 export PATH
+stub_argv="${test_tmp}/stub-argv"
+export STUB_ARGV="$stub_argv"
 
 git_t() {
     git -c user.email=test@test -c user.name=test "$@"
@@ -90,15 +99,20 @@ git add feature.txt
 git_t commit -q -m work
 git branch -q -D develop
 
+invoke_review() {
+    : >"$stub_argv"
+    ./scripts/codex-review.sh "$@"
+}
+
 run() {
-    ./scripts/codex-review.sh "$@" 2>&1
+    invoke_review "$@" 2>&1
 }
 
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
-grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex exec review not invoked: $out"
-grep -q -- "--model gpt-6.1-sol" <<<"$out" || fail "review model is not pinned to gpt-6.1-sol: $out"
-grep -q -- "--config model_reasoning_effort=high" <<<"$out" || fail "review reasoning is not pinned high: $out"
+grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "codex exec review not invoked: $out"
+grep -q -- "--model gpt-6.1-sol" "$stub_argv" || fail "review model is not pinned to gpt-6.1-sol: $out"
+grep -q -- "--config model_reasoning_effort=high" "$stub_argv" || fail "review reasoning is not pinned high: $out"
 grep -q "base branch 'origin/develop'" <<<"$out" || fail "remote-qualified fallback base missing: $out"
 grep -q "ADVERSARIAL" <<<"$out" || fail "challenge mode instructions missing: $out"
 grep -q "feature.txt" <<<"$out" || fail "changed-file manifest missing from branch-scope prompt: $out"
@@ -133,22 +147,60 @@ grep -q "hypothesis the" <<<"$out" ||
 echo "==> explicit model and reasoning selection preserves target and focus parsing"
 out="$(run challenge --model gpt-5.6-terra --reasoning medium --base origin/develop inspect dispatch)" ||
     fail "explicit model/reasoning run exited non-zero: $out"
-grep -q -- "--model gpt-5.6-terra" <<<"$out" || fail "explicit review model did not reach Codex: $out"
-grep -q -- "--config model_reasoning_effort=medium" <<<"$out" || fail "explicit review reasoning did not reach Codex: $out"
+grep -q -- "--model gpt-5.6-terra" "$stub_argv" || fail "explicit review model did not reach Codex: $out"
+grep -q -- "--config model_reasoning_effort=medium" "$stub_argv" || fail "explicit review reasoning did not reach Codex: $out"
 grep -q "base branch 'origin/develop'" <<<"$out" || fail "explicit model/reasoning consumed the target: $out"
 grep -q "inspect dispatch" <<<"$out" || fail "explicit model/reasoning consumed the focus text: $out"
+
+echo "==> effort: match is recorded without a warning, including strict mode"
+out="$(STUB_EFFORT=high run review --reasoning high --require-effort)" || fail "matching effort refused: $out"
+grep -q 'requested=high effective=high source=banner matched=true' <<<"$out" || fail "missing match record"
+! grep -q 'WARNING: Codex reasoning effort' <<<"$out" || fail "matching effort warned"
+
+echo "==> effort: managed override warns by default and fails only under strict mode"
+out="$(STUB_EFFORT=medium run challenge --reasoning high)" || fail "default mismatch changed exit status: $out"
+grep -q 'WARNING: Codex reasoning effort mismatch: requested=high effective=medium' <<<"$out" || fail "missing mismatch warning"
+grep -q 'source=banner matched=false' <<<"$out" || fail "missing mismatch record"
+rc=0
+out="$(STUB_EFFORT=medium run review --reasoning high --require-effort)" || rc=$?
+[ "$rc" -eq 1 ] || fail "strict mismatch exited $rc"
+grep -q 'requested=high effective=medium' <<<"$out" || fail "strict error does not name efforts"
+grep -q -- '--require-effort refuses' <<<"$out" || fail "missing strict refusal"
+
+echo "==> effort: absent or conflicting readouts stay unknown; strict refuses them"
+for banner in '' $'high\nreasoning effort: medium'; do
+    out="$(STUB_EFFORT="$banner" run review)" || fail "unknown changed default exit status"
+    grep -q 'effective=unknown source=unknown matched=false' <<<"$out" || fail "unknown effort was assumed: $out"
+    rc=0
+    out="$(STUB_EFFORT="$banner" run review --require-effort)" || rc=$?
+    [ "$rc" -eq 1 ] || fail "strict unknown exited $rc"
+done
+
+echo "==> effort: later reviewer prose cannot impersonate a startup readout"
+out="$(STUB_EFFORT=medium STUB_AFTER_BANNER=$'user\nreasoning effort: high' run review)" || fail "later readout failed"
+grep -q 'effective=medium source=banner matched=false' <<<"$out" || fail "later prose altered readout"
+
+echo "==> effort: parsing precedes line truncation and CLI failures retain their status"
+out="$(STUB_EFFORT=high CODEX_REVIEW_MAX_STDERR_BYTES=1 run review --require-effort)" || fail "truncated banner lost effort"
+grep -q 'effective=high source=banner matched=true' <<<"$out" || fail "truncation changed effort"
+for strict in '' --require-effort; do
+    rc=0
+    # An empty unquoted expansion supplies no flag; this is intentional.
+    out="$(STUB_EFFORT=medium STUB_EXIT=7 run review $strict)" || rc=$?
+    [ "$rc" -eq 7 ] || fail "effort check replaced CLI exit 7 with $rc"
+done
 
 echo "==> invalid explicit model and reasoning arguments fail before Codex"
 if out="$(run review --model 2>&1)"; then
     fail "--model without a value was accepted: $out"
 fi
 grep -q -- "--model requires a value" <<<"$out" || fail "missing-value model error absent: $out"
-grep -q "STUB-ARGS" <<<"$out" && fail "Codex invoked despite missing model value: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "Codex invoked despite missing model value: $out"
 if out="$(run review --reasoning extreme 2>&1)"; then
     fail "unsupported reasoning level was accepted: $out"
 fi
 grep -q "unsupported reasoning level" <<<"$out" || fail "unsupported-reasoning error absent: $out"
-grep -q "STUB-ARGS" <<<"$out" && fail "Codex invoked despite unsupported reasoning: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "Codex invoked despite unsupported reasoning: $out"
 
 echo "==> origin/HEAD outranks a stray local main"
 git branch -q main "$(git rev-list --max-parents=0 HEAD)"
@@ -161,7 +213,7 @@ unrelated="$(git_t commit-tree "$(git mktree </dev/null)" -m orphan)"
 if out="$(run review --base "$unrelated" 2>&1)"; then
     fail "--base with unrelated history accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite no merge base: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite no merge base: $out"
 grep -q "no merge base" <<<"$out" || fail "missing no-merge-base message: $out"
 
 echo "==> explicit --base and focus text reach the prompt"
@@ -199,7 +251,7 @@ git_t merge -q --no-edit origin/develop
 out="$(run review --base basestale)" || fail "stale-base run exited non-zero (must stay advisory): $out"
 # Advisory, not fatal: the review still has to happen, or the warning has
 # turned a nudge into a refusal.
-grep -q "STUB-ARGS: exec review" <<<"$out" || fail "stale-base warning suppressed the review: $out"
+grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "stale-base warning suppressed the review: $out"
 grep -q "lags its upstream 'origin/develop'" <<<"$out" || fail "stale-base warning missing: $out"
 grep -q "contains 2 commits that already merged upstream" <<<"$out" || fail "stale-base warning miscounted the carried commits: $out"
 grep -q -- "--base origin/develop" <<<"$out" || fail "stale-base warning does not name the remote-qualified ref: $out"
@@ -232,7 +284,7 @@ echo "==> --base refs with no upstream never warn"
 git tag basetag basestale
 for ref in basetag "$(git rev-parse basestale)" origin/develop; do
     out="$(run review --base "$ref")" || fail "--base '$ref' exited non-zero: $out"
-    grep -q "STUB-ARGS: exec review" <<<"$out" || fail "--base '$ref' did not reach codex: $out"
+    grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "--base '$ref' did not reach codex: $out"
     grep -q "lags its upstream" <<<"$out" && fail "--base '$ref' has no upstream but warned: $out"
 done
 
@@ -300,7 +352,7 @@ while [ "$i" -le 250 ]; do
     i=$((i + 1))
 done
 out="$(run review)" || fail "large dirty tree aborted the review (pipefail/SIGPIPE regression): $out"
-grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex not invoked on large dirty tree: $out"
+grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "codex not invoked on large dirty tree: $out"
 grep -q "manifest truncated at 200 entries" <<<"$out" || fail "truncation marker missing on >200-entry manifest: $out"
 rm -f bulk_f*.txt
 
@@ -312,7 +364,7 @@ if out="$(run review)"; then
     fail "nothing-to-review case exited zero (reads as a clean pass): $out"
 fi
 grep -q "Nothing to review" <<<"$out" || fail "expected nothing-to-review message: $out"
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite nothing to review: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite nothing to review: $out"
 
 echo "==> at the base tip, a dirty tree reviews the worktree alone"
 # The other side of the union: with no commits beyond the base there is no
@@ -332,7 +384,7 @@ echo "==> --base level with its base refuses, non-zero, without invoking codex"
 if out="$(run challenge --base origin/develop)"; then
     fail "--base with an empty diff was accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an empty --base diff: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite an empty --base diff: $out"
 grep -q "Nothing to review" <<<"$out" || fail "missing empty--base refusal message: $out"
 grep -q -- "--uncommitted" <<<"$out" || fail "empty --base refusal does not name the fix: $out"
 
@@ -342,14 +394,14 @@ if out="$(run challenge --base origin/develop)"; then
     fail "--base with an empty diff was accepted on a dirty tree: $out"
 fi
 grep -q "working tree is dirty" <<<"$out" || fail "no dirty-tree note on --base: $out"
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an empty --base diff: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite an empty --base diff: $out"
 
 echo "==> --uncommitted on a clean tree refuses, non-zero, without invoking codex"
 rm -f scratch.txt
 if out="$(run review --uncommitted)"; then
     fail "--uncommitted on a clean tree was accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite a clean tree: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite a clean tree: $out"
 grep -q "Nothing to review" <<<"$out" || fail "missing empty--uncommitted refusal message: $out"
 
 echo "==> status.showUntrackedFiles=no cannot hide an untracked-only tree"
@@ -374,7 +426,7 @@ git_t commit -q --allow-empty -m "empty commit"
 if out="$(run review --commit HEAD)"; then
     fail "--commit on an empty commit was accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an empty commit diff: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite an empty commit diff: $out"
 grep -q "Nothing to review" <<<"$out" || fail "missing empty--commit refusal message: $out"
 git_t reset -q --hard HEAD~1
 
@@ -387,19 +439,19 @@ echo "==> invalid explicit targets fail fast without invoking codex"
 if out="$(run review --base no-such-ref 2>&1)"; then
     fail "--base with an unresolvable ref was accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite bad --base ref: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite bad --base ref: $out"
 grep -q "does not resolve" <<<"$out" || fail "missing fail-fast message for bad --base: $out"
 if out="$(run challenge --commit 0000000000000000000000000000000000000000 2>&1)"; then
     fail "--commit with an unresolvable sha was accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite bad --commit sha: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite bad --commit sha: $out"
 
 echo "==> conflicting target flags are rejected"
 if out="$(run review --base origin/develop --uncommitted 2>&1)"; then
     fail "conflicting target flags accepted (last-wins regression): $out"
 fi
 grep -q "mutually exclusive" <<<"$out" || fail "missing conflicting-flags message: $out"
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite conflicting flags: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite conflicting flags: $out"
 
 echo "==> --commit manifests cover root and merge commits"
 root_sha="$(git rev-list --max-parents=0 HEAD | tail -1)"
@@ -522,19 +574,19 @@ git init -q -b feature "$norem"
     cd "$norem"
     git add -A
     git_t commit -q -m base
-    if out="$(./scripts/codex-review.sh review 2>&1)"; then
+    if out="$(invoke_review review 2>&1)"; then
         fail "clean tree with no detectable base was accepted: $out"
     fi
     grep -q "Could not resolve a base" <<<"$out" || fail "missing unresolvable-base message: $out"
-    grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked with no resolvable base: $out"
+    grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked with no resolvable base: $out"
     echo loose >loose.txt
-    if out="$(./scripts/codex-review.sh review 2>&1)"; then
+    if out="$(invoke_review review 2>&1)"; then
         fail "dirty tree with no detectable base reviewed the worktree alone and exited 0: $out"
     fi
-    grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked on a partial scope: $out"
+    grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked on a partial scope: $out"
     grep -q -- "--uncommitted" <<<"$out" || fail "refusal does not name the deliberate narrow target: $out"
     # ...and that named escape must actually work, or the refusal is a dead end.
-    out="$(./scripts/codex-review.sh review --uncommitted 2>&1)" || fail "--uncommitted refused with no base: $out"
+    out="$(invoke_review review --uncommitted 2>&1)" || fail "--uncommitted refused with no base: $out"
     grep -q "loose.txt" <<<"$out" || fail "worktree file missing from --uncommitted manifest: $out"
 )
 
@@ -568,12 +620,12 @@ echo halfwork >halfwork.txt
 if out="$(FAIL_GIT_DIFF=1 run review)"; then
     fail "an unreadable branch diff was reviewed as an empty half and exited 0: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked with a committed half that could not be read: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked with a committed half that could not be read: $out"
 grep -q "refusing rather than reading an unreadable" <<<"$out" || fail "missing unreadable-diff refusal message: $out"
 if out="$(FAIL_GIT_STATUS=1 run review)"; then
     fail "an unreadable worktree was reviewed as clean and exited 0: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked with a worktree half that could not be read: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked with a worktree half that could not be read: $out"
 grep -q "refusing rather than reading an unreadable worktree" <<<"$out" || fail "missing unreadable-worktree refusal message: $out"
 rm -f halfwork.txt "${test_tmp}/bin/git"
 
@@ -589,7 +641,7 @@ big_err="${test_tmp}/bound.err"
 longest() { awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$1"; }
 
 echo "==> an over-long CLI stderr line is bounded, and stdout is left alone"
-STUB_BIG_STDERR=40000 ./scripts/codex-review.sh review --uncommitted >"$big_out" 2>"$big_err" ||
+STUB_BIG_STDERR=40000 invoke_review review --uncommitted >"$big_out" 2>"$big_err" ||
     fail "review with a payload-dumping stub exited non-zero: $(cat "$big_err")"
 [ "$(longest "$big_err")" -lt 2000 ] ||
     fail "over-long stderr line was not bounded (longest $(longest "$big_err") bytes)"
@@ -608,35 +660,35 @@ echo "==> the stderr filter preserves the CLI's exit status"
 # pipefail must surface codex's own status, not the filter's — otherwise a
 # failed review reads as the clean pass a capped loop exits on.
 status=0
-STUB_EXIT=7 STUB_BIG_STDERR=40000 ./scripts/codex-review.sh review --uncommitted >/dev/null 2>&1 || status=$?
+STUB_EXIT=7 STUB_BIG_STDERR=40000 invoke_review review --uncommitted >/dev/null 2>&1 || status=$?
 [ "$status" -eq 7 ] || fail "codex exit status lost through the filter (got ${status}, want 7)"
 
 echo "==> CODEX_REVIEW_MAX_STDERR_BYTES=0 restores the unbounded output"
 CODEX_REVIEW_MAX_STDERR_BYTES=0 STUB_BIG_STDERR=40000 \
-    ./scripts/codex-review.sh review --uncommitted >/dev/null 2>"$big_err" ||
+    invoke_review review --uncommitted >/dev/null 2>"$big_err" ||
     fail "review with the bound disabled exited non-zero: $(cat "$big_err")"
 [ "$(longest "$big_err")" -gt 40000 ] ||
     fail "escape hatch did not restore the full line (longest $(longest "$big_err") bytes)"
 
 echo "==> a non-numeric bound is refused before the CLI is invoked"
-if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=abc ./scripts/codex-review.sh review --uncommitted 2>&1)"; then
+if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=abc invoke_review review --uncommitted 2>&1)"; then
     fail "non-numeric bound accepted: $out"
 fi
-grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an invalid bound: $out"
+grep -q "STUB-ARGS" "$stub_argv" && fail "codex invoked despite an invalid bound: $out"
 grep -q "must be a non-negative integer" <<<"$out" || fail "missing validation message: $out"
 
 echo "==> a bound past INT64_MAX is refused rather than leaking a shell error"
 # All-digit but too wide for `test -eq`, which fails with "integer expression
 # expected" ON STDERR and then runs effectively unbounded — a shell error in
 # the very stream this change exists to keep clean.
-if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999999 ./scripts/codex-review.sh review --uncommitted 2>&1)"; then
+if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999999 invoke_review review --uncommitted 2>&1)"; then
     fail "an INT64_MAX-exceeding bound was accepted: $out"
 fi
 grep -q "integer expression expected" <<<"$out" && fail "shell arithmetic error leaked to the caller: $out"
 grep -q "implausibly large" <<<"$out" || fail "missing implausible-bound message: $out"
 # The widest value that still compares cleanly must keep working.
 CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999 STUB_BIG_STDERR=40000 \
-    ./scripts/codex-review.sh review --uncommitted >/dev/null 2>"$big_err" ||
+    invoke_review review --uncommitted >/dev/null 2>"$big_err" ||
     fail "the widest safe bound was rejected: $(cat "$big_err")"
 grep -q "integer expression expected" "$big_err" && fail "shell arithmetic error at the 18-digit boundary: $(cat "$big_err")"
 rm -f bound.txt
@@ -750,6 +802,9 @@ mkdir -p "${env_root}/bin"
 # holds a "timed-out" original open while its retry runs to completion.
 cat >"${env_root}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
+printf 'OpenAI Codex (test)\n--------\n' >&2
+[ -z "${STUB_EFFORT-high}" ] || printf 'reasoning effort: %s\n' "${STUB_EFFORT-high}" >&2
+printf '%s\n' '--------' user >&2
 printf 'argv=%s\n' "$*" >>"${STUB_LOG:-/dev/null}"
 cd_dir=
 while [ $# -gt 0 ]; do
@@ -866,6 +921,39 @@ grep -Fq 'The result.challenger JSON Schema:' "${env_root}/prompt" && grep -Fq '
     fail "the payload schema is not requested in the prompt"
 grep -q "immutable diff ${env_base}...${env_head}" "${env_root}/prompt" || fail "scope not rewritten to captured SHAs"
 grep -q 'challenge-r1-codex-adversarial-1' "${env_root}/prompt" || fail "binding instructions missing from the prompt"
+
+echo "==> envelope effort: metadata lives outside passes and preserves envelope schema"
+effort_file="${record}/finder-effort/challenge-r1-codex-adversarial.json"
+jq -e '. == {requested: "high", effective: "high", source: "banner", matched: true}' "$effort_file" >/dev/null || fail "missing matched metadata"
+[ "$(find "${record}/finder-effort" -type f | wc -l)" -eq 1 ] || fail "metadata temporary remains"
+
+for effort in medium ''; do
+    reset_record
+    STUB_EFFORT="$effort" STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge >/dev/null 2>"${env_root}/err" || fail "default mismatch envelope failed"
+    effective="${effort:-unknown}"
+    jq -e --arg effective "$effective" '.requested == "high" and .effective == $effective and .matched == false and
+        .source == (if $effective == "unknown" then "unknown" else "banner" end)' "$effort_file" >/dev/null || fail "wrong mismatch/unknown metadata"
+    [ "$(find "${record}/passes" -type f | wc -l)" -eq 1 ] || fail "metadata appeared in passes"
+    reset_record
+    rc=0
+    STUB_EFFORT="$effort" STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge --require-effort >/dev/null 2>"${env_root}/err" || rc=$?
+    [ "$rc" -eq 1 ] || fail "strict envelope mismatch exited $rc"
+    grep -q "requested=high effective=$effective" "${env_root}/err" || fail "strict envelope error omits effort"
+    assert_nothing_published 'strict effort refusal'
+done
+
+echo "==> envelope effort: advisory metadata link failure keeps the published pass"
+reset_record
+mkdir -p "${record}/finder-effort"
+printf 'existing metadata\n' >"$effort_file"
+out="$(STUB_PAYLOAD="${env_root}/p.json" envelope_run challenge 2>"${env_root}/err")" ||
+    fail "advisory metadata collision failed the pass: $(cat "${env_root}/err")"
+[ "$out" = "$pass_file" ] && [ -f "$pass_file" ] || fail "metadata collision lost the published pass/path"
+grep -Fq "WARNING: could not publish advisory effort metadata $effort_file" "${env_root}/err" ||
+    fail "metadata collision warning does not name the path"
+[ "$(cat "$effort_file")" = 'existing metadata' ] || fail "metadata collision overwrote the existing record"
+[ "$(find "${record}/passes" -type f | wc -l)" -eq 1 ] || fail "metadata collision left pass temporaries"
+[ "$(find "${record}/finder-effort" -type f | wc -l)" -eq 1 ] || fail "metadata collision left effort temporaries"
 
 echo "==> envelope: null optionals in an answer are normalized away, then validated"
 reset_record
@@ -1004,7 +1092,7 @@ payload "${env_root}/orig.json" challenge 1 codex-adversarial '.findings[0].evid
 payload "${env_root}/retry.json" challenge 1 codex-adversarial '.findings[0].evidence = "retry"'
 gate="${env_root}/gate"
 rm -f "$gate" "${gate}.waiting"
-STUB_GATE="$gate" STUB_PAYLOAD="${env_root}/orig.json" envelope_run challenge >"${env_root}/orig.out" 2>"${env_root}/orig.err" &
+STUB_EFFORT=medium STUB_GATE="$gate" STUB_PAYLOAD="${env_root}/orig.json" envelope_run challenge >"${env_root}/orig.out" 2>"${env_root}/orig.err" &
 orig_pid=$!
 for _ in $(seq 1 300); do
     [ -e "${gate}.waiting" ] && break
@@ -1021,6 +1109,7 @@ wait "$orig_pid" || rc=$?
     fail "the late original was not refused at publication (rc $rc): $(cat "${env_root}/orig.err")"
 [ "$(cat "$pass_file")" = "$retry_bytes" ] && jq -e '.payload.findings[0].evidence == "retry"' "$pass_file" >/dev/null ||
     fail "the late original replaced the retry's pass"
+jq -e ' .effective == "high" and .matched == true' "$effort_file" >/dev/null || fail "late original replaced retry effort"
 [ "$(find "${record}/passes" -mindepth 1 | wc -l)" -eq 1 ] || fail "the race left temporaries: $(ls -A "${record}/passes")"
 
 echo "==> envelope: a change to any governing input is refused"
