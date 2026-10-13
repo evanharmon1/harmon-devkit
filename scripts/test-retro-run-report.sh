@@ -1620,6 +1620,62 @@ contains "$OUT" "keyed by stage" &&
     ok "the per-stage gap IS declared when no split is derivable" ||
     bad "a genuine per-stage gap went unreported"
 
+echo "==> two stages render their verified class/provenance counts separately"
+# Reuse the older-harvester fixture above, then add the new optional field.
+# The aggregate alone is deliberately ambiguous: both stages use one key.
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs')
+const file = process.argv[2]
+const t = JSON.parse(fs.readFileSync(file, 'utf8'))
+t.findings_by_stage_class_and_provenance = {
+  challenge: { 'correctness/original': 3 },
+  review: { 'correctness/original': 1, 'design/round:1': 1 }
+}
+t.findings_by_class_and_provenance = { 'correctness/original': 4, 'design/round:1': 1 }
+fs.writeFileSync(file, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0 with stage map" || bad "stage map exit $RC: $ERR"
+REPORT_TEXT="$OUT" node -e '
+  const text = process.env.REPORT_TEXT
+  const section = (stage) => text.split(`### Stage \`${stage}\`\n`)[1]?.split("\n### ")[0] || ""
+  if (!section("challenge").includes("correctness / original: 3") ||
+      section("challenge").includes("design / round:1") ||
+      !section("review").includes("correctness / original: 1") ||
+      !section("review").includes("design / round:1: 1") ||
+      text.includes("not derivable per stage") ||
+      !text.includes("| correctness | original | 4 |")) process.exit(1)
+' && ok "stage rows are isolated and the run-wide table remains" || bad "per-stage rendering"
+contains "$OUT" "keyed by stage" && bad "new harvester still reports stage gap" || ok "stage gap removed"
+contains "$OUT" "- Adjudication overrides: not derivable" && ok "override gap retained" || bad "override gap lost"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+printf '%s' "$OUT" >"$d/report.json"
+node - "$d/report.json" <<'NODE'
+const report = require(process.argv[2])
+const stages = report.measurements.stages
+if (stages.find(s => s.stage === 'challenge').findings_by_class_and_provenance[0].count !== 3 ||
+    stages.find(s => s.stage === 'review').findings_by_class_and_provenance.length !== 2 ||
+    report.unavailable.some(g => g.issue === 'harmon-devkit#779')) process.exit(1)
+NODE
+[ "$RC" -eq 0 ] && ok "machine form carries stage rows" || bad "machine stage rows exit $RC"
+
+echo "==> partial verified stage counts retain the unavailable-round warning"
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs')
+const file = process.argv[2]
+const t = JSON.parse(fs.readFileSync(file, 'utf8'))
+t.provenance_unavailable_rounds = [{ stage: 'review', round: 1 }]
+fs.writeFileSync(file, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+contains "$OUT" "unavailable for round(s) 1" &&
+    contains "$OUT" "partial verified projection" &&
+    contains "$OUT" "  - design / round:1: 1" &&
+    ok "partial rows accompany the warning" || bad "partial stage evidence lost"
+
 echo "==> the report names the actual trust root, not just where it came from"
 d="$TMPROOT/trustnamed"
 scaffold "$d" further-along "body"
