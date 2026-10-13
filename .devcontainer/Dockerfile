@@ -1,4 +1,4 @@
-FROM ghcr.io/evanharmon1/harmon-devcontainer:sha-a578c844a4036f3473df9089d5368de2ac9ace28@sha256:7c81bf8d201816d8628ff007741a0e45a887c428cbde5f3881621b3a21e9f864
+FROM ghcr.io/evanharmon1/harmon-devcontainer:sha-0bf800443034d3ac8ba370046ea6b1ed06fd568d@sha256:218037767a352ef83e13bdea42e22dafe8de2539ac43d8a17448fb7f448997d0
 
 USER root
 

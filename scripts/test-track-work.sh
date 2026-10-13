@@ -675,7 +675,8 @@ export PATH
 cp agent-registry.json "$metadata_repo/agent-registry.json"
 jq '.families |= map(
       if (.family == "area" or .family == "layer" or .family == "domain") then
-        .values += [{"value":"none","description":"Fixture explicit absence"}]
+        .values |= map(select(.value != "none"))
+        | .values += [{"value":"none","description":"Fixture explicit absence"}]
       else . end
       | if .family == "area" then
         .values += [{"value":"fixture","description":"Fixture-only area"}]
@@ -785,7 +786,9 @@ git -C "$metadata_model" init -q
 git -C "$metadata_model" remote add personal https://github.com/testowner/testrepo.git
 git -C "$metadata_model" remote add organization git@github.com:testorg/testrepo.git
 cp agent-registry.json "$metadata_model/agent-registry.json"
-jq '.families += [("model-family", "model", "model-version", "model-effort") as $f | {
+jq '.families |= map(select(.family != "model-family" and .family != "model"
+      and .family != "model-version" and .family != "model-effort"))
+    | .families += [("model-family", "model", "model-version", "model-effort") as $f | {
       family: $f, prefix: $f,
       purpose: "Implementer record: \($f).", axis: "model",
       source: "agent-registry", registry_set: $f, writers: ["agent"],
@@ -1394,7 +1397,8 @@ grep -q 'fetch may be truncated' "$tmp/metadata.out" ||
 
 echo "==> metadata: human-majority drafts require human; collectors require human + umbrella"
 cp "$metadata_repo/label-registry.json" "$tmp/metadata-registry-before-human.json"
-jq '.families += [{"family":"human-work","prefix":null,
+jq '.families |= map(select(.family != "human-work" and .family != "initiative"))
+    | .families += [{"family":"human-work","prefix":null,
     "purpose":"Work primarily completed by a human","axis":"meta",
     "source":"inline","writers":["human","agent"],"readers":"fixture",
     "lifecycle":"durable","exclusive":false,"provision":false,
@@ -2690,7 +2694,7 @@ metadata_retired_prefix="$tmp/metadata-retired-prefix"
 mkdir -p "$metadata_retired_prefix"
 git -C "$metadata_retired_prefix" init -q
 git -C "$metadata_retired_prefix" remote add origin https://github.com/testowner/testrepo.git
-jq '.families |= map(select(.prefix != "suggest"))
+jq '.families |= map(select(.prefix != "suggest" and .prefix != "priority"))
     | .families += [{
       "family": "ordinary-suggestion", "purpose": "Fixture ordinary metadata",
       "prefix": "suggest", "axis": "meta", "source": "inline",
@@ -2752,7 +2756,8 @@ git -C "$metadata_collector" init -q
 git -C "$metadata_collector" remote add origin https://github.com/testowner/testrepo.git
 # The harmon-init families that carry the collector pair: initiative (epic,
 # umbrella; exclusive) and human-work (human), both writable by agents.
-jq '.families += [
+jq '.families |= map(select(.family != "human-work" and .family != "initiative"))
+    | .families += [
       {"family":"initiative","prefix":null,"purpose":"Parent issue horizon.",
        "axis":"meta","source":"inline","writers":["human","agent"],
        "readers":"humans","lifecycle":"durable","exclusive":true,"provision":true,

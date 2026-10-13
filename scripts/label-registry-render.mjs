@@ -43,6 +43,8 @@
 //                       the complete-label-taxonomy markdown table for
 //                       docs/project-management.md (between the
 //                       label-taxonomy:begin/end markers).
+//   rubric-table        the classification short-form table between the
+//                       classification-rubric:begin/end markers.
 //
 // Usage: node label-registry-render.mjs <mode> [flags] [manifest-path]
 // Manifest defaults to ../label-registry.json relative to this file;
@@ -54,7 +56,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
-const MODES = new Set(['labels', 'inventory', 'docs-table'])
+const MODES = new Set(['labels', 'inventory', 'docs-table', 'rubric-table'])
 
 const args = process.argv.slice(2)
 const mode = args.shift()
@@ -87,7 +89,10 @@ if (jinja && (mode !== 'docs-table' || foreman || releasePlease)) {
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const manifestPath = path.resolve(manifestArg ?? path.join(here, '..', 'label-registry.json'))
-const agentRegistryPath = path.join(path.dirname(manifestPath), 'agent-registry.json')
+const localAgentRegistry = path.join(path.dirname(manifestPath), 'agent-registry.json')
+const agentRegistryPath = fs.existsSync(localAgentRegistry)
+  ? localAgentRegistry
+  : path.join(here, '..', 'agent-registry.json')
 const agentRenderer = path.join(here, 'agent-registry-labels.mjs')
 
 // Validate before rendering anything. This renderer is not only run by the
@@ -183,18 +188,11 @@ function agentRecords(rendererMode) {
 }
 
 function registryFamilyRecords(family) {
-  const REGISTRY_SET_MODES = {
-    'foreman-adapters': 'foreman-adapters',
-    'tier-roles': 'tier-roles',
-    suggest: 'suggest-claim',
-    claim: 'suggest-claim',
-  }
-  const rendererMode = REGISTRY_SET_MODES[family.registry_set] ?? 'suggest-claim'
-  const allLines = agentRecords(rendererMode)
-  const lines =
-    family.prefix != null
-      ? allLines.filter((line) => line.startsWith(`${family.prefix}:`))
-      : allLines
+  // agent-registry-labels.mjs names each mode after the registry_set it feeds
+  // (the validator pins every live set to its prefix). The retired `suggest`
+  // set never reaches here: provisioning and the inventory skip retired families.
+  const rendererMode = family.registry_set
+  const lines = agentRecords(rendererMode).filter((line) => family.prefix === null || line.startsWith(`${family.prefix}:`))
   for (const line of lines) {
     const color = line.split('|')[1]
     if (family.color && color !== family.color) {
@@ -217,6 +215,48 @@ const provisioned = (family) =>
   family.provision === true && family.retired !== true && gateOpen(family)
 
 const lines = []
+
+if (mode === 'rubric-table') {
+  // Axis order is documentation order; row order and descriptions come from
+  // the registry. Tier pinning is a control flag, rather than a scale value.
+  const axes = [
+    ['Impact', 'impact', 'Impact: '],
+    ['Risk', 'risk', 'Risk: '],
+    ['Complexity', 'complexity', 'Complexity: '],
+    ['Tier', 'tier', 'Model tier: '],
+    ['Priority', 'priority', 'Priority: '],
+    ['Priority (AI)', 'priority-ai', 'Priority (AI): ']
+  ]
+  const excludedValues = new Set(['tier:pinned'])
+  lines.push(
+    '<!-- Generated from label-registry.json by `node scripts/label-registry-render.mjs rubric-table`. Do not edit by hand — `task test:label-registry` fails on drift. -->',
+    '',
+    '| Axis | Value | Short form |',
+    '|---|---|---|'
+  )
+  for (const [axis, id, prefix] of axes) {
+    const family = manifest.families.find((entry) => entry.family === id)
+    const values =
+      family?.retired === true
+        ? []
+        : (family?.values ?? []).filter(
+            (value) => value.retired !== true && !excludedValues.has(`${id}:${value.value}`)
+          )
+    if (values.length === 0) {
+      console.error(`label-registry-render: rubric requires active values for axis ${id}`)
+      process.exit(1)
+    }
+    for (const [index, value] of values.entries()) {
+      const name = value.value
+      const description = field(value.description, `rubric ${id}:${name}`)
+      const shortForm = field(
+        description.startsWith(prefix) ? description.slice(prefix.length) : description,
+        `rubric ${id}:${name} short form`
+      )
+      lines.push(`|${index === 0 ? ` **${axis}**` : ''} | \`${name}\` | ${shortForm} |`)
+    }
+  }
+}
 
 if (mode === 'labels') {
   for (const family of manifest.families ?? []) {
@@ -265,8 +305,8 @@ if (mode === 'inventory') {
 
   // Resolve the agent-registry bases before consuming any open-value family.
   // Manifest order is documentation order, not an authorization boundary: an
-  // open family must never fall back to a broad `suggest:`/`claim:` prefix just
-  // because its agent-registry family appears later in the file.
+  // open family must never fall back to a broad `claim:` prefix just because
+  // its agent-registry family appears later in the file.
   for (const family of manifest.families ?? []) {
     if (family.retired === true || family.source !== 'agent-registry' || family.prefix === null)
       continue

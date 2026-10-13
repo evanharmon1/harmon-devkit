@@ -11,12 +11,20 @@
 # Exit: 0 clean, 1 unchecked work, 2 could not verify (fail closed).
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=scripts/lib/gh-rest.sh
+. "${script_dir}/lib/gh-rest.sh"
+
 usage() {
     echo "Usage: $0 --repo owner/repo [--body-env VAR] [--title-env VAR] [--commits-file PATH]" >&2
     exit 2
 }
 
-repo="${GH_REPO:-}"
+# One repository resolution for every session script: gh_rest_repo reads
+# GH_REPO (in gh's [HOST/]OWNER/REPO form) or the git remote and returns
+# OWNER/REPO, so no endpoint built here can carry a host segment. --repo below
+# overrides it and is OWNER/REPO by contract.
+repo="$(gh_rest_repo 2>/dev/null || true)"
 body_env=""
 title_env=""
 commits_file=""
@@ -111,7 +119,7 @@ fetch_issue_body() {
         [ -f "$fixture" ] || return 3
         cat "$fixture"
     else
-        gh issue view "$number" --repo "$repo" --json body --jq '.body // ""' 2>/dev/null || return 3
+        gh_rest_api "repos/${repo}/issues/${number}" --jq '.body // ""' 2>/dev/null || return 3
     fi
 }
 

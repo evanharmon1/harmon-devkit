@@ -142,9 +142,46 @@ write_proof() (
 discard_transaction() {
     transaction="$1"
     prefix="$2"
+    # Declared (not assigned) here, separately from their eventual
+    # command-substitution assignments below: `local x="$(cmd)"` masks
+    # cmd's own exit status behind local's own — the declaration alone
+    # does not (#1241 integration round 5, Gemini findings
+    # 4056368199/4056368200/4056368201/4056368204).
+    local temp_path quarantine_dir quarantine_path
     temp_name="$(proof_value "$transaction" temp_name 2>/dev/null || true)"
     case "$temp_name" in
-    "${prefix}.tmp."*) rm -f "${install_dir}/${temp_name}" ;;
+    "${prefix}.tmp."*)
+        temp_path="${install_dir}/${temp_name}"
+        # Quarantine into a FRESH, PRIVATE per-call directory (mktemp -d,
+        # beside temp_path so the rename stays on the same filesystem and
+        # atomic) before validating, then delete — not a same-directory
+        # sibling name created with a plain mktemp, then rm'd, then mv'd
+        # onto: that create-then-remove-then-move sequence makes the
+        # quarantine name publicly observable in the window between the
+        # create and the remove, and the final move was a plain mv -f, not
+        # no-clobber — together still leaving a window a racing process
+        # could exploit (#1241 item 7; review round 3, finding F6; hardened
+        # in integration round 2 after Codex/Gemini re-raised the same gap
+        # against this exact remedy). The move into the private directory
+        # is no-clobber (-n) with no prior rm: nothing can have pre-created
+        # a path inside a directory nobody else knows exists, and a refused
+        # move is treated as a failed quarantine — the delete below never
+        # runs.
+        if path_exists "$temp_path"; then
+            quarantine_dir="$(mktemp -d "${install_dir}/.harmon-init-discard.XXXXXX" 2>/dev/null)" || quarantine_dir=""
+            if [ -n "$quarantine_dir" ]; then
+                quarantine_path="${quarantine_dir}/proof"
+                if mv -n "$temp_path" "$quarantine_path" 2>/dev/null && [ -e "$quarantine_path" ]; then
+                    if proof_matches "$transaction" "$quarantine_path"; then
+                        rm -f "$quarantine_path"
+                    else
+                        echo "Transaction proof for ${quarantine_path} (quarantined from ${temp_path}) no longer matches its content; leaving it for manual review" >&2
+                    fi
+                fi
+                rmdir "$quarantine_dir" 2>/dev/null || true
+            fi
+        fi
+        ;;
     esac
     rm -f "$transaction"
 }
@@ -170,13 +207,52 @@ remove_if_owned() {
     case "$prior_temp_name" in
     "$(basename "$path")".harmon-init-quarantine.*)
         prior_quarantine="$(dirname "$path")/${prior_temp_name}"
-        if path_exists "$prior_quarantine" && proof_matches "$proof" "$prior_quarantine"; then
-            if ! rm -f "$prior_quarantine"; then
-                echo "Could not remove recovered managed ${label} at ${prior_quarantine}" >&2
-                return 1
+        # Quarantine into a FRESH, PRIVATE per-call directory (mktemp -d,
+        # beside prior_quarantine so the rename stays on the same
+        # filesystem and atomic) before validating, instead of a same-
+        # directory sibling name: nothing else can have pre-created a path
+        # inside a directory nobody else knows exists. Both moves are
+        # no-clobber (-n): if the first one's destination somehow already
+        # exists, that is a failed quarantine and the delete below is
+        # refused; if the SECOND (restore-on-mismatch) move finds a
+        # concurrent process has already recreated prior_quarantine,
+        # refusing to overwrite it is exactly what avoids reintroducing the
+        # concurrent-replacement race this whole mechanism exists to close
+        # — the recovered generation stays retained under its private
+        # directory instead of being silently dropped or clobbering the
+        # concurrent write (#1241 review round 3, finding F6; hardened in
+        # review round 5, finding F24 — the original same-directory
+        # sibling name and forced restore move left that exact race open).
+        if path_exists "$prior_quarantine"; then
+            recheck_dir="$(mktemp -d "$(dirname "$prior_quarantine")/.harmon-init-recheck.XXXXXX" 2>/dev/null)" || recheck_dir=""
+            if [ -n "$recheck_dir" ]; then
+                recheck="${recheck_dir}/$(basename "$prior_quarantine")"
+                if mv -n "$prior_quarantine" "$recheck" 2>/dev/null && [ -e "$recheck" ]; then
+                    if proof_matches "$proof" "$recheck"; then
+                        if ! rm -f "$recheck"; then
+                            echo "Could not remove recovered managed ${label} at ${recheck} (quarantined from ${prior_quarantine})" >&2
+                            return 1
+                        fi
+                        rmdir "$recheck_dir" 2>/dev/null || true
+                        rm -f "$proof"
+                        return 0
+                    fi
+                    # Not the recorded generation after all — try to restore
+                    # it under its original name, but never clobber a
+                    # concurrent replacement: mv -n either succeeds (nothing
+                    # is there) or leaves both files exactly where they are.
+                    if mv -n "$recheck" "$prior_quarantine" 2>/dev/null && [ ! -e "$recheck" ]; then
+                        rmdir "$recheck_dir" 2>/dev/null || true
+                    else
+                        echo "A concurrent replacement occupies ${prior_quarantine}; retaining the recovered generation at ${recheck} for manual review" >&2
+                    fi
+                else
+                    # The quarantine move itself failed or was refused —
+                    # a failed quarantine refuses the delete entirely and
+                    # falls through untouched.
+                    rmdir "$recheck_dir" 2>/dev/null || true
+                fi
             fi
-            rm -f "$proof"
-            return 0
         fi
         ;;
     esac

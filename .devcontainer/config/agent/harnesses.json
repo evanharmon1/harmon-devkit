@@ -1,0 +1,58 @@
+{
+  "supported": {
+    "claude-code": {
+      "executable": "claude",
+      "reason": "managed settings express the agent allow/deny lists, auto mode, and disableBypassPermissionsMode"
+    },
+    "codex-cli": {
+      "executable": "codex",
+      "reason": "managed config pins workspace-write + approval never; never danger-full-access"
+    }
+  },
+  "aliases": {
+    "claude-code-deepseek": "claude-code",
+    "claude-code-glm": "claude-code",
+    "claude-code-kimi": "claude-code",
+    "claude-code-minimax": "claude-code",
+    "claude-code-qwen": "claude-code",
+    "claude-code-qwen-local": "claude-code"
+  },
+  "refused": {
+    "claude-code-action": {
+      "executable": null,
+      "reason": "runs as a GitHub Actions workflow; no devcontainer-installable binary"
+    },
+    "copilot-cli": {
+      "executable": "copilot",
+      "reason": "no managed configuration that can express the agent deny list"
+    },
+    "qwen-code": {
+      "executable": "qwen",
+      "reason": "no managed configuration that can express the agent deny list"
+    },
+    "antigravity": {
+      "executable": "agy",
+      "reason": "no managed configuration that can express the agent deny list"
+    },
+    "opencode": {
+      "executable": "opencode",
+      "reason": "no managed configuration that can express the agent deny list"
+    },
+    "pi": {
+      "executable": "pi",
+      "reason": "no permission system that can express the agent deny list"
+    },
+    "oh-my-pi": {
+      "executable": "omp",
+      "reason": "no permission system that can express the agent deny list"
+    },
+    "goose": {
+      "executable": "goose",
+      "reason": "no managed configuration that can express the agent deny list"
+    },
+    "cline": {
+      "executable": "clite",
+      "reason": "no managed configuration that can express the agent deny list"
+    }
+  }
+}

@@ -15,14 +15,15 @@ this is the *procedure*.
 Two identities, deliberately:
 
 - **`evanharmon1-bot`** — the AI agent's identity inside
-  the bot devcontainer. Write access, no admin, cannot merge `main`.
+  the bot devcontainer. Write access, no admin; it cannot push to `main`, and
+  nothing merges into `main` without the operator's code-owner approval.
 - **`evanharmon1`** (you) — the operator. Full access,
   from the human `dev/` profile or the host.
 
-The split is what makes "an agent cannot merge to `main`" enforceable server-side
-rather than by convention. Anything running in the bot devcontainer can read this
-token out of the environment, so treat it as the agent's own credential and give
-it nothing you would not give the agent.
+The split is what makes "nothing reaches `main` without the operator's
+approval" enforceable server-side rather than by convention. Anything running
+in the bot devcontainer can read this token out of the environment, so treat it
+as the agent's own credential and give it nothing you would not give the agent.
 
 CI *workflows* are a **third** identity — they authenticate as the
 `evanharmon1-ci` GitHub App with short-lived tokens, not this PAT. Don't
@@ -160,16 +161,76 @@ value, which is the point of keeping it in exactly one place.
 
 A leaked bot PAT is bounded but not harmless: it can push branches and open PRs
 on the selected repos.
-It **cannot** merge `main`, edit workflows, or change repo
-settings. Revoke, re-issue, and check the repos' branch and PR lists for anything
-you did not create.
+It **cannot** push to `main`, edit workflows, or change repo settings, and it
+can merge into `main` only a PR a human has already approved with green
+checks — merging stays the maintainer's decision. Revoke, re-issue, and check
+the repos' branch and PR lists for anything you did not create.
+
+## The agent PAT (the agent posture's own token)
+
+The **agent** devcontainer (`.devcontainer/agent/`; see harmon-init's
+[three-posture ADR](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-29-agent-posture-three-posture-model.md))
+authenticates with a **separate** fine-grained PAT on the same bot account —
+never the bot's own `GH_TOKEN`:
+
+- **Same permissions as the bot's PAT** (the table above), so it can push
+  feature branches, open draft PRs, comment, and label, and has no
+  administration, secrets, or workflow permission. The rulesets refuse a
+  direct or force push to `main` and require code-owner approval and green
+  required checks for a merge into it; as with the bot's PAT, once a human
+  has approved and the checks pass, its `pull_requests: write` can perform
+  that merge, and merging stays the maintainer's decision. Its
+  `contents: write` does let it create releases and push to any branch no
+  ruleset protects, because a fine-grained PAT cannot separate those from
+  contents.
+- **Expiry of 180 days at most** — shorter than the bot's — and its **own
+  selected-repository list**, limited to the repositories that allow remote
+  lanes. One per resource owner, for the same reason as above.
+- **Supplied as `AGENT_GH_TOKEN`** in the host environment. `init-env.sh
+  --profile agent` projects it into `.devcontainer/agent/devcontainer.env`
+  and refuses to build if that file holds any other credential; the agent
+  post-create logs `gh` in from it. A distinct name is the point: a host
+  that exports the bot's `GH_TOKEN` can never feed it to an agent container.
+
+Revoke it independently of the bot's PAT: rotating one never touches the
+other. For Claude Code on the web, where `/web-setup` holds a single token
+across resource owners, the agent identity is instead a **classic** PAT on the bot
+account with `repo` scope and no `workflow` scope, handed to `/web-setup` with
+the account's Claude GitHub App connection removed. It is bounded by the bot's
+per-repo collaborator grants rather than by a selected-repository list (a
+classic token reaches every repository the bot can, across owners), and GitHub
+refuses a push that changes `.github/workflows/` (observed 2026-10-07). The one
+exception is the alternative of authorizing the Claude GitHub App as the bot,
+under which a web session **can** push workflow files; see
+[harmon-init's Claude Code on the web guide](https://github.com/evanharmon1/harmon-init/blob/main/docs/guides/claude-code-web.md#whose-identity-github-sees)
+for the procedure, the account pitfall and the costs (harmon-init#1407).
+
+That classic web PAT has its own lifecycle. Set an expiry (180 days at most, like
+the agent PAT), keep it in the bot's item in your secret store, and rotate it by
+minting a new token and re-running `/web-setup`. Retire it by revoking it on
+GitHub (Settings → Developer settings → Tokens (classic)): whether disconnecting
+GitHub on claude.ai's connectors page removes a stored token was not observed.
+Per-session repository scope does not limit this agent: a session can attach,
+when a human approves, any repository the bot can push to. A classic `repo`
+token also carries `repo:status`, `repo_deployment` and `security_events` on
+those repositories, and `repo:invite`, which lets it accept a pending
+collaborator invitation to the bot (someone with admin access still has to
+send it). GitHub documents that `repo` also reaches organization-owned
+resources (projects, invitations, team memberships, webhooks) as far as the
+bot's organization role allows.
 
 ## What the bot cannot do — by construction
 
-- **Push to or merge `main`** — the ruleset blocks it for every actor, and
-  CODEOWNERS requires the operator's review.
-- **Edit `.github/workflows/`** — no Workflows permission, so it cannot rewrite
-  CI to run with Actions secrets.
+- **Push to `main`, or merge into it unapproved** — the rulesets refuse a
+  direct or force push to `main` for every actor, and require code-owner
+  approval (the operator's, per CODEOWNERS) and green required checks for a
+  merge. A PAT with `pull_requests: write` — this one or the agent's — can
+  perform a merge a human has already approved; merging stays the
+  maintainer's decision.
+- **Edit `.github/workflows/`** through its PATs — no Workflows permission, so
+  it cannot rewrite CI to run with Actions secrets. The App-as-bot route on
+  Claude Code on the web is the exception (see
+  [harmon-init's Claude Code on the web guide](https://github.com/evanharmon1/harmon-init/blob/main/docs/guides/claude-code-web.md#whose-identity-github-sees)).
 - **Change settings, rulesets, or bypass lists** — no Administration.
 - **Reach production secrets** — the bot devcontainer installs no 1Password CLI
   and no Tailscale.

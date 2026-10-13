@@ -168,6 +168,7 @@
         },
         "models": {
           "type": "array",
+          "minItems": 1,
           "items": { "$ref": "#/$defs/model" }
         },
         "legacy_claim_labels": {

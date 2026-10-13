@@ -32,9 +32,25 @@ status="./scripts/status.sh"
 # below therefore needs both files, not just the script under test.
 scopes_lib="./scripts/gh-scopes.sh"
 output_lib="./scripts/lib/output.sh"
+rest_lib="./scripts/lib/gh-rest.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
+
+# status.sh branches its remedy text on FOREMAN_DEVCONTAINER (unset = dev
+# posture, "bot", "agent"), and the bot and agent profiles export it — plus a
+# preset GH_TOKEN / GITHUB_TOKEN — into every process; gh and the REST helper
+# honour more GH_* variables (GH_HOST, GH_REPO, GH_REST_HOST), and status.sh
+# its own STATUS_* switches. A case must not inherit whichever environment the
+# caller happens to be in (#1395), so every variable in those families is
+# cleared here, by pattern rather than by a list that misses the next one; the
+# cases that exercise a branch set its variables themselves, per case.
+for _ambient in $(compgen -e); do
+    case "$_ambient" in
+    FOREMAN_DEVCONTAINER | GH_* | GITHUB_* | STATUS_*) unset "$_ambient" ;;
+    esac
+done
+unset _ambient
 
 # Four fixture roots, each holding a copy of the script under test:
 #   with-board  — has the board tooling, so the check applies
@@ -55,6 +71,7 @@ for fixture in with-board no-board skills-only with-codex creds-board org-repo; 
     cp "${status}" "${TMP}/${fixture}/scripts/status.sh"
     cp "${scopes_lib}" "${TMP}/${fixture}/scripts/gh-scopes.sh"
     cp "${output_lib}" "${TMP}/${fixture}/scripts/lib/output.sh"
+    cp "${rest_lib}" "${TMP}/${fixture}/scripts/lib/gh-rest.sh"
 done
 # The markers status.sh feature-detects on. Contents are never read.
 : >"${TMP}/with-board/scripts/setup-github-project.sh"
@@ -72,14 +89,44 @@ mkdir -p "${TMP}/enterprise/scripts/lib"
 cp "${status}" "${TMP}/enterprise/scripts/status.sh"
 cp "${scopes_lib}" "${TMP}/enterprise/scripts/gh-scopes.sh"
 cp "${output_lib}" "${TMP}/enterprise/scripts/lib/output.sh"
+cp "${rest_lib}" "${TMP}/enterprise/scripts/lib/gh-rest.sh"
 : >"${TMP}/enterprise/scripts/setup-github-project.sh"
 git -C "${TMP}/enterprise" init -q
 git -C "${TMP}/enterprise" remote add origin git@ghe.example.com:owner/repo.git
 
+# A board repo whose owner AND name carry hyphens — the shape of this repository
+# itself. The resolved OWNER/REPO used to be validated against a class in which
+# `.-/` was the RANGE 0x2E-0x2F, so `-` was rejected, gh_rest_repo returned 1,
+# and the `if` guarding the open-PR read below simply skipped it: `task
+# status:gh` reported no open PRs at all, silently (challenge r3).
+mkdir -p "${TMP}/hyphenated/scripts/lib"
+cp "${status}" "${TMP}/hyphenated/scripts/status.sh"
+cp "${scopes_lib}" "${TMP}/hyphenated/scripts/gh-scopes.sh"
+cp "${output_lib}" "${TMP}/hyphenated/scripts/lib/output.sh"
+cp "${rest_lib}" "${TMP}/hyphenated/scripts/lib/gh-rest.sh"
+: >"${TMP}/hyphenated/scripts/setup-github-project.sh"
+git -C "${TMP}/hyphenated" init -q
+git -C "${TMP}/hyphenated" remote add origin git@github.com:my-org/harmon-init.git
+
+# A repo that ships a release workflow, so the setup audit renders its
+# "Release published" line (the check is gated on that file). It is a git repo
+# with a GitHub remote so the whole-block run below resolves a branch and an
+# owner/repo the way a real checkout does.
+mkdir -p "${TMP}/with-release/scripts/lib" "${TMP}/with-release/.github/workflows"
+cp "${status}" "${TMP}/with-release/scripts/status.sh"
+cp "${scopes_lib}" "${TMP}/with-release/scripts/gh-scopes.sh"
+cp "${output_lib}" "${TMP}/with-release/scripts/lib/output.sh"
+cp "${rest_lib}" "${TMP}/with-release/scripts/lib/gh-rest.sh"
+: >"${TMP}/with-release/.github/workflows/release.yml"
+git -C "${TMP}/with-release" init -q
+git -C "${TMP}/with-release" remote add origin git@github.com:owner/public.git
+
 WITH_BOARD="${TMP}/with-board/scripts/status.sh"
+WITH_RELEASE="${TMP}/with-release/scripts/status.sh"
 NO_BOARD="${TMP}/no-board/scripts/status.sh"
 SKILLS_ONLY="${TMP}/skills-only/scripts/status.sh"
 ENTERPRISE="${TMP}/enterprise/scripts/status.sh"
+HYPHENATED="${TMP}/hyphenated/scripts/status.sh"
 WITH_CODEX="${TMP}/with-codex/scripts/status.sh"
 CREDS_BOARD="${TMP}/creds-board/scripts/status.sh"
 ORG_REPO="${TMP}/org-repo/scripts/status.sh"
@@ -272,9 +319,85 @@ make_stub() {
             ;;
         esac
         echo 'fi'
-        echo 'if [ "$1" = "repo" ] && [ "$2" = "view" ] && [ -n "${GH_REPO_JSON:-}" ]; then'
-        echo '    printf "%s\n" "$GH_REPO_JSON"'
-        echo '    exit 0'
+        echo 'if [ "$1" = "api" ]; then'
+        echo '    endpoint="${2:-}"'
+        # GH_STUB_FULL_PAGES=1: answer the three completeness-required
+        # inventories with a FULL page every time, exactly as GitHub answers a
+        # list longer than per_page. Only a bound can end such a walk, so this
+        # is what lets a case drive gh_rest_paginate_* into its
+        # GH_REST_MAX_PAGES ceiling (exit 4) instead of a natural short page.
+        cat <<'STUB'
+    if [ "${GH_STUB_FULL_PAGES:-0}" = 1 ]; then
+        page_items="${endpoint##*per_page=}"
+        page_items="${page_items%%&*}"
+        case "$endpoint" in
+        */labels\?*)
+            jq -cn --argjson n "$page_items" '[range(0;$n) | {name:"l\(.)"}]'
+            exit 0
+            ;;
+        orgs/*/issue-types\?*)
+            jq -cn --argjson n "$page_items" '[range(0;$n) | {name:"t\(.)"}]'
+            exit 0
+            ;;
+        orgs/*/issue-fields\?*)
+            jq -cn --argjson n "$page_items" '{issue_fields:[range(0;$n) | {name:"f\(.)",data_type:"text"}]}'
+            exit 0
+            ;;
+        esac
+    fi
+STUB
+        echo '    case "$endpoint" in'
+        echo '    graphql | search/* | repositories/*) echo "HTTP 403: REST-only proxy rejection" >&2; exit 1 ;;'
+        echo '    *"&page=2"*) echo "[]"; exit 0 ;;'
+        echo '    repos/*/*\?* | repos/*/*)'
+        echo '        case "$endpoint" in'
+        echo '        */pulls\?* | */labels\?* | */pulls/comments\?* | */rulesets) echo "[]" ;;'
+        echo '        */vulnerability-alerts) echo "[]" ;;'
+        # The latest-release read. GH_STUB_RELEASES picks the answer: `none`
+        # (default) is a successful read of a repository with no release,
+        # `present` one with v4.47.1, `fail` the proxy refusing the read,
+        # `garbage` a 200 that is not a release list at all, and `malformed` a JSON
+        # array whose elements are not releases (a proxy's error objects),
+        # `empty-tag` a release with an empty tag_name, `two-documents` an error
+        # document followed by an empty array, and `trailing-document` an empty
+        # array followed by an error document (valid up to the first document).
+        echo '        */releases\?*)'
+        echo '            case "${GH_STUB_RELEASES:-none}" in'
+        echo '            present) echo "[{\"tag_name\":\"v4.47.1\",\"draft\":false}]" ;;'
+        echo '            fail) echo "HTTP 403: REST-only proxy rejection" >&2; exit 1 ;;'
+        echo '            garbage) echo "<html>proxy error</html>" ;;'
+        echo '            malformed) echo "[{\"message\":\"rate limited\"}]" ;;'
+        echo '            empty-tag) echo "[{\"tag_name\":\"\"}]" ;;'
+        echo '            two-documents) echo "[{\"message\":\"rate limited\"}]"; echo "[]" ;;'
+        echo '            trailing-document) echo "[]"; echo "[{\"message\":\"rate limited\"}]" ;;'
+        echo '            *) echo "[]" ;;'
+        echo '            esac'
+        echo '            ;;'
+        echo '        */private-vulnerability-reporting) echo "{}" ;;'
+        echo '        *) [ -n "${GH_REPO_JSON:-}" ] || exit 1; printf "%s\n" "$GH_REPO_JSON" ;;'
+        echo '        esac'
+        echo '        exit 0'
+        echo '        ;;'
+        echo '    orgs/*/issue-types\?*) echo "[]"; exit 0 ;;'
+        # The preview documents its page in two shapes, and a read can also
+        # simply fail. `empty` (the default) keeps every existing case on the
+        # wrapped-and-empty answer they were written against. `wrapped` and
+        # `bare` serve the org snapshot in GH_STUB_ISSUE_FIELDS_JSON (a bare
+        # JSON array) in that shape, so a case chooses the fields and the shape
+        # independently.
+        echo '    orgs/*/issue-fields\?*)'
+        echo '        case "${GH_STUB_ISSUE_FIELDS:-empty}" in'
+        echo '        wrapped) printf "{\"issue_fields\":%s}\n" "${GH_STUB_ISSUE_FIELDS_JSON:-[]}" ;;'
+        echo '        bare) printf "%s\n" "${GH_STUB_ISSUE_FIELDS_JSON:-[]}" ;;'
+        echo '        fail) exit 1 ;;'
+        echo '        *) echo "{\"issue_fields\":[]}" ;;'
+        echo '        esac'
+        echo '        exit 0'
+        echo '        ;;'
+        echo '    orgs/*/installations | user/installations) echo "{\"installations\":[]}"; exit 0 ;;'
+        echo '    esac'
+        echo '    echo "stub: unexpected REST endpoint: $endpoint" >&2'
+        echo '    exit 1'
         echo 'fi'
         echo 'if [ "$1" = "variable" ] && [ "$2" = "list" ] && [ -n "${GH_VARIABLES_JSON:-}" ]; then'
         echo '    printf "%s\n" "$GH_VARIABLES_JSON"'
@@ -445,7 +568,11 @@ make_isolated_bin() {
 run_setup_section() {
     make_stub "$1"
     local script="${2:-${WITH_CODEX}}"
-    PATH="${TMP}/bin:${PATH}" NO_COLOR=1 "${script}" setup 2>&1
+    local stub_repo="${GH_REPO:-}"
+    if [ -z "${stub_repo}" ] && [ -n "${GH_REPO_JSON:-}" ]; then
+        stub_repo="$(jq -r '.full_name // empty' <<<"${GH_REPO_JSON}")"
+    fi
+    GH_REPO="${stub_repo}" PATH="${TMP}/bin:${PATH}" NO_COLOR=1 "${script}" setup 2>&1
 }
 
 # run_creds_section GH_SCENARIO [SCRIPT] — status.sh's standalone credentials
@@ -475,7 +602,7 @@ run_setup_isolated() {
     make_stub "$1"
     make_isolated_bin ""
     local script="${2:-${WITH_CODEX}}"
-    PATH="${TMP}/bin-iso" NO_COLOR=1 "${script}" setup 2>&1
+    GH_REPO="${GH_REPO:-}" PATH="${TMP}/bin-iso" NO_COLOR=1 "${script}" setup 2>&1
 }
 
 # summary_field OUTPUT NAME — the count NAME carries on status.sh's Summary line
@@ -487,7 +614,7 @@ summary_field() {
 
 echo "==> public setup status audits the exact CI_RUNS_ON safety value"
 make_codex_stub in
-public_repo='{"nameWithOwner":"owner/public","visibility":"PUBLIC","isPrivate":false,"defaultBranchRef":{"name":"main"}}'
+public_repo='{"full_name":"owner/public","visibility":"PUBLIC","private":false,"default_branch":"main","owner":{"type":"Organization"}}'
 out="$(GH_REPO_JSON="$public_repo" \
     GH_VARIABLES_JSON='[{"name":"CI_RUNS_ON"}]' \
     GH_CI_RUNS_ON_JSON='{"name":"CI_RUNS_ON","value":"\"ubuntu-latest\""}' \
@@ -512,7 +639,7 @@ case "$out" in
 *) fail "failed public variable probes were reported as missing: ${out}" ;;
 esac
 
-internal_repo='{"nameWithOwner":"owner/internal","visibility":"INTERNAL","isPrivate":false,"defaultBranchRef":{"name":"main"}}'
+internal_repo='{"full_name":"owner/internal","visibility":"INTERNAL","private":false,"default_branch":"main","owner":{"type":"Organization"}}'
 out="$(GH_REPO_JSON="$internal_repo" \
     GH_VARIABLES_JSON='[{"name":"CI_RUNS_ON"}]' \
     GH_CI_RUNS_ON_JSON='{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"linux\"]"}' \
@@ -529,6 +656,133 @@ case "$out" in
 *) fail "expected a satisfied board-writes line, got: ${out}" ;;
 esac
 
+# assert_rest_only_calls LABEL — fail if the stub's call log ($STUB_CALLS) holds
+# a GraphQL-backed or otherwise proxy-refused surface. Every pattern is anchored
+# on `(^| )` because the log line is the bare `$*` of the gh call: a `gh pr list`
+# is logged as `pr list ...`, with no leading space for a ` pr list` pattern to
+# match. `release list` is GraphQL-backed, and is the call #1437 removed. The
+# `search` and `project` subcommands are refused by the proxy the same way as
+# the `search/` and GraphQL endpoints, and `pr checks` / `pr status` are
+# GraphQL-backed like `pr list` and `pr view`.
+assert_rest_only_calls() {
+    if grep -E '(^| )(graphql|search/|repositories/)|--paginate|(^| )pr (list|view|checks|status)|(^| )issue (list|view)|(^| )label list|(^| )release (list|view)|(^| )search |(^| )project ' "${STUB_CALLS}" >/dev/null; then
+        fail "$1 used a forbidden GitHub surface: $(tr '\n' ' ' <"${STUB_CALLS}")"
+    fi
+}
+
+echo "==> REST-only setup completes and marks the GraphQL-only project surface unavailable"
+STUB_CALLS="${TMP}/rest-only-calls.txt"
+export STUB_CALLS
+: >"${STUB_CALLS}"
+out="$(GH_REPO_JSON="$public_repo" run_setup_section project)"
+case "$out" in
+*"GitHub Project linked"*"unavailable through the REST-only GitHub API"*) ;;
+*) fail "expected an explicit unavailable project line, got: ${out}" ;;
+esac
+assert_rest_only_calls "REST-only setup status"
+unset STUB_CALLS
+
+# ── Release line (#1437) ─────────────────────────────────────────────────────
+# The line states one of three things and only the middle one may recommend a
+# remedy: a release exists, the read succeeded and found none, or the read
+# failed. Every case runs under the REST-only stub (GraphQL, search and
+# repositories/ refused with a 403), the shape of a Claude Code on the web
+# session, and checks the call log so a GraphQL-backed read cannot hide behind a
+# stub that happens to answer it.
+STUB_CALLS="${TMP}/release-calls.txt"
+export STUB_CALLS
+run_release_setup() {
+    : >"${STUB_CALLS}"
+    GH_STUB_RELEASES="$1" GH_REPO_JSON="$public_repo" run_setup_section project "${WITH_RELEASE}"
+}
+
+echo "==> the release line reports a release read over REST"
+out="$(run_release_setup present)"
+case "$out" in
+*"[x] Release published - v4.47.1"*) ;;
+*) fail "expected the latest release on the release line, got: ${out}" ;;
+esac
+assert_rest_only_calls "the release line"
+grep -F 'releases?per_page=1' "${STUB_CALLS}" >/dev/null ||
+    fail "the release line did not read repos/{owner}/{repo}/releases?per_page=1: $(tr '\n' ' ' <"${STUB_CALLS}")"
+case "$out" in
+*"task release:init"*) fail "a repository with a release was told to run release:init: ${out}" ;;
+*) ;;
+esac
+
+echo "==> a successful read that finds no release still recommends release:init"
+out="$(run_release_setup none)"
+case "$out" in
+*"[ ] Release published"*"task release:init"*) ;;
+*) fail "an observed absence must keep its remedy, got: ${out}" ;;
+esac
+
+echo "==> a failed release read reports unavailable and prints no remedy"
+for mode in fail garbage malformed empty-tag two-documents trailing-document; do
+    out="$(run_release_setup "${mode}")"
+    case "$out" in
+    *"[?] Release published - unavailable"*) ;;
+    *) fail "a ${mode} release read was not reported as unavailable: ${out}" ;;
+    esac
+    case "$out" in
+    *"Release published"*"task release:init"* | *"[ ] Release published"*)
+        fail "a ${mode} release read stated an absence it did not observe: ${out}"
+        ;;
+    *) ;;
+    esac
+    assert_rest_only_calls "the ${mode} release read"
+done
+
+echo "==> every section, and the whole block, completes under the REST-only stub"
+# The forbidden-surface check above covered the setup section alone, so a
+# GraphQL-backed call reintroduced in any other section would have passed: the
+# stub answers `pr list` and `run list` with `[]` and a grep nobody ran saw
+# nothing. Each section, and one run with NO section argument (the whole status
+# block), now runs with every gh call logged. A read the proxy refuses must
+# render as a line of its own; the proxy's raw error text appearing in the
+# output means a failure leaked through instead.
+for section in "" git gh creds code env setup; do
+    : >"${STUB_CALLS}"
+    make_stub project
+    rc=0
+    out="$(cd "${TMP}/with-release" && GH_STUB_RELEASES=fail GH_REPO_JSON="$public_repo" \
+        GH_REPO=owner/public PATH="${TMP}/bin:${PATH}" NO_COLOR=1 \
+        "${WITH_RELEASE}" ${section:+"${section}"} 2>&1)" || rc=$?
+    label="the ${section:-whole-block} run"
+    [ "${rc}" -eq 0 ] || fail "${label} exited ${rc} under the REST-only stub: ${out}"
+    case "$out" in
+    *"HTTP 403"* | *"stub: unexpected"*) fail "${label} leaked a refused read instead of reporting it: ${out}" ;;
+    *) ;;
+    esac
+    assert_rest_only_calls "${label}"
+done
+# The whole block must still hold every default section's header, so a run that
+# "completed" by skipping a section cannot pass.
+: >"${STUB_CALLS}"
+make_stub project
+rc=0
+out="$(cd "${TMP}/with-release" && GH_REPO_JSON="$public_repo" GH_REPO=owner/public \
+    PATH="${TMP}/bin:${PATH}" NO_COLOR=1 "${WITH_RELEASE}" 2>&1)" || rc=$?
+[ "${rc}" -eq 0 ] || fail "the whole-block header run exited ${rc}: ${out}"
+for header in "Git Status" "GitHub Status" "Codebase Stats" "Environment" "Local Credentials"; do
+    case "$out" in
+    *"${header}"*) ;;
+    *) fail "the whole-block run lacks its ${header} section: ${out}" ;;
+    esac
+done
+# The sections that cannot be filled through REST say so: the setup audit is
+# where the GraphQL-only Projects surface and the (here refused) release read
+# live, and both must be named unavailable rather than graded absent.
+out="$(GH_STUB_RELEASES=fail GH_REPO_JSON="$public_repo" run_setup_section project "${WITH_RELEASE}")"
+for line in "GitHub Project linked - unavailable through the REST-only GitHub API" \
+    "Release published - unavailable"; do
+    case "$out" in
+    *"${line}"*) ;;
+    *) fail "the setup audit did not report '${line}': ${out}" ;;
+    esac
+done
+unset STUB_CALLS
+
 echo "==> read-only 'read:project' is NOT reported as satisfied"
 # The state most easily mistaken for working: --show reads the card fine, so the
 # board looks reachable right up to the write that moves it.
@@ -537,6 +791,26 @@ case "$out" in
 *"token has 'project'"*) fail "read:project must not satisfy a WRITE check: ${out}" ;;
 *"read-only"*"task setup:gh-scopes"*) ;;
 *) fail "expected a read-only warning naming the remedy, got: ${out}" ;;
+esac
+
+echo "==> the bot profile's scope remedy re-provisions GH_TOKEN, never widens the login"
+out="$(FOREMAN_DEVCONTAINER=bot run_gh_section read-only)"
+case "$out" in
+*"bot profile: re-provision GH_TOKEN"*) ;;
+*) fail "expected the bot-profile scope remedy, got: ${out}" ;;
+esac
+case "$out" in
+*"task setup:gh-scopes"* | *"gh auth refresh"*) fail "the bot profile must not be told to widen its login: ${out}" ;;
+esac
+
+echo "==> the agent posture's scope remedy names AGENT_GH_TOKEN, not GH_TOKEN"
+out="$(FOREMAN_DEVCONTAINER=agent run_gh_section read-only)"
+case "$out" in
+*"agent posture: re-provision AGENT_GH_TOKEN"*) ;;
+*) fail "expected the agent-posture scope remedy, got: ${out}" ;;
+esac
+case "$out" in
+*"task setup:gh-scopes"* | *"gh auth refresh"* | *"bot profile"*) fail "the agent posture must get its own remedy: ${out}" ;;
 esac
 
 echo "==> a token with neither scope warns and names the remedy"
@@ -632,6 +906,9 @@ echo "==> the auth host comes from the repository, not a github.com assumption"
 STUB_HOSTS="${TMP}/hosts.txt"
 export STUB_HOSTS
 : >"${STUB_HOSTS}"
+STUB_CALLS="${TMP}/enterprise-calls.txt"
+export STUB_CALLS
+: >"${STUB_CALLS}"
 out="$(run_gh_section records-hostname "${ENTERPRISE}")"
 grep -qx 'ghe.example.com' "${STUB_HOSTS}" ||
     fail "probe used $(tr '\n' ' ' <"${STUB_HOSTS}") — expected the remote's host"
@@ -640,6 +917,28 @@ case "$out" in
 *"token has 'project'"*) ;;
 *) fail "expected the Enterprise section to render, got: ${out}" ;;
 esac
+# The REST reads must follow the same host: the endpoint stays repos/OWNER/REPO
+# (never repos/HOST/OWNER/REPO) and --hostname carries the Enterprise host, or
+# every read after the auth probe silently goes to github.com (challenge r1).
+grep -q '^api repos/owner/repo/pulls?state=open&sort=updated&direction=desc&per_page=10&page=1 --hostname ghe.example.com$' "${STUB_CALLS}" ||
+    fail "Enterprise REST reads did not carry the remote's host: $(grep '^api ' "${STUB_CALLS}" | tr '\n' ';')"
+grep -q '^api repos/ghe.example.com/' "${STUB_CALLS}" &&
+    fail "an Enterprise host leaked into the endpoint path: $(grep '^api ' "${STUB_CALLS}" | tr '\n' ';')"
+unset STUB_CALLS
+
+echo "==> a hyphenated owner and name still reach the open-PR read"
+# The two fixtures above are hyphen-free, which is why neither could see the
+# character-class defect: this read is the one that silently vanished.
+STUB_CALLS="${TMP}/hyphenated-calls.txt"
+export STUB_CALLS
+: >"${STUB_CALLS}"
+out="$(run_gh_section project "${HYPHENATED}")"
+case "$out" in
+*"not authenticated"*) fail "the hyphenated fixture's section did not render: ${out}" ;;
+esac
+grep -q '^api repos/my-org/harmon-init/pulls?state=open&sort=updated&direction=desc&per_page=10&page=1$' "${STUB_CALLS}" ||
+    fail "a hyphenated repository never reached the open-PR read: $(grep '^api ' "${STUB_CALLS}" | tr '\n' ';')"
+unset STUB_CALLS
 
 echo "==> GH_HOST still overrides the repository's remote"
 : >"${STUB_HOSTS}"
@@ -703,22 +1002,56 @@ else
     echo "    (skipped: no timeout binary — the probe is unbounded here)"
 fi
 
-echo "==> no user-facing message hardcodes the refresh remedy"
-# The remedy is derived from the credential source once, because `gh auth refresh`
-# is wrong for an env-provided or fine-grained token. Every message must use that
-# derivation — a hardcoded copy is how one call site silently drifts back to
-# advice that cannot work, and the setup section (which needs live GitHub data to
-# render) cannot be driven by the stub above. So assert it statically instead:
-# the literal may appear only in a comment or in the derivation itself.
+echo "==> no user-facing message hardcodes a remedy that acts on the current login"
+# One invariant, widened from the original refresh-only form (issue #596).
+#
+# The remedy is derived from the credential source once, because `gh auth
+# refresh` is wrong for an env-provided or fine-grained token — a hardcoded
+# copy is how one call site silently drifts back to advice that cannot work,
+# and the setup section (which needs live GitHub data to render) cannot be
+# driven by the stub above. So assert it statically.
+#
+# The class is wider than refresh, and the bot profile is why
+# (harmon-init#1236). There, EVERY remedy that acts on the current gh login is
+# wrong, not just the one that cannot work: the gh-identity tripwire may be
+# about to report that login as a personal credential which must be removed,
+# and advice to use it (`gh auth login`) or widen it (`gh auth refresh -s`,
+# `task setup:gh-scopes`) on the same screen re-creates the exact escalation
+# the tripwire exists to stop. Challenge found two such sites in two
+# consecutive rounds — the setup audit's login line, then the scope remedy —
+# so the guard is written against the class.
+#
+# The literal may appear only in a comment or inside one of the profile-aware
+# derivation helpers, which ARE the rule.
+#
+# The original form also exempted any `GH_REMEDY*=` assignment, because back
+# then the assignment WAS the derivation. It no longer is, and that exemption
+# had become a hole wide enough to drive the finding through: `GH_REMEDY_DEFAULT
+# ="see: task setup:gh-scopes"` matched it and sailed past. Mutation-verified
+# after removal. The patterns below are deliberately the RUNNABLE recommendation
+# forms — `gh auth refresh -s` rather than bare `gh auth refresh` — so
+# derive_gh_scope_state is exempt on the same grounds as the other two: it IS
+# the derivation, and its "an env token overrides gh auth refresh" branches
+# explain why that command will not work rather than recommending it. The
+# exemption is by FUNCTION, not by line shape — which is what the removed
+# assignment exemption got wrong.
+remedy_helper_lines="$(awk '
+    /^(gh_login_remedy|gh_scope_remedy_default|derive_gh_scope_state)\(\) \{/ { inf = 1 }
+    inf { print NR }
+    inf && /^\}/ { inf = 0 }
+' "${status}")"
 while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
-    *"#"*"gh auth refresh"*) continue ;; # a comment explaining the rule
-    *GH_REMEDY*=*) continue ;;           # the derivation itself
-    *) fail "hardcoded refresh remedy — use \${GH_REMEDY}: ${line}" ;;
+    *"#"*"gh auth refresh"* | *"#"*"gh auth login"* | *"#"*"setup:gh-scopes"*) continue ;;
     esac
+    # Inside a derivation helper? Then it is the single source, not a copy.
+    if printf '%s\n' "${remedy_helper_lines}" | grep -x "${line%%:*}" >/dev/null; then
+        continue
+    fi
+    fail "hardcoded remedy acting on the current login — derive it: ${line}"
 done <<EOF
-$(grep -n 'gh auth refresh' "${status}" || true)
+$(grep -nE "gh auth refresh|gh auth login|task setup:gh-scopes" "${status}" || true)
 EOF
 
 echo "==> the session-start hook allows more time than this section can spend"
@@ -1123,6 +1456,25 @@ case "$out" in
 *) fail "expected a missing-login line from status:creds, got: ${out}" ;;
 esac
 
+echo "==> status:creds names the profile's own provisioning remedy, never an interactive login"
+make_codex_stub in
+out="$(FOREMAN_DEVCONTAINER=bot run_creds_section unauthenticated)"
+case "$out" in
+*"GitHub CLI (gh) - bot profile: provision GH_TOKEN"*) ;;
+*) fail "expected the bot-profile login remedy from status:creds, got: ${out}" ;;
+esac
+case "$out" in
+*"GitHub CLI (gh) - gh auth login"*) fail "the bot profile must not be told to log in interactively: ${out}" ;;
+esac
+out="$(FOREMAN_DEVCONTAINER=agent run_creds_section unauthenticated)"
+case "$out" in
+*"GitHub CLI (gh) - agent posture: provision AGENT_GH_TOKEN"*) ;;
+*) fail "expected the agent-posture login remedy from status:creds, got: ${out}" ;;
+esac
+case "$out" in
+*"GitHub CLI (gh) - gh auth login"* | *"bot profile"*) fail "the agent posture must get its own login remedy: ${out}" ;;
+esac
+
 echo "==> a local token read that fails for another reason reads unknown"
 # Non-zero is not the same as logged out, exactly as for the Codex probe: a
 # locked keychain exits non-zero too, and `gh auth login` cannot repair it — the
@@ -1462,5 +1814,227 @@ if [ -f "$hook" ] && [ -f "$settings" ]; then
 else
     echo "    (skipped: no devcontainer hook/settings in this profile)"
 fi
+
+# ── Completeness-required inventories ────────────────────────────────────────
+# status.sh walks labels, org issue types, and org issue fields with MAX_ITEMS=0,
+# so the GH_REST_MAX_PAGES ceiling — not the data — can be what ends the walk,
+# and the pages that did arrive are a PARTIAL list. Each of those three
+# renderers can print a definite verdict about what the repository lacks, and
+# printing it from a partial list is an absence nobody observed (challenge r2).
+# No fixture above ships the setup:github-* markers, so this one is the first to
+# render any of the three.
+mkdir -p "${TMP}/inventories/scripts/lib" "${TMP}/bin-node"
+cp "${status}" "${TMP}/inventories/scripts/status.sh"
+cp "${scopes_lib}" "${TMP}/inventories/scripts/gh-scopes.sh"
+cp "${output_lib}" "${TMP}/inventories/scripts/lib/output.sh"
+cp "${rest_lib}" "${TMP}/inventories/scripts/lib/gh-rest.sh"
+: >"${TMP}/inventories/scripts/setup-github-labels.sh"
+: >"${TMP}/inventories/scripts/setup-github-issue-types.sh"
+: >"${TMP}/inventories/scripts/setup-github-issue-fields.sh"
+# The labels renderer takes its WANT list from the label-registry renderer. Both
+# paths are markers it only tests with -f, and the node stub below supplies the
+# rendering, so these cases assert on how status.sh grades an inventory rather
+# than on whatever label-registry.json happens to hold today.
+: >"${TMP}/inventories/label-registry.json"
+: >"${TMP}/inventories/scripts/label-registry-render.mjs"
+{
+    echo '#!/usr/bin/env bash'
+    echo '[ "${1:-}" != --version ] || { echo v20.0.0; exit 0; }'
+    echo 'printf "%s\n" "area:ci|ci and automation" "type:bug|a defect"'
+} >"${TMP}/bin-node/node"
+chmod +x "${TMP}/bin-node/node"
+INVENTORIES="${TMP}/inventories/scripts/status.sh"
+inventory_repo='{"full_name":"owner/repo","visibility":"PUBLIC","private":false,"default_branch":"main","owner":{"type":"Organization"}}'
+
+# run_inventory_section — the setup audit on the fixture above, with the node
+# stub ahead of the shared bin so no other case inherits it.
+run_inventory_section() {
+    make_stub project
+    PATH="${TMP}/bin-node:${TMP}/bin:${PATH}" NO_COLOR=1 \
+        GH_REPO=owner/repo GH_REPO_JSON="${inventory_repo}" \
+        "${INVENTORIES}" setup 2>&1
+}
+
+echo "==> a read that trips the page ceiling reports unknown, never an absence"
+# GH_REST_MAX_PAGES=1 against full pages: page 1 arrives, page 2 is refused, and
+# the walk returns 4 holding one page of a list it never finished reading.
+out="$(GH_STUB_FULL_PAGES=1 GH_REST_MAX_PAGES=1 run_inventory_section)"
+for label in "Starter labels" "Org issue types" "Org issue fields"; do
+    case "$out" in
+    *"[?] ${label} - read truncated at the 1-page ceiling"*) ;;
+    *) fail "a truncated read was not reported as unknown for ${label}: ${out}" ;;
+    esac
+done
+case "$out" in
+*"run task setup:github-labels"*)
+    fail "a truncated label read still told the reader to provision labels: ${out}"
+    ;;
+esac
+case "$out" in
+*"run task setup:github-issue-types"*)
+    fail "a truncated issue-type read still told the reader to provision types: ${out}"
+    ;;
+esac
+case "$out" in
+*"run task setup:github-issue-fields"*)
+    fail "a truncated issue-field read still told the reader to provision fields: ${out}"
+    ;;
+esac
+
+echo "==> a complete, genuinely empty read still renders its existing verdict"
+# The other half of the invariant: completeness gates the claim, it does not
+# suppress it. An unprovisioned repository answers every page and answers it
+# empty, and that IS an observed absence. Labels are the one of the three whose
+# empty verdict is a definite negative; org issue types and fields have always
+# reported an empty read as unknown-needs-admin:org, and must keep saying that
+# rather than borrowing the truncation reason.
+out="$(run_inventory_section)"
+case "$out" in
+*"[ ] Starter labels - run task setup:github-labels"*) ;;
+*) fail "an empty label read lost its provisioning verdict: ${out}" ;;
+esac
+case "$out" in
+*"[?] Org issue types - needs admin:org"*) ;;
+*) fail "an empty issue-type read lost its existing verdict: ${out}" ;;
+esac
+case "$out" in
+*"[?] Org issue fields - needs admin:org (public preview)"*) ;;
+*) fail "an empty issue-field read lost its existing verdict: ${out}" ;;
+esac
+case "$out" in
+*"read truncated at the"*) fail "a complete read was reported as truncated: ${out}" ;;
+esac
+
+echo "==> both documented issue-field page shapes render the same field list"
+# The preview documents its page as the array wrapped under `issue_fields` AND as
+# the bare array. The reader required the wrapper, so the other shape was a
+# FAILED read — rendered `unknown`, which told an org that really does have the
+# field that nobody could see it (review r1). The shape is the only difference
+# between these two runs, so the verdict may not depend on it.
+#
+# The org below is FULLY PROVISIONED as the setup script leaves it: GitHub's
+# built-ins (Priority, the dates), Product, the four classification fields, and
+# Effort on the ladder. Options come back in no particular order — status.sh must
+# read them by name, not position — and Impact carries one option an owner added,
+# which is fine. There is no Agent, Domain, Layer, or Tier field, and Priority is
+# not wanted: it is GitHub's own human priority, so requiring any of them would
+# report a permanent false failure on every fresh org (#662, #875, #698).
+fields_complete='[
+ {"name":"Priority","data_type":"single_select","options":[{"name":"Low","priority":4},{"name":"Urgent","priority":1},{"name":"High","priority":2},{"name":"Medium","priority":3}]},
+ {"name":"Start date","data_type":"date"},
+ {"name":"Target date","data_type":"date"},
+ {"name":"Product","data_type":"text"},
+ {"name":"Impact","data_type":"single_select","options":[{"name":"massive","priority":5},{"name":"epic","priority":6},{"name":"minimal","priority":1},{"name":"high","priority":4},{"name":"low","priority":2},{"name":"medium","priority":3}]},
+ {"name":"Risk","data_type":"single_select","options":[{"name":"trivial","priority":1},{"name":"low","priority":2},{"name":"medium","priority":3},{"name":"high","priority":4},{"name":"critical","priority":5}]},
+ {"name":"Complexity","data_type":"single_select","options":[{"name":"xs","priority":1},{"name":"s","priority":2},{"name":"m","priority":3},{"name":"l","priority":4},{"name":"xl","priority":5}]},
+ {"name":"Priority (AI)","data_type":"single_select","options":[{"name":"p0","priority":1},{"name":"p1","priority":2},{"name":"p2","priority":3},{"name":"p3","priority":4},{"name":"p4","priority":5}]},
+ {"name":"Effort","data_type":"single_select","options":[{"name":"1","priority":1},{"name":"2","priority":2},{"name":"3","priority":3},{"name":"5","priority":4},{"name":"8","priority":5},{"name":"13","priority":6},{"name":"20","priority":7}]},
+ {"name":"Model family","data_type":"single_select","options":[{"name":"gemini","priority":2},{"name":"claude","priority":1}]},
+ {"name":"Model","data_type":"single_select","options":[{"name":"opus","priority":1},{"name":"flash","priority":2}]},
+ {"name":"Model version","data_type":"single_select","options":[{"name":"3.8","priority":3},{"name":"5.5","priority":1},{"name":"5.1","priority":2},{"name":"4.0","priority":4}]},
+ {"name":"Model effort","data_type":"single_select","options":[{"name":"low","priority":1},{"name":"high","priority":2}]}
+]'
+issue_fields_ok="[x] Org issue fields - Product, Impact, Risk, Complexity, Priority (AI), Effort, Model family, Model, Model version, Model effort"
+for shape in wrapped bare; do
+    out="$(GH_STUB_ISSUE_FIELDS="$shape" GH_STUB_ISSUE_FIELDS_JSON="$fields_complete" run_inventory_section)"
+    case "$out" in
+    *"$issue_fields_ok"*) ;;
+    *) fail "the ${shape} issue-field page shape did not render a fully provisioned org as ok: ${out}" ;;
+    esac
+done
+
+echo "==> an org that is missing fields, options, or the right type is reported, with the remedy"
+# issue_fields_case LABEL JQ_EDIT EXPECTED — render the org after JQ_EDIT is applied
+# to the complete snapshot and require EXPECTED in the Org issue fields line.
+issue_fields_case() {
+    local label="$1" edit="$2" expected="$3" snapshot
+    snapshot="$(jq -c "$edit" <<<"$fields_complete")"
+    out="$(GH_STUB_ISSUE_FIELDS=bare GH_STUB_ISSUE_FIELDS_JSON="$snapshot" run_inventory_section)"
+    case "$out" in
+    *"$expected"*) ;;
+    *) fail "${label}: expected '${expected}' in: ${out}" ;;
+    esac
+    case "$out" in
+    *"$issue_fields_ok"*) fail "${label}: an incomplete org was reported ok: ${out}" ;;
+    esac
+}
+# The state of every org today: GitHub's built-ins and Product, nothing else.
+issue_fields_case "an org with only GitHub's built-ins" \
+    'map(select(.name == "Priority" or .name == "Start date" or .name == "Target date" or .name == "Product")) + [{"name":"Effort","data_type":"single_select","options":[{"name":"High","priority":1},{"name":"Medium","priority":2},{"name":"Low","priority":3}]}]' \
+    "[ ] Org issue fields - missing Impact, Risk, Complexity, Priority (AI), Model family, Model, Model version, Model effort; Effort lacks 1, 2, 3, 5, 8, 13, 20 — run task setup:github-issue-fields"
+issue_fields_case "a missing option" \
+    'map(if .name == "Impact" then .options |= map(select(.name != "massive")) else . end)' \
+    "[ ] Org issue fields - Impact lacks massive — run task setup:github-issue-fields"
+issue_fields_case "an Effort still on the shipped options" \
+    'map(if .name == "Effort" then .options = [{"name":"High","priority":1},{"name":"Low","priority":2}] else . end)' \
+    "[ ] Org issue fields - Effort lacks 1, 2, 3, 5, 8, 13, 20 — run task setup:github-issue-fields"
+issue_fields_case "a field of the wrong data type" \
+    'map(if .name == "Risk" then {name, data_type: "text"} else . end)' \
+    "[ ] Org issue fields - wrong type: Risk is text — rename/delete, then re-run task setup:github-issue-fields"
+issue_fields_case "a field with no options array" \
+    'map(if .name == "Complexity" then del(.options) else . end)' \
+    "[ ] Org issue fields - Complexity lacks xs, s, m, l, xl — run task setup:github-issue-fields"
+# A field that keeps its name and options but loses its data_type is a changed or
+# malformed preview response: the verdict is unknown, never ok (challenge r3, C3-F4).
+issue_fields_case "a field with no data_type" \
+    'map(if .name == "Impact" then del(.data_type) else . end)' \
+    "[?] Org issue fields - type unreadable for Impact — inventory unchecked"
+# An option is one option however its name is spelled: a name that merely lists
+# the wanted ones, joined by a comma or by the control character the renderer
+# itself joins with, must not satisfy them (challenge r1, C1-F4).
+issue_fields_case "one option named like the whole wanted scale" \
+    'map(if .name == "Impact" then .options = [{"name":"minimal,low,medium,high,massive","priority":1}] else . end)' \
+    "[ ] Org issue fields - Impact lacks minimal, low, medium, high, massive — run task setup:github-issue-fields"
+issue_fields_case "one option whose name hides the renderer's own separator" \
+    'map(if .name == "Impact" then .options = [{"name":"minimal\u001flow\u001fmedium\u001fhigh\u001fmassive","priority":1}] else . end)' \
+    "[ ] Org issue fields - Impact lacks minimal, low, medium, high, massive — run task setup:github-issue-fields"
+# Priority (AI) and Priority are two fields: the first being absent must read as
+# exactly that, never as the built-in Priority being absent or standing in for it.
+issue_fields_case "Priority (AI) missing while the built-in Priority exists" \
+    'map(select(.name != "Priority (AI)"))' \
+    "[ ] Org issue fields - missing Priority (AI) — run task setup:github-issue-fields"
+# Names are matched whole: a field that merely STARTS with a wanted name is a
+# different field and must not satisfy it.
+issue_fields_case "a field whose name only starts with a wanted name" \
+    'map(if .name == "Effort" then .name = "Effort estimate" else . end)' \
+    "[ ] Org issue fields - missing Effort — run task setup:github-issue-fields"
+# The four Model fields (#1517) are wanted by name and type only: their options
+# come from agent-registry.json and belong to the setup script, which validates
+# the registry. A Model field with no options at all is still ok here.
+issue_fields_case "a missing Model field" \
+    'map(select(.name != "Model effort"))' \
+    "[ ] Org issue fields - missing Model effort — run task setup:github-issue-fields"
+issue_fields_case "a Model field of the wrong data type" \
+    'map(if .name == "Model" then {name, data_type: "text"} else . end)' \
+    "[ ] Org issue fields - wrong type: Model is text — rename/delete, then re-run task setup:github-issue-fields"
+echo "==> the Model fields' options are not checked"
+out="$(GH_STUB_ISSUE_FIELDS=bare GH_STUB_ISSUE_FIELDS_JSON="$(jq -c 'map(if (.name | startswith("Model")) then .options = [] else . end)' <<<"$fields_complete")" run_inventory_section)"
+case "$out" in
+*"$issue_fields_ok"*) ;;
+*) fail "present, correctly typed Model fields were not ok without options: ${out}" ;;
+esac
+
+echo "==> the human Priority is not wanted: an org without the built-in Priority is still ok"
+out="$(GH_STUB_ISSUE_FIELDS=bare GH_STUB_ISSUE_FIELDS_JSON="$(jq -c 'map(select(.name != "Priority"))' <<<"$fields_complete")" run_inventory_section)"
+case "$out" in
+*"$issue_fields_ok"*) ;;
+*) fail "the built-in Priority was required of a fully provisioned org: ${out}" ;;
+esac
+
+echo "==> a failed issue-field read still renders unknown, never an absence"
+# Completeness is what accepting a second shape must not cost. A read that FAILED
+# is still a list nobody saw, so it may borrow neither the provisioning verdict
+# nor the needs-admin one — the same invariant the truncation cases above assert,
+# on the other incomplete-read code path.
+out="$(GH_STUB_ISSUE_FIELDS=fail run_inventory_section)"
+case "$out" in
+*"[?] Org issue fields - read failed — inventory unchecked"*) ;;
+*) fail "a failed issue-field read was not reported as unknown: ${out}" ;;
+esac
+case "$out" in
+*"run task setup:github-issue-fields"*)
+    fail "a failed issue-field read still told the reader to provision fields: ${out}"
+    ;;
+esac
 
 echo "status.sh tests passed"

@@ -52,6 +52,7 @@
       "dockerDashComposeVersion": "v2"
     },
     "ghcr.io/tailscale/codespace/tailscale": {},
+    // Keep until the Dockerfile's image pin ships /usr/local/bin/gh in its core tier; that pin-bump PR deletes this.
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/itsmechlark/features/1password:1.5.0": {}
   },
@@ -102,6 +103,10 @@
   // marker's value; only bot-autonomy/antigravity.sh (bot-only) does that.
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
+    // "This profile HAS a tailnet": post-start-common.sh uses this to decide
+    // whether to invoke tailscale-connect.sh at all, so it stays on
+    // unconditionally — a default repo still connects whenever TS_AUTHKEY is
+    // present. It does NOT make failure fatal.
     "DEVCONTAINER_TAILSCALE": "true",
     // gh checks GH_BROWSER before generic browser discovery. Route interactive
     // OAuth links through the host bridge so an installed terminal browser

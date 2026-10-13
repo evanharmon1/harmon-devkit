@@ -256,6 +256,19 @@ blocks promotion rather than passing it.
    triggered, tell the maintainer — that is the drift signature, and reporting
    it is all that is asked.
 
+### Remote lanes
+
+Do this setup on the machine that drives the lanes, never inside an ephemeral
+remote environment (Claude Code on the web, Codex cloud): those never hold a
+Codex login, so no device login, copied auth file, or API key is part of a
+lane's setup. The orchestrator runs `task challenge` and `task review` against
+the lane's pushed branch from its own local pane, and the lane's PR body records
+that review in its stage ledger as `reviewed from <host> at <head>`. A
+persistent environment (the agent devcontainer, Sprites) gets one login of its
+own, made once by the maintainer when provisioning it (never by an agent), and
+runs Codex locally. The rule and its reasons are in AGENTS.md
+("Remote environments").
+
 ## Manual reviews
 
 | Command | What it does |
@@ -607,7 +620,13 @@ If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a
 👍 from the pinned Codex bot actor ID `199175422` on the exact
 `@codex review` trigger comment as the clean pass. That reaction must post
-after both the current head was pushed and its review request was created.
+after both the current head was pushed and its review request was created —
+with one exception: where the integration stage implements **carry**, a clean
+verdict on an earlier head (a 👍 included) also attests a head that moved only
+by a base catch-up merge leaving the change's canonical diff byte-identical, so
+no new request is made for that head. That catch-up is normally GitHub's
+update-branch, and `carry` runs only after CI settles on the new head. `AGENTS.md` § "Dev Loop" (the
+current-head Codex contract) states the condition and when carry is active.
 Those requests are explicit and made while the PR is draft — which is why
 Automatic reviews must be off (setup step 6): an automatic review triggered by
 `gh pr ready` would land after the gate that promoted the PR.
@@ -656,8 +675,10 @@ The **scaffolding damper** is what replaces the cap as the first line of
 defense. At round 2 — the earliest round that can show the pattern — say on
 the table, for each finding, whether its subject exists only because an earlier
 round of the same stage added it. Where it does, adjudicate it with one of
-three dispositions written down: delete the scaffolding, restructure it to
-invariants, or state that the code is in scope and why the change needs it.
+four dispositions written down: delete the scaffolding, restructure it to
+invariants, split the mechanism out (only when and exactly as harmon-devkit's
+`specs/dev-flow-v2.md` § "The split strategy" allows), or state that the code
+is in scope and why the change needs it.
 
 **Restructuring to invariants** is deletion by abstraction, and it is the
 disposition to reach for when plain deletion is unavailable. Some artifacts —
@@ -689,6 +710,37 @@ deferred-P2 chain is a **precondition** of the exit, not a casualty of it:
 every P2 open at convergence must already be in the sidecar below, so
 `gh pr create` can move it into the PR body and the integrate stage can settle
 it. An exit that drops a P2 is not an exit.
+
+Where Codex cloud review is connected (the `use_codex_cloud_review` answer),
+integration retains its ordinary exit: one terminal clean current-head Codex
+cycle with every finding settled ends the stage. Clean means zero adjudicated
+P0/P1; P2-only counts as clean, so a P2-only cycle 1 whose findings are declined
+or filed needs no second cycle on that unchanged head. Two consecutive clean
+cycles bound **fixing P2s**: no further remediation push is made for P2 findings;
+settle them without a push, declined with evidence or filed together as one
+follow-up issue. A confirmed P0/P1 from any reviewer, including a late human
+review, breaks the streak and is fixed within the remaining `remediation` cap.
+Record dispositions, thread replies and ticked PR-body entries; every readiness
+condition still applies. Exempt cycles count, carries do not, and incomplete
+attempts or retries cannot supply another completed cycle.
+
+Where Codex cloud review is connected (the `use_codex_cloud_review` answer),
+from integration cycle 2 onward, record each finding's origin in earlier
+remediation pushes and its delete / restructure / keep-with-scope-reason
+disposition on the table. When every finding concerns that added surface (the
+tell), never make another hardening push. Deletion or restructure pushes are
+permitted within the `remediation` cap; otherwise settle P2s by filing.
+**Filing settles P2s only**: a tell holding confirmed P0/P1 keeps the PR draft,
+and escalation **leads with descoping**. On a second finding of the same kind,
+sweep every surface that states or feeds the rule before fixing it: rule copies
+across twins/docs, and input surfaces enumerated one member at a time. The earlier
+finding's fix counts as one already-covered surface; fix the confirmed cause
+across the rest of that set in one remediation round.
+
+Where Codex cloud review is connected (the `use_codex_cloud_review` answer),
+the ledger names which exit ended the stage — settled clean cycle, P2 fixing
+ceiling, tell, or cap — and its qualifying cycles, preserving separate
+integration/remediation and exempt/carried accounting.
 
 ## Finding priorities
 
@@ -947,3 +999,48 @@ Adjudicate it; never disable the gate to get past a BLOCK.
   A recurring dump usually means the CLI is older than the API it is talking
   to — compare `codex --version` against the version your devcontainer image
   ships, and rebuild or pull a newer image if it lags.
+- **A requested `-c` override is silently ignored, and the run header shows a
+  different value** — if this repo ships the devcontainer, it installs two
+  Codex config layers, and only one of them is overridable:
+
+  | File | Layer | Overridable? |
+  | --- | --- | --- |
+  | `/etc/codex/config.toml` | system **defaults** (`codex-system-config.toml`) | yes |
+  | `/etc/codex/managed_config.toml` | legacy MDM **requirements** (`codex-managed-config*.toml`) | **no** |
+
+  Every key in the managed layer is a hard requirement: it outranks `-c`,
+  `~/.codex/config.toml`, and a trusted project `.codex/config.toml` alike,
+  without logging that it overrode anything. The explicit `-m` flag was the
+  one model override that still took effect, which is why a pinned `model`
+  looked half-working rather than plainly broken. That is
+  deliberate for `sandbox_mode` and `approval_policy`, which nothing should be
+  able to relax — and it is why model, reasoning effort, the project-doc
+  budget, and the TUI status line live in the defaults layer instead. Pinning
+  reasoning effort in the managed layer makes every worker dispatched at a
+  higher effort silently run at the pinned one.
+
+  Read the run header rather than trusting the request — it reports what the
+  run will actually use:
+
+  ```sh
+  # 2>&1 is load-bearing: codex exec writes the run header to stderr and only
+  # the assistant's reply to stdout, so a stdout-only pipeline prints nothing.
+  codex exec -c 'model_reasoning_effort="xhigh"' --skip-git-repo-check \
+      'Reply with exactly: ok' 2>&1 | grep -iE '^model:|reasoning effort'
+  ```
+
+  If the header disagrees with what you asked for, read the **live** file the
+  container is actually using — not the checkout:
+
+  ```sh
+  grep -nE '^[[:space:]]*"?(model|model_reasoning_effort)"?[[:space:]]*=' \
+      /etc/codex/managed_config.toml
+  ```
+
+  Any hit there is the cause. `task test:devcontainer:permissions` checks the
+  repository's copies and will not catch this on its own: a container built
+  before the split keeps the old `/etc/codex/managed_config.toml` no matter what
+  the checkout says, so the check passes while the running container still pins
+  the effort. Rebuild the container once the files are right. Effort levels are not model-specific: under a ChatGPT-account login on
+  the pinned CLI, `low`, `medium`, `high`, and `xhigh` all take effect for
+  every supported model once the key is out of the managed layer.

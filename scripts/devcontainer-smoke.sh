@@ -10,7 +10,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 CONFIG_PATH="$1"
-WORKSPACE_ROOT="$(git rev-parse --show-toplevel)"
+WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 # Documented exclusion: this smoke test does not run from a linked worktree.
 # Only the workspace folder is mounted, and in a linked worktree `.git` is a
@@ -102,12 +102,25 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> Running devcontainer smoke test for ${CONFIG_PATH}..."
+# DEVCONTAINER_TAILSCALE_OPTIONAL=true: this builds the dev profile with no
+# TS_AUTHKEY on purpose — it proves the image and lifecycle scripts work, it is
+# not testing connectivity. tailscale-connect.sh treats a missing tailnet as
+# FATAL for that profile, so without this the smoke test would fail on the one
+# thing it is deliberately not providing.
+#
+# --remote-env rather than a containerEnv entry, for two reasons. It is applied
+# when the CLI runs the user lifecycle commands, which is where
+# tailscale-connect.sh is invoked from; and opting out stays an explicit act at
+# the CALL SITE, so no devcontainer.json can disable the gate from inside the
+# config the gate exists to guard (devcontainer-assert.sh enforces that).
+# Inert for the bot and agent profiles, which never mark the tailnet required.
 "$TIMEOUT_BIN" -k 30 1800 "${DEVCONTAINER_CMD[@]}" up \
     --workspace-folder "${WORKSPACE_ROOT}" \
     --config "${CONFIG_PATH}" \
     --remove-existing-container \
     --user-data-folder "${USER_DATA_DIR}" \
     --container-session-data-folder "${SESSION_DATA_DIR}" \
+    --remote-env DEVCONTAINER_TAILSCALE_OPTIONAL=true \
     --log-format json \
     --log-level info | tee "${LOG_FILE}"
 
@@ -129,12 +142,18 @@ if [ -z "${REMOTE_WORKSPACE_FOLDER}" ]; then
 fi
 
 # Derive the profile from the config's parent-dir basename: the dev profile
-# lives in .devcontainer/dev/, everything else is the bot profile.
-if [ "$(basename "$(dirname "${CONFIG_PATH}")")" = "dev" ]; then
-    PROFILE="dev"
-else
-    PROFILE="bot"
-fi
+# lives in .devcontainer/dev/, the agent posture in .devcontainer/agent/, and
+# the bot profile at .devcontainer/ itself. Anything else is an error, never a
+# silent bot — the three postures assert different things.
+case "$(basename "$(dirname "${CONFIG_PATH}")")" in
+dev) PROFILE="dev" ;;
+agent) PROFILE="agent" ;;
+.devcontainer) PROFILE="bot" ;;
+*)
+    echo "devcontainer smoke test: cannot tell which profile ${CONFIG_PATH} is (expected .devcontainer/, .devcontainer/dev/, or .devcontainer/agent/)" >&2
+    exit 1
+    ;;
+esac
 
 echo "==> Asserting ${PROFILE} permission invariants in the running container..."
 bash "$(dirname "$0")/devcontainer-assert.sh" container "${CONFIG_PATH}" "${CONTAINER_ID}" "${PROFILE}" "${REMOTE_WORKSPACE_FOLDER}"

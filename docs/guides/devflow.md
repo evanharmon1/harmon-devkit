@@ -31,9 +31,14 @@ an already-authorized rigor/strategy request, resolves the selected profile,
 and cross-validates registry and Taskfile references. It deliberately does not
 authenticate GitHub actors, read labels, reconcile label conflicts, or arm a
 workflow; those are consumer trust boundaries. A consumer applies the
-precedence below and passes the resulting rigor/strategy request to the reader.
-Role-tier overrides remain consumer inputs applied to the resolved five-role
-profile, not raw label parsing performed by this config reader.
+precedence below and passes the resulting request to the reader: the rigor and
+strategy, who chose the rigor (`--rigor-source operator|label`, echoed back as
+`rigor.chosen_by`, which is null when no rigor is passed), role-tier
+overrides already split into operator instructions (`--tier-overrides`) and
+authorized `tier:<role>:*` labels (`--tier-labels`), the issue's classification
+and stored Tier (`--risk`, `--complexity`, `--stored-tier`), and any pin (`--pinned-tier` with
+`--pin-marker-trusted` / `--pin-value-trusted`). The reader owns the order those
+resolve in, not the trust decisions behind them.
 `scripts/test-devflow-config.sh` checks both dogfood copies and exercises the
 reader. Generated repositories receive the declarative policy and schema; the
 reader is distributed separately at a pinned harmon-devkit release.
@@ -45,7 +50,45 @@ Resolve rigor and strategy in this order:
 1. explicit, attributable operator instruction;
 2. trusted `rigor:*` or `strategy:*` issue labels;
 3. `default_rigor` or `default_strategy`;
-4. the reader's built-in fallback, only if the policy file is absent.
+4. the reader's built-in fallback when the policy file is absent, or when
+   `--merge-base-policy-absent` explicitly declares an absent merge-base policy.
+
+Use `--merge-base-policy-absent` for a branch that adds `.devflow.toml`.
+It requires an existing `--policy` file and cannot be combined with
+`--merge-base-policy`. The candidate is validated independently; built-in
+values govern the run. An empty `--merge-base-policy ""` is a usage error
+(exit 2), never permission for the branch policy to govern. Invalid flag
+combinations (including `--rigor-source` without `--rigor`) or malformed operator `--tier-overrides` /
+`--rigor-source` values exit with usage status 2. Successful resolution exits
+0; invalid policy exits 1. Exit 3 means resolved but indeterminate:
+cross-validation could not finish (no registry was supplied, or no gate-target
+list from `--task-targets` / `--taskfile-dir`), or the derived Tier could not
+be computed where it decides the implementer tier.
+
+With no policy file and no requested registry, the built-in fallback is
+determinate: resolution exits 0 with no registry indeterminate, provided
+the other cross-validation checks complete. A present policy without a
+supplied registry still exits 3. An explicitly requested registry file
+that cannot be read (`--registry <missing>`) still exits 2. Merge-base
+governance is unchanged: `--merge-base-policy-absent` without a governing
+`--merge-base-registry` still exits 3.
+
+The **implementer** tier has two more rungs (ADR 2026-09-30 D5). Strongest
+first:
+
+1. an operator tier instruction;
+2. the pinned Tier;
+3. a `tier:implementer:*` label, or the profile of a rigor the operator or a
+   `rigor:*` label chose;
+4. the derived Tier (see "Issue Tier" below);
+5. the `default_rigor` profile.
+
+A tier input refines whatever profile resolved, so an operator *rigor*
+instruction selects the profile and a pin still sets its implementer tier; an
+operator who means to displace a pin gives a tier instruction. Pass a rigor to
+the reader only when the operator or a `rigor:*` label chose it — a rigor that
+is merely the default does not outrank the derived Tier. The other four roles
+resolve operator tier > label tier > profile.
 
 Rigor conflicts resolve to the strongest known label using `rigor_order`.
 Strategy conflicts are ambiguous: interactive runs ask, while unattended
@@ -87,6 +130,59 @@ The selected `[rounds.*]` table supplies separate ceilings for:
 - `review`: verification confidence passes;
 - `integration`: current-head cloud-review cycles;
 - `remediation`: integration-stage fix pushes.
+
+Only a cycle that reviews something new is charged against `integration`. A
+cycle whose head differs from the last reviewed head **only** by a base merge
+that changed nothing under review re-reads identical code by construction, so
+it is exempt: it runs, and it spends a separate ceiling of the same size —
+which the reader exposes as `integration_exempt` — rather than `integration`.
+Exempt is not free, and the separate ceiling is why: otherwise a busy base
+branch could spend a whole run on re-reviews of code nobody changed. A merge
+that resolves a conflict, or that touches any file the change under review
+touches, is ordinary work and charges normally. The ceiling is derived, never
+authored. On the operating path it equals `integration` — including at 0, where
+cloud review is off and there is no cycle of either kind to run. The one
+exception is a **historical merge-base decode**: a legacy or v1 policy spends
+integration and remediation from a single shared total and knows no exemption,
+so the ceiling resolves to 0 there even where `integration` is positive.
+Granting exempt cycles on that path would hand a branch budget its merge-base
+policy never allowed. A run's ledger names which
+counter each cycle spent, so `round n/cap` stays honest.
+
+The reader defines the two ceilings; the integration stage spends them. The
+exemption therefore takes effect only once that stage's implementation
+accounts for it — until then its single cycle counter governs, no cycle is
+exempt, and a cycle ordinal above `integration` is rejected by the readiness
+gate as `codex-cap-mismatch`.
+
+A PR that falls behind its base is caught up at the gate in a fixed order:
+GitHub **update-branch** first (merge mode, pinned to the captured head with
+`expected_head_sha`, never `--rebase`, after re-reading `baseRefName`), then
+**CI** on the new head, then, where Codex cloud review is enabled and the
+`integration` cap is positive, **`carry`** or the ordinary current-head cycle.
+Where available, use the integrate skill's `assets/update-branch.sh` helper.
+Before any further local commit, explicitly fetch the PR's head repository and
+branch, fast-forward to the recorded catch-up OID, and confirm `HEAD` equals it.
+A server-side catch-up authors no bytes, so it runs no local round gate or
+secret scan and spends no `remediation` round; the readiness gate's CI
+condition gates it. That head counts only if its parents are exactly the
+captured head, then the base tip, its committer is `GitHub <noreply@github.com>`,
+and its web-flow signature verifies; any other head is a newer push, which
+restarts the gate.
+A genuine merge refusal, or a base merge that must ship with a fix, falls back
+to a local merge, which is an ordinary remediation round.
+`AGENTS.md` § "Policy invariants" states the standard path and fallback.
+
+A base catch-up merge is tried for a **carry** before the exemption. When the
+change's canonical diff digest against the new base is identical to the one a
+clean verdict already covered, that verdict attests the new head too: no review
+runs and neither ceiling is spent, though CI still re-runs in full and the
+ledger names the head as carried. The exemption covers what a carry cannot
+prove. Carry takes effect only once every surface that must recognise it does —
+the checker, readiness gate, integrator agent, and the `dev-flow-support`
+result schemas and validator, all vendored through the skills pin at
+harmon-devkit `v0.47.0` or later — and until then every head is reviewed on its
+own.
 
 It also supplies `min_rounds` and the run-wide `wall_clock_min`. A cap is a
 ceiling, never a quota. Zero disables only the named heuristic activity; it
@@ -137,6 +233,15 @@ harness preference; it is not an empty allowlist.
 - `finders` and `finder_fallbacks` reference registry finder slugs;
 - `pool` references harness slugs;
 - every array is monomorphic and has the semantics documented beside it in
+  `.devflow.toml`;
+- `[stage.integration].review_trigger`, the one scalar, sets when the
+  integration stage requests its PR-side reviews relative to CI on the head:
+  `after-ci` (the value when the key is absent), `with-push`, or
+  `after-ci-first`. Any other value, or the key on another stage, is refused.
+  The reader reports it as `stages.integration.review_trigger` in its JSON and
+  on the `stage[integration]` line of its text output. It changes timing only
+  — never the readiness gate, which finders run, or the cycles the rounds
+  policy requires — and its trade-off and cap note sit beside it in
   `.devflow.toml`.
 
 The registry is authoritative for role result schemas and permitted writes,

@@ -4,8 +4,17 @@ on:
   push:
     branches:
       - main
+  # No `edited`: it fires on a PR title/body edit, and the dev loop's readiness
+  # gate REQUIRES body edits (ticking `## Deferred findings`), so carrying it
+  # here made satisfying one gate condition invalidate another — every
+  # settlement restarted the whole matrix. `edited` also fires on a
+  # base-BRANCH change; dropping that re-run is deliberate. Retargeting a PR
+  # is rare, and a strict required-status-checks policy already forces an
+  # up-to-date head before merge, which lands as a `synchronize` this list
+  # does cover. Title/body-dependent guards keep `edited` in their OWN
+  # workflows: closing-keywords.yml and release-content-guard.yml.
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, synchronize, reopened]
     branches:
       - main
   merge_group:
@@ -36,6 +45,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history so `task check`'s pin-pair guard can diff against the
+          # PR's merge-base: it is the only check that catches a Renovate bump
+          # that moved a tool's version but not its checksum, and it fails
+          # rather than skipping on a pull request without that history.
+          fetch-depth: 0
       - uses: ./.github/actions/setup
         with:
           lint-tools: "true"
@@ -52,111 +66,55 @@ jobs:
           python -m pip install "copier==${COPIER_VERSION}"
       - name: Lint
         run: task check
+      # Outside the suite: `audit:*` is not a `test:*` target, so `test:suite`
+      # does not carry it, and `verify` runs it between `check` and the suite.
       - run: task audit:agent-instructions
-      - run: task test:agent-instructions-size
-      - run: task test:agent-skill-links
-      - run: task validate
-      - run: task test:tasks
-      # These run in local `verify` and must run here too, or CI is strictly
-      # weaker than the local gate (harmon-init#962). Each is a unit test
-      # needing no container, network, or credential.
+      # Its own step, outside the suite it guards: it is also a suite member (so
+      # `verify` runs it), but deleting the suite step below would delete the
+      # only CI step that could notice — this one still fails then.
+      - name: Verify-CI parity guard (runs outside the suite it guards)
+        run: task test:verify-ci-parity
+      # The ONE step for every `test:*` target `task verify` runs. The list
+      # lives in Taskfile.yml's `test:suite` and nowhere else, so a check added
+      # to `verify` can no longer be missed here (harmon-init#962, #1461) —
+      # each entry carries the same answer gate in both places.
+      # `test:verify-ci-parity` (the step above) fails if this step is ever
+      # dropped.
       #
-      # NOT here, deliberately: `validate` and `test`. Both are in `verify`
-      # unconditionally, but CI only invokes them from the build-test job,
-      # which is gated on use_node. So a repo with
-      # `(include_terraform or include_ansible) and not use_node` runs real
-      # terraform/ansible checks locally and none in CI. Adding them here is
-      # not a one-liner — `terraform validate` needs an init step CI does not
-      # have — so it is tracked as harmon-init#978 rather than fixed in the
-      # same breath as these.
-      - run: task audit:agent-instructions
-      - run: task test:agent-instructions-size
-      - run: task test:agent-skill-links
-      - run: task test:output
-      - run: task test:meta-install
-      - run: task test:session-cleanup
-      - run: task test:setup-github
-      - run: task test:agent-registry
-      # This list is hand-maintained and already misses several task-verify
-      # suites (harmon-devkit#726) — added here so this one doesn't join
-      # them; #726 tracks fixing the list itself so a future addition can't
-      # silently skip CI again.
-      - run: task test:dev-flow-stats
-      - run: task test:result-schemas
-      # #974's two new suites. Same reason as the #796 note below: both are
-      # wired into `task verify`, but this workflow runs a hand-maintained
-      # list rather than `task verify`, so omitting them would let cloud CI
-      # pass while skipping the schema-copy parity check. #974's AC-5
-      # sync-and-execute coverage rides `task test:skills` below, which this
-      # list already runs; the mechanical root-`scripts/` guard (AC 4) was
-      # split out to #1099 and is not enforced anywhere yet.
-      - run: task test:result-schema-composition
-      - run: task test:schema-parity
-
-      - run: task test:registry-drift
-      - run: task test:registry-docs
-      - run: task test:label-registry
-      - run: task test:codex-review
-      # #796's two new suites. Both are wired into `task verify`, but the
-      # workflow never runs `task verify` — it runs this hand-maintained
-      # list — so without these lines cloud CI passes while skipping every
-      # normalization and sandbox regression the change added.
-      - run: task test:finder-normalization
-      - run: task test:finder-review
-      # test:review-skill is the third suite #796 grows — the logical-round cap
-      # accounting, union-only finder selection, resolver/exit agreement and
-      # closure handling behind criteria 2 and 5. Adding the two above and not
-      # this one left that coverage out of cloud CI entirely. All three are
-      # point-fixes: #726 is the general fix for a hand-maintained list that
-      # silently omits task verify's suites.
-      - run: task test:review-skill
-      # The groom skill's contract suite — the report renderer's only
-      # regression coverage. Same point-fix as the three above it and for
-      # the same reason: it is wired into `task verify`, this workflow does
-      # not run `task verify`, so without this line cloud CI passes while
-      # every assertion about the rendered report goes unexecuted. #726 is
-      # the general fix for this hand-maintained list.
-      - run: task test:groom-skill
-      - run: task test:meta-install
-      - run: task test:integrate-codex
-      - run: task test:ci-results
-      - run: task test:status
-      - run: task test:gh-scopes
-      - run: task test:worktree
-      - run: task test:lint-hygiene
-      - run: task test:release-title
-      - run: task test:track-work
-      - run: task test:claim-label-resolution
-      - run: task test:notify-release
-      - run: task test:claim-release-merged
-
-      - run: task test:setup-github-project
-      - run: task test:sync-devkit-release
-      - run: task test:hooks
-      - run: task test:skills
-      - run: task test:agents
-      - run: task test:hygiene
-      - run: task test:archive-hook
-      - run: task test:skill-index-lifecycle
-      - run: task test:independence
-      - run: task test:statusline
+      # General-profile consumers have no build-test job. This skills source
+      # therefore runs its native validate/test tiers explicitly below.
+      - name: Test suite (every test:* target verify runs)
+        run: task test:suite
+      # This is the skills source: native skill tests run through test:suite and
+      # task test; dogfood links intentionally do not self-vendor.
+      - run: task validate
+      - run: task test
+      # Outside the suite, on purpose: a `ci`-only unit check, not in `verify`.
       - run: task test:devcontainer:permissions
-      # Same devcontainer gate their `verify` entries carry (#962).
-      - run: task test:link-claude-json
-      - run: task test:image-staleness
-      - run: task test:open-devcontainer
-      # This list is otherwise hand-enumerated per-target (see the comment
-      # above the first batch), which is a systemic gap tracked as #726 —
-      # test:result-schemas has the same omission. Adding only this lane's
-      # own target here rather than auditing the whole list.
-      - run: task test:render-dev-flow
-      - run: task test:devcontainer-changed
-      - run: task test:bot-autonomy
-      - run: task test:claim-release-merged
 
-  # Metadata-only by design: this executes the trusted default-branch script,
-  # queries PR/issue data through read-only APIs, and never checks out a PR.
-  # It intentionally runs on forks too; no write-capable credential is present.
+  security:
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+        with:
+          gitleaks: "true"
+      - name: Secrets scan
+        run: task security:secrets
+      - name: Dependency audit
+        run: task security:audit
+      - name: SAST (Semgrep Community Edition)
+        run: task security:sast
+
   closing-keywords:
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
@@ -182,7 +140,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           commits_file=$(mktemp)
-          trap 'rm -f "$commits_file" ./check-closing-keywords.sh' EXIT
+          trap 'rm -f "$commits_file" ./check-closing-keywords.sh ./lib/gh-rest.sh; rmdir ./lib 2>/dev/null || :' EXIT
           if [ "$PR_COMMITS" -gt 250 ]; then
             echo "::error::PR has ${PR_COMMITS} commits, exceeding the 250-commit API limit; closing-keyword result is indeterminate" >&2
             exit 1
@@ -190,10 +148,20 @@ jobs:
           gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/commits" \
             --jq '.[].commit.message' > "$commits_file"
           fetch_error=$(mktemp)
+          mkdir -p ./lib
+          # The guard SOURCES scripts/lib/gh-rest.sh, so the library is fetched
+          # with it, from the SAME ref and under the same trust rules below: a
+          # script paired with another ref's library is a program nobody
+          # reviewed. It lands at ./lib/ because that is where the guard's own
+          # "${script_dir}/lib/gh-rest.sh" resolves. Either fetch failing fails
+          # the pair, so the rules below decide about the pair, not one file.
           fetch_script() {
             gh api -H 'Accept: application/vnd.github.raw' \
               "repos/${GH_REPO}/contents/scripts/check-closing-keywords.sh?ref=$1" \
-              > ./check-closing-keywords.sh 2>"$fetch_error"
+              > ./check-closing-keywords.sh 2>"$fetch_error" || return 1
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/${GH_REPO}/contents/scripts/lib/gh-rest.sh?ref=$1" \
+              > ./lib/gh-rest.sh 2>"$fetch_error" || return 1
           }
           # Workflow definitions are taken from the default branch for PRs.
           # Prefer that trusted program even if this PR edits it. The one
@@ -202,11 +170,11 @@ jobs:
           # executes head-controlled code; network/auth errors never fall back.
           if ! fetch_script "$DEFAULT_BRANCH"; then
             if grep -q '(HTTP 404)' "$fetch_error" && [ "$HEAD_REPO" = "$GH_REPO" ]; then
-              echo '::notice::default-branch guard script is absent; using same-repo PR head for bootstrap'
+              echo '::notice::the default-branch guard program is incomplete; using same-repo PR head for bootstrap'
               fetch_script "$HEAD_SHA"
             else
               cat "$fetch_error" >&2
-              echo '::error::trusted default-branch guard script is unavailable; refusing to execute PR code' >&2
+              echo '::error::the trusted default-branch guard program is unavailable; refusing to execute PR code' >&2
               exit 1
             fi
           fi
@@ -214,29 +182,6 @@ jobs:
           chmod +x ./check-closing-keywords.sh
           ./check-closing-keywords.sh --repo "$GH_REPO" \
             --title-env PR_TITLE --body-env PR_BODY --commits-file "$commits_file"
-
-  security:
-    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
-    # default; set it to a JSON runner spec to override without a commit.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: ./.github/actions/setup
-        with:
-          gitleaks: "true"
-      - name: Secrets scan
-        run: task security:secrets
-      - name: Dependency audit
-        run: task security:audit
-      - name: SAST (Semgrep Community Edition)
-        run: task security:sast
 
   verify:
     if: always()

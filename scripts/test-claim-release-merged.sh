@@ -181,4 +181,90 @@ GH_CLOSING='' GH_BODY='Refs #90' RELEASE_IDEMPOTENT_ISSUE=90 run_case
 calls_are '90 '
 grep -Fq 'no attributable live claim' "$tmp/summary" || fail "idempotent rerun was not reported"
 
+echo "==> the implementer record (model-* labels and issue fields) survives claim release"
+# #1517: the four implementer-record labels are kept and replaced by the next
+# implementer, never removed by claim release. This case drives the REAL
+# vendored release engine (not the stub above) through this script, against a
+# stateful `gh` that applies the writes it receives, for both record shapes the
+# engine accepts: a v1 record naming its label, and the legacy `yes` record
+# that sweeps every live claim-family label. A repository that does not vendor
+# the track-work skill has no engine to drive, so the case is skipped there.
+real_engine="$PWD/.claude/skills/track-work/assets/release-claim.sh"
+if [ ! -f "$real_engine" ]; then
+    echo "    SKIP: $real_engine is not vendored here"
+else
+    mkdir -p "$tmp/realbin"
+    cat >"$tmp/realbin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+case "$args" in
+*'/timeline'*) printf '[%s]\n' "$(cat "$FIX/timeline.json")" ;;
+*'/comments'*) printf '[%s]\n' "$(cat "$FIX/comments.json")" ;;
+'api repos/'*'/issues/'[0-9]*) cat "$FIX/issue.json" ;;
+'issue edit '*'--remove-label '*)
+    label="${args##*--remove-label }"
+    printf 'remove-label %s\n' "$label" >>"$WRITES"
+    jq --arg l "$label" '.labels |= map(select(.name != $l))' "$FIX/issue.json" >"$FIX/issue.new"
+    mv "$FIX/issue.new" "$FIX/issue.json"
+    ;;
+'issue edit '*'--remove-assignee '*) printf 'remove-assignee %s\n' "${args##*--remove-assignee }" >>"$WRITES" ;;
+'issue comment '*)
+    cat >/dev/null
+    echo comment >>"$WRITES"
+    ;;
+*)
+    printf 'UNEXPECTED %s\n' "$args" >>"$WRITES"
+    exit 2
+    ;;
+esac
+STUB
+    chmod +x "$tmp/realbin/gh"
+    fix="$tmp/realfix"
+    mkdir -p "$fix"
+    record_v1='- harness: Claude Code\n- model: claude-opus-5-5\n- family: claude\n- assignee added by this claim: yes\n- `claim:` label added by this claim: claim:claude\n- `claim:` model label added by this claim: n/a\n- `claim:` label displaced by this claim: none\n- assignee logins owned by this claim chain: alice\n- `claim:` label owned by this claim chain: claim:claude\n- `claim:` model label owned by this claim chain: n/a\n- `claim:` label displaced by this claim chain: none'
+    record_legacy='- assignee added by this claim: yes\n- `claim:` label added by this claim: yes\n- `claim:` label displaced by this claim: none'
+    model_labels='model-family:claude model-version:5.5 model-effort:medium model:opus'
+    for shape in v1 legacy; do
+        record="$record_v1"
+        [ "$shape" = legacy ] && record="$record_legacy"
+        jq -n --arg labels "claim:claude $model_labels" '{
+            number: 7, state: "open", body: "## Acceptance criteria\n- [x] [CI] Done",
+            user: {login: "alice"}, assignees: [{login: "alice"}],
+            labels: ($labels | split(" ") | map({name: .}))}' >"$fix/issue.json"
+        jq -n '[
+            {event: "assigned", assignee: {login: "alice"}, actor: {login: "alice"}, created_at: "2026-10-10T10:00:00Z"},
+            {event: "labeled", label: {name: "claim:claude"}, actor: {login: "alice"}, created_at: "2026-10-10T10:00:01Z"}
+          ] + ([ "model-family:claude", "model:opus", "model-version:5.5", "model-effort:medium" ]
+               | map({event: "labeled", label: {name: .}, actor: {login: "alice"}, created_at: "2026-10-10T11:00:00Z"}))' \
+            >"$fix/timeline.json"
+        jq -n --arg body "$(printf 'Claiming — starting implementation on branch 7-model-record (session test, base abc1234).\n\nClaim record (for `/wrap` — undo only what this claim added):\n%b' "$record")" '[{
+            id: 101, user: {login: "alice", type: "User"}, author_association: "OWNER",
+            created_at: "2026-10-10T10:00:02Z", updated_at: "2026-10-10T10:00:02Z", body: $body}]' \
+            >"$fix/comments.json"
+        : >"$tmp/writes"
+        : >"$tmp/summary"
+        set +e
+        PATH="$tmp/realbin:$PATH" FIX="$fix" WRITES="$tmp/writes" PR_BODY='Closes #7' \
+            GH_REPO=owner/repo PR_NUMBER=1517 MERGED_AT=2026-10-10T12:00:00Z HEAD_REF=7-model-record \
+            GITHUB_STEP_SUMMARY="$tmp/summary" RELEASE_CLAIM_SCRIPT="$real_engine" \
+            "$script" >"$tmp/out" 2>&1
+        run_rc=$?
+        set -e
+        [ "$run_rc" -eq 0 ] || fail "[$shape record] real-engine release exited $run_rc"
+        grep -Fq 'Claim release: released' "$tmp/summary" || fail "[$shape record] the claim was not released"
+        grep -Fxq 'remove-label claim:claude' "$tmp/writes" ||
+            fail "[$shape record] the claim label was not removed — the case would prove nothing"
+        if grep -q 'model' "$tmp/writes"; then
+            fail "[$shape record] claim release touched the implementer record: $(tr '\n' ' ' <"$tmp/writes")"
+        fi
+        if grep -q '^UNEXPECTED' "$tmp/writes"; then
+            fail "[$shape record] claim release made a call outside labels/assignees/comment (an issue-field write?): $(grep '^UNEXPECTED' "$tmp/writes" | tr '\n' ' ')"
+        fi
+        survived="$(jq -r '[ .labels[].name | select(startswith("model")) ] | sort | join(" ")' "$fix/issue.json")"
+        [ "$survived" = "$(jq -rn --arg l "$model_labels" '$l | split(" ") | sort | join(" ")')" ] ||
+            fail "[$shape record] model-* labels after release: '$survived'"
+    done
+fi
+
 echo "claim-release-merged: all cases passed"

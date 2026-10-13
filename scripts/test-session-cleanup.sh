@@ -10,6 +10,8 @@
 # `gh` is stubbed on PATH with a shim that answers exactly the invocations the
 # scripts make (repo view, pr list --head, batched pr list), driven by a
 # tab-separated PR table — so every case runs offline and deterministically.
+# The shim also has a REST-only mode (GH_STUB_REST_ONLY, used by run_audit) in
+# which `gh api` is the only gh command it will answer at all.
 # One shim mode advances a branch ref as a side effect of answering, to drive
 # the compare-and-delete race window (test-worktree.sh's WTSHIM_ADVANCE
 # precedent).
@@ -77,11 +79,29 @@ test_tmp="$(cd "$test_tmp" && pwd -P)"
 
 stub_bin="$test_tmp/bin"
 mkdir -p "$stub_bin"
+rest_violations="$test_tmp/rest-only-violations"
 cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # gh stub: answers the exact reads the cleanup scripts perform, from the PR
 # table in $GH_STUB_PRS (lines: headRefName<TAB>headRefOid<TAB>number<TAB>baseRefName).
 set -euo pipefail
+# A REST-only caller's whole permitted gh surface is `gh api`, so state THAT and
+# refuse everything else by shape — not by extending the list of endpoints the
+# proxy is known to reject further down, which can only ever forbid the shapes
+# somebody already thought of (review r1). The audit is such a caller (#1409)
+# and reaches gh only through gh_rest_api; clean:branches is not, and
+# legitimately uses `gh repo view` and `gh pr list`, so it runs without the
+# flag. Checked BEFORE the degraded-mode answer: a forbidden command is a
+# violation even where every answer would otherwise have been exit 1.
+if [ "${GH_STUB_REST_ONLY:-0}" = "1" ] && [ "${1:-}" != api ]; then
+    echo "gh stub: REST-only caller used a non-api gh command: $*" >&2
+    # Recorded, not merely refused: REST-only callers read with 2>/dev/null and
+    # fail closed, so a refusal alone would surface as whatever downstream
+    # expectation happened to notice the degraded answer. The file is what makes
+    # the violation itself the assertion.
+    [ -z "${GH_STUB_REST_VIOLATIONS:-}" ] || printf '%s\n' "$*" >>"${GH_STUB_REST_VIOLATIONS}"
+    exit 64
+fi
 if [ "${GH_STUB_FAIL:-0}" = "1" ]; then
     exit 1
 fi
@@ -90,6 +110,29 @@ sub="${2:-}"
 if [ "$cmd" = repo ] && [ "$sub" = view ]; then
     echo "stub/fixture"
     exit 0
+fi
+if [ "$cmd" = api ]; then
+    endpoint="${2:-}"
+    case "$endpoint" in
+    graphql | search/* | repositories/*)
+        echo "HTTP 403: REST-only proxy rejection" >&2
+        exit 1
+        ;;
+    *"&page=2"*)
+        echo '[]'
+        exit 0
+        ;;
+    repos/stub/fixture/pulls\?*)
+        if [ -n "${GH_STUB_PRS:-}" ] && [ -f "$GH_STUB_PRS" ]; then
+            jq -Rn '[inputs | split("\t") | {head:{ref:.[0],sha:.[1]},number:(.[2]|tonumber),base:{ref:.[3]},merged_at:"2026-01-01T00:00:00Z"}]' <"$GH_STUB_PRS"
+        else
+            echo '[]'
+        fi
+        exit 0
+        ;;
+    esac
+    echo "gh stub: unexpected REST endpoint: $endpoint" >&2
+    exit 64
 fi
 if [ "$cmd" = pr ] && [ "$sub" = list ]; then
     head_filter=""
@@ -151,6 +194,27 @@ exit 64
 STUB
 chmod +x "$stub_bin/gh"
 PATH="$stub_bin:$PATH"
+export GH_REPO=stub/fixture
+
+# run_audit DIR — the audit, run in the stub's REST-only mode. EVERY audit
+# invocation goes through this: the flag is what asserts that the audit reaches
+# gh only as `gh api`, and a call site that spelled the command out by hand
+# would silently opt out of it. Prefix env as usual (GH_STUB_FAIL=1 run_audit
+# …) — every call site is inside a command substitution, so a bash prefix
+# assignment on a function call cannot leak past it.
+run_audit() {
+    local out rc=0
+    : >"$rest_violations"
+    out="$(cd "$1" && GH_STUB_REST_ONLY=1 GH_STUB_REST_VIOLATIONS="$rest_violations" \
+        bash scripts/audit-session-artifacts.sh 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    # `fail` here exits the command substitution every call site wraps this in,
+    # which trips that site's own `|| fail` — so a violation always ends the
+    # suite, with the offending command named on stderr first.
+    [ ! -s "$rest_violations" ] ||
+        fail "the audit reached gh with a non-api command: $(tr '\n' ';' <"$rest_violations")"
+    return "$rc"
+}
 
 # ── Fixture repository ──────────────────────────────────────────────────────
 
@@ -173,9 +237,10 @@ git -C "$fixture" symbolic-ref HEAD refs/heads/main
 # The scripts resolve their repo root from their own location, so the fixture
 # gets its own copy — the same way generated repos ship them. worktree-lock.sh
 # rides along because the delete path sources its lifecycle-lock protocol.
-mkdir -p "$fixture/scripts"
+mkdir -p "$fixture/scripts/lib"
 cp "$repo/scripts/clean-branches.sh" "$repo/scripts/audit-session-artifacts.sh" \
     "$repo/scripts/worktree-lock.sh" "$fixture/scripts/"
+cp "$repo/scripts/lib/gh-rest.sh" "$fixture/scripts/lib/"
 
 # make_branch <name> <file> — new branch off main with one pushed commit;
 # echoes the tip. Leaves the checkout back on main.
@@ -305,14 +370,19 @@ printf '%s\t%s\t%s\t%s\n' \
     sq-stacked "$stacked_tip" 107 feature-base \
     >"$GH_STUB_PRS"
 
-# Audit fixtures: sidecar files and an integration cycle state.
+# Audit fixtures: sidecar files and Codex cycle state under BOTH the retired
+# shepherd-codex pin and the current integrate-codex pin (#1241 item 3) — a
+# repo mid-migration, or still on the older pin, must never read as clean
+# while either directory actually has cycle state.
 gitdir="$(git -C "$fixture" rev-parse --absolute-git-dir)"
-mkdir -p "$gitdir/deferred-findings" "$gitdir/adjudication-ledger/dead" "$gitdir/integrate-codex/stub/fixture"
+mkdir -p "$gitdir/deferred-findings" "$gitdir/adjudication-ledger/dead" \
+    "$gitdir/shepherd-codex/stub/fixture" "$gitdir/integrate-codex/stub/fixture"
 echo "p2 note" >"$gitdir/deferred-findings/unpushed-live"
 mkdir -p "$gitdir/worktrees/wt/deferred-findings"
 echo "linked-worktree note" >"$gitdir/worktrees/wt/deferred-findings/wt-checked"
 echo "orphan" >"$gitdir/adjudication-ledger/dead/branch"
-echo '{}' >"$gitdir/integrate-codex/stub/fixture/42.json"
+echo '{}' >"$gitdir/shepherd-codex/stub/fixture/42.json"
+echo '{}' >"$gitdir/integrate-codex/stub/fixture/43.json"
 
 snapshot() {
     git -C "$fixture" for-each-ref --format='%(refname) %(objectname)'
@@ -345,7 +415,7 @@ echo "ok: dry run classifies and mutates nothing"
 # ── Case B: audit reports everything and mutates nothing ───────────────────
 
 before="$(snapshot)"
-audit_out="$(cd "$fixture" && bash scripts/audit-session-artifacts.sh 2>&1)" ||
+audit_out="$(run_audit "$fixture")" ||
     fail "audit exited nonzero: $audit_out"
 after="$(snapshot)"
 [ "$before" = "$after" ] || fail "audit mutated refs or worktrees"
@@ -360,7 +430,8 @@ expect_contains "$audit_out" "$test_tmp/wt — wt-checked" "audit: other worktre
 expect_contains "$audit_out" "active    deferred-findings/unpushed-live" "audit: live sidecar"
 expect_contains "$audit_out" "leftover  adjudication-ledger/dead/branch" "audit: orphan sidecar"
 expect_contains "$audit_out" "deferred-findings/wt-checked (branch exists) [worktrees/wt]" "audit: linked-worktree sidecar state scanned"
-expect_contains "$audit_out" "stub/fixture/42.json" "audit: integration cycle state listed"
+expect_contains "$audit_out" "shepherd-codex/stub/fixture/42.json" "audit: retired shepherd-codex cycle state listed"
+expect_contains "$audit_out" "integrate-codex/stub/fixture/43.json" "audit: current-pin integrate-codex cycle state listed (#1241 item 3)"
 echo "ok: audit reports all artifact classes read-only"
 
 # ── Case B2: the audit's prunable figure equals what clean:branches deletes ──
@@ -454,7 +525,7 @@ expect_contains "$untracked_out" "1 in-flight kept" "untracked-only: the local b
 expect_not_contains "$untracked_out" "classified from local tracking refs" \
     "clean:branches: no caveat when no in-flight branch has a remote-backed upstream (#958)"
 # Degraded mode: a failing gh probe is UNVERIFIED, never silently clean.
-audit_fail_out="$(cd "$fixture" && GH_STUB_FAIL=1 bash scripts/audit-session-artifacts.sh 2>&1)" ||
+audit_fail_out="$(GH_STUB_FAIL=1 run_audit "$fixture")" ||
     fail "degraded audit exited nonzero: $audit_fail_out"
 expect_contains "$audit_fail_out" "UNVERIFIED" "audit: failed PR read reported unverified"
 echo "ok: audit fails closed when gh is unavailable"
@@ -731,7 +802,7 @@ fi
 echo "ok: record prune pins an orphan detached commit through the prune"
 
 # The audit surfaces a lingering pin as a decision waiting to be made.
-pin_audit_out="$(cd "$fixture" && bash scripts/audit-session-artifacts.sh 2>&1)" ||
+pin_audit_out="$(run_audit "$fixture")" ||
     fail "audit exited nonzero with a pin present: $pin_audit_out"
 expect_contains "$pin_audit_out" "wt-det — pins $det_sha" "audit: leftover rescue pin reported"
 echo "ok: audit reports leftover rescue pins"
@@ -1555,7 +1626,7 @@ ren_out="$(cd "$fixture" && bash scripts/clean-branches.sh --delete 2>&1)" ||
 expect_contains "$ren_out" "default branch is now 'trunk'" "rename: live default named in the note"
 expect_contains "$ren_out" "could not be verified as 'main'" "rename: deletions refused"
 branch_exists anc-ren || fail "rename: anc-ren deleted although the remote default moved"
-ren_audit_out="$(cd "$fixture" && bash scripts/audit-session-artifacts.sh 2>&1)" ||
+ren_audit_out="$(run_audit "$fixture")" ||
     fail "audit exited nonzero inside the renamed-default window: $ren_audit_out"
 expect_contains "$ren_audit_out" "default branch is now 'trunk'" "rename: audit resolves the live default over stale origin/HEAD"
 
@@ -1566,7 +1637,7 @@ expect_contains "$ren_audit_out" "default branch is now 'trunk'" "rename: audit 
 # expression first, so both are asserted.
 orig_fetch="$(git -C "$fixture" config --get remote.origin.fetch)"
 git -C "$fixture" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/upstream/*'
-spec_audit_out="$(cd "$fixture" && bash scripts/audit-session-artifacts.sh 2>&1)" ||
+spec_audit_out="$(run_audit "$fixture")" ||
     fail "non-identity-refspec audit exited nonzero: $spec_audit_out"
 expect_contains "$spec_audit_out" "non-identity refspec" "refspec: audit declines to compare (#958)"
 expect_not_contains "$spec_audit_out" "deleted upstream" "refspec: audit emits no false staleness (#958)"
@@ -1768,9 +1839,11 @@ git -C "$f2" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
 g1_tip="$(git -C "$f2" rev-parse refs/heads/g1)"
 printf '%s\t%s\t%s\t%s\n' g1 "$g1_tip" 201 trunk >>"$GH_STUB_PRS"
 mkdir -p "$f2/scripts"
+mkdir -p "$f2/scripts/lib"
 cp "$repo/scripts/audit-session-artifacts.sh" "$f2/scripts/"
+cp "$repo/scripts/lib/gh-rest.sh" "$f2/scripts/lib/"
 
-nodef_out="$(cd "$f2" && bash scripts/audit-session-artifacts.sh 2>&1)" ||
+nodef_out="$(run_audit "$f2")" ||
     fail "no-local-default audit exited nonzero: $nodef_out"
 expect_contains "$nodef_out" "using the remote's advertised 'trunk'" "no local default: advertisement adopted"
 expect_contains "$nodef_out" "prunable      g1 — merged PR #201 into trunk" "no local default: classification still runs"
@@ -1782,7 +1855,7 @@ echo "ok: the audit adopts the advertised default when no local record exists"
 # every tracking ref as deleted upstream.
 
 git -C "$f2" remote rename origin ns/origin 2>/dev/null
-slash_out="$(cd "$f2" && bash scripts/audit-session-artifacts.sh 2>&1)" ||
+slash_out="$(run_audit "$f2")" ||
     fail "slash-remote audit exited nonzero: $slash_out"
 expect_contains "$slash_out" "fresh — local tracking refs match" "slash remote: tracking refs matched, not mangled"
 expect_not_contains "$slash_out" "deleted upstream" "slash remote: no false deleted-upstream reports"
