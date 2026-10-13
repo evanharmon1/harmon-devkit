@@ -3137,7 +3137,8 @@ order one more round. `run.json`'s optional `cap_authorizations[]` records each
 such instruction as `{stage, round, actor, instruction, at}`: the stage
 (`challenge` or `review`), the round it admits, who gave it, the instruction
 verbatim, and when. An entry records a human instruction; an agent never writes
-one on its own judgement, and nothing writes one to make a recorded round fit.
+one on its own judgement, including after the fact to make a recorded round
+fit; a maintainer may authorize a round before or after it runs.
 `validate-result-schemas.mjs run` rejects an entry with any field missing or
 blank, any other stage, and a second entry for the same `(stage, round)`.
 Whether the round really lies above the cap is not the validator's to decide,
