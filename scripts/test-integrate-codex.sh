@@ -8328,6 +8328,36 @@ ci_runs "$(ci_run 11 7 completed failure '.head_branch = "other" |
 run_ci_check
 assert_ci_charge 1/0 "another repository's PR 493"
 
+# challenge-r1-codex-adversarial-1: two PRs from one branch share its head
+# branch and head repository, so a run that names another PR must stay that
+# PR's, even when it is the newer run of the same workflow and event.
+echo "==> another PR's newer failed run on the same branch is not this PR's evidence"
+ci_cycle with-push 4
+jq '.head.ref = "feature" | .head.repo = {full_name:"example/repo"}' "${fixtures}/pr.json" \
+    >"${fixtures}/pr.json.next"
+mv "${fixtures}/pr.json.next" "${fixtures}/pr.json"
+ci_runs "$ci_green" "$(ci_run 12 7 completed failure '.pull_requests[0].number = 494')"
+run_ci_check
+assert_status 0 clean
+assert_ci_charge 1/0 "another PR's run on the same branch"
+
+# challenge-r1-codex-adversarial-2: the state is written before the sidecar, and
+# a sidecar write that fails restores the state, so the two never disagree.
+echo "==> a sidecar write that fails leaves the settled state as it was"
+ci_cycle with-push 4
+ci_runs "$ci_green"
+run_ci_check
+assert_ci_charge 1/0 "before the failed sidecar write"
+unsettled_state="$(cat "$state")"
+rm -f "${state%.json}.spend.json"
+mkdir "${state%.json}.spend.json"
+ci_runs "$ci_failed"
+run_ci_check
+rmdir "${state%.json}.spend.json"
+[ "$check_rc" -eq 2 ] || fail "a failed sidecar write must stop the verdict, got rc $check_rc: $check_out"
+[ "$(cat "$state")" = "$unsettled_state" ] ||
+    fail "a failed sidecar write must restore the state: $(jq -c '{charge, charged_cycles, exempt_cycles, ci_exempt}' "$state")"
+
 echo "==> after-ci never settles a cycle exempt for a CI failure, and reads no CI"
 ci_cycle after-ci 4
 ci_runs "$ci_failed"

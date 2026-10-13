@@ -254,8 +254,9 @@ checker's `check --run-id` settles the charge each time it reaches the
 cycle's terminal result, from the latest CI on that head: the cycle moves to
 `exempt_cycles` only when a latest run of this PR concluded `failure` and
 none is pending, and moves back when that stops holding (a flaky failure
-re-run to green). Only the PR's own runs count — its `pull_request` runs, or
-runs on its head branch **and** head repository — and pending, cancelled,
+re-run to green). Only the PR's own runs count — runs whose `pull_requests`
+name it, or, for a run naming no PR, runs on its head branch **and** head
+repository — and pending, cancelled,
 unreadable or any other non-`failure` result charges. A carried cycle, a
 base-merge exemption, and a spent, 0 or undeclared exempt ceiling leave the
 charge where `reserve` put it. Because CI often concludes after the review,

@@ -128,8 +128,8 @@ charged: when the latest CI on the cycle head concluded `failure` with no run
 pending, the cycle moves from `charged_cycles` to `exempt_cycles` (if the
 recorded exempt ceiling has room), and when that no longer holds — a flaky
 failure re-run to green — it moves back. Only this PR's workflow runs count:
-its `pull_request` runs, or runs on its head branch AND head repository.
-Anything unreadable, pending, cancelled or otherwise not `failure` charges.
+runs whose pull_requests name it, or — for a run naming no PR — runs on its
+head branch AND head repository. Anything unreadable, pending, cancelled or otherwise not `failure` charges.
 `after-ci`, a carried cycle and a base-merge exemption are never touched, and
 an unscoped `check` settles nothing.
 
@@ -2068,9 +2068,11 @@ classify_cycle_charge() {
 #
 # Every workflow run GitHub lists for the head SHA reports its LATEST attempt,
 # so a run re-run to green reads green. Only this PR's runs count: one whose
-# pull_requests[] names this PR in this repository, or one on the PR's head
-# branch AND head repository — so a fork PR's same-named branch in the base
-# repository is not evidence. A head failed only when the newest run of some
+# pull_requests[] names this PR in this repository, or — only when that list
+# is empty, as it is for a fork PR's runs — one on the PR's head branch AND
+# head repository. A run that names other PRs is theirs even on the same branch
+# (two PRs from one branch), and a fork PR's same-named branch in the base
+# repository is not evidence either. A head failed only when the newest run of some
 # workflow and event concluded `failure` and no run is still pending;
 # cancelled, timed_out, skipped, neutral, stale, action_required and the rest
 # never prove a failure, and a listing that is unreadable or incomplete proves
@@ -2105,10 +2107,11 @@ ci_head_verdict() {
             else ($pr.head.ref // "") as $branch
             | ((($pr.head.repo // {}).full_name // "") | ascii_downcase) as $head_repo
             | [$all[] | select(
-                ((.pull_requests // []) | any(.number == $number and
-                  (((.base.repo // {}).url // "") | ascii_downcase | endswith("/repos/" + $repo_lc))))
-                or ($branch != "" and $head_repo != "" and .head_branch == $branch and
-                  ((((.head_repository // {}).full_name // "") | ascii_downcase) == $head_repo)))]
+                if ((.pull_requests // []) | length) > 0 then
+                  (.pull_requests | any(.number == $number and
+                    (((.base.repo // {}).url // "") | ascii_downcase | endswith("/repos/" + $repo_lc))))
+                else ($branch != "" and $head_repo != "" and .head_branch == $branch and
+                  ((((.head_repository // {}).full_name // "") | ascii_downcase) == $head_repo)) end)]
               as $mine
             | ([$mine[] | select(.status != "completed")] | length) as $pending
             | [$mine | group_by([.workflow_id, .event])[] | max_by(.id)
@@ -2138,8 +2141,8 @@ ci_head_verdict() {
 # refuses foreign or unowned state), and only to a cycle `reserve` charged:
 # after-ci, a carried cycle, a base-merge exemption, and an exempt ceiling that
 # is undeclared, 0 or spent all leave the charge where `reserve` put it. The
-# two counters move together, in the run-spend sidecar first and then in the
-# state, so their sum (the cycle ordinal) never changes; a write that fails
+# two counters move together, in the state first and then in the run-spend
+# sidecar, so their sum (the cycle ordinal) never changes; a write that fails
 # stops the verdict (exit 2) rather than reporting a charge that is not there.
 settle_ci_charge() {
     [ "${command_name:-}" = check ] && [ -n "${run_id:-}" ] || return 0
@@ -2194,26 +2197,25 @@ settle_ci_charge() {
         "$scc_update | .charged_cycles = \$c | .exempt_cycles = \$e" <<<"$scc_state") ||
         die "cannot compose the settled charge"
 
+    # State first, then the run-spend sidecar — `reserve`'s order, for its
+    # reason: a failure leaves "state settled, sidecar not yet", which the next
+    # reservation reads back from the state, never "sidecar settled, state not",
+    # which nothing corrects. A sidecar write that fails restores the state.
     scc_spend="${state_file%.json}.spend.json"
-    scc_spend_snapshot=
-    [ ! -f "$scc_spend" ] || scc_spend_snapshot=$(cat "$scc_spend") ||
-        die "cannot read the run-spend sidecar $scc_spend to settle this cycle's charge"
-    { [ -n "$scc_spend_snapshot" ] || printf '{}' >"$scc_spend"; } &&
+    scc_state_snapshot=$(cat "$state_file") ||
+        die "cannot snapshot the cycle state to settle its charge"
+    printf '%s\n' "$scc_next" >"${state_file}.ci-next" 2>/dev/null &&
+        chmod 600 "${state_file}.ci-next" && mv "${state_file}.ci-next" "$state_file" || {
+        rm -f "${state_file}.ci-next"
+        die "cannot write the settled charge; the cycle's charge is left as it was"
+    }
+    { [ -f "$scc_spend" ] || printf '{}' >"$scc_spend"; } &&
         jq --arg r "$run_id" --argjson c "$scc_charged" --argjson e "$scc_exempt" \
             '.[$r] = {charged: $c, exempt: $e}' "$scc_spend" >"${scc_spend}.next" 2>/dev/null &&
         mv "${scc_spend}.next" "$scc_spend" || {
         rm -f "${scc_spend}.next"
+        printf '%s\n' "$scc_state_snapshot" >"$state_file" 2>/dev/null || true
         die "cannot record the settled charge in $scc_spend; the cycle's charge is left as it was"
-    }
-    printf '%s\n' "$scc_next" >"${state_file}.ci-next" 2>/dev/null &&
-        chmod 600 "${state_file}.ci-next" && mv "${state_file}.ci-next" "$state_file" || {
-        rm -f "${state_file}.ci-next"
-        if [ -n "$scc_spend_snapshot" ]; then
-            printf '%s' "$scc_spend_snapshot" >"$scc_spend" 2>/dev/null || true
-        else
-            rm -f "$scc_spend"
-        fi
-        die "cannot write the settled charge; the cycle's charge is left as it was"
     }
     printf 'codex-cloud-review: %s\n' \
         "cycle on $state_head settled $scc_want from CI evidence ($ci_detail)" >&2
