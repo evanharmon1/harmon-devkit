@@ -28,7 +28,7 @@ test_tmp="$(mktemp -d)"
 trap 'chmod -R u+w "$test_tmp" 2>/dev/null || true; rm -rf "$test_tmp"' EXIT
 node --input-type=module - "$repo_root" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -399,6 +399,10 @@ pass('the inline challenge round is published through post-evidence.sh and regis
 
 // Advance exactly as /review's stage-advance write does, then run review.
 write('transition', '--stage', 'review', '--exit', 'converged: empty_round after challenge round 1/' + policy.rounds.challenge)
+refused(slateArgs, ['adjudicate', '--file', adjFile('challenge-r2-late', adjudication('challenge', 2, []))],
+  /adjudication is for stage challenge, but the run's active stage is review/)
+assert.equal(existsSync(join(record, 'adjudications', 'challenge-r2.json')), false)
+pass('adjudicate refuses a round of a stage the run has left')
 const reviewFinding = {
   id: `review-r1-${reviewFinder}-1`, path: 'change.txt', line: 1, class: 'hardening', provenance: 'original',
   fingerprint: 'new', priority: 'P2', recommended_disposition: 'defer', evidence: 'the change has no test',
@@ -495,9 +499,13 @@ write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint')
 const releaseLock = (slateId) => sh('node', [runRecord, 'lock', 'release', '--slate', slateId, '--session', SESSION])
 assert.match(releaseLock(identity.slate_id), /released/)
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
+const finalRecord = readFileSync(runJson, 'utf8')
+refused([], [...initArgs], /run run-1-solo has ended \(outcome ready-for-review\); reserve a fresh run id/)
+assert.equal(readFileSync(runJson, 'utf8'), finalRecord)
+assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
 refused(slateArgs, ['transition', '--stage', 'implement', '--exit', 'late'], /run already ended/)
 assert.equal(read(runJson).outcome, 'ready-for-review')
-pass('a promoted solo run releases its slate lock and refuses every later write')
+pass('a promoted solo run releases its slate lock, refuses every later write, and is never re-armed by solo-init')
 
 // A second run whose challenge stage diverges: round 2 repeats round 1's
 // finding on the very line round 1's fix added, which only the ledger can
@@ -665,6 +673,27 @@ singleStage({ disabled: 'challenge', enabled: 'review', issue: 9 })
 pass('with challenge disabled (cap 0) a solo run enters review alone, converges it, and hands off to security')
 singleStage({ disabled: 'review', enabled: 'challenge', issue: 10 })
 pass('with review disabled (cap 0) a solo run enters challenge alone, converges it, and hands off to security')
+
+// The merge base's registry governs the trust set, never the branch's copy.
+sh('git', ['switch', '-q', '-c', '11-registry', base])
+put(join(repo, 'agent-registry.json'), { ...registry, trusted_orchestrator_actor_ids: [ACTOR, 777] })
+const edited = commitAll('feat: trust another actor')
+const regArgs = (extra = {}) => soloArgs({ runId: 'run-11-registry', issue: 11, branch: '11-registry', ...extra })
+refused([], regArgs({ actor: 777 }), new RegExp(`actor 777 is not in agent-registry.json's trusted_orchestrator_actor_ids at ${base}`))
+refused([], [...regArgs(), '--registry-revision', edited], new RegExp(`--registry-revision ${edited} differs from the merge base's governing revision ${base}`))
+refused([], regArgs().map((a) => (a === base ? edited : a)), new RegExp(`--base ${edited} is not the merge base ${base}`))
+assert.ok(nothingWritten('run-11-registry'))
+pass("solo-init resolves trust from the merge base's registry: a branch-added actor, a branch registry revision or a non-merge-base --base is refused, writing nothing")
+
+// A grafted history proves nothing: every writer that reads the graph refuses.
+const grafts = join(common, 'info', 'grafts')
+mkdirSync(join(common, 'info'), { recursive: true })
+writeFileSync(grafts, `${edited}\n`)
+refused(sSlate, ['ledger', '--stage', 'challenge'], /info\/grafts exists; a grafted history cannot prove/)
+refused([], regArgs(), /info\/grafts exists; a grafted history cannot prove/)
+rmSync(grafts)
+assert.ok(nothingWritten('run-11-registry'))
+pass('a repository with an info/grafts file is refused before any ledger or reservation proof')
 
 JS
 echo "PASS: test-inline-record.sh"

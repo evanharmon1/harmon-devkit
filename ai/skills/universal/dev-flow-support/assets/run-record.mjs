@@ -800,16 +800,36 @@ function planPolicy(policy, { strategySource, operatorPins }) {
   }
 }
 
-function governingRegistryRevision(repoRoot) {
+// governingRegistryRevision — the agent-registry.json revision the merge base
+// carries: --base must BE the merge base of the default branch and the
+// branch's head, so a branch that edits the registry never governs its own
+// trust set (AGENTS.md's merge-base rule).
+function governingRegistryRevision(repoRoot, base, branch) {
   let ref
   try {
-    ref = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot).replace(/^refs\/remotes\//, '')
+    ref = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot)
   } catch {
-    throw new Refusal('could not resolve the default branch (refs/remotes/origin/HEAD is unset); pass --registry-revision')
+    throw new Refusal('could not resolve the default branch (refs/remotes/origin/HEAD is unset)')
   }
-  const revision = git(['log', '-1', '--format=%H', ref, '--', 'agent-registry.json'], repoRoot)
-  if (!/^[0-9a-f]{40}$/.test(revision)) throw new Refusal(`no agent-registry.json revision on ${ref}; pass --registry-revision`)
+  let tip = 'HEAD'
+  try {
+    tip = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], repoRoot)
+  } catch {
+    // the branch has no local ref yet: its head is the checkout's
+  }
+  const mergeBase = git(['merge-base', ref, tip], repoRoot)
+  if (mergeBase !== base) throw new Refusal(`--base ${base} is not the merge base ${mergeBase} of ${ref} and ${branch}`)
+  const revision = git(['log', '-1', '--format=%H', base, '--', 'agent-registry.json'], repoRoot)
+  if (!/^[0-9a-f]{40}$/.test(revision)) throw new Refusal(`the merge base ${base} carries no agent-registry.json revision`)
   return revision
+}
+
+// refuseGrafts — every proof here (merge bases, ancestry, diffs) reads the
+// commit graph; replace refs are disabled per call, but no flag disables an
+// info/grafts file, so its presence is a refusal before any of them runs.
+function refuseGrafts(repoRoot = process.cwd()) {
+  const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], repoRoot)
+  if (existsSync(grafts)) throw new Refusal(`${grafts} exists; a grafted history cannot prove a reviewed head or a fix, refusing`)
 }
 
 // trustedAt — the actor ids agent-registry.json trusts at `revision`.
@@ -848,6 +868,7 @@ function soloInit(args) {
   }
   const at = resolveAt(args.at)
   const repoRoot = git(['rev-parse', '--show-toplevel'])
+  refuseGrafts(repoRoot)
   const policy = readJson(args.policy, '--policy')
   const plannedPolicy = planPolicy(policy, { strategySource: args['strategy-source'], operatorPins: args['operator-pin'] ?? [] })
   const selection = (Array.isArray(policy.finder_selection) ? policy.finder_selection : [])
@@ -856,7 +877,15 @@ function soloInit(args) {
   const runDir = join(root, 'runs', runId)
 
   // Preconditions — every one refusable, all resolved before the first write.
-  const revision = args['registry-revision'] ?? governingRegistryRevision(repoRoot)
+  // An ended run is never re-armed: its record is final.
+  const existing = join(runDir, 'run.json')
+  if (existsSync(existing) && readJson(existing, 'run record').outcome !== null) {
+    throw new Refusal(`run ${runId} has ended (outcome ${readJson(existing, 'run record').outcome}); reserve a fresh run id`)
+  }
+  const revision = governingRegistryRevision(repoRoot, args.base, branch)
+  if (args['registry-revision'] !== undefined && args['registry-revision'] !== revision) {
+    throw new Refusal(`--registry-revision ${args['registry-revision']} differs from the merge base's governing revision ${revision}`)
+  }
   if (!trustedAt(repoRoot, revision).includes(actor)) {
     throw new Refusal(`actor ${actor} is not in agent-registry.json's trusted_orchestrator_actor_ids at ${revision}; its evidence markers would not authenticate, so no solo run is reserved`)
   }
@@ -1179,6 +1208,8 @@ const SIDE_EFFECTS = {
       if (!readFileSync(target).equals(bytes)) throw new Refusal(`${target} already exists with different content; a round is adjudicated once`)
       return null
     }
+    const active = record.stage_transitions.at(-1).stage
+    if (stage !== active) throw new Refusal(`adjudication is for stage ${stage}, but the run's active stage is ${active}`)
     const passes = receiptedPassNames(record)
       .filter((file) => file.startsWith(`${name}-`))
       .map((file) => join(runDir, 'passes', `${file}.json`))
@@ -1265,6 +1296,7 @@ function sideEffectWrite(command, args) {
   const slate = requireId('slate', args.slate)
   const session = requireId('session', args.session)
   const runId = requireId('run-id', args['run-id'])
+  refuseGrafts()
   assertRunOwner(root, slate, runId)
   const lock = acquireSlateLock({ root, slate, session })
   try {

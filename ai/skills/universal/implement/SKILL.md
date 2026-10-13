@@ -518,9 +518,12 @@ on with the inline procedure.
    <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan, slate lock
    on the issue, owner binding), `policy.json`, a kickoff `run.json`, and the
    branch's active pointer. Every refusable precondition is checked before the
-   first write — a run id that is not `run-<issue>-…`, an unresolvable default
-   branch or registry revision, an actor the registry does not trust (its
-   markers would never authenticate), a branch whose active pointer names a
+   first write — a run id that is not `run-<issue>-…`, a run id whose run has
+   already ended (reserve a fresh one), a grafted history, an unresolvable
+   default branch, a `--base` that is not the merge base of the default branch
+   and the branch, an actor the **merge base's** registry does not trust (its
+   markers would never authenticate; a branch's own registry edit never
+   governs its trust set), a branch whose active pointer names a
    run that has **not** ended (an orchestrated lane is never superseded), an
    issue another session holds — and a step that still fails afterwards undoes
    everything the call created. A refusal is a stop for recording, never
