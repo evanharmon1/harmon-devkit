@@ -24,7 +24,8 @@ Usage:
     [--assembly-plan FILE] \
     [--trusted-actor-id ID --repo-root DIR \
      --evidence-role ROLE --evidence-finder FINDER \
-     --marker TEXT --payload-digest SHA256]
+     --marker TEXT --payload-digest SHA256 \
+     --comment-lock-fd N]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
     --active-state FILE --run-id ID --branch BRANCH --generation N \
     [--repo-root DIR]
@@ -235,6 +236,7 @@ assembly_plan=""
 max_agent_runs=""
 slate_id=""
 nonce=""
+comment_lock_fd=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -308,6 +310,10 @@ while [ "$#" -gt 0 ]; do
         ;;
     --nonce)
         nonce="${2:-}"
+        shift 2
+        ;;
+    --comment-lock-fd)
+        comment_lock_fd="${2:-}"
         shift 2
         ;;
     --generation)
@@ -557,6 +563,53 @@ reserve)
         mv "$init_tmp" "$state"
     fi
     if [ "$action" = "comment" ]; then
+        # Exact comment re-arms recover a crash after reserve/post/register.
+        # Recheck today's allowlist above before adopting yesterday's intent;
+        # a changed actor/marker/body/head never gets a second reservation.
+        existing="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
+        if [ -n "$existing" ]; then
+            # Ordinary/concurrent callers retain the duplicate-event refusal.
+            # Only the holder of the complete publication transaction lock
+            # may re-arm. The inherited descriptor must reference that exact
+            # canonical file and own its existing exclusive advisory lock: a freshly
+            # opened descriptor in a competitor cannot acquire it.
+            [[ "$comment_lock_fd" =~ ^[1-9][0-9]*$ ]] && [ "$comment_lock_fd" -ge 3 ] || die "duplicate event; comment re-arm requires the publication lock holder"
+            publication_lock="$(dirname "$state")/post-evidence.lock"
+            # fcntl's standard-library implementation is available on both
+            # Linux and macOS; no platform-specific lock utility is required.
+            python3 - "$publication_lock" "$comment_lock_fd" <<'PY' || die "duplicate event; caller does not own the canonical publication lock"
+import fcntl, os, sys
+path, fd = sys.argv[1], int(sys.argv[2])
+actual, expected = os.fstat(fd), os.stat(path)
+if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+    sys.exit(2)
+probe = os.open(path, os.O_RDWR)
+try:
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        sys.exit(2)  # There was no existing lock to authenticate.
+finally:
+    os.close(probe)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(2)  # Another open file description owns the lock.
+PY
+            jq -e --arg head "$expected_head" --arg actor "$trusted_actor_id" \
+                --arg run "$run_id" --arg role "$evidence_role" --arg finder "$evidence_finder" \
+                --arg marker "$marker" --arg digest "$payload_digest" '
+                .action == "comment" and .expected_head == $head and
+                (.state == "reserved" or .state == "adopted") and
+                .comment_auth.trusted_actor_id == $actor and .comment_auth.run_id == $run and
+                .comment_auth.role == $role and .comment_auth.finder == $finder and
+                .comment_auth.marker == $marker and .comment_auth.payload_digest == $digest
+            ' <<<"$existing" >/dev/null || die "comment re-arm conflicts with reservation bindings"
+            printf 'reserved %s\n' "$event"
+            exit 0
+        fi
         jq -e --arg marker "$marker" '
             [.actions[] | select(
                 .action == "comment" and .comment_auth.marker == $marker
@@ -601,18 +654,24 @@ reconcile)
     reservation="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
     [ -n "$reservation" ] || die "unknown reservation $event"
     reservation_state="$(jq -r '.state' <<<"$reservation")"
+    expected_action="$(jq -r '.action' <<<"$reservation")"
     case "$reservation_state" in
     adopted)
-        # A stale re-arm must adopt the durable result, not retry a write
-        # already known to have landed.
-        printf 'adopt %s\n' "$event"
-        exit 0
+        if [ "$expected_action" = "comment" ]; then
+            # An adopted ID is durable, but its GitHub content remains mutable.
+            # Revalidate the supplied complete set instead of certifying edits.
+            :
+        else
+            # A stale re-arm must adopt the durable result, not retry a write
+            # already known to have landed.
+            printf 'adopt %s\n' "$event"
+            exit 0
+        fi
         ;;
     reserved) ;;
     *) die "reservation $event is not actionable" ;;
     esac
     status="$(jq -r '.status // empty' "$observed")"
-    expected_action="$(jq -r '.action' <<<"$reservation")"
     expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
     comment_id=""
     if [ "$expected_action" = "comment" ] && { [ "$status" = "landed" ] || [ "$status" = "absent" ]; }; then
@@ -676,6 +735,13 @@ reconcile)
         ' "$state" >/dev/null || die "cannot reconcile $event out of reservation order"
         ;;
     esac
+    if [ "$reservation_state" = "adopted" ] && [ "$expected_action" = "comment" ]; then
+        [ "$status" = "landed" ] &&
+            [ "$comment_id" = "$(jq -r '.postcondition.comment_id' <<<"$reservation")" ] ||
+            die "adopted comment postcondition changed or disappeared"
+        printf 'adopt %s\n' "$event"
+        exit 0
+    fi
     case "$status" in
     landed)
         jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '

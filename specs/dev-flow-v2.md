@@ -880,6 +880,12 @@ marker, documented in `ai/schemas/README.md`; readers accept any valid JSON seri
 <!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n|null>,"sequence":<n>,"destination":"<issue|pr>"} -->
 ```
 
+The review skill's `assets/post-evidence.sh` publishes a single issue-round
+comment with this marker on line one, through the monitor's reserve/reconcile
+path, and registers its exact posted whole-body digest in the validated run record.
+It refuses oversized/split projections rather than writing partial evidence;
+the general splitting and PR-rollup obligations below remain caller-owned.
+
 It authenticates the run and the stage/round coordinates present on GitHub;
 the full record remains local. A harvester given `--record-dir <path>` reads
 that content from `<path>/<run_id>/`, reports `record-missing` when the named

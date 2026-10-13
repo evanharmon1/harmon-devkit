@@ -199,19 +199,55 @@ fourth time.
 | Exit | Meaning | What the retro does |
 | --- | --- | --- |
 | 0 | a report is on stdout | Paste it as §2, then carry on |
+| 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
 | 10 · `no-run-record` | it **looked** and found no evidence marker at all | Fall back: skip §2, and **say plainly** that this session has no run record, so the improvements in §5 rest on the conversation rather than on measurements |
 | 10 · `run-not-found` | an id supplied with `--run` was not found; **discovery never ran** | Fall back for the measurements, but do **not** say the session has no run record — nothing looked. Say the supplied id was not found, and consider that it may be mistyped or that the record lives on the issue. §5's `run-not-found` provenance wording is the matching phrasing |
-| 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
 | 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; a trusted actor's own marker that does not parse; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding and quote the reason from stderr. **Draft** the follow-up issue — do not create it unless asked, exactly as §5 requires of every other follow-up. Never downgrade any of these to "no run record" |
-| 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
+| 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
+| 13 | `local-unverified` — opt-in schema-validated local record, not authenticated by a trusted GitHub evidence marker | Paste only with **unverified (local record, not authenticated by a trusted GitHub evidence marker)** on the heading and every measured line. Never treat it as authenticated evidence or a clean verified result |
+| 14 | Refused local record: schema failure, `run_id` mismatch, PR mismatch, path or symlink escape, or not a regular file | Report a **refused local record**, quote the reason, then fall back for measurements. Never describe this local refusal as GitHub evidence tampering |
 
 `no-run-record` is the ordinary pre-v2 session and costs the retro only its
 evidence section — it is the **only** outcome that licenses the sentence "this
 session has no run record", which is why it and `run-not-found` are separate
 rows above even though the process exit is the same number. Exit 12 is a fact about the checkout, not about the run:
 reporting it as 10 would let a vendoring gap masquerade as work nobody
-recorded. Exit 11 is a finding in its own right — treating it as "no evidence"
-is how tampered evidence would read as an ordinary memory-based retro.
+recorded. Exit 11 for GitHub evidence is a finding in its own right — treating it as "no
+evidence" is how tampered evidence would read as an ordinary memory-based
+retro. Exit 14 is a local input
+problem: report that refusal and fall back, without alleging GitHub tampering.
+
+After **only** exit 10 `no-run-record` or `run-not-found`, if the run id
+and its retained directory are known, an explicit local read is permitted:
+rerun with `--run <id> --record-dir <parent> --local-unverified`. This opt-in
+mode may replace only an ordinary exit-10 outcome. Every ordinary exit 0, 11
+or 12 keeps identical stdout, stderr and exit status with the flag enabled;
+integrity errors never fall back to local data. The run schema validator must
+accept the local `run.json` and its `run_id` must match the requested id;
+otherwise no report is rendered. With `--pr`, read-only discovery must find no
+trusted marker on the PR or its discovered issues before a local read.
+Indeterminate discovery, including untrusted-only markers or malformed
+markers treated as corrupted evidence, blocks the local read with exit 11.
+That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr`, or whose normalized PR URL
+differs from the requested PR URL fetched by `gh`, is refused with exit 14. A record
+naming no PR explicitly says it is not bound to the requested PR.
+A missing local record retains exit 10 on the ordinary path. An attempted
+local read with `--as-of` is a usage error (exit 2), even if the local record
+is missing. A guard read failure uses the existing error exits: operational
+GitHub failures exit 1; discovery integrity errors or indeterminate hint
+reads exit 11. A malformed trusted marker found by the guard also exits 11.
+Exit 13 is distinct from success, and
+both Markdown and JSON carry **unverified (local record, not authenticated
+by a trusted GitHub evidence marker)** on every measured entry. Missing `adjudications/` means **not
+recorded**, never zero adjudication rounds. Local adjudications, findings and
+convergence are not authenticated or measured here. Local reads do not support
+`--as-of`; they report the current snapshot only.
+
+For §5 provenance after exit 13, say: "Retro of the session on `<date>`;
+measurements are unverified (local record, not authenticated by a trusted GitHub evidence marker), read
+from `<parent>/<id>/run.json`; adjudication rounds absent from the retained
+record are not recorded." Never attribute these measurements to GitHub
+evidence or call this a verified retro.
 
 ## 2. The run-evidence report
 
@@ -242,12 +278,12 @@ revision history lists that `run_id` in `lanes[]`.
    remediation loop keeps **one** section holding all of its rounds), the
    interventions that landed while that stage was open, and — for a stage that
    found something — its findings by class and provenance plus its
-   adjudication overrides. Those last two are **only partly derivable today**:
-   the trajectory aggregates class/provenance across the whole run, so it is
-   attributed to a stage only when that stage is the sole one with findings
-   (harmon-devkit#779), and adjudication overrides are not exposed at all
-   (harmon-devkit#753). Each
-   affected stage section says which case it is in rather than leaving the line
+   adjudication overrides. The trajectory supplies verified class/provenance
+   counts keyed by stage; unavailable rounds are named, and unverified findings
+   are excluded from those counts. Older harvesters
+   expose only the run-wide aggregate, attributed to a stage only when that
+   stage is the sole one with findings. Adjudication overrides are not exposed
+   at all (harmon-devkit#753). Each affected stage section says which case it is in rather than leaving the line
    out; treat a "not derivable" line as a real gap in the retro, not as
    "nothing to report".
 4. `### Findings by class and provenance` — `class` from the reviewer's own

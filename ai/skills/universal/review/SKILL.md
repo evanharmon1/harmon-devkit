@@ -265,8 +265,8 @@ filled the slot — a role agent's result persisted in `passes/`, or a runner's
 published file — re-validate it with the same `envelope --receipt` call
 against the captured run, then append
 `{"kind": "pass", "file": "<stage>-r<round>-<slot>"}` (the filename without
-`.json`) to `run.json`'s `receipts`, and only then enter verification below. A
-pass you have not receipted is an **orphan**: it is never evidence, the exit
+`.json`) to `run.json`'s `receipts` under the shared mutex and validated-write
+path below, and only then enter verification below. A pass you have not receipted is an **orphan**: it is never evidence, the exit
 computation rejects it, and its finding ids reserve nothing. A runner in
 envelope mode that exited non-zero published nothing under a `.json` name. A
 retry refused because its destination already exists means an earlier attempt — typically
@@ -308,12 +308,23 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
-Before replacing `run.json`, write the complete candidate beside it and run
-`dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>` with every adjudication
-document the candidate depends on. Rename the candidate over `run.json` only
-after that validation passes. Immediately after every replacement of
-`run.json`, run `dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --receipts <run.json>` with those
-same adjudication documents to validate the canonical readback.
+Every `run.json` replacement, including pass receipts, evidence registrations
+and stage transitions, must perform its read-modify-write inside
+`run-record.mjs`'s `withMutex(runPath, ...)` (`run.json.wlock`) and publish
+through `writeValidated('run', runPath, document)`. Read and validate the
+existing record with `validateFile` while holding that mutex. Never replace
+it from an unlocked read or a separate hand-written rename recipe.
+The shared validated writer owns candidate validation, atomic rename and
+canonical readback with the record's receipts and current local adjudications.
+The following validation obligations are implemented by that shared writer:
+Before replacing `run.json`, write the complete candidate beside it through
+`writeValidated`, whose internal validation invokes
+`dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>`
+with the current local adjudication documents.
+Rename the candidate over `run.json` only through the shared writer,
+after that validation passes. Its canonical readback invokes
+`dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --receipts <run.json>`
+with the current adjudication documents before the locked operation returns.
 `--receipts <same-record>` binds the stage named by every supplied
 adjudication document to a transition receipt already present in that
 record, enforcing the binding here at write time rather than only later
@@ -329,29 +340,89 @@ the validated source facts to `verdict.json.verified_findings` by finding ID and
 publish only the verified or corrected provenance and fingerprint values,
 never the producer's superseded assertions. A missing, unverified, duplicate,
 or mismatched projection is a blocker, not permission to fall back to raw
-envelopes. Include that verified projection, the round's adjudication JSON, and
-its exit projection, then append the human table from
+envelopes. Combine the verified projection, the round's adjudication JSON and
+its exit projection in ONE fenced JSON object, never separate JSON fences.
+As a caller contract, its `passes` array contains envelopes with
+verified/corrected `payload.findings`. Then append the human table from
 `dev-flow-support/assets/render-dev-flow.sh round-table --record <record> --stage <stage>
 --round <N>`.
 
-Scan and redact the complete verification-bound projection first. If the final
-destination limit would be exceeded, split the sanitized projection
+Scan and redact the complete verification-bound projection first. If the comment
+would exceed the 60,000-byte single-comment budget, split the sanitized projection
 deterministically into an ordered sequence, reserving room in every segment for
 its canonical run/stage/round/sequence marker. Splitting is a projection-layer
 operation and must finish before reserving any comment. Append each unique
 sequence marker, scan the exact segment again, compute its digest, then reserve,
 post, and reconcile segments strictly in sequence; each reservation binds the
 active run generation, head, role, finder, actor ID, registry revision, marker,
-and exact segment digest. Never reserve an oversized unsplit body. On re-arm,
+and exact segment digest. Never reserve an oversized unsplit body: split any
+body that would exceed the 60,000-byte single-comment budget. On re-arm,
 fetch the complete bounded candidate set for that segment and pass it to
 `reconcile`; the monitor validates the candidates' run, head, role, finder,
 actor, marker, and digest bindings, hashes their bodies, and adopts the lowest
 authenticated match. Post once only after `reconcile` proves the candidate set
 has no authenticated match and returns `retry`; `block` is terminal.
 
+For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.
+For a round exceeding the 60,000-byte single-comment budget, follow the split
+procedure above by hand; the helper posts single comments only.
+The helper requires a canonical `run-<issue>-<name>` identity and refuses
+`--issue` unless it matches that run's issue number.
+The marker has exactly five fields: the run ID, a run-stage enum value, a
+positive round, sequence 1, and destination `issue`. The helper handles one
+round comment within a 60,000-byte budget; oversized or split projections are
+refused, never posted partially. The general marker grammar (including PR
+rollups with `round:null`) remains in `ai/schemas/README.md`.
+
+Write the marker object alone to `marker.json`, and the sanitized Markdown
+summary plus exactly one fenced JSON verification-bound projection to
+`round.md`, both in your own scratch directory. That projection must name
+`run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope,
+a `passes` array with `payload.findings` arrays (the caller's projection
+contract).
+The helper scans the exact final comment, including its canonical marker line, with `gitleaks stdin --no-banner --redact` and the repository's `.gitleaks.toml` when present, refusing detections, scanner failures or a missing scanner before any reservation or POST; projection adjudication remains caller-owned.
+
+```sh
+assets/post-evidence.sh --repo <owner/repo> --repo-root <checkout> \
+  --run <record>/run.json --branch <branch> --generation <generation> \
+  --active-state <active-state> --head <reviewed-head> --actor-id <actor-id> \
+  --role <challenger|reviewer> --finder <finder> --issue <issue-number> \
+  --marker-file <scratch>/marker.json --body-file <scratch>/round.md \
+  --scratch-dir <scratch>
+```
+
+This is an orchestrator-owned publication helper, never a role-agent write.
+It requires Python 3's POSIX `fcntl` standard library and holds an exclusive
+per-run `post-evidence.lock` (Linux/macOS, no separate lock utility)
+across reserve, reconcile, POST and registration. A second caller waits at
+most 30 seconds or refuses; it cannot post concurrently. Monitor re-arm is
+restricted to the holder of that inherited lock descriptor; ordinary callers
+retain the duplicate-event refusal.
+It validates the marker and run record before reserving, reads a complete
+bounded candidate set (at most ten 100-comment pages; a full final page
+blocks), and posts only on monitor `retry`. It adopts the monitor's lowest
+authenticated match and revalidates the readback on every re-arm. A failed
+or ambiguous post is resumed with the same destination and scope, never by a
+direct comment write. The helper binds the destination repository to origin
+and the issue to the run identity.
+After a successful reservation, the exact comment bytes persist atomically
+beside it as `<event>.body.md`. That copy is authoritative only while the
+event reservation exists; an orphan copy is replaced. On re-arm omit `--body-file` to reuse that copy, or supply the identical body. A changed
+caller body or destination refuses. Its stdout is the adopted comment ID. For registration it
+hashes the exact posted whole-comment body, matching the harvester's current
+marker authentication, and appends `evidence_registrations` with its canonical chain digest.
+Registration takes `run-record.mjs`'s shared `run.json.wlock` mutex and uses
+its `writeValidated` candidate/validation/rename/readback path. This
+registration is serialized with other writers using that same mutex.
+Validation binds receipts and all local adjudications. Exact
+existing ID/marker/actor/payload matches are adopted without appending;
+conflicts block and a login rename never changes the immutable chain.
+
 After adoption, append the canonical comment ID, immutable actor ID, display
 login, `sha256:` body digest, and marker fields to
-`run.json.evidence_comments` only when it is absent. On re-arm, first search by
+`run.json.evidence_comments` only when it is absent, reading and comparing
+under that shared mutex and publishing through its validated writer. On
+re-arm, first search by
 both comment ID and canonical marker: when ID, immutable actor ID, digest, and
 every marker field match exactly, adopt the existing entry without appending;
 display login is non-authoritative metadata and never participates in evidence
@@ -440,7 +511,8 @@ other readiness condition still applies unchanged).
 ### Stage advance write
 
 Without that recorded upward override, an `action: advance` result is the sole
-authority to advance the run record. Re-read `run.json`. First recognize and
+authority to advance the run record. Take the shared `run.json.wlock` mutex
+and read/validate `run.json` inside it. First recognize and
 validate an exact already-applied current-to-next transition; adopt it and
 complete the remaining readback, publication, and next-stage steps without
 appending a second transition. Otherwise require the last transition to name
@@ -454,11 +526,10 @@ the same complete candidate, append exactly
 matching `{"kind":"transition","stage":"<next>","entered_at":"<same timestamp>"}`
 receipt to `receipts`. Never
 append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
-transition shape. Write the close and append to a complete candidate beside
-`run.json`, validate that candidate with every adjudication document it
-depends on, then atomically rename it over `run.json` only after validation
-passes. Validate the canonical readback as required above before publishing
-evidence or entering the next stage.
+transition shape. Publish the close and append together through
+`run-record.mjs`'s `writeValidated('run', runPath, document)` while still
+holding the shared mutex. Its validated canonical readback must succeed
+before publishing evidence or entering the next stage.
 
 This advance recipe covers stages whose resolved cap is at least `1`. The next
 stage is `review` after a terminal `challenge`; a terminal `review` enters

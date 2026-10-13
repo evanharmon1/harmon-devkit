@@ -5503,6 +5503,59 @@ echo "$out" | jq -e '.rounds[0].stage == "challenge" and .rounds[0].round == 1' 
 echo "$out" | jq -e '.rounds[1].stage == "review" and .rounds[1].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[1] = review r1 (posted before challenge r2), got: $out"
 echo "$out" | jq -e '.rounds[2].stage == "challenge" and .rounds[2].round == 2' >/dev/null || fail "chronological-rounds: expected rounds[2] = challenge r2, got: $out"
 
+echo "== #779: CLI stage map includes each stage even with no verified findings =="
+echo "$out" | jq -e '.findings_by_stage_class_and_provenance == {challenge:{},review:{}} and .findings_by_class_and_provenance == {}' >/dev/null ||
+    fail "CLI per-stage map missing: $out"
+
+# Exercise the trajectory projection with the same verified/corrected
+# measurements consumed from the exit engine. The --run engine currently
+# has no history adapter, so its ordinary fixtures cannot certify provenance;
+# do not fabricate certification by treating raw claims as verified.
+echo "== #779: verified measurements accumulate per stage across rounds =="
+node --input-type=module <<'NODE'
+import assert from 'node:assert/strict';
+import { renderTrajectory, renderTrajectoryTable } from './ai/skills/universal/retro/assets/dev-flow-stats.mjs';
+const round = (stage, n, commentId, findings, attributions) => ({
+  stage, round: n, dest: 'issue', commentIds: [commentId],
+  payload: {
+    passes: [{ payload: { findings } }],
+    ...(attributions === null ? {} : { findingAttributions: attributions })
+  }
+});
+const finding = (id, cls) => ({ id, class: cls, provenance: 'original' });
+const attribution = (id, provenance, status = 'verified') => ({
+  id, provenance, provenance_status: status, fingerprint: 'new', fingerprint_status: 'verified'
+});
+const run = {
+  runId: 'run-779-two-stages', issueNumber: 779,
+  state: { initiated_by: 'human', stage_transitions: [], interventions: [], settlements: [] },
+  untrusted: [], forged: [],
+  rounds: [
+    round('challenge', 1, 1, [finding('c1', 'correctness'), finding('c2', 'correctness')],
+      [attribution('c1', 'original'), attribution('c2', 'original')]),
+    round('review', 1, 2, [finding('r1', 'correctness')], [attribution('r1', 'original')]),
+    round('challenge', 2, 3, [finding('c3', 'design'), finding('c4', 'correctness')],
+      [attribution('c3', 'round:1', 'corrected'), attribution('c4', 'original')]),
+    round('review', 2, 4, [finding('r2', 'security')], [attribution('r2', 'round:1', 'unverified')]),
+    round('review', 3, 5, [finding('r3', 'design')], null)
+  ]
+};
+const t = renderTrajectory(run);
+assert.deepEqual(t.findings_by_stage_class_and_provenance, {
+  challenge: { 'correctness/original': 3, 'design/round:1': 1 },
+  review: { 'correctness/original': 1 }
+});
+assert.deepEqual(t.findings_by_class_and_provenance, {
+  'correctness/original': 4, 'design/round:1': 1
+});
+assert.deepEqual(t.provenance_unavailable_rounds, [{stage:'review',round:2}, {stage:'review',round:3}]);
+const table = renderTrajectoryTable(t);
+assert.ok(table.includes('findings_by_stage_class_and_provenance:\n  challenge:\n    correctness/original: 3\n    design/round:1: 1\n  review:\n    correctness/original: 1'));
+assert.ok(table.includes('findings by class/provenance:\n  correctness/original: 4'));
+assert.ok(!table.includes('security/round:1'));
+assert.deepEqual(JSON.parse(JSON.stringify(t)).findings_by_stage_class_and_provenance, t.findings_by_stage_class_and_provenance);
+NODE
+
 echo "== shepherd round 1: a bot-authored post-promotion commit never counts as a post-ready HUMAN fix =="
 export DFSTATS_DB="$tmp/scenarios/postfix-bot.json"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
