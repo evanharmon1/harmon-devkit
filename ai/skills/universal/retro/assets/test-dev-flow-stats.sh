@@ -4063,6 +4063,53 @@ function writeScenario(name, db) {
   }
 }
 
+// #1444: retained ledger evidence verifies a repeat on round 1's fix,
+// including ancestry when the reviewed heads are absent from this checkout.
+{
+  const runId = "run-238-ledger";
+  const at = "2026-09-01T00:00:00Z";
+  const events = [1, 2].map((round) => evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", round, 1, at));
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: lifecycleTo("review", at), interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, promotion: null,
+    evidence_comments: events.map((ev, index) => ({
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: index + 1, sequence: 1 },
+    })),
+    receipts: [{ kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }, { kind: "pass", file: "review-r2" }],
+  };
+  const runDir = path.join("${tmp}", "local-records", runId);
+  mkdirSync(path.join(runDir, "passes"), { recursive: true });
+  mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+  writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+  for (const round of [1, 2]) {
+    const finding = {
+      id: "review-r" + round + "-codex-verification-1", line: 10,
+      provenance: round === 1 ? "original" : "round:1",
+      fingerprint: round === 1 ? "new" : "repeat-of:review-r1-codex-verification-1",
+    };
+    const envelope = pass("codex-verification", [finding]);
+    envelope.run.run_id = runId;
+    envelope.head = String(round).repeat(40);
+    envelope.payload.round = round;
+    envelope.payload.reviewed_head = envelope.head;
+    writeFileSync(path.join(runDir, "passes", "review-r" + round + ".json"), JSON.stringify(envelope, null, 2));
+    writeFileSync(path.join(runDir, "adjudications", "review-r" + round + ".json"), JSON.stringify({
+      schema: 2, run_id: runId, stage: "review", round, reviewed_head: envelope.head,
+      adjudications: [{ finding_id: finding.id, reviewer_priority: "P2", adjudicated_priority: "P2",
+        disposition: round === 1 ? "fix" : "defer", reason: "fixture reason", evidence: "fixture evidence", override: null }],
+    }, null, 2));
+  }
+  writeFileSync(path.join(runDir, "history.json"), JSON.stringify([{ round: 1,
+    path: "ai/skills/universal/retro/assets/dev-flow-stats.mjs", added_lines: [10], deleted_lines: [10] }]));
+  writeFileSync(path.join(runDir, "heads.json"), JSON.stringify({
+    ["2".repeat(40)]: { parent: "1".repeat(40) }, ["1".repeat(40)]: { parent: null },
+  }));
+  writeScenario("verified-ledger", { issues: [{ number: 238, pull_request: null }], comments: { "238": events },
+    commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+}
+
 // #753: retain adjudication priorities, dispositions and override reasons in
 // both legacy comment payloads and current local-record trajectories.
 {
@@ -4900,10 +4947,59 @@ jq '.adjudications = [{finding_id:"review-r1-codex-verification-1",reviewer_prio
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
 echo "$out" | jq -e '.rounds[0].provenance_measurement == "unverified" and .rounds[0].finding_attributions == [{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"repeat-of:review-r1-codex-verification-1",fingerprint_status:"unverified"}] and .findings_by_class_and_provenance == {} and .findings_by_verified_fingerprint == {} and .provenance_unavailable_rounds == [{stage:"review",round:1}]' >/dev/null ||
     fail "unverified finding projection: attribution was mislabeled or counted as verified: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
+grep -Fq 'Findings by class and provenance: unavailable for round(s) 1 — no matching verified `verdict.json` projection exists; raw producer assertions are not substituted.' <<<"$report_out" ||
+    fail "no-ledger retro wording changed: $report_out"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
 
+echo "== #1444: frozen history and heads verify round-2 repeats and render retro rows =="
+export DFSTATS_DB="$tmp/scenarios/verified-ledger.json"
+run_id="$(meta verified-ledger .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[1].provenance_measurement == "verified" and .rounds[1].finding_attributions == [{id:"review-r2-codex-verification-1",provenance:"round:1",provenance_status:"verified",fingerprint:"repeat-of:review-r1-codex-verification-1",fingerprint_status:"verified"}] and .findings_by_class_and_provenance == {"correctness/original":1,"correctness/round:1":1} and .findings_by_verified_fingerprint == {new:1,"repeat-of:review-r1-codex-verification-1":1} and .provenance_unavailable_rounds == []' >/dev/null ||
+    fail "retained ledger did not verify the repeat: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq '| correctness | original | 1 |' <<<"$report_out" && grep -Fq '| correctness | round:1 | 1 |' <<<"$report_out" && ! grep -Fq 'Findings by class and provenance: unavailable' <<<"$report_out" ||
+    fail "verified ledger retro did not render class/provenance rows: $report_out"
+
+echo "== #1444: a retained head map without history leaves provenance unverified =="
+mv "$tmp/local-records/$run_id/history.json" "$tmp/local-records/$run_id/history.json.saved"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[1].provenance_measurement == "unverified" and .rounds[1].finding_attributions[0].fingerprint_status == "unverified" and .findings_by_class_and_provenance == {}' >/dev/null ||
+    fail "heads without a change ledger fabricated provenance: $out"
+mv "$tmp/local-records/$run_id/history.json.saved" "$tmp/local-records/$run_id/history.json"
+
+echo "== #1444: malformed optional ledger evidence is indeterminate =="
+for file in history.json heads.json; do
+    mv "$tmp/local-records/$run_id/$file" "$tmp/local-records/$run_id/$file.saved"
+    printf '{broken' >"$tmp/local-records/$run_id/$file"
+    set +e
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "malformed $file: expected indeterminate, got rc=$rc: $out"
+    mv "$tmp/local-records/$run_id/$file.saved" "$tmp/local-records/$run_id/$file"
+done
+
+echo "== #1444: optional ledger links cannot escape the record root =="
+for file in history.json heads.json; do
+    mv "$tmp/local-records/$run_id/$file" "$tmp/local-records/$run_id/$file.saved"
+    cp "$tmp/local-records/$run_id/$file.saved" "$tmp/outside-$file"
+    ln -s "$tmp/outside-$file" "$tmp/local-records/$run_id/$file"
+    set +e
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'escapes --record-dir through a symbolic link' <<<"$out" ||
+        fail "escaping $file: expected containment refusal, got rc=$rc: $out"
+    rm "$tmp/local-records/$run_id/$file"
+    mv "$tmp/local-records/$run_id/$file.saved" "$tmp/local-records/$run_id/$file"
+done
+
 echo "== duplicate evidence-comment ids are indeterminate before registration indexing =="
+export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
+run_id="$(meta evidence-grammar .meta.runId)"
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";

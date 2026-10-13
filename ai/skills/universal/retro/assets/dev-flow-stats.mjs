@@ -1638,9 +1638,10 @@ function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds, eff
 // exist yet (the writer, #638/#639, is itself unbuilt) — filed as a
 // follow-up once that contract is settled, the same "blocked on a
 // capability this file doesn't have" category as the registry-trust gap.
-// --history is similarly never passed to dev-flow-exit.mjs, so
-// provenance_share/repeat_after_fix convergence predicates cannot replay
-// correctly either — same follow-up.
+// Published round payloads carry reviewed heads, but no per-fix change
+// ledger. Heads alone cannot establish line provenance, so reconstruction
+// leaves attribution unverified. Local records can supply the retained
+// history.json/heads.json pair through the frozen snapshot below.
 // ---------------------------------------------------------------------------
 
 function buildRunDirectory(runRecord, roundEvidence, destDir) {
@@ -2107,11 +2108,15 @@ function adjudicationNamesOtherStage(filePath, stage) {
 // round 1) is passed through alongside `error` so the caller can recognize
 // one specific, EXPECTED indeterminate condition ("review requested while
 // challenge is still active") without string-matching `error`'s free text.
-function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, policyPath, rigor, currentHead, repoRoot }) {
+function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir }) {
   const argv = [
     exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath,
     "--current-head", currentHead, "--repo-root", repoRoot, "--verification-only", "--json",
   ];
+  for (const [flag, file] of [["--history", "history.json"], ["--heads", "heads.json"]]) {
+    const source = path.join(ledgerDir, file);
+    if (existsSync(source)) argv.push(flag, source);
+  }
   if (rigor) argv.push("--rigor", rigor);
   const result = spawnSync(process.execPath, argv, { encoding: "utf8", maxBuffer: MAX_SYNC_BUFFER_BYTES });
   if (result.error) {
@@ -2186,6 +2191,16 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const policyJsonPath = path.join(runDir, "policy.json");
     if (existsSync(policyJsonPath)) {
       copyFileSync(policyJsonPath, path.join(engineSnapshotDir, "policy.json"));
+    }
+    // Optional provenance evidence belongs to the same frozen record as
+    // the passes. Never synthesize an empty ledger when one is absent, and
+    // copy present bytes unchanged so the engine reports malformed evidence.
+    for (const file of ["history.json", "heads.json"]) {
+      const candidate = path.join(runDir, file);
+      if (existsSync(candidate)) {
+        const source = resolveContainedPath(root, candidate, `${runId}/${file}`);
+        copyFileSync(source, path.join(engineSnapshotDir, file));
+      }
     }
 
     if (body.run_id !== runId) throw new EvidenceError(`${runFile} declares run_id ${JSON.stringify(body.run_id)}, expected ${runId}`);
@@ -2405,7 +2420,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         // rounds, which still uses its own genuine head below.
         let currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
         let { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
-          runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
+          runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
         });
         // Integration cycle 5 (P2), confirmed and fixed: the naive currentHead
         // above is picked from RAW local pass/adjudication/slot-failure
@@ -2444,7 +2459,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
             if (correctedHead && correctedHead !== currentHead) {
               currentHead = correctedHead;
               ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
-                runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
+                runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
               }));
             }
           }
