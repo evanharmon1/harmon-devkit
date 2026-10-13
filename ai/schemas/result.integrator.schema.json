@@ -81,7 +81,7 @@
           "minimum": 0
         },
         "exempt": {
-          "description": "How many of the run's cycles so far were EXEMPT from the integration cap (harmon-init#1326) — a cycle whose head differed from the last reviewed head only by a base merge that changed no file under review, which re-reads identical code by construction. Counted against the separate ceiling the resolver exposes as `rounds.integration_exempt`, never against [caps].integration. Required whenever `charged` is present.",
+          "description": "How many of the run's cycles so far were EXEMPT from the integration cap (harmon-init#1326) — a cycle whose head differed from the last reviewed head only by a base merge that changed no file under review, which re-reads identical code by construction, or (harmon-devkit#1406) a `with-push` / `after-ci-first` cycle whose head's CI concluded failure, which the checker's run-scoped `check` settles from the latest CI evidence and moves back to `charged` if that failure stops standing. Never exempt for a CI failure under `after-ci`. Counted against the separate ceiling the resolver exposes as `rounds.integration_exempt`, never against [caps].integration. Required whenever `charged` is present.",
           "type": "integer",
           "minimum": 0
         },
