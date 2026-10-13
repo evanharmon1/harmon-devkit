@@ -371,12 +371,12 @@ trap 'rm -f -- "$effort_capture" "$effort_metadata"; sandbox_cleanup; review_env
 jq -n --arg requested "$review_reasoning" --arg effective "$effective_effort" \
     --arg source "$effort_source" --argjson matched "$effort_matched" \
     '{requested: $requested, effective: $effective, source: $source, matched: $matched}' >"$effort_metadata"
-# Keep stdout empty until both artifacts exist. Failed publication exits in
-# the shared helper; its cleanup and ours remove every temporary.
+# Keep stdout empty until pass publication succeeds. Failed publication exits
+# in the shared helper; its cleanup and ours remove every temporary. Metadata
+# is advisory: a failed link must not invalidate the immutable published pass.
 review_envelope_publish "$raw_payload" "$review_model" >"$effort_capture"
 effort_path="$effort_dir/${envelope_pass_path##*/}"
 ln -- "$effort_metadata" "$effort_path" || {
-    echo "could not publish effort metadata $effort_path; pass must not be receipted" >&2
-    exit 1
+    echo "WARNING: could not publish advisory effort metadata $effort_path; keeping published pass" >&2
 }
 cat "$effort_capture"

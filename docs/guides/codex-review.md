@@ -209,7 +209,9 @@ blocks promotion rather than passing it.
    independently of the envelope schema. Metadata is outside `passes/` and
    `adjudications/`, so pass readers cannot mistake it for another result.
    Only the invocation that publishes the immutable pass publishes its
-   metadata; a late retry loser cannot overwrite either artifact. Failed runs
+   metadata; a late retry loser cannot overwrite either artifact. Metadata is
+   advisory: if its link fails, a loud stderr warning names the metadata path,
+   and the published pass, stdout path and successful exit are retained. Failed runs
    retain the stderr record and publish no effort sidecar. No user or managed
    Codex config is modified by the guard.
 
