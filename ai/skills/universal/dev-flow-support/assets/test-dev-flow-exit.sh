@@ -1037,6 +1037,22 @@ const gating = (charged) => [round(1, 1, 1, 1, [entry(1, "P1", "fix")]), round(2
 const onePush = { pushes: pushes.pushes.slice(0, 1), unrecorded: 0 };
 assert.equal(computeIntegrationExit(gating(1), 2, onePush).outcome, "continue");
 assert.equal(computeIntegrationExit(gating(2), 2, onePush).outcome, "capped");
+// harmon-devkit#1446: a later integration pass repeating the same cycle ordinal
+// updates the cycle charged/exempt counts — rising to the cap escalates, while
+// an unchanged count keeps the continue outcome.
+const repeated = (recharged) => [...gating(1), round(3, 2, 2, recharged, [])];
+const unchanged = computeIntegrationExit(repeated(1), 2, onePush);
+assert.equal(unchanged.outcome, "continue");
+assert.equal(unchanged.reason, "gating_findings");
+assert.equal(unchanged.action, "fix");
+const escalated = computeIntegrationExit(repeated(2), 2, onePush);
+assert.equal(escalated.outcome, "capped");
+assert.equal(escalated.reason, "cap_reached_with_gating_findings");
+assert.equal(escalated.action, "escalate");
+assert.deepEqual(escalated.cycles.map((c) => ({ cycle: c.cycle, rounds: c.rounds })), [
+  { cycle: 1, rounds: [1] },
+  { cycle: 2, rounds: [2, 3] },
+]);
 console.log("CI-failed exempt cycle check OK");
 '
 
