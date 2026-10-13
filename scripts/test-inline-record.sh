@@ -554,8 +554,11 @@ assert.equal(r.status, 0, r.stderr)
 assert.equal(JSON.parse(r.stdout).generation, 2)
 pass('a solo run stopped at a blocker is closed and its lock released; a fresh solo run then supersedes the ended one on the same branch')
 
-// A two-slot challenge stage: a round is adjudicated only once every resolved
-// slot has a receipted pass, and its head is fixed from the first receipt.
+// A two-slot challenge stage, the second slot added per run with
+// --add-finder: the reservation persists that selection in run.json, a round
+// is adjudicated only once every resolved slot has a receipted pass, the
+// added slot's P1 keeps the stage open, and a round's head is fixed from its
+// first receipt.
 const SRUN = 'run-8-slots'
 const SBRANCH = '8-slots'
 const twoSlotPolicy = join(tmp, 'policy-two-slots.json')
@@ -571,6 +574,11 @@ const s1 = commitAll('feat: slots')
 r = run('node', [runRecord, ...soloArgs({ runId: SRUN, issue: 8, branch: SBRANCH }).map((a) => (a === policyFile ? twoSlotPolicy : a))])
 assert.equal(r.status, 0, r.stderr)
 const sIdentity = JSON.parse(r.stdout)
+const sRecord = sIdentity.record_directory
+assert.deepEqual(read(join(sRecord, 'run.json')).finder_selection,
+  [{ stage: 'challenge', configured: [slotA], requested: [slotB], effective: [slotA, slotB] }])
+pass('solo-init persists the resolved --add-finder selection as run.json finder_selection, where the exit engine restores it')
+
 const sSlate = ['--slate', sIdentity.slate_id, '--session', SESSION, '--run-id', SRUN]
 const sWrite = writer(sSlate)
 sWrite('transition', '--stage', 'claim')
@@ -578,14 +586,36 @@ sWrite('transition', '--stage', 'implement', '--exit', 'claimed')
 sWrite('transition', '--stage', 'verify', '--exit', `committed ${s1}`)
 sWrite('transition', '--stage', 'challenge', '--exit', 'green')
 sWrite('receipt', '--pass', passFile('slots-a', envelope('challenger', 'challenge', 1, slotA, [], { runId: SRUN, reviewed: s1 })))
-refused(sSlate, ['adjudicate', '--file', adjFile('slots-r1', adjudication('challenge', 1, [], { runId: SRUN, reviewed: s1 }))],
+refused(sSlate, ['adjudicate', '--file', adjFile('slots-r1-early', adjudication('challenge', 1, [], { runId: SRUN, reviewed: s1 }))],
   /round challenge-r1 is incomplete: no receipted pass for slot\(s\) copilot-adversarial/)
-assert.equal(existsSync(join(sIdentity.record_directory, 'adjudications')), false)
+assert.equal(existsSync(join(sRecord, 'adjudications')), false)
+
+// A pass produced with fractional seconds and receipted within that same
+// second is not future-dated: start just after a second boundary.
+while (new Date().getMilliseconds() > 100) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+const addedP1 = {
+  id: `challenge-r1-${slotB}-1`, path: 'slots.txt', line: 1, class: 'correctness', provenance: 'original', fingerprint: 'new',
+  priority: 'P1', recommended_disposition: 'fix', evidence: 'slots.txt:1 drops the second value',
+}
+const fractional = envelope('challenger', 'challenge', 1, slotB, [addedP1], { runId: SRUN, reviewed: s1, produced_at: new Date().toISOString() })
+assert.match(fractional.produced_at, /\.[0-9]{3}Z$/)
+sWrite('receipt', '--pass', passFile('slots-b', fractional))
+pass('receipt admits a fractional-second pass in the second it was produced')
+
+v = adjudicateRound(sSlate, sRecord, 'challenge', 1, s1, adjudication('challenge', 1, [p1(1, addedP1.id, 'slots.txt:1')], { runId: SRUN, reviewed: s1 }))
+assert.equal(v.status, 0, JSON.stringify(v.json) + v.stderr)
+assert.equal(v.json.outcome, 'continue')
+pass("the added finder's P1 keeps the stage open: the exit engine restores the selection from run.json without --add-finder")
+
+// Round 2: its head is fixed by its first receipt.
 writeFileSync(join(repo, 'slots.txt'), 'first\nsecond\n')
 const s2 = commitAll('fix: slots')
-refused(sSlate, ['receipt', '--pass', passFile('slots-b', envelope('challenger', 'challenge', 1, slotB, [], { runId: SRUN, reviewed: s2 }))],
-  new RegExp(`challenge round 1 is fixed at head ${s1} by its receipted passes; .*harmon-devkit#1445`))
-assert.equal(existsSync(join(sIdentity.record_directory, 'passes', `challenge-r1-${slotB}.json`)), false)
+sWrite('receipt', '--pass', passFile('slots-a-r2', envelope('challenger', 'challenge', 2, slotA, [], { runId: SRUN, reviewed: s2 })))
+writeFileSync(join(repo, 'slots.txt'), 'first\nsecond\nthird\n')
+const s3 = commitAll('fix: slots again')
+refused(sSlate, ['receipt', '--pass', passFile('slots-b-r2', envelope('challenger', 'challenge', 2, slotB, [], { runId: SRUN, reviewed: s3 }))],
+  new RegExp(`challenge round 2 is fixed at head ${s2} by its receipted passes; .*harmon-devkit#1445`))
+assert.equal(existsSync(join(sRecord, 'passes', `challenge-r2-${slotB}.json`)), false)
 pass('a two-slot round is not adjudicated until every resolved slot has a pass, and a pass for a moved head is refused (harmon-devkit#1445)')
 
 JS

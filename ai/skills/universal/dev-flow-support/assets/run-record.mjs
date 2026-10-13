@@ -850,6 +850,8 @@ function soloInit(args) {
   const repoRoot = git(['rev-parse', '--show-toplevel'])
   const policy = readJson(args.policy, '--policy')
   const plannedPolicy = planPolicy(policy, { strategySource: args['strategy-source'], operatorPins: args['operator-pin'] ?? [] })
+  const selection = (Array.isArray(policy.finder_selection) ? policy.finder_selection : [])
+    .map(({ stage, configured, requested, effective }) => ({ stage, configured, requested, effective }))
   const slate = soloSlate(runId)
   const runDir = join(root, 'runs', runId)
 
@@ -945,6 +947,9 @@ function soloInit(args) {
           },
         ],
         receipts: [],
+        // The resolved per-run finder selection, persisted where the exit
+        // engine restores it from (#810), so an added finder's slot counts.
+        ...(selection.length > 0 ? { finder_selection: selection } : {}),
         interventions: [],
         outcome: null,
         pr: null,
@@ -1087,9 +1092,8 @@ function admitPass(record, envelope, runDir) {
   if (fixed !== undefined) refuse(`${stage} round ${round} is fixed at head ${fixed} by its receipted passes; a moved round is invalidated and re-run (harmon-devkit#1445), never mixed`)
   const { branch, head } = branchHead(runDir)
   if (envelope.head !== head || reviewed !== head) refuse(`it reviewed ${reviewed}, not ${branch}'s head ${head}`)
-  const now = resolveAt(undefined)
   if (typeof envelope.produced_at !== 'string' || !TIMESTAMP.test(envelope.produced_at) ||
-      isBefore(envelope.produced_at, active.entered_at) || isBefore(now, envelope.produced_at)) {
+      isBefore(envelope.produced_at, active.entered_at) || Date.now() < Date.parse(envelope.produced_at)) {
     refuse(`produced_at ${JSON.stringify(envelope.produced_at)} is outside the stage's span (${active.entered_at} to now)`)
   }
   return `${stage}-r${round}-${slot}`
