@@ -77,7 +77,12 @@ inline `task challenge` / `task review` stages in a real single-lane run
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
 directory unchanged, and a solo session records promotion with `run-record.mjs
-promote --slate solo-<run-id> --session <its session>`. Where no record exists
+promote --slate solo-<run-id> --session <its session>` — `<its session>` being
+the session name `/claim` recorded on its claim comment's `session:` line and
+`solo-init` persisted in the slate lock, the same value on every write — or a
+non-promotion ending with `close --outcome capped|escalated|abandoned`, then
+releases the slate lock with `run-record.mjs lock release` (`/implement`
+§ 6a step 6). Where no record exists
 because the confidence stages never ran (or could not be recorded), that is
 not an error and not grounds to fabricate one: evaluate `AGENTS.md`
 § Readiness gate condition by condition and say in the PR body that the run

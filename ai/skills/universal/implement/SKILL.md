@@ -498,22 +498,39 @@ on with the inline procedure.
    ```sh
    node "$support_dir/run-record.mjs" solo-init --session <session> \
      --run-id run-<issue>-<slug> --issue <issue> --title <issue title> \
-     --url <issue url> --branch <branch> --base <merge base> --policy <file>
+     --url <issue url> --branch <branch> --base <merge base> --policy <file> \
+     --actor-id "$(gh api user --jq .id)" --strategy-source <strategy source> \
+     [--operator-pin <pin>]...
    ```
+
+   `--session` is this session's name: the one `/claim` recorded on its claim
+   comment's `session:` line (the identity `/wrap` and every claim check
+   match on). It is not a secret and not a process id; it persists in the
+   slate lock and the plan's reservation reason, every later write must name
+   the same value, and another session's value is refused. `--actor-id` is
+   the GitHub account that will post the evidence markers;
+   `--strategy-source` and each `--operator-pin` are the resolution's own
+   disclosures, copied as resolved — never guessed.
 
    It prints the run identity (`run_id`, `slate_id`, `generation`,
    `active_state_path`, `record_directory`, `policy_projection`) — keep it;
    every later write names `--slate <slate_id> --session <session> --run-id
    <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan, slate lock
    on the issue, owner binding), `policy.json`, a kickoff `run.json`, and the
-   branch's active pointer. It **refuses** a branch whose active pointer names
-   another run (an orchestrated lane is never superseded), an issue another
-   session holds, or a run id that is not `run-<issue>-…`; a refusal is a stop
-   for recording, never something to work around. Re-running it is
-   idempotent.
-2. **Walk to the stage.** `transition --stage claim`, then `implement`,
-   `verify` and `challenge`, each with `--exit` naming how the stage being
-   left ended (the claim, the commit, `VERIFY-EXIT=0`).
+   branch's active pointer. Every refusable precondition is checked before the
+   first write — a run id that is not `run-<issue>-…`, an unresolvable default
+   branch or registry revision, an actor the registry does not trust (its
+   markers would never authenticate), a branch whose active pointer names a
+   run that has **not** ended (an orchestrated lane is never superseded), an
+   issue another session holds — and a step that still fails afterwards undoes
+   everything the call created. A refusal is a stop for recording, never
+   something to work around. Re-running it is idempotent.
+2. **Walk to the stage.** The reservation happens where the confidence stages
+   begin, so the stages before it are recorded **retroactively, now**:
+   `transition --stage claim`, then `implement`, `verify` and `challenge`,
+   each with `--exit` naming how the stage being left ended (the claim, the
+   commit, `VERIFY-EXIT=0`). Their `entered_at` is the time of this write,
+   not of the work; the exits carry the facts.
 3. **One pass per configured finder slot, per round.** Capture the head first.
    Where the finder's runner publishes in envelope mode, run it so
    (`task challenge -- --envelope --run-id … --head … --stage challenge
@@ -524,30 +541,49 @@ on with the inline procedure.
    or, where the harness has no role agent, assemble it yourself the way the
    role would: decode the finder's badges against its registry `severity_map`,
    and set `producer` to **your own** harness, model and tier — the finder's
-   CLI did not produce the envelope. Then `receipt --pass <file>`: it
-   validates the pass against the run (identity, stage, earlier finding ids,
-   produced within the stage), publishes it no-clobber as
-   `passes/<stage>-r<n>-<slot>.json`, and appends its receipt.
-4. **Adjudicate, compute the exit, publish.** Adjudicate exactly as above, then
-   `adjudicate --file <doc>` publishes `adjudications/<stage>-r<n>.json` after
-   validating it against the round's receipted passes. Run
-   `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage <stage>
-   --policy .devflow.toml --current-head <head> --repo-root . --json`, keep its
-   JSON as `<record>/verdict-<stage>-r<n>.json`, and treat a verdict that
-   disagrees with your reading of the exit rules as a blocker to resolve, not
-   a number to override. Publish the round's evidence comment on the issue
-   exactly as `review/SKILL.md` § "Verify, adjudicate, publish, exit"
-   specifies — `render-dev-flow.sh round-table`, one fenced JSON projection,
-   `review/assets/post-evidence.sh` with the identity's `--generation` and
-   `--active-state` and your own `gh api user` id as `--actor-id`.
+   CLI did not produce the envelope. Then `receipt --pass <file>`. It admits
+   only a **completed** pass for a **configured** slot of the **active**
+   stage's **next unadjudicated** round, reviewing the branch's **current
+   head**, produced inside the stage's span; anything else is refused with
+   nothing published. An admitted pass is validated against the run
+   (identity, earlier finding ids), published no-clobber as
+   `passes/<stage>-r<n>-<slot>.json`, and receipted.
+4. **Verify, adjudicate, compute the exit, publish** — the same sequence
+   `review/SKILL.md` § "Verify, adjudicate, publish, exit" runs:
+   1. `ledger --stage <stage>` materializes the exit engine's evidence from the
+      branch's own commits: `<record>/history.json` (the change ledger of each
+      fix between consecutive reviewed heads) and `<record>/heads.json` (the
+      branch's head map).
+   2. `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage <stage>
+      --policy .devflow.toml --current-head <head> --history
+      <record>/history.json --heads <record>/heads.json --repo-root .
+      --verification-only --json`. Only `action: adjudicate` authorizes
+      adjudication; its verified provenance and fingerprints are what the
+      round comment publishes.
+   3. Adjudicate exactly as above, then `adjudicate --file <doc>` publishes
+      `adjudications/<stage>-r<n>.json` after validating it against the
+      round's receipted passes.
+   4. Re-run `ledger` and the same exit command without
+      `--verification-only`, persist its JSON as `<record>/verdict.json`, and
+      act on it; a verdict that disagrees with your reading of the exit rules
+      is a blocker to resolve, not a number to override.
+   5. Publish the round's evidence comment on the issue as that section
+      specifies — `render-dev-flow.sh round-table`, one fenced JSON
+      projection, `review/assets/post-evidence.sh` with the identity's
+      `--generation` and `--active-state` and the same `--actor-id`.
 5. **Advance and hand off.** Leave a stage with `transition --stage <next>
    --exit "<rule>: <detail>"` (review after challenge, `security` after
    review, `integration` once the draft PR exists), and `bind-pr` the draft.
    Publish the PR-body projection with `render-dev-flow.sh publish` as
    `/review` does. `/integrate` then takes `--record <record_directory>` and
-   records promotion with `promote`; release the slate lock
-   (`run-record.mjs lock release --slate <slate_id> --session <session>`) once
-   the run has ended.
+   records promotion with `promote`.
+6. **End the run either way.** A run that stops short of promotion — a
+   `capped` or `diverging` stage, an escalation, an abandoned change — is
+   ended with `close --outcome capped|escalated|abandoned --exit "<why>"`
+   (every adjudicated round's evidence marker must already be posted). After
+   `promote` or `close`, release the slate lock: `run-record.mjs lock release
+   --slate <slate_id> --session <session>`. An ended run's active pointer is
+   the only one a later `solo-init` on the same branch may supersede.
 
 ## 7. Security gate
 

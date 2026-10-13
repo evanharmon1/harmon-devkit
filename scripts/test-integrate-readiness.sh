@@ -880,18 +880,16 @@ echo "==> #1183: a solo record written by the inline path passes the checker-onl
 # run with run-record.mjs solo-init and writes every stage through the real
 # writers (transition, receipt, adjudicate, bind-pr). The gate is handed that
 # record exactly as /integrate hands it one, with the session's own checker
-# state, and must accept it.
-build_solo_record() {
-    local solo="${test_tmp}/solo" writer="${repo_root}/ai/skills/universal/dev-flow-support/assets/run-record.mjs"
-    local run=run-380-solo run_dir
+# state, and must accept it. The record's passes review the solo branch's real
+# head (receipt admits nothing else), so the gate is run against that head.
+solo="${test_tmp}/solo"
+# `|| exit 1` on every step: errexit is suppressed inside a subshell whose
+# status the caller tests, so it cannot be relied on here.
+make_solo_repo() {
     rm -rf "$solo"
     mkdir -p "$solo"
-    # `|| exit 1` on every step: errexit is suppressed inside a subshell whose
-    # status the caller tests, so it cannot be relied on here.
     (
         cd "$solo" || exit 1
-        slate="solo-run-380-solo"
-        session="solo-session"
         git init -q -b main . || exit 1
         git config user.name Test
         git config user.email test@example.invalid
@@ -901,13 +899,29 @@ build_solo_record() {
         git commit -q -m "chore: initial" || exit 1
         git update-ref refs/remotes/origin/main HEAD || exit 1
         git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main || exit 1
+        git switch -q -c feature-branch || exit 1
+        printf 'the change\n' >change.txt
+        git add change.txt || exit 1
+        git commit -q -m "feat: a change" || exit 1
+        git rev-parse HEAD
+    ) || fail "could not build the solo scratch repository"
+}
+build_solo_record() {
+    local writer="${repo_root}/ai/skills/universal/dev-flow-support/assets/run-record.mjs"
+    local run=run-380-solo run_dir
+    (
+        cd "$solo" || exit 1
+        slate="solo-run-380-solo"
+        session="solo-session"
         rc=0
         node "${repo_root}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" resolve \
             --policy .devflow.toml --registry agent-registry.json --json >policy.json || rc=$?
         [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit 1
         node "$writer" solo-init --session "$session" --run-id "$run" --issue 380 --title "A change" \
             --url https://github.com/example/repo/issues/380 --branch feature-branch \
-            --base "$(git rev-parse HEAD)" --policy policy.json >/dev/null || exit 1
+            --base "$(git rev-parse main)" --policy policy.json \
+            --actor-id "$(jq -r '.trusted_orchestrator_actor_ids[0]' agent-registry.json)" \
+            --strategy-source default_strategy >/dev/null || exit 1
         w() { node "$writer" "$1" --slate "$slate" --session "$session" --run-id "$run" "${@:2}" >/dev/null || exit 1; }
         w transition --stage claim
         w transition --stage implement --exit claimed
@@ -940,6 +954,8 @@ build_solo_record() {
     mkdir -p "$record_dir"
     cp -R "$run_dir/run.json" "$run_dir/policy.json" "$run_dir/passes" "$run_dir/adjudications" "$record_dir/"
 }
+saved_head_sha="$head_sha"
+head_sha="$(make_solo_repo)"
 write_checker_defaults
 build_solo_record
 jq '.run_id = "run-380-solo"' "$recheck_state" >"$recheck_state.next"
@@ -948,6 +964,7 @@ marker_run_id=run-380-solo marker_registered_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 assert_gate 0 pass ready
 [ "$(gate_field cycle_evidence | jq -r '.kind')" = checker-state ] ||
     fail "the solo record must pass on checker-state evidence alone: $gate_out"
+head_sha="$saved_head_sha"
 
 echo "==> I1: integration finder selections require an integrator"
 write_checker_defaults

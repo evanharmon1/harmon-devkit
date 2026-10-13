@@ -892,7 +892,10 @@ confidence stages inline through `task challenge` / `task review`; it reserves
 a real single-lane run with `run-record.mjs solo-init` (its own one-lane slate,
 lock, `policy.json`, kickoff `run.json` and active pointer), publishes each
 round's pass and adjudication with `run-record.mjs receipt` / `adjudicate`,
-and posts the round's marker through the same `post-evidence.sh`. There is no
+materializes the exit engine's change ledger and head map from the branch's
+own commits with `run-record.mjs ledger` before the same verification-only
+and final exit calls `/review` makes, and posts the round's marker through the
+same `post-evidence.sh`. There is no
 second record format and no reduced one: the readiness gate, the exit engine
 and the harvester read the solo record exactly as they read an orchestrated
 one. A session that never enters a confidence stage reserves nothing, and the

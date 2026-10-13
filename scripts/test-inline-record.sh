@@ -4,11 +4,13 @@
 #
 # An interactive session with no orchestrator brief reserves a solo run with
 # `run-record.mjs solo-init`, receipts each pass and adjudication through
-# `run-record.mjs receipt|adjudicate`, advances with `transition`, publishes
-# each round's evidence marker through review's `post-evidence.sh`, and the
-# consumers read that record unchanged: the exit engine, the readiness-input
-# projection `/integrate`'s gate reads, and `/retro`'s retro-run-report.mjs,
-# which must discover the trusted marker and render `## Run evidence`.
+# `run-record.mjs receipt|adjudicate`, materializes the exit engine's evidence
+# with `run-record.mjs ledger`, advances with `transition`, publishes each
+# round's evidence marker through review's `post-evidence.sh`, and ends the run
+# with `promote` or `close` plus `lock release`. The consumers read that
+# record unchanged: the exit engine, the readiness-input projection
+# `/integrate`'s gate reads, and `/retro`'s retro-run-report.mjs, which must
+# discover the trusted marker and render `## Run evidence`.
 #
 # Hermetic and offline: a scratch repository, the REAL writers, validator,
 # monitor, exit engine, renderer, harvester and report, and a fake `gh` and
@@ -23,12 +25,13 @@ command -v node >/dev/null 2>&1 || {
     exit 1
 }
 test_tmp="$(mktemp -d)"
-trap 'rm -rf "$test_tmp"' EXIT
+trap 'chmod -R u+w "$test_tmp" 2>/dev/null || true; rm -rf "$test_tmp"' EXIT
 node --input-type=module - "$repo_root" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, existsSync, readdirSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const [source, tmp] = process.argv.slice(2)
 const support = join(source, 'ai/skills/universal/dev-flow-support/assets')
@@ -44,6 +47,11 @@ for (const key of Object.keys(env)) if (/^GIT_CONFIG_(KEY|VALUE)_/.test(key)) de
 const repo = join(tmp, 'repo')
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { cwd: repo, env, encoding: 'utf8', ...opts }).trim()
 const run = (cmd, args) => spawnSync(cmd, args, { cwd: repo, env, encoding: 'utf8' })
+const commitAll = (message) => {
+  sh('git', ['add', '.'])
+  sh('git', ['commit', '-q', '-m', message])
+  return sh('git', ['rev-parse', 'HEAD'])
+}
 
 // ---------------------------------------------------------------------------
 // A scratch consumer: the real policy, registry and gitleaks config, a
@@ -60,18 +68,14 @@ registry.trusted_orchestrator_actor_ids = [ACTOR]
 put(join(repo, 'agent-registry.json'), registry)
 cpSync(join(source, '.devflow.toml'), join(repo, '.devflow.toml'))
 cpSync(join(source, '.gitleaks.toml'), join(repo, '.gitleaks.toml'))
-sh('git', ['add', '.'])
-sh('git', ['commit', '-qm', 'initial'])
+const base = commitAll('chore: initial')
 sh('git', ['remote', 'add', 'origin', 'https://github.com/example/repo'])
-const base = sh('git', ['rev-parse', 'HEAD'])
 sh('git', ['update-ref', 'refs/remotes/origin/main', base])
 sh('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
 const BRANCH = '1-solo'
 sh('git', ['switch', '-q', '-c', BRANCH])
 writeFileSync(join(repo, 'change.txt'), 'the change under review\n')
-sh('git', ['add', 'change.txt'])
-sh('git', ['commit', '-qm', 'feat: a change'])
-const head = sh('git', ['rev-parse', 'HEAD'])
+const head = commitAll('feat: a change')
 const policyFile = join(tmp, 'policy.json')
 // Exit 3 is "resolved, but the gate slugs were not cross-checked": this
 // scratch repository has no Taskfile, which the record does not depend on.
@@ -80,29 +84,42 @@ assert.ok([0, 3].includes(resolved.status), resolved.stderr)
 writeFileSync(policyFile, resolved.stdout)
 const policy = read(policyFile)
 const common = sh('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'])
-const runsDir = join(common, 'dev-flow-v2', 'runs')
+const state = join(common, 'dev-flow-v2')
+const runsDir = join(state, 'runs')
+const SESSION = 'solo-session'
+const PIN = 'implementer: fixture pin (operator)'
+
+const soloArgs = ({ runId, issue, branch, session = SESSION, actor = ACTOR }) => ['solo-init', '--session', session,
+  '--run-id', runId, '--issue', String(issue), '--title', 'A change', '--url', `https://github.com/example/repo/issues/${issue}`,
+  '--branch', branch, '--base', base, '--policy', policyFile, '--actor-id', String(actor),
+  '--strategy-source', 'default_strategy', '--operator-pin', PIN]
+// Nothing a refused reservation could have created is left behind.
+const nothingWritten = (runId) =>
+  !existsSync(join(state, 'locks', `solo-${runId}.json`)) && !existsSync(join(state, 'slates', `solo-${runId}`)) &&
+  !existsSync(join(runsDir, runId))
 
 // ---------------------------------------------------------------------------
-// 1. A session that skips the confidence stages writes nothing.
-// ---------------------------------------------------------------------------
-assert.equal(existsSync(join(common, 'dev-flow-v2')), false)
-pass('a session that never enters the confidence stages has no run record (nothing to treat as an error)')
-
-// ---------------------------------------------------------------------------
-// 2. solo-init reserves a real single-lane run.
+// 1. solo-init: every refusable precondition before the first write.
 // ---------------------------------------------------------------------------
 const RUN = 'run-1-solo'
-const SESSION = 'solo-session'
-const initArgs = ['solo-init', '--session', SESSION, '--run-id', RUN, '--issue', '1', '--title', 'A change',
-  '--url', 'https://github.com/example/repo/issues/1', '--branch', BRANCH, '--base', base, '--policy', policyFile]
+const initArgs = soloArgs({ runId: RUN, issue: 1, branch: BRANCH })
 let r = run('node', [runRecord, ...initArgs.map((a) => (a === RUN ? 'run-2-solo' : a))])
 assert.equal(r.status, 2, r.stderr)
 assert.match(r.stderr, /canonical run-1-<name>/)
 r = run('node', [runRecord, ...initArgs.map((a) => (a === policyFile ? join(tmp, 'missing.json') : a))])
 assert.equal(r.status, 1, r.stderr)
 assert.match(r.stderr, /^refused: --policy not found/m)
-assert.equal(existsSync(join(common, 'dev-flow-v2')), false)
-pass('solo-init refuses a non-canonical run id or an unreadable policy before writing anything')
+r = run('node', [runRecord, ...soloArgs({ runId: RUN, issue: 1, branch: BRANCH, actor: 999 })])
+assert.equal(r.status, 1, r.stderr)
+assert.match(r.stderr, /actor 999 is not in agent-registry.json's trusted_orchestrator_actor_ids/)
+sh('git', ['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD'])
+r = run('node', [runRecord, ...initArgs])
+sh('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+assert.equal(r.status, 1, r.stderr)
+assert.match(r.stderr, /refs\/remotes\/origin\/HEAD is unset/)
+assert.equal(existsSync(state), false)
+pass('solo-init refuses a non-canonical id, an unreadable policy, an untrusted actor or an unresolvable default branch before writing anything')
+
 r = run('node', [runRecord, ...initArgs])
 assert.equal(r.status, 0, r.stderr)
 const identity = JSON.parse(r.stdout)
@@ -112,16 +129,21 @@ assert.equal(identity.run_id, RUN)
 assert.equal(identity.slate_id, `solo-${RUN}`)
 assert.equal(identity.generation, 1)
 assert.equal(identity.active_state_path, sh('bash', [join(source, 'ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh'), 'active-path', '--branch', BRANCH, '--repo-root', repo]))
-assert.deepEqual(read(identity.active_state_path), { ...read(identity.active_state_path), run_id: RUN, branch: BRANCH, generation: 1 })
+const pointer = read(identity.active_state_path)
+assert.deepEqual([pointer.run_id, pointer.branch, pointer.generation], [RUN, BRANCH, 1])
 assert.deepEqual(read(identity.policy_projection), { ...policy, rigor: { ...policy.rigor, source: 'default_rigor' } })
 let runDoc = read(runJson)
 assert.equal(runDoc.initiated_by, 'human')
 assert.equal(runDoc.stage_transitions.length, 1)
-assert.match(runDoc.stage_transitions[0].exit, /^resolved: rigor standard \(default_rigor\), strategy /)
+assert.match(runDoc.stage_transitions[0].exit, /^resolved: rigor standard \(default_rigor\), strategy plan \(default_strategy\)/)
+const planFile = join(state, 'slates', `solo-${RUN}`, 'plan.json')
 sh('node', [join(support, 'validate-result-schemas.mjs'), 'run', runJson, '--receipts', runJson, '--no-adjudications'])
-sh('node', [join(support, 'validate-result-schemas.mjs'), 'plan', join(common, 'dev-flow-v2', 'slates', `solo-${RUN}`, 'plan.json')])
-assert.equal(read(join(common, 'dev-flow-v2', 'locks', `solo-${RUN}.json`)).session, SESSION)
-pass('solo-init writes a schema-valid kickoff run.json, policy.json, single-lane plan, slate lock and active pointer')
+sh('node', [join(support, 'validate-result-schemas.mjs'), 'plan', planFile])
+const plannedPolicy = read(planFile).revisions[0].plan.policy
+assert.equal(plannedPolicy.strategy_source, 'default_strategy')
+assert.deepEqual(plannedPolicy.operator_pins, [PIN])
+assert.equal(read(join(state, 'locks', `solo-${RUN}.json`)).session, SESSION)
+pass('solo-init writes a schema-valid kickoff run.json, policy.json, single-lane plan (operator strategy source and pins), slate lock and active pointer')
 
 const before = readFileSync(runJson, 'utf8')
 r = run('node', [runRecord, ...initArgs])
@@ -130,28 +152,43 @@ assert.equal(JSON.parse(r.stdout).generation, 1)
 assert.equal(readFileSync(runJson, 'utf8'), before)
 pass('solo-init re-arms idempotently: same generation, run.json untouched')
 
-r = run('node', [runRecord, 'solo-init', '--session', SESSION, '--run-id', 'run-1-other', '--issue', '1', '--title', 'A change',
-  '--url', 'https://github.com/example/repo/issues/1', '--branch', BRANCH, '--base', base, '--policy', policyFile])
+r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-other', issue: 1, branch: BRANCH })])
 assert.equal(r.status, 1)
-assert.match(r.stderr, /already has active run run-1-solo/)
-assert.equal(existsSync(join(runsDir, 'run-1-other')), false)
-pass('solo-init refuses to supersede a branch that already has an active run, writing nothing')
-
-r = run('node', [runRecord, 'solo-init', '--session', 'another-session', '--run-id', 'run-1-elsewhere', '--issue', '1', '--title', 'A change',
-  '--url', 'https://github.com/example/repo/issues/1', '--branch', '1-elsewhere', '--base', base, '--policy', policyFile])
+assert.match(r.stderr, /already has live active run run-1-solo/)
+assert.ok(nothingWritten('run-1-other'))
+r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-elsewhere', issue: 1, branch: '1-elsewhere', session: 'another-session' })])
 assert.equal(r.status, 1)
 assert.match(r.stderr, /issue\(s\) 1 are already locked by session solo-session/)
-pass('solo-init refuses an issue another session holds')
+assert.ok(nothingWritten('run-1-elsewhere'))
+pass('solo-init refuses a branch whose run is still live, and an issue another session holds, writing nothing')
+
+if (process.getuid?.() !== 0) {
+  // A failure after the writes began (here: activation, against an
+  // unwritable pointer directory) undoes everything this call created.
+  chmodSync(join(state, 'active'), 0o555)
+  r = run('node', [runRecord, ...soloArgs({ runId: 'run-5-rollback', issue: 5, branch: '5-rollback' })])
+  chmodSync(join(state, 'active'), 0o755)
+  assert.equal(r.status, 1, r.stderr)
+  assert.match(r.stderr, /activation refused/)
+  assert.ok(nothingWritten('run-5-rollback'), readdirSync(state).join(','))
+  pass('solo-init rolls back its lock, plan, owner binding, policy.json, run.json and branch binding when activation fails')
+}
 
 // ---------------------------------------------------------------------------
-// 3. The inline stages, through the existing writer plus receipt/adjudicate.
+// 2. The inline stages, through the existing writer plus receipt/adjudicate.
 // ---------------------------------------------------------------------------
-const slateArgs = ['--slate', identity.slate_id, '--session', SESSION, '--run-id', RUN]
-const write = (...args) => {
-  const out = run('node', [runRecord, ...args.slice(0, 1), ...slateArgs, ...args.slice(1)])
+const writer = (slateArgs) => (...args) => {
+  const out = run('node', [runRecord, args[0], ...slateArgs, ...args.slice(1)])
   assert.equal(out.status, 0, `${args.join(' ')}: ${out.stderr}`)
   return out.stdout
 }
+const refused = (slateArgs, args, pattern) => {
+  const out = run('node', [runRecord, args[0], ...slateArgs, ...args.slice(1)])
+  assert.equal(out.status, 1, `${args.join(' ')} was not refused: ${out.stdout}${out.stderr}`)
+  assert.match(out.stderr, pattern)
+}
+const slateArgs = ['--slate', identity.slate_id, '--session', SESSION, '--run-id', RUN]
+const write = writer(slateArgs)
 write('transition', '--stage', 'claim')
 write('transition', '--stage', 'implement', '--exit', 'claimed by this session')
 write('transition', '--stage', 'verify', '--exit', `committed ${head}`)
@@ -160,89 +197,103 @@ write('transition', '--stage', 'challenge', '--exit', 'task verify VERIFY-EXIT=0
 const scratch = join(tmp, 'scratch')
 mkdirSync(scratch)
 const now = () => new Date().toISOString().replace(/\.[0-9]{3}Z$/, 'Z')
-const envelope = (role, stage, round, finder, findings) => ({
+const envelope = (role, stage, round, finder, findings, { runId = RUN, reviewed = head, ...overrides } = {}) => JSON.parse(JSON.stringify({
   schema: 2,
   role,
   status: 'completed',
-  head,
+  head: reviewed,
   produced_at: now(),
   producer: { harness: 'claude-code', model: 'claude-opus-5-5', tier: 'frontier' },
-  run: { run_id: RUN, initiated_by: 'human' },
+  run: { run_id: runId, initiated_by: 'human' },
   payload: {
     stage,
     round,
-    reviewed_head: head,
+    reviewed_head: reviewed,
     finder,
     slot: finder,
     findings,
     counts: ['P0', 'P1', 'P2', 'P3'].reduce((c, p) => ({ ...c, [p]: findings.filter((f) => f.priority === p).length }), {}),
     attack_scenarios: role === 'challenger' ? [{ id: 'as-1', description: 'tried to break the change', outcome: 'held', finding_id: null }] : undefined,
   },
-})
-const strip = (value) => JSON.parse(JSON.stringify(value))
+  ...overrides,
+}))
+const passFile = (name, value) => {
+  const file = join(scratch, `${name}.json`)
+  put(file, value)
+  return file
+}
 const challengeFinder = policy.stages.challenge.finders[0]
 const reviewFinder = policy.stages.review.finders[0]
-const challengePass = join(scratch, 'challenge-r1.json')
-put(challengePass, strip(envelope('challenger', 'challenge', 1, challengeFinder, [])))
+const challengePass = passFile('challenge-r1', envelope('challenger', 'challenge', 1, challengeFinder, []))
 
-// A pass for a stage the run is not in is refused, and publishes nothing.
-const earlyReview = join(scratch, 'early-review.json')
-put(earlyReview, strip(envelope('reviewer', 'review', 1, reviewFinder, [])))
-r = run('node', [runRecord, 'receipt', ...slateArgs, '--pass', earlyReview])
-assert.equal(r.status, 1)
-assert.match(r.stderr, /active stage is challenge/)
-assert.equal(existsSync(join(record, 'passes', `review-r1-${reviewFinder}.json`)), false)
-// A pass bound to another run fails the validator, and publishes nothing.
-const foreign = join(scratch, 'foreign.json')
-put(foreign, strip({ ...envelope('challenger', 'challenge', 1, challengeFinder, []), run: { run_id: 'run-9-other', initiated_by: 'human' } }))
-r = run('node', [runRecord, 'receipt', ...slateArgs, '--pass', foreign])
-assert.equal(r.status, 1)
-assert.match(r.stderr, /failed receipt validation/)
-assert.equal(existsSync(join(record, 'passes', `challenge-r1-${challengeFinder}.json`)), false)
-pass('receipt refuses a pass for the wrong stage or another run, publishing nothing')
+// The receipt invariant: a completed pass for a configured slot of the
+// active stage's next unadjudicated round, of the branch head, produced
+// within the stage's span. Each refusal publishes nothing.
+const inadmissible = [
+  ['wrong stage', envelope('reviewer', 'review', 1, reviewFinder, []), /the run's active stage is challenge/],
+  ['blocked', envelope('challenger', 'challenge', 1, challengeFinder, [], { status: 'blocked' }), /status is "blocked"/],
+  ['unconfigured slot', envelope('challenger', 'challenge', 1, 'not-a-finder', []), /slot not-a-finder is not a configured challenge finder/],
+  ['skipped round', envelope('challenger', 'challenge', 2, challengeFinder, []), /next unadjudicated challenge round is 1/],
+  ['foreign head', envelope('challenger', 'challenge', 1, challengeFinder, [], { reviewed: base }), /reviewed [0-9a-f]{40}, not 1-solo's head/],
+  ['future', envelope('challenger', 'challenge', 1, challengeFinder, [], { produced_at: '2999-01-01T00:00:00Z' }), /outside the stage's span/],
+  ['stale', envelope('challenger', 'challenge', 1, challengeFinder, [], { produced_at: '2026-01-01T00:00:00Z' }), /outside the stage's span/],
+]
+for (const [name, value, pattern] of inadmissible) {
+  refused(slateArgs, ['receipt', '--pass', passFile(`bad-${name.replace(/ /g, '-')}`, value)], new RegExp(`is not admissible: .*${pattern.source}`))
+}
+refused(slateArgs, ['receipt', '--pass', passFile('foreign-run', envelope('challenger', 'challenge', 1, challengeFinder, [], { runId: 'run-9-other' }))], /failed receipt validation/)
+assert.equal(existsSync(join(record, 'passes')), false)
+assert.deepEqual(read(runJson).receipts.filter((x) => x.kind === 'pass'), [])
+pass('receipt refuses a pass for another stage, a blocked one, an unconfigured slot, a skipped round, a foreign head, a future or stale one, or another run, publishing nothing')
 
 assert.match(write('receipt', '--pass', challengePass), /recorded pass receipt challenge-r1-/)
 assert.equal(readFileSync(join(record, 'passes', `challenge-r1-${challengeFinder}.json`), 'utf8'), readFileSync(challengePass, 'utf8'))
 assert.match(write('receipt', '--pass', challengePass), /no change/)
-const altered = join(scratch, 'altered.json')
-put(altered, strip({ ...envelope('challenger', 'challenge', 1, challengeFinder, []), producer: { harness: 'codex-cli', model: 'other', tier: 'frontier' } }))
-r = run('node', [runRecord, 'receipt', ...slateArgs, '--pass', altered])
-assert.equal(r.status, 1)
-assert.match(r.stderr, /immutable/)
+refused(slateArgs, ['receipt', '--pass', passFile('altered', envelope('challenger', 'challenge', 1, challengeFinder, [], { producer: { harness: 'codex-cli', model: 'other', tier: 'frontier' } }))], /immutable/)
 assert.deepEqual(read(runJson).receipts.filter((x) => x.kind === 'pass'), [{ kind: 'pass', file: `challenge-r1-${challengeFinder}` }])
 pass('receipt publishes the pass no-clobber and appends exactly one receipt; a re-receipt is a no-op, a changed one refused')
 
-const adjudication = (stage, round, entries) => ({ schema: 2, run_id: RUN, stage, round, reviewed_head: head, adjudications: entries })
-const missingRound = join(scratch, 'challenge-r2-adj.json')
-put(missingRound, adjudication('challenge', 2, []))
-r = run('node', [runRecord, 'adjudicate', ...slateArgs, '--file', missingRound])
-assert.equal(r.status, 1)
-assert.match(r.stderr, /no receipted pass/)
-const challengeAdj = join(scratch, 'challenge-r1-adj.json')
-put(challengeAdj, adjudication('challenge', 1, []))
-assert.match(write('adjudicate', '--file', challengeAdj), /recorded adjudication challenge-r1/)
-assert.match(write('adjudicate', '--file', challengeAdj), /no change/)
-
-const exitEngine = join(support, 'dev-flow-exit.sh')
-const verdict = (stage) => {
-  const out = run('bash', [exitEngine, '--run', record, '--stage', stage, '--policy', join(repo, '.devflow.toml'), '--current-head', head, '--repo-root', repo, '--json'])
-  return { status: out.status, json: out.stdout ? JSON.parse(out.stdout) : null, stderr: out.stderr }
+const adjudication = (stage, round, entries, { runId = RUN, reviewed = head } = {}) => ({ schema: 2, run_id: runId, stage, round, reviewed_head: reviewed, adjudications: entries })
+const adjFile = (name, value) => {
+  const file = join(scratch, `${name}.adj.json`)
+  put(file, value)
+  return file
 }
-let v = verdict('challenge')
+refused(slateArgs, ['adjudicate', '--file', adjFile('challenge-r2-early', adjudication('challenge', 2, []))], /no receipted pass/)
+
+// The confidence-stage exit, exactly as /review computes it: the change
+// ledger and head map materialized by the writer, a verification-only call
+// before adjudication, the final call after it, persisted as verdict.json.
+const exitEngine = join(support, 'dev-flow-exit.sh')
+const exitFor = (slate, rec, stage, current, verificationOnly) => {
+  writer(slate)('ledger', '--stage', stage)
+  const out = run('bash', [exitEngine, '--run', rec, '--stage', stage, '--policy', join(repo, '.devflow.toml'), '--current-head', current,
+    '--history', join(rec, 'history.json'), '--heads', join(rec, 'heads.json'), '--repo-root', repo, '--json',
+    ...(verificationOnly ? ['--verification-only'] : [])])
+  const json = out.stdout ? JSON.parse(out.stdout) : null
+  if (json !== null) put(join(rec, verificationOnly ? 'verification.json' : 'verdict.json'), json)
+  return { status: out.status, json, stderr: out.stderr }
+}
+const adjudicateRound = (slate, rec, stage, round, current, doc) => {
+  const verification = exitFor(slate, rec, stage, current, true)
+  assert.equal(verification.json?.action, 'adjudicate', JSON.stringify(verification.json) + verification.stderr)
+  writer(slate)('adjudicate', '--file', adjFile(`${rec.split('/').at(-1)}-${stage}-r${round}`, doc))
+  const verdict = exitFor(slate, rec, stage, current, false)
+  put(join(rec, `verdict-${stage}-r${round}.json`), verdict.json)
+  return { verification: verification.json, ...verdict }
+}
+let v = adjudicateRound(slateArgs, record, 'challenge', 1, head, adjudication('challenge', 1, []))
 assert.equal(v.status, 20, JSON.stringify(v.json) + v.stderr)
 assert.equal(v.json.outcome, 'converged')
-put(join(record, 'verdict-challenge-r1.json'), v.json)
-pass('adjudicate publishes once; the exit engine converges the inline challenge stage from the record (empty round)')
-
-const stale = join(scratch, 'stale.json')
-put(stale, strip({ ...envelope('challenger', 'challenge', 2, challengeFinder, []), produced_at: '2026-01-01T00:00:00Z' }))
-r = run('node', [runRecord, 'receipt', ...slateArgs, '--pass', stale])
-assert.equal(r.status, 1)
-assert.match(r.stderr, /before stage challenge began/)
-pass('receipt refuses a pass produced before its stage began (the exit engine would reject it as out-of-span)')
+assert.deepEqual(read(join(record, 'verdict.json')), v.json)
+assert.deepEqual(read(join(record, 'history.json')), [])
+assert.equal(read(join(record, 'heads.json'))[head].parent, base)
+assert.match(write('adjudicate', '--file', adjFile(`${RUN}-challenge-r1`, adjudication('challenge', 1, []))), /no change/)
+refused(slateArgs, ['receipt', '--pass', passFile('challenge-r1-again', envelope('challenger', 'challenge', 1, challengeFinder, [], { producer: { harness: 'codex-cli', model: 'again', tier: 'frontier' } }))], /immutable/)
+pass('adjudicate publishes once; ledger + verification-only + final exit converge the inline challenge stage (empty round) and persist verdict.json')
 
 // ---------------------------------------------------------------------------
-// 4. Evidence: each adjudicated round is published through review's own
+// 3. Evidence: each adjudicated round is published through review's own
 //    post-evidence.sh against a fake GitHub, and registered in run.json.
 // ---------------------------------------------------------------------------
 const bin = join(tmp, 'bin')
@@ -252,13 +303,16 @@ env.INLINE_GH_DB = db
 env.PATH = `${bin}:${env.PATH}`
 const ISSUE = 1
 const PR = 2
+const SKIP_ISSUE = 6
+const SKIP_PR = 7
+const prFixture = (number, issue) => ({ number, url: `https://github.com/example/repo/pull/${number}`, title: 'feat: a change',
+  state: 'OPEN', isDraft: true, body: `Closes #${issue}\n`, closingIssuesReferences: [{ number: issue }] })
 put(db, {
   login: 'solo-writer',
   actor: ACTOR,
   next_id: 100,
-  comments: { [ISSUE]: [], [PR]: [] },
-  pr: { number: PR, url: `https://github.com/example/repo/pull/${PR}`, title: 'feat: a change', state: 'OPEN', isDraft: true,
-    body: `Closes #${ISSUE}\n`, closingIssuesReferences: [{ number: ISSUE }] },
+  comments: {},
+  prs: { [PR]: prFixture(PR, ISSUE), [SKIP_PR]: prFixture(SKIP_PR, SKIP_ISSUE) },
   registry: Buffer.from(JSON.stringify(registry)).toString('base64'),
   base,
 })
@@ -272,8 +326,8 @@ const slurp = a.includes('--slurp')
 const page = (v) => out(slurp ? [v] : v)
 if (a[0] === 'repo' && a[1] === 'view') { process.stdout.write('https://github.com/example/repo\\n'); process.exit(0) }
 if (a[0] === 'pr' && a[1] === 'view') {
-  if (Number(a[2]) !== d.pr.number) { process.stderr.write('HTTP 404\\n'); process.exit(1) }
-  out(d.pr)
+  if (!d.prs[a[2]]) { process.stderr.write('HTTP 404\\n'); process.exit(1) }
+  out(d.prs[a[2]])
 }
 if (a[0] !== 'api') { process.stderr.write('fake gh: unsupported ' + a.join(' ') + '\\n'); process.exit(1) }
 if (a[1] === 'user') out({ id: d.actor, login: d.login })
@@ -293,7 +347,7 @@ if ((m = /^repos\\/example\\/repo\\/issues\\/([0-9]+)\\/comments$/.exec(path))) 
   page(pageNo === 1 ? (d.comments[n] || []) : [])
 }
 if ((m = /^repos\\/example\\/repo\\/issues\\/([0-9]+)$/.exec(path))) {
-  out(Number(m[1]) === d.pr.number ? { number: d.pr.number, pull_request: {} } : { number: Number(m[1]) })
+  out(d.prs[m[1]] ? { number: Number(m[1]), pull_request: {} } : { number: Number(m[1]) })
 }
 if (path === 'repos/example/repo') out({ default_branch: 'main' })
 if (path === 'repos/example/repo/commits' && endpoint.includes('path=agent-registry.json')) page([{ sha: d.base }])
@@ -311,26 +365,29 @@ chmodSync(join(bin, 'gitleaks'), 0o755)
 
 const render = join(support, 'render-dev-flow.sh')
 const postEvidence = join(source, 'ai/skills/universal/review/assets/post-evidence.sh')
-const publish = (stage, round, role, finder) => {
-  const verdictFile = join(record, `verdict-${stage}-r${round}.json`)
-  const table = sh('bash', [render, 'round-table', '--record', record, '--stage', stage, '--round', String(round), '--verdict', verdictFile])
+const publishFor = ({ ident, branch, issue }) => (stage, round, role, finder) => {
+  const rec = ident.record_directory
+  const pass = read(join(rec, 'passes', `${stage}-r${round}-${finder}.json`))
+  const verdictFile = join(rec, `verdict-${stage}-r${round}.json`)
+  const table = sh('bash', [render, 'round-table', '--record', rec, '--stage', stage, '--round', String(round), '--verdict', verdictFile])
   const projection = {
-    run_id: RUN, stage, round, reviewed_head: head,
-    passes: [read(join(record, 'passes', `${stage}-r${round}-${finder}.json`))],
-    adjudication: read(join(record, 'adjudications', `${stage}-r${round}.json`)).adjudications,
+    run_id: ident.run_id, stage, round, reviewed_head: pass.head,
+    passes: [pass],
+    adjudication: read(join(rec, 'adjudications', `${stage}-r${round}.json`)).adjudications,
     exit: read(verdictFile),
   }
-  const bodyFile = join(scratch, `${stage}-r${round}.md`)
-  const markerFile = join(scratch, `${stage}-r${round}.marker.json`)
-  writeFileSync(bodyFile, `**Dev flow v2 — ${stage} round ${round}** · run \`${RUN}\` (solo, inline path)\n\n${table}\n\n\`\`\`json\n${JSON.stringify(projection, null, 2)}\n\`\`\`\n`)
-  put(markerFile, { run_id: RUN, stage, round, sequence: 1, destination: 'issue' })
-  const out = run('bash', [postEvidence, '--repo', 'example/repo', '--repo-root', repo, '--run', runJson, '--branch', BRANCH,
-    '--generation', String(identity.generation), '--active-state', identity.active_state_path, '--head', head,
-    '--actor-id', String(ACTOR), '--role', role, '--finder', finder, '--issue', String(ISSUE),
+  const bodyFile = join(scratch, `${ident.run_id}-${stage}-r${round}.md`)
+  const markerFile = join(scratch, `${ident.run_id}-${stage}-r${round}.marker.json`)
+  writeFileSync(bodyFile, `**Dev flow v2 — ${stage} round ${round}** · run \`${ident.run_id}\` (solo, inline path)\n\n${table}\n\n\`\`\`json\n${JSON.stringify(projection, null, 2)}\n\`\`\`\n`)
+  put(markerFile, { run_id: ident.run_id, stage, round, sequence: 1, destination: 'issue' })
+  const out = run('bash', [postEvidence, '--repo', 'example/repo', '--repo-root', repo, '--run', join(rec, 'run.json'), '--branch', branch,
+    '--generation', String(ident.generation), '--active-state', ident.active_state_path, '--head', pass.head,
+    '--actor-id', String(ACTOR), '--role', role, '--finder', finder, '--issue', String(issue),
     '--marker-file', markerFile, '--body-file', bodyFile, '--scratch-dir', scratch])
   assert.equal(out.status, 0, out.stderr)
   return out.stdout.trim()
 }
+const publish = publishFor({ ident: identity, branch: BRANCH, issue: ISSUE })
 const challengeComment = publish('challenge', 1, 'challenger', challengeFinder)
 runDoc = read(runJson)
 assert.equal(runDoc.evidence_comments.length, 1)
@@ -344,38 +401,24 @@ const reviewFinding = {
   id: `review-r1-${reviewFinder}-1`, path: 'change.txt', line: 1, class: 'hardening', provenance: 'original',
   fingerprint: 'new', priority: 'P2', recommended_disposition: 'defer', evidence: 'the change has no test',
 }
-const reviewR1 = join(scratch, 'review-r1.json')
-put(reviewR1, strip(envelope('reviewer', 'review', 1, reviewFinder, [reviewFinding])))
-write('receipt', '--pass', reviewR1)
-const badAdj = join(scratch, 'review-r1-bad.json')
-put(badAdj, adjudication('review', 1, []))
-r = run('node', [runRecord, 'adjudicate', ...slateArgs, '--file', badAdj])
-assert.equal(r.status, 1)
-assert.match(r.stderr, /failed receipt validation/)
+write('receipt', '--pass', passFile('review-r1', envelope('reviewer', 'review', 1, reviewFinder, [reviewFinding])))
+refused(slateArgs, ['adjudicate', '--file', adjFile('review-r1-bad', adjudication('review', 1, []))], /failed receipt validation/)
 assert.equal(existsSync(join(record, 'adjudications', 'review-r1.json')), false)
 pass('adjudicate refuses a document that leaves a receipted finding unadjudicated, publishing nothing')
-const reviewAdj = join(scratch, 'review-r1-adj.json')
-put(reviewAdj, adjudication('review', 1, [{
+v = adjudicateRound(slateArgs, record, 'review', 1, head, adjudication('review', 1, [{
   finding_id: reviewFinding.id, reviewer_priority: 'P2', adjudicated_priority: 'P2', disposition: 'defer',
   reason: 'worth a test, not merge-blocking', evidence: 'change.txt:1 is a fixture', override: null,
 }]))
-write('adjudicate', '--file', reviewAdj)
-v = verdict('review')
 assert.equal(v.json.outcome, 'continue', JSON.stringify(v.json))
-put(join(record, 'verdict-review-r1.json'), v.json)
+const verified = v.verification.rounds.find((round) => round.round === 1).findings[0]
+assert.deepEqual([verified.provenance_status, verified.fingerprint_status], ['verified', 'verified'])
 publish('review', 1, 'reviewer', reviewFinder)
-const reviewR2 = join(scratch, 'review-r2.json')
-put(reviewR2, strip(envelope('reviewer', 'review', 2, reviewFinder, [])))
-write('receipt', '--pass', reviewR2)
-const reviewAdj2 = join(scratch, 'review-r2-adj.json')
-put(reviewAdj2, adjudication('review', 2, []))
-write('adjudicate', '--file', reviewAdj2)
-v = verdict('review')
+write('receipt', '--pass', passFile('review-r2', envelope('reviewer', 'review', 2, reviewFinder, [])))
+v = adjudicateRound(slateArgs, record, 'review', 2, head, adjudication('review', 2, []))
 assert.equal(v.status, 20, JSON.stringify(v.json))
-put(join(record, 'verdict-review-r2.json'), v.json)
 publish('review', 2, 'reviewer', reviewFinder)
 assert.equal(read(runJson).evidence_comments.length, 3)
-pass('review continues on a P2-only round and converges on the empty round 2; every round carries its marker')
+pass('review continues on a P2-only round (its provenance and fingerprint verified against the ledger) and converges on the empty round 2; every round carries its marker')
 
 write('intervention', '--kind', 'asked', '--note', 'maintainer confirmed deferring the P2 to integration')
 write('transition', '--stage', 'security', '--exit', 'converged: empty_round after review round 2/' + policy.rounds.review)
@@ -386,7 +429,7 @@ sh('node', [join(support, 'validate-result-schemas.mjs'), 'run', runJson, '--rec
 pass('the solo record reaches integration bound to its PR and validates strictly with every adjudication')
 
 // ---------------------------------------------------------------------------
-// 5. Consumers read the record unchanged.
+// 4. Consumers read the record unchanged.
 // ---------------------------------------------------------------------------
 const readiness = JSON.parse(sh('bash', [render, 'readiness-input', '--record', record, '--head', head], { stdio: ['ignore', 'pipe', 'ignore'] }))
 assert.equal(readiness.head, head)
@@ -397,24 +440,116 @@ pass("the readiness gate's readiness-input projection reads the solo record: the
 // (render-dev-flow.sh publish); the report reads its caps from there.
 const disclosure = sh('bash', [render, 'policy-disclosure', '--record', record], { stdio: ['ignore', 'pipe', 'ignore'] })
 const github = read(db)
-github.pr.body = `Closes #${ISSUE}\n\n<!-- dev-flow:begin:policy-disclosure -->\n${disclosure}\n<!-- dev-flow:end:policy-disclosure -->\n`
+github.prs[PR].body = `Closes #${ISSUE}\n\n<!-- dev-flow:begin:policy-disclosure -->\n${disclosure}\n<!-- dev-flow:end:policy-disclosure -->\n`
 put(db, github)
-const report = run('node', [join(source, 'ai/skills/universal/retro/assets/retro-run-report.mjs'), '--repo', 'example/repo',
-  '--pr', String(PR), '--trusted-actor-id', String(ACTOR), '--record-dir', runsDir])
+const retro = (pr, trusted) => run('node', [join(source, 'ai/skills/universal/retro/assets/retro-run-report.mjs'), '--repo', 'example/repo',
+  '--pr', String(pr), '--trusted-actor-id', String(trusted), '--record-dir', runsDir])
+const report = retro(PR, ACTOR)
 assert.equal(report.status, 0, `${report.stdout}\n${report.stderr}`)
-assert.match(report.stdout, /^## Run evidence/m)
-assert.ok(report.stdout.includes(RUN), report.stdout)
-assert.ok(report.stdout.includes(`Rounds spent: 1 / cap ${policy.rounds.challenge}`), report.stdout)
-assert.ok(report.stdout.includes(`Rounds spent: 2 / cap ${policy.rounds.review}`), report.stdout)
-assert.ok(report.stdout.includes('### Findings by class and provenance'), report.stdout)
-assert.ok(report.stdout.includes('maintainer confirmed deferring the P2 to integration'), report.stdout)
-assert.ok(report.stdout.includes('Forged-author comments: 0'), report.stdout)
-pass('retro-run-report.mjs discovers the trusted marker on the linked issue and renders ## Run evidence (exit 0): rounds against caps, findings by provenance, interventions')
+const section = (name) => report.stdout.split(/^### /m).find((s) => s.startsWith(name)) ?? ''
+assert.match(report.stdout, new RegExp(`^## Run evidence — run \`${RUN}\``, 'm'))
+assert.match(report.stdout, new RegExp(`evidence marker on issue #${ISSUE} \\(closing reference\\)`))
+assert.match(section('Stage `challenge`'), new RegExp(`Rounds spent: 1 / cap ${policy.rounds.challenge} `))
+assert.match(section('Stage `challenge`'), /Findings: 0 across 1 pass\(es\)/)
+assert.match(section('Stage `review`'), new RegExp(`Rounds spent: 2 / cap ${policy.rounds.review} `))
+assert.match(section('Stage `review`'), /Findings: 1 across 2 pass\(es\)/)
+assert.match(section('Stage `review`'), /Round 1 evidence: 1 pass\(es\), 0 blocked pass\(es\), 1 adjudication\(s\)/)
+// The harvester re-runs the exit engine without the run's ledger, so it
+// discloses provenance as unavailable for exactly the round with a finding —
+// stated, never silently substituted — while the record itself verifies it
+// (section 2's verification projection above).
+assert.match(section('Stage `review`'), /Verified provenance\/fingerprint unavailable for round\(s\): 1$/m)
+assert.match(report.stdout, /Interventions during this stage: asked at [0-9T:-]+Z \(maintainer confirmed deferring the P2 to integration\)/)
+assert.match(report.stdout, /Forged-author comments: 0/)
+pass('retro-run-report.mjs discovers the trusted marker on the linked issue and renders ## Run evidence (exit 0): rounds against caps, findings per stage, provenance disclosure, the intervention')
 
-const untrusted = run('node', [join(source, 'ai/skills/universal/retro/assets/retro-run-report.mjs'), '--repo', 'example/repo',
-  '--pr', String(PR), '--trusted-actor-id', '999', '--record-dir', runsDir])
+const untrusted = retro(PR, 999)
 assert.equal(untrusted.status, 11, `${untrusted.stdout}\n${untrusted.stderr}`)
 pass('the same markers under a different trust set are indeterminate (exit 11), never a clean report')
+
+const skipped = retro(SKIP_PR, ACTOR)
+assert.equal(skipped.status, 10, `${skipped.stdout}\n${skipped.stderr}`)
+assert.match(skipped.stderr, /no-run-record/)
+assert.deepEqual(readdirSync(runsDir).filter((name) => name.startsWith(`run-${SKIP_ISSUE}-`)), [])
+pass('a PR whose session skipped the confidence stages has no record: /retro reports exit 10 no-run-record, the ordinary no-evidence outcome')
+
+// ---------------------------------------------------------------------------
+// 5. End of life: promotion, and a run stopped at a blocker.
+// ---------------------------------------------------------------------------
+// /integrate settles the deferred P2 through the shared validated writer
+// (integrate/SKILL.md), which promotion requires.
+const settle = join(scratch, 'settle.mjs')
+writeFileSync(settle, `import { readFileSync } from 'node:fs'
+const [writer, runJson, finding, at] = process.argv.slice(2)
+const { withMutex, writeValidated } = await import(writer)
+withMutex(runJson, () => {
+  const record = JSON.parse(readFileSync(runJson, 'utf8'))
+  record.settlements.push({ finding_id: finding, disposition: 'file', settled_at: at, reference: { type: 'issue_number', value: '4242' } })
+  writeValidated('run', runJson, record)
+})
+`)
+sh('node', [settle, pathToFileURL(runRecord).href, runJson, reviewFinding.id, now()])
+write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint')
+const releaseLock = (slateId) => sh('node', [runRecord, 'lock', 'release', '--slate', slateId, '--session', SESSION])
+assert.match(releaseLock(identity.slate_id), /released/)
+assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
+refused(slateArgs, ['transition', '--stage', 'implement', '--exit', 'late'], /run already ended/)
+assert.equal(read(runJson).outcome, 'ready-for-review')
+pass('a promoted solo run releases its slate lock and refuses every later write')
+
+// A second run whose challenge stage diverges: round 2 repeats round 1's
+// finding on the very line round 1's fix added, which only the ledger can
+// verify, so repeat_after_fix fires.
+const DRUN = 'run-3-diverge'
+const DBRANCH = '3-diverge'
+sh('git', ['switch', '-q', '-c', DBRANCH, base])
+writeFileSync(join(repo, 'a.txt'), 'one\ntwo\nthree\n')
+const d1 = commitAll('feat: a')
+r = run('node', [runRecord, ...soloArgs({ runId: DRUN, issue: 3, branch: DBRANCH })])
+assert.equal(r.status, 0, r.stderr)
+const dIdentity = JSON.parse(r.stdout)
+const dSlate = ['--slate', dIdentity.slate_id, '--session', SESSION, '--run-id', DRUN]
+const dWrite = writer(dSlate)
+dWrite('transition', '--stage', 'claim')
+dWrite('transition', '--stage', 'implement', '--exit', 'claimed')
+dWrite('transition', '--stage', 'verify', '--exit', `committed ${d1}`)
+dWrite('transition', '--stage', 'challenge', '--exit', 'green')
+const finding = (round, line, provenance, fingerprint) => ({
+  id: `challenge-r${round}-${challengeFinder}-1`, path: 'a.txt', line, class: 'correctness', provenance, fingerprint,
+  priority: 'P1', recommended_disposition: 'fix', evidence: 'line two mishandles the edge case',
+})
+const p1 = (round, id, at) => ({ finding_id: id, reviewer_priority: 'P1', adjudicated_priority: 'P1', disposition: 'fix',
+  reason: 'confirmed', evidence: at, override: null })
+dWrite('receipt', '--pass', passFile('diverge-r1', envelope('challenger', 'challenge', 1, challengeFinder, [finding(1, 2, 'original', 'new')], { runId: DRUN, reviewed: d1 })))
+v = adjudicateRound(dSlate, dIdentity.record_directory, 'challenge', 1, d1, adjudication('challenge', 1, [p1(1, finding(1, 2).id, 'a.txt:2')], { runId: DRUN, reviewed: d1 }))
+assert.equal(v.json.outcome, 'continue', JSON.stringify(v.json))
+const dPublish = publishFor({ ident: dIdentity, branch: DBRANCH, issue: 3 })
+dPublish('challenge', 1, 'challenger', challengeFinder)
+writeFileSync(join(repo, 'a.txt'), 'one\ntwo, fixed\na new guard\nthree\n')
+const d2 = commitAll('fix: a')
+const repeat = finding(2, 3, 'round:1', `repeat-of:${finding(1, 2).id}`)
+dWrite('receipt', '--pass', passFile('diverge-r2', envelope('challenger', 'challenge', 2, challengeFinder, [repeat], { runId: DRUN, reviewed: d2 })))
+v = adjudicateRound(dSlate, dIdentity.record_directory, 'challenge', 2, d2, adjudication('challenge', 2, [p1(2, repeat.id, 'a.txt:3')], { runId: DRUN, reviewed: d2 }))
+assert.deepEqual(read(join(dIdentity.record_directory, 'history.json')),
+  [{ round: 1, path: 'a.txt', added_lines: [2, 3], deleted_lines: [2], renamed_from: null }])
+const repeated = v.verification.rounds.find((round) => round.round === 2).findings[0]
+assert.deepEqual([repeated.provenance_status, repeated.verified_provenance, repeated.fingerprint_status],
+  ['verified', 'round:1', 'verified'])
+assert.equal(v.status, 21, JSON.stringify(v.json))
+assert.equal(v.json.outcome, 'diverging')
+dPublish('challenge', 2, 'challenger', challengeFinder)
+pass("the writer's ledger verifies a round-2 repeat-of finding on round 1's own fix, so repeat_after_fix fires (diverging)")
+
+// Stopped at that blocker: close records the outcome, the lock is released,
+// and the branch can take a fresh solo run, which supersedes the ended one.
+dWrite('close', '--outcome', 'escalated', '--exit', 'diverging: repeat_after_fix after challenge round 2/' + policy.rounds.challenge)
+releaseLock(dIdentity.slate_id)
+assert.equal(read(join(dIdentity.record_directory, 'run.json')).outcome, 'escalated')
+assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
+r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch: DBRANCH })])
+assert.equal(r.status, 0, r.stderr)
+assert.equal(JSON.parse(r.stdout).generation, 2)
+pass('a solo run stopped at a blocker is closed and its lock released; a fresh solo run then supersedes the ended one on the same branch')
 
 JS
 echo "PASS: test-inline-record.sh"

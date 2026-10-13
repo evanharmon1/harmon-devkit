@@ -452,10 +452,19 @@ trusted evidence marker (harmon-devkit#1183). The procedure is `/implement`
 ```bash
 node "$support/run-record.mjs" solo-init --session <session> \
   --run-id run-<issue>-<slug> --issue <issue> --title <title> --url <issue url> \
-  --branch <branch> --base <merge base> --policy <resolved policy json>
+  --branch <branch> --base <merge base> --policy <resolved policy json> \
+  --actor-id "$(gh api user --jq .id)" --strategy-source <strategy source>
 node "$support/run-record.mjs" receipt    --slate solo-<run-id> --session <session> --run-id <run-id> --pass <envelope>
+node "$support/run-record.mjs" ledger     --slate solo-<run-id> --session <session> --run-id <run-id> --stage <stage>
 node "$support/run-record.mjs" adjudicate --slate solo-<run-id> --session <session> --run-id <run-id> --file <adjudication>
 ```
+
+`<session>` is the session name `/claim` recorded on its claim comment.
+`receipt` admits only a completed pass for a configured slot of the active
+stage's next unadjudicated round, reviewing the branch's current head; `ledger`
+writes the `history.json` and `heads.json` the exit engine's verification call
+reads. A run that stops at a blocker is ended with `close` and its slate lock
+released with `lock release`.
 
 `receipt` takes the pass whoever produced it: an envelope-mode runner's
 published file, a role agent's result, or — for a Codex finder, which has no
