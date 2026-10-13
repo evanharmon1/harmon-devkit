@@ -36,7 +36,19 @@
 #
 # Usage:
 #   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-#       [--maintainer-requested] [--wait SECONDS] [--interval SECONDS]
+#       [--state CHECKER_STATE_FILE] [--maintainer-requested]
+#       [--wait SECONDS] [--interval SECONDS]
+#
+#   Callers should pass --state and run a final checker `check` before this
+#   helper. An existing cycle must record a clean verdict for the captured
+#   head (or its carried head). A superseded cycle does not block this head.
+#   Repeat --state for every configured PR-side finder; every named state is
+#   guarded. Absent state means no open cycle and prints a one-line notice.
+#   Omitting --state preserves legacy behaviour without this ordering guard.
+#   Pass --state only once this run has reserved its own cycle (the state's
+#   run_id is this run's). At integration cap 0 or before the first reservation,
+#   omit --state: no cycle of this run needs settlement, and an earlier run's
+#   state must not block reconciliation.
 #
 #   The catch-up runs at the readiness gate, on a draft. A PR that is no
 #   longer a draft has been handed to a human, and is caught up only when the
@@ -85,6 +97,9 @@
 #       a 422 whose message is not a known merge refusal, or a PR that is not
 #       open. Never the fallback: stop and report (for a fork, ask for
 #       maintainer edits).
+#   17  unsettled cycle — --state does not record a settled clean cycle for
+#       this PR/head, or cannot be read. Run a final checker `check` first;
+#       no GitHub write was made. Never a local-merge fallback.
 
 set -euo pipefail
 
@@ -92,7 +107,8 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-      [--maintainer-requested] [--wait SECONDS] [--interval SECONDS]
+      [--state CHECKER_STATE_FILE] [--maintainer-requested]
+      [--wait SECONDS] [--interval SECONDS]
 
 Catches a behind PR up to its base with GitHub update-branch in merge mode,
 guarded by --head as expected_head_sha. Prints the new head OID.
@@ -100,7 +116,14 @@ Rebase is refused. A non-draft PR is refused unless --maintainer-requested
 says the maintainer asked for this catch-up. Exit codes: 0 caught up,
 2 usage, 10 ruleset refusal, 11 conflict, 12 stale head,
 13 indeterminate (including no timeout/gtimeout on PATH), 14 retarget,
-15 not a draft, 16 refused otherwise.
+15 not a draft, 16 refused otherwise, 17 unsettled cycle (run final check first).
+Callers should pass --state once per configured PR-side finder; repeats guard
+every named state. A superseded cycle does not block the captured head.
+Missing state means no open cycle and prints a one-line notice on stderr.
+Pass --state only once this run has reserved its own cycle (the state's run_id
+is this run's). At integration cap 0 or before the first reservation, omit
+--state: no cycle of this run needs settlement, and an earlier run's state
+must not block reconciliation.
 EOF
     exit 2
 }
@@ -138,6 +161,7 @@ base=
 wait_sec=180
 interval_sec=5
 maintainer_requested=0
+checker_states=()
 
 [ "$#" -gt 0 ] || usage
 while [ "$#" -gt 0 ]; do
@@ -145,7 +169,7 @@ while [ "$#" -gt 0 ]; do
     --rebase | --update-method | --update-method=* | --method | --method=*)
         refuse "$1: update-branch runs in merge mode only — a rebase rewrites pushed history"
         ;;
-    --repo | --pr | --head | --base | --wait | --interval)
+    --repo | --pr | --head | --base | --wait | --interval | --state)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -154,6 +178,10 @@ while [ "$#" -gt 0 ]; do
         --base) base=$2 ;;
         --wait) wait_sec=$2 ;;
         --interval) interval_sec=$2 ;;
+        --state)
+            [ -n "$2" ] || refuse "--state requires a checker-state file path"
+            checker_states+=("$2")
+            ;;
         esac
         shift 2
         ;;
@@ -172,6 +200,28 @@ valid_sha "$head" || refuse "--head must be a 40-hex commit SHA"
 [ -n "$base" ] || refuse "--base is required (the baseRefName the gate captured)"
 valid_uint "$wait_sec" || refuse "--wait must be a non-negative integer"
 valid_uint "$interval_sec" || refuse "--interval must be a non-negative integer"
+
+# State is an ordering guard, not a replacement for check's live evidence
+# scan. Only a cycle or carry for the captured head needs a clean verdict;
+# an older cycle superseded by a push cannot attest this head anyway.
+for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
+    if [ ! -e "$checker_state" ] && [ ! -L "$checker_state" ]; then
+        printf 'update-branch: no-cycle-state: guard found no cycle state at %s\n' "$checker_state" >&2
+        continue
+    fi
+    if ! jq -se --arg repo "$repo" --argjson pr "$pr" --arg head "$head" '
+        length == 1 and (.[0] |
+          type == "object" and .repo == $repo and .pr == $pr and
+          (.version == 1 or .version == 2) and
+          (.head | type == "string" and test("^[0-9a-f]{40}$")) and
+          (if .head == $head or .carry.attests_head == $head then
+             .phase == "attached" and .last_reviewed_verdict == "clean" and
+             .last_reviewed_head == .head
+           else true end))
+    ' "$checker_state" >/dev/null 2>&1; then
+        finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
+    fi
+done
 
 timeout_bin=
 if command -v timeout >/dev/null 2>&1; then
