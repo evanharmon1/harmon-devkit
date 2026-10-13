@@ -228,8 +228,8 @@ otherwise no report is rendered. With `--pr`, read-only discovery must find no
 trusted marker on the PR or its discovered issues before a local read.
 Indeterminate discovery, including untrusted-only markers or malformed
 markers treated as corrupted evidence, blocks the local read with exit 11.
-That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr`, or whose PR URL
-names a different repository from `--repo`, is refused with exit 14. A record
+That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr`, or whose normalized PR URL
+differs from the requested PR URL fetched by `gh`, is refused with exit 14. A record
 naming no PR explicitly says it is not bound to the requested PR.
 A missing local record retains exit 10 on the ordinary path. An attempted
 local read with `--as-of` is a usage error (exit 2), even if the local record

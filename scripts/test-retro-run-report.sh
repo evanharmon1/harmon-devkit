@@ -2301,6 +2301,15 @@ run_report "$d" --repo o/r --run not-file --record-dir "$d/records" --local-unve
 [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json is not a regular file' &&
     ok "directory run.json is a typed refusal without rendering" || bad "non-file record: $RC $ERR"
 
+echo "==> a legitimate dot-dot-prefixed run id stays inside its parent"
+mkdir -p "$d/records/..candidate"
+node -e '
+  const fs=require("node:fs"), r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))
+  r.run_id="..candidate"; fs.writeFileSync(process.argv[2],JSON.stringify(r))
+' "$FIXTURES/fresh-kickoff.json" "$d/records/..candidate/run.json"
+run_report "$d" --repo o/r --run ..candidate --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 13 ] && ok "dot-dot-prefixed candidate is accepted, unlike a parent escape" || bad "candidate refused: $RC $ERR"
+
 echo "==> containment accepts a filesystem-root parent"
 node -e '
   const fs=require("node:fs"), vm=require("node:vm"), path=require("node:path")
@@ -2330,6 +2339,31 @@ printf '%s' "$OUT" >"$d/terminators.txt"
   const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
   if (!text.includes("injected VERIFIED") || lines.some(line=>!line.includes(label))) process.exit(1)
 ' "$d/terminators.txt" && ok "CR/LF/CRLF/LS/PS/NEL/VT/FF cannot forge unlabelled local lines" || bad "local terminator injection: $RC $ERR"
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+
+echo "==> local values strip C0/C1 terminal controls but keep tab"
+node -e '
+  const fs=require("node:fs"), file=process.argv[1], r=JSON.parse(fs.readFileSync(file,"utf8"))
+  const controls=Array.from({length:32},(_,i)=>String.fromCharCode(i)).join("")+
+    Array.from({length:33},(_,i)=>String.fromCharCode(127+i)).join("")
+  r.interventions=[{kind:"other",at:r.started_at,
+    note:"\u001b[8mhidden\u001b[0m\u001b[2J\u001b[1A\u001b[2K"+controls+"kept\ttab"}]
+  fs.writeFileSync(file,JSON.stringify(r))
+' "$d/records/run-6000-fresh-kickoff/run.json"
+run_report "$d" "${local_args[@]}" --local-unverified
+printf '%s' "$OUT" >"$d/controls.txt"
+[ "$RC" -eq 13 ] && node -e '
+  const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+  const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) ||
+      !text.includes("kept\ttab") || text.split("\n").filter(Boolean).some(line=>!line.includes(label))) process.exit(1)
+' "$d/controls.txt" && ok "no terminal control reaches local output, tab and labels remain" || bad "local terminal injection: $RC $ERR"
+run_report "$d" "${local_args[@]}" --local-unverified --json
+printf '%s' "$OUT" >"$d/controls.json"
+[ "$RC" -eq 13 ] && node -e '
+  const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) || JSON.parse(text).verified!==false) process.exit(1)
+' "$d/controls.json" && ok "JSON escapes local control bytes and retains a valid unverified report" || bad "JSON control injection: $RC $ERR"
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
 echo "==> local notes render HTML and entities as literal text"
@@ -2371,18 +2405,40 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
 [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json records PR' &&
     ok "local record bound to another PR is refused" || bad "local PR mismatch: $RC $ERR"
 make_pr_json "$d/pr.json" "$d/body"
+node -e 'const fs=require("node:fs"),f=process.argv[1],r=JSON.parse(fs.readFileSync(f,"utf8")); r.url="https://github.com/evanharmon1/harmon-devkit/pull/634"; fs.writeFileSync(f,JSON.stringify(r))' "$d/pr.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo evanharmon1/harmon-devkit --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
 [ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
     ok "matching local PR with no marker renders as unverified" || bad "matching local PR refused: $RC $ERR"
 
+make_pr_json "$d/pr.json" "$d/body"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
 [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'PR URL does not name the requested repository' &&
     ok "matching PR number in another repository is refused" || bad "foreign local PR accepted: $RC $ERR"
+node -e 'const fs=require("node:fs"),f=process.argv[1],r=JSON.parse(fs.readFileSync(f,"utf8")); r.url="HTTPS://GITHUB.COM/EVANHARMON1/HARMON-DEVKIT/pull/634/"; fs.writeFileSync(f,JSON.stringify(r))' "$d/pr.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo EVANHARMON1/HARMON-DEVKIT --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
 [ "$RC" -eq 13 ] && ok "local PR repository binding is case-insensitive" || bad "normalized local PR refused: $RC $ERR"
+
+echo "==> local PR binding follows the fetched Enterprise host"
+node --input-type=module -e '
+  import fs from "node:fs"
+  import {chainDigest} from "./ai/skills/universal/dev-flow-support/assets/run-record.mjs"
+  const [file,prFile]=process.argv.slice(1)
+  const r=JSON.parse(fs.readFileSync(file,"utf8")), pr=JSON.parse(fs.readFileSync(prFile,"utf8"))
+  r.pr.url="https://git.example.test/evanharmon1/harmon-devkit/pull/634"
+  const entry=r.pr_bindings[0]; entry.url=r.pr.url
+  entry.digest=chainDigest({number:entry.number,url:entry.url,bound_at:entry.bound_at},entry.prev_digest)
+  pr.url=r.pr.url
+  fs.writeFileSync(file,JSON.stringify(r)); fs.writeFileSync(prFile,JSON.stringify(pr))
+' "$d/records/run-6001-further-along/run.json" "$d/pr.json"
+GH_HOST=git.example.test GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
+    --repo evanharmon1/harmon-devkit --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 13 ] && contains "$OUT" 'git.example.test' &&
+    ok "local binding accepts the host already resolved by gh" || bad "Enterprise local binding refused: $RC $ERR"
+cp "$FIXTURES/further-along.json" "$d/records/run-6001-further-along/run.json"
+make_pr_json "$d/pr.json" "$d/body"
 
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$PR" --run run-6000-fresh-kickoff --record-dir "$d/records" --local-unverified
@@ -2392,6 +2448,26 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
 # Exercise both authenticated success and authenticated missing-record with
 # --run: neither may render the local record. Existing fixtures supply the
 # same verified trajectory consumed throughout this suite.
+echo "==> unavailable validation is operational, never a schema rejection"
+validator_pkg="$TMPROOT/local-validator-failure"
+validator_report="$(vendored_report "$validator_pkg")"
+mkdir -p "$validator_pkg/skills/dev-flow-support/assets"
+validator_stub="$validator_pkg/skills/dev-flow-support/assets/validate-result-schemas.mjs"
+make_stats "$d/validator-stats.mjs" 1
+for failure in signal no-output runtime; do
+    case "$failure" in
+    signal) printf '%s\n' 'process.kill(process.pid, "SIGTERM")' >"$validator_stub" ;;
+    no-output) printf '%s\n' 'process.exitCode = 0' >"$validator_stub" ;;
+    runtime) printf '%s\n' 'throw new Error("validator runtime unavailable")' >"$validator_stub" ;;
+    esac
+    RC=0
+    OUT="$(PATH="$d/bin:$PATH" node "$validator_report" "${local_args[@]}" \
+        --trusted-actor-id "$ACTOR" --stats-script "$d/validator-stats.mjs" --local-unverified 2>"$d/stderr")" || RC=$?
+    ERR="$(cat "$d/stderr")"
+    [ "$RC" -eq 1 ] && [ -z "$OUT" ] && contains "$ERR" 'local run schema validator' &&
+        ok "$failure validator failure is operational exit 1" || bad "$failure validator misclassified: $RC $ERR"
+done
+
 echo "==> trusted evidence ignores the local flag"
 make_gh "$d"
 make_trajectory "$FIXTURES/fresh-kickoff.json" "$d/trajectory.json"

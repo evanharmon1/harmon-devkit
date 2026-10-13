@@ -1511,14 +1511,15 @@ function localSafe(value) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;'))
+    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, '')
 }
 
 function isLocalPathInside(parent, resolved) {
   const relative = path.relative(parent, resolved)
-  return !relative.startsWith('..') && !path.isAbsolute(relative)
+  return !(relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
 }
 
-function renderLocalUnverified(args, runId) {
+function renderLocalUnverified(args, runId, requestedPr) {
   if (!args.run || !args.recordDir) throw new UsageError('--local-unverified requires --run and --record-dir for a local read')
   if (args.asOf) throw new UsageError('--as-of is unavailable for local-unverified records; rerun without it')
   if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
@@ -1545,8 +1546,17 @@ function renderLocalUnverified(args, runId) {
       encoding: 'utf8', maxBuffer: MAX_SYNC_BUFFER_BYTES
     })
     if (validation.error) throw new OperationalError(`local run schema validator failed: ${validation.error.message}`)
+    if (validation.signal || validation.status === null) {
+      throw new OperationalError(`local run schema validator failed: ${validation.signal ? `signal ${validation.signal}` : 'no exit status'}`)
+    }
     if (validation.status !== 0) {
+      if (validation.status !== 1 || !/^FAIL: /m.test(validation.stderr || '')) {
+        throw new OperationalError(`local run schema validator failed without validation output: ${JSON.stringify((validation.stderr || '').trim())}`)
+      }
       throw new LocalRefusalError(`local run.json failed schema validation: ${JSON.stringify((validation.stderr || '').trim())}`)
+    }
+    if (!/^run record OK(?: \(.*\))?\s*$/.test(validation.stdout || '')) {
+      throw new OperationalError('local run schema validator produced no validation output')
     }
     record = JSON.parse(bytes)
   } finally {
@@ -1556,13 +1566,16 @@ function renderLocalUnverified(args, runId) {
   if (args.pr !== undefined && record.pr && record.pr.number !== args.pr) {
     throw new LocalRefusalError(`local run.json records PR #${record.pr.number}, not the requested #${args.pr}`)
   }
-  if (record.pr) {
-    const expected = `https://github.com/${args.repo}/pull/${record.pr.number}`
+  if (record.pr && requestedPr) {
     let normalized
-    try { normalized = new URL(record.pr.url).href.replace(/\/+$/, '').toLowerCase() } catch {
+    let expected
+    try {
+      normalized = new URL(record.pr.url).href.replace(/\/+$/, '').toLowerCase()
+      expected = new URL(requestedPr.url).href.replace(/\/+$/, '').toLowerCase()
+    } catch {
       throw new LocalRefusalError('local run.json PR URL is invalid')
     }
-    if (normalized !== expected.toLowerCase()) {
+    if (normalized !== expected) {
       throw new LocalRefusalError('local run.json PR URL does not name the requested repository and PR')
     }
   }
@@ -1596,7 +1609,7 @@ function renderLocalUnverified(args, runId) {
     schema: 'retro-run-report.v1', status: 'local-unverified', verified: false,
     run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
   }
-  return args.json ? JSON.stringify(report, null, 2) : [
+  return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
     `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
     ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
   ].join('\n')
@@ -1736,7 +1749,7 @@ function run(argv) {
           reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
           reportIgnoredHints(discovered.ignoredHints)
         }
-        const local = renderLocalUnverified(args, runId)
+        const local = renderLocalUnverified(args, runId, discovered?.pr || pr)
         if (local !== null) {
           console.log(local)
           return 13
