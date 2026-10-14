@@ -2377,6 +2377,24 @@ run_report "$d" --repo o/r --run run-file --record-dir "$d/records" --local-unve
 run_report "$d" --repo o/r --run absent-run --record-dir "$d/records" --local-unverified
 [ "$RC" -eq 10 ] && [ -z "$OUT" ] && ok "absent run directory still reports absence" || bad "absent directory: $RC $ERR"
 
+# Directory-path validation precedes the platform-specific descriptor check.
+# These malformed paths must be refused on Linux and on every other platform.
+echo "==> looped and invalid directory paths are local refusals"
+ln -s run-loop "$d/records/run-loop"
+run_report "$d" --repo o/r --run run-loop --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
+    contains "$ERR" 'local run path cannot be read as a directory' &&
+    ok "looped run directory is refused on $LOCAL_PLATFORM" || bad "looped run directory: $RC $ERR"
+ln -s record-loop "$d/record-loop"
+run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$d/record-loop" --local-unverified
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
+    contains "$ERR" '--record-dir cannot be read as a directory' &&
+    ok "looped --record-dir is refused on $LOCAL_PLATFORM" || bad "looped record directory: $RC $ERR"
+run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$d/record-file/child" --local-unverified
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
+    contains "$ERR" '--record-dir cannot be read as a directory' &&
+    ok "ENOTDIR record parent is refused on $LOCAL_PLATFORM" || bad "invalid record parent: $RC $ERR"
+
 # Hook only this report's target file, preserving real syscalls everywhere else.
 # A redirected ancestor tests containment on the opened object; a file swap
 # after fstat tests that the bytes are read from that same descriptor.

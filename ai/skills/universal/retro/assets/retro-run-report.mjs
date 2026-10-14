@@ -202,11 +202,20 @@ function validateArgs(args) {
   if (args.statsScript !== undefined && !existsSync(args.statsScript)) {
     throw new UsageError(`--stats-script path does not exist: ${args.statsScript}`)
   }
-  if (args.recordDir !== undefined && !existsSync(args.recordDir)) {
-    throw new UsageError(`--record-dir path does not exist: ${args.recordDir}`)
-  }
-  if (args.recordDir !== undefined && !statSync(args.recordDir).isDirectory()) {
-    throw new UsageError('--record-dir must be a directory')
+  if (args.recordDir !== undefined) {
+    let isDirectory
+    try {
+      isDirectory = statSync(args.recordDir).isDirectory()
+    } catch (error) {
+      if (args.localUnverified && error.code !== 'ENOENT') {
+        throw new LocalRefusalError('--record-dir cannot be read as a directory')
+      }
+      if (!existsSync(args.recordDir)) {
+        throw new UsageError(`--record-dir path does not exist: ${args.recordDir}`)
+      }
+      throw error
+    }
+    if (!isDirectory) throw new UsageError('--record-dir must be a directory')
   }
   // Validated here for the same reason, and it became load-bearing the moment
   // the cutoff started filtering discovery: an unparseable value makes
@@ -1554,14 +1563,21 @@ function renderLocalUnverified(args, runId, requestedPr) {
   if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
     throw new LocalRefusalError('local run.json path escapes the selected run directory; --run must name one directory')
   }
-  const parent = realpathSync(args.recordDir)
-  if (!statSync(parent).isDirectory()) throw new LocalRefusalError('--record-dir is not a directory')
+  let parent
+  try {
+    parent = realpathSync(args.recordDir)
+    if (!statSync(parent).isDirectory()) throw new LocalRefusalError('--record-dir is not a directory')
+  } catch (error) {
+    if (error instanceof LocalRefusalError) throw error
+    throw new LocalRefusalError('--record-dir cannot be read as a directory')
+  }
   const runDirectory = path.join(parent, runId)
   try {
     if (!statSync(runDirectory).isDirectory()) throw new LocalRefusalError('local run path is not a directory')
   } catch (error) {
     if (error.code === 'ENOENT') return null
-    throw error
+    if (error instanceof LocalRefusalError) throw error
+    throw new LocalRefusalError('local run path cannot be read as a directory')
   }
   if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
     throw new LocalRefusalError('local no-follow reads are unavailable on this platform')
