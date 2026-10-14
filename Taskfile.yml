@@ -382,6 +382,7 @@ tasks:
       - test:dev-flow-stats
       - test:dev-flow-exit
       - test:run-record
+      - test:inline-record
       - test:plan-revise
       - test:devflow-conformance
       - test:dev-flow-monitor
@@ -431,6 +432,11 @@ tasks:
     desc: Behavioral test for the Dev flow v2 run-record writer and slate lock, on fixture repositories only
     cmds:
       - ./ai/skills/universal/dev-flow-support/assets/test-run-record.sh
+
+  test:inline-record:
+    desc: End-to-end test of the inline confidence-stage path's solo run record (solo-init, receipt, adjudicate, evidence, readiness input, retro discovery), offline
+    cmds:
+      - ./scripts/test-inline-record.sh
 
   test:plan-revise:
     desc: Behavioral test for the Dev flow v2 plan-revision writer (base moves), on fixture repositories only
