@@ -1120,6 +1120,47 @@ rm .gitleaksignore
 scan_fixture "${root}/work" --config .gitleaks.toml --range HEAD..HEAD
 assert_rc 1
 
+echo "  -> Git-qualified baselines also suppress the working-tree finding"
+root="$(new_fixture git-baseline)"
+cd "${root}/work"
+secret_sha="$(commit_on "${root}/work" "test: baseline secret" leaked.env "$(fake_github_token)")"
+printf '%s:leaked.env:github-pat:1' "$secret_sha" >.gitleaksignore
+scan_fixture "${root}/work"
+assert_rc 0
+scan_fixture "${root}/work" --range HEAD..HEAD
+assert_rc 0
+scan_fixture "${root}/work" --config .gitleaks.toml --range HEAD..HEAD
+assert_rc 0
+[ "$(cat .gitleaksignore)" = "${secret_sha}:leaked.env:github-pat:1" ] ||
+    fail "the working-tree scan must never rewrite the checkout baseline"
+rm .gitleaksignore
+scan_fixture "${root}/work"
+assert_rc 1
+scan_fixture "${root}/work" --range HEAD..HEAD
+assert_rc 1
+
+echo "  -> relative config extensions resolve in the original invocation directory"
+root="$(new_fixture relative-config-extension)"
+cd "${root}/work"
+mkdir config
+# Keep the extension out of the snapshot: only the original cwd can load it.
+printf 'sibling.toml\n' >.gitignore
+cat >config/scanner.toml <<'EOF'
+[extend]
+path = "./sibling.toml"
+EOF
+cat >sibling.toml <<'EOF'
+[[rules]]
+id = "fixture-extended-rule"
+description = "Only the sibling extension defines this fixture rule"
+regex = 'INT1_[A-Za-z0-9]{20}'
+EOF
+scan_fixture "${root}/work" --config config/scanner.toml --range HEAD..HEAD
+assert_rc 0
+printf '%s%s\n' INT1_ AbCdEfGhIjKlMnOpQrSt >extended.env
+scan_fixture "${root}/work" --config config/scanner.toml --range HEAD..HEAD
+assert_rc 1
+
 echo "  -> the required target alone never substitutes for the secret scan"
 root="$(new_fixture secret-refusal)"
 cd "${root}/work"

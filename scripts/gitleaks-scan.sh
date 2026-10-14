@@ -140,16 +140,11 @@ fi
 
 scan_source=.
 run_gitleaks() {
-    (
-        if [ -n "${scan_directory:-}" ]; then
-            cd "$scan_directory" || exit $?
-        fi
-        if [ "$have_config" -eq 1 ]; then
-            gitleaks detect --no-banner --redact --source "$scan_source" "${config_args[@]}" "$@"
-        else
-            gitleaks detect --no-banner --redact --source "$scan_source" "$@"
-        fi
-    )
+    if [ "$have_config" -eq 1 ]; then
+        gitleaks detect --no-banner --redact --source "$scan_source" "${config_args[@]}" "$@"
+    else
+        gitleaks detect --no-banner --redact --source "$scan_source" "$@"
+    fi
 }
 
 # Preserve the interactive full-history exec path. Scoped mode needs two
@@ -185,13 +180,11 @@ scan_once() {
 }
 
 scan_working_tree() {
-    local worktree_root path scan_source scan_directory config_args
-    local GITLEAKS_CONFIG="${GITLEAKS_CONFIG:-}"
+    local worktree_root path scan_source ignore_file entry revision_pattern
     worktree_root="$(git rev-parse --show-toplevel)" || return $?
     working_tree_tmp="$(mktemp -d)" || return $?
-    scan_directory="${working_tree_tmp}/tree"
-    scan_source=.
-    mkdir "$scan_directory" || return $?
+    scan_source="${working_tree_tmp}/tree"
+    mkdir "$scan_source" || return $?
     # A directory scan ignores .gitignore. Snapshot only Git-visible paths:
     # tracked files (including force-added ones) and non-ignored untracked
     # files. Materialize the manifest first so a git failure cannot appear
@@ -201,11 +194,11 @@ scan_working_tree() {
     while IFS= read -r -d '' path; do
         if [ -L "${worktree_root}/${path}" ] || [ -f "${worktree_root}/${path}" ]; then
             case "$path" in
-            */*) mkdir -p "${scan_directory}/${path%/*}" || return $? ;;
+            */*) mkdir -p "${scan_source}/${path%/*}" || return $? ;;
             esac
             # Preserve symlinks rather than importing their external targets;
             # gitleaks' default directory scan does not follow them either.
-            cp -P "${worktree_root}/${path}" "${scan_directory}/${path}" || return $?
+            cp -P "${worktree_root}/${path}" "${scan_source}/${path}" || return $?
         elif [ -e "${worktree_root}/${path}" ] && [ ! -d "${worktree_root}/${path}" ]; then
             echo "gitleaks-scan: refusing — Git-visible path is not a regular file or symlink" >&2
             return 1
@@ -213,31 +206,40 @@ scan_working_tree() {
         # Deleted paths have no current bytes; gitlinks are directories, not
         # files, and must not import a submodule's ignored credential files.
     done <"${working_tree_tmp}/paths"
-    # Scan from the snapshot with source '.', retaining relative finding
-    # paths/fingerprints. Make path-valued config inputs absolute before the
-    # child changes directory; reports and summaries still run in this cwd.
-    if [ "$have_config" -eq 1 ]; then
-        case "$config_path" in
-        /*) config_args=(--config "$config_path") ;;
-        *) config_args=(--config "$(pwd)/${config_path}") ;;
-        esac
+    # Keep the invocation cwd: relative [extend].path in the config resolves
+    # there. Directory-source findings use the absolute snapshot prefix, so
+    # derive equivalent ignore fingerprints without modifying history's file.
+    ignore_file="${working_tree_tmp}/.gitleaksignore"
+    : >"$ignore_file" || return $?
+    if [ -f "${worktree_root}/.gitleaksignore" ]; then
+        cp "${worktree_root}/.gitleaksignore" "$ignore_file" || return $?
+        # Separate additions from a final original entry lacking a newline.
+        printf '\n' >>"$ignore_file" || return $?
+        revision_pattern='^[[:xdigit:]]{40}:'
+        while IFS= read -r entry || [ -n "$entry" ]; do
+            # gitleaks trims entries; preserve originals above while matching
+            # their meaningful fingerprint bytes in the derived additions.
+            entry=${entry#"${entry%%[![:space:]]*}"}
+            entry=${entry%"${entry##*[![:space:]]}"}
+            case "$entry" in
+            '' | '#'*) continue ;;
+            esac
+            if [[ "$entry" =~ $revision_pattern ]]; then
+                entry=${entry#*:}
+                printf '%s\n' "$entry" >>"$ignore_file" || return $?
+            fi
+            printf '%s/%s\n' "$scan_source" "$entry" >>"$ignore_file" || return $?
+        done <"${worktree_root}/.gitleaksignore"
     fi
-    if [ -n "$GITLEAKS_CONFIG" ]; then
-        case "$GITLEAKS_CONFIG" in
-        /*) ;;
-        *) GITLEAKS_CONFIG="$(pwd)/${GITLEAKS_CONFIG}" ;;
-        esac
-        export GITLEAKS_CONFIG
-    fi
-    # Keep the original ignore lookup even when that control file is itself
-    # ignored. Explicit --config/environment config keep their precedence;
+    # The derived file keeps the original ignore lookup even when that file
+    # is itself ignored. Explicit/environment config keep their precedence;
     # otherwise discover the checkout config, not the snapshot's config.
     if [ "$have_config" -eq 0 ] && [ -z "${GITLEAKS_CONFIG:-}${GITLEAKS_CONFIG_TOML:-}" ] &&
         [ -f "${worktree_root}/.gitleaks.toml" ]; then
-        scan_once --no-git --gitleaks-ignore-path "$worktree_root" \
+        scan_once --no-git --gitleaks-ignore-path "$ignore_file" \
             --config "${worktree_root}/.gitleaks.toml"
     else
-        scan_once --no-git --gitleaks-ignore-path "$worktree_root"
+        scan_once --no-git --gitleaks-ignore-path "$ignore_file"
     fi
 }
 
