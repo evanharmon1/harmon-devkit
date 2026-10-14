@@ -1068,6 +1068,58 @@ rm leaked.env
 scan_fixture "${root}/work" --range HEAD..HEAD
 assert_rc 0
 
+echo "  -> ignored local credentials do not fail a clean scoped round push"
+root="$(new_fixture ignored-local-secret)"
+cd "${root}/work"
+printf '.env\n.devcontainer/**/devcontainer.env\n' >.gitignore
+git_q "${root}/work" add .gitignore
+git_q "${root}/work" commit -m "test: ignore local credentials"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "feat: clean change" code.sh 'echo clean')"
+printf '%s\n' "$(fake_github_token)" >.env
+mkdir -p .devcontainer/dev
+printf '%s\n' "$(fake_github_token)" >.devcontainer/dev/devcontainer.env
+scan_fixture "${root}/work" --config "${scan_args[3]}" --range HEAD..HEAD
+assert_rc 0
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 0
+
+# Neither ignored credentials nor paths with whitespace/newlines may change
+# which non-ignored files are scanned. Git's NUL manifest must remain intact.
+echo "  -> non-ignored untracked secrets, including unusual paths, still fail"
+for secret_path in 'untracked.env' 'directory with spaces/leaked credential.env' $'newline\ncredential.env' $'directory\n/leaked.env'; do
+    case "$secret_path" in
+    */*) mkdir -p "${secret_path%/*}" ;;
+    esac
+    printf '%s\n' "$(fake_github_token)" >"$secret_path"
+    scan_fixture "${root}/work" --config "${scan_args[3]}" --range HEAD..HEAD
+    assert_rc 1
+    rm "$secret_path"
+done
+
+echo "  -> force-added tracked credentials still fail an empty scoped range"
+git_q "${root}/work" add -f .env
+git_q "${root}/work" commit -m "test: force-add ignored credential"
+scan_fixture "${root}/work" --config "${scan_args[3]}" --range HEAD..HEAD
+assert_rc 1
+
+echo "  -> snapshots retain relative fingerprints and config path inputs"
+root="$(new_fixture snapshot-controls)"
+cd "${root}/work"
+printf '%s\n' "$(fake_github_token)" >leaked.env
+printf 'leaked.env:github-pat:1\n' >.gitleaksignore
+scan_fixture "${root}/work" --range HEAD..HEAD
+assert_rc 0
+scan_fixture "${root}/work" --config .gitleaks.toml --range HEAD..HEAD
+assert_rc 0
+GITLEAKS_CONFIG=.gitleaks.toml scan_fixture "${root}/work" --range HEAD..HEAD
+assert_rc 0
+rm .gitleaksignore
+scan_fixture "${root}/work" --config .gitleaks.toml --range HEAD..HEAD
+assert_rc 1
+
 echo "  -> the required target alone never substitutes for the secret scan"
 root="$(new_fixture secret-refusal)"
 cd "${root}/work"
