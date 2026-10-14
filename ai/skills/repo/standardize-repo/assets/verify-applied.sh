@@ -887,35 +887,71 @@ aggregate_job_contract_is_safe() {
             value = trim(value)
             sub(/^\$\{\{[ ]*/, "", value)
             sub(/[ ]*\}\}$/, "", value)
+            gsub(/[[:space:]]+/, " ", value)
             return trim(value)
         }
-        # A deliberately small predicate grammar: named event/env values compared
-        # with literals, joined by AND. OR could reopen the fork path.
-        function predicate(value, parts, n, i) {
-            n = split(value, parts, /[ ]*&&[ ]*/)
-            for (i = 1; i <= n; i++) {
-                if (parts[i] ~ /^env\.IS_FORK /) return 0
-                if (parts[i] !~ ("^(env\\.[A-Za-z_][A-Za-z0-9_]*|github\\.event_name) (==|!=) " q "[A-Za-z0-9_-]+" q "$")) return 0
-            }
-            return n > 0
+        # Four fixed template paths: unchanged/non-merge, unchanged/merge,
+        # changed/non-merge, changed/merge. These are a structural contract,
+        # not an evaluator for arbitrary Actions expressions.
+        function trusted_paths(value, suffix) {
+            if (value == trusted_test) return "1111"
+            if (substr(value, 1, length(trusted_test) + 4) != trusted_test " && ") return ""
+            suffix = substr(value, length(trusted_test) + 5)
+            if (suffix == nonmerge_test) return "1010"
+            if (suffix == merge_test) return "0101"
+            if (changed_source == "" || ("CHANGED" in step_env)) return ""
+            if (suffix == unchanged_test) return "1100"
+            if (suffix == changed_test) return "0011"
+            if (suffix == changed_test " && " nonmerge_test) return "0010"
+            if (suffix == changed_test " && " merge_test) return "0001"
+            return ""
         }
-        function expectation(value, suffix) {
+        function leaf_paths(ref, job, value, changed) {
+            job = ref
+            sub(/^needs\./, "", job)
+            sub(/\.result$/, "", job)
+            if (!(job in job_exists)) return ""
+            value = condition(job_if[job])
+            if (value == "" || value == "true" || value == same_repo_test) return "1111"
+            if (value == merge_test) return "0101"
+            if (value == nonmerge_test " && (" same_repo_test ")") return "1010"
+            if (changed_source == "") return ""
+            changed = changed_source " == " q "true" q
+            if (value == changed " && (" same_repo_test ")") return "0011"
+            if (value == changed " && " merge_test) return "0001"
+            if (value == changed " && " nonmerge_test " && (" same_repo_test ")") return "0010"
+            return ""
+        }
+        function record_expectation(ref, value, paths, expected, path, actual) {
+            paths = leaf_paths(ref)
             value = unquote(trim(value))
-            if (value == "success") return 1
-            if (value == "skipped") return extra_predicate
-            value = condition(value)
-            suffix = " && " q "success" q " || " q "skipped" q
-            if (length(value) <= length(suffix) ||
-                substr(value, length(value) - length(suffix) + 1) != suffix) return 0
-            return predicate(substr(value, 1, length(value) - length(suffix)))
+            if (paths == "") { unsafe = 1; return }
+            if (value != "success" && value != "skipped") {
+                # The expression form is bound to a leaf whose own condition
+                # has this exact event term, never merely to a plausible name.
+                if (condition(value) != nonmerge_test " && " q "success" q " || " q "skipped" q ||
+                    (paths != "1010" && paths != "0010")) { unsafe = 1; return }
+            }
+            for (path = 1; path <= 4; path++) {
+                if (substr(step_paths, path, 1) != "1") continue
+                expected = value
+                if (expected != "success" && expected != "skipped") {
+                    expected = (path == 1 || path == 3) ? "success" : "skipped"
+                }
+                actual = substr(paths, path, 1) == "1" ? "success" : "skipped"
+                if (expected != actual) unsafe = 1
+                trusted_refs[ref, path] = 1
+            }
         }
         function bind_result(line, name, ref) {
             if (line !~ /^[ ]*[A-Za-z_][A-Za-z0-9_]*:/) return
             name = trim(substr(line, 1, index(line, ":") - 1))
             # A step override shadows a job binding even when its value is not
             # a result expression. Never certify a constant as the real result.
-            if (in_step) step_env[name] = ""
-            else job_env[name] = ""
+            if (in_step) {
+                step_env[name] = ""
+                if (name == "IS_FORK" || name == "CHANGED") unsafe = 1
+            } else job_env[name] = ""
             if (line !~ /^[ ]*[A-Za-z_][A-Za-z0-9_]*:[ ]*\$\{\{ needs\.[A-Za-z0-9_-]+\.result \}\}[ ]*$/) return
             match(line, /needs\.[A-Za-z0-9_-]+\.result/)
             ref = substr(line, RSTART, RLENGTH)
@@ -968,7 +1004,7 @@ aggregate_job_contract_is_safe() {
                 line = trim(substr(line, length(arg) + 1))
             }
             if (line !~ /^\.\/scripts\/verify-ci-results\.sh[ ]+/) { unsafe = 1; return }
-            if (!trusted || !safe_checkout || !expectation(expected)) unsafe = 1
+            if (!trusted || !safe_checkout) unsafe = 1
             sub(/^\.\/scripts\/verify-ci-results\.sh[ ]+/, "", line)
             count = 0
             # Only quoted name=result arguments are accepted, with no shell
@@ -979,7 +1015,7 @@ aggregate_job_contract_is_safe() {
                 sub(/"$/, "", value)
                 ref = resolve(value)
                 if (ref == "") unsafe = 1
-                else trusted_refs[ref] = 1
+                else record_expectation(ref, expected)
                 count++
                 line = trim(substr(line, RLENGTH + 1))
             }
@@ -996,16 +1032,11 @@ aggregate_job_contract_is_safe() {
         }
         function finish_step(i, line, run, command, prefix, fork, has_exit, message, function_declared, records_failure, helper_step) {
             if (!in_step) return
-            prefix = "env.IS_FORK != " q "true" q
-            trusted = step_if == prefix
-            extra_predicate = 0
-            if (substr(step_if, 1, length(prefix) + 4) == prefix " && ") {
-                extra_predicate = predicate(substr(step_if, length(prefix) + 5))
-                trusted = extra_predicate
-            }
+            step_paths = trusted_paths(step_if)
+            trusted = step_paths != ""
             fork = step_if == "env.IS_FORK == " q "true" q
             if (checkout) {
-                if (!trusted || !safe_boundary) unsafe = 1
+                if (step_paths != "1111" || !safe_boundary) unsafe = 1
                 else safe_checkout = 1
             }
             skipped_function = 0
@@ -1025,7 +1056,8 @@ aggregate_job_contract_is_safe() {
                 if (line ~ /^        run:/ || line ~ /^      - run:/) {
                     sub(/^.*run:[ ]*/, "", line)
                     run = 1
-                    if (line == "|" || line == ">-") continue
+                    if (line == "|" || line == "|-") continue
+                    if (line ~ /^[|>]/) { unsafe = 1; continue }
                 } else if (run && line !~ /^          /) run = 0
                 if (!run) continue
                 line = trim(line)
@@ -1054,7 +1086,39 @@ aggregate_job_contract_is_safe() {
         BEGIN {
             q = sprintf("%c", 39)
             fork_test = "github.event_name == " q "pull_request" q " && github.event.pull_request.head.repo.full_name != github.repository"
+            trusted_test = "env.IS_FORK != " q "true" q
+            same_repo_test = "github.event_name != " q "pull_request" q " || github.event.pull_request.head.repo.full_name == github.repository"
+            merge_test = "github.event_name == " q "merge_group" q
+            nonmerge_test = "github.event_name != " q "merge_group" q
+            unchanged_test = "env.CHANGED == " q "false" q
+            changed_test = "env.CHANGED != " q "false" q
             reset_step()
+        }
+        # First pass: collect only job-level conditions, including folded if:
+        # text. Reading all jobs first also supports leaves after the aggregate.
+        NR == FNR {
+            line = $0
+            if (line ~ /^[[:space:]]*#/) next
+            if (line ~ /^[A-Za-z0-9_-]+:/) source_job = ""
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                source_job = $1
+                sub(/:$/, "", source_job)
+                job_exists[source_job] = 1
+                collecting_if = 0
+            }
+            if (source_job == "" && line ~ /shell:/) {
+                sub(/^.*shell:[ ]*/, "", line)
+                if (unquote(trim(line)) != "bash") unsafe = 1
+            }
+            if (source_job != "" && line ~ /^    if:/) {
+                sub(/^    if:[ ]*/, "", line)
+                if (line == ">-" || line == "|") line = ""
+                job_if[source_job] = line
+                collecting_if = 1
+            } else if (collecting_if && line ~ /^      /) {
+                job_if[source_job] = job_if[source_job] " " trim(line)
+            } else collecting_if = 0
+            next
         }
         {
             line = $0
@@ -1068,6 +1132,20 @@ aggregate_job_contract_is_safe() {
                 next
             }
             if (line ~ /^[[:space:]]*#/) next
+            # No YAML indirection is resolved by this checker. A result binding
+            # must be the value Actions sees, not a default hidden by an alias.
+            if (line ~ /(^|[[:space:]:,{]|\[)[&*][A-Za-z0-9_-]+/ || index(line, "<<:")) unsafe = 1
+            if (line ~ /^[ ]*(- )?shell:/) {
+                shell_value = line
+                sub(/^.*shell:[ ]*/, "", shell_value)
+                if (unquote(trim(shell_value)) != "bash") unsafe = 1
+            }
+            if (!in_step && line ~ /^    defaults:[ ]*[^ ]/) unsafe = 1
+            if (!in_step && line ~ /^      run:[ ]*[^ ]/) unsafe = 1
+            if (line ~ /^      CHANGED:/) {
+                changed_source = condition(substr(line, index(line, ":") + 1))
+                if (changed_source !~ /^needs\.[A-Za-z0-9_-]+\.outputs\.changed$/) unsafe = 1
+            }
             if (line ~ /^    if:[ ]*always\(\)[ ]*$/) always_job = 1
             if (line ~ /^      IS_FORK:/ &&
                 condition(substr(line, index(line, ":") + 1)) == fork_test) fork_expression = 1
@@ -1109,7 +1187,10 @@ aggregate_job_contract_is_safe() {
             count = 0
             for (key in all_refs) {
                 count++
-                if (!(key in fork_refs) || !(key in trusted_refs)) unsafe = 1
+                if (!(key in fork_refs)) unsafe = 1
+                for (path = 1; path <= 4; path++) {
+                    if (!((key SUBSEP path) in trusted_refs)) unsafe = 1
+                }
             }
             if (!found_job || !always_job || !fork_expression || !safe_boundary ||
                 !safe_checkout || !safe_helper || unsafe || !count) exit 1
@@ -1121,7 +1202,7 @@ aggregate_job_contract_is_safe() {
                 }
             }
         }
-    ' "$workflow"
+    ' "$workflow" "$workflow"
 }
 
 workflow_job_has_fork_guard() {
@@ -1156,13 +1237,22 @@ workflow_job_has_fork_guard() {
             sub(/ $/, "", expression)
             sub(/^\$\{\{ */, "", expression)
             sub(/ *\}\}$/, "", expression)
-            same_repo = index(expression, "github.event_name != " q "pull_request" q) &&
-                        index(expression, "head.repo.full_name == github.repository")
-            # The credential-free build is merge-group-only: its event guard
-            # excludes pull_request entirely. A disjunction would undo that
-            # proof, so accept this route only as a conjunct in an AND chain.
-            merge_only = expression !~ /\|\|/ &&
-                         expression ~ ("(^| && )github.event_name == " q "merge_group" q "($| && )")
+            same_repo_test = "github.event_name != " q "pull_request" q " || github.event.pull_request.head.repo.full_name == github.repository"
+            merge_test = "github.event_name == " q "merge_group" q
+            nonmerge_test = "github.event_name != " q "merge_group" q
+            # Whole expressions only: a positive-looking comparison inside a
+            # negation or another grouping is not a fork exclusion.
+            same_repo = expression == same_repo_test
+            merge_only = expression == merge_test
+            changed = "needs\\.[A-Za-z0-9_-]+\\.outputs\\.changed == " q "true" q
+            suffix = " && " merge_test
+            if (length(expression) > length(suffix) &&
+                substr(expression, length(expression) - length(suffix) + 1) == suffix &&
+                substr(expression, 1, length(expression) - length(suffix)) ~ ("^" changed "$")) merge_only = 1
+            suffix = " && " nonmerge_test " && (" same_repo_test ")"
+            if (length(expression) > length(suffix) &&
+                substr(expression, length(expression) - length(suffix) + 1) == suffix &&
+                substr(expression, 1, length(expression) - length(suffix)) ~ ("^" changed "$")) same_repo = 1
             exit(found && (same_repo || merge_only) ? 0 : 1)
         }
     ' "$workflow"

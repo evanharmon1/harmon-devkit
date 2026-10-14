@@ -5931,7 +5931,7 @@ for merge_guard_mutation in missing disjunction; do
     fi
     rm -f "$AGG_TARGET/.github/workflows/devcontainer-build.yml.bak"
     expect_fail_contains "verify-applied rejects an ineffective merge-group leaf guard: $merge_guard_mutation" \
-        "leaf 'build-merge-group' is aggregated as fork-skipped but lacks the same-repository PR guard" \
+        "job 'devcontainer-verify' must enforce exact fork-skipped/trusted-success results" \
         bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 done
 write_rendered_aggregate_workflows
@@ -5960,10 +5960,38 @@ expect_fail_contains "verify-applied still requires guards for fork-skipped temp
     "is aggregated as fork-skipped but lacks the same-repository PR guard" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 
-for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit; do
+for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit negated-merge missing-merge-path unrelated-predicate folded-run shell-override yaml-alias; do
     write_rendered_aggregate_workflows
     aggregate_fixture="$AGG_TARGET/.github/workflows/devcontainer-build.yml"
     case "$aggregate_mutation" in
+    negated-merge)
+        sed -i.bak "/^  build-merge-group:/,/^  devcontainer-assert-bot:/ { /needs.devcontainer-changes.outputs.changed/d; s/github.event_name == 'merge_group'/!(true \&\& github.event_name == 'merge_group' \&\& true)/; }" "$aggregate_fixture"
+        ;;
+    missing-merge-path)
+        sed -i.bak '/      - name: Verify the credential-free merge-group build succeeded/,/      - name: / { /      - name: Verify the container assertions/!d; }' "$aggregate_fixture"
+        ;;
+    unrelated-predicate)
+        sed -i.bak "/      - name: Verify the change detector ran/,/        run:/s/EXPECTED_RESULT: success/EXPECTED_RESULT: \${{ github.event_name == 'never' \&\& 'success' || 'skipped' }}/" "$aggregate_fixture"
+        ;;
+    folded-run)
+        sed -i.bak '/run: .*"devcontainer-changes=${CHANGES_RESULT}"/c\
+        run: >-\
+          echo "checking"\
+          ./scripts/verify-ci-results.sh "devcontainer-changes=${CHANGES_RESULT}"' "$aggregate_fixture"
+        ;;
+    shell-override)
+        sed -i.bak '/run: .*"devcontainer-changes=${CHANGES_RESULT}"/c\
+        shell: bash {0}\
+        run: |\
+          ./scripts/verify-ci-results.sh "devcontainer-changes=${CHANGES_RESULT}"\
+          echo "done"' "$aggregate_fixture"
+        ;;
+    yaml-alias)
+        sed -i.bak '/^jobs:/i\
+env: \&result_defaults\
+  CHANGES_RESULT: success' "$aggregate_fixture"
+        sed -i.bak '/      - name: Verify the change detector ran/,/        run:/ { s/^        env:$/        env: *result_defaults/; /          EXPECTED_RESULT: success/d; s/run: /run: EXPECTED_RESULT=success /; }' "$aggregate_fixture"
+        ;;
     tolerance)
         sed -i.bak "s/EXPECTED_RESULT: success/EXPECTED_RESULT: success || skipped/" "$aggregate_fixture"
         ;;

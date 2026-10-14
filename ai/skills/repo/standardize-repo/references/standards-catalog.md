@@ -445,9 +445,14 @@ Shared structure:
   event-specific builds, and container assertions. Exact expectations may be
   step-level `EXPECTED_RESULT`, predicate-derived expressions (`cond &&
   'success' || 'skipped'`), or per-call inline assignments. A literal `skipped`
-  on the trusted path needs an additional step predicate beyond the fork guard.
-  Every result must actually be asserted on both paths; declaring it in `env`
-  is not verification. Classify fork-suppressed leaves from the boundary's
+  on a trusted path must match the leaf job’s own skip predicate, resolved
+  through its environment binding. Every result must actually be asserted on
+  every supported trusted branch (changed/unchanged × merge/non-merge), as well
+  as the fork path; declaring it in `env` is not verification. The auditor
+  accepts the template’s exact condition shapes and rejects unprovable ones.
+  Aggregate runs use literal `|`/`|-` blocks or single commands, with the default
+  shell or exactly `bash`; folded scalars, custom shell commands, and YAML
+  anchors, aliases, or merge keys in the aggregate are rejected. Classify fork-suppressed leaves from the boundary's
   `skipped` assertions: a leaf asserted `success` on forks does not need the
   same-repository guard. A fork-skipped leaf can also exclude fork PRs through
   an exact job-level `merge_group` event condition with no OR alternative.
