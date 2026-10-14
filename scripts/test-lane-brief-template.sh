@@ -1493,8 +1493,34 @@ assert recipe(catalog, "task verify") == expected_recipe, "cloud gate recipe in 
 prose = re.sub(r"```.*?```", "", rendered, flags=re.S)
 assert "one at a time" in prose, "cloud gate ordering instruction missing"
 assert re.search(r"poll the printed\s+`GATE-LOG=` path", prose), "cloud gate polling instruction missing"
+for required in (
+    "any session driving integration",
+    "check-codex-cloud-review.sh",
+    "readiness-gate.sh",
+    "never a hand-rolled poll or hand-evaluated table",
+    "clean verdict and its inline findings do not land atomically",
+):
+    assert required in " ".join(rendered.split()), f"cloud brief missing integration checker rule: {required}"
 print("cloud-lane brief template: ok")
 CLOUD
+
+# harmon-devkit#1077: any session driving integration — orchestrator or a lane
+# told to drive its own integration — must run the vendored checker and
+# readiness gate, never a hand-rolled poll or hand-evaluated table.
+lane_readiness="$(awk '/^## Readiness gate/{c=1} /^## Resolved policy/{c=0} c' \
+    "$rendered_file" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+[ -n "$lane_readiness" ] || fail "lane-brief has no Readiness gate section"
+for required in \
+    'any session driving integration' \
+    'check-codex-cloud-review.sh' \
+    'readiness-gate.sh' \
+    'never a hand-rolled poll or hand-evaluated table' \
+    'clean verdict and its inline findings do not land atomically'; do
+    case "$lane_readiness" in
+    *"$required"*) ;;
+    *) fail "lane-brief Readiness gate is missing: $required" ;;
+    esac
+done
 
 echo "implementer-brief template: ok"
 echo "lane-brief template: ok"

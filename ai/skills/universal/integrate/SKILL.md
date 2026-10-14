@@ -1173,7 +1173,11 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   vendored checker, it may pass that state directly to §6's executable gate
   with `--codex-recheck`, without dispatching an integrator merely to record
   the same verdict. Use the checker and broker's reserve/trigger/check
-  protocol (§2), never a hand-rolled substitute. The gate reads live checks,
+  protocol (§2), never a hand-rolled substitute. For any session driving integration
+  — the orchestrator or a lane told to drive its own integration — the vendored
+  `check-codex-cloud-review.sh` (`reserve`, broker trigger, `attach` where applicable, and `check`)
+  and `readiness-gate.sh` are required, never a hand-rolled poll or hand-evaluated table,
+  because a clean verdict and its inline findings do not land atomically. The gate reads live checks,
   thread replies, deferred findings and record settlements itself; its verdict
   records the checker state as cycle evidence. This removes only the recording
   pass: the orchestrator still owes watch/adjudication, run evidence,

@@ -413,7 +413,10 @@ orchestrator reserves its agent run. The inline fallback has no such dispatch
 surface, so the orchestrator instead authorizes the original lane to apply only
 the exact confirmed fixes in its recorded disposition and verifies the returned
 gate/publication evidence. The post-draft handoff remains separate and transfers
-integration to the supervising orchestrator.
+integration to the supervising orchestrator. When the maintainer overrides that handoff and
+tells a lane to drive its own integration, `integrate/SKILL.md` §2 binds any session driving integration
+to the vendored `check-codex-cloud-review.sh` checker protocol and `readiness-gate.sh`,
+never a hand-rolled poll or hand-evaluated table.
 
 Render `assets/lane-brief.md` for every local end-to-end, PR-owning implementation lane
 instead of hand-authoring a brief. Council proposal and synthesis implementers,

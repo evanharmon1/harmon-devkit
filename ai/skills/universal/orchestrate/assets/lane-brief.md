@@ -328,7 +328,12 @@ orchestrator. The lane may gather and report integration evidence requested by
 the brief, but it never adjudicates integration findings, edits the PR body,
 replies to review threads, or promotes the PR. Those actions and the readiness
 decision remain orchestrator-owned under `AGENTS.md` § Who decides, and what
-is delegated. Confidence-stage findings use the decision handshake above.
+is delegated. Confidence-stage findings use the decision handshake above. When
+the maintainer tells a lane to drive its own integration, any session driving integration
+— orchestrator or lane — must run the vendored `check-codex-cloud-review.sh`
+(`reserve`, broker trigger, `attach` where applicable, and `check`) and `readiness-gate.sh`,
+never a hand-rolled poll or hand-evaluated table,
+because a clean verdict and its inline findings do not land atomically.
 
 The orchestrator evaluates `AGENTS.md` § Readiness gate condition by condition
 using the vendored integrate procedure. A pending check row or an empty check
