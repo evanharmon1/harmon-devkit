@@ -530,7 +530,7 @@ const RUN_STAGES = ["kickoff", "claim", "explore", "plan", "implement", "verify"
 const MARKER_RE =
   /<!--\s*devflow:(run-index|run-record|evidence)\s+v2\s+run_id=(\S+)\s+stage=(\S+)\s+dest=(issue|pr)\s+round=(-|\d+)\s+seq=(\d+)\s*-->/;
 const EVIDENCE_SUMMARY_MARKER_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/;
-const EVIDENCE_SUMMARY_PREFIX_RE = /^[ \t]*<!--[ \t]*dev-flow-v2[- \t]+evidence\b/;
+const EVIDENCE_SUMMARY_PREFIX_RE = /^[ \t]*<!--[ \t]*dev-flow-v2[- \t]+evidence(?=[ \t:]|-->|\r?\n|$)/;
 const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
 
 function malformedEvidenceSummaryRunId(body) {

@@ -323,7 +323,7 @@ function statsCommandFor(file) {
 const EVIDENCE_MARKER_RE = /^<!--\s+devflow:([a-z][a-z-]*)\s+v2\s+([^>]*?)-->/
 const REVIEW_EVIDENCE_MARKER_RE = /^<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/
 const REVIEW_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2-evidence:/
-const NONCANONICAL_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2[- \t]+evidence\b/
+const NONCANONICAL_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2[- \t]+evidence(?=[ \t:]|-->|$)/
 
 // Only these three kinds are evidence. An earlier revision accepted any
 // lowercase kind carrying a run_id, so a trusted `devflow:example` comment on

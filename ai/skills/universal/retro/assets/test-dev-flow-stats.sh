@@ -6352,4 +6352,24 @@ set -e
 [ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7005 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
     fail "#1422 undecodable run_id: expected exit 3 naming comment 7005, got rc=$rc: $out"
 
+echo "== #1422 challenge r2 (-1): a trusted hyphenated longer identifier is ignored, not treated as a malformed evidence marker =="
+jq '.comments["187"] += [{
+      id: 7006,
+      user: {id: 9001, login: "orchestrator", type: "User"},
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      body: "<!-- dev-flow-v2-evidence-checklist: document evidence retention -->\nChecklist body"
+    }, {
+      id: 7007,
+      user: {id: 9001, login: "orchestrator", type: "User"},
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      body: "<!-- dev-flow-v2 evidence-checklist: document evidence retention -->\nChecklist body"
+    }]' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/hyphenated-longer-id.json"
+export DFSTATS_DB="$tmp/scenarios/hyphenated-longer-id.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and (.marker_facts | length) == 1' >/dev/null ||
+    fail "#1422 hyphenated longer identifier: expected valid evidence-only report ignoring checklist comments, got: $out"
+
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

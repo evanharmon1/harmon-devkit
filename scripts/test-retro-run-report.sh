@@ -2255,6 +2255,13 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.malformed_markers | length == 1 and .[0].reason == "non-canonical dev-flow-v2 evidence marker (expected <!-- dev-flow-v2-evidence: {...} -->)"' >/dev/null &&
     ok "a non-canonical marker alongside a valid run is reported in source.malformed_markers" ||
     bad "non-canonical marker was not surfaced in source.malformed_markers: rc=$RC, out=$OUT, err=$ERR"
+write_file "$d/i1" '<!-- dev-flow-v2-evidence-checklist: document evidence retention -->'
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.malformed_markers | length == 0' >/dev/null &&
+    ok "a hyphenated longer comment identifier is ignored, not classified as a malformed evidence marker" ||
+    bad "hyphenated longer comment identifier was misclassified as malformed: rc=$RC, out=$OUT, err=$ERR"
 
 echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
 d="$TMPROOT/realpath"
