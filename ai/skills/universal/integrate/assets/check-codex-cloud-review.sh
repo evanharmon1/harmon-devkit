@@ -621,11 +621,10 @@ run_gh() {
         current_epoch=$(clock_epoch) || return 1
         remaining=$((anchor_epoch + timeout_min * 60 - current_epoch))
         if [ "$remaining" -le 0 ]; then
-            # A post-window check still owes one terminal evidence sweep. Give
-            # that sweep, and attach's liveness reads, an independent normal
-            # request budget; reducing every
-            # call to one second here makes a completed remote review look
-            # absent precisely when the checker is deciding its final result.
+            # After the window, check still owes a terminal evidence sweep
+            # and attach must be able to recover a late trigger attachment.
+            # Give both the normal request budget; a one-second budget can
+            # make readable evidence appear absent or strand a late attach.
             if [ "$command_name" != "check" ] && [ "$command_name" != "attach" ]; then
                 call_timeout=1
             fi
@@ -637,9 +636,10 @@ run_gh() {
             # sub-second budget and reported readable evidence absent — the
             # same failure the carve-out exists to prevent, one minute
             # earlier. `check` keeps its full budget on both sides of the
-            # boundary now. Attach owes liveness reads even on a late retry
-            # and uses the same independent budget on both sides.
-            if [ "$command_name" != "check" ] && [ "$command_name" != "attach" ]; then
+            # boundary. Attach still honors the remaining in-window budget
+            # (harmon-devkit#223); only a post-window retry gets the independent
+            # budget above (harmon-devkit#1178).
+            if [ "$command_name" != "check" ]; then
                 call_timeout=$remaining
             fi
         fi

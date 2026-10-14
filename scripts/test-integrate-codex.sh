@@ -2098,7 +2098,7 @@ jq -e '.phase == "reserved" and .charged_cycles == 2 and
     .superseded_reservations[-1].reason == "trigger POST failed"' \
     "$broker_state" >/dev/null || fail 'failed POST recovery lost spend/history'
 
-echo "==> late attach receives independent budgets, before and after window expiry"
+echo "==> attach clamps in-window reads and gives post-window retries independent budgets"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 for attach_now in '2026-07-31T08:14:30Z' '2026-07-31T09:00:00Z'; do
@@ -2109,8 +2109,10 @@ for attach_now in '2026-07-31T08:14:30Z' '2026-07-31T09:00:00Z'; do
     : >"$timeout_args_log"
     TIMEOUT_ARGS_LOG="$timeout_args_log" "$helper" attach --state "$state" \
         --trigger-id "$trigger_id" --now "$attach_now" >/dev/null
-    awk '$3 != 60 {exit 1} END {if (NR < 5) exit 1}' "$timeout_args_log" ||
-        fail "late attach did not receive independent read budgets: $(cat "$timeout_args_log")"
+    attach_expected_budget=60
+    [ "$attach_now" != '2026-07-31T08:14:30Z' ] || attach_expected_budget=30
+    awk -v expected="$attach_expected_budget" '$3 != expected {exit 1} END {if (NR < 5) exit 1}' "$timeout_args_log" ||
+        fail "attach did not receive its expected ${attach_expected_budget}s read budgets: $(cat "$timeout_args_log")"
 done
 
 echo "==> denied check-suite boundaries attach conservatively; other errors refuse"
