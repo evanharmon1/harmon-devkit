@@ -221,8 +221,12 @@ prompt; refer to the reporting contract indirectly.
 
 ### Codex CLI (read the skill)
 
-Read `.agents/skills/implement/SKILL.md` completely and follow it for
-`{{issue-url}}` through draft-PR publication. For a lane worker,
+Read the vendored `implement` skill completely — take the first readable path
+in this resolution order: `.agents/skills/implement/SKILL.md`, then
+`.claude/skills/implement/SKILL.md`, then the harness-specific skills location,
+then one bounded glob. If none is readable, report BLOCKED and stop; do not
+reconstruct the procedure from memory. Follow it for `{{issue-url}}` through
+draft-PR publication. For a lane worker,
 repository policy overrides `/implement` step 9: record the confirmed draft
 handoff in `{{report-path}}` and return control to the supervising orchestrator.
 Only that orchestrator may enter the vendored integrate procedure and own its

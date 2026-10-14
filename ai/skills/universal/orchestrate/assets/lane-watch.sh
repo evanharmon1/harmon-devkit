@@ -2,6 +2,7 @@
 # Watch orchestrated lanes and emit stable, one-line transition events:
 #   AGENT <lane>: <from> -> <to>
 #   SENTINEL <lane>: <value>[ (pane only)]
+#   HANDOFF <lane>: <value>[ (pane only)]
 #   BRANCH <lane>: <branch> head=<sha8> | absent (cloud lanes)
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
@@ -83,6 +84,10 @@ usage() {
 Usage: lane-watch.sh [options] DEADLINE_ISO lane:branch:nonce:owner/repo ...
 
 Options:
+  Local spec: agent:branch:nonce:owner/repo[:/absolute/report-path[:lane-label]]
+  agent is the lowercase herdr name; lane-label defaults to agent.
+  Report defaults to <checkout>/.worktrees/<agent>/.lane-report.md.
+  Sentinels are READY|HANDOFF|BLOCKED-<lane-label>-<nonce>, whole final lines.
   Lane specs may end in :cloud (GitHub-only; no local worktree/report).
 
   --state-file PATH               Persist emitted state across restarts
@@ -511,16 +516,42 @@ if ! jq -e '
 fi
 trusted_actor_ids="$(jq -r '.finders[].trusted_actor_id // empty' "$registry")"
 
+# Keep spec decoding identical at validation and observation time. Colon is
+# the field separator and cannot occur in a report path or lane label.
+parse_spec() {
+    IFS=: read -r lane branch nonce repo report_path lane_label remainder <<<"$1"
+    extra=
+    if [ "$report_path" = cloud ]; then
+        extra=cloud
+        report_path=
+        [ -z "$lane_label" ] && [ -z "$remainder" ] || return 1
+    fi
+    [ -z "$remainder" ] || return 1
+    lane_label=${lane_label:-$lane}
+}
+
 for spec in "${specs[@]}"; do
-    IFS=: read -r lane branch nonce repo extra <<<"$spec"
-    if [ -z "${lane:-}" ] || [ -z "${branch:-}" ] || [ -z "${nonce:-}" ] ||
-        [ -z "${repo:-}" ] || { [ -n "${extra:-}" ] && [ "$extra" != cloud ]; }; then
+    if ! parse_spec "$spec" || [ -z "$lane" ] || [ -z "$branch" ] ||
+        [ -z "$nonce" ] || [ -z "$repo" ]; then
         echo "lane-watch: invalid lane spec: $spec" >&2
         exit 2
     fi
     case "$nonce" in
     *[!A-Za-z0-9_-]*)
         echo "lane-watch: invalid sentinel nonce in spec: $spec" >&2
+        exit 2
+        ;;
+    esac
+    case "$lane_label" in
+    *[!A-Za-z0-9_-]*)
+        echo "lane-watch: invalid sentinel lane label in spec: $spec" >&2
+        exit 2
+        ;;
+    esac
+    case "$report_path" in
+    '' | /*) ;;
+    *)
+        echo "lane-watch: report path must be absolute in spec: $spec" >&2
         exit 2
         ;;
     esac
@@ -533,24 +564,28 @@ for spec in "${specs[@]}"; do
     esac
 done
 
+# The same exact matcher consumes either source. Earlier report entries and
+# pane history are not terminal evidence; only the final nonblank line counts.
+terminal_sentinel() {
+    local label=$1 nonce=$2
+    awk 'NF { last = $0 } END { print last }' |
+        grep -E "^(READY|HANDOFF|BLOCKED)-${label}-${nonce}$" 2>/dev/null
+}
+
 sentinel_from_report() {
-    report=$1
-    nonce=$2
+    local report=$1 label=$2 nonce=$3
     [ -f "$report" ] || return 0
-    grep -E "^LANE-[A-Z0-9-]+-(READY|BLOCKED)-${nonce}$" "$report" 2>/dev/null | tail -1
+    terminal_sentinel "$label" "$nonce" <"$report"
 }
 
 sentinel_from_pane() {
-    lane=$1
-    nonce=$2
-    agent_state=$3
+    local lane=$1 label=$2 nonce=$3 agent_state=$4 pane
     case "$agent_state" in
     idle | done | blocked) ;;
     *) return 0 ;;
     esac
     pane="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
-    awk 'NF { last = $0 } END { print last }' <<<"$pane" |
-        grep -E "^LANE-[A-Z0-9-]+-(READY|BLOCKED)-${nonce}$" 2>/dev/null
+    terminal_sentinel "$label" "$nonce" <<<"$pane"
 }
 
 activity_rows() {
@@ -1206,10 +1241,8 @@ observe_branch() {
 
 local_lanes=0
 for spec in "${specs[@]}"; do
-    case "$spec" in
-    *:cloud) ;;
-    *) local_lanes=1 ;;
-    esac
+    parse_spec "$spec"
+    [ "$extra" = cloud ] || local_lanes=1
 done
 
 load_state
@@ -1242,7 +1275,7 @@ while true; do
     fi
 
     for spec in "${specs[@]}"; do
-        IFS=: read -r lane branch nonce repo extra <<<"$spec"
+        parse_spec "$spec"
         if [ "$extra" != cloud ]; then
             agent_state=unknown
             if [ "$agents_available" -eq 1 ]; then
@@ -1256,26 +1289,29 @@ while true; do
                 fi
             fi
 
-            if [ "$workspace_root_explicit" -eq 1 ]; then
+            if [ -n "$report_path" ]; then
+                report=$report_path
+            elif [ "$workspace_root_explicit" -eq 1 ]; then
                 report="$workspace_root/${repo#*/}/.worktrees/$lane/.lane-report.md"
             else
                 report="$checkout_root/.worktrees/$lane/.lane-report.md"
             fi
-            sentinel="$(sentinel_from_report "$report" "$nonce")"
+            sentinel="$(sentinel_from_report "$report" "$lane_label" "$nonce")"
             pane_only=0
             if [ -z "$sentinel" ]; then
-                sentinel="$(sentinel_from_pane "$lane" "$nonce" "$agent_state")"
+                sentinel="$(sentinel_from_pane "$lane" "$lane_label" "$nonce" "$agent_state")"
                 [ -z "$sentinel" ] || pane_only=1
             fi
             sentinel_key="$lane:$sentinel"
             if [ -n "$sentinel" ] && ! state_get SENTINEL "$sentinel_key" >/dev/null; then
                 state_set SENTINEL "$sentinel_key" 1
                 persist_state
-                if [ "$pane_only" -eq 1 ]; then
-                    echo "SENTINEL $lane: $sentinel (pane only)"
-                else
-                    echo "SENTINEL $lane: $sentinel"
-                fi
+                suffix=
+                [ "$pane_only" -eq 0 ] || suffix=' (pane only)'
+                echo "SENTINEL $lane: $sentinel$suffix"
+                case "$sentinel" in
+                HANDOFF-*) echo "HANDOFF $lane: $sentinel$suffix" ;;
+                esac
             fi
 
             if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 8)"; then
