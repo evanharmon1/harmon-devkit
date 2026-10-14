@@ -1473,6 +1473,26 @@ for heading in ("Identity and boundaries", "File-scope fence", "Gates and review
     assert "## " + heading in rendered.splitlines(), "missing cloud section: " + heading
 assert ".lane-report.md" not in rendered, "local report-file instruction in cloud brief"
 assert chr(64) + "codex" not in rendered.lower(), "literal Codex trigger in cloud brief"
+# The detached gate recipe: one exact block, identical in the brief and the
+# reference (only the command differs), and the brief's polling instruction in
+# its prose rather than inside the block.
+expected_recipe = """g="$(mktemp /tmp/gate.XXXXXX)"
+cat >"$g" <<'GATE'
+<gate command>
+echo GATE-EXIT=$?
+GATE
+nohup bash "$g" >"$g.log" 2>&1 & disown
+printf 'GATE-LOG=%s.log\\n' "$g"
+"""
+def recipe(doc, command):
+    m = re.search(r"```sh\n(g=\"\$\(mktemp /tmp/gate\.XXXXXX\)\"\n.*?)```", doc, re.S)
+    assert m, "detached gate recipe missing"
+    return m.group(1).replace(command, "<gate command>")
+assert recipe(text, "<gate command>") == expected_recipe, "cloud gate recipe in the brief changed"
+assert recipe(catalog, "task verify") == expected_recipe, "cloud gate recipe in the reference changed"
+prose = re.sub(r"```.*?```", "", rendered, flags=re.S)
+assert "one at a time" in prose, "cloud gate ordering instruction missing"
+assert re.search(r"poll the printed\s+`GATE-LOG=` path", prose), "cloud gate polling instruction missing"
 print("cloud-lane brief template: ok")
 CLOUD
 
