@@ -1,0 +1,113 @@
+{
+  // AGENT posture: an unattended agent somewhere nobody watches — never looser
+  // than the bot profile on any axis. The whole model (dev / bot / agent) and
+  // the reason for every choice below is
+  // docs/decisions/2026-09-29-agent-posture-three-posture-model.md.
+  //
+  //   identity    AGENT_GH_TOKEN, the agent's own fine-grained PAT on the bot
+  //               account; post-create logs gh in from it. No bot or operator
+  //               token, no 1Password, no Tailscale.
+  //   harnesses   Claude Code (auto mode, bypass disabled, explicit deny list)
+  //               and Codex (workspace-write, approval never) only — every
+  //               other installed harness is refused (agent-autonomy.sh).
+  //   network     default-deny egress allowlist, enforced at every start
+  //               (egress-allowlist.sh; needs NET_ADMIN, below).
+  //   docker      none: no Docker-in-Docker feature and never the host
+  //               socket. A per-repo Docker-in-Docker opt-in is a deliberate,
+  //               documented edit — see docs/guides/devcontainers.md.
+  "name": "AGENT - devcontainer-harmon-devkit",
+  "containerName": "devcontainer-harmon-devkit-agent",
+  // Minimum to run the intended workload (Playwright + agents). Codespaces
+  // enforces it; local Docker / Coder may not — see
+  // docs/guides/devcontainer-performance.md for recommended sizing.
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb"
+  },
+  // The same shared image and the same profile-invariant Dockerfile as bot
+  // and dev; only the lifecycle scripts and this config differ.
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "../..",
+    "cacheFrom": "ghcr.io/evanharmon1/harmon-devkit-devcontainer-agent"
+  },
+  // `--profile agent` puts init-env.sh in its fail-closed mode: only the
+  // names below may reach this env-file, and any other name — in this list
+  // or already in the file — stops the build. Alternative-model provider keys
+  // (KIMI/DEEPSEEK/ZAI/QWEN) are the per-repo, disclosed opt-in
+  // use_alternative_claude_providers, as in bot. ANTHROPIC_API_KEY is never
+  // admitted.
+  "initializeCommand": "bash .devcontainer/scripts/init-env.sh --profile agent .devcontainer/agent/devcontainer.env AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY QWEN_API_KEY",
+  "runArgs": [
+    "--init",
+    "--shm-size=2g",
+    // Egress enforcement installs a netfilter policy inside this container's
+    // network namespace, which needs NET_ADMIN. The harnesses' permission
+    // layers deny the commands that could use it (sudo, iptables, nft).
+    "--cap-add=NET_ADMIN",
+    "--env-file",
+    ".devcontainer/agent/devcontainer.env"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.14"
+    },
+    // No docker-in-docker, no 1Password, no Tailscale (see the header).
+    // Keep until the Dockerfile's image pin ships /usr/local/bin/gh in its core tier; that pin-bump PR deletes this.
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  // Volumes only for the two agent-capable harnesses and shell history —
+  // the refused harnesses get no persistent state.
+  "mounts": [
+    "source=claude-code-config-evanharmon1-harmon-devkit-agent,target=/home/vscode/.claude,type=volume",
+    "source=codex-config-evanharmon1-harmon-devkit-agent,target=/home/vscode/.codex,type=volume",
+    "source=shell-history-evanharmon1-harmon-devkit-agent,target=/home/vscode/.shell-history,type=volume"
+  ],
+  // FOREMAN_DEVCONTAINER: the posture marker, the same key bot sets. Every
+  // reader tells "bot", "agent", and unset (dev) apart; nothing treats agent
+  // as bot. Foreman's D2 tripwire refuses to run here by design — Foreman
+  // dispatch under the agent posture is out of scope (#1264).
+  //
+  // GH_TOKEN, GITHUB_TOKEN and the enterprise aliases are blanked (gh reads
+  // an empty value as unset; containerEnv outranks --env-file) so no env
+  // token can outrank the stored agent login post-create makes from
+  // AGENT_GH_TOKEN — the same reasoning as the dev profile's blanks.
+  //
+  // COPILOT_ALLOW_ALL is pinned "false" for the same reason bot renders it
+  // in both states: nothing may inherit allow-all from the env-file. Copilot
+  // CLI is refused in this posture regardless.
+  "containerEnv": {
+    "CODER": "${localEnv:CODER}",
+    "FOREMAN_DEVCONTAINER": "agent",
+    "GH_TOKEN": "",
+    "GITHUB_TOKEN": "",
+    "GH_ENTERPRISE_TOKEN": "",
+    "GITHUB_ENTERPRISE_TOKEN": "",
+    "COPILOT_ALLOW_ALL": "false"
+  },
+  "postCreateCommand": "bash .devcontainer/agent/post-create.sh",
+  "postStartCommand": "bash .devcontainer/agent/post-start.sh",
+  "customizations": {
+    "coder": {
+      "name": "devcontainer"
+    },
+    "vscode": {
+      "settings": {
+        "terminal.integrated.inheritEnv": true,
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "debug.javascript.autoAttachFilter": "disabled",
+        "terminal.integrated.env.linux": {
+          "NODE_OPTIONS": "",
+          "BROWSER": ""
+        },
+        "terminal.integrated.defaultProfile.linux": "zsh"
+      },
+      "extensions": [
+        "anthropic.claude-code",
+        "openai.chatgpt"
+      ]
+    }
+  },
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true
+}

@@ -1,0 +1,57 @@
+name: Classification Event
+run-name: reconciling the classification of issue #${{ github.event.issue.number }}
+
+# Catches the rare human edit of a classification input in the GitHub UI and
+# re-derives that one issue's Tier and `needs-triage` through
+# classification-reconcile.yml. Agent writers set both in the same write that
+# sets Risk or Complexity, so this workflow exists for humans only.
+#
+# Minutes: every event below creates a run, but a job whose `if` is false is
+# skipped before a runner is assigned and bills nothing. The filter therefore
+# starts a job only when ALL of these hold:
+#   - the sender is not a bot (the reconciler's App token, Claude Actions, …);
+#   - the sender is not in CLASSIFICATION_AGENT_LOGINS, a repo or org variable
+#     holding a JSON array of agent logins (unset = empty list);
+#   - the event changed an input: an issue opened, its Type set or cleared, or
+#     a risk:/complexity:/impact:/area:/layer:/domain: or Type-bearing
+#     work-type label (a non-retired one with a human or agent writer) added
+#     or removed.
+# `tier:*` (including `tier:pinned`) and `needs-triage` are never inputs: a
+# Tier or pin edit never starts a job, so the two-step UI pin (set the Tier,
+# then add tier:pinned, in either order) cannot be overwritten mid-pin.
+# `edited` is deliberately absent, and `field_added`/`field_removed` wait on
+# actionlint support (#1485): an organization repository's field edits are
+# repaired by the reconcile schedule, not instantly.
+# test-classification-reconcile.sh evaluates this `if` against fixture events.
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, typed, untyped]
+
+permissions: {}
+
+jobs:
+  reconcile:
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      !contains(fromJSON(vars.CLASSIFICATION_AGENT_LOGINS || '[]'), github.event.sender.login) &&
+      (contains(fromJSON('["opened","typed","untyped"]'), github.event.action) ||
+       startsWith(github.event.label.name, 'impact:') ||
+       startsWith(github.event.label.name, 'risk:') ||
+       startsWith(github.event.label.name, 'complexity:') ||
+       startsWith(github.event.label.name, 'area:') ||
+       startsWith(github.event.label.name, 'layer:') ||
+       startsWith(github.event.label.name, 'domain:') ||
+       contains(fromJSON('["bug","feature","task","research","documentation","question"]'), github.event.label.name))
+    # Job-level, so a skipped event never takes the slot: one run per issue at
+    # a time, and a burst of label events collapses to one running job plus
+    # the latest pending one, which reads the issue fresh.
+    concurrency:
+      group: classification-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/classification-reconcile.yml
+    with:
+      issue: ${{ github.event.issue.number }}

@@ -27,7 +27,50 @@ if ! task --list-all >/dev/null 2>&1; then
     fail "task --list-all failed — the Taskfile does not compile"
 fi
 
-echo "==> closing-keyword preflight mirrors the API cap and supports pre-PR metadata"
+check_taskfile_paths() {
+    local taskfile matches
+    for taskfile in "$@"; do
+        [ -f "$taskfile" ] || continue
+        matches="$(grep -nHE '\{\{[^}]*\.PWD[^A-Za-z0-9_]' "$taskfile" || true)"
+        [ -z "$matches" ] ||
+            fail "$matches — derive paths from ROOT_DIR or TASKFILE_DIR, never PWD"
+    done
+}
+
+echo "==> Taskfile paths derive from ROOT_DIR or TASKFILE_DIR, never PWD"
+# Assemble the copier marker so this verbatim script ships without an
+# unrendered marker, just like the path-safe formatter fixture below.
+taskfile_jinja_open='[%'
+template_taskfiles="template/${taskfile_jinja_open} if use_foreman %]taskfiles${taskfile_jinja_open} endif %]"
+check_taskfile_paths Taskfile.yml taskfiles/*.yml template/Taskfile.yml.jinja "$template_taskfiles"/*.yml
+
+echo "==> Taskfile PWD guard rejects bare, trimmed and piped references (negative controls)"
+pwd_taskfile="${test_tmp}/Taskfile.yml"
+for pwd_reference in '{{.PWD}}' '{{ .PWD }}' '{{- .PWD -}}' '{{.PWD | dir}}'; do
+    printf '%s\n' 'version: "3"' 'tasks:' '  probe:' '    cmds:' \
+        "      - echo \"$pwd_reference\"" >"$pwd_taskfile"
+    out=$(check_taskfile_paths "$pwd_taskfile" 2>&1) && rc=0 || rc=$?
+    [ "$rc" -ne 0 ] || fail "Taskfile PWD guard accepted $pwd_reference"
+    case "$out" in
+    *"${pwd_taskfile}:5:"*"${pwd_reference}"*'never PWD'*) ;;
+    *) fail "Taskfile PWD guard failed for the wrong reason: $out" ;;
+    esac
+done
+
+echo "==> Taskfile PWD guard accepts PWD_ROOT and shell PWD references"
+cat >"$pwd_taskfile" <<'EOF'
+version: "3"
+tasks:
+  probe:
+    cmds:
+      - echo "{{.PWD_ROOT}} $PWD"
+EOF
+out=$(check_taskfile_paths "$pwd_taskfile" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] || fail "Taskfile PWD guard rejected PWD_ROOT or shell PWD: $out"
+
+echo "==> closing-keyword preflight delegates to a linted script, not inline Taskfile bash"
+# The logic lives in scripts/guard-closing-keywords.sh so shellcheck/shfmt see
+# it (harmon-init#1196); inline `cmds:` strings are invisible to lint:shell.
 for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
     [ -f "$taskfile" ] || continue
     block="$(awk '
@@ -36,19 +79,92 @@ for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
         inblock { print }
     ' "$taskfile")"
     [ -n "$block" ] || fail "${taskfile}: guard:closing-keywords task not found"
-    grep -Fq 'git merge-base "$base_sha" "$head_sha"' <<<"$block" ||
-        fail "${taskfile}: closing-keyword guard does not resolve the merge base"
-    grep -Fq 'git rev-list --count "${merge_base}..${head_sha}"' <<<"$block" ||
-        fail "${taskfile}: closing-keyword guard does not mirror the workflow commit cap"
-    grep -Fq 'git log --format=%B "${merge_base}..${head_sha}"' <<<"$block" ||
-        fail "${taskfile}: closing-keyword guard does not scan merge-base-to-head only"
-    if grep -Fq '${BASE_SHA:-origin/main}...${HEAD_SHA:-HEAD}' <<<"$block"; then
-        fail "${taskfile}: closing-keyword guard still scans the symmetric difference"
+    grep -Fq './scripts/guard-closing-keywords.sh' <<<"$block" ||
+        fail "${taskfile}: guard:closing-keywords does not call scripts/guard-closing-keywords.sh"
+    if grep -Fq 'git merge-base' <<<"$block"; then
+        fail "${taskfile}: guard:closing-keywords re-inlined shell that lint:shell cannot see"
     fi
-    grep -Fq '[ -z "${PR_TITLE+x}" ] || [ -z "${PR_BODY+x}" ]' <<<"$block" ||
-        fail "${taskfile}: closing-keyword guard does not distinguish unset metadata from an empty body"
-    grep -Fq 'gh pr list --head "$branch" --state open --limit 2 --json title,body' <<<"$block" ||
-        fail "${taskfile}: closing-keyword guard does not distinguish a missing PR from an API failure"
+done
+
+echo "==> closing-keyword preflight mirrors the API cap and supports pre-PR metadata"
+for guard in scripts/guard-closing-keywords.sh template/scripts/guard-closing-keywords.sh; do
+    [ -f "$guard" ] || continue
+    grep -Fq 'git merge-base "$base_sha" "$head_sha"' "$guard" ||
+        fail "${guard}: closing-keyword guard does not resolve the merge base"
+    grep -Fq 'git rev-list --count "${merge_base}..${head_sha}"' "$guard" ||
+        fail "${guard}: closing-keyword guard does not mirror the workflow commit cap"
+    grep -Fq 'git log --format=%B "${merge_base}..${head_sha}"' "$guard" ||
+        fail "${guard}: closing-keyword guard does not scan merge-base-to-head only"
+    if grep -Fq '${BASE_SHA:-origin/main}...${HEAD_SHA:-HEAD}' "$guard"; then
+        fail "${guard}: closing-keyword guard still scans the symmetric difference"
+    fi
+    grep -Fq '[ -z "${PR_TITLE+x}" ] || [ -z "${PR_BODY+x}" ]' "$guard" ||
+        fail "${guard}: closing-keyword guard does not distinguish unset metadata from an empty body"
+    grep -Fq 'gh_rest_paginate_array "repos/${repo}/pulls?state=open&sort=updated&direction=desc" 100' "$guard" ||
+        fail "${guard}: closing-keyword guard does not list open PRs through the bounded helper, so a failed listing cannot be told from a missing PR"
+done
+
+echo "==> every REST pagination caller passes an explicit bound"
+# The helpers refuse a missing MAX_ITEMS and cap every walk at GH_REST_MAX_PAGES,
+# but a caller that passes 0 still asks for every page under that ceiling. The
+# session scripts' reads are all answerable from a bounded window, so each one
+# names its bound here (challenge r1: the REST rewrite had turned bounded single
+# reads into whole-repository walks).
+for status in scripts/status.sh template/scripts/status.sh; do
+    [ -f "$status" ] || continue
+    grep -Fq '"repos/${status_repo}/pulls?state=open&sort=updated&direction=desc" 10' "$status" ||
+        fail "${status}: open-PR list is not bounded to 10"
+    grep -Fq '"repos/${OWNER}/${REPO}/pulls?state=all&sort=updated&direction=desc" 100' "$status" ||
+        fail "${status}: renovate heuristic is not bounded to the 100 most recent PRs"
+    grep -Fq '"repos/${OWNER}/${REPO}/pulls/comments?sort=updated&direction=desc" 100' "$status" ||
+        fail "${status}: coderabbit heuristic is not bounded to the 100 most recent review comments"
+done
+for audit in scripts/audit-session-artifacts.sh template/scripts/audit-session-artifacts.sh; do
+    [ -f "$audit" ] || continue
+    grep -Fq '"repos/${gh_repo}/pulls?state=closed&sort=updated&direction=desc" "$pr_limit"' "$audit" ||
+        fail "${audit}: closed-PR scan does not pass pr_limit as its pagination bound"
+done
+for lib in scripts/lib/gh-rest.sh template/scripts/lib/gh-rest.sh; do
+    [ -f "$lib" ] || continue
+    grep -Fq 'GH_REST_MAX_PAGES:-10' "$lib" ||
+        fail "${lib}: the page ceiling no longer defaults to 10"
+done
+
+echo "==> the closing-keyword workflow fetches every library the guard sources"
+# The workflow runs the guard from a FETCH, not a checkout: it pulls
+# scripts/check-closing-keywords.sh out of the contents API and executes it. The
+# moment that guard grew `. "${script_dir}/lib/gh-rest.sh"`, a one-file fetch
+# became a program that dies on a missing file — and no PR's own CI can catch
+# that, because GitHub takes the workflow definition from the DEFAULT BRANCH:
+# every PR keeps running the pair already on main, and the new script and the
+# new workflow only meet after the merge, in the NEXT PR's required check. So the
+# pairing is asserted here instead — each library the guard sources is fetched
+# from the same parameterised ref, written where ${script_dir} resolves it, and
+# removed by the step's trap.
+for pair in \
+    'scripts/check-closing-keywords.sh|.github/workflows/closing-keywords.yml' \
+    'template/scripts/check-closing-keywords.sh|template/.github/workflows/closing-keywords.yml.jinja'; do
+    guard_script="${pair%%|*}"
+    workflow="${pair#*|}"
+    { [ -f "$guard_script" ] && [ -f "$workflow" ]; } || continue
+    trap_line="$(grep -F "trap 'rm -f" "$workflow" || true)"
+    sourced="$(sed -n 's|^\. "[$]{script_dir}/\([^"]*\)".*|\1|p' "$guard_script")"
+    [ -n "$sourced" ] ||
+        fail "${guard_script}: no \${script_dir} library is sourced, so this assertion checks nothing — remove it, or fix the extraction"
+    while IFS= read -r lib; do
+        grep -Fq "contents/scripts/${lib}?ref=\$1" "$workflow" ||
+            fail "${workflow}: ${guard_script} sources ${lib}, but the workflow never fetches scripts/${lib} from the ref it fetches the guard from — the guard it runs would die on a missing file"
+        grep -Fq "> ./${lib}" "$workflow" ||
+            fail "${workflow}: scripts/${lib} is not written to ./${lib}, where the guard's \${script_dir}/${lib} resolves"
+        grep -Fq "./${lib}" <<<"$trap_line" ||
+            fail "${workflow}: ./${lib} is fetched into the workspace and never removed by the step's trap"
+        libdir="$(dirname "$lib")"
+        if [ "$libdir" != . ] &&
+            ! grep -Fq "rmdir ./${libdir}" <<<"$trap_line" &&
+            ! grep -Fq "rm -rf ./${libdir}" <<<"$trap_line"; then
+            fail "${workflow}: the trap removes ./${lib} but leaves the ./${libdir} directory behind"
+        fi
+    done <<<"$sourced"
 done
 
 guard_bin="${test_tmp}/closing-keywords-bin"
@@ -66,6 +182,7 @@ merge-base)
     printf '%s\n' merge-base
     ;;
 rev-list) printf '%s\n' "${GIT_COMMIT_COUNT:-1}" ;;
+rev-parse) printf '%s\n' headsha ;;
 branch) printf '%s\n' feature ;;
 log) printf '%s\n' "$@" >"${GIT_ARGS:?}" ;;
 *) exit 1 ;;
@@ -76,11 +193,11 @@ cat >"${guard_bin}/gh" <<'EOF'
 printf '%s\n' "$*" >>"${GH_ARGS:?}"
 [ -z "${GH_PR_LIST_FAIL:-}" ] || exit 1
 case "${1:-} ${2:-}" in
-"pr list")
+"api repos/acme/repo/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1")
     if [ -n "${GH_NO_PR:-}" ]; then
         printf '%s\n' '[]'
     else
-        printf '%s\n' '[{"title":"Fixes #2","body":""}]'
+        printf '%s\n' '[{"title":"Fixes #2","body":"","head":{"sha":"headsha","ref":"feature"}}]'
     fi
     ;;
 *) exit 1 ;;
@@ -95,8 +212,22 @@ out=$(env -u PR_TITLE -u PR_BODY PATH="${guard_bin}:${PATH}" \
 [ "$rc" -ne 0 ] || fail "closing-keyword guard did not use fetched PR metadata: $out"
 grep -Fxq 'merge-base..head' "$guard_git_args" ||
     fail "closing-keyword guard did not scan exactly merge-base..head"
-[ "$(grep -c '^pr list ' "$guard_gh_args")" -eq 1 ] ||
+[ "$(grep -c '^api repos/acme/repo/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1$' "$guard_gh_args")" -eq 1 ] ||
     fail "closing-keyword guard did not fetch missing PR metadata atomically"
+
+echo "==> native closing-keyword preflight rejects cross-repository references without API reads"
+guard_gh_calls="$(wc -l <"$guard_gh_args" | tr -d ' ')"
+out=$(PR_TITLE='fix: local change' PR_BODY='Closes acme/other#123' \
+    PATH="${guard_bin}:${PATH}" GIT_ARGS="$guard_git_args" GH_ARGS="$guard_gh_args" \
+    GH_REPO=acme/repo BASE_SHA=base HEAD_SHA=head \
+    task guard:closing-keywords 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "native closing-keyword preflight accepted a cross-repository closing reference"
+case "$out" in
+*'acme/other#123 is in another repository; use Refs instead of a closing keyword'*) ;;
+*) fail "native closing-keyword preflight rejected the reference for the wrong reason: $out" ;;
+esac
+[ "$(wc -l <"$guard_gh_args" | tr -d ' ')" -eq "$guard_gh_calls" ] ||
+    fail "native cross-repository closing rejection attempted an API read"
 
 out=$(env -u PR_TITLE -u PR_BODY PATH="${guard_bin}:${PATH}" \
     GH_NO_PR=1 GIT_ARGS="$guard_git_args" GH_ARGS="$guard_gh_args" GH_REPO=acme/repo \

@@ -8,7 +8,9 @@
       "purpose": "Cross-cutting concerns worth filtering on, color-coded as one family.",
       "axis": "concern",
       "source": "inline",
-      "writers": ["human"],
+      "writers": [
+        "human"
+      ],
       "writer_note": "humans, at triage",
       "readers": "humans, saved views",
       "lifecycle": "durable",
@@ -46,14 +48,17 @@
     {
       "family": "provenance",
       "prefix": null,
-      "purpose": "Where the work came from — durable provenance, never removed.",
+      "purpose": "Where the work came from \u2014 durable provenance, never removed.",
       "axis": "provenance",
       "source": "inline",
-      "writers": ["human", "agent"],
+      "writers": [
+        "human",
+        "agent"
+      ],
       "writer_note": "whoever files or authors the work, human or agent",
       "readers": "humans, saved views",
       "lifecycle": "durable",
-      "lifecycle_note": "durable provenance — never removed",
+      "lifecycle_note": "durable provenance \u2014 never removed",
       "exclusive": false,
       "provision": true,
       "color": "EC4899",
@@ -74,11 +79,13 @@
       "purpose": "Transient triage states; blocked is the non-issue-blocker flag.",
       "axis": "workflow",
       "source": "inline",
-      "writers": ["human"],
+      "writers": [
+        "human"
+      ],
       "writer_note": "humans, at triage",
       "readers": "humans, the Triage view",
       "lifecycle": "transient",
-      "lifecycle_note": "transient — removed as soon as the state clears",
+      "lifecycle_note": "transient \u2014 removed as soon as the state clears",
       "exclusive": false,
       "provision": true,
       "color": "E36209",
@@ -86,7 +93,10 @@
         {
           "value": "needs-triage",
           "description": "Awaiting triage",
-          "writers": ["human", "agent"],
+          "writers": [
+            "human",
+            "agent"
+          ],
           "writer_note": "humans, the issue forms, and the triage skill",
           "lifecycle_note": "added freely at filing; removed only when classification is complete"
         },
@@ -113,6 +123,17 @@
         {
           "value": "needs-communication",
           "description": "An update needs to be communicated out"
+        },
+        {
+          "value": "needs-review",
+          "description": "PR ready for human review; out of the agent queue",
+          "writers": [
+            "human",
+            "agent"
+          ],
+          "writer_note": "the integration stage, at ready-for-review; humans",
+          "readers": "humans, the review list; the agent queue, which excludes it",
+          "lifecycle_note": "added at ready-for-review, when `claim:*` is removed; removed if review pulls the work back into fix rounds"
         }
       ]
     },
@@ -122,11 +143,14 @@
       "purpose": "Kind of work, on personal-account repos where native issue Type is unavailable; org repos set native Type instead.",
       "axis": "work-type",
       "source": "inline",
-      "writers": ["human", "agent"],
+      "writers": [
+        "human",
+        "agent"
+      ],
       "writer_note": "the issue forms on personal-account repos; humans or agents at triage",
       "readers": "humans, saved views",
       "lifecycle": "durable",
-      "lifecycle_note": "durable classification — org repos use native issue Type and no work-type label",
+      "lifecycle_note": "durable classification \u2014 org repos use native issue Type and no work-type label",
       "exclusive": false,
       "provision": true,
       "values": [
@@ -156,7 +180,7 @@
           "color": "0075CA",
           "provision": false,
           "writer_note": "GitHub ships it at repo creation; humans or agents apply it at triage",
-          "trust_note": "not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary"
+          "trust_note": "not provisioned \u2014 a GitHub repo-creation default adopted into the work-type vocabulary"
         },
         {
           "value": "question",
@@ -164,22 +188,25 @@
           "color": "D876E3",
           "provision": false,
           "writer_note": "GitHub ships it at repo creation; humans or agents apply it at triage",
-          "trust_note": "not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary"
+          "trust_note": "not provisioned \u2014 a GitHub repo-creation default adopted into the work-type vocabulary"
         },
         {
           "value": "dependencies",
           "provision": false,
           "writer_note": "Renovate, when it manages dependency updates",
-          "trust_note": "not provisioned — Renovate creates it on demand; never deleted by setup",
-          "lifecycle_note": "tool-managed by Renovate"
+          "trust_note": "not provisioned \u2014 Renovate creates it on demand; never deleted by setup",
+          "lifecycle_note": "tool-managed by Renovate",
+          "writers": [
+            "tool:renovate"
+          ]
         },
         {
           "value": "enhancement",
           "description": "New feature or request",
           "color": "A2EEEF",
           "retired": true,
-          "writer_note": "nobody — replaced by `feature`",
-          "trust_note": "retired — the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned",
+          "writer_note": "nobody \u2014 replaced by `feature`",
+          "trust_note": "retired \u2014 the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned",
           "lifecycle_note": "use guarded `--prune` with `--migrate enhancement=feature`"
         }
       ]
@@ -190,11 +217,14 @@
       "purpose": "Stack slice the change lives in; the label family is the only surface for this taxonomy.",
       "axis": "classification",
       "source": "inline",
-      "writers": ["human", "agent"],
+      "writers": [
+        "human",
+        "agent"
+      ],
       "writer_note": "humans or agents, at triage",
       "readers": "humans, `gh issue list --label`",
       "lifecycle": "durable",
-      "lifecycle_note": "durable classification; the label family is the only surface — there is no paired project field",
+      "lifecycle_note": "durable classification; the label family is the only surface \u2014 there is no paired project field",
       "exclusive": true,
       "provision": true,
       "color": "1D76DB",
@@ -217,7 +247,11 @@
         },
         {
           "value": "infra",
-          "description": "Hosts, networking, containers, provisioning — IaC and config rather than app code"
+          "description": "Hosts, networking, containers, provisioning \u2014 IaC and config rather than app code"
+        },
+        {
+          "value": "none",
+          "description": "Inapplicable: the work is not in a single stack slice"
         }
       ]
     },
@@ -227,11 +261,14 @@
       "purpose": "Product capability the work serves (problem space); the label family is the only surface for this taxonomy.",
       "axis": "classification",
       "source": "inline",
-      "writers": ["human", "agent"],
+      "writers": [
+        "human",
+        "agent"
+      ],
       "writer_note": "humans or agents, at triage",
       "readers": "humans, `gh issue list --label`",
       "lifecycle": "durable",
-      "lifecycle_note": "durable classification; the label family is the only surface — there is no paired project field",
+      "lifecycle_note": "durable classification; the label family is the only surface \u2014 there is no paired project field",
       "exclusive": true,
       "provision": true,
       "color": "FBCA04",
@@ -246,7 +283,7 @@
         },
         {
           "value": "agent-workflow",
-          "description": "AI-delegated dev sessions: the universal skill suite (kickoff→wrap) and shared subagents"
+          "description": "AI-delegated dev sessions: the universal skill suite (kickoff\u2192wrap) and shared subagents"
         },
         {
           "value": "standardization",
@@ -268,25 +305,29 @@
           "value": "auth",
           "description": "Authentication and authorization",
           "retired": true,
-          "writer_note": "nobody — retired",
-          "trust_note": "retired — a generic starter value this repo never needed; no longer provisioned",
-          "lifecycle_note": "no issues carry it — delete the live label"
+          "writer_note": "nobody \u2014 retired",
+          "trust_note": "retired \u2014 a generic starter value this repo never needed; no longer provisioned",
+          "lifecycle_note": "no issues carry it \u2014 delete the live label"
         },
         {
           "value": "billing",
           "description": "Billing and payments",
           "retired": true,
-          "writer_note": "nobody — retired",
-          "trust_note": "retired — a generic starter value this repo never needed; no longer provisioned",
-          "lifecycle_note": "no issues carry it — delete the live label"
+          "writer_note": "nobody \u2014 retired",
+          "trust_note": "retired \u2014 a generic starter value this repo never needed; no longer provisioned",
+          "lifecycle_note": "no issues carry it \u2014 delete the live label"
         },
         {
           "value": "platform",
           "description": "CI, build, test infra, and tooling in this repo",
           "retired": true,
-          "writer_note": "nobody — retired",
-          "trust_note": "retired — split across this repo's own domains; no longer provisioned",
+          "writer_note": "nobody \u2014 retired",
+          "trust_note": "retired \u2014 split across this repo's own domains; no longer provisioned",
           "lifecycle_note": "re-label its issues to the repo-specific domains, then delete the live label"
+        },
+        {
+          "value": "none",
+          "description": "Inapplicable: the work serves no single product capability"
         }
       ]
     },
@@ -296,7 +337,10 @@
       "purpose": "Codebase subsystem the work lives in (solution space); at most one per issue.",
       "axis": "classification",
       "source": "inline",
-      "writers": ["human", "agent"],
+      "writers": [
+        "human",
+        "agent"
+      ],
       "writer_note": "humans or agents, at triage",
       "readers": "humans, `gh issue list --label`",
       "lifecycle": "durable",
@@ -339,7 +383,7 @@
         },
         {
           "value": "pm",
-          "description": "Label registry, project boards, PM docs — not the PM skills, which have dedicated areas"
+          "description": "Label registry, project boards, PM docs \u2014 not the PM skills, which have dedicated areas"
         },
         {
           "value": "skills",
@@ -392,6 +436,10 @@
         {
           "value": "foreman",
           "description": "Foreman config, wrapper tasks, adapters"
+        },
+        {
+          "value": "none",
+          "description": "Inapplicable: the work belongs to no single codebase subsystem"
         }
       ]
     },
@@ -401,19 +449,21 @@
       "purpose": "How much confidence, effort, depth, and budget an agent works the issue under; values must match .devflow.toml's [rigor.*] tables.",
       "axis": "strategy",
       "source": "devflow",
-      "writers": ["human"],
-      "writer_note": "humans, at triage — **never an agent on itself**",
+      "writers": [
+        "human"
+      ],
+      "writer_note": "humans, at triage \u2014 **never an agent on itself**",
       "readers": "agents, when entering the Dev Loop",
       "lifecycle": "durable",
       "lifecycle_note": "set when the default rigor is wrong for the change; survives the work",
-      "trust_note": "provisioned; **read by agents** — selects a rounds policy, five role tiers, and a breadth envelope; arms nothing",
+      "trust_note": "provisioned; **read by agents** \u2014 selects a rounds policy, five role tiers, and a breadth envelope; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "D4C5F9",
       "values": [
         {
           "value": "cursory",
-          "description": "Rigor: one quick adversarial glance, economy elsewhere — near-zero-risk changes"
+          "description": "Rigor: one quick adversarial glance, economy elsewhere \u2014 near-zero-risk changes"
         },
         {
           "value": "light",
@@ -421,7 +471,7 @@
         },
         {
           "value": "standard",
-          "description": "Rigor: standard rounds and breadth, frontier challenger, standard implementer — the default"
+          "description": "Rigor: standard rounds and breadth, frontier challenger, standard implementer \u2014 the default"
         },
         {
           "value": "thorough",
@@ -433,22 +483,26 @@
         },
         {
           "value": "forensic",
-          "description": "Rigor: maximum scrutiny at every role — irreversible failure modes, security, data paths"
+          "description": "Rigor: maximum scrutiny at every role \u2014 irreversible failure modes, security, data paths"
         }
       ]
     },
     {
       "family": "tier",
       "prefix": "tier",
-      "purpose": "The issue's model stratum, derived from Risk × Complexity and stored as a cache; a human pins one with tier:pinned.",
+      "purpose": "The issue's model stratum, derived from Risk \u00d7 Complexity and stored as a cache; a human pins one with tier:pinned.",
       "axis": "strategy",
       "source": "inline",
-      "writers": ["human", "agent", "tool:github-actions"],
+      "writers": [
+        "human",
+        "agent",
+        "tool:github-actions"
+      ],
       "writer_note": "agents, in the write that sets Risk or Complexity, and the GitHub Actions reconciler; humans may set one, and pin it with `tier:pinned`",
-      "readers": "humans and agents — readers recompute the derived Tier from Risk × Complexity, so the label is a cache (a stale value is ignored); with `tier:pinned` and trusted provenance, the label is the pinned Tier, which sets the implementer; models are classified in `agent-registry.json` (ADR 0006/0007)",
+      "readers": "humans and agents \u2014 readers recompute the derived Tier from Risk \u00d7 Complexity, so the label is a cache (a stale value is ignored); with `tier:pinned` and trusted provenance, the label is the pinned Tier, which sets the implementer; models are classified in `agent-registry.json` (ADR 0006/0007)",
       "lifecycle": "durable",
-      "lifecycle_note": "a materialized cache — rewritten whenever Risk or Complexity changes and by the scheduled reconciler (daily on personal-account repositories, monthly on organization ones), recomputed by readers when absent; never rewritten while `tier:pinned` is present",
-      "trust_note": "provisioned; **read by agents** — a pin outranks the derived Tier and both rank below an operator instruction; resolved against `.devflow.toml`'s `tier_order`; arms nothing",
+      "lifecycle_note": "a materialized cache \u2014 rewritten whenever Risk or Complexity changes and by the scheduled reconciler (daily on personal-account repositories, monthly on organization ones), recomputed by readers when absent; never rewritten while `tier:pinned` is present",
+      "trust_note": "provisioned; **read by agents** \u2014 a pin outranks the derived Tier and both rank below an operator instruction; resolved against `.devflow.toml`'s `tier_order`; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "7057FF",
@@ -477,19 +531,21 @@
           "value": "adaptive",
           "description": "Model tier: cheap preflight classifies, then chooses or escalates",
           "retired": true,
-          "writer_note": "nobody — retired 2026-10-01",
-          "readers": "humans — retired, see the derived Tier (`tier:<value>`)",
-          "trust_note": "retired — no rung on the Tier scale (ADR 2026-09-30 D8); never provisioned",
-          "lifecycle_note": "remove the label from each issue — it then resolves through its derived Tier — then use guarded `--prune`"
+          "writer_note": "nobody \u2014 retired 2026-10-01",
+          "readers": "humans \u2014 retired, see the derived Tier (`tier:<value>`)",
+          "trust_note": "retired \u2014 no rung on the Tier scale (ADR 2026-09-30 D8); never provisioned",
+          "lifecycle_note": "remove the label from each issue \u2014 it then resolves through its derived Tier \u2014 then use guarded `--prune`"
         },
         {
           "value": "pinned",
           "description": "Tier pin: a human fixed this issue's tier; nothing automated rewrites it",
-          "writers": ["human"],
+          "writers": [
+            "human"
+          ],
           "writer_note": "humans only, from the GitHub UI, together with setting the Tier",
-          "readers": "agents and automation — a pinned Tier is never rewritten",
+          "readers": "agents and automation \u2014 a pinned Tier is never rewritten",
           "lifecycle_note": "added with the Tier value; removed to hand the Tier back to derivation; a human pinning a different tier replaces the existing Tier label first, since two tier values at once is a conflict for the reader to resolve, never one a writer creates",
-          "trust_note": "provisioned; **provenance-checked** — an interactive session confirms a pin the operator has not authorized, and unattended automation honors one only after verifying who applied it (ADR 2026-09-30 D5)"
+          "trust_note": "provisioned; **provenance-checked** \u2014 an interactive session confirms a pin the operator has not authorized, and unattended automation honors one only after verifying who applied it (ADR 2026-09-30 D5)"
         }
       ]
     },
@@ -501,12 +557,14 @@
       "source": "agent-registry",
       "registry_set": "tier-roles",
       "placeholder": "tier:<role>:<tier>",
-      "writers": ["human"],
-      "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>`, which is the issue's stored Tier rather than a role override",
+      "writers": [
+        "human"
+      ],
+      "writer_note": "humans, at triage or planning \u2014 never an agent on itself",
+      "readers": "humans and agents \u2014 targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>`, which is the issue's stored Tier rather than a role override",
       "lifecycle": "durable",
       "lifecycle_note": "set when one role's tier should differ from the rigor's own profile; strongest-wins per role",
-      "trust_note": "provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing",
+      "trust_note": "provisioned; **advisory** \u2014 resolved against `.devflow.toml`'s `tier_order`; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "7057FF",
@@ -519,11 +577,11 @@
       "axis": "strategy",
       "source": "inline",
       "writers": [],
-      "writer_note": "nobody — renamed to strategy:*",
-      "readers": "humans — retired, see `strategy:*`",
+      "writer_note": "nobody \u2014 renamed to strategy:*",
+      "readers": "humans \u2014 retired, see `strategy:*`",
       "lifecycle": "durable",
       "lifecycle_note": "migrate each with guarded `--prune` and repeatable `--migrate method:<v>=strategy:<v>`",
-      "trust_note": "retired — execution topology renamed to the `strategy` family; never provisioned",
+      "trust_note": "retired \u2014 execution topology renamed to the `strategy` family; never provisioned",
       "exclusive": false,
       "provision": false,
       "retired": true,
@@ -554,12 +612,14 @@
       "purpose": "Which execution strategy in .devflow.toml [strategy.*] an agent works the issue under; conflicts are ambiguous, never ranked.",
       "axis": "strategy",
       "source": "devflow",
-      "writers": ["human"],
-      "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "agents, when entering the Dev Loop — Foreman does not consume it yet (out of scope here)",
+      "writers": [
+        "human"
+      ],
+      "writer_note": "humans, at triage or planning \u2014 never an agent on itself",
+      "readers": "agents, when entering the Dev Loop \u2014 Foreman does not consume it yet (out of scope here)",
       "lifecycle": "durable",
       "lifecycle_note": "set when the default strategy is wrong for the change; survives the work",
-      "trust_note": "provisioned; **read by agents** — selects an execution topology, arms nothing",
+      "trust_note": "provisioned; **read by agents** \u2014 selects an execution topology, arms nothing",
       "exclusive": true,
       "provision": true,
       "color": "BF3989",
@@ -593,18 +653,19 @@
     {
       "family": "suggest",
       "prefix": "suggest",
-      "purpose": "Advisory routing: which agent family should implement the issue. Never Foreman arming.",
+      "purpose": "Retired: advisory family routing, superseded by the derived Tier (`tier:<value>`).",
       "axis": "model",
       "source": "agent-registry",
       "registry_set": "suggest",
-      "writers": ["human", "agent"],
-      "writer_note": "humans or agents, at planning",
-      "readers": "humans, the Agent queue view",
+      "writers": [],
+      "writer_note": "nobody \u2014 superseded by the derived Tier",
+      "readers": "humans \u2014 retired, see `tier:*`",
       "lifecycle": "durable",
-      "lifecycle_note": "set at planning; survives the work and is never rewritten by a claim",
-      "trust_note": "provisioned from the registry (family level only); advisory — arms nothing",
+      "lifecycle_note": "remove the label from each issue \u2014 it then resolves through its derived Tier \u2014 then use guarded `--prune` (no `--migrate`: nothing replaces a family suggestion one-to-one)",
+      "trust_note": "retired \u2014 superseded by the derived Tier; never provisioned and no longer rendered from the agent registry",
       "exclusive": false,
-      "provision": true,
+      "provision": false,
+      "retired": true,
       "placeholder": "<family>",
       "color": "BFD4F2",
       "values": []
@@ -612,17 +673,18 @@
     {
       "family": "suggest-model",
       "prefix": "suggest",
-      "purpose": "Model-level refinement of a family suggestion; applied alongside the family label, never instead of it.",
+      "purpose": "Retired: model-level refinement of a family suggestion, superseded by the derived Tier.",
       "axis": "model",
       "source": "tool-owned",
-      "writers": ["human", "agent"],
-      "writer_note": "humans or agents, at planning",
-      "readers": "humans",
+      "writers": [],
+      "writer_note": "nobody \u2014 superseded by the derived Tier",
+      "readers": "humans \u2014 retired, see `tier:*`",
       "lifecycle": "durable",
-      "lifecycle_note": "refines the family label; apply both",
-      "trust_note": "**tool-owned, created on demand** — seeding every model would be an unbounded roster",
+      "lifecycle_note": "remove the label from each issue, then use guarded `--prune`",
+      "trust_note": "retired \u2014 never provisioned; no tool creates it any more",
       "exclusive": false,
       "provision": false,
+      "retired": true,
       "open_values": true,
       "placeholder": "<family>:<model>",
       "color": "BFD4F2",
@@ -635,11 +697,13 @@
       "axis": "model",
       "source": "agent-registry",
       "registry_set": "claim",
-      "writers": ["agent"],
-      "writer_note": "the agent itself — a vendored claim skill, or a Claude Actions run",
+      "writers": [
+        "agent"
+      ],
+      "writer_note": "the agent itself \u2014 a vendored claim skill, or a Claude Actions run",
       "readers": "humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it",
       "lifecycle": "claim-release",
-      "lifecycle_note": "added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close where the repo ships it",
+      "lifecycle_note": "added at claim, removed at release \u2014 by the workflow's `always()` step, or by `claim-release.yml` on close where the repo ships it",
       "trust_note": "provisioned from the registry; a **gate**, never a trigger",
       "exclusive": false,
       "provision": true,
@@ -653,7 +717,9 @@
       "purpose": "Model-level refinement of a family claim; applied alongside the family label.",
       "axis": "model",
       "source": "tool-owned",
-      "writers": ["agent"],
+      "writers": [
+        "agent"
+      ],
       "writer_note": "the agent itself",
       "readers": "humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it",
       "lifecycle": "claim-release",
@@ -673,7 +739,7 @@
       "axis": "model",
       "source": "inline",
       "writers": [],
-      "writer_note": "nobody — never seeded into a new repo",
+      "writer_note": "nobody \u2014 never seeded into a new repo",
       "readers": "claim skills (and `claim-release.yml` where present), which still recognize it",
       "lifecycle": "claim-release",
       "lifecycle_note": "after choosing the actual claim family, use guarded `--prune` with repeatable `--migrate OLD=NEW`",
@@ -692,7 +758,9 @@
       "axis": "foreman",
       "source": "agent-registry",
       "registry_set": "foreman-adapters",
-      "writers": ["trusted-human"],
+      "writers": [
+        "trusted-human"
+      ],
       "writer_note": "a trusted human, to arm an issue",
       "readers": "Foreman",
       "lifecycle": "durable",
@@ -712,7 +780,9 @@
       "purpose": "Foreman's own workflow-state protocol: the default-backend arming input, the hold override, and the dependency overrides.",
       "axis": "foreman",
       "source": "inline",
-      "writers": ["human"],
+      "writers": [
+        "human"
+      ],
       "readers": "Foreman",
       "lifecycle": "durable",
       "exclusive": false,
@@ -723,7 +793,9 @@
           "value": "approved",
           "description": "Arm with the repo default backend",
           "color": "1D76DB",
-          "writers": ["trusted-human"],
+          "writers": [
+            "trusted-human"
+          ],
           "writer_note": "a trusted human",
           "arming": true,
           "trust_note": "provisioned (`--foreman`); **actor-verified arming** with the repo default backend",
@@ -763,7 +835,9 @@
       "purpose": "Foreman's PR-side lifecycle outputs, written by Foreman itself.",
       "axis": "foreman",
       "source": "tool-owned",
-      "writers": ["tool:foreman"],
+      "writers": [
+        "tool:foreman"
+      ],
       "readers": "Foreman, humans",
       "lifecycle": "tool-managed",
       "trust_note": "**tool-owned, auto-created**",
@@ -789,12 +863,14 @@
       "purpose": "Optional override of the native issue Type, read by Foreman for the unit's conventional-commit type.",
       "axis": "meta",
       "source": "inline",
-      "writers": ["human"],
+      "writers": [
+        "human"
+      ],
       "writer_note": "a human, optionally",
       "readers": "Foreman, to pick the unit's conventional-commit type",
       "lifecycle": "durable",
       "lifecycle_note": "applied when the native type is absent or wrong",
-      "trust_note": "**not provisioned** — an optional override of the native issue `Type`",
+      "trust_note": "**not provisioned** \u2014 an optional override of the native issue `Type`",
       "exclusive": true,
       "provision": false,
       "open_values": true,
@@ -805,15 +881,17 @@
     {
       "family": "autorelease",
       "prefix": null,
-      "purpose": "release-please's own release-PR state; the space after the colon is deliberate — not the family:value convention.",
+      "purpose": "release-please's own release-PR state; the space after the colon is deliberate \u2014 not the family:value convention.",
       "axis": "release",
       "source": "tool-owned",
-      "writers": ["tool:release-please"],
+      "writers": [
+        "tool:release-please"
+      ],
       "writer_note": "release-please",
       "readers": "release-please",
       "lifecycle": "tool-managed",
       "lifecycle_note": "pending on the open release PR, tagged once the release is cut",
-      "trust_note": "**tool-owned, auto-created**; note the space after the colon — not part of the `family:value` convention",
+      "trust_note": "**tool-owned, auto-created**; note the space after the colon \u2014 not part of the `family:value` convention",
       "exclusive": false,
       "provision": false,
       "values": [
@@ -832,11 +910,13 @@
       "purpose": "GitHub's repo-creation defaults that remain in the vocabulary; never provisioned and protected from maintenance pruning.",
       "axis": "meta",
       "source": "inline",
-      "writers": ["human"],
+      "writers": [
+        "human"
+      ],
       "writer_note": "GitHub, at repo creation",
       "readers": "humans",
       "lifecycle": "durable",
-      "lifecycle_note": "adopted; leave in place — inventory reporting and guarded pruning exclude it",
+      "lifecycle_note": "adopted; leave in place \u2014 inventory reporting and guarded pruning exclude it",
       "trust_note": "not provisioned, never deleted by setup",
       "exclusive": false,
       "provision": false,
@@ -867,6 +947,394 @@
           "color": "FFFFFF"
         }
       ]
+    },
+    {
+      "family": "initiative",
+      "prefix": null,
+      "purpose": "Parent issue horizon: a finite deliverable, a perennial area of ownership, or a human-task collector.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "humans, at planning or grooming; agents when filing a (HUMAN)/(QA) collector or an approved breakdown",
+      "readers": "humans, saved views",
+      "lifecycle": "durable",
+      "lifecycle_note": "applied to a parent while its role is current; removed or changed when its horizon changes",
+      "exclusive": true,
+      "provision": true,
+      "color": "8250DF",
+      "values": [
+        {
+          "value": "epic",
+          "description": "Time-bound parent initiative with a defined future deliverable"
+        },
+        {
+          "value": "umbrella",
+          "description": "Open-ended parent for an enduring area, topic, or team, or a (HUMAN)/(QA) collector"
+        }
+      ]
+    },
+    {
+      "family": "human-work",
+      "prefix": null,
+      "purpose": "Work whose completion is primarily a human's, kept off the agent dispatch path.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "whoever files or triages the issue, human or agent; triage may remove it only when the issue no longer qualifies (non-collector, no [HUMAN] majority, agent-completable)",
+      "readers": "humans, saved views; agents, to skip dispatch",
+      "lifecycle": "durable",
+      "lifecycle_note": "applied while completion is primarily a human's; removed once the issue's remaining completion is no longer primarily a human's",
+      "exclusive": false,
+      "provision": true,
+      "color": "FBCA04",
+      "values": [
+        {
+          "value": "human",
+          "description": "Work whose completion is primarily a human's; never dispatched to an agent"
+        }
+      ]
+    },
+    {
+      "family": "impact",
+      "prefix": "impact",
+      "purpose": "Expected significance of completing the issue: core versus marginal benefit, not common versus uncommon path \u2014 a rare but severe bug can be high.",
+      "axis": "classification",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "humans or agents, at triage or filing \u2014 agent-authored issues arrive with it set",
+      "readers": "humans, saved views",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification; required for an issue to count as triaged",
+      "trust_note": "provisioned; **advisory** \u2014 a required axis for triaged; arms nothing",
+      "exclusive": true,
+      "provision": true,
+      "color": "0052CC",
+      "values": [
+        {
+          "value": "minimal",
+          "description": "Impact: marginal benefit; most users would not notice it"
+        },
+        {
+          "value": "low",
+          "description": "Impact: small benefit to a few users or a narrow use case"
+        },
+        {
+          "value": "medium",
+          "description": "Impact: clear benefit to a meaningful share of users or goals"
+        },
+        {
+          "value": "high",
+          "description": "Impact: core benefit, or severe harm prevented even if rarely triggered"
+        },
+        {
+          "value": "massive",
+          "description": "Impact: transformative; current goals depend on it"
+        }
+      ]
+    },
+    {
+      "family": "risk",
+      "prefix": "risk",
+      "purpose": "How consequential a failure is if the change is implemented incorrectly; for a bug fix, the danger of the fix \u2014 the harm it prevents belongs in Impact.",
+      "axis": "classification",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "humans or agents, at triage or filing \u2014 agent-authored issues arrive with it set",
+      "readers": "humans, saved views; the Tier derivation (Risk \u00d7 Complexity)",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification; required for triaged; whoever changes it re-derives the Tier in the same write",
+      "trust_note": "provisioned; **read by agents** \u2014 an input to the derived Tier (Risk \u00d7 Complexity); arms nothing",
+      "exclusive": true,
+      "provision": true,
+      "color": "B60205",
+      "values": [
+        {
+          "value": "trivial",
+          "description": "Risk: a mistake is harmless and trivially reversible"
+        },
+        {
+          "value": "low",
+          "description": "Risk: a mistake is contained, caught quickly, and cheap to undo"
+        },
+        {
+          "value": "medium",
+          "description": "Risk: a mistake breaks a feature or needs a careful rollback"
+        },
+        {
+          "value": "high",
+          "description": "Risk: a mistake reaches many users or their data; recovery is costly"
+        },
+        {
+          "value": "critical",
+          "description": "Risk: a mistake risks data loss, security exposure, or an irreversible outage"
+        }
+      ]
+    },
+    {
+      "family": "complexity",
+      "prefix": "complexity",
+      "purpose": "How difficult the work is to understand, design, implement, and verify correctly, including how likely it is to grow; set on every issue, never a time estimate.",
+      "axis": "classification",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "humans or agents, at triage or filing \u2014 agent-authored issues arrive with it set",
+      "readers": "humans, saved views; the Tier derivation (Risk \u00d7 Complexity)",
+      "lifecycle": "durable",
+      "lifecycle_note": "durable classification; required for triaged; whoever changes it re-derives the Tier in the same write",
+      "trust_note": "provisioned; **read by agents** \u2014 an input to the derived Tier (Risk \u00d7 Complexity); arms nothing",
+      "exclusive": true,
+      "provision": true,
+      "color": "F9D0C4",
+      "values": [
+        {
+          "value": "xs",
+          "description": "Complexity: a tiny, well-understood change with obvious verification"
+        },
+        {
+          "value": "s",
+          "description": "Complexity: small and local; a clear approach across a few files"
+        },
+        {
+          "value": "m",
+          "description": "Complexity: moderate; several components and some design choices"
+        },
+        {
+          "value": "l",
+          "description": "Complexity: large; cross-cutting, with real design and wide verification"
+        },
+        {
+          "value": "xl",
+          "description": "Complexity: very large or uncertain; likely to grow or need splitting"
+        }
+      ]
+    },
+    {
+      "family": "priority",
+      "prefix": "priority",
+      "purpose": "The human's ranking of when to work the issue; never required \u2014 unset means an agent asks before starting.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": [
+        "human"
+      ],
+      "writer_note": "humans only \u2014 an agent never sets or changes it",
+      "readers": "humans, saved views; the agent queue (an issue with no Priority is not queued)",
+      "lifecycle": "durable",
+      "lifecycle_note": "set by a human when ranking the work; changed as priorities move",
+      "trust_note": "provisioned; **advisory** \u2014 orders the agent queue; arms nothing",
+      "exclusive": true,
+      "provision": true,
+      "color": "FF7619",
+      "values": [
+        {
+          "value": "urgent",
+          "description": "Priority: work on this now, ahead of everything else"
+        },
+        {
+          "value": "high",
+          "description": "Priority: next up; schedule soon"
+        },
+        {
+          "value": "medium",
+          "description": "Priority: normal queue order"
+        },
+        {
+          "value": "low",
+          "description": "Priority: when nothing more pressing remains"
+        }
+      ]
+    },
+    {
+      "family": "priority-ai",
+      "prefix": "priority-ai",
+      "purpose": "The AI's suggested priority, p0\u2013p4; the human Priority overrides it, and for a bug it reads as severity (how bad, and how important to fix before a merge or deploy). Advisory.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "agents or humans \u2014 the AI's suggestion, never required; a review finding filed as an issue carries its adjudicated badge (P0\u2192p0, P1\u2192p1, P2\u2192p2, P3\u2192p3; nothing from a review maps to p4)",
+      "readers": "humans, saved views; the effective priority, which is the human `priority` when set and else this suggestion; in the agent queue it only orders issues within a `priority` rung and admits nothing",
+      "lifecycle": "durable",
+      "lifecycle_note": "written by an agent or human when classifying or filing the issue; changed as the AI learns more; the human `priority` overrides it without clearing it",
+      "trust_note": "provisioned; **advisory** \u2014 the AI's suggestion, overridden by the human `priority` family; arms nothing",
+      "exclusive": true,
+      "provision": true,
+      "values": [
+        {
+          "value": "p0",
+          "description": "Priority (AI): blocks a merge or deploy \u2014 critical",
+          "color": "B60205"
+        },
+        {
+          "value": "p1",
+          "description": "Priority (AI): a real defect or must-do; next",
+          "color": "FF7619"
+        },
+        {
+          "value": "p2",
+          "description": "Priority (AI): worth doing, not blocking",
+          "color": "FBCA04"
+        },
+        {
+          "value": "p3",
+          "description": "Priority (AI): cosmetic or informational",
+          "color": "1D76DB"
+        },
+        {
+          "value": "p4",
+          "description": "Priority (AI): negligible",
+          "color": "BFC5CB"
+        }
+      ]
+    },
+    {
+      "family": "effort",
+      "prefix": "effort",
+      "purpose": "The human time estimate for work a human will do, on a modified Fibonacci ladder; human tasks only, never agent work.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": [
+        "human"
+      ],
+      "writer_note": "humans only, on a human task \u2014 agent work carries Complexity instead",
+      "readers": "humans, saved views",
+      "lifecycle": "durable",
+      "lifecycle_note": "set by a human when estimating a human task; agent issues never carry it",
+      "trust_note": "provisioned; **advisory** \u2014 a human estimate; arms nothing",
+      "exclusive": true,
+      "provision": true,
+      "color": "C5DEF5",
+      "values": [
+        {
+          "value": "1",
+          "description": "Effort: 1, the smallest step on the modified Fibonacci ladder (human tasks only)"
+        },
+        {
+          "value": "2",
+          "description": "Effort: 2 on the modified Fibonacci ladder (human tasks only)"
+        },
+        {
+          "value": "3",
+          "description": "Effort: 3 on the modified Fibonacci ladder (human tasks only)"
+        },
+        {
+          "value": "5",
+          "description": "Effort: 5 on the modified Fibonacci ladder (human tasks only)"
+        },
+        {
+          "value": "8",
+          "description": "Effort: 8 on the modified Fibonacci ladder (human tasks only)"
+        },
+        {
+          "value": "13",
+          "description": "Effort: 13 on the modified Fibonacci ladder (human tasks only)"
+        },
+        {
+          "value": "20",
+          "description": "Effort: 20, the largest step on the modified Fibonacci ladder (human tasks only)"
+        }
+      ]
+    },
+    {
+      "family": "model-family",
+      "prefix": "model-family",
+      "purpose": "Implementer record: the agent-registry model family that last implemented the work.",
+      "axis": "model",
+      "source": "agent-registry",
+      "registry_set": "model-family",
+      "writers": [
+        "agent"
+      ],
+      "writer_note": "the implementing agent, as a record of fact \u2014 personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead)",
+      "readers": "humans, saved views \u2014 never read to select a model",
+      "lifecycle": "durable",
+      "lifecycle_note": "kept; replaced by the next implementer, never removed by claim release",
+      "trust_note": "provisioned from the registry (every owner type); a **record of fact**, never a routing input",
+      "exclusive": true,
+      "provision": true,
+      "placeholder": "<family>",
+      "color": "C2E0C6",
+      "values": []
+    },
+    {
+      "family": "model",
+      "prefix": "model",
+      "purpose": "Implementer record: the model line (e.g. `opus`) that last implemented the work.",
+      "axis": "model",
+      "source": "agent-registry",
+      "registry_set": "model",
+      "writers": [
+        "agent"
+      ],
+      "writer_note": "the implementing agent, as a record of fact \u2014 personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead)",
+      "readers": "humans, saved views \u2014 never read to select a model",
+      "lifecycle": "durable",
+      "lifecycle_note": "kept; replaced by the next implementer, never removed by claim release",
+      "trust_note": "provisioned from the registry (every owner type); a **record of fact**, never a routing input",
+      "exclusive": true,
+      "provision": true,
+      "placeholder": "<line>",
+      "color": "C2E0C6",
+      "values": []
+    },
+    {
+      "family": "model-version",
+      "prefix": "model-version",
+      "purpose": "Implementer record: the model version (e.g. `5.5`) that last implemented the work.",
+      "axis": "model",
+      "source": "agent-registry",
+      "registry_set": "model-version",
+      "writers": [
+        "agent"
+      ],
+      "writer_note": "the implementing agent, as a record of fact \u2014 personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead)",
+      "readers": "humans, saved views \u2014 never read to select a model",
+      "lifecycle": "durable",
+      "lifecycle_note": "kept; replaced by the next implementer, never removed by claim release",
+      "trust_note": "provisioned from the registry (retired versions included, so history keeps its labels; every owner type); a **record of fact**, never a routing input",
+      "exclusive": true,
+      "provision": true,
+      "placeholder": "<version>",
+      "color": "C2E0C6",
+      "values": []
+    },
+    {
+      "family": "model-effort",
+      "prefix": "model-effort",
+      "purpose": "Implementer record: the reasoning effort the implementer ran at (registry effort ladder).",
+      "axis": "model",
+      "source": "agent-registry",
+      "registry_set": "model-effort",
+      "writers": [
+        "agent"
+      ],
+      "writer_note": "the implementing agent, as a record of fact \u2014 personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead)",
+      "readers": "humans, saved views \u2014 never read to select a model",
+      "lifecycle": "durable",
+      "lifecycle_note": "kept; replaced by the next implementer, never removed by claim release",
+      "trust_note": "provisioned from the registry (every owner type); a **record of fact**, never a routing input",
+      "exclusive": true,
+      "provision": true,
+      "placeholder": "<effort>",
+      "color": "C2E0C6",
+      "values": []
     }
   ]
 }

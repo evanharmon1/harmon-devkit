@@ -137,9 +137,14 @@ const axes = new Set([
 ])
 const sources = new Set(['inline', 'devflow', 'agent-registry', 'tool-owned'])
 const registrySetPrefixes = new Map([
+  ['suggest', 'suggest'],
   ['claim', 'claim'],
   ['foreman-adapters', 'foreman'],
-  ['tier-roles', null]
+  ['tier-roles', null],
+  ['model-family', 'model-family'],
+  ['model', 'model'],
+  ['model-version', 'model-version'],
+  ['model-effort', 'model-effort']
 ])
 const familyKeys = new Set([
   'family',

@@ -18,6 +18,14 @@ run-name: releasing claim markers after a close event
 # markers. Editing that script here is pointless — `task sync:skills`
 # overwrites it. Change it in harmon-devkit and bump the pin.
 #
+# What it never touches: the implementer record (#1517) — the `model-family:*`,
+# `model:*`, `model-version:*`, and `model-effort:*` labels and the org issue
+# fields Model family / Model / Model version / Model effort. They are kept and
+# replaced by the next implementer, never removed by claim release: the engine
+# removes only `claim:*`/`agent:*` labels and the claimant's assignment, and
+# this token's `issues: write` is never used on an issue field.
+# test-claim-release-merged.sh drives the real engine to prove it.
+#
 # "No script on disk" is handled at RUNTIME, by the run: guard below, not by
 # narrowing the copier gate that renders this file. The gate asks only whether
 # the repo vendors skills at all; which categories it vendors is editable after

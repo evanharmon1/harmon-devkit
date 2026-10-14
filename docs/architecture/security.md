@@ -284,11 +284,94 @@ slugs, replaces that with one dispatch point:
 See [../guides/devcontainers.md](../guides/devcontainers.md) for the
 per-harness mechanics.
 
+## Agent devcontainer: the unattended posture
+
+The **agent** posture (`.devcontainer/agent/`, marker
+`FOREMAN_DEVCONTAINER=agent`) is for an agent that runs where nobody watches —
+a third-party cloud VM, or work on untrusted input. Untrusted input enters it
+as data (issues, diffs, pull request content); the devcontainer definition
+must come from a trusted checkout (the default branch or a reviewed ref),
+because `initializeCommand` runs checkout code on the host for every profile.
+It is **never looser than bot on any axis**; the decision and every "not" are
+in harmon-init's
+[three-posture ADR](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-29-agent-posture-three-posture-model.md).
+The security contract, by layer:
+
+- **Harness policy — one source.** `.devcontainer/config/agent/` holds the
+  agent Claude managed settings (auto mode, `disableBypassPermissionsMode:
+  "disable"`, `allowManagedPermissionRulesOnly`, an explicit dev-loop allow
+  list that includes `gh pr merge`, deny rules for
+  release/admin/secrets/workflows/force-push (argument patterns, defence in
+  depth; see [the agent posture](https://github.com/evanharmon1/harmon-init/blob/main/docs/architecture/remote-environments.md#the-agent-posture))/pushes to
+  `main`/`op`/`.env*`/the egress-tamper commands, and no `ask` rule) and
+  the agent Codex managed config (`workspace-write`, never
+  `danger-full-access`, approval `never` — its sandbox is the criterion, and
+  it carries no command-level deny list).
+  Neither the bot nor the agent posture carries a merge guard: in either
+  profile, a PAT with `pull_requests: write` can merge any approved PR whose
+  required checks are green. The "Protect Main" ruleset — code-owner
+  approval plus the required status checks — is the only boundary on what
+  reaches `main`.
+  In the agent devcontainer, `.devcontainer/agent/agent-autonomy.sh apply`
+  installs both at create and refuses every other harness, and `verify`
+  re-checks at every start. The remote bootstrap runs both with
+  `--platform-vm`, which installs and verifies the two files but refuses no
+  harness — a recorded delivery gap on platform VMs; see
+  [How each platform receives the agent posture](https://github.com/evanharmon1/harmon-init/blob/main/docs/architecture/remote-environments.md#how-each-platform-receives-the-agent-posture).
+  `scripts/test-agent-profile.sh` (in `task verify`) fails on a second copy,
+  on an agent allow rule bot does not grant or bot denies, on an `ask` rule,
+  and on Codex `danger-full-access`.
+- **Credentials — fail closed.** `init-env.sh --profile agent` admits only
+  `AGENT_GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and the disclosed opt-in
+  provider keys, and stops the build on anything else. The container blanks
+  `GH_TOKEN` and its aliases so the stored agent login is the only GitHub
+  credential. No 1Password, no Tailscale, never `ANTHROPIC_API_KEY`.
+- **Network — default-deny egress.** `egress-allowlist.sh` installs the filter
+  before anything else at create and at every start, and fails the container
+  if it cannot. Every such failure leaves the OUTPUT and FORWARD policies
+  DROP — a failed iptables install, a refused list at snapshot or apply, a
+  failed rule or verify, a missing snapshot — except when iptables itself
+  could not be installed: nothing can set DROP then, and the step says so
+  (`CRITICAL`). A container whose create or start failed must not be used.
+  Post-create snapshots the applier and both lists into a
+  root-owned directory, and every start applies that snapshot, never the
+  writable checkout. A `0.0.0.0` entry or a CIDR wider than `/16` fails
+  closed, whether it is a list line or a range fetched through
+  `@github-meta`. Refused destinations are recorded
+  (`egress-allowlist.sh blocked`) for the lane report.
+- **Docker — none by default.** Never the host socket; Docker-in-Docker only
+  through the documented per-repo opt-in (`HARMON_AGENT_DOCKER=dind`), which
+  the same egress filter still covers.
+- **Residuals — where the boundaries are.** Command-level denies are a
+  best-effort first layer for a cooperating harness (Claude Code's rules;
+  Codex has none): they are not transitive through repository code —
+  Taskfile targets and git hooks, which the agent runs through `task` and
+  commits — and pattern matching can miss flag spellings such as bundled
+  short flags. Argument-pattern denies are defence in depth. In the agent
+  posture, REST reads use `/usr/local/bin/gh-api-read`, which pins the system
+  PATH and GET method; raw `gh api` is denied. The boundary for **GitHub
+  writes** is the bot's collaborator grants, the agent PAT's scopes (no
+  administration, secrets, or workflow) and the branch rulesets (no direct or force push to `main`;
+  a merge to `main` needs code-owner approval and green required checks). The
+  rulesets do not stop the PAT from merging: once a human has approved and
+  the checks pass, its `pull_requests: write` can perform that merge. Its
+  `contents: write` lets it create releases and push non-protected branches
+  — a fine-grained PAT cannot separate releases from contents. The boundary
+  for the **network** is the egress filter; it lives inside the container
+  and needs `NET_ADMIN`, and the container user keeps passwordless `sudo`,
+  so repository code run with root can lift it. Narrowing `sudo` is tracked
+  in [harmon-init#1432](https://github.com/evanharmon1/harmon-init/issues/1432). DNS to
+  the configured resolvers stays open. See the ADR's Consequences for the
+  full list.
+
 ## Two identities: the bot vs the operator
 
 - **AI bot** (`evanharmon1-bot`) — runs in the primary
   devcontainer with a scoped fine-grained PAT (Write, no admin) for its in-container
-  git pushes. Cannot push to or merge `main`. (CI **workflows** authenticate
+  git pushes. Cannot push to `main`; the rulesets require code-owner approval
+  and green checks for a merge into it, which its `pull_requests: write` can
+  then perform once a human has approved — merging stays the maintainer's
+  decision. (CI **workflows** authenticate
   separately as the `evanharmon1-ci` GitHub App — see below.)
 - **Operator** (you) — the human `dev/` devcontainer and the host, authenticated
   by an ordinary `gh auth login` against your own account. The bot's PAT is
@@ -399,7 +482,10 @@ Write it down rather than re-derive it under pressure:
 
 - **The selected repos** — at the level each collaborator grant allows, capped by
   the permission table. It can push branches, open PRs, and comment. It **cannot**
-  merge `main` (ruleset + CODEOWNERS), edit workflows, or change settings.
+  merge `main` unapproved: the ruleset and CODEOWNERS require code-owner
+  approval and green checks, though its `pull_requests: write` can perform a
+  merge a human has approved — merging stays the maintainer's decision. Nor
+  can it edit workflows or change settings.
 
 **Read is cheap; write is the line.** Variables are read-only deliberately:
 write could opt a private repository into paid CodeQL or mutate other
@@ -536,6 +622,13 @@ even the in-org radius small:
   it from workflows that untrusted code can influence (fork `pull_request`,
   `pull_request_target`, `workflow_run`) — the provided workflows gate on
   sender / same-repo checks.
+- **Never put `workflow_dispatch` on a workflow that mints an App token.** For
+  that trigger GitHub runs the workflow definition from whichever ref the
+  operator selects, so any branch — reviewed or not — could rewrite the
+  token-minting step and use the credential. Pinning the *checkout* to `main`
+  does not help: the token already exists. Use `repository_dispatch` when a
+  manual trigger is needed; it takes the same repository write access and
+  always runs the default branch's definition.
 - **Rotate the key** periodically; GitHub Apps allow multiple keys for
   zero-downtime rotation.
 
@@ -548,6 +641,8 @@ even the in-org radius small:
 | `GH_TOKEN` (the bot's PAT) | the **bot** devcontainer's `gh`/git operations — never the `dev/` profile | 1Password Environment → devcontainer `--env-file` | manual; re-issue before expiry ([guides/bot-account.md](../guides/bot-account.md)) |
 | `SNYK_TOKEN` | optional Snyk CLI scans | local env / 1Password by default | manual |
 | TODO | TODO | TODO | TODO |
+
+The optional `CLAUDE_CODE_OAUTH_TOKEN_2` enables one zero-usage failure fallback in Claude workflows; the fallback is skipped when absent.
 
 > **`CLAUDE_CODE_OAUTH_TOKEN` must be an OAuth token, not an API key.** Generate
 > it with `claude setup-token`; the value starts **`sk-ant-oat01-`** and bills the

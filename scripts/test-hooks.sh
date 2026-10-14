@@ -66,6 +66,172 @@ fi
 
 echo "==> hook-delegation targets OK (commit-msg accept/reject, format:file)"
 
+# Commit messages must come from the git invocation, never adjacent commands.
+assert_commit_status() {
+    local hook="$1" expected="$2" command_text="$3"
+    local status=0 output
+    output="$(jq -n --arg command "$command_text" --arg cwd "$tmpdir" \
+        '{cwd: $cwd, tool_input: {command: $command}}' |
+        CLAUDE_PROJECT_DIR="$repo" bash "$hook" 2>&1)" || status=$?
+    [ "$status" -eq "$expected" ] ||
+        fail "$hook: expected exit $expected, got $status for $command_text: $output"
+}
+
+python_before_commit="$(
+    cat <<'COMMAND'
+python3 - <<'EOF'
+import pathlib
+print('git commit -m bad message')
+EOF
+git commit -F msg.txt
+COMMAND
+)"
+heredoc_message="$(
+    cat <<'COMMAND'
+git commit -m "$(cat <<'EOF'
+fix: multiline message
+
+A body with 'quotes' and a second paragraph.
+EOF
+)"
+COMMAND
+)"
+bad_heredoc_message="$(
+    cat <<'COMMAND'
+git commit -m "$(cat <<'EOF'
+bad message
+
+A body that must not hide the invalid subject.
+EOF
+)"
+COMMAND
+)"
+
+unquoted_heredoc_header="$(
+    cat <<'COMMAND'
+git commit -m "$(cat <<EOF
+$TYPE: expanded by the shell
+EOF
+)"
+COMMAND
+)"
+quoted_heredoc_literals="$(
+    cat <<'COMMAND'
+git commit -m "$(cat <<'EOF'
+feat: add `--flag`
+
+Mentions `x` and $HOME literally.
+EOF
+)"
+COMMAND
+)"
+
+continued_commit="$(
+    cat <<'COMMAND'
+git commit \
+-m "bad message"
+COMMAND
+)"
+
+for commit_hook in \
+    "$repo/.claude/hooks/enforce-conventional-commits.sh" \
+    "$repo/.devcontainer/config/claude-hooks/enforce-conventional-commits.sh" \
+    "$repo/template/.claude/hooks/enforce-conventional-commits.sh" \
+    "$repo/template/[% if devcontainer %].devcontainer[% endif %]/config/claude-hooks/enforce-conventional-commits.sh"; do
+    [ -f "$commit_hook" ] || continue
+    echo "==> conventional commit extraction: $commit_hook"
+    printf 'fix: file message\n' >"$tmpdir/msg.txt"
+    assert_commit_status "$commit_hook" 0 "$python_before_commit"
+    printf 'bad file message\n' >"$tmpdir/msg.txt"
+    # -F/--file deliberately delegate to lefthook, even for an invalid file.
+    assert_commit_status "$commit_hook" 0 "$python_before_commit"
+    assert_commit_status "$commit_hook" 0 'git commit --file msg.txt'
+    assert_commit_status "$commit_hook" 0 'git commit --file=msg.txt'
+    assert_commit_status "$commit_hook" 0 "$heredoc_message"
+    assert_commit_status "$commit_hook" 2 "$bad_heredoc_message"
+    assert_commit_status "$commit_hook" 0 "echo 'git commit -m bad'"
+    assert_commit_status "$commit_hook" 2 'git commit -m "bad message"'
+    assert_commit_status "$commit_hook" 0 'git commit -m "fix: ok"'
+    assert_commit_status "$commit_hook" 0 'echo -m "bad message"; git commit --amend --no-edit'
+    assert_commit_status "$commit_hook" 0 'git commit -C HEAD'
+    assert_commit_status "$commit_hook" 0 'git commit'
+    assert_commit_status "$commit_hook" 0 'git commit -m "unterminated'
+    assert_commit_status "$commit_hook" 0 'echo -m "bad message"; git commit --message "fix: ok"'
+    assert_commit_status "$commit_hook" 2 'git commit --message="bad message"'
+    assert_commit_status "$commit_hook" 0 'git commit --message="fix: ok"'
+    assert_commit_status "$commit_hook" 2 'git commit -m"bad message"'
+    assert_commit_status "$commit_hook" 0 'git commit -m"fix: ok"'
+    assert_commit_status "$commit_hook" 2 'git -C /tmp commit -m "bad message"'
+    assert_commit_status "$commit_hook" 0 'git log -m "bad message" commit'
+    assert_commit_status "$commit_hook" 0 'git commit -- path -m "bad message"'
+    assert_commit_status "$commit_hook" 0 "${python_before_commit/-F msg.txt/-m \"fix: ok\"}"
+    assert_commit_status "$commit_hook" 2 "${python_before_commit/-F msg.txt/-m \"bad message\"}"
+    # Shell command words, Git global options, and clustered message options.
+    assert_commit_status "$commit_hook" 2 'git --no-pager commit -m "bad message"'
+    assert_commit_status "$commit_hook" 2 'git -P commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'git --bare commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'git -C . commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'git -c user.name=x commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'git --super-prefix prefix commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'git --exec-path commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'git --exec-path=/tmp commit -m "bad"'
+    assert_commit_status "$commit_hook" 0 "$continued_commit"
+    assert_commit_status "$commit_hook" 2 'FOO=1 git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'env GIT_X=1 git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'env -i -u HOME GIT_X=1 git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'command git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'builtin git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'exec git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'nohup git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'time git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'time -p git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 '/usr/bin/git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 '( git commit -m "bad" )'
+    assert_commit_status "$commit_hook" 2 '{ git commit -m "bad"; }'
+    assert_commit_status "$commit_hook" 2 'if git commit -m "bad"; then :; fi'
+    assert_commit_status "$commit_hook" 2 '! git commit -m "bad"'
+    assert_commit_status "$commit_hook" 2 'while git commit -m "bad"; do :; done'
+    assert_commit_status "$commit_hook" 2 'until git commit -m "bad"; do :; done'
+    assert_commit_status "$commit_hook" 0 'git commit -am "bad message"'
+    assert_commit_status "$commit_hook" 0 'git commit -sm "bad"'
+    assert_commit_status "$commit_hook" 0 'git commit -vam "bad"'
+    assert_commit_status "$commit_hook" 0 'git commit -ambad'
+    assert_commit_status "$commit_hook" 2 'git commit --mess "bad"'
+    assert_commit_status "$commit_hook" 2 'git commit --messa=bad'
+    assert_commit_status "$commit_hook" 0 'git commit -am "fix: ok"'
+    assert_commit_status "$commit_hook" 0 'git commit "-amfix: ok"'
+    assert_commit_status "$commit_hook" 0 'git commit -aF msg.txt'
+    assert_commit_status "$commit_hook" 0 'git commit --fil msg.txt'
+    assert_commit_status "$commit_hook" 0 'git commit --fil=msg.txt'
+
+    # Certain message forms only: ambiguous syntax belongs to lefthook.
+    assert_commit_status "$commit_hook" 2 'git commit -m "bad message" -SABCDEF12'
+    assert_commit_status "$commit_hook" 0 'git commit -Cmain -m "fix: ok"'
+    assert_commit_status "$commit_hook" 2 'git commit --m "bad message"'
+    assert_commit_status "$commit_hook" 2 'git commit --me=bad'
+    assert_commit_status "$commit_hook" 2 'curl http://x/#frag && git commit -m "bad message"'
+    assert_commit_status "$commit_hook" 2 'git commit -m "feat: ok" && git commit -m "bad message"'
+    assert_commit_status "$commit_hook" 2 'git --attr-source HEAD commit -m "bad message"'
+    assert_commit_status "$commit_hook" 0 "git commit -m \$'feat: ok'"
+    assert_commit_status "$commit_hook" 0 'git commit -m "$MESSAGE"'
+    assert_commit_status "$commit_hook" 0 "printf x; $continued_commit"
+    assert_commit_status "$commit_hook" 0 'git commit -m "bad message" && git commit -am "bad"'
+    assert_commit_status "$commit_hook" 2 'git commit -C main -m "bad message"'
+    assert_commit_status "$commit_hook" 0 "$unquoted_heredoc_header"
+    assert_commit_status "$commit_hook" 0 'git commit -m "`echo feat`: ok"'
+    assert_commit_status "$commit_hook" 0 "$quoted_heredoc_literals"
+    assert_commit_status "$commit_hook" 0 'true # note ; git commit -m "bad message"'
+    assert_commit_status "$commit_hook" 2 'git commit -u -m "bad message"'
+    assert_commit_status "$commit_hook" 2 'true |& git commit -m "bad message"'
+    assert_commit_status "$commit_hook" 0 'git commit --amend --no-edit;(echo -m "not a message")'
+    assert_commit_status "$commit_hook" 0 '(git commit --no-edit)|grep -m1 x'
+    assert_commit_status "$commit_hook" 2 'true;(git commit -m "bad message")'
+    assert_commit_status "$commit_hook" 0 'echo "" git commit -m "bad message"'
+
+done
+
+echo "==> conventional commit extraction OK"
+
 codex_hooks_dir="$repo/.devcontainer/config/codex-hooks"
 if [ -x "$codex_hooks_dir/file-payload.sh" ] && [ -x "$codex_hooks_dir/claude-compat.sh" ]; then
     echo "==> Codex apply_patch adapter emits one Claude-style payload per file"
@@ -296,45 +462,56 @@ assert_protect_allows() {
     fi
 }
 
-echo "==> protect-files blocks credential-shaped paths"
-assert_protect_blocks "$devc_protect" ".env"
-assert_protect_blocks "$devc_protect" "/repo/.env"
-assert_protect_blocks "$devc_protect" "/repo/.env.local"
-assert_protect_blocks "$devc_protect" "/repo/prod.env"
-assert_protect_blocks "$devc_protect" "/repo/subdir/.env.local"
-assert_protect_blocks "$devc_protect" "/repo/sub/.env.production"
-assert_protect_blocks "$devc_protect" "/repo/.envrc"
-assert_protect_blocks "$devc_protect" "secrets.pem"
-assert_protect_blocks "$devc_protect" "/repo/certs/server.pem"
-assert_protect_blocks "$devc_protect" "server.key"
-assert_protect_blocks "$devc_protect" "/repo/keys/id_rsa.key"
-assert_protect_blocks "$devc_protect" ".claude/settings.json"
-assert_protect_blocks "$devc_protect" "/repo/.claude/settings.json"
-assert_protect_blocks "$devc_protect" ".codex/config.toml"
-assert_protect_blocks "$devc_protect" "/repo/.codex/config.toml"
-assert_protect_blocks "$devc_protect" "/etc/claude-code/x"
-assert_protect_blocks "$devc_protect" "/etc/claude-code/config.json"
-assert_protect_blocks "$devc_protect" "/etc/codex/x"
+if [ ! -f "$repo/$devc_protect" ]; then
+    echo "==> protect-files regression tests skipped (devcontainer assets absent)"
+elif [ ! -x "$repo/$devc_protect" ]; then
+    fail "$devc_protect exists but is not executable"
+else
+    echo "==> protect-files blocks credential-shaped paths"
+    assert_protect_blocks "$devc_protect" ".env"
+    assert_protect_blocks "$devc_protect" "/repo/.env"
+    assert_protect_blocks "$devc_protect" "/repo/.env.local"
+    assert_protect_blocks "$devc_protect" "/repo/prod.env"
+    assert_protect_blocks "$devc_protect" "/repo/subdir/.env.local"
+    assert_protect_blocks "$devc_protect" "/repo/sub/.env.production"
+    assert_protect_blocks "$devc_protect" "/repo/.envrc"
+    assert_protect_blocks "$devc_protect" "secrets.pem"
+    assert_protect_blocks "$devc_protect" "/repo/certs/server.pem"
+    assert_protect_blocks "$devc_protect" "server.key"
+    assert_protect_blocks "$devc_protect" "/repo/keys/id_rsa.key"
+    assert_protect_blocks "$devc_protect" ".claude/settings.json"
+    assert_protect_blocks "$devc_protect" "/repo/.claude/settings.json"
+    assert_protect_blocks "$devc_protect" ".codex/config.toml"
+    assert_protect_blocks "$devc_protect" "/repo/.codex/config.toml"
+    assert_protect_blocks "$devc_protect" "/etc/claude-code/x"
+    assert_protect_blocks "$devc_protect" "/etc/claude-code/config.json"
+    assert_protect_blocks "$devc_protect" "/etc/codex/x"
 
-echo "==> protect-files allows dropped patterns (.git, lockfiles, dist, media, etc.)"
-assert_protect_allows "$devc_protect" "/repo/.git/dev-flow-v2/runs/r/run.json"
-assert_protect_allows "$devc_protect" "/repo/.git/deferred-findings/branch"
-assert_protect_allows "$devc_protect" "/repo/.git/config"
-assert_protect_allows "$devc_protect" "/repo/package-lock.json"
-assert_protect_allows "$devc_protect" "/repo/uv.lock"
-assert_protect_allows "$devc_protect" "/repo/node_modules/foo/index.js"
-assert_protect_allows "$devc_protect" "/repo/dist/x.js"
-assert_protect_allows "$devc_protect" "/repo/img.png"
-assert_protect_allows "$devc_protect" "/repo/photo.jpg"
-assert_protect_allows "$devc_protect" "/repo/doc.pdf"
-assert_protect_allows "$devc_protect" "/repo/.terraform/main.tf"
-assert_protect_allows "$devc_protect" "/repo/terraform.tfstate"
-assert_protect_allows "$devc_protect" "/repo/ai/schemas/result.envelope.schema.json"
-assert_protect_allows "$devc_protect" "/repo/config.environment.json"
-assert_protect_allows "$devc_protect" "/repo/config.env.js"
-assert_protect_allows "$devc_protect" "/repo/src/env.ts"
-assert_protect_allows "$devc_protect" "/repo/env.config.json"
-assert_protect_allows "$devc_protect" "/repo/prod.env.local"
-assert_protect_allows "$devc_protect" ""
+    echo "==> protect-files allows dropped patterns (.git, lockfiles, dist, media, etc.)"
+    assert_protect_allows "$devc_protect" "/repo/.git/dev-flow-v2/runs/r/run.json"
+    assert_protect_allows "$devc_protect" "/repo/.git/deferred-findings/branch"
+    assert_protect_allows "$devc_protect" "/repo/.git/config"
+    assert_protect_allows "$devc_protect" "/repo/package-lock.json"
+    assert_protect_allows "$devc_protect" "/repo/uv.lock"
+    assert_protect_allows "$devc_protect" "/repo/node_modules/foo/index.js"
+    assert_protect_allows "$devc_protect" "/repo/dist/x.js"
+    assert_protect_allows "$devc_protect" "/repo/img.png"
+    assert_protect_allows "$devc_protect" "/repo/photo.jpg"
+    assert_protect_allows "$devc_protect" "/repo/doc.pdf"
+    assert_protect_allows "$devc_protect" "/repo/.terraform/main.tf"
+    assert_protect_allows "$devc_protect" "/repo/terraform.tfstate"
+    assert_protect_allows "$devc_protect" "/repo/ai/schemas/result.envelope.schema.json"
+    assert_protect_allows "$devc_protect" "/repo/config.environment.json"
+    assert_protect_allows "$devc_protect" "/repo/config.env.js"
+    assert_protect_allows "$devc_protect" "/repo/src/env.ts"
+    assert_protect_allows "$devc_protect" "/repo/env.config.json"
+    assert_protect_allows "$devc_protect" "/repo/prod.env.local"
+    assert_protect_allows "$devc_protect" "/repo/.env.d/README.md"
+    assert_protect_allows "$devc_protect" "/repo/.environment/schema.json"
+    assert_protect_allows "$devc_protect" ""
 
-echo "==> protect-files regression tests OK"
+    echo "==> protect-files regression tests OK"
+fi
+
+# git-merge-guard replaces the Bash(git merge:*) ask rules; see the script header.
+bash "$(dirname "${BASH_SOURCE[0]}")/test-git-merge-guard.sh"

@@ -1,0 +1,54 @@
+# AGENT-posture BOUNDARY policy, installed to /etc/codex/managed_config.toml by
+# the agent devcontainer's post-create (.devcontainer/agent/agent-autonomy.sh).
+# This file is the ONLY source of the agent Codex config: the agent
+# devcontainer installs it from the image copy, and scripts/test-agent-profile.sh
+# fails if any other checked-in file carries its own copy.
+#
+# Structurally derived from codex-managed-config.toml (the shared human/bot
+# baseline): every key matches that file except approval_policy and the
+# [sandbox_workspace_write] table, enforced by scripts/test-agent-profile.sh's
+# parity test. The agent posture is never looser than bot on any axis
+# (docs/decisions/2026-09-29-agent-posture-three-posture-model.md):
+#
+#   - sandbox_mode stays "workspace-write" — never "danger-full-access", the
+#     bot's setting. The Codex sandbox is a second boundary inside the
+#     container, not the container alone.
+#   - approval_policy is "never", because an unattended run has nobody to
+#     answer a prompt; the sandbox and the container's egress allowlist are
+#     what bound it instead.
+#   - network_access is on inside the sandbox because the dev loop must fetch
+#     and push. The container's default-deny egress allowlist
+#     (.devcontainer/scripts/egress-allowlist.sh) is what limits where.
+#
+# Same rule as the shared file: this is Codex's legacy MDM layer, so every key
+# is an unoverridable requirement. Overridable defaults live in
+# codex-system-config.toml (/etc/codex/config.toml). See harmon-init#1186.
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+approvals_reviewer = "auto_review"
+
+[sandbox_workspace_write]
+network_access = true
+
+[features]
+hooks = true
+
+# Managed hooks are deliberately limited to policies implemented entirely by
+# image-owned scripts. Startup/context and formatter hooks delegate into the
+# checkout's Taskfile, so they remain Claude/project-trusted behavior instead
+# of becoming system-trusted Codex startup code.
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/claude-compat.sh /etc/claude-code/hooks/block-no-verify.sh"
+timeout = 20
+
+[[hooks.PreToolUse]]
+matcher = "Edit|Write"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/file-payload.sh /etc/claude-code/hooks/protect-files.sh"
+timeout = 20

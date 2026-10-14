@@ -53,9 +53,6 @@ set -euo pipefail
 # `false` (explicitly distrusted) or `null`. Only `true` grants anything —
 # `false` and `null` are safe, so failing on "an entry exists at all" would
 # wrongly reject an explicitly-distrusted volume.
-#
-# See https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-new-harnesses/design.md - Decisions
-# ("Resolved 2026-09-03").
 
 PI_AGENT_DIR="${BOT_AUTONOMY_PI_AGENT_DIR:-$HOME/.pi/agent}"
 PI_SETTINGS="${PI_AGENT_DIR}/settings.json"

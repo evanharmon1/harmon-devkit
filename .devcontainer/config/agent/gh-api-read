@@ -1,0 +1,65 @@
+#!/bin/bash
+# GET-only front door for the agent posture. Independent of skills sync.
+# Allow detached output flags only; never forward unknown flags or bodies.
+# Headers (including method overrides), bundled flags and GraphQL are refused.
+set -euo pipefail
+
+# Ignore caller-controlled search directories: the allowed wrapper must run
+# the system gh, never an executable planted in a user-writable directory.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+refuse() {
+    printf 'gh-api-read: refused: %s\n' "$*" >&2
+    exit 2
+}
+
+[ "$#" -gt 0 ] || refuse "usage: gh-api-read ENDPOINT [--paginate] [--slurp] [--jq EXPR]"
+endpoint=
+original_count=$#
+# Consume original arguments while appending vetted flags to the back.
+while [ "$original_count" -gt 0 ]; do
+    argument=$1
+    shift
+    original_count=$((original_count - 1))
+    case "$argument" in
+    --paginate | --slurp | -i | --include | --silent)
+        set -- "$@" "$argument"
+        ;;
+    --jq | -q)
+        [ "$original_count" -ge 1 ] || refuse "$argument requires a value"
+        set -- "$@" --jq "$1"
+        shift
+        original_count=$((original_count - 1))
+        ;;
+    --jq=*)
+        set -- "$@" "$argument"
+        ;;
+    -*)
+        refuse "unrecognised flag $argument"
+        ;;
+    "")
+        refuse "empty argument"
+        ;;
+    *)
+        [ -z "$endpoint" ] || refuse "exactly one REST endpoint is required"
+        endpoint=$argument
+        ;;
+    esac
+done
+[ -n "$endpoint" ] || refuse "a REST endpoint is required"
+trimmed=$endpoint
+while [ "${trimmed#/}" != "$trimmed" ]; do
+    trimmed=${trimmed#/}
+done
+lowered=$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')
+case "$lowered" in
+graphql | graphql/* | graphql\?*)
+    refuse "GraphQL is not a REST read"
+    ;;
+esac
+case "$endpoint" in
+*://*)
+    refuse "absolute URLs are not GitHub REST paths"
+    ;;
+esac
+exec gh api --method GET "$@" "$endpoint"

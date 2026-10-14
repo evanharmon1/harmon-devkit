@@ -25,9 +25,9 @@ body:
     attributes:
       label: Acceptance criteria
       description: >-
-        Optional. One `- [ ]` item per criterion; tag `[CI]`/`[HUMAN]` where
-        useful. Leave blank to file without criteria — triage adds them
-        before this is dispatched.
+        Optional. One `- [ ]` item per criterion, tagged `[CI]`/`[HUMAN]`;
+        triage adds them if blank. Human-only follow-ups go on the
+        `(HUMAN):`/`(QA):` collector, not here.
   - type: textarea
     id: verify
     attributes:

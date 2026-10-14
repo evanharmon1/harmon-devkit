@@ -41,6 +41,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history lets the pin-pair guard compare the PR merge base.
+          fetch-depth: 0
       - uses: ./.github/actions/setup
         with:
           lint-tools: "true"
@@ -58,10 +60,22 @@ jobs:
       - name: Lint
         run: task check
       - run: task audit:agent-instructions
-      - run: task test:agent-instructions-size
-      - run: task test:agent-skill-links
+      # Its own step, outside the suite it guards: it is also a suite member (so
+      # `verify` runs it), but deleting the suite step below would delete the
+      # only CI step that could notice — this one still fails then.
+      - name: Verify-CI parity guard (runs outside the suite it guards)
+        run: task test:verify-ci-parity
+      # The ONE step for every `test:*` target `task verify` runs. The list
+      # lives in Taskfile.yml's `test:suite` and nowhere else, so a check added
+      # to `verify` can no longer be missed here (harmon-init#962, #1461) —
+      # each entry carries the same answer gate in both places.
+      # `test:verify-ci-parity` (the step above) fails if this step is ever
+      # dropped.
+      #
+      # This source runs validate here and its project test tier in test-skills.
+      - name: Test suite (every test:* target verify runs)
+        run: task test:suite
       - run: task validate
-      - run: task test:tasks
 
   # The old lint job serialized ~18–22 minutes of checks. Keep the same
   # Taskfile targets on every code change, in independent runner workspaces.
@@ -90,68 +104,16 @@ jobs:
           # renovate: datasource=pypi depName=copier
           COPIER_VERSION=9.18.2
           python -m pip install "copier==${COPIER_VERSION}"
-      # These run in local `verify` and must run here too, or CI is strictly
-      # weaker than the local gate (harmon-init#962). Each is a unit test
-      # needing no container, network, or credential.
-      #
-      # NOT here, deliberately: `validate` and `test`. Both are in `verify`
-      # unconditionally, but CI only invokes them from the build-test job,
-      # which is gated on use_node. So a repo with
-      # `(include_terraform or include_ansible) and not use_node` runs real
-      # terraform/ansible checks locally and none in CI. Adding them here is
-      # not a one-liner — `terraform validate` needs an init step CI does not
-      # have — so it is tracked as harmon-init#978 rather than fixed in the
-      # same breath as these.
-      - run: task audit:agent-instructions
-      - run: task test:agent-instructions-size
-      - run: task test:agent-skill-links
-      - run: task test:output
-      - run: task test:meta-install
-      - run: task test:session-cleanup
-      - run: task test:setup-github
-      - run: task test:agent-registry
-      # This list is hand-maintained and already misses several task-verify
-      # suites (harmon-devkit#726) — added here so this one doesn't join
-      # them; #726 tracks fixing the list itself so a future addition can't
-      # silently skip CI again.
+      # Shared guards run once through lint's test:suite. These native
+      # project checks remain in their independent required jobs.
       - run: task test:dev-flow-stats
       - run: task test:result-schemas
-      # #974's two new suites. Same reason as the #796 note below: both are
-      # wired into `task verify`, but this workflow runs a hand-maintained
-      # list rather than `task verify`, so omitting them would let cloud CI
-      # pass while skipping the schema-copy parity check. #974's AC-5
-      # sync-and-execute coverage rides `task test:skills` below, which this
-      # list already runs; the mechanical root-`scripts/` guard (AC 4) was
-      # split out to #1099 and is not enforced anywhere yet.
       - run: task test:result-schema-composition
       - run: task test:schema-parity
-
-      - run: task test:registry-drift
-      - run: task test:registry-docs
-      - run: task test:label-registry
-      - run: task test:codex-review
-      # #796's two new suites. Both are wired into `task verify`, but the
-      # workflow never runs `task verify` — it runs this hand-maintained
-      # list — so without these lines cloud CI passes while skipping every
-      # normalization and sandbox regression the change added.
       - run: task test:finder-normalization
       - run: task test:finder-review
-      # test:review-skill is the third suite #796 grows — the logical-round cap
-      # accounting, union-only finder selection, resolver/exit agreement and
-      # closure handling behind criteria 2 and 5. Adding the two above and not
-      # this one left that coverage out of cloud CI entirely. All three are
-      # point-fixes: #726 is the general fix for a hand-maintained list that
-      # silently omits task verify's suites.
-      - run: task test:review-skill
-      # The groom skill's contract suite — the report renderer's only
-      # regression coverage. Same point-fix as the three above it and for
-      # the same reason: it is wired into `task verify`, this workflow does
-      # not run `task verify`, so without this line cloud CI passes while
-      # every assertion about the rendered report goes unexecuted. #726 is
-      # the general fix for this hand-maintained list.
       - run: task test:groom-skill
-      - run: task test:meta-install
-      - run: task test:integrate-codex
+
   test-helpers:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
@@ -176,20 +138,12 @@ jobs:
           # renovate: datasource=pypi depName=copier
           COPIER_VERSION=9.18.2
           python -m pip install "copier==${COPIER_VERSION}"
-      - run: task test:ci-results
-      - run: task test:status
-      - run: task test:gh-scopes
-      - run: task test:worktree
-      - run: task test:lint-hygiene
-      - run: task test:release-title
+      # Shared guards run once through lint's test:suite. These native
+      # project checks remain in their independent required jobs.
       - run: task test:track-work
       - run: task test:claim-label-resolution
-      - run: task test:notify-release
-      - run: task test:claim-release-merged
-
-      - run: task test:setup-github-project
-      - run: task test:sync-devkit-release
       - run: task test:hooks
+
   test-skills:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
@@ -214,26 +168,8 @@ jobs:
           # renovate: datasource=pypi depName=copier
           COPIER_VERSION=9.18.2
           python -m pip install "copier==${COPIER_VERSION}"
-      - run: task test:skills
-      - run: task test:agents
-      - run: task test:hygiene
-      - run: task test:archive-hook
-      - run: task test:skill-index-lifecycle
-      - run: task test:independence
-      - run: task test:statusline
-      - run: task test:devcontainer:permissions
-      # Same devcontainer gate their `verify` entries carry (#962).
-      - run: task test:link-claude-json
-      - run: task test:image-staleness
-      - run: task test:open-devcontainer
-      # This list is otherwise hand-enumerated per-target (see the comment
-      # above the first batch), which is a systemic gap tracked as #726 —
-      # test:result-schemas has the same omission. Adding only this lane's
-      # own target here rather than auditing the whole list.
-      - run: task test:render-dev-flow
-      - run: task test:devcontainer-changed
-      - run: task test:bot-autonomy
-      - run: task test:claim-release-merged
+      # The source project tier owns all skill/agent and dev-flow tests.
+      - run: task test
 
   security:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered

@@ -7,10 +7,10 @@
 # singleSelectOptions array, and per GitHub's schema an existing option re-sent
 # WITHOUT its `id` is destroyed and recreated — silently blanking that field on
 # every board item already assigned to it. Appending is therefore only safe while
-# every pre-existing option goes back with its id, and nothing else in `verify`
-# executes this path (the script talks to the live API, so lint is its only other
-# gate). A future edit that drops the ids would otherwise pass every check and
-# lose data on the next re-run.
+# every pre-existing option goes back with its id. This test, run directly and
+# through test-template.sh for the full and minimal profiles, guards that
+# option-id contract against a stubbed `gh`; the live-API path is not exercised.
+# A future edit that drops the ids would otherwise lose data on the next re-run.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 script="$PWD/scripts/setup-github-project.sh"
@@ -53,7 +53,17 @@ case "$q" in
     fi
     ;;
 *repositoryOwner*__typename*) printf '{"data":{"repositoryOwner":{"__typename":"%s","id":"U_1"}}}\n' "${STUB_OWNER_TYPE:-User}" ;;
-*projectsV2*) echo '{"data":{"repositoryOwner":{"projectsV2":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"P_1","number":7,"title":"Test Project"}]}}}}' ;;
+*projectsV2*)
+    if [ "${STUB_NEW_PROJECT:-0}" = 1 ]; then
+        echo '{"data":{"repositoryOwner":{"projectsV2":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'
+    else
+        echo '{"data":{"repositoryOwner":{"projectsV2":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"P_1","number":7,"title":"Test Project"}]}}}}'
+    fi
+    ;;
+*createProjectV2\(*)
+    printf '%s\n' "$q" >>"$MUTATIONS"
+    echo '{"data":{"createProjectV2":{"projectV2":{"id":"P_1","number":7}}}}'
+    ;;
 *ProjectV2Field*) printf '%s\n' "$q" >>"$MUTATIONS"; echo '{"data":{}}' ;;
 *) echo "fake gh: unexpected query: $q" >&2; exit 1 ;;
 esac
@@ -69,6 +79,8 @@ STUB_FIELDS_FILE="$tmp/fields.json"
 STUB_FIELDS_FILE2="$tmp/fields2.json"
 export MUTATIONS STUB_FIELDS_FILE STUB_FIELDS_FILE2
 export STUB_OWNER_TYPE STUB_VARIABLE_RC
+STUB_NEW_PROJECT=0
+export STUB_NEW_PROJECT
 
 # run_with FIELDS_JSON — run the script against that project snapshot.
 run_with() {
@@ -99,14 +111,18 @@ complete='{"data":{"node":{"fields":{"nodes":[
    {"id":"s12","name":"Done","color":"PURPLE","description":"Merged/shipped"},
    {"id":"s13","name":"Deployed","color":"PURPLE","description":"Deployed"},
    {"id":"s14","name":"Accepted","color":"PURPLE","description":"Smoke/QA/manual check passed"}]},
- {"id":"F_size","name":"Size","dataType":"NUMBER"},
- {"id":"F_prod","name":"Product","dataType":"TEXT"},
- {"id":"F_pri","name":"Priority","dataType":"SINGLE_SELECT","options":[
-   {"id":"p1","name":"Urgent","color":"RED","description":""},
-   {"id":"p2","name":"High","color":"ORANGE","description":""},
-   {"id":"p3","name":"Medium","color":"YELLOW","description":""},
-   {"id":"p4","name":"Low","color":"GRAY","description":""}]}
+ {"id":"F_prod","name":"Product","dataType":"TEXT"}
 ]}}}}'
+
+# The same board as it looked before harmon-init#1451: Priority and Size were project fields
+# then, and a board set up by an older release still carries them. Priority lacks
+# options its old starter set had and carries an owner-added `Critical`.
+legacy=$(printf '%s' "$complete" | jq -c '
+    .data.node.fields.nodes += [
+        {"id":"F_size","name":"Size","dataType":"NUMBER"},
+        {"id":"F_pri","name":"Priority","dataType":"SINGLE_SELECT","options":[
+            {"id":"p1","name":"Urgent","color":"RED","description":""},
+            {"id":"p9","name":"Critical","color":"PINK","description":"owner added"}]}]')
 
 # run_expecting_snapshot_failure FIELDS — a malformed/errored snapshot is
 # UNKNOWN, never evidence that every expected field is absent. Require a loud
@@ -166,33 +182,105 @@ grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
 STUB_OWNER_TYPE=User
 STUB_VARIABLE_RC=0
 
-echo "==> the retired Agent field is never created"
-# The fixture above deliberately has no Agent field, so any mutation naming one
-# is the script recreating it. Advisory routing is the suggest:* label family
-# plus Status: Agent Queue; the live claim is a claim:* label (ADR 0005 D4).
-case "$(cat "$MUTATIONS")" in
-*'name:"Agent"'*) fail "the retired Agent field was created — routing lives in suggest:*/claim:* labels" ;;
+echo "==> a run creates none of the retired Agent, Domain, Layer, Priority, or Size fields, on either owner type"
+# Priority is an issue field on an organization and a priority:* label on a
+# personal account; Size is retired (harmon-init#1451); Agent is retired too — the live
+# claim is a claim:* label (ADR 2026-08-07 D4). Domain and Layer are label-only
+# taxonomies, not project fields (harmon-init#875). The board below is missing
+# Product as well, so a personal-account run provably does write — it creates
+# Product, the one field it still owns — and the assertions are about everything
+# else. The fixture has no Agent, Domain, or Layer field, so any mutation naming one
+# is the script recreating it; reading it from a personal-account run is what
+# makes the check able to fail (an organization run exits before any field is
+# created).
+bare=$(printf '%s' "$complete" | jq -c '
+    .data.node.fields.nodes |= map(select(.name != "Product"))')
+for owner_type in User Organization; do
+    STUB_OWNER_TYPE=$owner_type
+    run_with "$bare"
+    mut=$(cat "$MUTATIONS")
+    case "$mut" in
+    *'name:"Agent"'*) fail "a $owner_type run created the retired Agent project field" ;;
+    *'name:"Domain"'*) fail "a $owner_type run created the retired Domain project field" ;;
+    *'name:"Layer"'*) fail "a $owner_type run created the retired Layer project field" ;;
+    *'name:"Priority"'*) fail "a $owner_type run created the retired Priority project field" ;;
+    *'name:"Size"'*) fail "a $owner_type run created the retired Size project field" ;;
+    *'dataType:NUMBER'*) fail "a $owner_type run created a number field — Size was the only one" ;;
+    esac
+    if [ "$owner_type" = User ]; then
+        case "$mut" in
+        *'dataType:TEXT,name:"Product"'*) : ;;
+        *) fail "a personal-account run should still create the Product text field" ;;
+        esac
+        [ "$(grep -c createProjectV2Field "$MUTATIONS")" = 1 ] ||
+            fail "a personal-account run should create exactly 1 field (Product), got $(grep -c createProjectV2Field "$MUTATIONS")"
+    else
+        [ ! -s "$MUTATIONS" ] || fail "an organization run reconciles Status only; it wrote: $mut"
+    fi
+done
+STUB_OWNER_TYPE=User
+
+echo "==> a new personal-account project creates none of the retired fields"
+STUB_NEW_PROJECT=1
+run_with "$bare"
+STUB_NEW_PROJECT=0
+mut=$(cat "$MUTATIONS")
+grep -q 'Created project #7' "$tmp/out" || fail "expected the new-project path"
+case "$mut" in
+*'name:"Agent"'*) fail "a new personal-account project created the retired Agent project field" ;;
+*'name:"Domain"'*) fail "a new personal-account project created the retired Domain project field" ;;
+*'name:"Layer"'*) fail "a new personal-account project created the retired Layer project field" ;;
+*'name:"Priority"'*) fail "a new personal-account project created the retired Priority project field" ;;
+*'name:"Size"'*) fail "a new personal-account project created the retired Size project field" ;;
+*'dataType:NUMBER'*) fail "a new personal-account project created a number field — Size was the only one" ;;
 esac
+case "$mut" in
+*'dataType:TEXT,name:"Product"'*) : ;;
+*) fail "a new personal-account project should create the Product text field" ;;
+esac
+[ "$(grep -c createProjectV2Field "$MUTATIONS")" = 1 ] ||
+    fail "a new personal-account project should create exactly 1 field (Product), got $(grep -c createProjectV2Field "$MUTATIONS")"
+
+echo "==> a board that still carries Priority and Size is left exactly as it is"
+# Reconciling is additive and the script never deletes: an existing Priority is no
+# longer appended to, resized, or warned about, and neither is an existing Size.
+# Deleting them is the operator's step (docs/CHECKLIST.md). A wrong-typed one is
+# the sharper probe — it would have been an `incompatible` warning before.
+legacy_wrong=$(printf '%s' "$legacy" | jq -c '
+    .data.node.fields.nodes |= map(
+        if .name == "Priority" or .name == "Size" then {id: .id, name: .name, dataType: "TEXT"} else . end)')
+for owner_type in User Organization; do
+    STUB_OWNER_TYPE=$owner_type
+    for board in "$legacy" "$legacy_wrong"; do
+        run_with "$board"
+        [ ! -s "$MUTATIONS" ] || fail "a $owner_type run mutated a board that only carries the retired fields: $(cat "$MUTATIONS")"
+        ! grep -Eq "[Ff]ield '(Priority|Size)'|(Priority|Size) \(is " "$tmp/out" ||
+            fail "a $owner_type run reported on a retired field it no longer manages"
+        grep -q "DONE: GitHub Project is ready" "$tmp/out" ||
+            fail "a $owner_type run did not finish ready over a board carrying retired fields"
+    done
+done
+STUB_OWNER_TYPE=User
 
 echo "==> a field missing a starter option gains ONLY that option"
-# Priority lacks `Low` and carries an owner-added `Critical`.
+# Status lacks `Accepted` and carries an owner-added `Blocked`.
 partial=$(printf '%s' "$complete" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Priority" then
-            .options = [ .options[] | if .name == "Low"
-                then {id: "p9", name: "Critical", color: "PINK", description: "owner added"}
+        if .name == "Status" then
+            .options = [ .options[] | if .name == "Accepted"
+                then {id: "s99", name: "Blocked", color: "PINK", description: "owner added"}
                 else . end ]
         else . end)')
 run_with "$partial"
 [ "$(updates)" = 1 ] || fail "expected exactly 1 update mutation, got $(updates)"
 mut=$(cat "$MUTATIONS")
 case "$mut" in
-*'{name:"Low"'*) : ;;
+*'{name:"Accepted"'*) : ;;
 *) fail "the appended option should be sent WITHOUT an id" ;;
 esac
 
 echo "==> every pre-existing option is re-sent WITH its id (identity preserved)"
-for pair in 'p1:Urgent' 'p9:Critical' 'p3:Medium'; do
+for pair in 's1:Inbox' 's99:Blocked' 's3:Next'; do
     case "$mut" in
     *"{id:\"${pair%%:*}\",name:\"${pair##*:}\""*) : ;;
     *) fail "existing option '${pair##*:}' lost its id '${pair%%:*}' — item values would be cleared" ;;
@@ -201,20 +289,25 @@ done
 
 echo "==> an owner-added option survives the append"
 case "$mut" in
-*'name:"Critical"'*) : ;;
-*) fail "owner-added option 'Critical' was dropped from the replacement list" ;;
+*'name:"Blocked"'*) : ;;
+*) fail "owner-added option 'Blocked' was dropped from the replacement list" ;;
 esac
 
-echo "==> a field of the wrong data type is warned about, never appended to"
+echo "==> a field of the wrong data type is warned about, never created over"
+# Product is the one custom field left, and a text field has no options to append
+# to — so the guard here is create_text's: warn, report it in the end-of-run
+# summary, and write nothing (a second Product would shadow the owner's).
 wrong=$(printf '%s' "$complete" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Priority" then {id: .id, name: .name, dataType: "TEXT"} else . end)')
+        if .name == "Product" then {id: .id, name: .name, dataType: "NUMBER"} else . end)')
 run_with "$wrong"
-[ "$(updates)" = 0 ] || fail "a wrong-typed field must not receive an option update"
-grep -q "already exists as TEXT" "$tmp/out" || fail "expected a data-type warning for Priority"
+[ ! -s "$MUTATIONS" ] || fail "a wrong-typed field must be neither updated nor re-created: $(cat "$MUTATIONS")"
+grep -q "already exists as NUMBER" "$tmp/out" || fail "expected a data-type warning for Product"
+grep -q "Product (is NUMBER, wanted TEXT)" "$tmp/out" ||
+    fail "expected Product in the end-of-run incompatible summary"
 
 echo "==> a non-single-select Status warns and is skipped, never aborting the run"
-# Status is reconciled by its own call site rather than create_single_select, so
+# Status is reconciled at its own call site, so
 # it needs its own coverage: without the field_exists guard there, existing_options
 # runs `.options[]` over a field that has none, jq exits 5, and `set -euo pipefail`
 # kills the whole run — a stack trace instead of the warning this script promises,
@@ -237,13 +330,13 @@ grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
 echo "==> a field at the option cap warns instead of attempting an oversized write"
 capped=$(printf '%s' "$complete" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Priority" then
-            .options = ([ .options[] | select(.name != "Low") ]
-                + [ range(0; 47) | {id: "x\(.)", name: "custom\(.)", color: "GRAY", description: ""} ])
+        if .name == "Status" then
+            .options = ([ .options[] | select(.name != "Accepted") ]
+                + [ range(0; 37) | {id: "x\(.)", name: "custom\(.)", color: "GRAY", description: ""} ])
         else . end)')
 run_with "$capped"
 [ "$(updates)" = 0 ] || fail "an over-capacity append must be skipped, not attempted"
-grep -q "cannot fit Low" "$tmp/out" || fail "expected a capacity warning naming the missing option"
+grep -q "cannot fit Accepted" "$tmp/out" || fail "expected a capacity warning naming the missing option"
 grep -q "WARN: GitHub Project needs attention" "$tmp/out" ||
     fail "expected a warning final outcome at the option cap"
 
@@ -262,8 +355,8 @@ echo "==> an option added after the startup snapshot survives the append"
 # built from the fresh list, not the stale one.
 concurrent=$(printf '%s' "$partial" | jq -c '
     .data.node.fields.nodes |= map(
-        if .name == "Priority" then
-            .options += [{id: "p42", name: "raced-in", color: "BLUE", description: "added concurrently"}]
+        if .name == "Status" then
+            .options += [{id: "s42", name: "raced-in", color: "BLUE", description: "added concurrently"}]
         else . end)')
 run_with "$partial" "$concurrent"
 mut=$(cat "$MUTATIONS")

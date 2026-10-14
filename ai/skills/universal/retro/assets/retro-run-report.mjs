@@ -32,7 +32,8 @@
 //       report a clean retro on this path, and never fall back to memory.
 //   13  local-unverified — opt-in local record, not authenticated by a trusted GitHub evidence marker.
 //       Never a verified report or an authenticated trajectory.
-//   14  refused local record — invalid local input, never evidence tampering.
+//   14  refused local record — unsafe or invalid local input, or unsupported
+//       platform; never evidence tampering. Local reads are Linux-only.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
 // Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
@@ -45,7 +46,7 @@
 // that was never recorded (challenge round 1, confirmed P1).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync, statSync, constants, openSync, fstatSync, closeSync, readlinkSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -81,9 +82,13 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --record-dir <path>          Parent directory containing <run_id>/run.json;
                                passed through unchanged to the harvester.
   --local-unverified           After run-not-found only, read --record-dir/--run
-                               as unverified local data (exit 13); refused local
-                               records exit 14. Requires both flags. Ignored when
-                               authenticated evidence exists.
+                               as unverified local data (exit 13). Linux-only:
+                               containment needs a single-step descriptor path.
+                               Unsafe or invalid local records exit 14, as does
+                               an unsupported platform, with the refusal reason:
+                               local descriptor containment cannot be established on this platform
+                               Requires both flags. Ignored when authenticated
+                               evidence exists.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -197,8 +202,20 @@ function validateArgs(args) {
   if (args.statsScript !== undefined && !existsSync(args.statsScript)) {
     throw new UsageError(`--stats-script path does not exist: ${args.statsScript}`)
   }
-  if (args.recordDir !== undefined && !existsSync(args.recordDir)) {
-    throw new UsageError(`--record-dir path does not exist: ${args.recordDir}`)
+  if (args.recordDir !== undefined) {
+    let isDirectory
+    try {
+      isDirectory = statSync(args.recordDir).isDirectory()
+    } catch (error) {
+      if (args.localUnverified && error.code !== 'ENOENT') {
+        throw new LocalRefusalError('--record-dir cannot be read as a directory')
+      }
+      if (!existsSync(args.recordDir)) {
+        throw new UsageError(`--record-dir path does not exist: ${args.recordDir}`)
+      }
+      throw error
+    }
+    if (!isDirectory) throw new UsageError('--record-dir must be a directory')
   }
   // Validated here for the same reason, and it became load-bearing the moment
   // the cutoff started filtering discovery: an unparseable value makes
@@ -887,13 +904,12 @@ function harvestTrajectory(stats, args, runId, trusted) {
     try {
       structuredStatus = JSON.parse(result.stdout || 'null')?.status || null
     } catch {
-      // No structured status on stdout — classify as an ordinary not-found
-      // below. A stderr substring is not a fallback: the not-found message
-      // echoes the requested run id verbatim, so a --run value that merely
-      // CONTAINS the text "record-missing" would otherwise self-misclassify.
+      // A crash can also exit 1. Only a structured status licenses fallback;
+      // stderr echoes arbitrary run ids and cannot prove absence.
     }
-    const kind = structuredStatus === 'record-missing' ? 'record-missing' : 'run-not-found'
-    return { missingKind: kind, missing: `${kind} — ${stderr || `the harvester does not know run ${runId}`}` }
+    if (structuredStatus === 'record-missing' || structuredStatus === 'run-not-found') {
+      return { missingKind: structuredStatus, missing: `${structuredStatus} — ${stderr || `the harvester does not know run ${runId}`}` }
+    }
   }
   if (result.status === 3) {
     throw new IndeterminateError(stderr || `the harvester reports run ${runId} indeterminate`)
@@ -1537,7 +1553,7 @@ function localSafe(value) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;'))
-    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, '')
+    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
 }
 
 function isLocalPathInside(parent, resolved) {
@@ -1551,16 +1567,66 @@ function renderLocalUnverified(args, runId, requestedPr) {
   if (runId === '.' || runId === '..' || /[/\\]/.test(runId)) {
     throw new LocalRefusalError('local run.json path escapes the selected run directory; --run must name one directory')
   }
-  const parent = realpathSync(args.recordDir)
-  const file = path.join(parent, runId, 'run.json')
-  if (!existsSync(file)) return null
-  // Symlinks must not redirect the local read outside the selected parent.
-  const resolved = realpathSync(file)
-  if (!isLocalPathInside(parent, resolved)) {
-    throw new LocalRefusalError('local run.json resolves outside --record-dir')
+  let parent
+  try {
+    parent = realpathSync(args.recordDir)
+    if (!statSync(parent).isDirectory()) throw new LocalRefusalError('--record-dir is not a directory')
+  } catch (error) {
+    if (error instanceof LocalRefusalError) throw error
+    throw new LocalRefusalError('--record-dir cannot be read as a directory')
   }
-  if (!statSync(resolved).isFile()) throw new LocalRefusalError('local run.json is not a regular file')
-  const bytes = readFileSync(resolved, 'utf8')
+  const runDirectory = path.join(parent, runId)
+  try {
+    if (!statSync(runDirectory).isDirectory()) throw new LocalRefusalError('local run path is not a directory')
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    if (error instanceof LocalRefusalError) throw error
+    throw new LocalRefusalError('local run path cannot be read as a directory')
+  }
+  if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
+    throw new LocalRefusalError('local no-follow reads are unavailable on this platform')
+  }
+  if (process.platform !== 'linux') {
+    throw new LocalRefusalError('local descriptor containment cannot be established on this platform')
+  }
+  const file = path.join(runDirectory, 'run.json')
+  let fd
+  let resolved
+  let bytes
+  try {
+    // O_NONBLOCK prevents a replaced FIFO from blocking before fstat refuses it.
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    const fileStat = fstatSync(fd, { bigint: true })
+    if (!fileStat.isFile()) throw new LocalRefusalError('local run.json is not a regular file')
+    // One kernel readlink describes the open object. realpath would walk that
+    // returned path again, letting renamed ancestors redirect the proof.
+    let pathStat
+    try {
+      resolved = readlinkSync(`/proc/self/fd/${fd}`)
+      if (!path.isAbsolute(resolved) || resolved.endsWith(' (deleted)')) {
+        throw new LocalRefusalError('local descriptor containment cannot be established')
+      }
+      if (!isLocalPathInside(parent, resolved)) {
+        throw new LocalRefusalError('local run.json descriptor resolves outside --record-dir')
+      }
+      pathStat = lstatSync(resolved, { bigint: true })
+    } catch (error) {
+      if (error instanceof LocalRefusalError) throw error
+      throw new LocalRefusalError('local descriptor containment cannot be established')
+    }
+    if (fileStat.dev !== pathStat.dev || fileStat.ino !== pathStat.ino) {
+      throw new LocalRefusalError('local run.json descriptor identity differs from its path')
+    }
+    bytes = readFileSync(fd, 'utf8')
+  } catch (error) {
+    if (fd === undefined && error.code === 'ENOENT') return null
+    if (error.code === 'ELOOP' || error.code === 'ENOTDIR') {
+      throw new LocalRefusalError('local run.json requires a no-follow regular file in a directory')
+    }
+    throw error
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
   const validator = path.join(ASSET_DIR, '..', '..', 'dev-flow-support', 'assets', 'validate-result-schemas.mjs')
   if (!existsSync(validator)) throw new OperationalError('local run schema validator is unavailable')
   const snapshot = mkdtempSync(path.join(tmpdir(), 'retro-local-'))
@@ -1635,7 +1701,7 @@ function renderLocalUnverified(args, runId, requestedPr) {
     schema: 'retro-run-report.v1', status: 'local-unverified', verified: false,
     run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
   }
-  return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
+  return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
     `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
     ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
   ].join('\n')

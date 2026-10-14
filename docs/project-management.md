@@ -180,9 +180,11 @@ writer arm dispatch, bypassing the actor-attributable `foreman:*` trust gate.
 Either way the item moves to **In Progress** once work starts.
 
 > **Foreman is that automation** for issue-driven delivery: arm the issue with
-> a `foreman:*` label — label arming is the only supported mode, because
-> Foreman requires a trusted, timeline-attributable arming actor and GitHub
-> exposes no actor for an issue-field change — and `task foreman:dispatch` /
+> a `foreman:*` label — label arming is the only supported mode: while
+> `issues.field_added` / `issues.field_removed` events exist, Foreman reads the
+> label timeline, where field events carry an actor only under a preview
+> GraphQL API and the timeline algorithm is specified for labels
+> (ponderousdev/foreman#139) — and `task foreman:dispatch` /
 > `foreman:watch` pulls ready items and delivers them **draft-first**: it opens
 > a **draft** PR labelled `foreman:dispatched`, runs its own verify gate,
 > shepherds CI and reviews on the draft, and promotes it to
@@ -317,23 +319,289 @@ There is no `project-automation.yml` here: it writes an **org** project through
 the CI GitHub App, and a personal-account board has no equivalent. The
 built-ins plus the claim lifecycle are the whole story.
 
+### Classification reconciler
+
+After filing, the derived Tier (`tier:<value>`) and `needs-triage` have two
+automated writers and no others; what they derive from is under
+[Classification](#classification) below. The skills (triage, track-work, breakdown) are meant to set both in the
+same write that sets Risk or Complexity, but the pinned skills do not yet
+(harmon-devkit#1250, #1251 and #1252, plus a skills-pin bump), so until then
+the reconciler is what sets them. `classification-reconcile.yml` and
+`classification-event.yml` repair everything else: a scheduled walk of open
+issues (monthly on an organization repository, daily on a personal-account
+one) and a per-issue job when a human opens an issue or changes a label or the
+Type in the GitHub UI. An edit to an organization issue field starts no event
+run, so after classifying with fields, run `classification-reconcile.yml` by
+hand (`workflow_dispatch`), or the Agent queue view lags until the schedule.
+The workflows write nothing but those two labels. They never write over
+`tier:pinned` and never resolve a pin carrying two tier values; they report
+that case for a human. The minutes model, the event filter and the opt-in
+standalone organization workflow (the "Organization-wide walk": one file in a
+private repository of the organization, not a call into a reusable workflow)
+are in
+[the CI/CD architecture](architecture/ci-cd.md#issue-classification-reconciler).
+
+## Classification
+
+Every issue carries a few **inherent attributes**: what it *is*, as opposed to
+how the factory runs it. That is its **classification**. The **execution
+policy** (`.devflow.toml`: rigor, strategy, role tiers, budgets) is the other
+layer. It decides how an issue is run and may override any default the
+classification implies ([the devflow guide](guides/devflow.md)). The
+[glossary](glossary.md#issue-classification) defines each term. The design is
+harmon-init's ADR 2026-09-30,
+as amended by its ADR 2026-10-01 (Tier as a label),
+its ADR 2026-10-01 (Priority AI)
+and its ADR 2026-10-05 (filing rule and organization walk).
+This section is the working summary; the writers that keep the derived parts
+current are under [Classification reconciler](#classification-reconciler)
+above.
+
+### The axes
+
+| Axis | Scale | Set by | Required for triaged | Organization | Personal account |
+|---|---|---|---|---|---|
+| **Impact** | minimal, low, medium, high, massive | AI or human | yes | issue field | `impact:*` label |
+| **Risk** | trivial, low, medium, high, critical | AI or human | yes | issue field | `risk:*` label |
+| **Complexity** | xs, s, m, l, xl | AI or human | yes | issue field | `complexity:*` label |
+| **Tier** | local, economy, standard, frontier, apex | derived from Risk × Complexity; a human may pin it | no — a cache | `tier:*` label | `tier:*` label |
+| **Priority** | urgent, high, medium, low | human only | no, but the Agent queue requires it | issue field (GitHub's built-in) | `priority:*` label |
+| **Priority (AI)** | p0, p1, p2, p3, p4 | agent or human, as a suggestion | no | issue field | `priority-ai:*` label |
+| **Effort** | 1, 2, 3, 5, 8, 13, 20 | human only, and only on a human task | no | issue field | `effort:*` label |
+| **Type** | bug, feature, task, research (a personal account also has `documentation` and `question`) | AI or human | yes | native issue Type | work-type label |
+| **Area**, **Layer**, **Domain** | the values of `area:*`, `layer:*` and `domain:*`, each family with a `none` value | AI or human | yes: one from each family, or that family's `none` | labels | labels |
+
+Start date and Target date are organization issue fields a human sets; nothing
+here requires them.
+
+### Issue fields on an organization, labels on a personal account
+
+A personal account has no issue fields, so the same axes are stored by owner
+type:
+
+- **Impact, Risk, Complexity, Priority, Priority (AI) and Effort** are issue
+  fields on an organization and `impact:*`, `risk:*`, `complexity:*`,
+  `priority:*`, `priority-ai:*` and `effort:*` labels on a personal account.
+  The labels exist on **every** repository, because the label registry
+  provisions the same set everywhere, but on an organization they are
+  **inert** while the field is set: the field is the source of truth, and a
+  same-axis label never overrides it. For Impact, Risk and Complexity the
+  reconciler falls back to a same-axis label only when the field is unset.
+  Priority, Priority (AI) and Effort labels on an organization are inert, and
+  nothing reads them as a fallback.
+- **Type** is the native issue Type on an organization and a work-type label
+  on a personal account. The same holds: the provisioned work-type labels exist
+  on every repository (`documentation` and `question` are GitHub's
+  repository-creation defaults, which setup does not re-create), an
+  organization never applies one, and the reconciler counts a single work-type
+  label as the Type only when no native Type is set.
+- **The Tier is a label on both owner types**, `tier:<value>`, and there is no
+  `Tier` issue field. It is the one axis whose storage does not follow the
+  owner type, so a reader, the reconciler and a writer all treat it the same
+  way everywhere.
+- **`area:*`, `layer:*` and `domain:*`** are labels on both. Each family has a
+  `none` value that records "this axis does not apply".
+- **The implementer record** (model family, model, model version and model
+  effort) follows the same split on issues: single-select issue fields on an
+  organization, `model-family:*`, `model:*`, `model-version:*` and
+  `model-effort:*` labels on a personal account. Pull requests carry the labels
+  on both owner types, because issue fields do not exist on pull requests. See
+  [The implementer record](#the-implementer-record).
+
+Which surface suits a datum is the question [Label or field?](#label-or-field)
+answers.
+
+### The rubric, in short
+
+The short form below is generated from the descriptions in
+[`label-registry.json`](../label-registry.json), which is authoritative. The
+long form of the rubric lives in harmon-devkit's `triage` skill. Do not invent
+a reading that is not in one of them.
+
+<!-- classification-rubric:begin -->
+<!-- Generated from label-registry.json by `node scripts/label-registry-render.mjs rubric-table`. Do not edit by hand — `task test:label-registry` fails on drift. -->
+
+| Axis | Value | Short form |
+|---|---|---|
+| **Impact** | `minimal` | marginal benefit; most users would not notice it |
+| | `low` | small benefit to a few users or a narrow use case |
+| | `medium` | clear benefit to a meaningful share of users or goals |
+| | `high` | core benefit, or severe harm prevented even if rarely triggered |
+| | `massive` | transformative; current goals depend on it |
+| **Risk** | `trivial` | a mistake is harmless and trivially reversible |
+| | `low` | a mistake is contained, caught quickly, and cheap to undo |
+| | `medium` | a mistake breaks a feature or needs a careful rollback |
+| | `high` | a mistake reaches many users or their data; recovery is costly |
+| | `critical` | a mistake risks data loss, security exposure, or an irreversible outage |
+| **Complexity** | `xs` | a tiny, well-understood change with obvious verification |
+| | `s` | small and local; a clear approach across a few files |
+| | `m` | moderate; several components and some design choices |
+| | `l` | large; cross-cutting, with real design and wide verification |
+| | `xl` | very large or uncertain; likely to grow or need splitting |
+| **Tier** | `local` | self-hosted endpoint first; may escalate to economy |
+| | `economy` | cheapest qualified hosted model first; escalation allowed |
+| | `standard` | reliable general-purpose coding model first |
+| | `frontier` | opus-class heavyweights; no warm-up on weaker models |
+| | `apex` | mythos-class leading edge (fable, sol) |
+| **Priority** | `urgent` | work on this now, ahead of everything else |
+| | `high` | next up; schedule soon |
+| | `medium` | normal queue order |
+| | `low` | when nothing more pressing remains |
+| **Priority (AI)** | `p0` | blocks a merge or deploy — critical |
+| | `p1` | a real defect or must-do; next |
+| | `p2` | worth doing, not blocking |
+| | `p3` | cosmetic or informational |
+| | `p4` | negligible |
+<!-- classification-rubric:end -->
+
+Three notes come with the scales:
+
+- **Impact is core versus marginal benefit**, not common versus uncommon path:
+  a rarely triggered bug with severe consequences can be high impact.
+- **For a bug fix, the harm it prevents belongs in Impact** and the danger of
+  the fix belongs in Risk.
+- **Complexity is on every issue and is never a time estimate.** The human
+  time estimate is Effort, and only for a human task.
+
+### Triaged, and the derived `needs-triage`
+
+An issue is **triaged** when every required classification is present: Type
+(or the work-type label), one label from each of the `area:*`, `layer:*` and
+`domain:*` families (or that family's explicit `none` value), Risk, Complexity
+and Impact. That is the glossary's `triaged` entry and harmon-init's ADR
+2026-09-30 D6, as amended for the filing rule by harmon-init's ADR 2026-10-05
+D2.
+
+`needs-triage` is **derived** from that: present while any of those is
+missing, absent once all are present. Whoever files an issue that is not fully
+classified adds it at filing: the issue forms, people and agents alike. After
+that it is derived, and nobody clears it by hand: the reconciler maintains it
+(see [Classification reconciler](#classification-reconciler)), and so do the
+skills (triage, track-work, breakdown) in the same call that writes Risk or
+Complexity, once a skills-pin bump carries harmon-devkit#1250, #1251 and #1252.
+What counts is the value the reconciler reads: an organization field
+that is set wins, and a disagreeing same-axis label is reported, not
+decisive. Any native issue Type counts as the Type. A retired or unknown label
+or field value does not count as present, and neither does an axis carrying
+two labels with no field to decide between them: a second `area:*`, `layer:*`
+or `domain:*` label is a conflict that keeps the issue in `needs-triage`.
+Priority is not part of the predicate: an issue is triaged without it, though
+it is not startable by an agent until a human sets one.
+
+### The Tier: derivation and pin
+
+The Tier is the model stratum an issue is suggested to run at. It is a **pure
+function of Risk × Complexity**, a risk-dominant matrix in `.devflow.toml`
+(`[tier.matrix]`), implemented once in `devflow-policy.mjs`. The reader's
+behaviour is in [the devflow guide](guides/devflow.md#issue-tier). The stored
+`tier:<value>` label is a **materialized cache**:
+
+- whoever writes Risk or Complexity writes the Tier in the same call, so an
+  agent's write never waits on GitHub Actions (the skills that do this are
+  harmon-devkit#1250, #1251 and #1252, not yet in the pinned skills: until a
+  pin bump carries them, set Risk and Complexity by hand and leave the Tier to
+  the reconciler);
+- the reconciler repairs drift, on a schedule and when a human opens an issue
+  or changes a label or the Type; an edit to an organization issue field starts
+  no event run, so after classifying with fields run
+  `classification-reconcile.yml` by hand (`workflow_dispatch`), or the Agent
+  queue view lags until the schedule;
+- a reader recomputes the Tier from the inputs whenever the label is absent.
+
+**The pin.** A human who disagrees with the derived Tier sets the Tier label
+from the GitHub UI and adds `tier:pinned`. Nothing automated writes over a
+pinned Tier. An issue carries at most one tier value, so a human pinning a
+different tier replaces the existing Tier label first. A pin is a label input
+like any other, so the provenance rule applies: an interactive session
+confirms a pin the operator has not authorized, and unattended automation
+honors one only after verifying who applied it.
+
+**Pin first on an existing repository.** An unqualified `tier:<value>` label
+used to be a human's implementer override; it is now the cache automation
+rewrites. On an unpinned issue with Risk and Complexity set, the reconciler
+(and any writer of those axes) adds the derived Tier and removes every other
+tier label. Before that first write, add `tier:pinned` to each open issue
+whose hand-set tier label you want to keep.
+
+In execution-policy resolution the order is: an operator instruction, then the
+pinned Tier, then `rigor:*` and `tier:<role>:*`, then the derived Tier, then
+`default_rigor`. The pinned and the derived Tier set the **implementer** tier
+only; the other role tiers come from the resolved rigor profile. A
+`tier:<role>:*` label is a role override, not the issue's Tier (see
+[Labels](#labels)).
+
+### The Agent queue
+
+The Agent queue is the set of issues an agent may start. It requires a human
+**Priority**: an issue with only a Priority (AI) is not startable, and an agent
+asks first. Priority (AI) only orders issues within a Priority rung and admits
+nothing (harmon-init's ADR 2026-09-30
+D7). The authoritative predicate (every other exclusion), the order, and how
+the saved view approximates it on each owner type are the **Agent queue** entry
+in [Views](#views).
+
+An agent that files an issue classifies it fully, so that it arrives triaged
+except for Priority. The rule is in [conventions.md](conventions.md#issues).
+
+### Migration: what the classification retired
+
+Everything below is retired, and none of it is a live vocabulary. Each entry
+says where the operator steps are.
+
+- **The `suggest:*` family**, including `suggest:<family>:<model>`, is
+  superseded by the derived Tier. It is **retired**, and its namespace has
+  been removed from `agent-registry.json`. Nothing provisions or renders it.
+  To migrate, remove the label from every issue, pull request and
+  discussion that carries it (an issue then resolves through its derived
+  Tier), then use guarded `--prune`. There is
+  no `--migrate` destination, and the script refuses one. See
+  [Migrating retired and renamed labels](#migrating-retired-and-renamed-labels).
+- **The `Size` project field** is superseded by Effort (human tasks) and
+  Complexity (every issue). Its values have no destination, and deleting the
+  field destroys every value on it, unrecoverably: record any you need first.
+- **The personal-project `Priority` field** is replaced by the `priority:*`
+  labels. On an organization `Priority` was always GitHub's built-in issue
+  field, and it stays.
+- **The `Agent` issue field** is gone, and no `Agent` value carries over. The
+  derived Tier sets the tier an agent runs at, the configured backend or
+  harness picks the family within it, and which agent is working an issue is
+  the claim label.
+- **`tier:adaptive`** has no rung on the Tier scale. Remove the label from every
+  issue, pull request and discussion that carries it, and an issue then
+  resolves through its derived Tier.
+- **A hand-managed `needs-triage` or Tier.** Both are derived now (`needs-triage`
+  is added at filing, then maintained). A human who wants a different Tier pins
+  it, and an existing repository pins any
+  hand-set Tier it wants to keep before the reconciler's first write (see
+  [The Tier](#the-tier-derivation-and-pin)).
+
+The steps for these field retirements (the Agent entry, and the Priority /
+Size entry), and the order they must run in, are under **Migrating a board
+that still has one** in [Fields](#fields).
+
 ## Fields
 
 `Status` is a **Project field** — the board pipeline above; it stays on the
 project because the built-in workflows (and `project-automation.yml`, on an org)
-drive it.
+drive it. It is also the only project field a workflow or an agent ever writes.
 
-The work-metadata fields:
+The work-metadata field:
 
-- **Priority** — Urgent / High / Medium / Low
-- **Size** — estimation points on the Fibonacci ladder (1 / 2 / 3 / 5 / 8 / 13 / 21),
-  a project **number** field so a view can sum it per group
 - **Product** — which product/area it belongs to (free text)
 
-There is deliberately **no `Agent` field**. Which agent *should* take an issue
-is the `suggest:*` label family plus the `Status: Agent Queue` lane; which agent
-*is* working it is the claim label (see **Claiming** below). A field could carry
-neither answer without duplicating the label vocabulary, and on an organization
+There is deliberately **no `Priority` or `Size` field** (harmon-init#1451).
+Priority is an issue field on an organization (GitHub's built-in) and a
+`priority:*` label on a personal account, with `Priority (AI)` /
+`priority-ai:*` beside it as the AI's suggestion; Size is retired in favour of
+Effort (human tasks) and Complexity (every issue), per harmon-init's ADR
+2026-09-30.
+
+There is deliberately **no `Agent` field**. Whether an agent may take an issue
+is decided by the **Agent queue** in [Views](#views); the derived Tier
+(`tier:*`) sets the tier an agent runs at, and the configured backend or harness
+picks the family within it; which agent *is* working it is the claim label (see
+**Claiming** below). A field could carry
+none of these answers without duplicating the label vocabulary, and on an organization
 the Projects V2 API could not even write it — see
 [Label or field?](#label-or-field).
 
@@ -351,35 +619,27 @@ the setup scripts are additive-only by design, so deleting a live field is an
 explicit operator step, and reviewing its values comes first — deleting a field
 destroys every value on it, unrecoverably.
 
-- **Agent** (retired earlier):
-  1. Provision the replacement vocabulary first: run `task setup:github-labels`
-     in every repository whose issues carry the field — a `suggest:*` label must
-     exist in a repo before an assignment can be copied onto its issues.
-  2. List what the field holds — filter the Project's own board/table view by
-     the field, not a capped CLI listing (`gh project item-list` defaults to a
-     page size well under a typical board, and `gh issue list` won't show
-     draft items at all): every issue or board item with `Agent` set,
-     including **draft items**, which can carry the project field but can
-     never carry a label. Convert any draft whose assignment you want to keep
-     into an issue first; a draft you leave as-is loses its assignment with
-     the field.
-  3. Carry each assignment you still want over as the matching `suggest:*` label
-     on the issue (e.g. `Agent: Claude Code` → `suggest:claude`).
-  4. Re-point the saved **Agent queue** view (below) at the new predicate —
-     filter on the `suggest:*` labels instead of the `Agent` field. A view still
-     filtered on the field loses its routing predicate the moment the field is
-     deleted.
-  5. Only then delete the field — Project settings → the field → *Delete field*
+- **Agent** (retired earlier): no value carries over — the derived Tier
+  (`tier:*`) sets the tier an agent runs at, and the configured backend or
+  harness picks the family within it.
+  1. **Enumerate every board and view that references the field before deleting
+     it** (harmon-init#910): every Project that has it, and every saved view in
+     each that filters on it (the **Agent queue** view as it was specified
+     before the field was retired did) — not just the board being migrated.
+  2. Re-point the saved **Agent queue** view at its current definition in
+     [Views](#views). A view still filtered on the field loses its routing
+     predicate the moment the field is deleted.
+  3. Only then delete the field — Project settings → the field → *Delete field*
      on a personal project. On an organization the field is **org-wide**:
      deleting it under **Settings → Planning → Issue fields** removes the value
      from every issue in every repository and project the org owns, not just
-     this board — repeat steps 2–4 across the whole organization before
-     deleting, including step 4 for **every** Project whose saved views filter
+     this board — repeat steps 1–2 across the whole organization before
+     deleting, including step 2 for **every** Project whose saved views filter
      on the field, not just the board being migrated.
 - **Domain / Layer** (retired by harmon-init#875): `domain:*`/`layer:*` are provisioned
   by default, so most repos already carry them — but don't skip the
   provisioning step on that assumption; confirm it.
-  1. Provision the replacement vocabulary first, the same as Agent: run
+  1. Provision the replacement vocabulary first: run
      `task setup:github-labels` in every repository whose issues carry the
      field. An org-wide issue field is shared by every repo in the org, and
      labels are not — a repo that never ran the script has neither label
@@ -392,7 +652,8 @@ destroys every value on it, unrecoverably.
      all). Include **draft items**, which can carry the project field but can
      never carry a label: convert any draft whose value you want to keep into
      an issue first, since a draft left as-is loses the value outright once
-     the field is gone.
+     the field is gone. List **archived items** too (the project's Archived
+     items page), which keep their field values but are hidden from views.
      For each item, add the matching `domain:*`/`layer:*` label — **creating
      it first** if the field carries a custom option (e.g. `Domain: crm`)
      that has no label counterpart yet, since the starter set
@@ -408,9 +669,43 @@ destroys every value on it, unrecoverably.
   4. Only then delete the field(s) — Project settings → the field → *Delete
      field* on a personal project; **Settings → Planning → Issue fields** on an
      organization, org-wide as above.
+- **Priority / Size** (retired by harmon-init#1451): on a **personal account**
+  both were project fields; on an **organization** only `Size` was — `Priority`
+  there is GitHub's built-in issue field and stays. On a personal account
+  Priority's replacement is the `priority:*` labels; `priority-ai:*` (on an
+  organization, the `Priority (AI)` issue field) is a separate AI suggestion
+  beside it, not a replacement. `Size` has none, and its values go with the
+  field.
+  1. Provision the replacement first (personal account): run
+     `task setup:github-labels` in every repository whose issues carry a
+     `Priority` value — a `priority:*` label must exist in a repo before a value
+     can be copied onto its issues.
+  2. **Enumerate every board and view that references each field before
+     deleting it** (harmon-init#910): every Project that has the field, and
+     every saved view in each that filters, sorts, groups, or sums by it (the
+     Triage, Agent queue, Planning, and Mine views as they were specified before
+     harmon-init#1451 all did) — not just the board being migrated. Then list
+     the items that hold a value, filtering the Project's own view rather than a
+     capped CLI listing, **draft items** included, which can carry the project
+     field but can never carry a label, and **archived items** (the project's
+     Archived items page), which keep their field values but are hidden from
+     views.
+  3. On a personal account, convert any draft whose `Priority` you want to keep
+     into an issue first (a label cannot go on a draft; a draft you leave as-is
+     loses its value with the field), then carry each `Priority` value you still
+     want onto the matching `priority:*` label. A value with no `priority:*`
+     label — an option you added beyond Urgent / High / Medium / Low — has no
+     counterpart to carry it to: map it to the nearest rung, or record it before
+     deleting the field. `Size` values have no destination: keep a record of any
+     you need now, because deleting the field destroys them unrecoverably.
+  4. Re-point or rebuild every view from step 2 as the **Views** section below
+     specifies it. A view still filtered, sorted, or summed by a deleted field
+     loses that predicate the moment the field is gone.
+  5. Only then delete each field — Project settings → the field → *Delete
+     field* — on a personal account both, on an organization `Size` only.
 
 On a personal account there are no issue fields, so `task setup:github-project`
-creates **Priority, Product, and Size** as project fields.
+creates **Product** as a project field.
 
 ### The provisioned field values
 
@@ -422,9 +717,10 @@ lands on the next run.
 | Field | Type | Values | Provisioned by |
 |---|---|---|---|
 | **Status** | project single-select | Inbox, Icebox, Next, Todo, Shaping, Ready, Agent Queue, In Progress, Verifying, In Review, Ready to Merge, Done, Deployed, Accepted | `setup:github-project` |
-| **Size** | project number | free numeric entry; the Fibonacci ladder (1, 2, 3, 5, 8, 13, 21) is a convention, not an option list | `setup:github-project` |
-| **Priority** | project single-select | Urgent, High, Medium, Low | `setup:github-project` |
 | **Product** | project text | free text | `setup:github-project` |
+
+On a personal account `Priority` is the `priority:*` label family, never a
+project field.
 
 ## Labels
 
@@ -446,6 +742,29 @@ the taxonomy table below is generated from) and the starter set is created by
   accessibility, performance, tech debt, internationalization
 - **Source** — where the work came from (a customer request, AI authorship) —
   durable provenance, never removed
+- **Initiative** — the horizon of a parent issue: `epic` for a time-bound
+  deliverable, or `umbrella` for an enduring area, topic, or team — or for a
+  `(HUMAN):`/`(QA):` collector (see **Human-task and QA collectors** below).
+  These labels describe the issue; sub-issues remain the source of the
+  parent/child relationship
+- **Human work** — `human` is applied when the issue's completion is primarily a
+  human's (actions, decisions, QA, purchases, credentials, physical work),
+  whether or not an agent can assist with parts of it. Agents may file, append
+  to, or prepare for a `human` issue, but never claim, arm, or implement one
+  while it carries the label. Filing never removes `human`. Triage may remove
+  `human` only when the issue no longer qualifies for it, and all of these hold:
+  the issue is not a `(HUMAN):` or `(QA):` collector, `[HUMAN]` criteria are not
+  a majority of its acceptance criteria, and the classifier judges the remaining
+  work agent-completable. Every removal is listed in the triage report for a
+  person to see. "Prepare for" means comments, drafts or research on the human
+  issue itself, never a claim. A part an agent can do is filed as its own issue
+  and goes through the Agent queue. When that part cannot start before the human
+  step, give it a native blocked-by link to a standalone `human` issue for that
+  step, never to a collector, which can stay open by design (see **A precondition
+  is a dependency, not a follow-up** below). The agent issue is then not
+  startable until that standalone issue closes. `human` + `umbrella` marks a
+  `(HUMAN):`/`(QA):` collector (see **Human-task and QA collectors** below) as
+  the special case
 - **Workflow** — transient triage states; `blocked` is the non-issue-blocker
   flag described above
 - **Layer** — which stack slice the change lives in
@@ -498,20 +817,19 @@ The prose above describes what each family *means*; the actual values — names,
 colors, writers, lifecycle — live in `label-registry.json` and appear in the
 generated taxonomy table below, so vocabulary is never restated here.
 
-Two more families name **model intelligence** rather than a facet of the work,
-and their vocabulary is not hand-listed anywhere: it is rendered from
+One more family names **model intelligence** rather than a facet of the work,
+and its vocabulary is not hand-listed anywhere: it is rendered from
 `agent-registry.json` (see [Agent families and harnesses](#agent-families-and-harnesses)),
 so provisioning and documentation cannot fork from each other.
 
-- **Suggest** — `suggest:<family>` — which agent family
-  *should* implement the issue, set at triage. Advisory only: it routes
-  nothing by itself and must never be read as Foreman arming (that is the
-  `foreman:*` family). A model-level label (`suggest:<family>:<model>`, created on
-  demand) **refines** the family label, never replaces it — apply both, so
-  views filtered on the family labels keep seeing the issue
 - **Claim** — `claim:<family>` — which agent family is working
   the issue *right now*, written by the agent itself (see **Claiming** below).
   Model-level (`claim:<family>:<model>`) refines it the same way
+
+Which model stratum an issue *should* run at is not a label family of its own
+any more: it is the derived [Tier](#the-tier-derivation-and-pin) (`tier:*`,
+above). The retired family-suggestion labels are covered under
+[Migration](#migration-what-the-classification-retired).
 
 > **Transition — the retired `agent:*` family.** Repos seeded before the
 > registry-driven vocabulary carry `agent:claude-code`-style labels instead of
@@ -590,24 +908,36 @@ verification drifts, treat the operation as incomplete, reconcile live
 associations, and rerun in a new quiet window; a successful exit alone is not a
 claim of association preservation.
 
+### Migrating retired and renamed labels
+
+Retiring a label is a guarded migration, never a direct `gh label delete`. The
+mechanics are the ones above; what differs per label is its destination.
+
+**A retired label with no one-to-one replacement has no destination.**
+`suggest:*` (including `suggest:<family>:<model>`, superseded by the derived
+Tier) and `tier:adaptive` (no rung on the Tier scale) are refused as `--migrate`
+sources, because a migration would stamp an unrelated label on every associated
+record. Remove the label from every issue, pull request and discussion that
+carries it (an issue then resolves through its derived Tier), then rerun
+`--prune`, which offers the now-unassociated label for deletion.
+
 **Fixed legacy mappings are authoritative.** Use the association-migration path
 for these fixed sources: `agent:claude-code` → `claim:claude`,
 `agent:codex` → `claim:gpt`, `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`,
-`agent:qwen-code` → `claim:qwen`, `suggest:codex` → `suggest:gpt`, and
-`claim:codex` → `claim:gpt`. Pass one repeatable `--migrate OLD=NEW` per exact
+`agent:qwen-code` → `claim:qwen`, and `claim:codex` → `claim:gpt`. Pass one
+repeatable `--migrate OLD=NEW` per exact
 live source; `--migrate` does not match prefixes. The `OLD=NEW` form contains
 exactly one `=`; labels containing `=` must be relabeled per record instead of
 passed to bulk migration. For a model-level fixed
 source, move only the family segment and preserve the recorded suffix, for
-example `suggest:codex:sol` → `suggest:gpt:sol` and
-`claim:codex:sol` → `claim:gpt:sol`. Model-level labels refine rather than
+example `claim:codex:sol` → `claim:gpt:sol`. Model-level labels refine rather than
 replace their family-level label, so the guarded command retains or adds both
 associations. When a recognized model-level destination is absent, the guarded
 command creates it only after confirmation by copying the live family label's
 color and description; if that family label is absent, setup must run first and
 maintenance stops. Enumerate model-level names explicitly with
 `gh label list --repo <owner/repo> --limit 1000 --json name --jq '.[].name' |
-grep -E '^(suggest|claim):(codex|copilot):'`; for each source, inspect all-state
+grep -E '^claim:(codex|copilot):'`; for each source, inspect all-state
 `gh issue list --label <old> --state all --limit 1000` and
 `gh pr list --label <old> --state all --limit 1000`. An exactly-full manual
 result is capped; increase the limit and rerun before writes. The maintenance
@@ -615,30 +945,25 @@ path itself uses `gh api --paginate` and refuses an indeterminate read.
 
 For a fixed mapping, do not use `gh label edit` or a hand-written
 create-then-delete sequence. Use `--migrate`: it accepts a live registered
-destination or creates a recognized on-demand model destination as described
-above,
-mapping: it validates the live registry destination, attempts the association
-move for each matching issue, PR, and discussion found in the paginated snapshots, then
-permits guarded `--prune` only when a fresh snapshot shows the source has zero
-associations. For
-per-record broker handling, add and
-verify the destination on each record before removing the old association;
-after all records are handled, a fresh zero-association snapshot may permit
-guarded `--prune` to attempt retiring the old label.
+destination (or creates a recognized on-demand model destination, as described
+above), validates the live registry destination, attempts the association move
+for each matching issue, PR, and discussion found in the paginated snapshots,
+and permits guarded `--prune` only when a fresh snapshot shows the source has
+zero associations. For per-record broker handling, add and verify the
+destination on each record before removing the old association; after all
+records are handled, a fresh zero-association snapshot may permit guarded
+`--prune` to attempt retiring the old label.
 
 **Copilot labels need a per-record family decision, not a default-based rename.**
 `copilot-cli` is a broker, not a model family: its picker defaults to `mai`,
 but MAI is only that default and never evidence for a migration. Do not pass
-`agent:github-copilot*`, `suggest:copilot*`, or `claim:copilot*` to bulk
+`agent:github-copilot*` or `claim:copilot*` to bulk
 `--migrate`; the command rejects broker-derived sources because one destination
-cannot represent mixed runtime records. `suggest:copilot` has no claim/session
-record: re-express each issue/PR's planning intent as
-`suggest:<actual-family>` or drop the old association, never mechanically
-rename it to `suggest:mai`. `claim:copilot` is different: inspect each
+cannot represent mixed runtime records. For `claim:copilot`, inspect each
 issue/PR's claim/session record and handle that record individually as
 `claim:<actual-family>`; use `claim:mai` only when the record confirms MAI.
 Apply the same distinction to model-level
-`suggest:copilot:<model>`/`claim:copilot:<model>` labels and preserve a model
+`claim:copilot:<model>` labels and preserve a model
 suffix only after the actual family is known. Include Discussions in the
 per-record inventory: the read-only report gives their association count, and
 the Discussions UI or GraphQL API identifies the records to relabel. If a live
@@ -668,7 +993,7 @@ that can only stop work:
 
 | Family | Triggers execution? | How the consumer establishes trust |
 |---|---|---|
-| `foreman:<adapter>`, `foreman:approved` | **yes** — arms an issue for dispatch | Foreman reads the `labeled` **timeline event**, takes the actor from it, and requires that login in `trusted_actors` (`.foreman.toml`). Unattributable arming is a fail-closed refusal, never a dispatch — which is also why issue-field arming is refused outright: GitHub exposes no actor for a field change |
+| `foreman:<adapter>`, `foreman:approved` | **yes** — arms an issue for dispatch | Foreman reads the `labeled` **timeline event**, takes the actor from it, and requires that login in `trusted_actors` (`.foreman.toml`). Unattributable arming is a fail-closed refusal, never a dispatch — which is also why issue-field arming is refused outright: field events carry an actor only under a preview GraphQL API, and the timeline algorithm is specified for labels (ponderousdev/foreman#139) |
 | the Claude Actions workflows | **no** — labels trigger nothing at all | Execution starts only on an explicit `@claude` mention naming `plan`, `implement`, or `review`, from a login on the workflow's sender allowlist. The allowlist is enforced in the job `if:` and re-asserted in a token-free step *before* any credential is minted |
 | `claim:*` (and legacy `agent:*`) | **no** — read as a gate, not a trigger | Those workflows refuse to start on a target that already carries one. No actor check is needed for a signal that can only *withhold* execution: the worst outcome is a visible, reversible refusal |
 | `autorelease: *` | **no** | release-please writes them on its own release PRs and reads only what it wrote; nothing dispatches from one |
@@ -684,29 +1009,59 @@ then map and retire them with guarded `--migrate`/`--prune` maintenance.
 
 ### Label or field?
 
-Both surfaces can hold the same-looking datum, so the choice is made on
-mechanics, not taste. Use a **label** when the datum must be any of:
+An axis can live in three places, a label, an issue field or a project field,
+and they are not interchangeable. The choice is made on mechanics, not taste.
 
-- **multi-valued** — an issue can legitimately carry two at once;
+**A label** is per-repository and works on every owner type. Use one when the
+datum must be any of:
+
+- **multi-valued** — an issue can legitimately carry two at once, for the
+  families the registry marks non-exclusive (a second `area:*`, `layer:*` or
+  `domain:*` label is a conflict that keeps the issue in `needs-triage`);
 - **visible without project scope** — readable from `gh issue list` and the
   issue page, with no Projects API token;
 - **writable with plain repo scope** — no `project` scope, no org permission;
 - **timeline-attributable** — the `labeled` event records who applied it and
-  when;
-- **available on personal repos** — org issue fields do not exist there.
+  when, and it is the one actor signal the checks here read;
+- **available on personal repos** — issue fields do not exist there.
 
-Use a **field** when it is **single-valued planning metadata you slice the
-board by**: `Status`, `Priority`, `Size`, `Product`.
+**An issue field** is organization-only. It holds single-valued classification
+metadata that lives on the **issue** itself: the value is the same in every
+project the issue belongs to, and it does not depend on project membership. On
+an organization it is where Impact, Risk, Complexity, Priority, Priority (AI)
+and Effort are stored (see
+[Classification](#issue-fields-on-an-organization-labels-on-a-personal-account)).
+A field change is recorded in the issue's timeline with its actor (the GraphQL
+`IssueFieldAddedEvent` and `IssueFieldChangedEvent` timeline items, a preview
+API). No workflow here runs on a field edit, so the scheduled walk, or a run you
+start by hand, is the only reconciler path. Fields are not an arming surface:
+nothing in this repository reads or verifies a field's actor before acting, and
+arming stays with `foreman:*` labels.
 
-The consequences are not stylistic. Foreman arming is labels because only
-the label timeline names an arming actor. Claims are labels because a claim
+**A project field** lives on the board item, in one project, and is for
+**views only**: it is how a board is grouped, sorted and filtered. It needs the
+Projects scope for API reads and writes, and its changes are not a
+`labeled`-style timeline event that an actor check can read. `Status` is the
+project field, and `Product` is one on a personal account (on an organization
+it is an issue field). Nothing is classified in a project field.
+
+In practice, a **label** is the default; an **issue field** is for an axis that
+is single-valued, on an organization, and that every project should agree on; a
+**project field** is for pure board metadata that nothing decides work from
+(`Status` plays no part in the Agent queue).
+
+The consequences are not stylistic. Foreman arming is labels because field events carry an actor only under a preview API, and the timeline algorithm is specified for labels (ponderousdev/foreman#139). Claims are labels because a claim
 must be writable and visible to an agent holding nothing but repo scope, on
-personal and org repos alike. And there is deliberately no `Agent` field:
-advisory routing and live ownership are two different facts, a single-select
-could carry neither without duplicating the label vocabulary, and on an
-organization the Projects V2 API could not write it at all. `Domain` and `Layer` were fields once
-too, and were retired for the same reason: a label already covered every one of
-the bullets above and nothing kept the two surfaces in sync (harmon-init#875).
+personal and org repos alike. The Tier is a label on both owner types even
+where issue fields exist: a reader, the reconciler and a writer then share one
+storage path, and the pin needs a marker (`tier:pinned`) that works where
+issue fields cannot, since they have no boolean type and a personal account has
+none at all. And there is deliberately no `Agent` field: advisory routing and
+live ownership are two different facts, a single-select could carry neither
+without duplicating the label vocabulary, and on an organization the Projects
+V2 API could not write it at all. `Domain` and `Layer` were fields once too,
+and were retired for the same reason: a label already covered every one of the
+bullets above and nothing kept the two surfaces in sync (harmon-init#875).
 
 ### The complete label taxonomy
 
@@ -727,17 +1082,19 @@ deliberately leaves it alone.
 | `customer-request`, `ai-generated` | whoever files or authors the work, human or agent | humans, saved views | provisioned; inert | durable provenance — never removed |
 | `needs-triage` | humans, the issue forms, and the triage skill | humans, the Triage view | provisioned; inert | added freely at filing; removed only when classification is complete |
 | `needs-requirements`, `blocked`, `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
+| `needs-review` | the integration stage, at ready-for-review; humans | humans, the review list; the agent queue, which excludes it | provisioned; inert | added at ready-for-review, when `claim:*` is removed; removed if review pulls the work back into fix rounds |
 | `bug`, `feature`, `task`, `research` | the issue forms on personal-account repos; humans or agents at triage | humans, saved views | provisioned; inert | durable classification — org repos use native issue Type and no work-type label |
 | `documentation` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
 | `question` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
 | `dependencies` | Renovate, when it manages dependency updates | humans, saved views | not provisioned — Renovate creates it on demand; never deleted by setup | tool-managed by Renovate |
 | `enhancement` (**retired**) | nobody — replaced by `feature` | humans, saved views | retired — the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned | use guarded `--prune` with `--migrate enhancement=feature` |
-| `layer:{ui,logic,data,integration,infra}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
+| `layer:{ui,logic,data,integration,infra,none}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
 | `domain:{boilerplates,scripts,agent-workflow,standardization,design,project-tracking,delivery}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
 | `domain:auth` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — a generic starter value this repo never needed; no longer provisioned | no issues carry it — delete the live label |
 | `domain:billing` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — a generic starter value this repo never needed; no longer provisioned | no issues carry it — delete the live label |
 | `domain:platform` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — split across this repo's own domains; no longer provisioned | re-label its issues to the repo-specific domains, then delete the live label |
-| `area:{ci,docs,deps,build,tests,tasks,release,devcontainer,pm,skills,gauntlet,templates,agents,security,scripts,shepherd,triage,track-work,standardize-repo,design,session-flow,foreman}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; area = solution space, domain = problem space, layer = stack slice |
+| `domain:none` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
+| `area:{ci,docs,deps,build,tests,tasks,release,devcontainer,pm,skills,gauntlet,templates,agents,security,scripts,shepherd,triage,track-work,standardize-repo,design,session-flow,foreman,none}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; area = solution space, domain = problem space, layer = stack slice |
 | `rigor:{cursory,light,standard,thorough,deep,forensic}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a rounds policy, five role tiers, and a breadth envelope; arms nothing | set when the default rigor is wrong for the change; survives the work |
 | `tier:{local,economy,standard,frontier,apex}` | agents, in the write that sets Risk or Complexity, and the GitHub Actions reconciler; humans may set one, and pin it with `tier:pinned` | humans and agents — readers recompute the derived Tier from Risk × Complexity, so the label is a cache (a stale value is ignored); with `tier:pinned` and trusted provenance, the label is the pinned Tier, which sets the implementer; models are classified in `agent-registry.json` (ADR 0006/0007) | provisioned; **read by agents** — a pin outranks the derived Tier and both rank below an operator instruction; resolved against `.devflow.toml`'s `tier_order`; arms nothing | a materialized cache — rewritten whenever Risk or Complexity changes and by the scheduled reconciler (daily on personal-account repositories, monthly on organization ones), recomputed by readers when absent; never rewritten while `tier:pinned` is present |
 | `tier:adaptive` (**retired**) | nobody — retired 2026-10-01 | humans — retired, see the derived Tier (`tier:<value>`) | retired — no rung on the Tier scale (ADR 2026-09-30 D8); never provisioned | remove the label from each issue — it then resolves through its derived Tier — then use guarded `--prune` |
@@ -745,8 +1102,8 @@ deliberately leaves it alone.
 | `tier:<role>:<tier>` | humans, at triage or planning — never an agent on itself | humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>`, which is the issue's stored Tier rather than a role override | provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing | set when one role's tier should differ from the rigor's own profile; strongest-wins per role |
 | `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` (**retired**) | nobody — renamed to strategy:* | humans — retired, see `strategy:*` | retired — execution topology renamed to the `strategy` family; never provisioned | migrate each with guarded `--prune` and repeatable `--migrate method:<v>=strategy:<v>` |
 | `strategy:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage or planning — never an agent on itself | agents, when entering the Dev Loop — Foreman does not consume it yet (out of scope here) | provisioned; **read by agents** — selects an execution topology, arms nothing | set when the default strategy is wrong for the change; survives the work |
-| `suggest:<family>` | humans or agents, at planning | humans, the Agent queue view | provisioned from the registry (family level only); advisory — arms nothing | set at planning; survives the work and is never rewritten by a claim |
-| `suggest:<family>:<model>` | humans or agents, at planning | humans | **tool-owned, created on demand** — seeding every model would be an unbounded roster | refines the family label; apply both |
+| `suggest:<family>` (**retired**) | nobody — superseded by the derived Tier | humans — retired, see `tier:*` | retired — superseded by the derived Tier; never provisioned and no longer rendered from the agent registry | remove the label from each issue — it then resolves through its derived Tier — then use guarded `--prune` (no `--migrate`: nothing replaces a family suggestion one-to-one) |
+| `suggest:<family>:<model>` (**retired**) | nobody — superseded by the derived Tier | humans — retired, see `tier:*` | retired — never provisioned; no tool creates it any more | remove the label from each issue, then use guarded `--prune` |
 | `claim:<family>` | the agent itself — a vendored claim skill, or a Claude Actions run | humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it | provisioned from the registry; a **gate**, never a trigger | added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close where the repo ships it |
 | `claim:<family>:<model>` | the agent itself | humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it | **tool-owned, created on demand** | refines the family label; added at claim, removed at release |
 | `agent:<harness>` (**retired**) | nobody — never seeded into a new repo | claim skills (and `claim-release.yml` where present), which still recognize it | legacy; inert | after choosing the actual claim family, use guarded `--prune` with repeatable `--migrate OLD=NEW` |
@@ -760,7 +1117,18 @@ deliberately leaves it alone.
 | `type:<commit-type>` | a human, optionally | Foreman, to pick the unit's conventional-commit type | **not provisioned** — an optional override of the native issue `Type` | applied when the native type is absent or wrong |
 | `autorelease: pending`, `autorelease: tagged` | release-please | release-please | **tool-owned, auto-created**; note the space after the colon — not part of the `family:value` convention | pending on the open release PR, tagged once the release is cut |
 | `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix` | GitHub, at repo creation | humans | not provisioned, never deleted by setup | adopted; leave in place — inventory reporting and guarded pruning exclude it |
-
+| `epic`, `umbrella` | humans, at planning or grooming; agents when filing a (HUMAN)/(QA) collector or an approved breakdown | humans, saved views | provisioned; inert | applied to a parent while its role is current; removed or changed when its horizon changes |
+| `human` | whoever files or triages the issue, human or agent; triage may remove it only when the issue no longer qualifies (non-collector, no [HUMAN] majority, agent-completable) | humans, saved views; agents, to skip dispatch | provisioned; inert | applied while completion is primarily a human's; removed once the issue's remaining completion is no longer primarily a human's |
+| `impact:{minimal,low,medium,high,massive}` | humans or agents, at triage or filing — agent-authored issues arrive with it set | humans, saved views | provisioned; **advisory** — a required axis for triaged; arms nothing | durable classification; required for an issue to count as triaged |
+| `risk:{trivial,low,medium,high,critical}` | humans or agents, at triage or filing — agent-authored issues arrive with it set | humans, saved views; the Tier derivation (Risk × Complexity) | provisioned; **read by agents** — an input to the derived Tier (Risk × Complexity); arms nothing | durable classification; required for triaged; whoever changes it re-derives the Tier in the same write |
+| `complexity:{xs,s,m,l,xl}` | humans or agents, at triage or filing — agent-authored issues arrive with it set | humans, saved views; the Tier derivation (Risk × Complexity) | provisioned; **read by agents** — an input to the derived Tier (Risk × Complexity); arms nothing | durable classification; required for triaged; whoever changes it re-derives the Tier in the same write |
+| `priority:{urgent,high,medium,low}` | humans only — an agent never sets or changes it | humans, saved views; the agent queue (an issue with no Priority is not queued) | provisioned; **advisory** — orders the agent queue; arms nothing | set by a human when ranking the work; changed as priorities move |
+| `priority-ai:{p0,p1,p2,p3,p4}` | agents or humans — the AI's suggestion, never required; a review finding filed as an issue carries its adjudicated badge (P0→p0, P1→p1, P2→p2, P3→p3; nothing from a review maps to p4) | humans, saved views; the effective priority, which is the human `priority` when set and else this suggestion; in the agent queue it only orders issues within a `priority` rung and admits nothing | provisioned; **advisory** — the AI's suggestion, overridden by the human `priority` family; arms nothing | written by an agent or human when classifying or filing the issue; changed as the AI learns more; the human `priority` overrides it without clearing it |
+| `effort:{1,2,3,5,8,13,20}` | humans only, on a human task — agent work carries Complexity instead | humans, saved views | provisioned; **advisory** — a human estimate; arms nothing | set by a human when estimating a human task; agent issues never carry it |
+| `model-family:<family>` | the implementing agent, as a record of fact — personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead) | humans, saved views — never read to select a model | provisioned from the registry (every owner type); a **record of fact**, never a routing input | kept; replaced by the next implementer, never removed by claim release |
+| `model:<line>` | the implementing agent, as a record of fact — personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead) | humans, saved views — never read to select a model | provisioned from the registry (every owner type); a **record of fact**, never a routing input | kept; replaced by the next implementer, never removed by claim release |
+| `model-version:<version>` | the implementing agent, as a record of fact — personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead) | humans, saved views — never read to select a model | provisioned from the registry (retired versions included, so history keeps its labels; every owner type); a **record of fact**, never a routing input | kept; replaced by the next implementer, never removed by claim release |
+| `model-effort:<effort>` | the implementing agent, as a record of fact — personal-account repos on issues and PRs; organization repos on PRs only (issues carry the issue field instead) | humans, saved views — never read to select a model | provisioned from the registry (every owner type); a **record of fact**, never a routing input | kept; replaced by the next implementer, never removed by claim release |
 <!-- label-taxonomy:end -->
 
 One nuance the table compresses: `claim:claude` in a repo with **no label
@@ -780,8 +1148,11 @@ and merging stays human-only.
 Every agent-vocabulary label comes from one machine-readable source,
 `agent-registry.json`, validated against `agent-registry.schema.json`. Its two
 axes are deliberately distinct: a **family** is the model intelligence doing
-the reasoning, a **harness** is the executable that runs it. `suggest:` and
-`claim:` name families; `foreman:<adapter>` names harness machinery.
+the reasoning, a **harness** is the executable that runs it. `claim:` names
+families; `foreman:<adapter>` names harness machinery. The
+registry no longer declares the retired `suggest` namespace;
+nothing provisions or renders it (see
+[Migration](#migration-what-the-classification-retired)).
 
 The same file carries the repository's **trusted-orchestrator allowlist**,
 `trusted_orchestrator_actor_ids`: the immutable GitHub actor ids (integers,
@@ -800,6 +1171,190 @@ provisioning actually creates. Model-level labels are created on demand rather
 than seeded. A `foreman:` selector is provisioned only for an adapter that
 exists and is production-dispatchable in the pinned Foreman release: a selector
 with no adapter behind it is a false capability that can strand armed work.
+#### Model lines, versions, and efforts
+
+Each entry under a family's `models` is a model **line**, not a release. The
+line `slug` names the product (`opus`, `flash`, `coder-plus`) and stays the
+same across releases, so it never embeds a version — `validate-agent-registry`
+rejects a slug segment such as `5`, `v4` or `k3`. The releases live in the
+line's `versions` list, newest first. Each version has its own `slug` (`5.5`,
+`3.8`), a `display_name`, and a `retired` flag. A line has exactly one current
+(non-retired) version, and it is listed first. Exactly one, not "at most one":
+a line with no current version would still lend its tier to the policy
+readers. Older releases stay as retired entries, for the record. "Newest
+first" is checked: slugs are split into components on `.` and `-` and compared
+left to right, numerically when both components are numbers (`3.10` is newer
+than `3.9`), and otherwise as strings. A slug that runs out of components first
+is the older one (`3` before `3.1`). Model-level claim labels derive from the line slug, so
+`claim:gemini:flash` keeps its meaning as Flash moves from 3.8 to its next
+release.
+
+The line's `tier` is the tier of its current version. The policy readers
+reason about tiers per line (which tiers a family can reach), so a version may
+carry its own `tier` only once it is retired, as history. This rule has a
+deliberate consequence for two families. Gemini's 3.7 and 3.6 Flash were its
+standard rung, and DeepSeek's V4 Flash was its economy rung. Both are now
+retired versions of a `flash` line whose current release sits on a different
+tier, so **Gemini no longer reaches `standard` and DeepSeek no longer reaches
+`economy`**. Per-version current tiers would need reader support. That is
+tracked in
+[harmon-devkit#1268](https://github.com/evanharmon1/harmon-devkit/issues/1268).
+
+Each harness declares the reasoning `efforts` it accepts. The list is drawn
+from the registry-wide `effort_ladder` and kept in ladder order. Effort belongs
+to the harness, not the model. The list holds the levels the harness is verified
+to accept — for a provider-rewired wrapper, for the models its launcher resolves.
+A level documented only
+for a model the harness does not resolve is not recorded. An empty list means
+no separate, verified effort
+setting is recorded. Numeric token budgets and on/off switches are not mapped
+onto the ladder, and aliases that collapse onto another level add no rung.
+
+The following documentation was checked on **2026-10-10**. The existing
+`claude-code`, `claude-code-action` and `codex-cli` lists remain as previously
+verified; the checks below establish the other entries' status. GLM remains
+unverified for Anthropic effort pass-through; hosted Qwen and MiniMax remain
+unverified for the models their wrappers resolve:
+
+- **`claude-code-deepseek`**: DeepSeek's [thinking-mode reference](https://api-docs.deepseek.com/guides/thinking_mode/)
+  documents Anthropic `output_config.effort` with distinct `low`, `high` and
+  `max` levels, covering the launcher's configured `deepseek-v4-pro` /
+  `deepseek-v4-flash` models. Other accepted names map onto those levels.
+- **`claude-code-kimi`**: Kimi's [Claude Code integration](https://platform.kimi.ai/docs/guide/claude-code-kimi)
+  documents `CLAUDE_CODE_EFFORT_LEVEL`; its [reasoning-effort reference](https://platform.kimi.ai/docs/guide/use-reasoning-effort)
+  lists K3's `low`, `high` and `max`, covering the K line this wrapper resolves.
+  These lists describe K3, not older K2 models.
+- **`claude-code-minimax`**: MiniMax's [Anthropic compatibility reference](https://platform.minimax.io/docs/api-reference/text-anthropic-api)
+  documents `output_config.effort`: `low`, `medium`, `high`, `xhigh`, `max`.
+  This control is documented only for `MiniMax-M3.1-Flash-Preview`.
+  This repository provisions no `claude-minimax` launcher yet, and the registry's
+  minimax family carries M3. The list stays `[]` until a launcher exists and
+  the provider documents effort for the model it resolves.
+- **`claude-code-qwen`**: Alibaba's [Anthropic Messages reference](https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages)
+  documents `output_config.effort` for Qwen3.8 Max/Flash: `low`, `medium`,
+  `xhigh`. `high` and `max` map to `xhigh`. This wrapper resolves Qwen3.7 Max
+  / Coder Plus, so its list stays `[]` (unverified for the configured models)
+  until the wrapper moves to supported models or Alibaba documents effort
+  support for its configured models.
+- **`claude-code-glm` — still unverified**: Z.ai's [deep-thinking reference](https://docs.z.ai/guides/capabilities/thinking)
+  documents `reasoning_effort`, and its [Claude Code integration](https://docs.z.ai/devpack/tool/claude)
+  documents the Anthropic endpoint. Neither establishes the endpoint's
+  handling of Claude Code's `output_config.effort`; keep `[]` until that
+  pass-through is documented or verified.
+- **`claude-code-qwen-local`**: no reasoning-effort setting was established
+  for the configured `qwen3-coder:30b`. Qwen's [30B Coder model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct)
+  documents non-thinking mode only. [Ollama](https://docs.ollama.com/api/anthropic-compatibility)
+  supports model-defined `output_config.effort` names, but that does not add
+  reasoning to this model; [LM Studio's Messages documentation](https://lmstudio.ai/docs/developer/anthropic-compat)
+  establishes no effort levels for it. Keep `[]` for this configuration.
+- **`antigravity`**: Google's [models page](https://www.antigravity.google/docs/models/)
+  places the thinking choice in model selection (for example, a Flash Medium
+  or Pro High selection). Its [CLI reference](https://www.antigravity.google/docs/cli/reference/)
+  exposes `/model` but no separate effort setting, so keep `[]`.
+- **`copilot-cli`**: GitHub's [CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+  documents `--effort` / `--reasoning-effort`: `low`, `medium`, `high`,
+  `xhigh`, `max`, subject to the selected model.
+- **`qwen-code`**: the official [model-provider configuration reference](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/model-providers.md)
+  documents `generationConfig.reasoning.effort` and configurable capability
+  tiers: `low`, `medium`, `high`, `xhigh`, `max`. Endpoint/model profiles can
+  restrict or normalize these values; token budgets alone add no levels.
+- **`opencode`**: the [model configuration reference](https://opencode.ai/docs/models/)
+  documents `reasoningEffort` and named variants covering `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max` across providers. The [v2 reference](https://opencode.ai/v2/docs/models)
+  uses model `settings.reasoningEffort`; available variants and accepted
+  settings depend on the provider/model.
+- **`pi` and `oh-my-pi`**: their official CLI references
+  ([Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/cli.md),
+  [Oh My Pi](https://github.com/can1357/oh-my-pi/blob/main/docs/cli-reference.md))
+  document `--thinking`: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+  `off` (and Oh My Pi's `auto`) are not effort-ladder levels; model capability
+  limits still apply.
+- **`goose`**: the official [provider configuration reference](https://github.com/block/goose/blob/main/documentation/docs/getting-started/providers.md)
+  documents `GOOSE_THINKING_EFFORT` / `goose configure` for Muse Spark.
+  The recorded list is `GOOSE_THINKING_EFFORT`'s own values: `low`, `medium`,
+  `high`, `max`. Per-provider variables such as `GEMINI3_THINKING_LEVEL`
+  (which accepts `low` and `high`) are separate controls, not part of this list;
+  `off` and numeric budgets add no ladder levels.
+- **`cline`**: the official [CLI reference](https://github.com/cline/cline/blob/main/docs/cli/cli-reference.mdx)
+  documents `--thinking`: `low`, `medium`, `high`, `xhigh` (`none` is excluded).
+  These are the CLI's levels, not every value accepted by Cline's shared SDK.
+
+Introducing lines renamed the slugs that embedded a version. Model-level claim
+labels are created on demand, so the renames change only the names of future
+labels. Where an old label exists in a repository, rename it to the new name;
+GitHub keeps the issues attached through a rename. Where several old labels
+merge into one new name, rename the first. For each of the others, relabel its
+issues with the new name and then delete the old label: a rename to a name that
+already exists fails.
+
+| Old label | New label |
+| --- | --- |
+| `claim:mai:code-1-1-flash` | `claim:mai:code-flash` |
+| `claim:mai:thinking-1` | `claim:mai:thinking` |
+| `claim:deepseek:v4-1-flash`, `claim:deepseek:v4-flash` | `claim:deepseek:flash` (merged) |
+| `claim:deepseek:v4-pro` | `claim:deepseek:pro` |
+| `claim:glm:5-3`, `claim:glm:5-2` | `claim:glm:glm` (merged) |
+| `claim:glm:5-3-flash`, `claim:glm:4-7-flash` | `claim:glm:flash` (merged) |
+| `claim:kimi:k3` | `claim:kimi:k` |
+| `claim:minimax:m3` | `claim:minimax:m` |
+| `claim:gemini:3-1-pro` | `claim:gemini:pro` |
+| `claim:gemini:3-8-flash`, `claim:gemini:3-7-flash`, `claim:gemini:3-6-flash` | `claim:gemini:flash` (merged) |
+| `claim:gemini:3-5-flash-lite` | `claim:gemini:flash-lite` |
+| `claim:mistral:medium-3-5` | `claim:mistral:medium` |
+| `claim:mistral:small-4` | `claim:mistral:small` |
+| `claim:mistral:devstral-small-2` | `claim:mistral:devstral-small` |
+
+The Claude, GPT and Qwen line slugs did not change.
+
+#### The implementer record
+
+Which model implemented an issue is recorded as four values, all drawn from
+`agent-registry.json` (harmon-devkit#1262, decided 2026-10-04):
+
+| Value | Label | Issue field (organization) | Source in the registry | Example |
+| --- | --- | --- | --- | --- |
+| Model family | `model-family:<family>` | Model family | a family `slug` | `claude` |
+| Model | `model:<line>` | Model | a model line `slug` | `opus` |
+| Model version | `model-version:<version>` | Model version | a version `slug`, retired ones included | `5.5` |
+| Model effort | `model-effort:<effort>` | Model effort | the `effort_ladder` | `high` |
+
+- **Owner-type split.** On a **personal-account** repository the four values
+  are labels on the issue. On an **organization** they are single-select issue
+  fields on the issue, provisioned by `task setup:github-issue-fields`.
+- **Pull requests carry the labels on every owner type.** Issue fields do not
+  exist on pull requests, so a pull request always records its implementer as
+  the four labels. That is why `task setup:github-labels` provisions the four
+  label families on every repository that provisions labels, on both owner
+  types (personal and organization). The issue fields stay organization-only.
+- **Last implementer wins.** Each value is exclusive. When a second
+  implementer takes over an issue, its values *replace* the first one's, so the
+  issue answers "who implemented this most recently". The pull request is the
+  exact per-change record: each pull request keeps the values of the
+  implementer that produced it.
+- **A record of fact, never a routing input.** The implementing agent writes
+  the values after the fact, and nothing reads them to select a model. Choosing
+  a model is the Tier's and the harness's job (see
+  [The Tier](#the-tier-derivation-and-pin)). This is also why they are not the
+  retired `Agent` field: that field tried to say who *may* take the work, and
+  these values say who *did*.
+- **Kept, never removed by claim release.** The values are not claim markers.
+  `claim:*` comes off when the claim is released, but the implementer record
+  stays until the next implementer replaces it. `claim-release.yml` never
+  touches these labels or fields.
+- **Provisioned from the registry, history included.** Every family slug,
+  every model line slug and every version slug is provisioned once. A slug
+  shared by several families or lines (the `flash` line, the `5.5` version)
+  becomes a single label or option. Retired versions stay provisioned, so an
+  issue implemented by a model that has since been retired keeps a value that
+  still exists. On an organization a new version is appended as an option.
+  Every existing option is sent back with its id, because GitHub clears the
+  value on every issue holding an option that is re-sent without one. So
+  assigned values survive, and no option is ever removed.
+
+The code that *writes* these values at implement or claim time belongs to the
+vendored skills (harmon-devkit#1269 and #1262). This repository only
+provisions the vocabulary.
+
 <!-- registry-tables:begin -->
 <!-- Generated from agent-registry.json by `node scripts/agent-registry-labels.mjs docs-tables`. Do not edit by hand — `task test:registry-docs` fails on drift. -->
 
@@ -872,8 +1427,8 @@ look like the same fact and are not:
 
 | | Means | Set by | When |
 |---|---|---|---|
-| **`suggest:*`** label | which agent *should* implement it | whoever plans/triages | at planning, before the work starts |
-| **`claim:*`** label | which agent *is* implementing it | the agent itself | at claim, released at hand-off |
+| **`tier:*`** label | which stratum of agent the issue *should* run at | whoever writes its Risk and Complexity, or a human who pins it | at classification, before the work starts |
+| **`claim:*`** label | which agent family *is* implementing it | the agent itself | at claim, released at hand-off |
 
 They share one model-centric vocabulary — the same family and model slugs — but
 they answer different questions. Overwriting the `suggest:*` label at claim time
@@ -1047,9 +1602,10 @@ is minted, the run acquires `claim:claude` on the target:
 | The label list cannot be read | **refuses** — it cannot prove the target is free |
 | The label will not apply | **refuses** — it would work the target unmarked |
 
-`suggest:*` is deliberately not matched: it is advice about who *should* do the
-work, never ownership of it. The label is created if the repository does not
-have it, with the registry's own color and description, so a later
+Only ownership labels count (`claim:*` and the legacy `agent:*`): the Tier
+(`tier:*`) and the other classification labels are advice about who *should* do
+the work, never ownership of it, so they are deliberately not matched. The `claim:claude` label is created if the repository
+does not have it, with the registry's own color and description, so a later
 `task setup:github-labels` reconciles that label instead of fighting it.
 
 Release is loud, and bounded. An `always()` step releases the claim — but only
@@ -1164,35 +1720,46 @@ build-measure-learn, get it in front of a user fast, for which the clock is your
 it at the work level more directly. You already have those.)
 
 **Iterations also don't fit the agent queue.** Agents run when triggered, not "this
-week"; scoping the queue to `iteration:@current` adds nothing over *agent-set +
-Ready + priority*. Iteration is a human-cadence concept your agents don't have.
+week"; scoping the queue to `iteration:@current` adds nothing over its own
+predicate in [Views](#views). Iteration is a human-cadence concept your agents
+don't have.
 (The native Iteration field stays available if you reach steady-state and want it.)
 
-## Hierarchy (sub-issues, not Epics)
+## Hierarchy (sub-issues with Epic and umbrella labels)
 
-There's **no Epic type, by design.** The "big initiative" role splits cleanly
-into two natives — **sub-issues** carry the *hierarchy* axis and **milestones**
-carry the *delivery-batch* axis — and GitHub stitches them together for you: a
+There's **no Epic type, by design.** GitHub **sub-issues** are the authoritative
+*hierarchy* axis, and **milestones** are the *delivery-batch* axis. The durable
+`epic` and `umbrella` labels describe a parent issue's horizon; they do not
+create membership, rollups, or inheritance. A
 **sub-issue inherits its parent's Project and Milestone by default** (shipped
 2025-09). Assign them once on the parent and the child tree picks them up — no
 per-child bookkeeping.
 
+Use **`epic`** for a parent with a finite, time-bound deliverable. It may belong
+to a milestone, whose completion bar and optional due date remain the source of
+delivery tracking. Use **`umbrella`** for a perennial parent that covers an
+enduring area, topic, or team and has no single delivery endpoint. An issue is
+one or the other, never both; both normally gain sub-issues over time.
+`umbrella` also marks the human-task and QA collectors described at the end of
+this section, which gather work rather than decompose it.
+
 So a parent issue "Scheduling v1" in milestone `v1.1.0` pulls its whole subtree
 into that release payload for free. Break big work down with **sub-issues** (up to
 8 levels — flip on **Show hierarchy** in a view to expand/collapse the tree)
-rather than a markdown checklist or an Epic type: you get the structure without
-the "Feature or Epic?" tax.
+rather than a markdown checklist: the `epic` label names the finite parent role,
+while the native relationship carries the structure.
 
-**Sub-issues are your only hierarchy axis; everything else stays flat.** Type,
+**Sub-issues are your only membership axis; everything else stays flat.** Type,
 Status, milestone, labels, and fields must never try to encode "part of" — that's
-the sub-issue's job, and only that. Once that's clear, the rest is just sizing and
-deciding what metadata rides on the parent vs. the leaves.
+the sub-issue's job, and only that. `epic` and `umbrella` are metadata on the
+parent, not substitutes for the relationship. Once that's clear, the rest is just
+sizing and deciding what metadata rides on the parent vs. the leaves.
 
-**The three-tier shape (replaces Epic → Story → Task with natives):** a
-**milestone** (the cross-feature shippable batch — possibly-unrelated work)
-contains parent
+**The common finite-delivery shape:** a **milestone** (the cross-feature
+shippable batch — possibly-unrelated work) contains `epic`-labelled parent
 **Feature** issues (each a cohesive capability), each of which contains **Task**
-sub-issues (mergeable slices). Full hierarchy, no synthetic Epic.
+sub-issues (mergeable slices). An `umbrella` can instead hold a perennial
+subtree without inventing a date or deliverable.
 
 The boundary that trips people up: **a milestone is a flat batch of unrelated
 features targeting one delivery outcome; a parent issue is one cohesive thing
@@ -1203,15 +1770,13 @@ batch; the parent-issue tree for a single feature.
 
 **Where metadata lives — parent vs. leaf.** The **parent** holds the durable
 context: the spec (your Given/When/Then acceptance criteria), the "why," the
-explicit *not*-doing reasoning, and — since sub-issues auto-inherit it — the
-**milestone and project** assignment. Set those once on the parent and the tree
-inherits; move the parent to `v1.1.0` and the whole tree moves with it. Never set
-the milestone per child.
+explicit *not*-doing reasoning, the `epic` or `umbrella` label, and — since
+sub-issues auto-inherit it — the **milestone and project** assignment. Set the
+milestone and project once on the parent and the tree inherits; move the parent
+to `v1.1.0` and the whole tree moves with it. Keep the initiative label on the
+parent; never set the milestone per child.
 
-The **leaves** hold execution: the `Task` type and the **`Size` points**. Put
-the estimate on the mergeable one-PR slices, not the parent — estimating a slice is
-reliable, estimating a big parent isn't — and a view's field sums total the leaves
-for you.
+The **leaves** hold execution: the `Task` type.
 It's route-not-duplicate applied to hierarchy: a child references the parent's spec
 rather than restating it, and reads up for context.
 
@@ -1233,6 +1798,79 @@ before."* If A must finish before B but B isn't part of A, that's a **dependency
 **Blocked is not a status** above) — not a parent-child link. Conflating them
 corrupts the tree; keep composition (sub-issues) and sequencing (dependencies) in
 separate mechanisms.
+
+**Human-task and QA collectors.** Long-running work — a milestone or an `epic`
+— usually needs things only a human can do: set a secret, flip a GitHub or
+vendor setting, approve an account, try the feature by hand. Written as
+required `[HUMAN]` criteria on the issue that surfaced them, each one parks
+that issue: a `Closes #N` fails the closing-keywords check while a box is
+unticked, and an orchestrated run stalls on a human who deliberately circles
+back later. Collect them instead on two kinds of dedicated issue, which differ
+in scope:
+
+| | `(HUMAN): <outcome>` | `(QA): <outcome>` |
+|---|---|---|
+| Collects | human **actions** — credentials, settings, accounts, approvals, purchases, decisions | human **verification** — hands-on, exploratory, or acceptance testing of what shipped |
+| Scope | one per milestone or `epic`, plus one repo-wide for unscoped work | **one per repository** — the standing QA role or team |
+| Placement | in its milestone, and a sub-issue of its `epic` | in no milestone and under no parent; milestones and epics link to it |
+| Lifecycle | closes when every item is ticked | stays open; its checklist is the running QA queue |
+| Labels | `human` + `umbrella`, plus the usual classification and provenance labels | same |
+| Type | `Task` — native Issue Type on org repos, the `task` label on personal repos | same |
+| Example | `(HUMAN): Complete manual setup for v1.2 remote environments` | `(QA): Verify shipped work by hand` |
+
+- **Find it before filing it.** Each collector's `## Provenance` carries one
+  stable scope line: `Collector scope: milestone <number>`,
+  `Collector scope: <owner/repo>#<epic>`, or `Collector scope: repository`
+  for a `(HUMAN):` collector, and always `Collector scope: repository` for
+  the `(QA):` issue. Search all states (`label:human label:umbrella`) and
+  match on the title prefix plus that scope line: append to the open one,
+  reopen a closed one, and never file a second. Whoever meets the first
+  human task files it **lazily**, human or agent. Two writers can still both
+  miss and both file, so whoever finds two open collectors for one scope
+  merges the newer's items into the older, repoints each moved item's
+  source line at the older, and closes the newer as a duplicate.
+- **`(HUMAN):` follows the work.** Its scope is the source issue's
+  milestone; failing that, its `epic`; failing both, the repository. Give it
+  that milestone, and under an `epic` also make it the epic's sub-issue so
+  the epic's rollup stays honest about the human work still owed. An epic's
+  `(HUMAN):` collector lives in the epic's repository, and sources in other
+  repositories cite it as `owner/repo#N`. An item stays on the collector it
+  was filed to even if its source later changes scope, and the collector
+  closes when every box is ticked.
+- **`(QA):` is a role, not a batch.** Each repository has exactly one,
+  standing for its QA role or team. It is never given a milestone, never
+  made a sub-issue, and stays open when its items are all ticked. Milestones
+  and epics reference it — a link in their body, or `Refs` — rather than
+  containing it, and an item can name the milestone or epic it verifies:
+  `- [ ] [HUMAN] Verify remote environments end to end (from #1412, v1.2)`.
+  A cross-repo epic's QA items go to each source repository's own `(QA):`
+  issue.
+- **Each task is one `- [ ] [HUMAN] …` acceptance criterion on its
+  collector**, naming its source:
+  `- [ ] [HUMAN] Add FLY_API_TOKEN to the repo secrets (from #1412)`, with
+  the source written `owner/repo#N` when it lives in another repository.
+  Agents append items; a human ticks them.
+- **The source issue mentions, never blocks.** Record the task on the source
+  issue as a plain line under `## Out of scope` —
+  `Human follow-up (tracked in #1420): add FLY_API_TOKEN` — not as an
+  acceptance criterion, so the issue closes as soon as its agent-verifiable
+  work merges. That line is the durable record and the collector item is its
+  index: an issue-body edit is last-write-wins, so two concurrent appends can
+  drop one item, and the source line is how a later pass finds it again.
+- **A precondition is a dependency, not a follow-up.** When the agent cannot
+  do the work until the human step happens (the secret must exist before the
+  deploy test can run), the step is not a collector item: file it as its own
+  `human` issue and give the source issue a blocked-by edge on it (see
+  **Hierarchy is not dependency**). Closing the human issue unblocks the work
+  through the same graph the dispatchers read.
+- **Never dispatched.** A `human` issue is never claimed, armed with
+  `foreman:*`, or implemented by an agent while it carries the label. Triage
+  may remove `human` only when the issue no longer qualifies (non-collector,
+  no `[HUMAN]` majority, agent-completable; every removal is reported — see
+  **Human work** above). Do not rely on tooling to stop it — Foreman, for one,
+  does not read the label — so never arm one. `human` alone marks a standalone
+  issue whose completion is primarily a human's, such as a precondition;
+  `human` + `umbrella` marks a collector.
 
 ## Cross-repo work
 
@@ -1304,7 +1942,7 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   and Layer are labels only (harmon-init#875): a view can still **filter** on
   `domain:*`/`layer:*` (add the label to the view's filter), it just cannot
   **group** by them the way a field allows — same as the agent split, which is
-  a label question too (`suggest:*`/`claim:*` — filter, don't slice).
+  a label question too (`tier:*`/`claim:*` — filter, don't slice).
 
 ## Notes
 

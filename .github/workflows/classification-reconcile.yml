@@ -1,0 +1,92 @@
+name: Classification Reconcile
+run-name: >-
+  ${{ inputs.issue > 0 && format('reconciling the classification of issue #{0}', inputs.issue) || 'reconciling the classification of open issues' }}
+
+# Materializes the derived Tier (`tier:<value>`) and `needs-triage` on open
+# issues (ADR 2026-09-30 D4 "Reconcile drift" and D6; the Tier is a label on
+# every owner type, ADR 2026-10-01). The logic is
+# scripts/classification-reconcile.mjs; this file only wires triggers to it.
+#
+# Three ways in:
+#   - schedule: daily on a personal-account repository, monthly on an
+#     organization repository (Team-plan minutes are shared and most org
+#     repositories are private). Walks this repository's open issues.
+#   - workflow_call: this repository's own classification-event.yml calls it
+#     for one issue. A call from another repository is not supported: the job
+#     checks out the calling repository, which must carry the script. An
+#     organization-wide walk is the standalone organization workflow in
+#     docs/architecture/ci-cd.md, which mints its own token in its own job.
+#   - workflow_dispatch: by hand, with an optional dry run.
+#
+# The token is always GITHUB_TOKEN, whatever secrets the repository or
+# organization holds (ruling 9: no stored token). It is repository-scoped, so
+# a run walks this repository's issues.
+#
+# The checked-out repository supplies the script and the reader. Each walked
+# repository is judged by its own label-registry.json and .devflow.toml: the
+# calling repository's from the checkout, any other's read from its default
+# branch (so the token also needs contents: read there).
+#
+# Writers: only `tier:<value>` and `needs-triage`, never over `tier:pinned`.
+# Loop safety: label writes made with GITHUB_TOKEN start no workflow runs, and
+# classification-event.yml never treats `tier:*` or `needs-triage` as an input.
+
+on:
+  schedule:
+    # Daily: a personal-account repository (public repositories run free).
+    - cron: "37 6 * * *"
+  workflow_dispatch:
+    inputs:
+      repositories:
+        description: "owner/name list to walk (default: this repository)"
+        type: string
+        required: false
+        default: ""
+      issue:
+        description: "One issue number to reconcile (0 = every open issue)"
+        type: number
+        required: false
+        default: 0
+      dry-run:
+        description: "Report the plan without writing any label"
+        type: boolean
+        required: false
+        default: false
+  workflow_call:
+    inputs:
+      issue:
+        description: "One issue number to reconcile (0 = every open issue)"
+        type: number
+        required: false
+        default: 0
+      dry-run:
+        description: "Report the plan without writing any label"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  issues: write # tier:<value> and needs-triage labels only
+
+jobs:
+  reconcile:
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          # renovate: datasource=node-version depName=node
+          node-version: "24"
+      - name: Reconcile Tier and needs-triage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECONCILE_REPOSITORIES: ${{ inputs.repositories }}
+          RECONCILE_ISSUE: ${{ inputs.issue }}
+          RECONCILE_DRY_RUN: ${{ inputs.dry-run }}
+        run: node scripts/classification-reconcile.mjs

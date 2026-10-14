@@ -2,10 +2,11 @@
 # CLI (taskfiles/foreman.yml; https://github.com/ponderousdev/foreman).
 #
 # Arming is label mode (`foreman:claude`, `foreman:hold`, ...): D13 needs a
-# trusted, timeline-attributable arming actor, and GitHub exposes no actor
-# for issue-field changes — fields mode fails closed by design, so it is
-# never selected here (`auto` would pick it on any org with issue fields).
-# Explicit approval is required before any issue is dispatchable.
+# trusted, timeline-attributable arming actor. Issue-field events carry an
+# actor only under a preview GraphQL API, and the timeline algorithm is
+# specified for labels — fields mode fails closed by design, so it is never
+# selected here (`auto` would pick it on any org with issue fields). Explicit
+# approval is required before any issue is dispatchable.
 #
 # NOTE (D4): on a PUBLIC repository foreman classifies every unit as
 # requiring the `untrusted-input` boundary, which the local runner never
