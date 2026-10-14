@@ -62,6 +62,24 @@ assembly must review the latest implement transition's exact
 different head blocks until the feature owner records the actual assembly
 rather than certifying an unauthenticated tree.
 
+## Which path produces the record
+
+**Both paths produce it, and it is the same record.** In an orchestrated run
+this skill writes it from the role agents' passes (or an envelope-mode
+runner's). An ordinary interactive session with no validated brief envelope
+runs the inline `task challenge` / `task review` procedure instead, and writes
+the record itself as `/implement` § 6a describes: `run-record.mjs solo-init`
+reserves a single-lane run, `receipt` and `adjudicate` publish each round's
+pass and adjudication, `ledger` materializes the per-stage
+`history.<stage>.json` and the shared `heads.json` the verification call reads, `transition` advances the
+stage, and this skill's
+`assets/post-evidence.sh` posts and registers the round's evidence marker.
+Either way it is one `run.json` with `passes/`, `adjudications/` and trusted
+evidence markers, validated by the same validator; nothing downstream branches
+on which path wrote it. A session that never ran a confidence stage — or could
+not record one (the fork topology above, or a `solo-init` refusal) — has no
+record, and neither stage treats that as an error.
+
 ## Stage invariants
 
 Every confidence stage carries the mandatory round-two scaffolding checkpoint
@@ -281,9 +299,13 @@ is a blocker, never a smaller round disguised as complete.
 
 Before adjudication, run `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage
 <stage> --policy <policy> --current-head <head> --repo-root <trusted-repo>
---history <record>/history.json --heads <record>/heads.json --verification-only
+--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only
 --json`, capturing both its status and JSON projection. Materialize the trusted history and head map from the feature-owner's
-verified branch state before dispatch; never let a finder supply them. Its
+verified branch state before dispatch; never let a finder supply them. The
+change ledger is per stage — `<record>/history.<stage>.json` for the stage
+being verified, never a shared `history.json`, because its entries carry only
+round and path — and the head map `<record>/heads.json` is shared by both
+stages (`run-record.mjs ledger --stage <stage>` writes both). Its
 provenance and fingerprint corrections are preconditions, not an advisory
 reviewer assertion. A recognized terminal nonzero status with a valid blocker
 projection is handled as that blocker. Any other command failure, missing or

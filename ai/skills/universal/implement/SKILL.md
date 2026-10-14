@@ -411,7 +411,9 @@ prevents). If the identity is present but topology or compatibility fails, the
 inline procedure remains the fallback and the orchestrator flags the absence
 of v2 evidence at PR-open confirmation. An ordinary session with no validated
 brief envelope also uses the inline procedure and never asks `/review` to
-invent authenticated run state.
+invent authenticated run state. Instead it creates a **real** run itself and
+records the inline stages in it ([§ 6a](#6a-recording-the-inline-stages-solo-run)),
+so `/integrate` and `/retro` read the same record an orchestrated run leaves.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the security
@@ -468,6 +470,154 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
   review and `gh pr create` takes the findings with it. Match on location plus
   substance so a re-reported finding is not recorded twice — a stage exits on a
   clean re-run, so an unchanged deferred finding is reported again by design.
+
+### 6a. Recording the inline stages (solo run)
+
+An ordinary session on the inline procedure (no validated brief envelope)
+records its confidence stages in a **real dev-flow-v2 run** — the same
+`run.json`, `passes/`, `adjudications/` and evidence markers the orchestrated
+path writes, through the same tested writers and validators, never a second
+format (harmon-devkit#1183, the #973 decision). This is what lets `/integrate`'s
+readiness gate start with `--record` and `/retro` find a trusted evidence
+marker. Every writer below is `dev-flow-support/assets/run-record.mjs` unless
+named otherwise; resolve it physically as the review skill describes.
+
+**No stages, no record.** Reserve the run on entering the first confidence
+stage whose resolved cap is at least 1, and not before. A session that skips
+both stages (both caps 0, or a repository that runs none) reserves nothing, and
+no stage treats the absence as an error: `/integrate` uses `AGENTS.md`'s
+readiness procedure condition by condition, and `/retro` reports exit 10
+`no-run-record`. The same holds where recording is unavailable — `origin` is
+not the repository the PR targets (the evidence helper binds its destination
+to `origin`), or `solo-init` refuses (below): say so in the PR body and carry
+on with the inline procedure.
+
+1. **Reserve.** Save step 3's `devflow-policy.mjs resolve --json` output to a
+   scratch file, then:
+
+   ```sh
+   node "$support_dir/run-record.mjs" solo-init --session <session> \
+     --run-id run-<issue>-<slug> --issue <issue> --title <issue title> \
+     --url <issue url> --branch <branch> --base <merge base> --policy <file> \
+     --actor-id "$(gh api user --jq .id)" --strategy-source <strategy source> \
+     [--operator-pin <pin>]...
+   ```
+
+   `--session` is this session's name: the one `/claim` recorded on its claim
+   comment's `session:` line (the identity `/wrap` and every claim check
+   match on). It is not a secret and not a process id; it persists in the
+   slate lock and the plan's reservation reason, every later write must name
+   the same value, and another session's value is refused. `--actor-id` is
+   the GitHub account that will post the evidence markers;
+   `--strategy-source` and each `--operator-pin` are the resolution's own
+   disclosures, copied as resolved — never guessed.
+
+   It prints the run identity (`run_id`, `slate_id`, `generation`,
+   `active_state_path`, `record_directory`, `policy_projection`) — keep it;
+   every later write names `--slate <slate_id> --session <session> --run-id
+   <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan, slate lock
+   on the issue, owner binding), `policy.json`, a kickoff `run.json`, and the
+   branch's active pointer. Every refusable precondition is checked before the
+   first write — a run id that is not `run-<issue>-…`, a run id whose run has
+   already ended (reserve a fresh one), a grafted history, an unresolvable
+   default branch, a `--base` that is not the merge base of the default branch
+   and the branch, an actor the **merge base's** registry does not trust (its
+   markers would never authenticate; a branch's own registry edit never
+   governs its trust set), a branch whose active pointer names a
+   run that has **not** ended (an orchestrated lane is never superseded), an
+   issue another session holds — and a step that still fails afterwards undoes
+   everything the call created. A refusal is a stop for recording, never
+   something to work around. Re-running it is idempotent.
+2. **Walk to the stage.** **A solo run enters only the confidence stages
+   whose recorded cap is above 0, in order** — the run's `policy.json`
+   `rounds.challenge` and `rounds.review`; a cap-0 stage never opens and the
+   exit engine refuses a transition into it. So the first enabled stage is
+   entered at reservation, the next at that stage's handoff, and none at all
+   when both are 0 (no reservation — "No stages, no record" above). The
+   reservation happens where that first stage begins, so the stages before it
+   are recorded **retroactively, now**: `transition --stage claim` **with no
+   `--exit`** (`solo-init` already recorded kickoff's exit, and an exit is
+   never rewritten), then `implement`, `verify` and the first enabled stage,
+   each with `--exit` naming how the stage being left ended (the claim, the
+   commit, `VERIFY-EXIT=0`). Their `entered_at` is the time of this write,
+   not of the work; the exits carry the facts.
+3. **One pass per configured finder slot, per round.** Capture the head first.
+   Where the finder's runner publishes in envelope mode, run **that finder's
+   own task target** so — for a `scripts/finder-review.sh` finder, for
+   example `task challenge:copilot -- --model <model> --envelope --run-id …
+   --head … --stage challenge --round <n> --slot <finder> --tier <challenger
+   tier> --record-dir <record> --base <default branch>`. The bare `task
+   challenge` / `task review` targets run Codex, whose envelope mode fails
+   closed today (harmon-devkit#1365), so for every Codex finder run the task
+   as usual and have the
+   `challenger`/`reviewer` role agent assemble `result.<role>` from its output,
+   or, where the harness has no role agent, assemble it yourself the way the
+   role would: decode the finder's badges against its registry `severity_map`,
+   and set `producer` to **your own** harness, model and tier — the finder's
+   CLI did not produce the envelope. That last option exists only when your
+   own tier is **at least the run's resolved tier for that role**
+   (`policy.json` `roles.<challenger|reviewer>.tier`); below it, dispatch the
+   role agent. Then `receipt --pass <file>`. It admits only a **completed**
+   pass of the stage's own role (`challenger` for challenge, `reviewer` for
+   review), produced at no lower than that resolved tier, for a
+   **configured** slot of the **active**
+   stage's **next unadjudicated** round, reviewing the branch's **current
+   head**, produced inside the stage's span; anything else is refused with
+   nothing published. **A round's head is fixed from its first receipt to its
+   adjudication**: push a fix only after the round is adjudicated, because a
+   pass reviewing a different head than the round's receipted passes is
+   refused (invalidating and re-running a moved round is harmon-devkit#1445). An admitted pass is validated against the run
+   (identity, earlier finding ids), published no-clobber as
+   `passes/<stage>-r<n>-<slot>.json`, and receipted.
+4. **Verify, adjudicate, compute the exit, publish** — the same sequence
+   `review/SKILL.md` § "Verify, adjudicate, publish, exit" runs.
+   **Invariant: every exit-engine call for a solo run takes its policy from
+   the reservation's recorded resolution** — `--rigor` is the run's
+   `policy.json` `rigor.level` (`jq -r .rigor.level <record>/policy.json`),
+   never a fresh default — **and, when the branch edits `.devflow.toml`,
+   `agent-registry.json` or the policy reader, follows `AGENTS.md`'s
+   merge-base rule**: run the merge base's engine, materialized and invoked
+   directly by path exactly as `integrate/SKILL.md` § "Integration exit:
+   follow the engine, not memory" does it (its merge-base engine recipe, with
+   `mb_args` supplying the merge-base flags), never the branch's
+   `dev-flow-exit.sh`. Every command below is written to satisfy it:
+   1. `ledger --stage <stage>` materializes the exit engine's evidence from the
+      branch's own commits: `<record>/history.<stage>.json` (that stage's
+      change ledger of each fix between consecutive reviewed heads — one file
+      per stage, never shared) and `<record>/heads.json` (the branch's head
+      map, shared by both stages).
+   2. `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage <stage>
+      --policy .devflow.toml --rigor <recorded rigor> [<merge-base flags>]
+      --current-head <head> --history
+      <record>/history.<stage>.json --heads <record>/heads.json --repo-root .
+      --verification-only --json`. Only `action: adjudicate` authorizes
+      adjudication; its verified provenance and fingerprints are what the
+      round comment publishes.
+   3. Adjudicate exactly as above, then `adjudicate --file <doc>` publishes
+      `adjudications/<stage>-r<n>.json` after validating it against the
+      round's receipted passes.
+   4. Re-run `ledger` and the same exit command without
+      `--verification-only`, persist its JSON as `<record>/verdict.json`, and
+      act on it; a verdict that disagrees with your reading of the exit rules
+      is a blocker to resolve, not a number to override.
+   5. Publish the round's evidence comment on the issue as that section
+      specifies — `render-dev-flow.sh round-table`, one fenced JSON
+      projection, `review/assets/post-evidence.sh` with the identity's
+      `--generation` and `--active-state` and the same `--actor-id`.
+5. **Advance and hand off.** Leave a stage with `transition --stage <next>
+   --exit "<rule>: <detail>"` (the next enabled stage — `review` after
+   `challenge` only when review's cap is above 0 — otherwise `security`;
+   `integration` once the draft PR exists), and `bind-pr` the draft.
+   Publish the PR-body projection with `render-dev-flow.sh publish` as
+   `/review` does. `/integrate` then takes `--record <record_directory>` and
+   records promotion with `promote`.
+6. **End the run either way.** A run that stops short of promotion — a
+   `capped` or `diverging` stage, an escalation, an abandoned change — is
+   ended with `close --outcome capped|escalated|abandoned --exit "<why>"`
+   (every adjudicated round's evidence marker must already be posted). After
+   `promote` or `close`, release the slate lock: `run-record.mjs lock release
+   --slate <slate_id> --session <session>`. An ended run's active pointer is
+   the only one a later `solo-init` on the same branch may supersede.
 
 ## 7. Security gate
 

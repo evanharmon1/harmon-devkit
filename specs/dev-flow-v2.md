@@ -886,6 +886,21 @@ path, and registers its exact posted whole-body digest in the validated run reco
 It refuses oversized/split projections rather than writing partial evidence;
 the general splitting and PR-rollup obligations below remain caller-owned.
 
+**A solo session writes the same evidence** (harmon-devkit#1183, the #973
+decision). An interactive session with no orchestrator brief still runs its
+confidence stages inline through `task challenge` / `task review`; it reserves
+a real single-lane run with `run-record.mjs solo-init` (its own one-lane slate,
+lock, `policy.json`, kickoff `run.json` and active pointer), publishes each
+round's pass and adjudication with `run-record.mjs receipt` / `adjudicate`,
+materializes the exit engine's change ledger and head map from the branch's
+own commits with `run-record.mjs ledger` before the same verification-only
+and final exit calls `/review` makes, and posts the round's marker through the
+same `post-evidence.sh`. There is no
+second record format and no reduced one: the readiness gate, the exit engine
+and the harvester read the solo record exactly as they read an orchestrated
+one. A session that never enters a confidence stage reserves nothing, and the
+absence of a record is then the ordinary "no evidence" outcome, never an error.
+
 It authenticates the run and the stage/round coordinates present on GitHub;
 the full record remains local. A harvester given `--record-dir <path>` reads
 that content from `<path>/<run_id>/`, reports `record-missing` when the named
@@ -1079,6 +1094,12 @@ absorbed by the issue that carries their criteria;
 - **Given** `remediation = 2` and a CI check that fails again after each of two fix pushes in the integration stage
 - **When** the next finding arrives
 - **Then** no third fix push is made; the run records `capped` for integration, posts a blocker report naming the unresolved finding, and the PR stays draft
+
+### Scenario: an inline session's run is measurable
+
+- **Given** an interactive session with no orchestrator brief whose confidence stages ran only through `task challenge` / `task review`
+- **When** it reserves a solo run and records each round through `run-record.mjs receipt`/`adjudicate` and `post-evidence.sh`
+- **Then** the readiness gate accepts its `--record`, and `retro-run-report.mjs` on its PR discovers the trusted marker and exits 0 with a `## Run evidence` report
 
 ### Scenario: Foreman and a session agree
 
