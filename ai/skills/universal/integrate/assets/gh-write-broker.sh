@@ -182,21 +182,22 @@ case "$subcommand" in
 trigger)
     [ -z "$comment_id" ] && [ -z "$body_file" ] ||
         refuse "trigger takes no --comment-id or --body-file — its body is hardcoded"
+    [ -z "$finder" ] || valid_slug "$finder" || refuse "invalid finder slug: $finder"
+    state=$(git rev-parse --git-path "integrate-${finder:-codex}/$repo/$pr.json") ||
+        refuse "cannot locate cycle state in the current checkout"
+    [ -f "$state" ] || refuse "cycle state is missing: $state"
+    # Hold the checker lock through the POST. A release must not observe
+    # an empty surface while this broker is about to create its trigger.
+    trigger_lock="${state}.lock"
+    mkdir "$trigger_lock" 2>/dev/null || refuse "cycle state lock-held"
+    trap 'rm -f "$trigger_lock/pid"; rmdir "$trigger_lock" 2>/dev/null || true' EXIT
+    printf '%s\n' "$$" >"$trigger_lock/pid"
+    jq -e --arg repo "$repo" --argjson pr "$pr" '
+        .phase == "reserved" and .repo == $repo and .pr == $pr and
+        (.head | type == "string" and length > 0)
+    ' "$state" >/dev/null || refuse "cycle state is not a matching reservation"
+    reserved_head=$(jq -r '.head' "$state")
     if [ -z "$finder" ]; then
-        state=$(git rev-parse --git-path "integrate-codex/$repo/$pr.json") ||
-            refuse "cannot locate cycle state in the current checkout"
-        [ -f "$state" ] || refuse "cycle state is missing: $state"
-        # Hold the checker lock through the POST. A release must not observe
-        # an empty surface while this broker is about to create its trigger.
-        trigger_lock="${state}.lock"
-        mkdir "$trigger_lock" 2>/dev/null || refuse "cycle state lock-held"
-        trap 'rm -f "$trigger_lock/pid"; rmdir "$trigger_lock" 2>/dev/null || true' EXIT
-        printf '%s\n' "$$" >"$trigger_lock/pid"
-        jq -e --arg repo "$repo" --argjson pr "$pr" '
-            .phase == "reserved" and .repo == $repo and .pr == $pr and
-            (.head | type == "string" and length > 0)
-        ' "$state" >/dev/null || refuse "cycle state is not a matching reservation"
-        reserved_head=$(jq -r '.head' "$state")
         reserved_at=$(jq -er '.reserved_at | select(type == "string" and length > 0)' "$state") ||
             refuse "reservation has no creation time"
         my_id=$("$SCRIPT_DIR/gh-ro.sh" user --jq .id) ||
@@ -240,7 +241,13 @@ trigger)
     trigger_body=$(printf '%s' "$profile" | jq -r '.collection.trigger.body')
     [ -n "$trigger_body" ] ||
         refuse "finder '$finder' has no trigger body in the registry"
-    exec gh api "repos/$repo/issues/$pr/comments" -f body="$trigger_body" --jq .id
+    pr_now=$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid) ||
+        refuse "cannot re-read the PR before posting"
+    jq -e --arg head "$reserved_head" '
+        .state == "OPEN" and .isDraft == true and .headRefOid == $head
+    ' <<<"$pr_now" >/dev/null || refuse "PR is not an open draft on the reserved head"
+    # Do not exec: the EXIT trap must release the lock after the POST.
+    gh api "repos/$repo/issues/$pr/comments" -f body="$trigger_body" --jq .id
     ;;
 request-review)
     [ -n "$finder" ] || refuse "request-review requires --finder"

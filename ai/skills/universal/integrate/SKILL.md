@@ -340,7 +340,7 @@ after it is the last thing before the post, exactly as §2 requires; it must
 show `OPEN`, a draft, and the dispatched head, and any mismatch there means no
 trigger. Run `"$helper" release --state "$state" --note "PR changed before trigger"`
 before returning the mismatch. It releases only an untriggered Codex reservation
-after a live comment scan proves no trigger exists since `reserved_at`; attached
+after the age check and live comment scan with the 10-minute skew margin; attached
 triggers, matching live comments and unreadable evidence refuse recovery. The
 same order binds every per-finder trigger (#804) — its fresh cycle, its
 attempt-2 retry, and its reconcile path alike.
@@ -364,6 +364,11 @@ a blocker on exit 3. Exit 2 refuses before posting; report other failures
 without blindly re-running. For a failed trigger POST with no returned id, run
 `"$helper" release --state "$state" --note "trigger POST failed"` too: a lost
 response may hide a successful POST, so only the live scan can permit release.
+Wait 10 minutes after a failed trigger before releasing: the reservation must
+be at least 10 minutes old by the local clock, and the scan must find no
+matching trigger from any author at or after `reserved_at` minus 10 minutes.
+One `RELEASE_MARGIN_SEC=600` constant sets both boundaries; broker adoption
+still uses the exact reservation time.
 Release records head, reservation time and reason in `superseded_reservations`,
 retains charged/exempt counters and the run-spend file, and permits the next
 `reserve --attempt 1` on either the same or a moved head. It does not refund a

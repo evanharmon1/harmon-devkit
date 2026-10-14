@@ -124,6 +124,16 @@ fi
 shift
 if [[ "$*" == *"-f body=@codex review"* ]]; then
     echo 'attempted trigger POST' >>"$GH_FIXTURES/post-attempts"
+    if [ -f "$GH_FIXTURES/finder-lock-state" ]; then
+        lock_probe_rc=0
+        "$(cat "$GH_FIXTURES/finder-lock-helper")" release \
+            --state "$(cat "$GH_FIXTURES/finder-lock-state")" \
+            --note 'release while finder POST holds lock' \
+            --now '2030-01-01T00:00:00Z' >"$GH_FIXTURES/finder-lock-result" 2>&1 || lock_probe_rc=$?
+        printf '%s\n' "$lock_probe_rc" >"$GH_FIXTURES/finder-lock-rc"
+        echo 9001
+        exit 0
+    fi
     echo 'unexpected end of JSON input' >&2
     exit 1
 fi
@@ -2044,6 +2054,30 @@ jq -e '.charged_cycles == 3 and .exempt_cycles == 1 and
     (.superseded_reservations | length) == 1' "$state" >/dev/null || fail 'reserve lost release history/counters'
 jq -e '.recovery == {charged:3,exempt:1}' "${state%.json}.spend.json" >/dev/null || fail 'new reserve lost spend'
 
+echo "==> release waits ten minutes and scans backward for skewed trigger clocks"
+new_cycle
+jq '.phase = "reserved" | .trigger_comment_id = null | .requested_at = null |
+    .reserved_at = "2026-07-31T08:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+cp "$state" "${test_tmp}/release-before.json"
+if "$helper" release --state "$state" --note 'too young' --now '2026-07-31T08:09:59Z' \
+    >"${test_tmp}/release.out" 2>&1; then
+    fail 'young reservation released'
+fi
+grep -qF 'wait 10 minutes' "${test_tmp}/release.out" || fail 'young refusal does not name wait'
+cmp "$state" "${test_tmp}/release-before.json" || fail 'young refusal mutated state'
+jq '[[. | .created_at = "2026-07-31T07:59:55Z"]]' "${fixtures}/trigger.json" \
+    >"${fixtures}/comments.pages.json"
+if "$helper" release --state "$state" --note 'skewed trigger' --now '2026-07-31T08:10:00Z' \
+    >"${test_tmp}/release.out" 2>&1; then
+    fail 'release ignored a trigger five seconds before reservation'
+fi
+grep -qF 'matching trigger exists' "${test_tmp}/release.out" || fail 'skew refusal missed trigger'
+cmp "$state" "${test_tmp}/release-before.json" || fail 'skew refusal mutated state'
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+"$helper" release --state "$state" --note 'old and trigger-free' --now '2026-07-31T08:10:00Z' >/dev/null
+[ "$(jq -r .phase "$state")" = released ] || fail 'old trigger-free reservation did not release'
+
 echo "==> release never removes an attached trigger, including corrupt reserved phase"
 new_cycle
 for release_phase in attached reserved; do
@@ -2091,12 +2125,84 @@ if "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigge
 fi
 [ -s "${fixtures}/post-attempts" ] || fail "broker never attempted POST: $(cat "${test_tmp}/broker.out")"
 [ ! -d "${broker_state}.lock" ] || fail 'failed POST leaked the broker lock'
-"$helper" release --state "$broker_state" --note 'trigger POST failed' >/dev/null
+broker_release_now=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601' "$broker_state")
+"$helper" release --state "$broker_state" --note 'trigger POST failed' --now "$broker_release_now" >/dev/null
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --run-id failed-post >/dev/null
 jq -e '.phase == "reserved" and .charged_cycles == 2 and
     .superseded_reservations[-1].reason == "trigger POST failed"' \
     "$broker_state" >/dev/null || fail 'failed POST recovery lost spend/history'
+
+echo "==> release and same-head reserve preserve deleted-first-trigger anchors"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+release_now=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601' "$state")
+"$helper" release --state "$state" --note 'second trigger never posted' --now "$release_now" >/dev/null
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq -e '.first_trigger_comment_id == 123 and .previous_trigger_comment_id == 123' "$state" >/dev/null ||
+    fail 'same-head release/re-reserve lost trigger anchors'
+# The first trigger is absent from the live comments; only the local anchor
+# can keep the earlier unbound badge visible after attaching trigger 200.
+jq '.id = 200 | .created_at = "2026-07-31T08:20:00Z"' "${fixtures}/trigger.json" >"${fixtures}/trigger.next"
+mv "${fixtures}/trigger.next" "${fixtures}/trigger.json"
+jq -cn --argjson actor "$actor_id" --arg login "$actor_login" --arg prefix "${head_sha:0:10}" '
+    [[{id:150,user:{id:$actor,login:$login},created_at:"2026-07-31T08:10:00Z",
+       updated_at:"2026-07-31T08:10:00Z",body:"**P0** answered the deleted first trigger."},
+      {id:8400,user:{id:$actor,login:$login},created_at:"2026-07-31T08:21:00Z",
+       body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix + "`")}]]
+' >"${fixtures}/comments.pages.json"
+"$helper" attach --state "$state" --trigger-id 200 >/dev/null
+run_check '2026-07-31T08:40:00Z'
+assert_status 10 findings
+assert_accepted comment 150
+
+# A moved head has no entitlement to the previous head's trigger anchors.
+jq '.phase = "reserved" | .trigger_comment_id = null' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+release_now=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601' "$state")
+"$helper" release --state "$state" --note 'head moved' --now "$release_now" >/dev/null
+printf '%s\n' "$new_live_head" >"${fixtures}/head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$new_live_head" --attempt 1 >/dev/null
+jq -e '.first_trigger_comment_id == null and .previous_trigger_comment_id == null' "$state" >/dev/null ||
+    fail 'moved-head reserve inherited stale anchors'
+
+echo "==> finder trigger holds the checker lock through its POST"
+write_defaults
+finder_state="$(git rev-parse --git-path integrate-codex-cloud/example/repo/493.json)"
+"$helper" reserve --state "$finder_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq -cn '{finders:[{slug:"codex-cloud",trusted_actor_id:"199175422",
+    trusted_actor_login:"chatgpt-codex-connector[bot]",collection:{protocol:"codex-cloud",
+      trigger:{mechanism:"review-comment",body:"@codex review"}}}]}' |
+    base64 | tr -d '\n' >"${fixtures}/registry.b64"
+printf '%s\n' "$test_repo/$finder_state" >"${fixtures}/finder-lock-state"
+printf '%s\n' "$helper" >"${fixtures}/finder-lock-helper"
+cp "$finder_state" "${test_tmp}/finder-state-before.json"
+"${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigger \
+    --finder codex-cloud --repo example/repo --pr 493 >"${test_tmp}/finder-broker.out"
+[ "$(cat "${test_tmp}/finder-broker.out")" = 9001 ] || fail 'finder did not post'
+[ "$(cat "${fixtures}/finder-lock-rc")" = 2 ] || fail 'release acquired finder POST lock'
+grep -qF lock-held "${fixtures}/finder-lock-result" || fail 'finder release refused for wrong reason'
+cmp "$finder_state" "${test_tmp}/finder-state-before.json" || fail 'release replaced finder reservation'
+[ ! -d "${finder_state}.lock" ] || fail 'finder broker leaked its lock'
+rm -f "${fixtures}/finder-lock-state" "${fixtures}/finder-lock-helper"
+
+echo "==> finder trigger refuses released, mismatched, or moved-head reservations"
+for finder_filter in '.phase = "released"' '.repo = "other/repo"' '.pr = 494' '.head = "different"'; do
+    jq "$finder_filter" "${test_tmp}/finder-state-before.json" >"$finder_state"
+    if "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigger \
+        --finder codex-cloud --repo example/repo --pr 493 >"${test_tmp}/finder-broker.out" 2>&1; then
+        fail "finder accepted invalid reservation: $finder_filter"
+    fi
+    [ "$(wc -l <"${fixtures}/post-attempts" | tr -d ' ')" = 1 ] || fail 'invalid finder reservation posted'
+    [ ! -d "${finder_state}.lock" ] || fail 'finder refusal leaked its lock'
+done
 
 echo "==> attach clamps in-window reads and gives post-window retries independent budgets"
 trigger_id=123

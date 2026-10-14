@@ -71,6 +71,9 @@
 
 set -euo pipefail
 
+# One interval bounds delayed trigger writes and local/server clock skew.
+RELEASE_MARGIN_SEC=600
+
 usage() {
     cat >&2 <<'EOF'
 Usage:
@@ -157,8 +160,11 @@ is `after-ci` or `with-push`.
 
 `release --state FILE --note REASON` recovers a reserved cycle whose trigger
 was never posted (including a failed broker POST or a moved PR head). It
-requires a live, complete comment read proving no matching trigger exists
-since reserved_at, and refuses attached triggers or indeterminate reads.
+requires a reservation at least 10 minutes old by the local clock and a live,
+complete comment read proving no matching trigger exists at or after
+reserved_at minus 10 minutes, by any author. RELEASE_MARGIN_SEC=600 governs
+both the minimum age and fixed skew margin. Wait 10 minutes after a failed
+trigger before releasing. Attached triggers and indeterminate reads refuse.
 It records the old head, reserved_at and reason in superseded_reservations,
 leaves charged/exempt counters and the run-spend sidecar unchanged, and marks
 the reservation released. A following reserve begins at attempt 1 and charges
@@ -2509,6 +2515,13 @@ reserve)
             :
         elif [ "$old_phase" = "released" ]; then
             [ "$attempt" = "1" ] || die "a released reservation must restart at attempt 1"
+            if [ "$old_head" = "$head" ]; then
+                # Release removes an unposted attempt, never this head's
+                # trigger history (including a first trigger since deleted).
+                replaced_trigger_comment_id=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
+                carried_first_trigger_comment_id=$(jq -r \
+                    '.first_trigger_comment_id // .previous_trigger_comment_id // empty' "$state_file")
+            fi
         elif [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
@@ -3002,6 +3015,14 @@ release)
     release_reserved_at=$(jq -r '.reserved_at' "$state_file")
     valid_repo "$state_repo" && valid_uint "$state_pr" && valid_time "$release_reserved_at" ||
         die "reservation identity or time is invalid"
+    release_reserved_epoch=$(jq -nr --arg at "$release_reserved_at" '$at | fromdateiso8601') ||
+        die "reservation time cannot be parsed"
+    release_now_epoch=$(clock_epoch) || die "cannot read the local clock"
+    [ "$release_now_epoch" -ge "$((release_reserved_epoch + RELEASE_MARGIN_SEC))" ] ||
+        die "wait 10 minutes after the reservation (and a failed trigger) before releasing"
+    release_scan_since=$(jq -nr --argjson at "$release_reserved_epoch" \
+        --argjson margin "$RELEASE_MARGIN_SEC" '$at - $margin | todateiso8601') ||
+        die "cannot compute the release scan boundary"
     # Use the broker's classifier, with no author filter: a trigger posted by
     # another actor is also evidence that the reservation cannot be released.
     # shellcheck source=gh-write-broker.sh
@@ -3009,7 +3030,7 @@ release)
     release_comments=$(run_gh api --paginate --slurp \
         "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
         die "cannot read live triggers; reservation remains reserved"
-    release_candidates=$(reservation_trigger_candidates "$release_reserved_at" <<<"$release_comments") ||
+    release_candidates=$(reservation_trigger_candidates "$release_scan_since" <<<"$release_comments") ||
         die "cannot classify live triggers; reservation remains reserved"
     [ "$(jq 'length' <<<"$release_candidates")" = 0 ] ||
         die "a matching trigger exists; reconcile its attachment instead of releasing"

@@ -395,7 +395,7 @@ no trigger**: skip the rest of this section, report `codex_cycle: null` with
 the mismatch as a finding (§5), and run
 `"$helper" release --state "$state" --note "PR changed before trigger"`.
 Release succeeds only for an untriggered Codex reservation after a live comment
-scan proves no trigger exists; a refusal remains a blocker. The next dispatch
+scan with the 10-minute skew margin proves no trigger exists; a refusal remains a blocker. The next dispatch
 reserves its own head with the retained counters and history. Never substitute the head `pr_now` reports for the brief's. A head
 GitHub has not caught up to yet is `reserve`'s question, not this read's: its
 bounded head wait answers it (exit codes below) before this read runs, so do
@@ -558,6 +558,11 @@ Three cases, mutually exclusive:
   reservation and PR state still match. For a failed trigger write with no
   returned id, run the same recovery command:
   `"$helper" release --state "$state" --note "trigger POST failed"`.
+  Wait 10 minutes after a failed trigger before releasing: the reservation
+  must be at least 10 minutes old by the local clock, and the live scan must
+  find no matching trigger from any author at or after `reserved_at` minus
+  10 minutes. One `RELEASE_MARGIN_SEC=600` constant sets both boundaries;
+  broker adoption still uses the exact reservation time.
   Its live scan refuses if the POST actually created a trigger despite a lost
   response; report that blocker and reconcile the existing id. Never delete
   state. Successful release preserves charged/exempt spend and records the
