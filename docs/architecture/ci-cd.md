@@ -22,17 +22,19 @@ plus an aggregate **`verify`** job; branch protection requires `verify` +
   base-**branch** change; losing that re-run is accepted, because retargeting a
   PR is rare and a strict required-status-checks policy forces an up-to-date
   head before merge, which arrives as a `synchronize`.
-  **One list, not two**: the `lint` job runs `check`, then a single
-  `task test:suite` step — the Taskfile's aggregate of every `test:*` target
-  `task verify` runs — so a guard added to `verify` is in CI by construction
-  instead of by someone remembering to list it in the workflow too. The
-  accepted cost is one Actions step for the whole suite rather than a named
-  step per test. Outside the suite, each with its reason beside it in the
-  workflow: the `audit:*` step (not a `test:*` target), `verify:skills` (network), `test:devcontainer:permissions` (a `ci`-only unit check).
+  **One list, not two**: the `test-suite` job runs a single `task test:suite`
+  step — the Taskfile's aggregate of every shared `test:*` target `task verify`
+  runs. It has its own runner and 30-minute budget; `lint` runs `check`, the
+  instruction audit, the parity guard, and validation in parallel with it.
+  The required `verify` aggregate checks both jobs, along with the project test
+  jobs and security. Fork PRs skip all repository-controlled jobs and the
+  trusted aggregate verifies those deliberate skips.
   `task test:verify-ci-parity` — itself in the suite, and also its own `lint`
-  step so deleting the suite step cannot silence it — fails if `build.yml`'s
-  `lint` job stops calling `test:suite`, if `verify` stops running it, or if
-  `verify` lists a `test:*` target directly.
+  step so deleting the suite step cannot silence it — fails if the suite stops
+  feeding `verify`, if local `verify` stops running it, or if local `verify`
+  lists a shared `test:*` target directly. Existing consumers that run the
+  suite inside `lint` retain support.
+
 - `closing-keywords.yml` — the metadata-only gate that refuses a same-repo
   `Closes #N` while `#N` has unchecked task-list items. It lives in its own
   workflow precisely so it can keep `pull_request.edited`: it reads the PR
