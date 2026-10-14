@@ -2646,6 +2646,61 @@
           }
         }
       }
+    },
+    {
+      "name": "unknown-stage-table-is-refused",
+      "basis": "branch",
+      "config_replacements": [
+        [
+          "review_trigger = \"after-ci\"",
+          "review_trigger = \"after-ci\"\n\n[stage.integraton]\nreview_trigger = \"with-push\""
+        ]
+      ],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [
+          {
+            "code": "unsupported_key",
+            "subject": "[stage].integraton"
+          }
+        ]
+      }
+    },
+    {
+      "name": "known-stage-tables-resolve",
+      "basis": "branch",
+      "config_replacements": [
+        ["[stage.implement]", "[stage.implement]\npool = [\"claude-code\", \"codex-cli\"]"]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "stages": {
+            "implement": {
+              "finders": [],
+              "finder_fallbacks": [],
+              "pool": ["claude-code", "codex-cli"]
+            },
+            "challenge": {
+              "finders": ["codex-adversarial"],
+              "finder_fallbacks": [],
+              "pool": null
+            },
+            "review": {
+              "finders": ["codex-verification"],
+              "finder_fallbacks": [],
+              "pool": null
+            },
+            "integration": {
+              "finders": ["codex-cloud"],
+              "finder_fallbacks": [],
+              "pool": null,
+              "review_trigger": "after-ci"
+            }
+          }
+        }
+      }
     }
   ]
 }
