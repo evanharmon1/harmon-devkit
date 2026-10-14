@@ -273,9 +273,17 @@ def v2_normalize(resolved: dict, sources: dict, basis: str) -> dict:
         "pin": {"status": resolved["pin"]["status"]},
         "rounds": {"min_rounds": resolved["rounds"].get("min_rounds")},
         "stages": {
-            "integration": {
-                "review_trigger": resolved["stages"]["integration"].get("review_trigger"),
-            },
+            stage: {
+                "finders": entry.get("finders"),
+                "finder_fallbacks": entry.get("finder_fallbacks"),
+                "pool": entry.get("pool"),
+                **(
+                    {"review_trigger": entry.get("review_trigger")}
+                    if stage == "integration"
+                    else {}
+                ),
+            }
+            for stage, entry in resolved["stages"].items()
         },
         "disclosures": sorted(
             ({"code": item["code"], "role": item["role"]} for item in resolved["disclosures"]),
@@ -458,7 +466,7 @@ def run_v2(repo: Path, fixture: dict, config: Path) -> int:
             errors.append({"code": "invalid_value", "subject": invalid.group(1)})
         elif result.returncode == 1 and (
             unsupported := re.search(
-                r"devflow-policy: (\[[^\]\s]+\]) has invalid keys; unsupported: ([a-z_]+)$",
+                r"devflow-policy: (\[[^\]\s]+\]) has invalid keys(?:; missing: [a-z_, ]+)?; unsupported: ([a-z_]+)(?: \(known: [a-z_, ]+\))?$",
                 result.stderr,
                 re.M,
             )

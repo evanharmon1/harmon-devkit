@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.58.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.57.0...v0.58.0) (2026-10-14)
+
+
+### Features
+
+* **dev-flow:** score a maintainer-authorized round above the cap ([#1427](https://github.com/evanharmon1/harmon-devkit/issues/1427)) ([00fe75f](https://github.com/evanharmon1/harmon-devkit/commit/00fe75f9f9cd036245f3a6f3b14eeb0329ae95ec))
+* **integrate:** charge a CI-failed head's review cycle to integration_exempt ([#1440](https://github.com/evanharmon1/harmon-devkit/issues/1440)) ([0a43e90](https://github.com/evanharmon1/harmon-devkit/commit/0a43e903aec6b2951b8c9d3a3592e56642c5aea3))
+* **integrate:** honor review_trigger when requesting the integration review ([#1407](https://github.com/evanharmon1/harmon-devkit/issues/1407)) ([2b98dd3](https://github.com/evanharmon1/harmon-devkit/commit/2b98dd35522b5c0f031ce76463260efcb35f6fb4))
+* **retro:** report a local-only run record as unverified behind an opt-in flag ([#1429](https://github.com/evanharmon1/harmon-devkit/issues/1429)) ([725cde3](https://github.com/evanharmon1/harmon-devkit/commit/725cde3954f711dc6719c52fe9edb527ae77fe37))
+* **retro:** report findings by class and provenance per stage ([#1442](https://github.com/evanharmon1/harmon-devkit/issues/1442)) ([b4461e8](https://github.com/evanharmon1/harmon-devkit/commit/b4461e8cedbc8e2c74a5ae669bfbcaa5221e5162))
+* **review:** post the dev-flow-v2-evidence marker through a helper ([#1411](https://github.com/evanharmon1/harmon-devkit/issues/1411)) ([629fb49](https://github.com/evanharmon1/harmon-devkit/commit/629fb498da1b8d4a0dffbc046ebcee81c622f02d))
+* **review:** write the v2 run record from the inline confidence-stage path ([#1449](https://github.com/evanharmon1/harmon-devkit/issues/1449)) ([55e2c55](https://github.com/evanharmon1/harmon-devkit/commit/55e2c55825fb5330b61cfd0253e8a1832733e296))
+
+
+### Bug Fixes
+
+* **build:** isolate closing-reference edits and parallelize test suites ([#1447](https://github.com/evanharmon1/harmon-devkit/issues/1447)) ([035a714](https://github.com/evanharmon1/harmon-devkit/commit/035a7149b486e9be075fcc58d2b3a5180221e4f7))
+* **dev-flow-exit:** keep the latest charged count when integration passes repeat a cycle ([#1450](https://github.com/evanharmon1/harmon-devkit/issues/1450)) ([949f088](https://github.com/evanharmon1/harmon-devkit/commit/949f08815ee8aaead60b090cad6689938546923d))
+* **dev-flow-support:** refuse an unknown [stage.*] table and re-vendor the conformance corpus ([#1468](https://github.com/evanharmon1/harmon-devkit/issues/1468)) ([70e9b1a](https://github.com/evanharmon1/harmon-devkit/commit/70e9b1aaaf368fd2fdfadfc0a65da43a353e32cb))
+* **integrate:** detect and undo a ready-for-review flip no readiness gate produced, against the run record ([#1458](https://github.com/evanharmon1/harmon-devkit/issues/1458)) ([50312d8](https://github.com/evanharmon1/harmon-devkit/commit/50312d8dc06b45167939e4ec97397bf07a51ac26)), closes [#1420](https://github.com/evanharmon1/harmon-devkit/issues/1420)
+* **integrate:** refuse a base catch-up while the current Codex cycle is unsettled ([#1439](https://github.com/evanharmon1/harmon-devkit/issues/1439)) ([6c282c5](https://github.com/evanharmon1/harmon-devkit/commit/6c282c54c800e4d7c0dc6cad11aac6f7e12e57a5))
+* **orchestrate:** run cloud-lane gates from a quoted per-gate script and refuse failed ref reads ([#1465](https://github.com/evanharmon1/harmon-devkit/issues/1465)) ([f60bc16](https://github.com/evanharmon1/harmon-devkit/commit/f60bc167a5051807f6349d153472d4eed345623d))
+* **retro:** harden --local-unverified against crashes, bidi controls, bad paths and a read race ([#1459](https://github.com/evanharmon1/harmon-devkit/issues/1459)) ([cb3f578](https://github.com/evanharmon1/harmon-devkit/commit/cb3f578af587fcfdc69af1dc8b9439372e5ca94f))
+* **retro:** paginate without --slurp plus --jq and fail closed on malformed evidence markers ([#1464](https://github.com/evanharmon1/harmon-devkit/issues/1464)) ([e3f103a](https://github.com/evanharmon1/harmon-devkit/commit/e3f103a6eb56587839ba7fc5487225228854133a))
+* **retro:** pass the run's history and heads ledger to the exit engine ([#1452](https://github.com/evanharmon1/harmon-devkit/issues/1452)) ([cf6d59b](https://github.com/evanharmon1/harmon-devkit/commit/cf6d59bed06494d59c91536cf41bd34b2113d18b))
+* **review:** record and check the reasoning effort a Codex finder actually ran at ([#1441](https://github.com/evanharmon1/harmon-devkit/issues/1441)) ([78c17f9](https://github.com/evanharmon1/harmon-devkit/commit/78c17f929e5ab0b37ae1f5f1c81795b4e65efc43)), closes [#1408](https://github.com/evanharmon1/harmon-devkit/issues/1408)
+* **template:** update harmon-init to v5.7.2 ([#1453](https://github.com/evanharmon1/harmon-devkit/issues/1453)) ([d18b8e9](https://github.com/evanharmon1/harmon-devkit/commit/d18b8e9358de353c84cb0a9f14f13e1004dc211e))
+* **test:** match TMPDIR-derived paths as fixed strings in test-worktree.sh ([#1448](https://github.com/evanharmon1/harmon-devkit/issues/1448)) ([36f1396](https://github.com/evanharmon1/harmon-devkit/commit/36f1396d9ebfc5b18e3f7c124841ff8cb4f7ed92)), closes [#1413](https://github.com/evanharmon1/harmon-devkit/issues/1413)
+* **test:** match worktree registry entries exactly in test-worktree.sh ([#1423](https://github.com/evanharmon1/harmon-devkit/issues/1423)) ([b7f4a3a](https://github.com/evanharmon1/harmon-devkit/commit/b7f4a3a2eb75f0ec0198feb7830004b18ab28595)), closes [#1388](https://github.com/evanharmon1/harmon-devkit/issues/1388)
+* **test:** prove the attach timeout bound without depending on host speed ([#1432](https://github.com/evanharmon1/harmon-devkit/issues/1432)) ([2303ee4](https://github.com/evanharmon1/harmon-devkit/commit/2303ee4c9008e03e4a937c5922fa6c2c94d11701)), closes [#1387](https://github.com/evanharmon1/harmon-devkit/issues/1387)
+* **triage:** grant the triage scripts under the ./-prefixed path the worker uses ([#1457](https://github.com/evanharmon1/harmon-devkit/issues/1457)) ([8aead19](https://github.com/evanharmon1/harmon-devkit/commit/8aead1904985dfac20afbb5b87a0e45ccb4476bd))
+
 ## [0.57.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.56.0...v0.57.0) (2026-10-12)
 
 
