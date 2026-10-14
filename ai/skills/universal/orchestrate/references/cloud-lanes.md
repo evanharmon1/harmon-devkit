@@ -36,8 +36,10 @@ GitHub channel is a gated push, and the CLI cannot read session replies. No push
 by the deadline is therefore indeterminate, and the operator reads the reason on
 the session page, the one out-of-band channel. Before launch, require
 that the remote has no `refs/heads/claude/<lane-slug>`
-(`git ls-remote --exit-code origin refs/heads/claude/<lane-slug>` finds nothing);
-if it exists, choose a new slug, so the first head the watcher reports is this
+(`git ls-remote --exit-code origin refs/heads/claude/<lane-slug>` exits 2; only
+exit status 2 means the ref is absent, and any other non-zero status, for example
+128, is a failed read that blocks the launch or is retried, never counted as
+absent); if it exists, choose a new slug, so the first head the watcher reports is this
 launch's push.
 `assets/fence-check.sh` needs a schema-bound brief, so it cannot check a cloud
 lane; before the readiness gate, check instead that every changed path, both the
@@ -142,7 +144,7 @@ A cloud VM never holds a Codex login; never ask the lane to log in to Codex.
 log to the actual `GATE-EXIT=` line, retaining a failing or indeterminate result:
 
 ```sh
-nohup bash -c 'task verify; echo GATE-EXIT=$?' > verify.log 2>&1 & disown
+nohup bash -c 'task verify; echo GATE-EXIT=$?' > /tmp/verify.log 2>&1 & disown
 ```
 
 With network level Custom plus `semgrep.dev`, the cloud lane can run

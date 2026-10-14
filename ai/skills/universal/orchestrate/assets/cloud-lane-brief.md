@@ -42,9 +42,10 @@ This lane's REST read command: `{{github-rest-read-path}}`.
 Gate commands: {{gate-commands}}
 Gate bounds and tier: {{gate-bounds-override}}
 
-Run each long gate command above detached, with its log outside the repository:
-`nohup bash -c '<gate command>; echo GATE-EXIT=$?' > /tmp/gate.log 2>&1 & disown`,
-then poll through `GATE-EXIT=`. Report the exact result and any unavailable gate;
+Run each long gate command above detached, with its log outside the repository.
+Write the gate command to `/tmp/gate.sh` with `echo GATE-EXIT=$?` as its last
+line (so a quote in the command is never re-quoted), then run
+`nohup bash /tmp/gate.sh > /tmp/gate.log 2>&1 & disown` and poll through `GATE-EXIT=`. Report the exact result and any unavailable gate;
 a timeout or missing exit line is indeterminate. After your push and report, stop: the orchestrator reviews
 the pushed head and makes any confirmed fixes itself, not through this session.
 
