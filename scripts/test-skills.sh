@@ -5624,6 +5624,198 @@ EOF
     esac
 }
 
+# Aggregate jobs copied verbatim from a harmon-init v5.7.2 web-app render.
+# Leaf bodies are inert stubs: this is an offline structural contract test.
+write_rendered_aggregate_workflows() {
+    local workflow leaf leaves
+    for workflow in build devcontainer-build; do
+        if [ "$workflow" = build ]; then
+            leaves="lint security build-test e2e"
+        else
+            leaves="devcontainer-changes build build-merge-group devcontainer-assert-bot devcontainer-assert-agent"
+        fi
+        printf '%s\n' 'name: Fixture' 'on: [push, pull_request, merge_group]' 'jobs:' \
+            >"$AGG_TARGET/.github/workflows/$workflow.yml"
+        for leaf in $leaves; do
+            printf '  %s:\n' "$leaf" >>"$AGG_TARGET/.github/workflows/$workflow.yml"
+            case "$workflow:$leaf" in
+            devcontainer-build:build-merge-group)
+                cat >>"$AGG_TARGET/.github/workflows/$workflow.yml" <<'EOF'
+    if: >-
+      needs.devcontainer-changes.outputs.changed == 'true' &&
+      github.event_name == 'merge_group'
+EOF
+                ;;
+            devcontainer-build:build | devcontainer-build:devcontainer-assert-bot | devcontainer-build:devcontainer-assert-agent)
+                cat >>"$AGG_TARGET/.github/workflows/$workflow.yml" <<'EOF'
+    if: >-
+      needs.devcontainer-changes.outputs.changed == 'true' &&
+      github.event_name != 'merge_group' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+EOF
+                ;;
+            *)
+                cat >>"$AGG_TARGET/.github/workflows/$workflow.yml" <<'EOF'
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+EOF
+                ;;
+            esac
+            cat >>"$AGG_TARGET/.github/workflows/$workflow.yml" <<'EOF'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo fixture
+EOF
+        done
+    done
+    cat >>"$AGG_TARGET/.github/workflows/build.yml" <<'EOF'
+  verify:
+    if: always()
+    needs: [lint, security, build-test, e2e]
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      # Never check out or run fork-controlled repository code on this path.
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          BUILD_TEST_RESULT: ${{ needs.build-test.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          fail=0
+          check_skipped() {
+            if [ "$2" != "skipped" ]; then
+              echo "Job $1 result: $2 (expected skipped for an untrusted fork)"
+              fail=1
+            fi
+          }
+          check_skipped lint "$LINT_RESULT"
+          check_skipped security "$SECURITY_RESULT"
+          check_skipped build-test "$BUILD_TEST_RESULT"
+          check_skipped e2e "$E2E_RESULT"
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: all repository-controlled jobs were deliberately skipped."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify required jobs succeeded
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          BUILD_TEST_RESULT: ${{ needs.build-test.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "security=${SECURITY_RESULT}" "build-test=${BUILD_TEST_RESULT}" "e2e=${E2E_RESULT}"
+EOF
+    cat >>"$AGG_TARGET/.github/workflows/devcontainer-build.yml" <<'EOF'
+  devcontainer-verify:
+    # The REQUIRED status check. `if: always()` so it reports on every
+    # event — including the unrelated-path runs that used to be filtered
+    # away, which is what lets it be required at all.
+    if: always()
+    needs: [devcontainer-changes, build, build-merge-group, devcontainer-assert-bot, devcontainer-assert-agent]
+    # merge_group is pinned to GitHub-hosted regardless: for that event this
+    # job checks out and runs scripts/verify-ci-results.sh from the queued
+    # candidate tree, which can carry fork-authored content — see
+    # docs/architecture/ci-cd.md "Security boundaries".
+    runs-on: ${{ github.event_name == 'merge_group' && 'ubuntu-latest' || fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    env:
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      CHANGED: ${{ needs.devcontainer-changes.outputs.changed }}
+      CHANGES_RESULT: ${{ needs.devcontainer-changes.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      BUILD_MERGE_GROUP_RESULT: ${{ needs.build-merge-group.result }}
+      ASSERT_RESULT: ${{ needs.devcontainer-assert-bot.result }}
+      AGENT_ASSERT_RESULT: ${{ needs.devcontainer-assert-agent.result }}
+    steps:
+      # Never check out or run fork-controlled repository code on this path.
+      - name: Verify deliberate skips at the untrusted-fork boundary
+        if: env.IS_FORK == 'true'
+        run: |
+          fail=0
+          check_skipped() {
+            if [ "$2" != "skipped" ]; then
+              echo "Job $1 result: $2 (expected skipped for an untrusted fork)"
+              fail=1
+            fi
+          }
+          check_skipped devcontainer-changes "$CHANGES_RESULT"
+          check_skipped build "$BUILD_RESULT"
+          check_skipped build-merge-group "$BUILD_MERGE_GROUP_RESULT"
+          check_skipped devcontainer-assert-bot "$ASSERT_RESULT"
+          check_skipped devcontainer-assert-agent "$AGENT_ASSERT_RESULT"
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Untrusted fork trust boundary enforced: no repository-controlled devcontainer job ran."
+      - if: env.IS_FORK != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The detector itself must always run: if IT was skipped or failed, the
+      # `changed` answer below is not trustworthy and nothing may be excused.
+      - name: Verify the change detector ran
+        if: env.IS_FORK != 'true'
+        env:
+          EXPECTED_RESULT: success
+        run: ./scripts/verify-ci-results.sh "devcontainer-changes=${CHANGES_RESULT}"
+      # `skipped` is accepted below ONLY where a predicate proves it
+      # deliberate: here, that the range contains no devcontainer-relevant
+      # changes.
+      - name: Verify deliberate no-op (no devcontainer changes)
+        if: env.IS_FORK != 'true' && env.CHANGED == 'false'
+        env:
+          EXPECTED_RESULT: skipped
+        run: |
+          ./scripts/verify-ci-results.sh \
+            "build=${BUILD_RESULT}" \
+            "build-merge-group=${BUILD_MERGE_GROUP_RESULT}" \
+            "devcontainer-assert-bot=${ASSERT_RESULT}" \
+            "devcontainer-assert-agent=${AGENT_ASSERT_RESULT}"
+          echo "No devcontainer-relevant changes in this range — the build and assertion jobs were deliberately skipped."
+      # build and build-merge-group are mutually exclusive by event (never
+      # both applicable), so exactly one of these two steps' checks runs.
+      - name: Verify the build succeeded (non-merge_group)
+        if: env.IS_FORK != 'true' && env.CHANGED != 'false' && github.event_name != 'merge_group'
+        env:
+          EXPECTED_RESULT: success
+        run: |
+          ./scripts/verify-ci-results.sh "build=${BUILD_RESULT}"
+          EXPECTED_RESULT=skipped ./scripts/verify-ci-results.sh "build-merge-group=${BUILD_MERGE_GROUP_RESULT}"
+      - name: Verify the credential-free merge-group build succeeded
+        if: env.IS_FORK != 'true' && env.CHANGED != 'false' && github.event_name == 'merge_group'
+        env:
+          EXPECTED_RESULT: success
+        run: |
+          ./scripts/verify-ci-results.sh "build-merge-group=${BUILD_MERGE_GROUP_RESULT}"
+          EXPECTED_RESULT=skipped ./scripts/verify-ci-results.sh "build=${BUILD_RESULT}"
+      # The bot-autonomy container assertion is legitimately absent on
+      # merge_group — the credentialed half stands down at the fork trust
+      # boundary there (see devcontainer-assert-bot above). Its expected
+      # result is derived from that same predicate, so `skipped` is never
+      # merely tolerated.
+      - name: Verify the container assertions matched their predicate
+        if: env.IS_FORK != 'true' && env.CHANGED != 'false'
+        env:
+          EXPECTED_RESULT: ${{ github.event_name != 'merge_group' && 'success' || 'skipped' }}
+        run: |
+          ./scripts/verify-ci-results.sh \
+            "devcontainer-assert-bot=${ASSERT_RESULT}" \
+            "devcontainer-assert-agent=${AGENT_ASSERT_RESULT}"
+EOF
+}
+
 write_required_check_ruleset() {
     local target="$1"
     local mode="${2:-baseline}"
@@ -5721,6 +5913,113 @@ git_init "$AGG_TARGET"
 git_commit_all "$AGG_TARGET" "record aggregate fixture"
 expect_ok "verify-applied accepts exact build and devcontainer result contracts" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+
+# Both template aggregates pass end to end, so neither issue-966 FAIL line can
+# hide among unrelated failures. Keep mutations local to these aggregate jobs.
+write_rendered_aggregate_workflows
+expect_ok "verify-applied accepts v5.7.2 build and predicate-derived devcontainer aggregates" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+
+for merge_guard_mutation in missing disjunction; do
+    write_rendered_aggregate_workflows
+    if [ "$merge_guard_mutation" = missing ]; then
+        sed -i.bak "/^  build-merge-group:/,/^  devcontainer-assert-bot:/ { s/ &&$//; /github.event_name == 'merge_group'/d; }" \
+            "$AGG_TARGET/.github/workflows/devcontainer-build.yml"
+    else
+        sed -i.bak "/^  build-merge-group:/,/^  devcontainer-assert-bot:/s/github.event_name == 'merge_group'/github.event_name == 'merge_group' || true/" \
+            "$AGG_TARGET/.github/workflows/devcontainer-build.yml"
+    fi
+    rm -f "$AGG_TARGET/.github/workflows/devcontainer-build.yml.bak"
+    expect_fail_contains "verify-applied rejects an ineffective merge-group leaf guard: $merge_guard_mutation" \
+        "leaf 'build-merge-group' is aggregated as fork-skipped but lacks the same-repository PR guard" \
+        bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+done
+write_rendered_aggregate_workflows
+
+# The historical build shape also includes a leaf which must RUN on forks.
+# Add it without a same-repository guard and assert success in both branches.
+sed -i.bak '/^  verify:/i\
+  closing-keywords:\
+    runs-on: ubuntu-latest\
+    steps:\
+      - run: echo fixture' "$AGG_TARGET/.github/workflows/build.yml"
+sed -i.bak '/          LINT_RESULT:/a\
+          CLOSING_RESULT: ${{ needs.closing-keywords.result }}' "$AGG_TARGET/.github/workflows/build.yml"
+sed -i.bak '/          fail=0/a\
+          if [ "$CLOSING_RESULT" != "success" ]; then\
+            exit 1\
+          fi' "$AGG_TARGET/.github/workflows/build.yml"
+sed -i.bak 's/needs: \[lint, security, build-test, e2e\]/needs: [lint, security, build-test, e2e, closing-keywords]/; s/"lint=${LINT_RESULT}"/"closing-keywords=${CLOSING_RESULT}" "lint=${LINT_RESULT}"/' \
+    "$AGG_TARGET/.github/workflows/build.yml"
+rm -f "$AGG_TARGET/.github/workflows/"*.bak
+expect_ok "verify-applied distinguishes fork-success leaves from fork-skipped leaves" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+sed -i.bak "s/github.event_name != 'pull_request' ||/true/; /head.repo.full_name == github.repository/d" "$AGG_TARGET/.github/workflows/build.yml"
+rm -f "$AGG_TARGET/.github/workflows/build.yml.bak"
+expect_fail_contains "verify-applied still requires guards for fork-skipped template leaves" \
+    "is aggregated as fork-skipped but lacks the same-repository PR guard" \
+    bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+
+for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit; do
+    write_rendered_aggregate_workflows
+    aggregate_fixture="$AGG_TARGET/.github/workflows/devcontainer-build.yml"
+    case "$aggregate_mutation" in
+    tolerance)
+        sed -i.bak "s/EXPECTED_RESULT: success/EXPECTED_RESULT: success || skipped/" "$aggregate_fixture"
+        ;;
+    unconditional-skip)
+        # The detector has only the trusted condition, no skip predicate.
+        sed -i.bak 's/EXPECTED_RESULT: success/EXPECTED_RESULT: skipped/' "$aggregate_fixture"
+        ;;
+    unverified-leaf)
+        # Its result remains in env and in the fork assertion, but no trusted
+        # helper consumes it. Mere mentions must not count as coverage.
+        sed -i.bak '/run: .*"devcontainer-changes=${CHANGES_RESULT}"/d' "$aggregate_fixture"
+        ;;
+    fork-helper)
+        sed -i.bak "s/if: env.IS_FORK != 'true'/if: env.IS_FORK == 'true'/" "$aggregate_fixture"
+        ;;
+    unguarded-checkout)
+        sed -i.bak "/^      - if: env.IS_FORK != 'true'/s/.*/      - name: Unguarded checkout/" "$aggregate_fixture"
+        ;;
+    mismatched-refs)
+        sed -i.bak '/          check_skipped devcontainer-changes /d' "$aggregate_fixture"
+        ;;
+    redundant-fork-predicate)
+        sed -i.bak "s/if: env.IS_FORK != 'true'$/if: env.IS_FORK != 'true' \&\& env.IS_FORK != 'true'/; s/EXPECTED_RESULT: success/EXPECTED_RESULT: skipped/" "$aggregate_fixture"
+        ;;
+    hidden-call)
+        sed -i.bak '/run: .*"devcontainer-changes=${CHANGES_RESULT}"/c\
+        run: |\
+          if false; then\
+            ./scripts/verify-ci-results.sh "devcontainer-changes=${CHANGES_RESULT}"\
+          fi' "$aggregate_fixture"
+        ;;
+    disabled-errexit)
+        sed -i.bak '/run: .*"devcontainer-changes=${CHANGES_RESULT}"/c\
+        run: |\
+          set +e\
+          ./scripts/verify-ci-results.sh "devcontainer-changes=${CHANGES_RESULT}"' "$aggregate_fixture"
+        ;;
+    shadowed-result)
+        sed -i.bak '/          EXPECTED_RESULT: success/a\
+          CHANGES_RESULT: success' "$aggregate_fixture"
+        ;;
+    masked-failure)
+        sed -i.bak 's/"devcontainer-changes=${CHANGES_RESULT}"/"devcontainer-changes=${CHANGES_RESULT}" || true/' "$aggregate_fixture"
+        ;;
+    undeclared-coverage)
+        # Remove all mentions except needs: a declared dependency still owes
+        # assertions on both paths.
+        sed -i.bak '/CHANGES_RESULT/d' "$aggregate_fixture"
+        ;;
+    esac
+    rm -f "$aggregate_fixture.bak"
+    expect_fail_contains "verify-applied rejects template aggregate mutation: $aggregate_mutation" \
+        "job 'devcontainer-verify' must enforce exact fork-skipped/trusted-success results" \
+        bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
+done
+write_aggregate_workflows
 
 # A rendered skills-sync manifest starts inert until its managed provenance is
 # materialized. That is advisory: surface the first-vendor decision, then go
