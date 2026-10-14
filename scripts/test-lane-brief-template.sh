@@ -1473,6 +1473,18 @@ for heading in ("Identity and boundaries", "File-scope fence", "Gates and review
     assert "## " + heading in rendered.splitlines(), "missing cloud section: " + heading
 assert ".lane-report.md" not in rendered, "local report-file instruction in cloud brief"
 assert chr(64) + "codex" not in rendered.lower(), "literal Codex trigger in cloud brief"
+# The detached gate recipe: the brief and the reference carry the same block,
+# written through a quoted heredoc (no re-quoting, no write-time $?), with a
+# GATE-EXIT line and a printed GATE-LOG path a later tool call can poll.
+def recipe(doc, command):
+    m = re.search(r"```sh\n(g=\"\$\(mktemp /tmp/gate\.XXXXXX\)\"\n.*?)```", doc, re.S)
+    assert m, "detached gate recipe missing"
+    return m.group(1).replace(command, "<gate command>")
+brief_recipe, reference_recipe = recipe(text, "<gate command>"), recipe(catalog, "task verify")
+assert brief_recipe == reference_recipe, "cloud gate recipe differs between the brief and the reference"
+for needle in ("cat >\"$g\" <<'GATE'\n", "\necho GATE-EXIT=$?\nGATE\n", "printf 'GATE-LOG=%s.log\\n' \"$g\"\n"):
+    assert needle in brief_recipe, "cloud gate recipe lost: " + needle.strip()
+assert "GATE-LOG=" in rendered and "one at a time" in rendered, "cloud gate polling or ordering instruction missing"
 print("cloud-lane brief template: ok")
 CLOUD
 
