@@ -9,11 +9,14 @@ nothing in the vendored Herdr skill.
 
 The local Claude Code CLI must be signed in to claude.ai, have a default web
 environment selected with `/remote-env` (`remote.defaultEnvironmentId`), and
-have remote sessions permitted by `allow_remote_sessions`. The repository must
-be on GitHub with the Claude GitHub App installed: then launch clones the remote
-at the current branch. Otherwise the platform uploads the repository instead;
-that is outside this mode. Claims are unchanged: the orchestrator claims before
-launch, and the lane never claims or refreshes the claim.
+have remote sessions permitted by `allow_remote_sessions`. The session runs on
+the account the CLI is signed in to (`claude auth status`), not the one open in a
+browser, so that account must hold both the web environment and a GitHub
+credential that reaches the repository, such as a `/web-setup` token. Then
+launch clones the remote at the current branch. Without one, the platform uploads
+the checkout with no `origin`, and the lane cannot push; that is outside this mode.
+Claims are unchanged: the orchestrator claims before launch, and the lane never
+claims or refreshes the claim.
 Launch from a checkout on the default branch at its pushed tip, because the
 platform clones the current branch; review fetched lane heads in a separate
 worktree, never by switching the launching checkout.
@@ -77,9 +80,9 @@ A Herdr terminal can instead run
 `claude --cloud "$(cat "$BRIEF")" --model "$MODEL" --effort "$EFFORT"` directly.
 `<model>` and `<effort>` are the implementer profile the orchestrator resolved;
 they are the dispatch-attested values it records at PR open with
-`record-implementer.sh apply`. Whether the cloud session honours them is not yet
-verified, so the PR body discloses that until the end-to-end check confirms the
-model on the session page.
+`record-implementer.sh apply`. The cloud session honours them: on 2026-10-12 the
+session page of the end-to-end check's first launch showed the pinned model and
+effort.
 Without a terminal it refuses with `Error: --cloud requires an interactive
 terminal.` Capture `Created cloud session: <title>`, the `View:` session URL and
 `Resume with: claude --teleport <session-id>` from the launch output. Keep the
@@ -182,6 +185,23 @@ relay. Two lanes were watched through pushed branches and carried to draft PRs:
 [harmon-init#1620](https://github.com/evanharmon1/harmon-init/pull/1620) and
 [harmon-init#1631](https://github.com/evanharmon1/harmon-init/pull/1631).
 The [scope and spike record](https://github.com/evanharmon1/harmon-devkit/issues/1210)
-records the attach error above. Teleport was not tested. The maintainer's
-post-shipping end-to-end check remains a human follow-up; these spike results do
-not mark that check complete.
+records the attach error above. Teleport was not tested.
+
+The post-shipping end-to-end check ran from 2026-10-12 to 2026-10-14 and ended
+in [harmon-devkit#1465](https://github.com/evanharmon1/harmon-devkit/pull/1465).
+Its fourth launch worked end to end: the orchestrator launched it with no human
+step under a pseudo-terminal into the `/remote-env` default, saw its pushed
+branch through GitHub, and carried the work to a draft PR.
+The lane pushed exactly its planned `claude/*` branch, as the account's
+`/web-setup` identity, and reported in its commit body. That lane was not
+messaged. Messaging with `claude -p … --cloud <id>` was exercised on the first
+launch, where a steering note and two rulings reached the session and changed
+what it did. The lane's `Claude-Session` commit trailer named a different
+session ID from the one its launch printed; which one identifies the session
+was not established. Of the three earlier launches, the first and third had no
+GitHub credential that reached the repository, so the platform uploaded the
+checkout with no `origin`: at the first, the account's GitHub connection did not
+cover the repository, and the third ran after that account's GitHub connector
+had been disconnected following `/web-setup`. The second was abandoned before it
+reported, when the CLI was found signed in to a different account from the one
+holding the credential.
