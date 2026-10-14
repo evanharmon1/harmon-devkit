@@ -340,6 +340,7 @@ function statsCommandFor(file) {
 const EVIDENCE_MARKER_RE = /^<!--\s+devflow:([a-z][a-z-]*)\s+v2\s+([^>]*?)-->/
 const REVIEW_EVIDENCE_MARKER_RE = /^<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/
 const REVIEW_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2-evidence:/
+const NONCANONICAL_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2[- \t]+evidence(?=[ \t:\n]|-->|$)/
 
 // Only these three kinds are evidence. An earlier revision accepted any
 // lowercase kind carrying a run_id, so a trusted `devflow:example` comment on
@@ -399,6 +400,9 @@ function parseMarker(body) {
     return { kind: 'evidence', runId: value.run_id, destination: value.destination }
   }
   if (REVIEW_EVIDENCE_PREFIX_RE.test(firstLine)) return { malformed: 'dev-flow-v2-evidence marker has trailing content or an invalid payload' }
+  if (NONCANONICAL_EVIDENCE_PREFIX_RE.test(firstLine)) {
+    return { malformed: 'non-canonical dev-flow-v2 evidence marker (expected <!-- dev-flow-v2-evidence: {...} -->)' }
+  }
   const marker = EVIDENCE_MARKER_RE.exec(firstLine)
   if (!marker) return null
   const kind = marker[1]
