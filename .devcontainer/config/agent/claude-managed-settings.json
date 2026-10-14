@@ -1,0 +1,146 @@
+{
+  "allowManagedPermissionRulesOnly": true,
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "allow": [
+      "Bash(task *)",
+      "Bash(lefthook *)",
+      "Bash(gitleaks *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git fetch *)",
+      "Bash(git push *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr ready *)",
+      "Bash(gh pr merge)",
+      "Bash(gh pr merge *)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue comment *)",
+      "Bash(gh issue edit *)",
+      "Bash(/usr/local/bin/gh-api-read *)"
+    ],
+    "deny": [
+      "Bash(gh release *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh repo edit *)",
+      "Bash(gh repo rename *)",
+      "Bash(gh secret *)",
+      "Bash(gh variable set *)",
+      "Bash(gh variable delete *)",
+      "Bash(gh workflow run *)",
+      "Bash(gh workflow enable *)",
+      "Bash(gh workflow disable *)",
+      "Bash(gh api)",
+      "Bash(gh api *)",
+      "Bash(git push --force*)",
+      "Bash(git push * --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(git push * main)",
+      "Bash(git push * main *)",
+      "Bash(git push * *:main)",
+      "Bash(git push * *:main *)",
+      "Bash(git push * refs/heads/main)",
+      "Bash(git push * *:refs/heads/main)",
+      "Bash(task release*)",
+      "Bash(task secret*)",
+      "Bash(task codex:gate:disable*)",
+      "Bash(op)",
+      "Bash(op *)",
+      "Bash(sudo *)",
+      "Bash(su)",
+      "Bash(su *)",
+      "Bash(iptables *)",
+      "Bash(ip6tables *)",
+      "Bash(nft *)",
+      "Bash(ipset *)",
+      "Read(**/.env*)",
+      "Read(**/*.env)",
+      "Read(!**/.env.example)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/etc/claude-code/hooks/protect-files.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/etc/claude-code/hooks/block-no-verify.sh"
+          },
+          {
+            "type": "command",
+            "command": "/etc/claude-code/hooks/enforce-conventional-commits.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/etc/claude-code/hooks/post-edit-format.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/etc/claude-code/hooks/session-start-context.sh",
+            "timeout": 18
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/etc/claude-code/hooks/session-start-context.sh",
+            "timeout": 18
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/share/devcontainer-config/claude-hooks/session-end-archive.sh",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "FOREMAN_DEVCONTAINER": "agent"
+  }
+}

@@ -25,9 +25,11 @@ for pattern in "${protected[@]}"; do
     fi
 done
 
-# Suffix and glob patterns — sensitive credentials.
-case "$file_path" in
-*.pem | *.key | *.env | .env* | */.env*)
+# Suffix and glob patterns — sensitive credentials, matched against the
+# basename only so a directory merely starting with .env (.environment/,
+# .env.d/) does not block every file beneath it.
+case "${file_path##*/}" in
+*.pem | *.key | *.env | .env*)
     echo "protect-files: blocked write to '$file_path' (matches protected credential pattern)" >&2
     exit 2
     ;;

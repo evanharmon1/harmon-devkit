@@ -72,10 +72,11 @@ def config_tail(info):
     """The devcontainer.json this entry was built from, trimmed to its tail.
 
     This is what tells one PROFILE of a checkout from another: the bot config
-    at `.devcontainer/devcontainer.json` and the dev config at
-    `.devcontainer/dev/devcontainer.json` produce two recents entries whose
+    at `.devcontainer/devcontainer.json`, the dev config at
+    `.devcontainer/dev/devcontainer.json`, and the agent config at
+    `.devcontainer/agent/devcontainer.json` produce recents entries whose
     container path, host path, and remote authority are all identical. Without
-    this, they are two indistinguishable lines.
+    this, they are indistinguishable lines.
     """
     config = info.get("configFile")
     path = ""
@@ -164,8 +165,8 @@ Usage: open-devcontainer.sh [<repo-match>]
                  `code --folder-uri`, several are listed so you can narrow it.
                  Every listed line ends in a short [token] that is also a
                  match target — the way to pick between two entries whose
-                 details are identical (the bot and dev profiles of one
-                 checkout, say)
+                 details are identical (the bot, dev, and agent profiles
+                 of one checkout, say)
 
 Environment:
   VSCODE_STATE_DB            path to VS Code's state.vscdb (default: per-platform)

@@ -34,11 +34,10 @@ mkdir -p "$(dirname "$ENV_GITCONFIG")"
 # --- Workspace permissions reconciliation ---
 # Git 2.35+ refuses to inspect a bind-mounted repository when the host checkout
 # owner differs from the in-container user. Resolve the mounted workspace from
-# its .git marker without asking Git first, grant the Git metadata tree the
-# permissions needed by this container, then add only that exact path to the
-# environment config. Changing permissions preserves the host runner's UID/GID;
-# a wildcard safe.directory would trust unrelated repositories, so it is never
-# used here.
+# its .git marker without asking Git first, reclaim the Git metadata tree for
+# the container user (never grant other users on the host access to it), then
+# add only the workspace's exact path to the environment config. A wildcard
+# safe.directory would trust unrelated repositories, so it is never used here.
 resolve_workspace_root() {
     local candidate="$1"
     while [ "$candidate" != "/" ]; do
@@ -55,9 +54,175 @@ resolve_workspace_root() {
     return 1
 }
 
+# resolve_git_dir <workspace_root> — the actual Git directory to reconcile.
+# For an ordinary checkout this is "$workspace_root/.git" itself; in a linked
+# worktree .git is a FILE pointing at this checkout's private admin dir inside
+# the MAIN checkout's .git, and only that main .git holds the shared
+# objects/refs/hooks tree this reconciliation exists to fix (issue #1241 item
+# 6). Delegating the resolution to Git rather than hand-parsing the pointer
+# file tracks whatever format the installed Git version actually uses.
+# safe.directory is scoped to this exact invocation via -c — never persisted,
+# never a wildcard — because Git's ownership check runs before the workspace
+# root has been trusted anywhere durable.
+# resolve_relative_to <base_dir> <maybe_relative_path> — canonicalize a path
+# that may be relative to base_dir (Git's own worktree "gitdir" pointers are
+# relative when the worktree was created with --relative-paths /
+# worktree.useRelativePaths). Portable (cd + pwd -P), no GNU-only realpath.
+resolve_relative_to() {
+    local base_dir="$1" maybe_relative="$2"
+    case "$maybe_relative" in
+    /*) printf '%s\n' "$maybe_relative" ;;
+    *)
+        (
+            cd "$base_dir" && cd "$(dirname "$maybe_relative")" 2>/dev/null &&
+                printf '%s/%s\n' "$(pwd -P)" "$(basename "$maybe_relative")"
+        )
+        ;;
+    esac
+}
+
+resolve_git_dir() {
+    local workspace_root="$1"
+    local git_marker="$workspace_root/.git"
+    local git_dir admin_dir reverse_pointer reverse_pointer_resolved cr
+
+    if [ -d "$git_marker" ]; then
+        # A .git DIRECTORY containing its own "commondir" file is indirection
+        # Git itself follows (the same marker a worktree admin dir uses) —
+        # not an ordinary checkout, even though it is a directory. Trusting
+        # it unconditionally here would reconcile $git_marker itself while
+        # Git's own commands operate on wherever commondir actually points,
+        # silently reconciling the wrong tree. Treat it the same as any
+        # other non-worktree indirection this reconciliation cannot verify
+        # (#1241 integration round 3, Codex finding 4056166565).
+        if [ -e "$git_marker/commondir" ]; then
+            echo "NOTE: $workspace_root's .git is non-worktree indirection (a .git directory containing its own commondir file, which Git itself follows) — skipping the privileged Git metadata reconciliation for it. This is a known, intentional non-goal: see docs/guides/devcontainers.md." >&2
+            return 2
+        fi
+        # Ordinary checkout: no attacker-controlled indirection to validate
+        # — $git_marker IS the Git directory, not a pointer to one.
+        printf '%s\n' "$git_marker"
+        return 0
+    fi
+
+    # Linked worktree: .git is a FILE naming the admin directory to trust,
+    # and that content is checkout-controlled — safe.directory only bypasses
+    # Git's ownership check; it proves nothing about whether the resolved
+    # directory actually belongs to this workspace. A stale, corrupted, or
+    # crafted pointer (e.g. "gitdir: /path/to/another/repo/...") would
+    # otherwise redirect the privileged recursive chown/chmod below onto an
+    # unrelated repository (#1241 challenge rounds 3/4/6, findings
+    # F8/F11/F17; review round 1, finding F19).
+    admin_dir="$(git -c safe.directory="$workspace_root" -C "$workspace_root" \
+        rev-parse --path-format=absolute --git-dir 2>/dev/null)" || {
+        echo "ERROR: could not resolve the Git admin directory for $workspace_root" >&2
+        return 1
+    }
+    [ -n "$admin_dir" ] || {
+        echo "ERROR: Git reported an empty admin directory for $workspace_root" >&2
+        return 1
+    }
+    git_dir="$(git -c safe.directory="$workspace_root" -C "$workspace_root" \
+        rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+        echo "ERROR: could not resolve the Git directory for $workspace_root" >&2
+        return 1
+    }
+    [ -n "$git_dir" ] || {
+        echo "ERROR: Git reported an empty common directory for $workspace_root" >&2
+        return 1
+    }
+
+    # .git can be a FILE for shapes other than a linked worktree too — a
+    # submodule, or a repository made with `git init --separate-git-dir` —
+    # where --git-dir and --git-common-dir resolve to the SAME directory
+    # (no admin/worktrees split to validate). Git provides no reverse-
+    # pointer mechanism for this shape the way it does for worktrees
+    # (verified empirically: neither sets core.worktree or an equivalent),
+    # so there is no way to distinguish a legitimate submodule/separate-
+    # git-dir checkout from a crafted ".git" naming an arbitrary unrelated
+    # repository directly. Rather than either trusting it blindly (F17's
+    # original vulnerability) or aborting post-create entirely, skip the
+    # privileged reconciliation for this one shape with a clear line
+    # explaining why — this reconciliation's own scope (issue #1241 item 6)
+    # was always linked worktrees specifically, and a devcontainer
+    # workspace pointed directly at a submodule or separate-git-dir root is
+    # rare enough here that preserving the security property matters more
+    # than covering it (maintainer decision, review round 2, finding F22).
+    if [ "$admin_dir" = "$git_dir" ]; then
+        echo "NOTE: $workspace_root's .git is non-worktree indirection (a submodule or a --separate-git-dir checkout) — skipping the privileged Git metadata reconciliation for it. This is a known, intentional non-goal: see docs/guides/devcontainers.md." >&2
+        return 2
+    fi
+
+    # A round-trip check on the admin dir ALONE is not enough: a crafted
+    # admin directory can carry a correct reverse pointer back to this
+    # workspace while its OWN "commondir" file names a different, unrelated
+    # repository, which --git-common-dir would then happily return — the
+    # privileged chown/chmod would follow it there (review round 1, finding
+    # F19). Require the admin directory to actually be the exact
+    # "worktrees/<name>" child of the resolved common directory — the only
+    # shape Git itself ever creates — before trusting either path.
+    [ "$(dirname "$admin_dir")" = "$git_dir/worktrees" ] || {
+        echo "ERROR: refusing an untrusted worktree admin directory at $admin_dir — it is not a direct worktrees/ child of the resolved common directory $git_dir" >&2
+        return 1
+    }
+
+    # THEN require the admin directory to round-trip: every worktree admin
+    # directory Git itself creates (`git worktree add`) contains its OWN
+    # "gitdir" file naming the linked worktree's .git file right back —
+    # verified empirically. The reverse pointer is RELATIVE (to the admin
+    # dir) when the worktree was created with --relative-paths — resolved
+    # before comparing, so a Git-supported relative worktree is accepted,
+    # not just an absolute one (review round 1, finding F21).
+    reverse_pointer="$(cat "$admin_dir/gitdir" 2>/dev/null)" || {
+        echo "ERROR: refusing an untrusted worktree admin directory at $admin_dir — no reverse gitdir pointer found" >&2
+        return 1
+    }
+    # Command substitution strips trailing newlines but not a trailing CR —
+    # a "gitdir" file written with CRLF line endings (a Windows host, or a
+    # host-side editor/tool that normalizes line endings) would otherwise
+    # leave a literal \r on the end of the path, breaking both the
+    # resolve_relative_to call below and the exact-match comparison after
+    # it. cr="$(printf '\r')" + "${var%"$cr"}" (rather than the $'\r'
+    # ANSI-C-quoted form) is the same strip with no shell-specific quoting
+    # syntax in it (#1241 integration round 4, Gemini findings re-raising
+    # this as non-POSIX after it was already declined on those grounds —
+    # this repo's shebang and invocation are bash either way, but this form
+    # is equally correct and stops the re-raise).
+    cr="$(printf '\r')"
+    reverse_pointer="${reverse_pointer%"$cr"}"
+    reverse_pointer_resolved="$(resolve_relative_to "$admin_dir" "$reverse_pointer")" || {
+        echo "ERROR: could not resolve the reverse gitdir pointer at $admin_dir/gitdir" >&2
+        return 1
+    }
+    [ "$reverse_pointer_resolved" = "$git_marker" ] || {
+        echo "ERROR: refusing an untrusted worktree admin directory at $admin_dir — its reverse pointer ($reverse_pointer_resolved) does not name $git_marker" >&2
+        return 1
+    }
+
+    printf '%s\n' "$git_dir"
+}
+
+# Every step below (chown, chmod, setgid, core.sharedRepository) is
+# individually idempotent and their combined end state does not depend on
+# what order a RETRY finds them in — re-running this function always
+# converges to the same fully-reconciled tree. That is deliberate: a true
+# rollback would mean snapshotting every file's original owner and mode
+# before touching anything, which is itself another privileged, fallible
+# recursive walk. Converging on retry is the cheaper, safer answer to the
+# same problem (#1241 challenge round 4, finding F12) — an interruption
+# between any two steps leaves a state the NEXT post-create (or a
+# container rebuild) completes, never one only a rollback could fix. One
+# shared failure message names that remedy instead of repeating it.
+reconcile_step_failed() {
+    echo "ERROR: $1" >&2
+    echo "Reconciliation is safe to retry — re-run post-create-common.sh, or rebuild the container, to complete it; every step converges to the same end state regardless of where a previous attempt stopped." >&2
+    return 1
+}
+
 reconcile_workspace_permissions() {
     local env_gitconfig="$1"
-    local workspace_root
+    local workspace_root git_dir resolve_status
+    local skip_privileged_reconciliation=false
 
     workspace_root="$(resolve_workspace_root "$(pwd -P)")" || {
         echo "ERROR: could not resolve the repository/workspace root from $(pwd -P)" >&2
@@ -68,14 +233,31 @@ reconcile_workspace_permissions() {
         return 1
     }
 
-    # Keep the host checkout's UID/GID intact. Git and Lefthook write under
-    # .git, so make only that repository metadata tree readable, writable, and
-    # traversable for the container user. Capital X adds execute permission to
-    # directories and files that were already executable, not every file.
-    sudo chmod -R a+rwX "$workspace_root/.git" || {
-        echo "ERROR: could not grant Git metadata permissions at $workspace_root/.git" >&2
-        return 1
-    }
+    # The exit status is consumed by this `if` (not a bare assignment) so
+    # that `set -e` does not abort here on resolve_git_dir's deliberate
+    # `return 2` — verified empirically: a bare
+    # `git_dir="$(resolve_git_dir ...)"; resolve_status=$?` aborts the whole
+    # function under set -e before the status is ever read.
+    if git_dir="$(resolve_git_dir "$workspace_root")"; then
+        skip_privileged_reconciliation=false
+    else
+        resolve_status=$?
+        if [ "$resolve_status" -eq 2 ]; then
+            # Non-worktree .git indirection (submodule / --separate-git-dir)
+            # — resolve_git_dir already explained why on stderr. Skip the
+            # privileged mutation but still let post-create continue, and
+            # still trust the workspace for the ownership-CHECK bypass below
+            # (that grants no new filesystem access on its own, unlike the
+            # mutation steps this skips).
+            skip_privileged_reconciliation=true
+        else
+            return 1
+        fi
+    fi
+
+    if [ "$skip_privileged_reconciliation" != true ]; then
+        reconcile_git_metadata_ownership "$git_dir" "$workspace_root" || return 1
+    fi
 
     # This read is deliberately an exact-line match. An existing wildcard (or
     # another repository path) does not satisfy the workspace's own entry. It
@@ -89,6 +271,178 @@ reconcile_workspace_permissions() {
     fi
 
     RECONCILED_WORKSPACE_ROOT="$workspace_root"
+}
+
+# reconcile_git_metadata_ownership <git_dir> <workspace_root> — the
+# privileged mutation steps, factored out so reconcile_workspace_permissions
+# can skip them entirely for non-worktree .git indirection (review round 2,
+# finding F22) without duplicating them.
+reconcile_git_metadata_ownership() {
+    local git_dir="$1"
+    local workspace_root="$2"
+    local orig_gid
+
+    # Capture the tree's CURRENT group before reassigning ownership: the
+    # host checkout's original group keeps write access afterward, instead
+    # of only the container user — a bare owner reassignment would lock the
+    # host side out of its own checkout the next time it commits, checks
+    # out, or fetches outside the container (#1241 challenge round 1,
+    # finding F1; confirmed empirically — the fix is a maintainer-ruled
+    # ownership-model revision, not a mode-only change).
+    orig_gid="$(stat -c '%g' "$git_dir" 2>/dev/null || stat -f '%g' "$git_dir")" || {
+        reconcile_step_failed "could not determine the current group of $git_dir"
+        return 1
+    }
+
+    # Reclaim the Git metadata tree for the container user's own uid, keep
+    # the original gid, then set exact modes (no world-writable bits) — Git
+    # and Lefthook need the tree readable, writable, and traversable for
+    # BOTH the container user and the host's original group, nothing more.
+    # Capital X adds execute permission to directories and files that were
+    # already executable, not every file — an unmanaged hook that predates
+    # this reconciliation (not one of Lefthook's own, which it (re)installs
+    # with its own chmod +x after this runs) keeps its executable bit
+    # instead of being silently disabled.
+    #
+    # Directories always get reconciled — the filesystem itself refuses
+    # hard links to directories. Regular files are reconciled only when
+    # their link count is exactly 1: a local `git clone` (no
+    # --no-hardlinks/--dissociate) hard-links loose objects and packs to
+    # the source repository by default, and a recursive chown/chmod on a
+    # hard-linked file mutates the SAME inode for every path referencing
+    # it — silently changing ownership and permissions on an unrelated
+    # repository entirely outside $git_dir. Those objects are immutable and
+    # world-readable (mode 0444) by Git's own default, so a multiply-linked
+    # one never needed this reconciliation's write grant in the first
+    # place; skipping it removes an out-of-scope mutation, not a needed one
+    # (#1241 review round 3, finding F23 — confirmed empirically: a local
+    # clone's object files share an inode, nlink=2, with the source
+    # repository's, and mutating the clone's copy mutated the source's).
+    sudo find "$git_dir" \( -type d -o \( -type f -a -links 1 \) \) \
+        -exec chown "$(id -u):${orig_gid}" {} + || {
+        reconcile_step_failed "could not reclaim ownership of the Git directory at $git_dir"
+        return 1
+    }
+    # Privileged (sudo), like the chown pass above: the container user does
+    # not yet own — and, before this exact call, may not even be able to
+    # TRAVERSE into — every directory here. chown alone does not add the
+    # execute/traverse bit a mismatched-ownership directory can be missing
+    # entirely, so an unprivileged find attempting to enter it would
+    # silently skip everything underneath, exactly like the ownership
+    # mismatch this reconciliation exists to fix (#1241 integration round
+    # 3, Gemini findings on the same shape as the ownership pass above).
+    sudo find "$git_dir" \( -type d -o \( -type f -a -links 1 \) \) \
+        -exec chmod u=rwX,g=rwX,o=rX {} + || {
+        reconcile_step_failed "could not set permissions under $git_dir"
+        return 1
+    }
+
+    # The pass above deliberately skips multi-linked regular files under
+    # objects/ (F23) — Git's immutable, hash-addressed loose objects and
+    # packs, which never need the write grant this reconciliation exists
+    # to give. That exemption is scoped to objects/ specifically, not
+    # "any multi-linked file anywhere": a hard link OUTSIDE objects/ means
+    # shared MUTABLE metadata (a hook, a config file, anything this
+    # workspace or Git itself might rewrite in place) — e.g. a
+    # hard-linked .git/hooks/pre-commit left unreconciled by a blanket
+    # exemption would later make install_repo_managed_hooks's own `cp`
+    # fail against it. Break the hard link unconditionally for anything
+    # outside objects/, and for anything inside objects/ that the
+    # container user genuinely cannot read (a restrictive host-side
+    # umask at clone time can leave one at mode 0440, owned by neither
+    # the container's uid nor its preserved group) — never for a
+    # readable objects/ file, which correctly stays untouched and still
+    # shares the source repository's inode. Privileged-copy the bytes
+    # (only root can read an unreadable original) into a sibling temp
+    # name in the same directory, chown/chmod that copy to this
+    # reconciliation's own target state, then atomically replace the
+    # path with it: the original inode, and whatever else still
+    # references it outside $git_dir, is never touched (#1241 integration
+    # round 2, Codex finding 4056048549, scope narrowed to objects/ in
+    # round 3, Codex finding 4056166568 — both verified empirically).
+    while IFS= read -r linked_object; do
+        [ -n "$linked_object" ] || continue
+        case "$linked_object" in
+        "$git_dir"/objects/*)
+            [ -r "$linked_object" ] && continue
+            ;;
+        esac
+        # Capture the inode find itself saw, unprivileged, right here — the
+        # privileged block below re-checks against it immediately before
+        # copying, so a same-uid process swapping a symlink in at this
+        # exact path between enumeration and the privileged copy is
+        # detected and refused rather than followed (#1241 integration
+        # round 4, Codex finding 4056318550).
+        seen_inode="$(stat -c '%i' "$linked_object" 2>/dev/null || stat -f '%i' "$linked_object" 2>/dev/null)" || continue
+        sudo sh -c '
+            target="$1"
+            owner="$2"
+            seen_inode="$3"
+            # Re-verify immediately before the privileged copy: refuse if
+            # the path no longer names a plain regular file, or now names a
+            # DIFFERENT inode than the one just captured — either signals a
+            # race since enumeration, not the file this loop meant to fix.
+            [ -f "$target" ] && [ ! -L "$target" ] || exit 1
+            current_inode="$(stat -c "%i" "$target" 2>/dev/null || stat -f "%i" "$target" 2>/dev/null)" || exit 1
+            [ "$current_inode" = "$seen_inode" ] || exit 1
+            tmp="$(mktemp "$(dirname "$target")/.harmon-init-unlink.XXXXXX")" || exit 1
+            # -P (POSIX/BSD-portable spelling of --no-dereference): if
+            # something raced past the checks above in the instant before
+            # this runs, copy the symlink itself, never what it points to
+            # — a privileged cp that DID dereference would let a same-uid
+            # process read an arbitrary root-readable file into the
+            # workspace. Re-checked once more right after: only a genuine
+            # plain file proceeds to chown/chmod/move.
+            if ! cp -Pp "$target" "$tmp"; then
+                rm -f "$tmp"
+                exit 1
+            fi
+            if [ ! -f "$tmp" ] || [ -L "$tmp" ]; then
+                rm -f "$tmp"
+                exit 1
+            fi
+            if ! chown "$owner" "$tmp" || ! chmod u=rwX,g=rwX,o=rX "$tmp" || ! mv -f "$tmp" "$target"; then
+                rm -f "$tmp"
+                exit 1
+            fi
+        ' _ "$linked_object" "$(id -u):${orig_gid}" "$seen_inode" || {
+            reconcile_step_failed "could not break the hard link for a multi-linked object at $linked_object (or it changed since it was found)"
+            return 1
+        }
+    done < <(sudo find "$git_dir" -type f -links +1 -print 2>/dev/null)
+
+    # setgid on directories only (never files — on a FILE this bit means
+    # something unrelated and security-sensitive, set-group-ID on
+    # execution, which must never land on a hook script): every new file or
+    # directory Git creates under here inherits the original group instead
+    # of whichever process's primary group happened to create it. Privileged
+    # (sudo): an unprivileged chmod silently CLEARS S_ISGID — reporting
+    # success while not setting it — whenever the caller is not itself a
+    # member of the target group, which is the ordinary case here (the
+    # container user has no reason to belong to the host's original group)
+    # (#1241 challenge round 5, finding F13).
+    sudo find "$git_dir" -type d -exec chmod g+s {} + || {
+        reconcile_step_failed "could not set the setgid bit under $git_dir"
+        return 1
+    }
+    # setgid only propagates GROUP OWNERSHIP to new entries — it does not
+    # make Git create them group-WRITABLE. Git's own loose-object and ref
+    # creation honors the process umask by default, so the very next commit
+    # made after reconciliation would otherwise create fresh object-fanout
+    # directories and ref files the host's group cannot write to, breaking
+    # host access again immediately (#1241 challenge round 2, finding F5).
+    # core.sharedRepository is Git's own mechanism for exactly this: a
+    # repository shared read-write across a Unix group. The symbolic value
+    # "group" is NOT umask-independent — Git only raises the group class to
+    # match the owner class, leaving "other" governed by umask, so a
+    # permissive umask (this environment's default is 000) would still
+    # create world-writable metadata and silently reopen the exact exposure
+    # this whole change exists to close. An explicit octal pins the bits
+    # Git actually applies regardless of umask.
+    git -c safe.directory="$workspace_root" -C "$workspace_root" config core.sharedRepository 0664 || {
+        reconcile_step_failed "could not configure shared-repository permissions for $workspace_root"
+        return 1
+    }
 }
 
 # --- End workspace permissions reconciliation ---
@@ -117,7 +471,8 @@ git config --file "$ENV_GITCONFIG" user.email "${DEVCONTAINER_GIT_EMAIL}"
 # operator credential — `workflow` scope and all — inside a bypassPermissions
 # agent container, which is the exact escalation the bot PAT's denials exist to
 # stop (docs/architecture/security.md). Each profile's own post-create.sh
-# declares which remedy applies via DEVCONTAINER_GH_AUTH; anything else falls
+# declares which remedy applies via DEVCONTAINER_GH_AUTH ("login" for dev,
+# "agent-token" for the agent posture's AGENT_GH_TOKEN); anything else falls
 # back to the token message, so the operator instructions can only ever appear
 # where a wrapper explicitly asked for them.
 #
@@ -138,8 +493,9 @@ fi
 
 gh_auth_help() {
     echo "=============================================================="
-    echo "  GitHub CLI is NOT authenticated — gh pr / gh api and the"
-    echo "  related-repo clones will fail until this is fixed."
+    echo "  GitHub CLI is NOT authenticated — gh pr / gh api will fail."
+    echo "  Public siblings clone over HTTPS without a login, private ones"
+    echo "  after 'task setup:gh-scopes', which starts the bootstrap itself."
     echo ""
     if [ "${DEVCONTAINER_GH_AUTH:-token}" = "login" ]; then
         echo "  This profile authenticates as you. Log in:"
@@ -154,8 +510,14 @@ gh_auth_help() {
             echo "    $1"
         fi
         echo ""
-        echo "  Then re-run: bash .devcontainer/scripts/bootstrap-related-repos.sh"
         echo "  See docs/guides/devcontainers.md."
+    elif [ "${DEVCONTAINER_GH_AUTH:-token}" = "agent-token" ]; then
+        echo "  This AGENT-posture container authenticates from AGENT_GH_TOKEN,"
+        echo "  the agent's own PAT on the bot account. Do NOT run"
+        echo "  'gh auth login' here, and never supply the bot's GH_TOKEN."
+        echo "  Populate AGENT_GH_TOKEN in the host environment (init-env.sh"
+        echo "  projects it into .devcontainer/agent/devcontainer.env) and"
+        echo "  rebuild. See docs/guides/bot-account.md."
     else
         echo "  This profile authenticates from GH_TOKEN. Do NOT run"
         echo "  'gh auth login' here — that would put a human credential in an"
@@ -204,6 +566,33 @@ gh auth status || true
 
 # push.autoSetupRemote is baked in the environment gitconfig alongside the
 # other static settings.
+
+# --- Transitional: Codex overridable-defaults layer (harmon-init#1186) ---
+#
+# Model, reasoning effort, the project-doc budget and the TUI status line moved
+# OUT of /etc/codex/managed_config.toml, where Codex treats every key as an
+# unoverridable requirement that silently beats `-c` and the user's own config,
+# and INTO /etc/codex/config.toml, its system *defaults* layer. (An explicit
+# `-m` still overrode a pinned `model`; it was `-c model=` that was swallowed.)
+#
+# The installer that writes that file lives in the shared IMAGE, but this repo
+# pins an image by digest, so between this change landing and the consumer-pin
+# bump the pinned image still ships the old installer -- it would create no
+# /etc/codex/config.toml at all, and the defaults would simply vanish rather
+# than become overridable. This step closes that window from the consumer side.
+#
+# It is deliberately self-retiring: once the pinned image's own installer
+# writes the file, the `-f` test is true on every subsequent build and this is
+# a no-op. Delete it after the pin bump has landed everywhere.
+# `workspace_root` is local to reconcile_workspace_permissions, so resolve it
+# here rather than reaching for a name that is unbound under `set -u`.
+codex_defaults_root="$(resolve_workspace_root "$(pwd -P)" || true)"
+codex_defaults_src="${codex_defaults_root:-/nonexistent}/.devcontainer/config/codex-system-config.toml"
+if [ ! -f /etc/codex/config.toml ] && [ -f "$codex_defaults_src" ]; then
+    echo "==> Installing Codex defaults layer (image predates the split)..."
+    sudo install -d -m 0755 /etc/codex
+    sudo install -m 0644 "$codex_defaults_src" /etc/codex/config.toml
+fi
 
 echo "==> Fixing ownership of persistent volume dirs..."
 for dir in /home/vscode/.codex /home/vscode/.claude /home/vscode/.gemini \

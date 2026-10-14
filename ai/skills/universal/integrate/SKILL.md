@@ -128,19 +128,22 @@ not call `gh pr ready` again. If new work or a blocker appears, convert it back
 to draft before posting fixes or starting another review cycle — but through
 [§2](#2-watch)'s unexplained-promotion procedure, not a bare `gh pr ready
 --undo`: entry is exactly where a promotion no session of yours made turns up,
-so the same timeline guard, the same prior-conversion escalation, and the same
-unknown-does-not-license-an-undo rule apply here. Verify `isDraft == true`. If
+so the same run-record/timeline guard, the same unaccounted-conversion
+escalation, and the same unknown-does-not-license-an-undo rule apply here. Verify `isDraft == true`. If
 that transition is unavailable, stop as blocked rather than doing active agent
 work on a ready PR.
 
-One case is not that: a promotion **this session itself made** through step 6's
-gate is a known handoff, not an unexplained one — its detection clause ("no
-`gh pr ready` issued by this session") is simply false. If a human then requests
-changes and the new work must be done on a draft, reverse your own promotion
-directly with a single `gh pr ready --undo`, confirm `isDraft == true`, and
-carry on; that is the own-mutation act §6 already carves out of §2's bound.
-The unexplained-promotion procedure governs only flips no session command
-accounts for.
+One case is not that: a promotion **the run record attributes to step 6's
+gate** is a known handoff, including after resume. Establish that attribution
+through §2's PR, head and timeline correlation, never session memory. If a
+human then requests changes and the new work must be done on a draft, reserve
+a **fresh run** (new run id and record directory) before any follow-up write,
+including reversing your own recorded promotion with a single
+`gh pr ready --undo`. Confirm `isDraft == true` and continue the follow-up work
+under that fresh run; the promoted run stays terminal as the record of the
+first handoff and accepts no later writes. This own-mutation act remains
+outside §2's automatic-undo bound, as §6 describes. The unexplained-promotion
+procedure governs flips the durable record does not account for.
 
 ## Stage ledger
 
@@ -920,18 +923,47 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   merge moves the head and throws away the CI and review results the round was
   about to spend. The readiness gate resolves it, once, and the recipe is
   "Base reconciliation" at the end of step 5.
-- **Unexplained promotion — `isDraft` flips to false with no `gh pr ready`
-  issued by this session.** Read the `isDraft` from the round-start fetch every
-  poll, not only at the gate: a flip caught late looks exactly like a PR that
-  was never draft. Do not assume you forgot the call — check this session's
-  own command record first, then treat the flip as external. In this skill's
-  home platform the identified mechanism is the ChatGPT Codex Connector's
-  user-to-server authorization: its actions are attributed to the account
-  owner, and the observed signature is a flip minutes after Codex review
-  activity on an actively-worked PR (harmon-devkit#276) — the actor field
+- **Unexplained promotion — a `ready_for_review` event the run record does
+  not attribute to a readiness gate.** Read `isDraft` from every round-start
+  fetch and every poll; on non-draft entry or a flip to false, correlate the
+  timeline with the validated `run.json`, never this session's command memory.
+  Fetch the complete timeline through
+  `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`
+  (the pre-approved GET-only wrapper), retaining both `ready_for_review` and
+  `convert_to_draft` events with their IDs, times and actors. A failed read or
+  invalid/missing run record is **unknown**, and unknown never licenses an undo.
+
+  **First attribute the ready event; then compare the current head.**
+  Gate-produced means the record names this PR, the head at promotion and this
+  transition, not necessarily the head observed now.
+  `run.json.pr` binds the canonical PR number/URL; `run.json.promotion.head`
+  names the head confirmed by step 6's gate at promotion. Correlate the
+  `ready_for_review` event's time and order with `promotion.promoted_at` and
+  that confirmed transition, comparing the head at promotion to the recorded
+  `promotion.head`, never requiring it to equal the current head.
+  Correlation must identify that exact transition, with no intervening
+  conversion/re-promotion; a historical promotion on the same head does not
+  account for a later flip. Only after event attribution compare the current
+  head to the recorded promotion head: a later head change on an attributed
+  promotion is **post-promotion drift — report, never undo**, even if the new
+  head fails the gate. A gate promotion of A followed by a contributor push of
+  B stays attributed to that promotion of A; B does not make its ready event
+  unexplained. Route it to the drift branch below before auditing the current
+  head for unexplained-promotion recovery. If attribution is ambiguous, report
+  unknown rather than guessing. A valid record with no matching promotion
+  leaves the observed draft-workbench PR's event unexplained. Record its event
+  ID, time, actor and observed head; the current head alone is not proof of the
+  head at event time.
+
+  In this skill's home platform the identified mechanism is the ChatGPT Codex
+  Connector's user-to-server authorization: its actions are attributed to the
+  account owner, and the observed signature is a flip minutes after Codex
+  review activity on an actively-worked PR (harmon-devkit#276). The actor field
   cannot separate that from the owner's own click. Elsewhere treat the writer
-  as unidentified; the recovery below is deliberately actor-agnostic. Branch
-  on the current head's gate status, freshly audited:
+  as unidentified; recovery remains actor-agnostic. A dispatched integrator
+  reports this evidence and stops its writes; only the session owning
+  integration (the orchestrator in a run) may audit, undo and record it.
+  Branch on the current head's gate status, freshly audited:
   - **The head independently passes the full readiness gate** — checks
     concluded green, current-head Codex terminal-clean, every thread answered,
     deferred findings settled, `mergeStateStatus` acceptable: **reconcile**.
@@ -980,53 +1012,77 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     an unverified head or open findings: failing checks, a `CHANGES_REQUESTED`
     review, unanswered threads, unsettled deferred findings, a Codex cycle that
     is not clean. Only these.
-    **The undo is its own record, so read the PR's timeline before making
-    another one**:
-    `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`
-    (the pre-approved GET-only wrapper) filtered to `convert_to_draft` —
-    unpaginated, an older conversion falls
-    off page one of a busy PR and the guard fail-opens. Any such event — a
-    prior session's undo or a human's own conversion, and there is no need to
-    tell which — means this PR was
-    already returned to draft once and promoted again: do not undo, stop the
-    stage, and escalate with the timeline. That stop is
-    **blocked-with-report and necessarily leaves the PR non-draft** — the one
-    sanctioned exception to a stop leaving the PR draft. Name the standing
-    unexplained promotion in the report: the timeline evidence, the head it
-    sits on, and what about that head is still unverified — posting it is the
-    one write exempt from the pre-write gate above. For this PR the
-    draft-means-workbench reading is suspended until a human intervenes, which
-    is why the stop is loud rather than quiet. That is deliberately
-    conservative,
-    and a legitimate earlier human conversion trips it too: a PR with draft
-    churn behind it is exactly one a human should look at rather than an agent
-    re-fight. If the read fails, that is **unknown**, and unknown does not
-    license an undo — escalate. Otherwise run
-    `gh pr ready --undo <n> --repo "$repo"` **once**, confirm
-    `isDraft == true`, and resume the stage; GitHub writes the
-    `convert_to_draft` event atomically with the mutation, so the next
-    session's guard is armed with no bookkeeping of yours to forget. The read
-    and the undo are adjacent by construction, so a concurrent conversion and
-    re-promotion can slip through the seconds between them at most once, and
-    the next guard read — any session, any entry path — catches it: bounded
-    drift, accepted rather than locked against. Where the repo has a tracking
-    issue (harmon-devkit#276 here), also record the event — timestamp,
-    nearest preceding Codex activity, head SHA — as evidence for that
-    investigation; it is not part of the bound, so a repo without one loses
-    nothing.
-  - **Never loop the undo — the bound is per PR, across sessions.** It counts
-    only undos of promotions this session did not make: reversing a
-    `gh pr ready` of your own — step 6's lost confirmation or changed
-    head/content snapshot, or a completed handoff a human has sent back for
-    more work (preamble) — is a different act, and stays under the
-    once-then-stop logic of the step that made it without spending this
-    budget. Those conversions still land on the timeline, which is a
-    further reason a tripped guard escalates rather than assuming who wrote
-    what. A session's own command record resets at every resume; the PR's
-    timeline is the memory that survives, which is why the guard reads it. An
-    undo war against a writer you cannot attribute has no bounded exit, and a
-    standing promotion is recoverable by a human in a way a corrupted audit
-    trail is not.
+    **Guard against unaccounted conversions, using a per-PR undo ledger and the
+    complete timeline together.** Resolve the ledger in the common Git directory:
+    `$(git rev-parse --path-format=absolute --git-common-dir)/integrate-draft-undos/<owner>/<repo>/<pr>.json`.
+    Every linked worktree reads the same per-PR ledger, so a new run or worktree
+    cannot lose earlier undo evidence or reset the ceiling.
+    Its JSON object has `version: 1`, canonical `repo`, integer `pr` and an
+    `undos` array. Validate that shape and PR identity before using its entries.
+    A `convert_to_draft` event is accounted for only when its event ID matches
+    an automatic undo in this PR's ledger, including undos from earlier runs.
+    Correlate its time and actor, the ready event it reversed and recorded head;
+    actor identity alone never establishes ownership. Count only conversions
+    the ledger does not account for as guard violations. Any unaccounted
+    conversion — a human's or an undo whose durable ledger entry is missing —
+    stops the stage and escalates with the timeline. Never adopt an older
+    conversion just to clear this guard. A missing, unreadable or malformed
+    ledger leaves conversions unaccounted: **escalate, fail-safe**. A missing
+    ledger may be initialized only when the complete timeline has no conversions;
+    an unreadable or malformed ledger is unknown even then. A failed timeline
+    or run-record read is also **unknown**, never permission to undo.
+
+    **At most 12 automatic undos per PR across runs**, across every resume.
+    Count this PR's `undos` array before acting; at 12, stop and escalate rather
+    than performing a thirteenth. A fresh session or run does not reset the
+    counter. These are additional
+    bounds, independent of integration-cycle and remediation-push caps. A guard
+    violation or exhausted ceiling is **blocked-with-report and necessarily
+    leaves the PR non-draft** — the sanctioned exception to a stop leaving it
+    draft. Name the ready event ID/time/actor, observed head and unverified
+    conditions in the blocker report; that one report comment is the write
+    exempt from the pre-write gate above.
+
+    With a determinate failing audit, no unaccounted conversion and ceiling
+    remaining, re-read `state,isDraft,headRefOid` and the timeline immediately
+    before the undo. Require the same open PR, head and latest unexplained ready
+    event; changed or unknown evidence returns to detection, never a write.
+    Run `gh pr ready --undo <n> --repo "$repo"` **once for that event**, then
+    confirm `isDraft == true` on the same head and read back the timeline.
+    Attribution requires a unique new `convert_to_draft` event consistent with
+    the undo's time and actor, following the captured ready event, with no
+    intervening draft/ready transition. A concurrent conversion or re-promotion,
+    failed command, missing event, changed head or indeterminate confirmation
+    stops and reports; do not retry the mutation or claim an attributed undo.
+
+    **Every confirmed automatic undo appends to the per-PR ledger's `undos` array**.
+    Each entry carries the `ready_for_review` event ID, time and actor, observed
+    head, run id, undo time, and read-back `convert_to_draft` event ID, time and
+    actor, with confirmed `isDraft == true`. `run.json.interventions` remains
+    human touchpoints only; never append automatic undos there. Preserve every
+    earlier ledger entry; append once per ready/conversion event pair, never
+    duplicate it on resume. Write the complete candidate to a temporary file
+    beside the ledger, validate its version, repo, pr, array and complete event
+    entries (unique ready/conversion IDs), then atomically rename it over the
+    canonical ledger and validate the canonical readback. Any write,
+    validation, rename or readback failure stops the stage; never resume before
+    the entry is durable. An undo interrupted before persistence is unaccounted
+    on the next guard read and escalates rather than being repeated. After
+    successful persistence, resume integration. Where a tracking issue exists
+    (harmon-devkit#276 here), optionally also record the event, nearest preceding
+    Codex activity and head as investigation evidence; it never substitutes for
+    the per-PR ledger.
+  - **Never loop an undo for one event — the bound is per PR, across sessions
+    and runs.** Recorded automatic conversions do not trip the guard;
+    unaccounted conversions still escalate, and the finite per-PR ceiling
+    prevents an undo war even when every conversion is accounted for. Reversing
+    your own gate-produced promotion — §6's lost confirmation or changed
+    head/content snapshot, or a recorded handoff a human sends back for more
+    work (preamble) — remains under that step's once-then-stop rule, outside this
+    automatic-undo budget. Follow-up work after a recorded handoff uses a fresh
+    run, leaving the promoted run terminal. Without an automatic-undo entry,
+    such a conversion
+    still trips this procedure's guard on a later unexplained flip.
 - Checks (under a `with-push` order this runs alongside the dispatch the
   first bullet already made, never ahead of it): poll
   `gh pr checks <n> --repo "$repo"` on an interval (or run
@@ -2471,6 +2527,12 @@ that loops indefinitely:
    session just attempted*, so it is governed by the once-then-stop logic here
    and not by §2's unexplained-promotion guard; a promotion somebody else made
    is that procedure's, not this one's.
+   A later human request to reverse a **recorded handoff**, including after
+   resume, is distinct from that failed-confirmation recovery. Reserve a
+   **fresh run** with a new run id and record directory before any follow-up
+   write, including the single own-mutation undo; confirm draft state and
+   continue the requested work under the fresh run. The promoted run stays
+   terminal as the record of the first handoff and accepts no later writes.
    This confirmation is the final lifecycle transition: ready-for-review is the
    human handoff, not another automated workbench. After it, perform only this
    stop condition's coordination cleanup (project-card state, guarded

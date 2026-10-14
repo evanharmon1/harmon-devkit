@@ -28,6 +28,9 @@ cd "$(dirname "$0")/.."
 # nothing to do with the code. The explicit env-token cases set what they need,
 # one variable at a time.
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST
+# Likewise git's own discovery variables (set when this runs under a git hook), so
+# the worktree case below finds the repository it builds, not the caller's.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 
 script="./scripts/setup-gh-scopes.sh"
 scopes_lib="./scripts/gh-scopes.sh"
@@ -35,6 +38,10 @@ output_lib="./scripts/lib/output.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
+# Keep git from walking above the temp directory, so a fixture that is not itself a
+# repository is never mistaken for part of one that happens to contain $TMPDIR.
+GIT_CEILING_DIRECTORIES="$(cd "${TMP}" && pwd -P)"
+export GIT_CEILING_DIRECTORIES
 
 # A board-carrying fixture, so the required list includes the Projects scopes.
 mkdir -p "${TMP}/repo/scripts"
@@ -204,6 +211,8 @@ run_sut_pty() {
     # A subshell with explicit exports rather than `env`: pty_exec is a shell
     # function, and `env` can only exec a real binary.
     (
+        mkdir -p "${TMP}/home"
+        export HOME="${TMP}/home"
         export PATH="${TMP}/bin:${PATH}"
         export TMP_PHASE="${TMP}/phase-marker"
         rm -f "${TMP_PHASE}"
@@ -224,6 +233,8 @@ rc_pty_of() {
     make_stub "${scenario}"
     local rc=0
     (
+        mkdir -p "${TMP}/home"
+        export HOME="${TMP}/home"
         export PATH="${TMP}/bin:${PATH}"
         export TMP_PHASE="${TMP}/phase-marker"
         rm -f "${TMP_PHASE}"
@@ -308,6 +319,83 @@ case "$out" in
 *) fail "expected an enterprise env-token refusal, got: ${out}" ;;
 esac
 
+echo "==> the related-repo bootstrap is detached in the race-free form"
+# The behavioural marker test below passes under the old, racy forms too (a HUP
+# landing between the fork and a trap inside the child is not reproducible), so
+# the detach form is pinned statically, inside trigger_related_repos_bootstrap:
+#   prev_hup="$(trap -p HUP)"        the old disposition is captured first (under
+#                                    set -u the restore aborts without it)
+#   trap '' HUP                      the PARENT ignores SIGHUP before the fork
+#   bash "${bootstrap}" ... </dev/null >>log 2>&1 &     then forks, detached
+#   eval "${prev_hup}" / trap - HUP  and restores what it was after the fork
+# An ignored signal stays ignored across fork and exec, so the job is immune from
+# its first instruction. nohup, or a trap set inside the child, leaves a window and
+# must not return. Comment lines never count, in either direction.
+detach_form_ok() {
+    awk -v sq="'" '
+    function joined(   line, next_line) {
+        line = $0
+        while (line ~ /\\$/) {
+            sub(/\\$/, "", line)
+            if ((getline next_line) > 0) {
+                line = line next_line
+            } else {
+                break
+            }
+        }
+        return line
+    }
+    /^trigger_related_repos_bootstrap\(\) \{/ { infn = 1; next }
+    infn && /^\}/ { infn = 0 }
+    !infn { next }
+    /^[[:space:]]*#/ { next }
+    /nohup/ { nohup_seen = 1 }
+    /^[[:space:]]*prev_hup="\$\(trap -p HUP\)"[[:space:]]*$/ { captured = 1 }
+    $0 ~ ("^[[:space:]]*trap (" sq sq "|\"\") HUP[[:space:]]*$") { state = 1; if (captured) armed = 1; next }
+    state == 1 && /^[[:space:]]*bash "\$\{bootstrap\}"/ {
+        line = joined()
+        if (line ~ /<[[:space:]]*\/dev\/null/ && line ~ /&[[:space:]]*$/) { state = 2; next }
+        state = 0
+        next
+    }
+    state == 2 && /eval .*prev_hup/ { restored = 1 }
+    state == 2 && /^[[:space:]]*trap - HUP[[:space:]]*$/ { reset = 1 }
+    /[^[:space:]]/ && state == 1 { state = 0 }
+    END {
+        exit (!(armed && restored && reset) || nohup_seen)
+    }' "$1"
+}
+detach_form_ok "${script}" ||
+    fail "expected trigger_related_repos_bootstrap to ignore SIGHUP in the parent (trap '' HUP), fork the bootstrap with </dev/null and a trailing &, then restore it, without nohup"
+
+# The guard is only worth anything if it can fail: break each element once in a
+# scratch copy (never the real file) and require the verdict to follow.
+mutate_detach() { # DESCRIPTION SED-EXPRESSION
+    sed "$2" "${script}" >"${TMP}/detach-mutant.sh"
+    if cmp -s "${script}" "${TMP}/detach-mutant.sh"; then
+        fail "test setup: the mutation '$1' did not change the script"
+    fi
+    if detach_form_ok "${TMP}/detach-mutant.sh"; then
+        fail "the detach guard accepted a script with $1"
+    fi
+}
+mutate_detach "the parent-side HUP ignore removed" "/^[[:space:]]*trap '' HUP\$/d"
+mutate_detach "the HUP ignore reset to the default (trap -- HUP)" "s/^\\([[:space:]]*\\)trap '' HUP\$/\\1trap -- HUP/"
+mutate_detach "</dev/null removed from the forked command" '/bash "\${bootstrap}"/s# </dev/null##'
+mutate_detach "the trailing & removed from the forked command" '/bash "\${bootstrap}"/s# &$##'
+mutate_detach "nohup in front of the forked command" '/bash "\${bootstrap}"/s#bash "#nohup bash "#'
+mutate_detach "the saved disposition no longer restored" '/eval "\${prev_hup}"/d'
+mutate_detach "the default disposition no longer restored" '/^[[:space:]]*trap - HUP$/d'
+mutate_detach "the saved disposition never captured before the ignore" '/prev_hup="\$(trap -p HUP)"/d'
+# ...and a reworded comment must not be able to fail it.
+# (awk, not sed: a newline in a sed replacement is GNU-only, and on BSD sed the
+# "comment" would silently become a literal n, making this case vacuous.)
+awk '{ print } /^trigger_related_repos_bootstrap\(\) \{$/ { print "    # nohup bash bootstrap was the old form" }' "${script}" >"${TMP}/detach-comment.sh"
+grep -q '^    # nohup bash bootstrap was the old form$' "${TMP}/detach-comment.sh" ||
+    fail "test setup: the comment line was not inserted"
+detach_form_ok "${TMP}/detach-comment.sh" ||
+    fail "the detach guard failed on a comment that merely mentions nohup"
+
 if [ "${PTY_OK}" = true ]; then
     echo "==> a logged-out host is told to log in, not refreshed"
     out="$(run_sut_pty logged-out GH_HOST=github.com)"
@@ -322,6 +410,183 @@ if [ "${PTY_OK}" = true ]; then
     *"All requested GitHub CLI scopes are present"*) ;;
     *) fail "expected success after a landed refresh, got: ${out}" ;;
     esac
+
+    echo "==> triggers bootstrap-related-repos.sh upon successful refresh grant"
+    mkdir -p "${TMP}/repo/.devcontainer/scripts"
+    rm -f "${TMP}/bootstrap-marker"
+    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+#!/usr/bin/env bash
+touch "${TMP}/bootstrap-marker"
+exit 0
+EOF
+    chmod +x "${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    out="$(run_sut_pty lands-after-refresh GH_HOST=github.com)"
+    case "$out" in
+    *"Bootstrapping related repos in the background"*"${TMP}/home/.related-repos-bootstrap.log"*) ;;
+    *) fail "expected background bootstrap invocation notice naming log path, got: ${out}" ;;
+    esac
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        [ -f "${TMP}/bootstrap-marker" ] && break
+        sleep 0.2
+    done
+    [ -f "${TMP}/bootstrap-marker" ] || fail "bootstrap marker file was not created after grant landed"
+
+    echo "==> the bootstrap is told the checkout's physical parent, on any layout"
+    # The bootstrap's default target is /workspaces, which is right only inside the
+    # devcontainer; anywhere else a scope refresh would clone into a directory that
+    # does not exist. The trigger names the target, as setup-remote.sh does: the
+    # parent of the PHYSICAL checkout (pwd -P).
+    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+#!/usr/bin/env bash
+printf '%s\n' "\$#" "\${1:-}" >"${TMP}/bootstrap-args"
+exit 0
+EOF
+    chmod +x "${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    # assert_bootstrap_target SUT-PATH EXPECTED-DIR DESCRIPTION
+    assert_bootstrap_target() {
+        local sut="$1" want="$2" what="$3" i
+        rm -f "${TMP}/bootstrap-args"
+        (
+            SUT="${sut}"
+            run_sut_pty lands-after-refresh GH_HOST=github.com
+        ) >/dev/null
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            [ -s "${TMP}/bootstrap-args" ] && break
+            sleep 0.2
+        done
+        [ -s "${TMP}/bootstrap-args" ] || fail "${what}: the bootstrap was not started"
+        [ "$(sed -n 1p "${TMP}/bootstrap-args")" = 1 ] ||
+            fail "${what}: the bootstrap must get exactly one argument, got: $(tr '\n' ' ' <"${TMP}/bootstrap-args")"
+        [ "$(sed -n 2p "${TMP}/bootstrap-args")" = "${want}" ] ||
+            fail "${what}: expected the target ${want}, got: $(sed -n 2p "${TMP}/bootstrap-args")"
+    }
+    # A checkout whose parent is a directory named "workspaces" — the devcontainer
+    # layout, without needing a writable /workspaces on this host...
+    mkdir -p "${TMP}/layout/workspaces"
+    cp -R "${TMP}/repo" "${TMP}/layout/workspaces/checkout"
+    want_ws="$(cd "${TMP}/layout/workspaces" && pwd -P)"
+    assert_bootstrap_target "${TMP}/layout/workspaces/checkout/scripts/setup-gh-scopes.sh" "${want_ws}" \
+        "a checkout under a workspaces directory"
+    # ...one under another directory, which is the case the default got wrong...
+    mkdir -p "${TMP}/layout/elsewhere/deep"
+    cp -R "${TMP}/repo" "${TMP}/layout/elsewhere/deep/checkout"
+    want_el="$(cd "${TMP}/layout/elsewhere/deep" && pwd -P)"
+    [ "${want_el}" != "${want_ws}" ] || fail "test setup: the two layouts must resolve to different parents"
+    assert_bootstrap_target "${TMP}/layout/elsewhere/deep/checkout/scripts/setup-gh-scopes.sh" "${want_el}" \
+        "a checkout under another directory"
+    # ...and one entered through a symlink, where the PHYSICAL parent wins.
+    mkdir -p "${TMP}/layout/links"
+    ln -s "${TMP}/layout/elsewhere/deep/checkout" "${TMP}/layout/links/alias"
+    assert_bootstrap_target "${TMP}/layout/links/alias/scripts/setup-gh-scopes.sh" "${want_el}" \
+        "a checkout entered through a symlink"
+    # ...and a linked worktree, which sits INSIDE its primary checkout (this
+    # repository's own .worktrees/<name> layout): siblings belong beside the
+    # PRIMARY checkout, not under its .worktrees directory.
+    mkdir -p "${TMP}/layout/base"
+    cp -R "${TMP}/repo" "${TMP}/layout/base/primary"
+    (
+        cd "${TMP}/layout/base/primary"
+        git init -q
+        git add -A
+        git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
+            -c core.hooksPath=/dev/null commit -q -m fixture
+        git worktree add -q .worktrees/linked -b linked
+    ) >/dev/null 2>&1 || fail "test setup: could not build a repository with a linked worktree"
+    [ -f "${TMP}/layout/base/primary/.worktrees/linked/scripts/setup-gh-scopes.sh" ] ||
+        fail "test setup: the linked worktree has no copy of the script"
+    want_primary="$(cd "${TMP}/layout/base" && pwd -P)"
+    assert_bootstrap_target "${TMP}/layout/base/primary/.worktrees/linked/scripts/setup-gh-scopes.sh" "${want_primary}" \
+        "a linked worktree"
+    # ...and the other root this repository uses, a Claude Code agent worktree at
+    # <primary>/.claude/worktrees/<name>, which also belongs beside the PRIMARY.
+    (
+        cd "${TMP}/layout/base/primary"
+        git worktree add -q .claude/worktrees/agent -b agent
+    ) >/dev/null 2>&1 || fail "test setup: could not add a .claude/worktrees linked worktree"
+    [ -f "${TMP}/layout/base/primary/.claude/worktrees/agent/scripts/setup-gh-scopes.sh" ] ||
+        fail "test setup: the .claude/worktrees linked worktree has no copy of the script"
+    assert_bootstrap_target "${TMP}/layout/base/primary/.claude/worktrees/agent/scripts/setup-gh-scopes.sh" "${want_primary}" \
+        "a linked worktree under .claude/worktrees"
+    # ...but ONLY a linked worktree gets that treatment. A --separate-git-dir
+    # checkout whose git directory happens to be named .git elsewhere is still an
+    # ordinary checkout: it keeps its own parent, not the git directory's.
+    mkdir -p "${TMP}/layout/sepbase" "${TMP}/layout/gitstore"
+    cp -R "${TMP}/repo" "${TMP}/layout/sepbase/checkout"
+    (
+        cd "${TMP}/layout/sepbase/checkout"
+        git init -q --separate-git-dir "${TMP}/layout/gitstore/.git"
+    ) >/dev/null 2>&1 || fail "test setup: could not build a --separate-git-dir checkout"
+    [ -f "${TMP}/layout/gitstore/.git/HEAD" ] || fail "test setup: the separate git directory was not created"
+    want_sep="$(cd "${TMP}/layout/sepbase" && pwd -P)"
+    assert_bootstrap_target "${TMP}/layout/sepbase/checkout/scripts/setup-gh-scopes.sh" "${want_sep}" \
+        "a --separate-git-dir checkout"
+    # ...and a linked worktree whose PRIMARY keeps its git directory elsewhere
+    # (--separate-git-dir). Git reports the common dir as <store>/.git, and
+    # <store> even passes for a working-tree top level, but it is not a checkout:
+    # the override must not trust it, and the argument falls back to the linked
+    # worktree's own physical parent.
+    mkdir -p "${TMP}/layout/sepprimary/store" "${TMP}/layout/sepprimary/work"
+    cp -R "${TMP}/repo" "${TMP}/layout/sepprimary/work/primary"
+    (
+        cd "${TMP}/layout/sepprimary/work/primary"
+        git init -q --separate-git-dir "${TMP}/layout/sepprimary/store/.git"
+        git add -A
+        git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
+            -c core.hooksPath=/dev/null commit -q -m fixture
+        git worktree add -q .worktrees/linked -b linked
+    ) >/dev/null 2>&1 || fail "test setup: could not build a linked worktree of a --separate-git-dir primary"
+    [ -f "${TMP}/layout/sepprimary/work/primary/.worktrees/linked/scripts/setup-gh-scopes.sh" ] ||
+        fail "test setup: that linked worktree has no copy of the script"
+    want_sepwt="$(cd "${TMP}/layout/sepprimary/work/primary/.worktrees" && pwd -P)"
+    assert_bootstrap_target "${TMP}/layout/sepprimary/work/primary/.worktrees/linked/scripts/setup-gh-scopes.sh" "${want_sepwt}" \
+        "a linked worktree of a --separate-git-dir primary"
+    # ...and one whose --separate-git-dir store is an ANCESTOR of the checkout:
+    # <work>/.git holds the metadata, the primary is <work>/primary, and git treats
+    # <work> as a working tree of that repository, so every "is it a primary"
+    # predicate except the exact <primary>/.worktrees/<name> layout holds for it.
+    # The target must be the linked worktree's own physical parent, never <work>'s.
+    mkdir -p "${TMP}/layout/ancestor/work"
+    cp -R "${TMP}/repo" "${TMP}/layout/ancestor/work/primary"
+    (
+        cd "${TMP}/layout/ancestor/work/primary"
+        git init -q --separate-git-dir "${TMP}/layout/ancestor/work/.git"
+        git add -A
+        git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
+            -c core.hooksPath=/dev/null commit -q -m fixture
+        git worktree add -q .worktrees/linked -b linked
+    ) >/dev/null 2>&1 || fail "test setup: could not build a linked worktree of a primary whose git directory is an ancestor"
+    [ -f "${TMP}/layout/ancestor/work/primary/.worktrees/linked/scripts/setup-gh-scopes.sh" ] ||
+        fail "test setup: the ancestor-store linked worktree has no copy of the script"
+    want_ancwt="$(cd "${TMP}/layout/ancestor/work/primary/.worktrees" && pwd -P)"
+    assert_bootstrap_target "${TMP}/layout/ancestor/work/primary/.worktrees/linked/scripts/setup-gh-scopes.sh" "${want_ancwt}" \
+        "a linked worktree of a primary whose --separate-git-dir store is an ancestor"
+    rm -rf "${TMP}/layout"
+
+    echo "==> bootstrap-related-repos.sh failure does not change exit status of setup-gh-scopes"
+    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+#!/usr/bin/env bash
+exit 1
+EOF
+    [ "$(rc_pty_of lands-after-refresh GH_HOST=github.com)" = 0 ] ||
+        fail "setup-gh-scopes must succeed even if bootstrap-related-repos.sh exits non-zero"
+
+    echo "==> bootstrap is NOT triggered if refresh does not land"
+    rm -f "${TMP}/bootstrap-marker"
+    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+#!/usr/bin/env bash
+touch "${TMP}/bootstrap-marker"
+exit 0
+EOF
+    chmod +x "${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    out="$(run_sut_pty does-not-land GH_HOST=github.com)"
+    case "$out" in
+    *"Bootstrapping related repos"*) fail "bootstrap should not be invoked when grant verification fails: ${out}" ;;
+    esac
+    sleep 0.5
+    [ ! -f "${TMP}/bootstrap-marker" ] || fail "bootstrap marker was created even though grant verification failed"
+
+    rm -rf "${TMP}/repo/.devcontainer"
+    rm -f "${TMP}/bootstrap-marker"
 
     echo "==> FAILS when the refresh silently did not land"
     # The whole reason this script verifies rather than trusting the exit code.

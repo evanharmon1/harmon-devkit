@@ -42,18 +42,21 @@ set -euo pipefail
 # no copilot binary exists at all — it is skipped, not failed. The CI
 # container assertion in scripts/devcontainer-assert.sh covers that case
 # instead, bounded to the one image pin for which it is legitimate.
-#
-# See https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-new-harnesses/design.md - Decisions.
 
 COPILOT_LINK="${BOT_AUTONOMY_COPILOT_LINK:-$HOME/.local/bin/copilot}"
 COPILOT_LINK_DIR="$(dirname "$COPILOT_LINK")"
-# The npm global prefix for this image's apt-installed Node is system-wide,
-# so the shared image's own binary lands at /usr/bin/copilot (confirmed
-# against the built image). The wrapper resolves its delegate off PATH
-# instead of trusting this path; it is only the documented fallback for a
-# PATH that cannot resolve one, mirroring Antigravity's own
+# The shared image installs Node from the nodejs.org tarball under
+# /usr/local (images/devcontainer/install/install-core.sh), so npm's global
+# prefix is /usr/local and `npm install -g @github/copilot` lands the image's
+# own binary at /usr/local/bin/copilot. The default is resolved from
+# `npm prefix -g` rather than typed in, so an image whose Node lives
+# elsewhere still names the right file; /usr/local/bin/copilot is the
+# fallback for a PATH with no npm at all. The wrapper resolves its delegate
+# off PATH instead of trusting this path; it is only the documented fallback
+# for a PATH that cannot resolve one, mirroring Antigravity's own
 # HARMON_ANTIGRAVITY_SYSTEM_BINARY.
-COPILOT_SYSTEM_BINARY="${HARMON_COPILOT_SYSTEM_BINARY:-/usr/bin/copilot}"
+copilot_npm_prefix="$(npm prefix -g 2>/dev/null || true)"
+COPILOT_SYSTEM_BINARY="${HARMON_COPILOT_SYSTEM_BINARY:-${copilot_npm_prefix:-/usr/local}/bin/copilot}"
 COPILOT_SETTINGS="${BOT_AUTONOMY_COPILOT_SETTINGS:-$HOME/.copilot/settings.json}"
 # Ownership marker, carried verbatim inside every wrapper this module writes.
 # NEVER reword it: it is how a LATER release recognises an EARLIER release's

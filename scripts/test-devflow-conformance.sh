@@ -232,7 +232,7 @@ for spelling in --merge-base-policy= --merge-base-policy-absent=; do
         "$spelling" --json >"$scratch/early-eq.out" 2>"$scratch/early-eq.err"
     eq_status=$?
     set -e
-    if [ "$eq_status" -eq 2 ] && grep -Fq -- "\"$spelling…\" is not accepted" "$scratch/early-eq.err" &&
+    if [ "$eq_status" -eq 2 ] && grep -Fq -- "\"${spelling}…\" is not accepted" "$scratch/early-eq.err" &&
         ! grep -Fq STUB-CLOSURE-RAN "$scratch/early-eq.out"; then
         echo "  ✓ the reader refuses $spelling before delegating"
     else

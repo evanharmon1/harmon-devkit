@@ -48,31 +48,41 @@ runs:
         # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
         SHELLCHECK_VERSION=0.11.0
         # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
-        SHFMT_VERSION=3.14.1
+        SHFMT_VERSION=3.14.1 # pin-pair: shfmt
         # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
         ACTIONLINT_VERSION=1.7.12
         # renovate: datasource=pypi depName=yamllint
         YAMLLINT_VERSION=1.38.0
         # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
-        YQ_VERSION=4.54.1
+        YQ_VERSION=4.54.1 # pin-pair: yq
 
+        # Each `*_sha256` is Renovate-managed with its `*_VERSION`: the
+        # github-release-attachments annotation above it names the release tag
+        # the hash belongs to, and Renovate rewrites tag and hash together when
+        # it bumps the version. `# pin-pair:` marks the lines that must move
+        # together; scripts/test-tool-pin-pairs.sh (`task check`) fails a bump
+        # that left one behind.
         runner_arch="${RUNNER_ARCH:-$(uname -m)}"
         case "$runner_arch" in
           X64|x86_64)
             shellcheck_arch=x86_64
             shfmt_arch=amd64
-            shfmt_sha256=76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf
+            # renovate: datasource=github-release-attachments depName=mvdan/sh digestVersion=v3.14.1
+            shfmt_sha256=76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf # pin-pair: shfmt
             actionlint_arch=amd64
             yq_arch=amd64
-            yq_sha256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
+            # renovate: datasource=github-release-attachments depName=mikefarah/yq digestVersion=v4.54.1
+            yq_sha256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f # pin-pair: yq
             ;;
           ARM64|arm64|aarch64)
             shellcheck_arch=aarch64
             shfmt_arch=arm64
-            shfmt_sha256=5f2db09dae91fca848f7adbdd014632e921a383863a2ad7e0450ad3aba0c6489
+            # renovate: datasource=github-release-attachments depName=mvdan/sh digestVersion=v3.14.1
+            shfmt_sha256=5f2db09dae91fca848f7adbdd014632e921a383863a2ad7e0450ad3aba0c6489 # pin-pair: shfmt
             actionlint_arch=arm64
             yq_arch=arm64
-            yq_sha256=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b
+            # renovate: datasource=github-release-attachments depName=mikefarah/yq digestVersion=v4.54.1
+            yq_sha256=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b # pin-pair: yq
             ;;
           *)
             echo "::error::Unsupported runner architecture for pinned lint tools: ${runner_arch}" >&2
@@ -106,10 +116,10 @@ runs:
         IFS= read -r installed_shfmt_version <<<"$(shfmt --version 2>/dev/null || true)"
         installed_shfmt_version="${installed_shfmt_version#v}"
         if [ "$installed_shfmt_version" != "$SHFMT_VERSION" ]; then
-          # Raw-binary download: fail closed on a checksum mismatch (a version
-          # bump must update the pinned hash). Archive downloads (shellcheck,
-          # actionlint) already fail loudly at extract time on corruption; a
-          # hash-pinned toolchain image is the follow-on refactor.
+          # Raw-binary download: fail closed on a checksum mismatch. Archive
+          # downloads (shellcheck, actionlint) already fail loudly at extract
+          # time on corruption; a hash-pinned toolchain image is the follow-on
+          # refactor.
           curl -fsSL --retry 3 -o "${lint_tools_tmp}/shfmt" \
             "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_${shfmt_arch}"
           echo "${shfmt_sha256}  ${lint_tools_tmp}/shfmt" | sha256sum -c -
@@ -128,8 +138,7 @@ runs:
         IFS= read -r installed_yq_version <<<"$(yq --version 2>/dev/null || true)"
         installed_yq_version="${installed_yq_version##* version v}"
         if [ "$installed_yq_version" != "$YQ_VERSION" ]; then
-          # Raw-binary download: fail closed on a checksum mismatch (a version
-          # bump must update the pinned hash).
+          # Raw-binary download: fail closed on a checksum mismatch.
           curl -fsSL --retry 3 -o "${lint_tools_tmp}/yq" \
             "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${yq_arch}"
           echo "${yq_sha256}  ${lint_tools_tmp}/yq" | sha256sum -c -
@@ -150,20 +159,87 @@ runs:
       if: inputs.gitleaks == 'true'
       shell: bash
       run: |
-        if ! command -v gitleaks >/dev/null 2>&1; then
-          # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
-          GITLEAKS_VERSION=8.30.1
-          curl -fsSL --retry 3 -o /tmp/gitleaks.tgz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          tar -xzf /tmp/gitleaks.tgz -C /tmp
-          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+        # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
+        GITLEAKS_VERSION=8.30.1 # pin-pair: gitleaks
+        # A pre-installed gitleaks (a self-hosted or pre-baked runner) is only
+        # reused when its version matches the pin exactly — otherwise the
+        # runner silently ran whatever version happened to be on it. The
+        # trailing "|| true" matters: GitHub's `shell: bash` steps always run
+        # `bash -eo pipefail`, so a PRESENT but non-executing binary (a
+        # corrupted download, wrong arch, missing shared library) would
+        # otherwise abort this entire step instead of being treated as a
+        # mismatch and replaced — worse than the version check this fix
+        # exists to add.
+        installed_gitleaks_version=
+        if command -v gitleaks >/dev/null 2>&1; then
+          # The whole reported token (not a regex-extracted semver-shaped
+          # substring of it) so that build metadata or an adjacent suffix
+          # with no separator (8.24.3+vendor.1, 8.24.3rc1) is preserved and
+          # fails the exact comparison below, instead of being silently
+          # trimmed off and accepted as matching the pin.
+          installed_gitleaks_version="$(gitleaks version 2>/dev/null | head -n1 | tr -d '[:space:]')" || true
+          installed_gitleaks_version="${installed_gitleaks_version#v}"
+        fi
+        if [ "$installed_gitleaks_version" != "$GITLEAKS_VERSION" ]; then
+          runner_arch="${RUNNER_ARCH:-$(uname -m)}"
+          case "$runner_arch" in
+            X64|x86_64)
+              gitleaks_arch=x64
+              # renovate: datasource=github-release-attachments depName=gitleaks/gitleaks digestVersion=v8.30.1
+              gitleaks_sha256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # pin-pair: gitleaks
+              ;;
+            ARM64|arm64|aarch64)
+              gitleaks_arch=arm64
+              # renovate: datasource=github-release-attachments depName=gitleaks/gitleaks digestVersion=v8.30.1
+              gitleaks_sha256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 # pin-pair: gitleaks
+              ;;
+            *)
+              echo "::error::Unsupported runner architecture for pinned gitleaks: ${runner_arch}" >&2
+              exit 1
+              ;;
+          esac
+          # Install into a job-scoped directory and PREPEND it via
+          # GITHUB_PATH, rather than /usr/local/bin: on a self-hosted
+          # runner, a stale gitleaks earlier on PATH than /usr/local/bin
+          # would otherwise keep winning command resolution even after the
+          # pinned binary lands on disk. The archive is verified against the
+          # per-architecture `gitleaks_sha256` above before it is extracted.
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required for the job-private gitleaks install}"
+          : "${GITHUB_PATH:?GITHUB_PATH is required to publish the pinned gitleaks}"
+          gitleaks_bin="${RUNNER_TEMP}/harmon-init-gitleaks/${GITLEAKS_VERSION}"
+          mkdir -p "$gitleaks_bin"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gitleaks_arch}.tar.gz"
+          echo "${gitleaks_sha256}  ${RUNNER_TEMP}/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/gitleaks.tgz" -C "$gitleaks_bin" gitleaks
+          printf '%s\n' "$gitleaks_bin" >> "$GITHUB_PATH"
+          export PATH="${gitleaks_bin}:${PATH}"
         fi
     - name: Install Snyk CLI
       if: inputs.snyk == 'true'
       shell: bash
       run: |
-        if ! command -v snyk >/dev/null 2>&1; then
-          # renovate: datasource=npm depName=snyk
-          SNYK_VERSION=1.1307.4
-          npm install --global "snyk@${SNYK_VERSION}"
+        # renovate: datasource=npm depName=snyk
+        SNYK_VERSION=1.1307.4
+        # Same reuse-only-on-exact-match reasoning, and the same "|| true"
+        # abort-under-set-e reasoning, as gitleaks above.
+        installed_snyk_version=
+        if command -v snyk >/dev/null 2>&1; then
+          # Same reasoning as the gitleaks check above: the whole token,
+          # not a regex-extracted subset of it.
+          installed_snyk_version="$(snyk --version 2>/dev/null | head -n1 | tr -d '[:space:]')" || true
+          installed_snyk_version="${installed_snyk_version#v}"
+        fi
+        if [ "$installed_snyk_version" != "$SNYK_VERSION" ]; then
+          # Same job-scoped-directory + GITHUB_PATH-prepend reasoning as
+          # gitleaks above: `npm install --global` alone does not change
+          # PATH order, so a stale snyk earlier on PATH than npm's global
+          # bin directory would otherwise keep winning resolution.
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required for the job-private Snyk install}"
+          : "${GITHUB_PATH:?GITHUB_PATH is required to publish the pinned Snyk CLI}"
+          snyk_install_dir="${RUNNER_TEMP}/harmon-init-snyk/${SNYK_VERSION}"
+          mkdir -p "$snyk_install_dir"
+          npm install --global --prefix "$snyk_install_dir" "snyk@${SNYK_VERSION}"
+          printf '%s\n' "${snyk_install_dir}/bin" >> "$GITHUB_PATH"
+          export PATH="${snyk_install_dir}/bin:${PATH}"
         fi

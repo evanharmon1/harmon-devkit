@@ -27,8 +27,7 @@ set -euo pipefail
 # path` reports ~/.omp/agent; `omp config get tools.approvalMode --json`
 # returns {"key","value","type":"enum","description"} and resolves a
 # <cwd>/.omp/config.yml override over the global file; the enum is
-# always-ask | write | yolo with schema default yolo. See
-# https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-new-harnesses/design.md - Decisions.
+# always-ask | write | yolo with schema default yolo.
 
 OMP_AGENT_DIR="${BOT_AUTONOMY_OMP_AGENT_DIR:-$HOME/.omp/agent}"
 CONFIG="${OMP_AGENT_DIR}/config.yml"

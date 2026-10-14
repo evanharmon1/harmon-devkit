@@ -332,13 +332,20 @@ validateSchema(registry, schema, '$registry')
 // the prefix+value gap between them.
 const GH_LABEL_NAME_MAX = 50
 
-// Which agent-registry render feeds which prefix — a suggest family rendering
-// claim labels would provision the wrong vocabulary silently.
+// Which agent-registry render feeds which prefix — a family rendering another
+// family's labels would provision the wrong vocabulary silently. `suggest` is
+// retired: agent-registry-labels.mjs no longer renders it, so only a retired
+// family may still name it (checked below). The four implementer-record sets
+// (#1517) each render exactly their own prefix.
 const REGISTRY_SET_PREFIX = {
   suggest: 'suggest',
   claim: 'claim',
   'foreman-adapters': 'foreman',
-  'tier-roles': null
+  'tier-roles': null,
+  'model-family': 'model-family',
+  model: 'model',
+  'model-version': 'model-version',
+  'model-effort': 'model-effort'
 }
 const VALUE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -377,6 +384,11 @@ if (errors.length === 0) {
       if (!family.provision && family.retired !== true) {
         semanticError(
           `${where}: agent-registry families exist to be provisioned — set provision: true (retired families are the one exception)`
+        )
+      }
+      if (family.registry_set === 'suggest' && family.retired !== true) {
+        semanticError(
+          `${where}: registry_set suggest is retired — agent-registry-labels.mjs no longer renders suggest labels, so a live family naming it would provision nothing; keep it retired`
         )
       }
       if (!family.color && family.retired !== true) {

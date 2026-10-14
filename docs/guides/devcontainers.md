@@ -1,6 +1,6 @@
 # Devcontainers
 
-Harmon DevKit ships a **dual-profile** devcontainer. Both profiles share
+Harmon DevKit ships a devcontainer in **three postures**. All three share
 one `Dockerfile` and the baked `.devcontainer/config/` tree; they differ in
 which secrets and capabilities they allow.
 
@@ -8,6 +8,7 @@ which secrets and capabilities they allow.
 |---|---|---|---|---|
 | **Bot** | `.devcontainer/devcontainer.json` | AI agents (Claude Code, Codex, OpenCode, Antigravity, Copilot CLI, pi, oh-my-pi) | the bot's PAT via `GH_TOKEN` | no |
 | **Dev** | `.devcontainer/dev/devcontainer.json` | humans | the operator's own `gh auth login` | yes (`TS_AUTHKEY`, `--device=/dev/net/tun`) |
+| **Agent** | `.devcontainer/agent/devcontainer.json` | unattended agents (Claude Code, Codex only) | the agent's own PAT via `AGENT_GH_TOKEN` | no — and egress is allowlisted |
 
 Each profile authenticates as the identity it commits as, and the omissions are
 what make that true: the bot profile leaves `TS_AUTHKEY` off its allow-list so a
@@ -172,6 +173,179 @@ receives neither that variable nor the marker in either state. If an earlier
 template update enabled the option, post-create removes the wrapper it
 installed.
 
+## Agent posture: the unattended profile
+
+The **agent** posture (`.devcontainer/agent/`) is for an agent that runs
+unattended somewhere nobody watches — a cloud VM, or work on untrusted input.
+Untrusted input enters it as **data** (issues, diffs, pull request content);
+the devcontainer definition itself must come from a trusted checkout — the
+default branch or a reviewed ref — because `initializeCommand` runs the
+checkout's code on the host, for this profile as for every other.
+It is **never looser than bot on any axis**; the reasoning for every choice
+is in harmon-init's three-posture ADR
+([docs/decisions/2026-09-29-agent-posture-three-posture-model.md](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-29-agent-posture-three-posture-model.md)).
+Its containerEnv marker is `FOREMAN_DEVCONTAINER=agent`: scripts tell `bot`,
+`agent`, and unset (dev) apart, and nothing reads `agent` as `bot`. Foreman
+refuses to dispatch from it by design.
+
+| Axis | What the agent devcontainer does |
+|---|---|
+| Identity | `AGENT_GH_TOKEN`, the agent's own fine-grained PAT on the bot account ([bot-account.md](bot-account.md)). post-create logs `gh` in from it; `GH_TOKEN` and its aliases are blanked. |
+| Harnesses | Claude Code, through its managed allow/deny rules (auto mode, bypass disabled, no `ask`), and Codex, through its sandbox (`workspace-write`, never `danger-full-access`, approval `never`) with no command-level deny list. Every other installed harness is **refused**: `agent-autonomy.sh apply` makes its executable non-executable and `verify` fails if one is runnable again. |
+| Secrets | Only `AGENT_GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and (opt-in) the alternative-provider keys. No 1Password, no Tailscale, never `ANTHROPIC_API_KEY`. |
+| Network | Default-deny egress allowlist, enforced at every start from a root-owned snapshot taken at create. |
+| Docker | None by default (see the opt-in below). |
+
+The single source of its harness policy is `.devcontainer/config/agent/`
+(`claude-managed-settings.json`, `codex-managed-config.toml`,
+`harnesses.json`). Nothing else may carry a copy — `task test:agent-profile`
+fails if one appears. `agent-autonomy.sh` installs it over the image's managed
+settings at create and re-verifies it at every start.
+
+### Where the agent's boundaries are
+
+One first layer and two boundaries — only the boundaries are claimed as such:
+
+- **Command-level denies are a best-effort first layer** for a cooperating
+  harness. Claude Code's deny rules match the command it is about to run;
+  Codex has no command-level deny list at all, only its sandbox. The denies
+  are not transitive through repository code: the agent may run `task` and
+  make commits, so Taskfile targets and git hooks run outside them. Pattern
+  matching can also miss another spelling of the same flags, such as bundled
+  short flags. Argument-pattern denies are defence in depth, not the write
+  boundary. Raw `gh api` is explicitly denied; REST reads go through
+  `/usr/local/bin/gh-api-read`, installed from `.devcontainer/config/agent/`
+  independently of skills sync. It accepts one REST endpoint and a small
+  allowlist of output flags, refuses methods, fields, bodies, headers,
+  bundled flags, unknown flags and GraphQL, then pins `gh api --method GET`.
+- **GitHub writes are bounded by the bot's collaborator grants, the agent
+  PAT's scopes and the repository branch rulesets.** The PAT has no administration, secrets, or workflow permission;
+  the rulesets refuse a direct or force push to `main`, and a merge to `main`
+  needs code-owner approval and green required checks. They do not stop the
+  PAT from merging: once a human has approved and the checks pass, its
+  `pull_requests: write` can perform that merge. Its `contents: write` does
+  let it create releases and push to any branch no ruleset protects — a
+  fine-grained PAT cannot separate releases from contents.
+- **The network is bounded by the egress filter** (below). Its residual is
+  root: the container user keeps passwordless `sudo`, so repository code run
+  with root can lift the filter; harmon-init#1432 tracks narrowing it.
+
+The ADR's Consequences state the same in full.
+
+### Agent env-file: fail closed
+
+The agent's `initializeCommand` runs `init-env.sh --profile agent`. In that
+mode the env-file may hold **only** the names the command allow-lists, and
+the allow-list may name only `AGENT_GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, and
+the alternative-provider keys. Any other name — the bot's `GH_TOKEN` or
+`FOREMAN_AGENT_GH_TOKEN`, `TS_AUTHKEY`, an `OP_*` token, `ANTHROPIC_API_KEY`,
+or a bare `NAME` line that would pass a host value through — **stops the
+build** with the offending name (never its value). The other profiles quietly
+evict a disallowed name; the agent profile refuses instead, because nobody is
+watching to notice a repaired misconfiguration. The Codex login, where an
+environment persists one (harmon-init#1406), lives in the `~/.codex` volume, not the
+env-file.
+The maintainer runs `codex login` once on the environment when provisioning it
+(an agent never does: AGENTS.md § Hard Rules). Its
+`~/.codex/auth.json` is never copied to another machine (the refresh token is
+single-use, so a copy would invalidate both holders).
+
+### Egress allowlist
+
+The egress filter is installed first in both agent lifecycle scripts. It
+reads `.devcontainer/egress-allowlist.txt` (the shared list, harmon-init#286)
+plus the optional per-repo `.devcontainer/egress-allowlist.local.txt`, then
+installs a default-deny netfilter policy: loopback, replies, DNS to the
+configured resolvers, and the listed destinations pass; everything else is
+refused. It needs `--cap-add=NET_ADMIN`, and it fails the container create
+or start if the filter cannot be installed. Claude Code's deny rules cover `sudo`,
+`iptables`, `nft`, and `ipset`, so it cannot lift the filter through its own
+tools — the first layer above, not a boundary against repository code run
+with root.
+
+- **Applied from a root-owned snapshot.** post-create runs
+  `egress-allowlist.sh establish`, which copies the applier and both lists out
+  of the checkout into `/usr/local/share/harmon-egress/` (root-owned, closed
+  to writes), and applies from there; every start applies that snapshot and
+  never the checkout. An edit to the checkout's lists — by an agent or anyone
+  else — changes nothing until the operator re-snapshots it.
+- **Fails closed — and where it cannot.** Every step meant to install the
+  filter (`apply`, post-create's `establish`, and post-start's apply of the
+  snapshot), when it does not complete — a failed iptables install, a list
+  the snapshot or the plan refuses, a failed rule or verify, a signal, or a
+  missing snapshot — flushes the filter chain's allow rules, so a previous
+  allowlist does not outlive a failed re-apply, and sets the OUTPUT and
+  FORWARD policies to DROP, for every address family the container has
+  (IPv4 always, IPv6 when it has a global address). It says egress was left
+  at DROP only when every one of those steps succeeded; when one did not —
+  iptables failing to install at all, or a DROP or flush step failing — it
+  prints a `CRITICAL: could not close egress` line instead. Either way the
+  create or start fails, and a container whose create or start failed must
+  not be used: rebuild it after fixing the cause.
+- **No over-broad entries.** A list line that is `0.0.0.0` in any form, or a
+  CIDR wider than `/16`, fails `apply` closed with the file and line named.
+  A range fetched through `@github-meta` is held to the same rule and fails
+  `apply` closed naming `@github-meta` and the range. IPv6 literals are not
+  accepted; IPv6 egress is closed outright.
+
+- **A refused host leaves evidence.** `bash .devcontainer/scripts/egress-allowlist.sh blocked`
+  prints every destination refused since the container started (address, and
+  reverse name where one resolves), with no root needed. Put its output in the
+  lane report of any unattended run that failed on the network.
+- **Adding a host:** a need every repository shares goes in the shared list,
+  with the reason; a need of this repository alone goes in
+  `egress-allowlist.local.txt`. Either way, a rebuild picks it up, or, in a
+  running container, `sudo bash .devcontainer/scripts/egress-allowlist.sh snapshot`
+  followed by a restart.
+- **Addresses are resolved at start.** A CDN that rotates addresses during a
+  long run can start refusing a listed host;
+  `sudo bash /usr/local/share/harmon-egress/scripts/egress-allowlist.sh apply`
+  re-resolves.
+- **The default bridge network only.** On a user-defined Docker network or a
+  compose setup, `resolv.conf` points at Docker's embedded resolver
+  (`127.0.0.11`), whose upstream queries are not in the allow set, so DNS
+  resolution fails once the filter installs.
+
+### Docker in the agent posture: per-repo opt-in
+
+The agent devcontainer has **no Docker**: no Docker-in-Docker feature, and
+never the host Docker socket (a socket mount hands the agent the host).
+A repository whose gate needs Docker (harmon-infra) opts in with a
+deliberate, reviewed edit to its `.devcontainer/agent/devcontainer.json` —
+both halves, in the same change:
+
+```jsonc
+"features": {
+  "ghcr.io/devcontainers/features/docker-in-docker:2": {
+    "dockerDashComposeVersion": "v2"
+  }
+},
+"containerEnv": {
+  "HARMON_AGENT_DOCKER": "dind"
+}
+```
+
+`HARMON_AGENT_DOCKER=dind` is the disclosure: `task test:agent-profile` and
+`devcontainer-assert.sh` fail on Docker-in-Docker without it, and on a Docker
+socket mount always. The nested daemon's containers are filtered by the same
+egress allowlist (the filter hooks Docker's `DOCKER-USER` chain). Say so in
+the PR that turns it on — it widens what the agent can build and run.
+
+Two consequences of that hook come with the opt-in:
+
+- **Nested containers cannot reach each other until you allow their
+  subnet.** Traffic between two nested containers is forwarded too, so it
+  also goes through `DOCKER-USER` → `HARMON_EGRESS`, and is rejected there
+  like any unlisted destination. A repository whose nested containers talk
+  to each other (a compose stack) adds its nested bridge subnet to
+  `.devcontainer/egress-allowlist.local.txt` — for Docker's default bridge
+  that is `172.17.0.0/16`, exactly at the list's `/16` floor.
+- **An allowed destination skips Docker's own isolation chains.** An
+  `ACCEPT` reached through `DOCKER-USER` ends the whole `FORWARD`
+  traversal, so traffic to an allowlisted destination never reaches
+  Docker's `DOCKER-ISOLATION-*` chains, which would otherwise keep separate
+  nested networks apart.
+
 ## Run it locally
 
 - **VS Code:** "Dev Containers: Reopen in Container" → pick the **Dev** profile
@@ -182,6 +356,50 @@ Prebuilt images are pulled from GHCR as a build cache
 (`ghcr.io/evanharmon1/harmon-devkit-devcontainer` / `ghcr.io/evanharmon1/harmon-devkit-devcontainer-dev`), so a warm rebuild
 is fast. A cache miss is non-fatal — it just rebuilds from the `Dockerfile`.
 
+## Bind-mounted checkout permissions
+
+`post-create-common.sh` reconciles the bind-mounted workspace's `.git`
+metadata tree on every attach: it reclaims ownership for the container
+user (keeping the tree's original group), grants that group read/write,
+sets directories setgid so new Git objects and refs stay group-writable
+too (`core.sharedRepository`), and never leaves the tree world-writable.
+
+**What this guarantees, and what it does not.** Write access after
+reconciliation is guaranteed for the container user and for anyone
+sharing the checkout's original group — in practice, same-uid re-attaches
+(a container rebuild reusing the same runtime user) and other containers
+or processes running as a group-mate. It does **not** extend trust to a
+genuinely different host identity: Git's own "detected dubious ownership"
+safety check is keyed on the file owner's uid, not on permission bits, so
+a host process running as a *different* uid than the container sees the
+reconciled checkout as owned by someone else regardless of the group
+permissions — the same check that made `a+rwX` (world-writable) tempting
+in the first place, and the reason this reconciliation never reintroduces
+it. It is also a deliberate non-goal for a workspace root that is itself a
+Git submodule or a `--separate-git-dir` checkout, rather than a linked
+worktree: Git gives that shape no reverse pointer to validate a redirect
+against, so the privileged mutation is skipped there (with a logged reason)
+instead of trusting it, and the workspace still becomes usable without the
+ownership repair. The reconciliation can only write its `safe.directory` trust entry
+into the container's own environment-scoped Git config
+(`.devcontainer/scripts/post-create-common.sh`'s `$ENV_GITCONFIG`), a
+location a separate host machine's own Git installation has no way to
+read.
+
+**If a different-uid host needs to run Git directly against the same
+checkout** (outside any container — for example a host-side terminal or
+Git client, not a devcontainer attach), it needs its own one-time trust
+entry:
+
+```sh
+git config --global --add safe.directory /path/to/the/checkout
+```
+
+Run that once, as the host user, against the exact path the checkout is
+mounted at. It only grants that one path, never a wildcard, and it is
+independent of the container's own reconciliation — repeat it if the
+checkout is ever re-cloned to a new path.
+
 ## Claude Code settings in the container
 
 Everything is sourced from `.devcontainer/config/` and baked into the **image**,
@@ -191,6 +409,7 @@ status line:
 | What | Lives at | Source | Overridable |
 |---|---|---|---|
 | Managed settings | `/etc/claude-code/managed-settings.json` (image) | `config/claude-settings.json` | no (policy) |
+| Managed drop-in: `gh pr merge` ask (**dev profile only**) | `/etc/claude-code/managed-settings.d/dev-gh-pr-merge-ask.json` (dev post-create) | `config/claude-settings-dev.json` | no (policy) |
 | Hook scripts (mandatory) | `/etc/claude-code/hooks/` (image) | `config/claude-hooks/` | no |
 | Hook scripts (optional) | `/usr/local/share/devcontainer-config/claude-hooks/` (**staged**) | `config/claude-hooks/` | no |
 | Status line | `/etc/claude-code/statusline.sh` (image) | `config/claude-statusline.sh` | yes |
@@ -342,11 +561,20 @@ whichever account happened to sign in — including in repos templated from here
 Running the command yourself is the consent.
 ## Codex CLI settings in the container
 
-Codex policy is baked at `/etc/codex/managed_config.toml` from
-`config/codex-managed-config.toml`; its shared hook adapters are installed under
-`/etc/codex/hooks/`. The config pins Sol/medium, loads the standard project
-skills from `.agents/skills`, and renders a compact built-in footer with project,
-branch, model/effort, context, quota, token, and run-state fields. Unlike
+Codex settings arrive as **two** layers, and the split is load-bearing.
+Boundary policy is baked at `/etc/codex/managed_config.toml` from
+`config/codex-managed-config.toml` — Codex's legacy MDM layer, where every key
+is an unoverridable requirement that beats `-c`, `~/.codex/config.toml` and a
+trusted project `.codex/config.toml` without saying so. Only the sandbox and
+approval boundary and the image-owned hooks belong there. Overridable defaults
+— model, reasoning effort, the project-instruction budget and the status line —
+are baked at `/etc/codex/config.toml` from `config/codex-system-config.toml`,
+so an agent or orchestration session can raise the effort for one run. Pinning
+those in the managed layer silently downgraded dispatched workers instead.
+Together they default to Sol/medium, load the standard project skills from
+`.agents/skills`, and render a compact built-in footer with project, branch,
+model/effort, context, quota, token, and run-state fields. Its shared hook
+adapters are installed under `/etc/codex/hooks/`. Unlike
 Claude's renderer, Codex's supported status line is a single ordered list rather
 than an external multi-line command. System-managed Codex hooks are limited to
 image-owned policy scripts; checkout-controlled status and formatter tasks stay
@@ -604,9 +832,10 @@ not the missing volume — it is that something is **recreating** the container
 behind your back. Chase that instead; see
 [Attach paths and container managers](#attach-paths-and-container-managers).
 
-Nothing fails hard before you log in. `post-create` prints the commands above and
-sibling repos are skipped with a warning (re-run
-`bash .devcontainer/scripts/bootstrap-related-repos.sh` afterwards). What does
+Nothing fails hard before you log in. `post-create` prints the commands above,
+public sibling repos clone via HTTPS fallback while private ones are skipped
+with a warning (missing siblings are automatically cloned in the background on
+container start and upon completing `task setup:gh-scopes`). What does
 not work is anything that talks to GitHub *as you*: `git push`, `gh pr`,
 `gh api`.
 
@@ -704,11 +933,17 @@ init-env.sh: the container will start without them. On Coder/Codespaces set them
 init-env.sh: workspace/repo secrets; locally populate the env-file from 1Password.
 ```
 
-The build still succeeds — a missing optional secret must not block a rebuild,
-and `initializeCommand` runs on the host, where a non-zero exit aborts the whole
-build. So this is a signal to read, not a failure. Without it the container comes
-up clean and only the dependent step fails later, far from the cause: a missing
-`TS_AUTHKEY` went unnoticed for hours in a Coder workspace that way.
+**This warning is not itself a failure.** `initializeCommand` runs on the host,
+where a non-zero exit aborts the whole build, so a missing optional secret must
+not block a rebuild there — it is a signal to read.
+
+What happens next depends on the secret. For most, the container comes up clean
+and only the dependent step fails later, far from the cause.
+That includes `TS_AUTHKEY`. The dev profile installs Tailscale and still
+connects whenever a key is present — a missing one is a skip, not a failure, so
+the container comes up either way. Answer `tailscale_required` at scaffold time
+to make it fatal instead: worth it for a profile whose whole point is the
+tailnet, where a container that starts up logged out is easy to miss for hours.
 
 The warning covers **only** the vars this profile's allow-list permits, so the
 bot profile never reports `TS_AUTHKEY` missing. Its absence there is correct —
@@ -735,7 +970,8 @@ repo** (one template serves every repo). To stand this repo up in Coder:
    - secrets → `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DECK_TELEGRAM_KEY`, and
      `GH_TOKEN` **for a bot workspace only** — a dev workspace runs
      `gh auth login` instead
-     (+ `TS_AUTHKEY` if you want Tailscale); `KIMI_API_KEY`/`MOONSHOT_API_KEY`,
+     (+ `TS_AUTHKEY` if you want Tailscale — without it the dev profile
+     simply skips the tailnet connect); `KIMI_API_KEY`/`MOONSHOT_API_KEY`,
      `DEEPSEEK_API_KEY`, `ZAI_API_KEY`, `QWEN_API_KEY` for the alt-model wrappers
      (`claude-qwen-local` needs no key — see below). Coder passes these
      into the workspace's host environment, where `init-env.sh` picks them up.
@@ -1050,15 +1286,25 @@ environment gitconfig baked into the image at `~/.config/git/config`, so
 in-container git operations never depend on an SSH agent). They are:
 
 - **cloned** into `/workspaces/`, beside this repo, on container **create**
-  (`scripts/bootstrap-related-repos.sh`) — so a rebuilt or persistence-lost
-  container re-populates them;
+  and in the background on container **start** (`.devcontainer/scripts/bootstrap-related-repos.sh`),
+  with fallback to `git clone` for public repos when `gh` is unauthenticated,
+  and re-triggered upon completing `task setup:gh-scopes` — so a rebuilt or
+  persistence-lost container re-populates them and missing siblings clone
+  automatically once authenticated;
 - **fetched** non-destructively on container **start**
-  (`scripts/fetch-related-repos.sh`).
+  (`.devcontainer/scripts/fetch-related-repos.sh`).
 
 Both are safe to re-run: an already-cloned sibling is **never clobbered** —
 clone skips it, and start runs `git fetch` only (never pull / merge / checkout),
-so uncommitted work, local commits, and the checked-out branch stay put. The
-list is preserved across `copier update` (an empty list is a no-op).
+so uncommitted work, local commits, and the checked-out branch stay put.
+Overlapping runs are safe: each repo is cloned into its own private temporary
+directory and moved into place atomically on success, so only one run can
+publish and a failed or interrupted clone never deletes a user's existing
+checkout.
+When a sibling does not appear after a start or a scope refresh, read the logs:
+`$HOME/.related-repos-bootstrap.log` holds the clone job (from container start
+and from `task setup:gh-scopes`) and `$HOME/.related-repos-fetch.log` the fetch job.
+The list is preserved across `copier update` (an empty list is a no-op).
 
 To let Claude read and search the cloned siblings, add them to
 `.claude/settings.json` in **two** places — `permissions.additionalDirectories`

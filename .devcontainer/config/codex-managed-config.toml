@@ -1,27 +1,23 @@
-# Shared baseline for the human and bot devcontainer profiles. The bot's
-# post-create step changes only sandbox_mode and approval_policy; Docker remains
-# the outer boundary in that profile.
-model = "gpt-6.1-sol"
-model_reasoning_effort = "medium"
-project_doc_max_bytes = 65536
+# Shared BOUNDARY policy for the human and bot devcontainer profiles,
+# installed to /etc/codex/managed_config.toml. The bot's post-create step
+# changes only sandbox_mode and approval_policy; Docker remains the outer
+# boundary in that profile.
+#
+# This is Codex's legacy MDM layer: every key here is a hard REQUIREMENT that
+# silently outranks `-c`, ~/.codex/config.toml and a trusted project
+# .codex/config.toml. (The explicit `-m` flag still beat a pinned `model`,
+# which is why the pin looked half-working rather than plainly broken.) Put a
+# key here ONLY when no one -- human, agent, or orchestration session -- may
+# override it. Overridable defaults (model, reasoning effort, doc budget, TUI)
+# live in codex-system-config.toml, which installs to /etc/codex/config.toml.
+# See harmon-init#1186: a model/effort pin here downgraded dispatched workers
+# without any error.
 sandbox_mode = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 
 [features]
 hooks = true
-
-[tui]
-status_line = [
-  "project-name",
-  "git-branch",
-  "model-with-reasoning",
-  "context-remaining",
-  "five-hour-limit",
-  "weekly-limit",
-  "used-tokens",
-  "run-state",
-]
 
 # Managed hooks are deliberately limited to policies implemented entirely by
 # image-owned scripts. Startup/context and formatter hooks delegate into the

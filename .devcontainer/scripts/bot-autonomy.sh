@@ -32,12 +32,9 @@ set -euo pipefail
 #     `reason` is documentation only and never changes verify's behavior: the
 #     instant a named executable is found installed, its slug is treated
 #     exactly like an uncovered slug and verify fails naming it, regardless of
-#     why it was unsupported. See
-#     https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap/design.md - Decisions.
+#     why it was unsupported.
 #
-# See docs/architecture/security.md and
-# https://github.com/evanharmon1/harmon-init/blob/main/openspec/specs/devcontainer/bot-autonomy/spec.md
-# for the full contract.
+# See docs/architecture/security.md for the full contract.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -333,6 +333,26 @@ merely `pending` (neither failed nor settled) belongs in `checks_ready`
 (already false) and `checks[]`, never in `$failed_required` or `findings[]`
 — it is not yet a defect to adjudicate, just CI still running.
 
+**Draft flips are report-only.** On entry, in every poll and immediately before
+any brokered write, re-read `state,isDraft,headRefOid`. If an open draft-workbench
+PR is now non-draft, stop writes and fetch its complete timeline through the
+resolved `gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`. Report the
+latest `ready_for_review` event ID, time, actor and observed head to the
+orchestrator, who correlates it with `run.json.pr` and `run.json.promotion`
+under `/integrate` §2. You report a suspected unexplained flip; you never decide
+whether it is gate-produced. A failed timeline read is unknown: name it in the
+blocker report rather than inventing event evidence. The observed head does
+not establish the historical head at event time.
+
+Carry the observation in the existing blocker report (§9), with
+`status: "blocked"` in the schema-valid envelope; do not add payload fields or
+manufacture a reviewer finding. Set `status=blocked` for §7's builder.
+Populate the existing payload from evidence
+already gathered (§7), leaving `codex_cycle: null` if no cycle ran. If missing
+evidence prevents a valid result, report that blocker to the orchestrator;
+never fabricate values to satisfy the schema. Only the orchestrator applies
+an undo and persists the per-PR ledger entry. **Never run `gh pr ready --undo`.**
+
 ## 4. Drive cloud review cycles (skip entirely when the cap is 0)
 
 If your brief states the resolved `[rounds].integration` cap is 0, **or §3's
@@ -391,12 +411,18 @@ pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exi
 
 Require all three on that one read: `.state` is `OPEN`, `.isDraft` is `true`,
 and `.headRefOid` equals the head your brief named. Any mismatch means **post
-no trigger**: skip the rest of this section, report `codex_cycle: null` with
-the mismatch as a finding (§5), and run
+no trigger**: skip the rest of this section and report `codex_cycle: null`.
+For an open PR whose `.isDraft` is not `true`, use §3's **Draft flips are
+report-only** blocker path: set `status=blocked`, report `status: "blocked"`
+through §7/§9, never manufacture a reviewer finding for the promotion, and
+leave the reservation untouched (its head has not moved). A closed PR is still
+reported as a finding (§5), as before. For a moved head, report the mismatch as
+a finding (§5) and run
 `"$helper" release --state "$state" --note "PR changed before trigger"`.
 Release succeeds only for an untriggered Codex reservation after a live comment
-scan with the 10-minute skew margin proves no trigger exists; a refusal remains a blocker. The next dispatch
-reserves its own head with the retained counters and history. Never substitute the head `pr_now` reports for the brief's. A head
+scan with the 10-minute skew margin proves no trigger exists; a refusal remains a blocker. The next
+dispatch reserves its own head with the retained counters and history, and its
+broker call runs this same read before it would post. Never substitute the head `pr_now` reports for the brief's. A head
 GitHub has not caught up to yet is `reserve`'s question, not this read's: its
 bounded head wait answers it (exit codes below) before this read runs, so do
 not read the PR ahead of `reserve` to second-guess it. A
@@ -679,7 +705,8 @@ endpoint, a repository made private under you. Polling those to the end of the
 window and reporting `pending` asks the orchestrator to re-dispatch you into
 the identical failure, which spends the whole wall clock on a condition that
 was decided at the first read. So **count CONSECUTIVE 16s, and after the third
-break out of the loop** and return `status: "blocked"` with a blocker line
+break out of the loop**, set `status=blocked` for §7's builder, and return
+`status: "blocked"` with a blocker line
 naming the read that failed — the endpoint and the checker's own detail, so the
 operator can see it is an access problem and not a reviewer problem. The
 counter resets on any other exit code, because a 16 between two successful
@@ -713,12 +740,15 @@ while [ "$SECONDS" -lt "$window_end" ]; do
     # code breaks the loop.
     [ "$check_exit" != "11" ] && [ "$check_exit" != "16" ] && break
     # A read that fails three times running is not transient. Break and report
-    # `indeterminate` naming the failing read, rather than polling out the
+    # `blocked` naming the failing read, rather than polling out the
     # window and handing back a `pending` the orchestrator will re-dispatch
     # into the same wall.
     if [ "$check_exit" = "16" ]; then
         consecutive_16=$((consecutive_16 + 1))
-        [ "$consecutive_16" -lt 3 ] || break
+        if [ "$consecutive_16" -ge 3 ]; then
+            status=blocked
+            break
+        fi
     else
         consecutive_16=0
     fi
@@ -745,7 +775,8 @@ driving the cycle for this pass. If the window elapsed still pending, report
 `codex_cycle` with `exit_code: 11` and no `accepted` (§7 shows the shape); a
 caller that wants another look dispatches you again for a fresh window, rather
 than this pass looping indefinitely on its own. If the consecutive-16 budget
-broke it, report `status: "blocked"` with `codex_cycle.exit_code: 16`,
+broke it, set `status=blocked` for §7's builder and report
+`status: "blocked"` with `codex_cycle.exit_code: 16`,
 `verdict: "pending"` (16's own rule in EXIT_CODE_VERDICT_CONSTRAINTS, which
 does not change because the read stopped being retriable) and a blocker line
 naming the failing read — the endpoint and the checker's detail — so the
@@ -965,11 +996,14 @@ pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exi
 
 If `.state` is not `OPEN`, `.isDraft` is not `true`, or `.headRefOid`
 disagrees with the head your brief named, **do not post anything** — stop
-here and report the mismatch as a finding instead (a closed PR, a promoted
-draft, or a moved head all mean the orchestrator's own next read supersedes
-whatever you were about to write, exactly as `/integrate`'s own re-check
-rule requires before every PR write). Only when all three still match do you
-proceed to the posts below.
+here. For an open PR whose `.isDraft` is not `true`, use §3's **Draft flips
+are report-only** blocker path: set `status=blocked`, report
+`status: "blocked"` through §7/§9, and never manufacture a reviewer finding
+for the promotion. A closed PR or moved head is still reported as a finding
+(§5), as before. These mismatches mean the orchestrator's own next read
+supersedes whatever you were about to write, exactly as `/integrate`'s own
+re-check rule requires before every PR write. Only when all three still match
+do you proceed to the posts below.
 
 If your brief supplied exact reply text with target comment IDs, post each
 one now, verbatim — never edited, summarized, or extended. This text is
@@ -1032,9 +1066,14 @@ and is rejected before your evidence is even looked at. Build it with
 `jq -n` rather than hand-typing JSON — this is a mechanical composition
 step, not a place to improvise the schema:
 
+Set `status=completed` when starting the pass. Every blocked path sets
+`status=blocked` before assembly; preserve that outcome here rather than
+resetting it. A blocker reported under §9 also sets `status=blocked`.
+
 ```sh
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 jq -n \
+    --arg status "$status" \
     --arg head "<head>" \
     --arg produced_at "$now" \
     --arg harness "<producer.harness from your brief>" \
@@ -1051,7 +1090,7 @@ jq -n \
     --arg settled_at "$now" \
     --arg verdict "$verdict" \
     --argjson applied_dispositions "$applied_dispositions_json" \
-    '{schema: 2, role: "integrator", status: "completed", head: $head,
+    '{schema: 2, role: "integrator", status: $status, head: $head,
       produced_at: $produced_at,
       producer: {harness: $harness, model: $model, tier: $tier},
       run: {run_id: $run_id, initiated_by: $initiated_by},
@@ -1121,6 +1160,7 @@ unvalidated result, and never loosen the check to get past it.
 
 Decide a finding's disposition. Call `settle`. Post reply text you composed
 yourself. Edit the PR body. Trigger `gh pr ready` or any other promotion.
+Run `gh pr ready --undo` or record an automatic-undo ledger entry.
 Adjudicate whether a finding is real. Spawn another agent. Retry the Codex
 cycle more than the one bounded time in §4. Guess a missing brief field
 instead of stopping.

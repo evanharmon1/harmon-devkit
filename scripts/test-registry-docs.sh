@@ -2,7 +2,7 @@
 # test-registry-docs.sh — GATE the human-facing agent-registry tables in
 # docs/project-management.md against the machine-readable registry.
 #
-# ADR 0005 D10 makes that document the human authority for the agent
+# ADR 2026-08-07 D10 makes that document the human authority for the agent
 # vocabulary, and D11 says the registry has executable teeth. A markdown table
 # maintained by hand satisfies neither: it drifts the moment a family or
 # harness is added, and nothing fails. So the tables are GENERATED —
