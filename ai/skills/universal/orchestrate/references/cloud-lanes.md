@@ -12,10 +12,11 @@ environment selected with `/remote-env` (`remote.defaultEnvironmentId`), and
 have remote sessions permitted by `allow_remote_sessions`. The session runs on
 the account the CLI is signed in to (`claude auth status`), not the one open in a
 browser, so that account must hold both the web environment and a GitHub
-credential that reaches the repository, such as a `/web-setup` token;
-disconnecting the account's GitHub connector afterwards removes that token. Then
-launch clones the remote at the current branch. Without one, the platform uploads the
-checkout with no `origin`, and the lane cannot push; that is outside this mode.
+credential that reaches the repository, such as a `/web-setup` token. Then
+launch clones the remote at the current branch. Without one, the platform uploads
+the checkout with no `origin`, and the lane cannot push; that is outside this mode.
+Leave the account's GitHub connector connected after `/web-setup`: in the
+end-to-end check below, the token was gone after the connector was disconnected.
 Claims are unchanged: the orchestrator claims before launch, and the lane never
 claims or refreshes the claim.
 Launch from a checkout on the default branch at its pushed tip, because the
