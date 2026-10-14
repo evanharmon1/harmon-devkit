@@ -415,9 +415,9 @@ no trigger**: skip the rest of this section and report `codex_cycle: null`.
 For an open PR whose `.isDraft` is not `true`, use §3's **Draft flips are
 report-only** blocker path: set `status=blocked`, report `status: "blocked"`
 through §7/§9, never manufacture a reviewer finding for the promotion, and
-leave the reservation untouched (its head has not moved). A closed PR is still
-reported as a finding (§5), as before. For a moved head, report the mismatch as
-a finding (§5) and run
+leave the reservation untouched (its head has not moved).
+A closed PR or moved head is still reported as a finding (§5), as before; for a
+moved head also run
 `"$helper" release --state "$state" --note "PR changed before trigger"`.
 Release succeeds only for an untriggered Codex reservation after a live comment
 scan with the 10-minute skew margin proves no trigger exists; a refusal remains a blocker. The next
