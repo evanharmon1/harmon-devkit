@@ -11404,6 +11404,37 @@ expect_ok "review: the verification call reads the per-stage ledger and the shar
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
     grep -qF './scripts/test-inline-record.sh' "$repo/Taskfile.yml"
 
+# harmon-devkit#1077: any session driving integration — orchestrator or a lane
+# told to drive its own integration — must use the vendored checker protocol
+# and readiness-gate.sh wherever they apply, never a hand-rolled poll or
+# hand-evaluated table; orchestrate/SKILL.md and lane-brief.md point at
+# integrate/SKILL.md §2's qualified rule.
+LANE_BRIEF_MD="$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
+for doc in "$INTEGRATE_MD" "$ORCH_MD" "$LANE_BRIEF_MD"; do
+    doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
+    expect_ok "$doc_label: binds any session driving integration (#1077)" \
+        grep -qF 'any session driving integration' "$doc"
+    expect_ok "$doc_label: names check-codex-cloud-review.sh (#1077)" \
+        grep -qF 'check-codex-cloud-review.sh' "$doc"
+    expect_ok "$doc_label: names readiness-gate.sh (#1077)" \
+        grep -qF 'readiness-gate.sh' "$doc"
+    expect_ok "$doc_label: qualifies where the vendored checker and gate apply (#1077 C1-1)" \
+        grep -qiF 'wherever the vendored checker and gate apply' "$doc"
+    expect_ok "$doc_label: forbids a hand-rolled poll or hand-evaluated table (#1077)" \
+        grep -qF 'never a hand-rolled poll or hand-evaluated table' "$doc"
+done
+expect_ok "integrate: states the cap-0 exception to the checker requirement (#1077 C1-1)" \
+    grep -qF 'whenever the resolved integration cap is above 0; cap 0 runs no Codex cycle' "$INTEGRATE_MD"
+expect_ok "integrate: states the no-record exception to readiness-gate.sh (#1077 C1-1)" \
+    grep -qF "whenever a run record exists; the no-record path keeps \`AGENTS.md\`'s hand-run readiness" "$INTEGRATE_MD"
+expect_ok "integrate: cites why — clean verdict and inline findings are not atomic (#1077)" \
+    grep -qF 'a clean verdict and its inline findings do not land atomically' "$INTEGRATE_MD"
+for doc in "$ORCH_MD" "$LANE_BRIEF_MD"; do
+    doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
+    expect_ok "$doc_label: points at integrate/SKILL.md §2's rule (#1077 C1-1)" \
+        grep -qF "follow \`integrate/SKILL.md\` §2's rule" "$doc"
+done
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
