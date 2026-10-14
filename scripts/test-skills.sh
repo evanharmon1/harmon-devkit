@@ -3902,6 +3902,63 @@ expect_ok "integration paginates the draft-conversion undo guard" \
         grep -qF "convert_to_draft" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration bounds the undo per PR across sessions" \
     grep -qF 'the bound is per PR, across sessions' "$INTEGRATE_SKILL"
+# #1420: the durable record governs unexplained flips, including after resume.
+# Restrict these assertions to the recovery procedure so unrelated promotion
+# instructions elsewhere cannot accidentally satisfy the contract.
+READY_FLIP_PROCEDURE="$TMPROOT/ready-flip-procedure.md"
+sed -n '/^- \*\*Unexplained promotion —/,/^- Checks (under/p' \
+    "$INTEGRATE_SKILL" >"$READY_FLIP_PROCEDURE"
+expect_ok "unexplained flips are detected from a paginated timeline and validated run record" \
+    sh -c 'grep -qF "timeline with the validated" "$1" &&
+        grep -qF "never this session" "$1" &&
+        grep -qF "/assets/gh-ro.sh --paginate" "$1" &&
+        grep -qF "invalid/missing run record" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "gate attribution binds PR, head and the exact transition after resume" \
+    sh -c 'grep -qF "run.json.pr" "$1" &&
+        grep -qF "run.json.promotion.head" "$1" &&
+        grep -qF "promotion.promoted_at" "$1" &&
+        grep -qF "with no intervening" "$1" &&
+        grep -qF "account for a later flip" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "the undo guard exempts only exact conversions attributed to this run" \
+    sh -c 'grep -qF "only conversions the record does not account for" "$1" &&
+        grep -qF "event ID, time and actor" "$1" &&
+        grep -qF "undo whose durable record is missing" "$1" &&
+        grep -qF "Never adopt an older conversion" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "automatic undos have a durable finite per-run ceiling" \
+    sh -c 'grep -qF "At most 12 automatic undos per PR in one run" "$1" &&
+        grep -qF "thirteenth" "$1" &&
+        grep -qF "fresh session does not reset the counter" "$1" &&
+        grep -qF "never unrelated" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "recovery preserves reconcile and unknown-or-drift report-only branches" \
+    sh -c 'grep -qF "reconcile" "$1" &&
+        grep -qF "Indeterminate, or ordinary post-promotion drift — report, never undo" "$1" &&
+        grep -qF "unknown never licenses an undo" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "each event gets only one undo with adjacent evidence and confirmation" \
+    sh -c 'grep -qF "before the undo" "$1" &&
+        grep -qF "once for that event" "$1" &&
+        grep -qF "unique new" "$1" &&
+        grep -qF "do not retry the mutation" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "confirmed undos persist complete intervention evidence before resuming" \
+    sh -c 'grep -qF "Every confirmed automatic undo appends" "$1" &&
+        grep -qF "{kind: \"other\", at: <undo time>, note: <evidence>}" "$1" &&
+        grep -qF "event ID and time" "$1" &&
+        grep -qF "read-back" "$1" &&
+        grep -qF "confirmed \`isDraft == true\`" "$1" &&
+        grep -qF "append once per ready/conversion event pair" "$1" &&
+        grep -qF "candidate beside \`run.json\`" "$1" &&
+        grep -qF "validate-result-schemas.mjs run --receipts" "$1" &&
+        grep -qF "rename over the canonical record" "$1" &&
+        grep -qF "the canonical readback" "$1" &&
+        grep -qF "never resume before" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "integrator reports suspected flips through its existing blocker contract only" \
+    sh -c 'grep -qF "Draft flips are report-only" "$1" &&
+        grep -qF "latest \`ready_for_review\` event ID, time, actor and observed head" "$1" &&
+        grep -qF "existing blocker report" "$1" &&
+        grep -qF "status: \"blocked\"" "$1" &&
+        grep -qF "do not add payload fields" "$1" &&
+        grep -qF "Only the orchestrator applies" "$1" &&
+        grep -qF "Never run \`gh pr ready --undo\`" "$1"' sh "$INTEGRATOR_AGENT"
+
 expect_ok "integration freezes review content across promotion" \
     sh -c 'grep -qF "top-level comments, inline comments" "$1" &&
         grep -qF "GraphQL review-thread resolution" "$1" &&

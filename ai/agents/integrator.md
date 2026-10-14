@@ -333,6 +333,25 @@ merely `pending` (neither failed nor settled) belongs in `checks_ready`
 (already false) and `checks[]`, never in `$failed_required` or `findings[]`
 — it is not yet a defect to adjudicate, just CI still running.
 
+**Draft flips are report-only.** On entry, in every poll and immediately before
+any brokered write, re-read `state,isDraft,headRefOid`. If an open draft-workbench
+PR is now non-draft, stop writes and fetch its complete timeline through the
+resolved `gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`. Report the
+latest `ready_for_review` event ID, time, actor and observed head to the
+orchestrator, who correlates it with `run.json.pr` and `run.json.promotion`
+under `/integrate` §2. You report a suspected unexplained flip; you never decide
+whether it is gate-produced. A failed timeline read is unknown: name it in the
+blocker report rather than inventing event evidence. The observed head does
+not establish the historical head at event time.
+
+Carry the observation in the existing blocker report (§9), with
+`status: "blocked"` in the schema-valid envelope; do not add payload fields or
+manufacture a reviewer finding. Populate the existing payload from evidence
+already gathered (§7), leaving `codex_cycle: null` if no cycle ran. If missing
+evidence prevents a valid result, report that blocker to the orchestrator;
+never fabricate values to satisfy the schema. Only the orchestrator applies
+an undo and persists the intervention. **Never run `gh pr ready --undo`.**
+
 ## 4. Drive cloud review cycles (skip entirely when the cap is 0)
 
 If your brief states the resolved `[rounds].integration` cap is 0, **or §3's
@@ -1099,6 +1118,7 @@ unvalidated result, and never loosen the check to get past it.
 
 Decide a finding's disposition. Call `settle`. Post reply text you composed
 yourself. Edit the PR body. Trigger `gh pr ready` or any other promotion.
+Run `gh pr ready --undo` or record an automatic-undo intervention.
 Adjudicate whether a finding is real. Spawn another agent. Retry the Codex
 cycle more than the one bounded time in §4. Guess a missing brief field
 instead of stopping.
