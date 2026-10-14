@@ -2690,7 +2690,7 @@ echo "==> bidi controls never reach local Markdown or JSON output raw"
 node -e '
   const fs=require("node:fs"), file=process.argv[1], r=JSON.parse(fs.readFileSync(file,"utf8"))
   r.interventions=[{kind:"other",at:r.started_at,
-    note:"before"+"\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"+"after"}]
+    note:"before"+"\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"+"after"}]
   fs.writeFileSync(file,JSON.stringify(r))
 ' "$d/records/run-6000-fresh-kickoff/run.json"
 for format in markdown json; do
@@ -2701,11 +2701,11 @@ for format in markdown json; do
         printf '%s' "$OUT" >"$d/bidi-$format.txt"
         [ "$RC" -eq 13 ] && node -e '
           const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-          if (/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text) ||
+          if (/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text) ||
               !text.includes("before") || !text.includes("after")) process.exit(1)
           if (process.argv[2]==="json" && JSON.parse(text).verified!==false) process.exit(1)
         ' "$d/bidi-$format.txt" "$format" &&
-            ok "$format neutralizes LRM/RLM, embeddings, overrides and isolates" || bad "$format bidi output: $RC $ERR"
+            ok "$format neutralizes ALM/LRM/RLM, embeddings, overrides and isolates" || bad "$format bidi output: $RC $ERR"
     else
         expect_local_platform_refusal "$format bidi note"
     fi
@@ -3029,9 +3029,15 @@ GH_FAIL_ISSUE=999999 GH_FAIL_ISSUE_STATUS=503 \
     ok "indeterminate hint guard read exits 11" || bad "hint guard failure: $RC $ERR"
 node "$REPORT" --help >"$trusted_dir/help.txt"
 grep -q 'records exit 14' "$trusted_dir/help.txt" &&
-    ok "local flag help documents refusal exit 14" || bad "local help omits exit 14"
+    grep -q 'Linux-only' "$trusted_dir/help.txt" &&
+    grep -q 'an unsupported platform' "$trusted_dir/help.txt" &&
+    grep -q 'local descriptor containment cannot be established on this platform' "$trusted_dir/help.txt" &&
+    ok "local flag help documents Linux-only reads and both exit 14 causes" || bad "local help omits refusal contract"
 
 grep -q '| 14 | Refused local record:' ai/skills/universal/retro/SKILL.md &&
+    grep -q 'are \*\*Linux-only\*\*' ai/skills/universal/retro/SKILL.md &&
+    grep -q 'or an unsupported platform' ai/skills/universal/retro/SKILL.md &&
+    grep -q 'local descriptor containment cannot be established on this platform' ai/skills/universal/retro/SKILL.md &&
     grep -q 'Never describe this local refusal as GitHub evidence tampering' ai/skills/universal/retro/SKILL.md &&
     ! grep -q 'stderr names `local run.json`' ai/skills/universal/retro/SKILL.md &&
     ok "typed local exit 14 replaces stderr-substring classification" || bad "local refusal docs missing"

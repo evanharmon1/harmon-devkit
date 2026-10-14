@@ -32,7 +32,8 @@
 //       report a clean retro on this path, and never fall back to memory.
 //   13  local-unverified — opt-in local record, not authenticated by a trusted GitHub evidence marker.
 //       Never a verified report or an authenticated trajectory.
-//   14  refused local record — invalid local input, never evidence tampering.
+//   14  refused local record — unsafe or invalid local input, or unsupported
+//       platform; never evidence tampering. Local reads are Linux-only.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
 // Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
@@ -81,9 +82,13 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --record-dir <path>          Parent directory containing <run_id>/run.json;
                                passed through unchanged to the harvester.
   --local-unverified           After run-not-found only, read --record-dir/--run
-                               as unverified local data (exit 13); refused local
-                               records exit 14. Requires both flags. Ignored when
-                               authenticated evidence exists.
+                               as unverified local data (exit 13). Linux-only:
+                               containment needs a single-step descriptor path.
+                               Unsafe or invalid local records exit 14, as does
+                               an unsupported platform, with the refusal reason:
+                               local descriptor containment cannot be established on this platform
+                               Requires both flags. Ignored when authenticated
+                               evidence exists.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -1535,7 +1540,7 @@ function localSafe(value) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;'))
-    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
 }
 
 function isLocalPathInside(parent, resolved) {
@@ -1676,7 +1681,7 @@ function renderLocalUnverified(args, runId, requestedPr) {
     schema: 'retro-run-report.v1', status: 'local-unverified', verified: false,
     run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
   }
-  return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
+  return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
     `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
     ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
   ].join('\n')
