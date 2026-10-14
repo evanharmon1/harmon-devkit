@@ -202,8 +202,8 @@ what it did. The lane's `Claude-Session` commit trailer named a different
 session ID from the one its launch printed; which one identifies the session
 was not established. Of the three earlier launches, the first and third had no
 GitHub credential that reached the repository, so the platform uploaded the
-checkout with no `origin`: the first account's GitHub connection did not cover
-the repository, and the third ran after the account's GitHub connector had been
-disconnected following `/web-setup`. The second was abandoned before it
+checkout with no `origin`: at the first, the account's GitHub connection did not
+cover the repository, and the third ran after that account's GitHub connector
+had been disconnected following `/web-setup`. The second was abandoned before it
 reported, when the CLI was found signed in to a different account from the one
 holding the credential.
