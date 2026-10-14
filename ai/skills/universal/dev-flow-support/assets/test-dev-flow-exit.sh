@@ -409,7 +409,10 @@ task devflow:exit -- --run ai/schemas/fixtures/exit/single-round-clean-converge/
     >"${scratch}/dfe-task-$$.out" 2>"${scratch}/dfe-task-$$.err" || true
 outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfe-task-$$.out" | node -e '
   const body = require("node:fs").readFileSync(0, "utf8");
-  console.log(JSON.parse(body).outcome);
+  // Task annotates the expected exit 20 after the verdict in GitHub Actions.
+  const json = process.env.GITHUB_ACTIONS === "true"
+    ? body.replace(/\n::error title=Task \x27devflow:exit\x27 failed::exit status 20\n?$/, "\n") : body;
+  console.log(JSON.parse(json).outcome);
 ')" || {
     cat "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err" >&2
     rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
