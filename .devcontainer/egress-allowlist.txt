@@ -1,0 +1,71 @@
+# Shared egress allowlist (harmon-init#286) — enforced default-deny in the
+# AGENT devcontainer by .devcontainer/scripts/egress-allowlist.sh at every
+# container start. Hosted platforms (Claude Code on the web, Codex cloud,
+# Sprites) document their own network level from this same list.
+#
+# Format: one entry per line; `#` starts a comment.
+#   <hostname>       resolved to its IPv4 addresses when the container starts
+#   <a.b.c.d>[/n]    a literal IPv4 address or CIDR
+#   @github-meta     GitHub's published git/web/api/packages ranges
+#                    (https://api.github.com/meta), fetched at start
+# No wildcards: enforcement is by address, so every name must be listed.
+#
+# Per-repo additions go in .devcontainer/egress-allowlist.local.txt (same
+# format, optional) — never edit this shared list for one repository's need.
+# A host that an unattended run was refused is printed by
+# `bash .devcontainer/scripts/egress-allowlist.sh blocked`; add it here (for
+# every repository) or to the local file (for one), with the reason.
+#
+# Seeded generously from the denials a Claude Code on the web session recorded
+# on harmon-init#1407 (2026-09-27), plus what the dev loop and the harnesses
+# need.
+
+# ── GitHub: clone/fetch/push, API, release assets, container registry ──
+@github-meta
+github.com
+api.github.com
+uploads.github.com
+codeload.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
+release-assets.githubusercontent.com
+github-releases.githubusercontent.com
+pkg-containers.githubusercontent.com
+ghcr.io
+cli.github.com
+
+# ── Anthropic: Claude Code ─────────────────────────────────────────────
+api.anthropic.com
+claude.ai
+platform.claude.com
+console.anthropic.com
+downloads.claude.ai
+
+# ── OpenAI: Codex CLI and its ChatGPT sign-in (#1406) ──────────────────
+api.openai.com
+auth.openai.com
+chatgpt.com
+ab.chatgpt.com
+
+# ── Package registries the gates install from ─────────────────────────
+registry.npmjs.org
+nodejs.org
+pypi.org
+files.pythonhosted.org
+astral.sh
+proxy.golang.org
+sum.golang.org
+releases.hashicorp.com
+registry.terraform.io
+galaxy.ansible.com
+deb.nodesource.com
+archive.ubuntu.com
+security.ubuntu.com
+ports.ubuntu.com
+ppa.launchpadcontent.net
+keybase.io
+dl.google.com
+
+# ── Security gate (`task security`) ───────────────────────────────────
+semgrep.dev
+api.osv.dev

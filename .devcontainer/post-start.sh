@@ -5,6 +5,20 @@ set -euo pipefail
 # disconnects the pipe before the script finishes.
 exec &>/tmp/devcontainer-post-start.log
 
+# Bot gh-identity tripwire (harmon-init#1236): warn when gh is unauthenticated
+# or holds a non-bot credential — on every START, not just create, because an
+# interactive `gh auth login` can happen at any point in a container's life.
+# This copy lands in the log for the lifecycle record; the VISIBLE surface is
+# the status board's creds section (scripts/status.sh), which the session-start
+# hook renders — same two-surface split as check-image-staleness.sh.
+# BEFORE the common startup work, so a failure there (this script is set -e)
+# cannot skip the every-start check it promises; warn-only (`|| true`), so a
+# diagnostic never aborts the lifecycle it diagnoses. It depends on nothing
+# the common script sets up — gh ships in the image, and the helper is a bash
+# script driving a Go binary, so the NODE_OPTIONS unset below does not apply
+# to it.
+bash .devcontainer/scripts/check-bot-gh-identity.sh || true
+
 # Prevent VS Code's JS debug extension from breaking Node.js processes,
 # duplicating post-start-common.sh's own line for the same reason (see that
 # script). verify runs BEFORE post-start-common.sh below — ahead of its own

@@ -152,6 +152,19 @@ workspace its variables on the tabs/panes you create inside it) — and they
 are the right place for gate variables an orchestrator sets under explicit
 human authorization (never in the worker's prompt). When to reach for a worktree at all is [worktrees.md](worktrees.md).
 
+A worker in its own worktree can keep up with the default branch without a
+prompt: the `git-merge-guard` hook stays silent for one literal merge or pull
+at a time, run in that worktree — `git pull --no-rebase origin main --no-edit`,
+or `git fetch origin` and then `git merge origin/main --no-edit` as two Bash
+calls. Joined with `&&` they ask, as do `git merge --abort` and
+`git pull --rebase`. Both silent forms need a resolvable remote HEAD (usually
+`git remote set-head origin --auto`). The hook parses each command, so a
+heredoc commit message or PR body that merely mentions `merge` or `pull` is
+data and stays silent; text a shell runs (`bash -c`, `$(...)`, a heredoc fed
+to a shell) is checked like any other command. All of this applies in the dev
+profile: with `FOREMAN_DEVCONTAINER` set to `bot` or `agent` the hook makes no
+merge checks at all, and the "Protect Main" ruleset is the boundary there.
+
 ## Fan-out: orchestrating many workers from one session
 
 A Claude Code (or any) session running inside a Herdr pane can act as an
@@ -183,6 +196,67 @@ on it. "Its own permissions" means each harness's own tool-approval settings,
 not isolation. Fan out only mutually trusted workers over trusted inputs;
 work that chews on untrusted content (third-party repos, inbound issue text)
 belongs in a separate user, container, or VM, not a sibling pane.
+
+**Launching a worker needs a permission grant.** `agent start` is an ordinary
+Bash call, so a Claude Code orchestrator meets its own tool-approval layer
+before Herdr ever runs — and in auto mode the classifier reads a launch line
+carrying `-s danger-full-access` or `--dangerously-skip-permissions` as
+creating an unsafe agent and denies it. The shipped project-scope settings
+therefore allow it outright:
+
+```json
+"Bash(herdr agent start:*)"
+```
+
+Claude Code judges a compound command segment by segment, and this grant covers
+only the launch segment: anything else on the line is decided on its own (for
+example by another allow rule, by Claude Code's read-only auto-approval, or by
+an ask or deny rule), and whenever that decision is left to the auto-mode
+classifier, the classifier sees the whole line and denies a skip-permissions
+launch. In practice, launch bare
+and literal: `herdr agent start …` as the whole command, with the lane name,
+pane ID, model and paths written out. A variable set in an earlier Bash call
+does not exist in a later one (each call is its own shell), so there is nothing
+to reference, and the pane's working directory was set when the tab or pane was
+created (`tab create --cwd` / `pane split --cwd`), so there is nothing to `cd`
+into:
+
+```bash
+herdr agent start lane-1 --kind agy --pane w1:p2 -- --dangerously-skip-permissions --model gemini-3.8-flash-high
+```
+
+The prefix form is deliberate: the flags after `--` vary per harness and per
+policy, and a rule that has to be re-edited per flag defeats its purpose. It
+reaches named sessions too: `--session` is accepted **after** the subcommand as
+well as before it, so `herdr agent start … --session NAME` matches the grant
+and targets that session's server. Only the leading form,
+`herdr --session NAME agent start …`, falls outside the prefix and still
+prompts — an artifact of prefix matching, not a control. Do not rely on it as
+one. It
+is ungated because herdr has no copier answer — the devcontainer installs it
+unconditionally — and an allow rule for a command that is not installed is
+inert.
+
+Be precise about what the grant concedes, because it is not nothing. The
+launch line decides the *worker's* gate, and the lines this rule exists to
+permit start a child with no approval layer at all — so an orchestrator that
+can launch a worker can reach anything its own `ask` rules would have stopped
+(this repo asks on `gh pr merge` in the dev devcontainer profile only, through
+its managed-settings drop-in; on any merging command that the
+`git-merge-guard` hook cannot verify lands on a feature branch; on
+`git push origin main`; and on force-pushes, prefix rules: a backstop, not a boundary) simply by asking a child to do it. That is accepted here for two
+reasons, neither of which is "it is safe": the orchestrator already holds
+`Bash(task:*)`, an unconditional grant over a checked-out Taskfile, so no new
+capability class is created; and the fan-out brief is trusted by construction
+(§ Panes are not a security boundary). A repo that tightens its orchestrator's
+`ask`/`deny` list should revisit this rule in the same change, and a repo that
+fans out over untrusted input should not be using this surface at all.
+
+The other concession is that lane workers run **unsandboxed**, which for Codex
+is not a preference: `workspace-write` re-protects a *linked worktree's*
+git-dir (`.git/worktrees/<lane>`) even with the git common dir in
+`sandbox_workspace_write.writable_roots`, so a sandboxed Codex lane can
+neither commit nor push without a per-command escalation on every git write.
 
 **The loop** (each step is a `herdr` command the orchestrator runs):
 

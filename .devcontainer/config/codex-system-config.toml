@@ -1,0 +1,38 @@
+# System-level Codex DEFAULTS for both devcontainer profiles, installed to
+# /etc/codex/config.toml.
+#
+# Why these keys live here and not in codex-managed-config.toml
+# (harmon-init#1186): /etc/codex/managed_config.toml is Codex's *legacy MDM*
+# layer, and every key in it becomes a hard REQUIREMENT. It silently outranks
+# `-c` flags, ~/.codex/config.toml and a project's .codex/config.toml alike --
+# and a trusted project .codex/config.toml. Pinning model_reasoning_effort
+# there meant a
+# dispatched worker asked for "xhigh" and actually ran at "medium", with no
+# error and a run header nobody read back; `-c model=` was swallowed the same
+# way, leaving only the explicit `-m` flag working.
+#
+# The split is therefore by intent, not convenience:
+#
+#   this file (/etc/codex/config.toml) -- defaults anyone may override
+#   codex-managed-config.toml          -- the boundary nobody may override
+#
+# Anything a human, another agent, or a herdr orchestration session might
+# legitimately choose per run belongs here. Only the sandbox/approval boundary
+# belongs in the managed layer. Override precedence above this file, weakest
+# first: ~/.codex/config.toml, a trusted project .codex/config.toml, then `-c`
+# and `-m` on the command line.
+model = "gpt-6.1-sol"
+model_reasoning_effort = "medium"
+project_doc_max_bytes = 65536
+
+[tui]
+status_line = [
+  "project-name",
+  "git-branch",
+  "model-with-reasoning",
+  "context-remaining",
+  "five-hour-limit",
+  "weekly-limit",
+  "used-tokens",
+  "run-state",
+]

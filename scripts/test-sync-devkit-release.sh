@@ -9,6 +9,18 @@
 # error-handling paths.
 set -euo pipefail
 
+# The helper reads its release inputs from the environment, and harmon-init's
+# devkit-sync workflow runs `task verify` with them exported, so an inherited
+# SYNC_DEVKIT_TAG or SYNC_DEVKIT_ALLOW_DOWNGRADE would change what the cases
+# resolve (#1395). Clear the family and the helper's other inputs
+# (GH_APP_SLUG, AGENT_SKILLS_DIR); the cases that need one set it per call.
+for _ambient in $(compgen -e); do
+    case "$_ambient" in
+    SYNC_DEVKIT_* | GH_APP_SLUG | AGENT_SKILLS_DIR) unset "$_ambient" ;;
+    esac
+done
+unset _ambient
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The helper is co-located. In the template source both files carry conditional
 # names ([% if … %]…[% endif %]); in a rendered repo they are plain
@@ -84,16 +96,15 @@ YAML
 
 write_task_stub() {
     _ts_mode="$1" # pass | fail
+    # The token checks below are escaped on purpose: this heredoc is unquoted,
+    # so an unescaped expansion would be evaluated when the stub is WRITTEN (in
+    # this test's own environment), not when the stub RUNS — a preset token
+    # would then always report a leak and an absent one could never detect it.
     cat >"$BIN_DIR/task" <<SCRIPT
 #!/usr/bin/env bash
 echo "task \$*" >>"$TASK_LOG"
-# \$GH_TOKEN must stay escaped: this heredoc is unquoted, so an unescaped
-# reference would bake the GENERATING shell's token in as a constant instead of
-# reading the stub's own environment. That inverted the test in both
-# directions — vacuously green wherever GH_TOKEN was unset (the leak branch
-# could never fire, so scrubbing went unverified), and unconditionally red
-# wherever a developer had one exported, whatever run_untrusted did.
 [ -n "\${GH_TOKEN:-}" ] && echo "LEAKED GH_TOKEN" >>"$TASK_LOG"
+[ -n "\${GITHUB_TOKEN:-}" ] && echo "LEAKED GITHUB_TOKEN" >>"$TASK_LOG"
 case "\${1:-}" in
 sync:skills)
     if [ "$_ts_mode" = "pass" ]; then
@@ -259,8 +270,8 @@ assert_commit_title() {
 
 # ── run_helper ────────────────────────────────────────────────────────
 # Copies the helper into the fixture's scripts/ directory and runs the copy
-# from the fixture root. Scrubs GH_TOKEN so a stale env value cannot leak
-# into the helper — the test stubs gh, so the token must never reach git.
+# from the fixture root. Scrubs GH_TOKEN and GITHUB_TOKEN so a stale env value
+# cannot leak into the helper — the test stubs gh, so a token must never reach git.
 # The helper calls cd "$(dirname "$0")/.." to reach the repo root from its
 # scripts/ location; we replicate that layout so it resolves to the fixture.
 run_helper() {
@@ -276,8 +287,9 @@ run_helper_with_tag() {
     (cd "$FIXTURE" && PATH="$BIN_DIR:$PATH" env -u GH_TOKEN -u GITHUB_TOKEN SYNC_DEVKIT_TAG="$1" bash scripts/_sync-devkit-release.sh run)
 }
 
-# Like run_helper_with_tag but deliberately passes GH_TOKEN through so the
-# test can verify that run_untrusted scrubs it before task subprocesses see it.
+# Like run_helper_with_tag but deliberately passes GH_TOKEN and GITHUB_TOKEN
+# through so the test can verify that run_untrusted scrubs both before task
+# subprocesses see them.
 run_helper_with_token() {
     mkdir -p "$FIXTURE/scripts"
     cp "$HELPER" "$FIXTURE/scripts/_sync-devkit-release.sh"
@@ -602,18 +614,20 @@ SCRIPT
 }
 
 test_token_never_reaches_task() {
-    note "GH_TOKEN is scrubbed from task subprocesses"
+    note "GH_TOKEN and GITHUB_TOKEN are scrubbed from task subprocesses"
     FIXTURE="$(build_fixture v0.1.0)"
     clear_logs
     write_gh_stub
     write_task_stub pass
-    export GH_TOKEN=fake-token
-    # Use run_helper_with_token (not run_helper_with_tag) so GH_TOKEN reaches
-    # the helper: run_untrusted must scrub it before task subprocesses see it.
+    export GH_TOKEN=fake-token GITHUB_TOKEN=fake-token
+    # Use run_helper_with_token (not run_helper_with_tag) so both tokens reach
+    # the helper: run_untrusted must scrub them before task subprocesses see them.
     run_helper_with_token v0.9.0 || return 1
-    # The task stub logs "LEAKED GH_TOKEN" if it sees the token.
-    grep -qxF "LEAKED GH_TOKEN" "$TASK_LOG" && {
-        echo "GH_TOKEN leaked into a task subprocess" >&2
+    # Positive control: a task really ran, so the leak check below is not vacuous.
+    assert_task_logged "task sync:skills" || return 1
+    # The task stub logs "LEAKED GH_TOKEN" / "LEAKED GITHUB_TOKEN" if it sees one.
+    grep -qE '^LEAKED (GH|GITHUB)_TOKEN$' "$TASK_LOG" && {
+        echo "$(grep -E '^LEAKED (GH|GITHUB)_TOKEN$' "$TASK_LOG" | head -n 1) into a task subprocess" >&2
         return 1
     } || true
 }

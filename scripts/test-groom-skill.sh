@@ -2176,7 +2176,13 @@ grep -qE "^issue close" "$GH_STUB_LOG" &&
     fail "a pass-1-refused label op must prevent the earlier valid close from writing too"
 grep -q "^WRITE " "$label_never_log" && fail "no WRITE lines should be logged when pass 1 refuses"
 
-echo "==> apply-plan: human removal inherits triage's add-only refusal before any write"
+echo "==> apply-plan: human removal inherits triage's human-majority refusal before any write"
+# The template now provisions guarded human removal. Make this fixture
+# explicitly human work, rather than relying on human being outside the registry.
+cp "$stub_dir/issue-30.json" "$tmp/human-remove-issue-before.json"
+jq '.body = "## Acceptance criteria\n\n- [ ] [HUMAN] Complete the manual work"
+    | .labels = [{name:"human"}]' "$tmp/human-remove-issue-before.json" \
+    >"$stub_dir/issue-30.json"
 human_remove_plan="$tmp/label-human-remove-plan.jsonl"
 cat >"$human_remove_plan" <<'JSONL'
 {"op":"close","issue":30,"reason":"completed","bot_owned":false}
@@ -2191,6 +2197,7 @@ human_remove_log="$tmp/label-human-remove.log"
 grep -qE '^issue (close|edit)' "$GH_STUB_LOG" &&
     fail "human removal refusal must prevent every write in the plan"
 grep -q '^WRITE ' "$human_remove_log" && fail "refused removal must not log writes"
+cp "$tmp/human-remove-issue-before.json" "$stub_dir/issue-30.json"
 
 echo "==> apply-plan: a label row's dry-run plan shows triage-apply.sh's derived writes (harmon-devkit#1250)"
 cp "$stub_dir/labels.json" "$tmp/labels-before-axes.json"

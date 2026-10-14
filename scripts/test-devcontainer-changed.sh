@@ -97,6 +97,15 @@ git commit -qm "nested"
 [ "$("$helper" "$prev" HEAD)" = true ] ||
     fail "a change under .devcontainer/dev/ was not detected"
 
+# ── the agent posture's directory counts too ────────────────────────
+prev="$(git rev-parse HEAD)"
+mkdir -p .devcontainer/agent
+printf '%s\n' '{}' >.devcontainer/agent/devcontainer.json
+git add -A
+git commit -qm "agent"
+[ "$("$helper" "$prev" HEAD)" = true ] ||
+    fail "a change under .devcontainer/agent/ was not detected"
+
 # ── editing the workflow counts: it decides how the container is built ──
 prev="$(git rev-parse HEAD)"
 printf '%s\n' '# edited' >>.github/workflows/devcontainer-build.yml

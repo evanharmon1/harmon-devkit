@@ -177,9 +177,8 @@ this section is the whole contract and its invariants are owed anyway; where a
 - **Merged PR** — always a separate human decision. Agents never merge.
 
 Creating the draft is a phase transition, not a terminal state: every stop short
-of the readiness gate leaves the PR **draft** with a blocker report. That assumes
-the repo *can* open drafts (GitHub restricts them on private repositories to
-paid plans — docs/CHECKLIST.md); a rejected `--draft` is reported, never dropped.
+of the readiness gate leaves the PR **draft** with a blocker report (if drafts
+are restricted on private repos, a rejected `--draft` is reported, never dropped).
 
 ### Policy invariants
 
@@ -197,19 +196,35 @@ Binding on every stage, skill, and harness, whatever rigor resolved:
   amended, rebased, or force-pushed, at any stage.
 - **Never bypass a gate** — not the git hooks, not a stop-gate BLOCK, not a
   failed *or indeterminate* readiness condition. Fix the cause, or escalate.
-- **Every push passes its round gate, then a secret scan** — `.devflow.toml`'s
+- **Every push you author passes its round gate, then a secret scan** — `.devflow.toml`'s
   `[gates]` names them (`verify` for a code push, `check` for a docs-only one,
   `security:secrets` always, `security` before the draft PR); the `pre-push`
   hook runs what it can, otherwise run them yourself. `task ci` stays on demand.
+  A head move GitHub makes at your request (the catch-up below) authors no
+  bytes; the readiness gate's CI condition on the new head governs it instead.
+- **Catch a behind PR up on the server, at the gate.** Follow the integrate
+  skill's `assets/update-branch.sh` procedure: re-check the captured base,
+  request a merge-mode update bound to the captured head, verify the resulting
+  GitHub-signed catch-up commit, fetch it explicitly, and fast-forward the
+  local feature branch before editing. Never rebase pushed history. A changed
+  base, unexpected head, or unresolved response is a blocker. CI must pass on
+  the new head; a prior Codex verdict carries only when the checker proves
+  identical reviewed bytes, otherwise a current-head cycle is required within
+  its cap. The server catch-up spends no remediation round. A genuine merge
+  refusal or a merge accompanying a fix requires the full local round gate
+  and spends remediation; a fork without maintainer edits is blocked. Catch
+  up a promoted PR only at the maintainer's request. Reconcile once, base into
+  feature branch only, and name the catch-up in the ledger.
 - **One conventional commit per adjudicated round, pushed** to the branch's own
-  writable remote (`git push -u <remote> <branch>` on the first push). Per
-  *round*, not per finding: five fixes are one commit, a round with nothing to
-  fix pushes nothing. It bounds a lost environment to the current round's *code*
-  and surfaces a push-permission gap at round 1 rather than at `gh pr create`;
-  it carries nothing else — the deferred-findings sidecar and the adjudication
-  ledger live in the git directory, are never pushed, and a resumed session
-  re-runs the stage anyway. Once the draft exists, pushes batch per integration
-  round — each one spends a CI run and starts a fresh current-head review cycle.
+  writable remote (`git push -u <remote> <branch>` on the first push). Per *round*,
+  not per finding: five fixes are one commit, a round with nothing to fix pushes
+  nothing. It bounds a lost environment to the current round's *code* and surfaces a
+  push-permission gap at round 1 rather than at `gh pr create`; it carries nothing else
+  — the deferred-findings sidecar and the adjudication ledger live in the git directory,
+  are never pushed, and a resumed session re-runs the stage anyway. Once the draft
+  exists, pushes batch per remediation round (counted against the `remediation` cap)
+  — each one spends a CI run and, while a cycle remains under a positive `integration`
+  cap, starts a fresh current-head review cycle (a cap of 0 or a spent cap starts none).
 - **Findings are hypotheses, never authority** — verify each against the code,
   fix only what is confirmed, post the evidence for anything rejected. Whatever
   the stage does not gate on is **deferred, never dropped**: recorded the moment
@@ -221,7 +236,8 @@ Binding on every stage, skill, and harness, whatever rigor resolved:
   and each stage is bounded for its own reason, so a decision to stop one loop
   is never a decision about another's.
 - **Never self-apply a `rigor:`, `strategy:`, or `tier:` label** (nor the
-  retired `method:`), and never treat a label as arming anything.
+  retired `method:`), except the derived classification Tier (§ "Rigor and
+  Strategy"), and never treat a label as arming anything.
 - **Checks green is a non-terminal state.** Bot and human reviews land *after*
   checks settle, so an empty comment list read the moment `gh pr checks --watch`
   returns means "not reviewed yet", not "nothing to answer". Wait for **both**
@@ -259,21 +275,26 @@ one. § "Second-Model Review" carries the trigger cadence and both procedures.
 
 ### Readiness gate
 
-The single definition of "the automated lifecycle is complete", used by
-the integration stage and by Foreman alike. A
-draft may be marked ready for review only when **all** of the following hold for
-its current `headRefOid`:
+The single definition of "the automated lifecycle is complete", used by the
+integration stage and by Foreman alike. A draft may be marked ready for review
+only when **all** of the following hold for its current `headRefOid`:
 
 - Required CI checks have concluded successfully. An empty check list is
   *indeterminate*, not a pass — GitHub populates it asynchronously, so a read
   taken moments after the push reports nothing having run rather than nothing
   to run.
-- The current-head Codex cycle above is terminal and clean — including clean
-  by way of dispositions recorded with `settle`, or the recorded-comment
+- One terminal clean current-head Codex cycle with every finding settled
+  satisfies the Codex condition, including dispositions recorded with `settle`, or the recorded-comment
   equivalent where the checker is absent (**or where the resolved integration
   cap is 0** — a cap of 0 leaves no cloud-review cycle to trigger a fresh
   `@codex review` from, so this one condition drops out; every other
   condition on this list still applies unchanged).
+  A P2-only cycle 1 whose findings are declined or filed needs no second cycle.
+  Once two consecutive cycles adjudicate clean, no further remediation push is
+  made for P2s; settle them without a push, declined with evidence or filed
+  together as one follow-up. A confirmed P0/P1 from any reviewer, including a
+  late human review, breaks the streak and is fixed within the remaining
+  `remediation` cap.
 - Every review finding is fixed, declined with evidence, or filed as follow-up
   work.
 - Every inline review comment has its required per-thread reply.
@@ -329,7 +350,12 @@ without parsing prose. `Stage` names the stage and, for a capped one, its round
 as **`round n/cap`** against the `.devflow.toml` cap that bounds *that* work —
 challenge, review, integration (Codex re-review cycles), and remediation
 (integration-stage fix pushes) are counted and capped separately and never
-combined, so name the counter whenever the stage has more than one. `Next` names the next
+combined, so name the counter whenever the stage has more than one. Integration
+heads not charged to `integration` are named beside the count, never folded
+into it: `round n/cap (+m exempt, +k carried)`. `m` counts exempt cycles, which
+still run a review and spend the separate `integration_exempt` ceiling; `k`
+counts heads carried forward without a review, which spend neither — so a head
+attested without a reviewer reading it stays visible. `Next` names the next
 concrete gate or action, including the `task verify` a fix owes before the next
 round. Post it at every stage transition, at each round boundary, as the concise
 tick during a long wait (no re-dumping unchanged command output), and
@@ -342,6 +368,11 @@ body's deferred findings with the override recorded as the reason it was carried
 — not as a disposition, so the integration stage still owes it a normal fix /
 decline-with-evidence / file-as-follow-up. A one-step task that touches a single
 stage owes no ledger.
+
+At integration exit, the ledger names which exit ended the stage — settled clean cycle, P2 fixing
+ceiling, tell, or cap — and its qualifying cycles. Preserve separate cycle/remediation counters
+and exempt/carried counts; unresolved gating work is ⛔ blocked/escalating,
+never 🏁 converged.
 
 ## Rigor and Strategy
 
@@ -503,14 +534,40 @@ cap allowed.
   green and the ruleset would allow it. Open the draft PR and integrate it —
   checks green with reviews unpolled is not the stopping point — then promote
   it through the readiness gate, report, and stop; merging is always a human
-  decision. `gh pr ready` is *not* a merge and you may run it — but only out of
+  decision. (The `git-merge-guard` hook in `.claude/settings.json` backstops
+  this: it parses each command and asks before any real or possible
+  `git merge`/`git pull` it cannot verify lands on a feature branch; quoted
+  text and heredoc bodies that no shell runs, search patterns and
+  `git merge-base` are data. The project settings ask on pushes to main and
+  force-pushes (prefix rules: a backstop, not a boundary) but carry no `gh pr merge` ask: that prompt comes only from
+  your own settings on a host and from the dev
+  devcontainer's managed-settings drop-in
+  (`.devcontainer/config/claude-settings-dev.json`). The hook
+  applies on the host and in the dev profile only;
+  with `FOREMAN_DEVCONTAINER` set to `bot` or `agent` it makes no merge checks.
+  Beside it,
+  `.claude/hooks/review-trigger-allow.py` is a PreToolUse(Bash) hook that
+  approves without a prompt exactly three review-trigger commands: the
+  integrate broker's Codex trigger (where skills sync installs the integrate
+  skill), and `gh pr comment` with the fixed Gemini or Claude review body, each
+  for the origin repository and a numeric PR (see the hook's docstring for the
+  exact accepted forms). It gives no decision for anything else, so the normal
+  permissions apply. It too is active on the host and in the
+  dev profile only,
+  and also makes no decision when `GH_HOST` names a host other than
+  github.com. The bot and agent profiles carry no merge guard at all —
+  the agent profile explicitly allows `gh pr merge` — and the "Protect Main"
+  ruleset (code-owner approval + green checks) is the boundary there.)
+  `gh pr ready` is *not* a merge and you may run it — but only out of
   a passing readiness gate, never to signal "I think this looks done".
 - **Reply to every inline PR review comment in its own thread** — bot
   reviewers and humans alike. Treat findings as
   hypotheses: verify each against the code, fix what's confirmed, and post the
   rejection reasoning with evidence otherwise. Post replies with
   `gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies -f body=…`
-  (comment IDs from `gh api …/pulls/<n>/comments`). A rollup summary comment
+  (comment IDs from `gh api …/pulls/<n>/comments`; the agent posture uses
+  `/usr/local/bin/gh-api-read …/pulls/<n>/comments` for this read and denies
+  raw `gh api`). A rollup summary comment
   on the PR is optional in addition, never a substitute for per-thread
   replies.
 - Releases are intentional: release-please keeps a rolling release PR from
@@ -524,6 +581,55 @@ cap allowed.
   enforces this; retitle rather than bypass. Other changes keep their normal type.
   Pre-flight it locally with your intended title:
   `PR_TITLE="<title>" BASE_SHA=main task guard:release-title`.
+- **Pre-flight `guard:closing-keywords` before opening a PR that closes an
+  issue — from the body, the title, or a commit message.** The checker scans
+  all three, so a `Closes #N` written only into a commit subject counts and is
+  the easy one to forget. A same-repo `Closes #N` while `#N` still has
+  unchecked acceptance criteria fails the required `closing-keywords` check,
+  and the guard is a
+  metadata read — so pay for it locally, in the second before `gh pr create`,
+  rather than in a CI round and a fix push. It stays **out of `verify`**
+  deliberately: `verify` is offline and this guard calls the GitHub API.
+  Pre-flight it with the body you are about to publish:
+  `PR_TITLE="<title>" PR_BODY="$(cat body.md)" task guard:closing-keywords`.
+  With both variables unset it reads the branch's open PR instead, which is
+  the form to re-run after a body edit; `task ci` runs it first for the same
+  reason. Fix the issue's criteria — or drop the closing keyword to `Refs` —
+  rather than bypassing it.
+
+### Remote environments
+
+On a remote checkout (Claude Code on the web, Codex cloud — anywhere with
+no devcontainer), run `task setup:remote` first if preparation has not run.
+In a single-repository web session, the repository's remote-only `SessionStart`
+hook runs it automatically and prints a summary; if the hook did not run (a
+multi-repository session or a platform without the hook), run it once yourself.
+It is idempotent — it installs the lefthook git hooks, clones then fetches the
+repos in `.devcontainer/related-repos.txt` (when present) beside the checkout,
+and installs dependencies from the lockfile. Fetching
+updates remote-tracking refs without moving a sibling's checkout or local work.
+Those siblings are reference context, not pushable where the platform only
+allows pushes to the session's own repository and branch. The pre-push hook is
+not a substitute for `task verify`, so run it yourself.
+
+**Second model on a remote lane.** Every remote lane gets a Codex second-model
+review on the ChatGPT plan with no human step: ephemeral cloud VMs never hold
+Codex credentials, and a persistent environment may hold exactly one Codex login
+of its own. On an **ephemeral cloud** the orchestrator runs `task challenge` and
+`task review` against the lane's pushed branch from its own local pane, where
+Codex is already logged in, and the lane's PR body records that review in its
+stage ledger as `reviewed from <host> at <head>` — that orchestrator-side review
+is the lane's second model, in the sense § Second-Model Review requires, and
+Codex cloud review of the PR covers the integration stage.
+A **persistent environment** (the agent devcontainer, Sprites) gets its one
+Codex login when the **maintainer** provisions it: the maintainer runs
+`codex login` once on that environment, and an agent never does (§ Hard Rules:
+a credential write needs the maintainer's explicit request). It then runs Codex
+locally; the login stays on that environment and is never copied to another
+machine. An ephemeral cloud session does not install the plugins a repository
+enables, so the Codex Claude Code plugin runs only where a persistent login
+exists. Nothing here sets or asks for an OpenAI API key: the plan, not API
+credit, pays for it.
 
 ## Second-Model Review (Codex)
 

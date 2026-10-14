@@ -6,10 +6,11 @@
 # exits), [role.*] (per-role tier baselines and family/harness preferences),
 # [stage.*] (stage → registry actors). Model-tier CLASSIFICATION lives in
 # agent-registry.json (each model entry carries its stratum); this file holds
-# only tier_order and the per-role/per-rigor tier CHOICES.
+# tier_order, the per-role/per-rigor tier CHOICES, and [tier.matrix] — the
+# risk × complexity matrix that derives an issue's Tier (ADR 2026-09-30 D4).
 # Anchor spec: specs/dev-flow-v2.md (harmon-devkit).
 #
-# Schema v2 is an incompatible change under ADR 0008: v1 consumers reject
+# Schema v2 is an incompatible change under ADR 2026-08-25: v1 consumers reject
 # this file with a migration hint; v2 consumers refuse the v1/legacy shapes.
 schema_version = 2
 
@@ -25,9 +26,14 @@ rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 # families[].models[] carries `tier: "<rung>"` (frontier is opus-class, apex
 # mythos-class), and a family with two models at one rung marks one
 # `default: true` — so resolving a model is a registry lookup: the resolved
-# family's model at the resolved rung. Two tier:* labels on one issue resolve
-# to whichever sorts later here (a conflict only ever buys more capability;
-# a concrete tier beats `adaptive`). Escalation climbs one rung at a time in
+# family's model at the resolved rung. Two tier:<role>:* labels for the same
+# role resolve to whichever sorts later here (a conflict only ever buys more
+# capability). An unqualified tier:<value> label is not a role override: it is
+# the issue's stored Tier — a cache of the derived Tier, or the pinned Tier when
+# tier:pinned is also present.
+# `adaptive` is retired (ADR 2026-09-30 D8): it is not a rung, a leftover
+# tier:adaptive label resolves as if absent with a warning, and `adaptive` as
+# a configured or operator tier is rejected. Escalation climbs one rung at a time in
 # this order, fires on failure/refusal/operator policy — never cost alone —
 # only where the resolved rigor's tier_escalation allows it, and never
 # switches family or vendor (family fallback is [role.*].families' separate,
@@ -38,8 +44,15 @@ tier_order = ["local", "economy", "standard", "frontier", "apex"]
 #   explicit operator instruction (attributable channel; never issue/PR text)
 #     > rigor:*/strategy:* labels > defaults above > built-in fallback
 # tier:<role>:* labels refine the resolved profile ([role.*] baseline, then
-# the rigor level's *_tier override). Off-default/off-profile resolutions are
-# disclosed in the PR body. Merge-base rule: when the change under review
+# the rigor level's *_tier override). The implementer tier has two more
+# rungs (ADR 2026-09-30 D5), each setting the implementer only:
+#   operator tier instruction > pinned Tier (tier:pinned, provenance of both
+#   the marker and the value verified) > tier:<role>:* label / the profile of
+#   an operator- or rigor:*-chosen rigor > derived Tier ([tier.matrix]) >
+#   default_rigor's profile
+# Off-default/off-profile resolutions — including a role tier a pin or a
+# derived Tier leaves below the implementer — are disclosed in the PR body,
+# never corrected. Merge-base rule: when the change under review
 # edits THIS FILE or agent-registry.json, every value read during policy
 # resolution comes from the merge-base copy. Nothing here arms anything;
 # .foreman.toml remains the arming surface, and Foreman derives
@@ -47,7 +60,7 @@ tier_order = ["local", "economy", "standard", "frontier", "apex"]
 #
 # Announcement line (worked example — fill in what actually resolved):
 #   rigor: standard (default) → rounds standard: challenge ≤3, review ≤3,
-#   integration ≤4, remediation ≤4, min_rounds 1, wall_clock 120m ·
+#   integration ≤4, remediation ≤4, min_rounds 1, wall_clock 720m ·
 #   breadth standard: runs ≤6, parallel ≤3 · tiers orch/impl/chal/rev/integ
 #   = frontier/standard/frontier/standard/economy · strategy: plan (default)
 
@@ -168,7 +181,7 @@ review         = 1
 integration    = 1
 remediation    = 2
 min_rounds     = 1
-wall_clock_min = 30
+wall_clock_min = 180
 
 [rounds.light]
 challenge      = 2
@@ -176,7 +189,7 @@ review         = 2
 integration    = 3
 remediation    = 3
 min_rounds     = 1
-wall_clock_min = 60
+wall_clock_min = 360
 
 [rounds.standard]
 challenge      = 3
@@ -184,7 +197,7 @@ review         = 3
 integration    = 4
 remediation    = 4
 min_rounds     = 1
-wall_clock_min = 120
+wall_clock_min = 720
 
 [rounds.thorough]
 challenge      = 4
@@ -192,7 +205,7 @@ review         = 4
 integration    = 5
 remediation    = 5
 min_rounds     = 1
-wall_clock_min = 240
+wall_clock_min = 1440
 
 [rounds.deep]
 challenge      = 5
@@ -200,7 +213,7 @@ review         = 5
 integration    = 6
 remediation    = 6
 min_rounds     = 1
-wall_clock_min = 480
+wall_clock_min = 2880
 
 [rounds.forensic]
 challenge      = 6
@@ -208,7 +221,7 @@ review         = 6
 integration    = 8
 remediation    = 8
 min_rounds     = 2   # forensic: a single empty round never ends a stage
-wall_clock_min = 720
+wall_clock_min = 4320
 
 # ── Breadth — horizontal scale: how many agents, how wide ───────────────────
 # max_agent_runs: total dispatches across the run (orchestration +
@@ -339,7 +352,8 @@ harnesses = ["claude-code"]   # (preference) — live every run:
 # ── Stages — stage → registry actors ────────────────────────────────────────
 # Monomorphic keys; the KEY carries the semantics, the value is always a
 # plain array of agent-registry.json slugs (never commands — those live one
-# hop away, behind the registry entry's Taskfile target):
+# hop away, behind the registry entry's Taskfile target). The one scalar is
+# [stage.integration].review_trigger, documented beside it below:
 #   finders           (all-of) every listed finder returns a completed pass at
 #                     the same reviewed_head or the round is incomplete
 #                     (finder_unavailable after one retry — never a round
@@ -376,6 +390,26 @@ finders = ["codex-verification"]
 [stage.integration]
 finders = ["codex-cloud"]
 # finder_fallbacks = []
+# review_trigger: WHEN the integration stage requests its PR-side reviews
+# (every finder above) relative to CI on the head. Absent = "after-ci".
+#   "after-ci"        wait for CI to conclude green, then request — on the
+#                     PR's first head and after every remediation push
+#   "with-push"       request with every push; CI runs alongside
+#   "after-ci-first"  wait for CI on the PR's first head, then request; after
+#                     a remediation push, request with the push
+# Trade-off: after-ci never spends a review on a head CI then fails, but every
+# cycle pays CI time plus the reviewer window back to back; the other two
+# trade an occasional wasted cycle for wall-clock time. Timing only: the
+# readiness gate is unchanged (checks green AND a terminal clean current-head
+# review), and carry and the base-merge exemption apply exactly as above.
+# Cycles requested before CI concludes still charge integration when CI fails;
+# the native checker governs this source repo. CI-only re-runs do not re-review.
+# It decides only WHEN a review is requested: it never suppresses a cycle the
+# resolved [rounds.*] policy requires and never adds a request beyond it — the
+# one legitimate second cycle on an unchanged head is the one forensic's
+# min_rounds = 2 requires. It takes effect only where the vendored integration
+# stage implements it; until then every request waits for CI, as after-ci.
+review_trigger = "after-ci"
 
 # ── Strategies — how the work is organized ──────────────────────────────────
 # topology/planning/delegation/coordination semantics and the
@@ -432,10 +466,25 @@ delegation  = "optional"
 human_gates = ["after-discovery", "after-plan", "before-publication"]
 description = "Strategy: human owns central decisions; AI does bounded pieces"
 
+# ── Tier matrix — an issue's Tier from Risk × Complexity ────────────────────
+# Rows are Complexity (xs … xl), columns Risk (trivial … critical); every cell
+# is a tier_order rung. Risk-dominant by design (ADR 2026-09-30 D4). The reader
+# derives an unpinned issue's Tier from this matrix on EVERY read; a Tier
+# stored on the issue is a cache it compares against, never an input. A pinned
+# Tier (tier:pinned) is read as stored. The derived or pinned Tier seeds the
+# implementer tier only; the other roles keep the resolved profile's tiers.
+# Absent matrix + a classified issue = indeterminate, never a guess.
+[tier.matrix]
+xs = { trivial = "local",    low = "local",    medium = "economy",  high = "standard", critical = "frontier" }
+s  = { trivial = "local",    low = "economy",  medium = "standard", high = "standard", critical = "frontier" }
+m  = { trivial = "economy",  low = "standard", medium = "standard", high = "frontier", critical = "apex" }
+l  = { trivial = "standard", low = "standard", medium = "frontier", high = "frontier", critical = "apex" }
+xl = { trivial = "frontier", low = "frontier", medium = "frontier", high = "apex",     critical = "apex" }
+
 # ── Model tiers ─────────────────────────────────────────────────────────────
-# There is no [tier.*] section in schema v2. The v1 family→model maps,
-# escalate_to chains, and the local-endpoint binding all restated registry
-# facts and are gone:
+# [tier.matrix] above is the only [tier.*] table in schema v2. The v1
+# family→model maps, escalate_to chains, and the local-endpoint binding all
+# restated registry facts and are gone:
 #   - stratum classification → agent-registry.json: each families[].models[]
 #     entry carries `tier` (and `default: true` where a family has two models
 #     at one rung), e.g.
@@ -445,7 +494,7 @@ description = "Strategy: human owns central decisions; AI does bounded pieces"
 #       { "slug": "haiku",  "display_name": "Haiku",  "tier": "economy"  }
 #   - escalation chains → derived: one rung up tier_order (see top of file)
 #   - local endpoint binding → the registry's `-local` harness variants
-#     (ADR 0005) already carry it; `local`-tier models are those served by a
+#     (ADR 2026-08-07) already carry it; `local`-tier models are those served by a
 #     registered local harness
 # Adding a model is now ONE edit in ONE file (the registry); this file never
 # names a concrete model. Both files resolve under the merge-base rule when

@@ -93,7 +93,7 @@
         },
         "purpose": { "type": "string", "minLength": 1, "maxLength": 200 },
         "axis": {
-          "description": "Which question the family answers. classification = area/domain/layer (at most one each); strategy = advisory execution/routing axes; model = the suggest/claim agent vocabulary; foreman = arming inputs and lifecycle outputs; release/meta = tool and platform namespaces.",
+          "description": "Which question the family answers. classification = the exclusive axes an issue must carry, or mark `none`, to count as triaged (area, layer, domain, impact, risk, complexity; at most one each) — a family that is not required for triaged must use another axis, because triage tooling derives its required axes from every exclusive classification family; strategy = advisory execution/routing axes (rigor, strategy, tier); model = the claim agent vocabulary (and the retired suggest one); foreman = arming inputs and lifecycle outputs; release/meta = tool and platform namespaces, and planning flags that are not required for triaged (initiative, human-work, priority, effort).",
           "enum": [
             "classification",
             "strategy",
@@ -114,7 +114,16 @@
         },
         "registry_set": {
           "description": "Which agent-registry render feeds a source: agent-registry family.",
-          "enum": ["suggest", "claim", "foreman-adapters", "tier-roles"]
+          "enum": [
+            "suggest",
+            "claim",
+            "foreman-adapters",
+            "tier-roles",
+            "model-family",
+            "model",
+            "model-version",
+            "model-effort"
+          ]
         },
         "writers": { "$ref": "#/$defs/writers" },
         "writer_note": { "type": "string", "minLength": 1 },
@@ -123,7 +132,7 @@
         "lifecycle_note": { "type": "string", "minLength": 1 },
         "trust_note": { "type": "string", "minLength": 1 },
         "exclusive": {
-          "description": "True when an issue should carry at most one value of the family (the classification axes). Advisory families whose conflicts have a defined resolution (tier strongest-wins, method rank) are not exclusive.",
+          "description": "True when an issue should carry at most one value of the family (the classification axes, priority, effort). Advisory families whose conflicts have a defined resolution (tier strongest-wins, method rank), or that carry a marker beside the value (`tier:pinned`), are not exclusive.",
           "type": "boolean"
         },
         "arming": { "type": "boolean" },
@@ -146,6 +155,7 @@
         "placeholder": { "type": "string", "minLength": 1, "maxLength": 50 },
         "color": { "$ref": "#/$defs/color" },
         "values": {
+          "description": "The family's values. By convention the exclusive classification families that say where the work lives (area, layer, domain) each carry a `none` value: the explicit answer when the axis does not apply. It is an ordinary provisioned label, counted as a classification when deciding whether an issue is triaged — not a schema construct, so no extra property marks it.",
           "type": "array",
           "items": { "$ref": "#/$defs/value" }
         }

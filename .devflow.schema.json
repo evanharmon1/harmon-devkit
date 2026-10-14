@@ -30,6 +30,12 @@
     "rounds": { "$ref": "#/$defs/round_profiles" },
     "breadth": { "$ref": "#/$defs/breadth_profiles" },
     "spend": { "$ref": "#/$defs/spend_profiles" },
+    "tier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matrix"],
+      "properties": { "matrix": { "$ref": "#/$defs/tier_matrix" } }
+    },
     "gates": {
       "type": "object",
       "additionalProperties": false,
@@ -68,6 +74,31 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "tier": { "type": "string", "enum": ["local", "economy", "standard", "frontier", "apex"] },
+    "tier_matrix": {
+      "description": "Issue Tier by Complexity (rows) then Risk (columns), ADR 2026-09-30 D4. Every cell is a tier_order rung; the retired 'adaptive' is not one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["xs", "s", "m", "l", "xl"],
+      "properties": {
+        "xs": { "$ref": "#/$defs/tier_matrix_row" },
+        "s": { "$ref": "#/$defs/tier_matrix_row" },
+        "m": { "$ref": "#/$defs/tier_matrix_row" },
+        "l": { "$ref": "#/$defs/tier_matrix_row" },
+        "xl": { "$ref": "#/$defs/tier_matrix_row" }
+      }
+    },
+    "tier_matrix_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trivial", "low", "medium", "high", "critical"],
+      "properties": {
+        "trivial": { "$ref": "#/$defs/tier" },
+        "low": { "$ref": "#/$defs/tier" },
+        "medium": { "$ref": "#/$defs/tier" },
+        "high": { "$ref": "#/$defs/tier" },
+        "critical": { "$ref": "#/$defs/tier" }
+      }
+    },
     "rigor_profile": {
       "type": "object",
       "additionalProperties": false,
@@ -184,6 +215,17 @@
         "pool": { "$ref": "#/$defs/strings_allow_empty" }
       }
     },
+    "review_trigger": { "type": "string", "enum": ["after-ci", "with-push", "after-ci-first"] },
+    "integration_stage_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finders": { "$ref": "#/$defs/strings_allow_empty" },
+        "finder_fallbacks": { "$ref": "#/$defs/strings_allow_empty" },
+        "pool": { "$ref": "#/$defs/strings_allow_empty" },
+        "review_trigger": { "$ref": "#/$defs/review_trigger" }
+      }
+    },
     "stage_profiles": {
       "type": "object",
       "additionalProperties": false,
@@ -192,7 +234,7 @@
         "implement": { "$ref": "#/$defs/stage_profile" },
         "challenge": { "$ref": "#/$defs/stage_profile" },
         "review": { "$ref": "#/$defs/stage_profile" },
-        "integration": { "$ref": "#/$defs/stage_profile" }
+        "integration": { "$ref": "#/$defs/integration_stage_profile" }
       }
     },
     "strategy_profile": {

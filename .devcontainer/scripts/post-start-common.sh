@@ -42,13 +42,28 @@ if command -v jq &>/dev/null; then
     fi
 fi
 
+# --- Bootstrap missing related repos in the background ---
+# Clones any missing sibling repos configured in .devcontainer/related-repos.txt
+# into /workspaces/. Backgrounded so container start is never blocked.
+#
+# SIGHUP is ignored in THIS shell before the jobs are forked and restored after.
+# POSIX guarantees an ignored signal stays ignored across fork and exec, so each
+# child starts with SIGHUP already ignored and is immune from its first
+# instruction; there is no window between fork and a later `trap` or `nohup` in
+# which a HUP could kill it. nohup would add nothing (the disposition is already
+# inherited and the redirections keep the jobs off the tty). A process-group
+# SIGTERM at container teardown still ends them, which is expected.
+trap '' HUP
+bash .devcontainer/scripts/bootstrap-related-repos.sh </dev/null >>"$HOME/.related-repos-bootstrap.log" 2>&1 &
+
 # --- Freshen related repos in the background (non-destructive git fetch) ---
 # Reads .devcontainer/related-repos.txt and git-fetches already-cloned siblings
 # in /workspaces/ so they track their remotes. NEVER pulls/merges/checks out —
-# local work is left untouched. nohup'd + backgrounded so it neither delays the
-# session nor is killed with the postStart process group. No-op for an empty list.
-nohup bash .devcontainer/scripts/fetch-related-repos.sh \
-    >>"$HOME/.related-repos-fetch.log" 2>&1 &
+# local work is left untouched. Backgrounded, with SIGHUP ignored in the parent
+# before the fork (see above), so it neither delays the session nor is killed
+# when the shell exits. No-op for an empty list.
+bash .devcontainer/scripts/fetch-related-repos.sh </dev/null >>"$HOME/.related-repos-fetch.log" 2>&1 &
+trap - HUP
 
 echo "==> Starting tmux session..."
 if command -v tmux &>/dev/null; then
@@ -100,12 +115,19 @@ bash .devcontainer/scripts/check-image-staleness.sh || true
 
 if [ "${DEVCONTAINER_TAILSCALE:-}" = "true" ]; then
     echo "==> Connecting to Tailscale..."
-    if command -v tailscale &>/dev/null && sudo tailscale ip -4 >/dev/null 2>&1; then
-        echo "Tailscale already connected."
-    else
-        # Run in foreground — post-start output is already redirected to a log file
-        # so there is no SIGPIPE risk, and background processes get killed when
-        # VS Code's postStartCommand process group exits.
-        bash .devcontainer/scripts/tailscale-connect.sh
-    fi
+    # Delegate unconditionally. This used to carry its own "already connected"
+    # probe (`tailscale ip -4`) and skip the script when it passed — but that is
+    # the WEAKER check and it won: `tailscale ip` answers from local state that
+    # outlives the node it describes, so a reaped ephemeral node still reports an
+    # address and none of tailscale-connect.sh's failure handling ever ran.
+    # tailscale-connect.sh owns that decision now and has the same fast path,
+    # checked properly against BackendState.
+    #
+    # Run in foreground — post-start output is already redirected to a log file
+    # so there is no SIGPIPE risk. (The detached `… </dev/null … &` jobs
+    # above are different: they survive the postStartCommand process group's
+    # exit because they inherited an ignored SIGHUP from this shell before the
+    # fork; a process-group SIGTERM at container teardown still ends them, which
+    # is expected.)
+    bash .devcontainer/scripts/tailscale-connect.sh
 fi

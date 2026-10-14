@@ -1,4 +1,4 @@
-# 8. Version the devflow compatibility contract
+# Version the devflow compatibility contract
 
 Date: 2026-08-25
 
@@ -28,8 +28,8 @@ Schema version 1 is the first compatibility contract.
   keys. They do not guess forward compatibility.
 - `.devflow.schema.json` declares the JSON-shaped structure and the executable
   validator enforces TOML-specific typing, allowed keys, exact v1 vocabulary,
-  registry references, and semantic cross-references. In harmon-devkit, the
-  canonical schema is defined at the repository root (`.devflow.schema.json`).
+  registry references, and semantic cross-references. Both root and template
+  copies are authoritative twins.
 - `.devflow-conformance-v1.json` is the language-neutral fixture corpus. It
   pins inputs, config-basis selection, a complete baseline normalized
   projection, stable diagnostic codes/subjects, and expected error/warning

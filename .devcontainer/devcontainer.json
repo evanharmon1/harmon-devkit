@@ -47,6 +47,7 @@
     // No 1Password CLI in the bot profile — this container must hold no path
     // to production secrets (docs/guides/devcontainers.md). The human dev
     // profile (.devcontainer/dev/) keeps its own op feature.
+    // Keep until the Dockerfile's image pin ships /usr/local/bin/gh in its core tier; that pin-bump PR deletes this.
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
   "mounts": [
@@ -75,7 +76,7 @@
   // HARMON_BOT_AUTONOMY_ANTIGRAVITY: rendered from use_antigravity_cli — the
   // ONLY channel the verbatim, template-twinned ensure-antigravity-cli.sh
   // and bot-autonomy/antigravity.sh may read to learn that per-repo Copier
-  // answer. See https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap/design.md - Decisions.
+  // answer.
   //
   // HARMON_BOT_AUTONOMY_COPILOT / COPILOT_ALLOW_ALL: rendered from
   // use_copilot_cli — BOT PROFILE ONLY, unlike the Antigravity marker above
@@ -99,6 +100,12 @@
   // this runtime layer.
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
+    // Emitted unconditionally (not gated on use_antigravity_cli): it is
+    // harmless when the compatibility binary is never installed, and
+    // devcontainer-assert.sh's bot-profile permission gate requires it
+    // regardless of the answer (#1241 item 4) — gating the assert on the
+    // Copier answer instead would have been the wrong fix, since the assert
+    // runs against the RENDERED tree with no access to that answer.
     "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
     "FOREMAN_DEVCONTAINER": "bot",
     "HARMON_BOT_AUTONOMY_ANTIGRAVITY": "enabled",

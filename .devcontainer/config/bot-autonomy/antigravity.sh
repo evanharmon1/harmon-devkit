@@ -8,9 +8,7 @@ set -euo pipefail
 # the rendered containerEnv.HARMON_BOT_AUTONOMY_ANTIGRAVITY marker (never the
 # Copier answer directly: this file is a verbatim template twin, shipped
 # byte-identical to every generated repo, so it has no template-time
-# substitution to read). See
-# https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap/design.md - Decisions for the full
-# "~/.local/bin/agy is exactly one of three states" rationale.
+# substitution to read).
 #
 #   marker == enabled  -> apply-antigravity-settings.sh apply (always-proceed)
 #                          + install the flag-injecting wrapper at
@@ -106,9 +104,44 @@ launcher_proof_matches() (
 )
 
 discard_launcher_transaction() {
+    # Declared (not assigned) here, separately from their eventual
+    # command-substitution assignments below: `local x="$(cmd)"` masks
+    # cmd's own exit status behind local's own — the declaration alone
+    # does not (#1241 integration round 5, Gemini findings
+    # 4056368199/4056368200/4056368201/4056368204).
+    local temp_path quarantine_dir quarantine_path
     temp_name="$(proof_value "$AGY_LINK_TRANSACTION" temp_name 2>/dev/null || true)"
     case "$temp_name" in
-    agy.tmp.*) rm -f "$(dirname "$AGY_LINK")/${temp_name}" ;;
+    agy.tmp.*)
+        temp_path="$(dirname "$AGY_LINK")/${temp_name}"
+        # Quarantine into a FRESH, PRIVATE per-call directory (mktemp -d,
+        # beside temp_path so the rename stays on the same filesystem and
+        # atomic) before validating, then delete — the same hardening as
+        # the mirrored ensure-antigravity-cli.sh discard_transaction: a
+        # same-directory sibling name created with a plain mktemp, then
+        # rm'd, then mv'd onto, made the quarantine name publicly
+        # observable in the create-to-remove window and used a plain
+        # mv -f, not no-clobber (#1241 item 7; review round 3, finding F6;
+        # hardened in integration round 2). The move into the private
+        # directory is no-clobber (-n) with no prior rm: nothing can have
+        # pre-created a path inside a directory nobody else knows exists,
+        # and a refused move is treated as a failed quarantine — the
+        # delete below never runs.
+        if metadata_exists "$temp_path"; then
+            quarantine_dir="$(mktemp -d "$(dirname "$AGY_LINK")/.harmon-init-discard.XXXXXX" 2>/dev/null)" || quarantine_dir=""
+            if [ -n "$quarantine_dir" ]; then
+                quarantine_path="${quarantine_dir}/proof"
+                if mv -n "$temp_path" "$quarantine_path" 2>/dev/null && [ -e "$quarantine_path" ]; then
+                    if launcher_proof_matches "$AGY_LINK_TRANSACTION" "$quarantine_path"; then
+                        rm -f "$quarantine_path"
+                    else
+                        echo "antigravity: transaction proof for ${quarantine_path} (quarantined from ${temp_path}) no longer matches its content; leaving it for manual review" >&2
+                    fi
+                fi
+                rmdir "$quarantine_dir" 2>/dev/null || true
+            fi
+        fi
+        ;;
     esac
     rm -f "$AGY_LINK_TRANSACTION"
 }

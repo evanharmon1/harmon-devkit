@@ -27,6 +27,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { TIER_ORDER } from './lib/registry-roles.mjs'
 
@@ -46,7 +47,10 @@ const TIER_BLURBS = new Map([
   ['apex', 'mythos-class leading edge'],
 ])
 
-const MODES = new Set(['suggest-claim', 'foreman-adapters', 'tier-roles', 'all', 'docs-tables'])
+const COLOR_MODEL = 'C2E0C6'
+const MODEL_MODES = ['model-family', 'model', 'model-version', 'model-effort']
+
+const MODES = new Set(['suggest-claim', 'foreman-adapters', 'tier-roles', 'claim', ...MODEL_MODES, 'all', 'docs-tables'])
 
 const mode = process.argv[2]
 if (!MODES.has(mode)) {
@@ -65,6 +69,29 @@ try {
 } catch (error) {
   console.error(
     `agent-registry-labels: cannot read valid JSON from ${registryPath}: ${error.message}`
+  )
+  process.exit(1)
+}
+
+// Validate the registry before rendering anything from it. Parsing is not
+// enough: a registry that parses but holds a family with no model lines, or a
+// line with no versions, would otherwise render a partial label set that
+// setup-github-labels.sh provisions as if it were complete (#1517). The
+// validator is the one place registry invariants live, so run it rather than
+// re-check a subset here, against the schema shipped beside this script.
+const validation = spawnSync(
+  process.execPath,
+  [
+    path.join(here, 'validate-agent-registry.mjs'),
+    registryPath,
+    path.join(here, '..', 'agent-registry.schema.json')
+  ],
+  { encoding: 'utf8' }
+)
+if (validation.status !== 0) {
+  process.stderr.write(validation.stderr || validation.error?.message || '')
+  console.error(
+    `agent-registry-labels: ${registryPath} is not a valid agent registry — refusing to render a partial label set`
   )
   process.exit(1)
 }
@@ -117,17 +144,21 @@ const record = (name, color, description) => {
 
 const lines = []
 
-if (mode === 'suggest-claim' || mode === 'all') {
+if (mode === 'suggest-claim' || mode === 'claim' || mode === 'all') {
   for (const family of registry.families ?? []) {
     const slug = field(family.slug, `family slug`)
     const name = field(family.display_name, `family '${slug}' display_name`)
-    lines.push(
-      record(
-        labelName('suggest', slug),
-        COLOR_SUGGEST,
-        `Suggested for the ${name} family (advisory)`
+    // Keep the explicit legacy API available; the active all/provisioning set
+    // must never include the retired suggestion namespace.
+    if (mode === 'suggest-claim') {
+      lines.push(
+        record(
+          labelName('suggest', slug),
+          COLOR_SUGGEST,
+          `Suggested for the ${name} family (advisory)`
+        )
       )
-    )
+    }
     lines.push(record(labelName('claim', slug), COLOR_CLAIM, `Claimed by ${name}`))
   }
 }
@@ -145,6 +176,69 @@ if (mode === 'foreman-adapters' || mode === 'all') {
       )
     )
   }
+}
+
+// The implementer-record families. A value shared across families or lines is
+// emitted once (first occurrence wins, in registry order), so a label name is
+// never rendered twice — the label-registry renderer fails closed on duplicates.
+const RECORD_NOTE = 'a record of fact, never a routing input'
+const modelRecords = (prefix, entries) => {
+  const seen = new Set()
+  for (const [slug, text] of entries) {
+    if (seen.has(slug)) continue
+    seen.add(slug)
+    lines.push(record(labelName(prefix, slug), COLOR_MODEL, `${text} — ${RECORD_NOTE}`))
+  }
+}
+const familyEntries = () => registry.families ?? []
+const lineEntries = () =>
+  familyEntries().flatMap((family) =>
+    (family.models ?? []).map((line) => ({ family: field(family.slug, 'family slug'), line }))
+  )
+
+if (mode === 'model-family' || mode === 'all') {
+  modelRecords(
+    'model-family',
+    familyEntries().map((family) => {
+      const slug = field(family.slug, 'family slug')
+      const name = field(family.display_name, `family '${slug}' display_name`)
+      return [slug, `Implementing model family: ${name}`]
+    })
+  )
+}
+
+if (mode === 'model' || mode === 'all') {
+  modelRecords(
+    'model',
+    lineEntries().map(({ family, line }) => {
+      const slug = field(line.slug, `family '${family}' model slug`)
+      const name = field(line.display_name, `family '${family}' line '${slug}' display_name`)
+      return [slug, `Implementing model line: ${name}`]
+    })
+  )
+}
+
+if (mode === 'model-version' || mode === 'all') {
+  // Every version, retired included, so history keeps its labels.
+  modelRecords(
+    'model-version',
+    lineEntries().flatMap(({ family, line }) =>
+      (line.versions ?? []).map((version) => {
+        const slug = field(version.slug, `family '${family}' line '${line.slug}' version slug`)
+        return [slug, `Implementing model version: ${slug}`]
+      })
+    )
+  )
+}
+
+if (mode === 'model-effort' || mode === 'all') {
+  modelRecords(
+    'model-effort',
+    (registry.effort_ladder ?? []).map((effort) => {
+      const slug = field(effort, 'effort_ladder entry')
+      return [slug, `Implementing reasoning effort: ${slug}`]
+    })
+  )
 }
 
 if (mode === 'tier-roles' || mode === 'all') {
