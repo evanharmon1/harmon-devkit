@@ -974,6 +974,100 @@ printf '%s' "$err" | grep -Fi "tracking ref may be stale" >/dev/null ||
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
     fail "the actual push must still have landed even though the local tracking-ref update failed"
 
+# These scanner checks use real gitleaks and the same throwaway repository
+# helpers as the broker tests; never put the generated token in this source.
+scan_fixture() {
+    local repo=$1
+    shift
+    set +e
+    out="$(cd "$repo" && "$gitleaks_scan_src" "$@" 2>"${test_tmp}/stderr")"
+    rc=$?
+    set -e
+    err="$(cat "${test_tmp}/stderr")"
+}
+
+echo "  -> an unrelated branch leak does not block a scoped round push"
+root="$(new_fixture unrelated-secret)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+git_q "${root}/work" checkout -b unrelated-secret
+commit_on "${root}/work" "test: unrelated secret" leaked.env "$(fake_github_token)" >/dev/null
+git_q "${root}/work" checkout main
+code_sha="$(commit_on "${root}/work" "feat: clean change" code.sh 'echo clean')"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 0
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
+    fail "the unrelated branch must not prevent the clean scoped push"
+scan_fixture "${root}/work"
+assert_rc 1
+
+# No-range remains full history, both interactively and in CI summary mode.
+summary_path="${test_tmp}/full-summary.md"
+GITHUB_STEP_SUMMARY="$summary_path" scan_fixture "${root}/work"
+assert_rc 1
+grep -F '**FAIL**' "$summary_path" >/dev/null || fail "full-history CI summary must report the unrelated leak"
+
+echo "  -> scoped scans reject malformed, option-shaped and unresolved ranges"
+for invalid_range in HEAD HEAD...HEAD HEAD.. HEAD..HEAD..HEAD ..HEAD \
+    '--all..HEAD' 'HEAD..HEAD --all' 'HEAD..HEAD,unrelated-secret' \
+    'HEAD..HEAD:code.sh' 'missing-ref..HEAD' 'HEAD..missing-ref'; do
+    scan_fixture "${root}/work" --range "$invalid_range"
+    assert_rc 2
+done
+scan_fixture "${root}/work" --range
+assert_rc 2
+scan_fixture "${root}/work" --range ''
+assert_rc 2
+scan_fixture "${root}/work" --range HEAD..HEAD --range HEAD..HEAD
+assert_rc 2
+scan_fixture "${root}/work" --unexpected
+assert_rc 2
+blob_sha="$(git -C "${root}/work" rev-parse HEAD:code.sh)"
+scan_fixture "${root}/work" --range "${blob_sha}..HEAD"
+assert_rc 2
+
+echo "  -> a secret deleted before the pushed head still fails the range scan"
+root="$(new_fixture deleted-range-secret)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+commit_on "${root}/work" "test: transient secret" leaked.env "$(fake_github_token)" >/dev/null
+git_q "${root}/work" rm leaked.env
+git_q "${root}/work" commit -m "test: remove secret"
+code_sha="$(git rev-parse HEAD)"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 3
+[ -z "$(git ls-remote "${root}/origin.git" refs/heads/main)" ] ||
+    fail "a deleted secret in the pushed range must not land"
+summary_path="${test_tmp}/range-summary.md"
+GITHUB_STEP_SUMMARY="$summary_path" scan_fixture "${root}/work" \
+    --config "${scan_args[3]}" --range "${merge_base_sha}..${code_sha}"
+assert_rc 1
+grep -F '**FAIL**' "$summary_path" >/dev/null || fail "scoped CI summary must retain the history failure"
+
+echo "  -> a working-tree-only secret fails even an empty commit range"
+root="$(new_fixture working-tree-secret)"
+cd "${root}/work"
+mark_base "${root}/work"
+printf '%s\n' "$(fake_github_token)" >leaked.env
+scan_fixture "${root}/work" --range HEAD..HEAD --config "${scan_args[3]}"
+assert_rc 1
+summary_path="${test_tmp}/working-tree-summary.md"
+GITHUB_STEP_SUMMARY="$summary_path" scan_fixture "${root}/work" \
+    --range HEAD..HEAD --config "${scan_args[3]}"
+assert_rc 1
+grep -F '**FAIL**' "$summary_path" >/dev/null || fail "scoped CI summary must report the working-tree failure"
+# The directory scan shares gitleaks' line-level fixture allowance.
+printf '%s # gitleaks:allow\n' "$(fake_github_token)" >leaked.env
+scan_fixture "${root}/work" --config "${scan_args[3]}" --range HEAD..HEAD
+assert_rc 0
+rm leaked.env
+scan_fixture "${root}/work" --range HEAD..HEAD
+assert_rc 0
+
 echo "  -> the required target alone never substitutes for the secret scan"
 root="$(new_fixture secret-refusal)"
 cd "${root}/work"

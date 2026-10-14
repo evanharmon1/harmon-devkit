@@ -1197,7 +1197,7 @@ rm -f "$closure_verify_tmp"
 # implementation": "the orchestrator SHALL materialize outside the feature
 # worktree and execute the merge-base implementations of both the secret
 # scan and the round-push broker."
-if ! "$gitleaks_script" --config "$gitleaks_config"; then
+if ! "$gitleaks_script" --config "$gitleaks_config" --range "${closure_base}..${resolved}"; then
     refuse "the closure-extracted secret scan found findings, refused a mismatched .gitleaksignore, or failed to run"
 fi
 

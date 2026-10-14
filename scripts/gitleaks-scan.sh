@@ -4,7 +4,10 @@
 # merge-base-extracted closure (specs/dev-flow-v2.md § Configuration "Gate
 # authority separates policy from branch implementation").
 #
-# Two modes, picked off GITHUB_STEP_SUMMARY: interactively gitleaks just prints;
+# With --range BASE..HEAD, scan only those commits plus the working tree.
+# Without --range, retain the full-history scan used by security:secrets/CI.
+#
+# Two output modes, picked off GITHUB_STEP_SUMMARY: interactively gitleaks just prints;
 # in a job with a step summary it writes a JSON report that summarize-gitleaks
 # renders into the run summary.
 #
@@ -41,12 +44,57 @@
 set -euo pipefail
 
 config_path=
-if [ "${1:-}" = "--config" ]; then
-    [ "$#" -ge 2 ] || {
-        echo "gitleaks-scan: --config requires a path" >&2
+scan_range=
+have_range=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --config | --range)
+        option=$1
+        [ "$#" -ge 2 ] && [ -n "$2" ] || {
+            echo "gitleaks-scan: ${option} requires a value" >&2
+            exit 2
+        }
+        if [ "$option" = "--config" ]; then
+            config_path=$2
+        else
+            [ "$have_range" -eq 0 ] || {
+                echo "gitleaks-scan: --range may only be given once" >&2
+                exit 2
+            }
+            scan_range=$2
+            have_range=1
+        fi
+        shift 2
+        ;;
+    *)
+        echo "gitleaks-scan: unknown argument: $1" >&2
+        exit 2
+        ;;
+    esac
+done
+
+if [ "$have_range" -eq 1 ]; then
+    range_base=${scan_range%%..*}
+    range_head=${scan_range#*..}
+    # Exactly two revisions, no log options/pathspecs or extra range operators.
+    # Resolve each to a commit SHA before passing anything to --log-opts, so
+    # ref movement cannot change the requested endpoints during the scan.
+    revision_pattern='^[[:alnum:]_][[:alnum:]_./@{}~^-]*$'
+    if [ "$range_base" = "$scan_range" ] ||
+        [[ "$range_base" == *..* || "$range_head" == *..* ]] ||
+        [[ ! "$range_base" =~ $revision_pattern || ! "$range_head" =~ $revision_pattern ]]; then
+        echo "gitleaks-scan: --range requires two commit revisions joined by .." >&2
+        exit 2
+    fi
+    range_base_sha="$(git rev-parse --verify --quiet "${range_base}^{commit}")" || {
+        echo "gitleaks-scan: --range base does not resolve to a commit" >&2
         exit 2
     }
-    config_path=$2
+    range_head_sha="$(git rev-parse --verify --quiet "${range_head}^{commit}")" || {
+        echo "gitleaks-scan: --range head does not resolve to a commit" >&2
+        exit 2
+    }
+    scan_range="${range_base_sha}..${range_head_sha}"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,7 +146,9 @@ run_gitleaks() {
     fi
 }
 
-if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+# Preserve the interactive full-history exec path. Scoped mode needs two
+# scans; CI summarizes each scan with a separate fresh report.
+if [ "$have_range" -eq 0 ] && [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
     if [ "$have_config" -eq 1 ]; then
         exec gitleaks detect --no-banner --redact --source . "${config_args[@]}"
     else
@@ -106,10 +156,37 @@ if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
     fi
 fi
 
-report="$(mktemp)"
-trap 'rm -f "$report"' EXIT
+report=
+trap 'if [ -n "$report" ]; then rm -f "$report"; fi' EXIT
+
+scan_once() {
+    local scan_rc=0 summary_rc=0
+    if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+        run_gitleaks "$@" || scan_rc=$?
+    else
+        report="$(mktemp)" || return $?
+        run_gitleaks "$@" --report-format json --report-path "$report" || scan_rc=$?
+        node "${script_dir}/summarize-gitleaks.mjs" "$report" || summary_rc=$?
+        if [ "$scan_rc" -eq 0 ]; then
+            scan_rc=$summary_rc
+        fi
+        rm -f "$report"
+        report=
+    fi
+    return "$scan_rc"
+}
 
 rc=0
-run_gitleaks --report-format json --report-path "$report" || rc=$?
-node "${script_dir}/summarize-gitleaks.mjs" "$report"
+if [ "$have_range" -eq 1 ]; then
+    scan_once "--log-opts=${scan_range}" || rc=$?
+    # Still scan the checkout if history failed; success of either half must
+    # never hide a failure of the other. Both share the config/ignore policy.
+    working_tree_rc=0
+    scan_once --no-git || working_tree_rc=$?
+    if [ "$rc" -eq 0 ]; then
+        rc=$working_tree_rc
+    fi
+else
+    scan_once || rc=$?
+fi
 exit "$rc"
