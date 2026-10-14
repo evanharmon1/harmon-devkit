@@ -44,9 +44,11 @@ class GhError extends Error {}
 // Resolved via $PATH (never an absolute path) so a test's stub directory,
 // prepended to PATH ahead of the real gh, transparently shadows it — the
 // same shim pattern scripts/test-claim-transaction.sh already establishes.
-function ghApiPaginated(endpoint, jq = null) {
+function ghApiPaginated(endpoint, project = null) {
+  // gh 2.89+ / 2.98+ rejects `--slurp` combined with `--jq` or `--template`
+  // ("cannot use `--slurp` with `--jq` or `--template`"). Keep `--paginate
+  // --slurp` and apply any per-item projection in Node after flattening.
   const argv = ["api", "--paginate", "--slurp", endpoint];
-  if (jq) argv.push("--jq", jq);
   const result = spawnSync("gh", argv, { encoding: "utf8", maxBuffer: MAX_SYNC_BUFFER_BYTES });
   if (result.error) throw new GhError(`gh api ${endpoint} failed to execute: ${result.error.message}`);
   if (result.status !== 0) throw new GhError(`gh api ${endpoint} exited ${result.status}: ${(result.stderr || "").trim()}`);
@@ -57,7 +59,15 @@ function ghApiPaginated(endpoint, jq = null) {
     throw new GhError(`gh api ${endpoint} returned malformed JSON: ${err.message}`);
   }
   // --paginate --slurp yields one array per page; flatten.
-  return pages.flat();
+  const items = pages.flat();
+  if (typeof project === "function") return items.map(project);
+  if (project === "map(.[] | {number, pull_request})") {
+    return items.map((item) => ({ number: item.number, pull_request: item.pull_request ?? null }));
+  }
+  if (project !== null) {
+    throw new GhError(`gh api ${endpoint}: unsupported ghApiPaginated projection: ${String(project)}`);
+  }
+  return items;
 }
 
 function ghApiOne(endpoint) {
@@ -468,7 +478,7 @@ function fetchIssueList(repo) {
   // counts abandoned/capped runs as failures, not as absent.
   return ghApiPaginated(
     `repos/${repo}/issues?state=all&per_page=100`,
-    "map(.[] | {number, pull_request})",
+    (item) => ({ number: item.number, pull_request: item.pull_request ?? null }),
   ).filter((i) => !i.pull_request);
 }
 
@@ -523,8 +533,18 @@ const RUN_STAGES = ["kickoff", "claim", "explore", "plan", "implement", "verify"
 const MARKER_RE =
   /<!--\s*devflow:(run-index|run-record|evidence)\s+v2\s+run_id=(\S+)\s+stage=(\S+)\s+dest=(issue|pr)\s+round=(-|\d+)\s+seq=(\d+)\s*-->/;
 const EVIDENCE_SUMMARY_MARKER_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/;
-const EVIDENCE_SUMMARY_PREFIX_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:/;
+const EVIDENCE_SUMMARY_PREFIX_RE = /^[ \t]*<!--[ \t]*dev-flow-v2[- \t]+evidence\b/;
 const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
+
+function malformedEvidenceSummaryRunId(body) {
+  if (typeof body !== "string") return null;
+  const firstLine = body.replace(/\r/g, "").split("\n", 1)[0];
+  const jsonRunId = /"run_id"\s*:\s*"([^"]+)"/.exec(firstLine);
+  if (jsonRunId) return jsonRunId[1];
+  const kvRunId = /\brun(?:_id)?=([^\s>"']+)/.exec(firstLine);
+  if (kvRunId) return kvRunId[1];
+  return null;
+}
 
 class EvidenceError extends Error {}
 
@@ -1806,6 +1826,8 @@ function collectTrustedEvidenceSummaries(comments, runId, { trustedActorIds, asO
     if (Date.parse(comment.created_at) > cutoff) continue;
     if (!marker) {
       if (EVIDENCE_SUMMARY_PREFIX_RE.test(comment.body || "") && trustedActorIds.has(actorId)) {
+        const claimedRunId = malformedEvidenceSummaryRunId(comment.body || "");
+        if (claimedRunId !== null && claimedRunId !== runId) continue;
         throw new EvidenceError(`trusted evidence comment ${comment.id} has a malformed dev-flow-v2-evidence marker`);
       }
       continue;

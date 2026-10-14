@@ -119,6 +119,18 @@ pr)
     cat "$GH_PR_JSON"
     ;;
 api)
+    has_slurp=0
+    has_jq_or_template=0
+    for a in "$@"; do
+        case "$a" in
+        --slurp) has_slurp=1 ;;
+        --jq | -q | --jq=* | -q=* | --template | -t | --template=* | -t=*) has_jq_or_template=1 ;;
+        esac
+    done
+    if [ "$has_slurp" -eq 1 ] && [ "$has_jq_or_template" -eq 1 ]; then
+        echo 'cannot use `--slurp` with `--jq` or `--template`' >&2
+        exit 1
+    fi
     case "$*" in
     */contents/agent-registry.json?ref=*)
         if [ "${GH_FAIL_REGISTRY:-0}" = 1 ] || [ ! -f "${GH_REGISTRY_JSON:-/nonexistent}" ]; then
@@ -2050,11 +2062,34 @@ pr)
     cat "$GH_PR_JSON"
     ;;
 api)
+    has_slurp=0
+    has_jq_or_template=0
+    for a in "$@"; do
+        case "$a" in
+        --slurp) has_slurp=1 ;;
+        --jq | -q | --jq=* | -q=* | --template | -t | --template=* | -t=*) has_jq_or_template=1 ;;
+        esac
+    done
+    if [ "$has_slurp" -eq 1 ] && [ "$has_jq_or_template" -eq 1 ]; then
+        echo 'cannot use `--slurp` with `--jq` or `--template`' >&2
+        exit 1
+    fi
     case "$*" in
+    */issues\?state=all*)
+        if [ -f "${GH_ISSUES_JSON:-/nonexistent}" ]; then
+            cat "$GH_ISSUES_JSON"
+        else
+            echo '[[]]'
+        fi
+        ;;
     */issues/*/comments*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
         file="${GH_COMMENTS_DIR:-/nonexistent}/$n.json"
         if [ -f "$file" ]; then cat "$file"; else echo '[[]]'; fi
+        ;;
+    */issues/[0-9]*)
+        n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\).*$|\1|p')"
+        printf '{"number":%s,"pull_request":null}\n' "$n"
         ;;
     *--slurp*) echo '[]' ;;
     *) echo '[]' ;;
@@ -2199,6 +2234,28 @@ for pair in 'issue null' 'pr 1'; do
 done
 ok "both invalid destination/round combinations are rejected"
 
+echo "==> non-canonical dev-flow-v2 evidence markers are surfaced as malformed/integrity findings (#1422)"
+d="$TMPROOT/noncanonical-evidence-marker"
+scaffold "$d" further-along "$POLICY_SECTION"
+write_file "$d/c1" "no marker"
+write_file "$d/i1" '<!-- dev-flow-v2 evidence run=classification-1444-d1446 stage=challenge round=1 destination=issue sequence=1 -->'
+set_comments "$d/comments" "$PR" "$d/c1"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'non-canonical dev-flow-v2 evidence marker' &&
+    ! contains "$ERR" 'no-run-record' &&
+    ok "a trusted non-canonical dev-flow-v2 evidence marker is indeterminate (exit 11), never silent no-run-record" ||
+    bad "non-canonical dev-flow-v2 evidence marker was silently ignored: rc=$RC, err=$ERR"
+evidence_marker_file "$d/c1" run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.malformed_markers | length == 1 and .[0].reason == "non-canonical dev-flow-v2 evidence marker (expected <!-- dev-flow-v2-evidence: {...} -->)"' >/dev/null &&
+    ok "a non-canonical marker alongside a valid run is reported in source.malformed_markers" ||
+    bad "non-canonical marker was not surfaced in source.malformed_markers: rc=$RC, out=$OUT, err=$ERR"
+
 echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
 d="$TMPROOT/realpath"
 mkdir -p "$d"
@@ -2220,6 +2277,37 @@ ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 11 ] && contains "$ERR" "deleted-entry tampering" &&
     ok "the real harvester ran and its exit code was mapped end to end" ||
     bad "expected exit 11 from the real harvester's run-not-found, got $RC: $ERR"
+
+echo "==> both dev-flow-stats.mjs and retro-run-report.mjs exit 0 on a valid fixture run under a gh 2.98 stub that rejects --slurp with --jq or --template (#1422, #1199)"
+d="$TMPROOT/gh298-e2e"
+mkdir -p "$d"
+make_permissive_gh "$d"
+for bad_flag in '--jq .[]' '--template {{.}}'; do
+    RC=0
+    # shellcheck disable=SC2086
+    OUT="$("$d/bin/gh" api --paginate --slurp repos/o/r/issues $bad_flag 2>&1)" || RC=$?
+    [ "$RC" -ne 0 ] && contains "$OUT" 'cannot use `--slurp` with `--jq` or `--template`' ||
+        bad "stub gh did not reject --slurp with $bad_flag: rc=$RC, out=$OUT"
+done
+ok "PATH-shimmed gh stub rejects --slurp combined with --jq or --template"
+write_file "$d/body" "$POLICY_SECTION"
+printf '[[{"number":%s,"pull_request":null}]]\n' "$ISSUE" >"$d/issues.json"
+evidence_marker_file "$d/i1" classification-1444-d6001 challenge issue 1
+set_comments "$d/comments" "$PR"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+RC=0
+OUT="$(PATH="$d/bin:$PATH" GH_ISSUES_JSON="$d/issues.json" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    node "$REAL_STATS" --repo o/r --run classification-1444-d6001 --trusted-actor-id "$ACTOR" --as-of 2026-12-31T23:59:59Z --json 2>"$d/stats.err")" || RC=$?
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .run_id == "classification-1444-d6001"' >/dev/null &&
+    ok "dev-flow-stats.mjs exits 0 on a valid fixture run under the gh 2.98 stub" ||
+    bad "dev-flow-stats.mjs failed under the gh 2.98 stub: rc=$RC, err=$(cat "$d/stats.err"), out=$OUT"
+RC=0
+OUT="$(PATH="$d/bin:$PATH" GH_ISSUES_JSON="$d/issues.json" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    node "$REPORT" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" --json 2>"$d/report.err")" || RC=$?
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .run_id == "classification-1444-d6001"' >/dev/null &&
+    ok "retro-run-report.mjs exits 0 on a valid fixture run with the real harvester under the gh 2.98 stub" ||
+    bad "retro-run-report.mjs failed under the gh 2.98 stub: rc=$RC, err=$(cat "$d/report.err"), out=$OUT"
 
 echo "==> the real harvester rejects the trust-file entries this asset now rejects"
 d="$TMPROOT/trustagree"
