@@ -89,8 +89,11 @@ refute_exists() {
 
 # `pwd -P` because macOS mktemp hands back /var/... while git reports the
 # physical /private/var/... — the two must agree for the path assertions below.
-# The template contains "scratch" so every run exercises a TMPDIR-derived path containing "scratch" (#1388).
-test_tmp="$(cd "$(mktemp -d -t harmon-init-worktree-scratch-XXXXXX)" && pwd -P)"
+# Two steps, each stopped by its own || exit 1 (not left to set -e): one
+# command, cd "$(mktemp -d)", would swallow a failed mktemp and `cd ""` would
+# resolve the checkout itself as the directory the cleanup below removes.
+test_tmp="$(mktemp -d -t harmon-init-worktree-XXXXXX)" || exit 1
+test_tmp="$(cd "$test_tmp" && pwd -P)" || exit 1
 # The sentinel lives OUTSIDE $test_tmp because the cleanup below removes that
 # directory, and this file has to outlive it to be read on the way out.
 WORKTREE_TIMEOUT_SENTINEL="$(mktemp -t harmon-init-worktree-timeout-XXXXXX)"
@@ -328,7 +331,7 @@ fi
 echo "==> worktree:rm removes the tree and prunes the registry"
 rm_wt scratch >/dev/null || fail "worktree-rm.sh failed on a clean tree"
 refute_exists "$fixture/.worktrees/scratch" "worktree-rm.sh left the directory behind"
-if grep -Fxq "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain); then
+if grep -qxF "worktree $fixture/.worktrees/scratch" < <(git -C "$fixture" worktree list --porcelain); then
     fail "worktree-rm.sh left a stale registry record"
 fi
 

@@ -33,7 +33,7 @@ jobs:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    timeout-minutes: 80
+    timeout-minutes: 138
     # Serialize every claim-bearing run on one target. Acquiring a claim is a
     # read-then-add, so two runs that read "unclaimed" in the same instant
     # would both proceed; this group makes the second wait for the first.
@@ -109,10 +109,10 @@ jobs:
       # `claim:claude` string: an exact match would miss the model-pinned
       # `claim:claude:opus` form, another family's `claim:gpt`, and the
       # `agent:*` labels generated repos still carry through the rolling
-      # transition. `suggest:*` is deliberately NOT matched — it is advice
-      # about who should do the work, never ownership of it. The read asks for
-      # 100-label pages and paginates, so a marker on any page cannot read as
-      # "unclaimed" however many labels the target carries.
+      # transition. The retired `suggest:*` is deliberately NOT matched — it
+      # was advice about who should do the work, never ownership of it. The
+      # read asks for 100-label pages and paginates, so a marker on any page
+      # cannot read as "unclaimed" however many labels the target carries.
       #
       # An unreadable label list refuses for the same reason: we cannot prove
       # the target is free, and claiming blind or running unmarked are both
@@ -190,14 +190,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
+      # Review events can check out a PR merge commit. Read the helper only
+      # from the default branch tip; until it exists there, use primary-only
+      # behavior without inspection or fallback.
+      - name: Read the trusted Claude result helper
+        id: claude-helper
+        timeout-minutes: 2
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          echo "start_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if gh api -X GET "repos/$GH_REPO/contents/scripts/claude-workflow-result.sh" \
+             -H 'Accept: application/vnd.github.raw' -f ref="$DEFAULT_BRANCH" > /dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Default-branch helper unavailable; running only the primary Claude action."
+          fi
       - uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        id: claude-primary
+        continue-on-error: true
         # Step-level cap. A JOB timeout kills the runner outright and the
         # always() release below never runs; a STEP timeout fails only this
         # step and lets the cleanup run, so the claim is still released. The
-        # arithmetic keeps it that way: job cap 80 = this step's 50 + 30
-        # minutes of headroom for the sender gate, claim, token mint, checkout
-        # and setup, so the step timeout always fires first however slow the
-        # preamble is. Losing the runner itself (or a force-cancel) can still
+        # arithmetic keeps it that way: job cap 138 = 2 × 50 + 8 + 30
+        # (8 minutes for helper steps, 30 for setup and claim release).
+        # Each step timeout fires before the job cap, leaving cleanup time. Losing the runner itself (or a force-cancel) can still
         # strand the advisory label — accepted, rather than a reconciliation
         # workflow of its own.
         timeout-minutes: 50
@@ -218,6 +238,94 @@ jobs:
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
             code or modify files.
+      - name: Inspect Claude primary result
+        id: claude-primary-result
+        if: always() && steps.claude-helper.outputs.available == 'true' && steps.claude-primary.outcome != 'skipped' && steps.claude-primary.outcome != ''
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXECUTION_FILE: ${{ steps.claude-primary.outputs.execution_file }}
+          ACTION_OUTCOME: ${{ steps.claude-primary.outcome }}
+          HAS_ALT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 != '' }}
+          ARCHIVE_EXECUTION: 'true'
+          REDACT_PRIMARY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          REDACT_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ github.event.issue.number || github.event.pull_request.number }}
+        timeout-minutes: 2
+        run: |
+          if gh api -X GET "repos/$GH_REPO/contents/scripts/claude-workflow-result.sh" \
+             -H 'Accept: application/vnd.github.raw' -f ref="$DEFAULT_BRANCH" > "$RUNNER_TEMP/claude-workflow-result.sh"; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            bash "$RUNNER_TEMP/claude-workflow-result.sh"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Default-branch helper unavailable for this step."
+          fi
+      - uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        id: claude-alternate
+        if: ${{ !cancelled() && steps.claude-helper.outputs.available == 'true' && steps.claude-primary-result.outputs.retry == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 50
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          trigger_phrase: "@claude review"
+          track_progress: true
+          use_sticky_comment: true
+          allowed_bots: "renovate[bot],dependabot[bot]"
+          base_branch: main
+          branch_prefix: claude/
+          # --max-budget-usd caps API-key spend; likely a no-op under
+          # CLAUDE_CODE_OAUTH_TOKEN (subscription) billing. Real runaway guards
+          # are timeout-minutes (job- and step-level) and --max-turns.
+          claude_args: "--model opus --effort max --max-budget-usd 6 --disallowedTools Edit Write Bash --max-turns 60"
+          prompt: |
+            Review the PR diff and post a code review comment. Flag security,
+            correctness, and convention concerns (see AGENTS.md). Do not write
+            code or modify files.
+      - name: Inspect Claude alternate result
+        id: claude-alternate-result
+        if: always() && steps.claude-helper.outputs.available == 'true' && steps.claude-alternate.outcome != 'skipped' && steps.claude-alternate.outcome != ''
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXECUTION_FILE: ${{ steps.claude-alternate.outputs.execution_file }}
+          ACTION_OUTCOME: ${{ steps.claude-alternate.outcome }}
+          HAS_ALT: 'false'
+          REDACT_PRIMARY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          REDACT_ALT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          REDACT_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ github.event.issue.number || github.event.pull_request.number }}
+        timeout-minutes: 2
+        run: |
+          if gh api -X GET "repos/$GH_REPO/contents/scripts/claude-workflow-result.sh" \
+             -H 'Accept: application/vnd.github.raw' -f ref="$DEFAULT_BRANCH" > "$RUNNER_TEMP/claude-workflow-result.sh"; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            bash "$RUNNER_TEMP/claude-workflow-result.sh"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Default-branch helper unavailable for this step."
+          fi
+      - name: Require the last Claude attempt to succeed
+        if: always() && steps.claude-primary.outcome != 'skipped' && steps.claude-primary.outcome != ''
+        env:
+          LAST_SUCCESS: >-
+            ${{ (steps.claude-alternate.outcome != 'skipped' &&
+            steps.claude-alternate.outcome != '' &&
+            steps.claude-alternate.outcome ||
+            steps.claude-primary.outcome) == 'success' &&
+            ((steps.claude-alternate.outcome != 'skipped' &&
+            steps.claude-alternate.outcome != '' &&
+            steps.claude-alternate-result.outputs.available ||
+            steps.claude-primary-result.outputs.available) != 'true' ||
+            (steps.claude-alternate.outcome != 'skipped' &&
+            steps.claude-alternate.outcome != '' &&
+            steps.claude-alternate-result.outputs.failed ||
+            steps.claude-primary-result.outputs.failed) == 'false') }}
+        timeout-minutes: 2
+        run: test "$LAST_SUCCESS" = true
       # Release the claim on EVERY terminal path — success, failure, step
       # timeout, and cancellation alike — so a spent run never leaves a stale
       # claim behind. Gated on this run having ACQUIRED the claim: a claim that

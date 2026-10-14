@@ -19,6 +19,29 @@ if git rev-parse --is-inside-work-tree &>/dev/null &&
     git pull --ff-only origin main 2>/dev/null || true
 fi
 
+# `--profile agent` (first arguments) selects the AGENT posture's closed,
+# fail-closed allow-list — see "Agent posture" below. It is an explicit flag,
+# never inferred from the env-file path, so no path rename can switch it off.
+PROFILE=""
+if [ "${1:-}" = "--profile" ]; then
+    PROFILE="${2:-}"
+    case "$PROFILE" in
+    agent) ;;
+    *)
+        echo "init-env.sh: unknown --profile '${PROFILE}' (only 'agent' is defined)" >&2
+        exit 1
+        ;;
+    esac
+    shift 2
+fi
+
+# The agent profile names its env-file explicitly, as its initializeCommand
+# does: the default below is the bot's env-file, which the agent must never
+# read or write.
+if [ "$PROFILE" = "agent" ] && [ -z "${1:-}" ]; then
+    echo "init-env.sh: --profile agent needs the agent env-file path (.devcontainer/agent/devcontainer.env); it never falls back to the bot's .devcontainer/devcontainer.env" >&2
+    exit 1
+fi
 ENV_FILE="${1:-.devcontainer/devcontainer.env}"
 shift || true
 
@@ -60,15 +83,28 @@ shift || true
 # the bot profile allow-lists it, so it is evicted from dev/ like GH_TOKEN.
 BASE_MANAGED_VARS=(TS_AUTHKEY GH_TOKEN FOREMAN_AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AGENT_DECK_TELEGRAM_KEY)
 OPT_IN_PROVIDER_KEYS=(KIMI_API_KEY MOONSHOT_API_KEY DEEPSEEK_API_KEY ZAI_API_KEY QWEN_API_KEY)
+# AGENT_GH_TOKEN is the agent posture's own fine-grained PAT on the bot
+# account (docs/guides/bot-account.md). It is a DIFFERENT host-side name from
+# the bot's GH_TOKEN on purpose: a host that exports the bot token (a Coder
+# workspace does) can then never project it into the agent env-file by name.
+# Only the agent posture admits it, so it is evicted from the bot and dev
+# env-files like any other credential a profile must not hold.
+AGENT_ONLY_VARS=(AGENT_GH_TOKEN)
 # KNOWN_VARS: every var this script recognizes. The filter below restricts the
 # caller's allow-list to this set, so a positional arg can't smuggle an unknown
 # var into the env-file. Includes the opt-in keys so an opted-in profile can
 # inject them.
-KNOWN_VARS=("${BASE_MANAGED_VARS[@]}" ANTHROPIC_API_KEY "${OPT_IN_PROVIDER_KEYS[@]}")
+KNOWN_VARS=("${BASE_MANAGED_VARS[@]}" "${AGENT_ONLY_VARS[@]}" ANTHROPIC_API_KEY "${OPT_IN_PROVIDER_KEYS[@]}")
 # EVICT_VARS: vars stripped from the env-file when not in the profile's
 # allow-list. The opt-in provider keys are intentionally absent (see above) so an
 # opted-out repo keeps any same-named value it set independently.
-EVICT_VARS=("${BASE_MANAGED_VARS[@]}" ANTHROPIC_API_KEY)
+EVICT_VARS=("${BASE_MANAGED_VARS[@]}" "${AGENT_ONLY_VARS[@]}" ANTHROPIC_API_KEY)
+# Agent posture (`--profile agent`): the ONLY vars its env-file may hold. The
+# opt-in provider keys are admissible too, but only when the caller passes
+# them (a per-repo, disclosed opt-in, as in bot). Everything else — the bot's
+# GH_TOKEN and FOREMAN_AGENT_GH_TOKEN, TS_AUTHKEY, an `op` service-account
+# token, ANTHROPIC_API_KEY, anything unknown — fails closed below.
+AGENT_ADMITTED_VARS=(AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN "${OPT_IN_PROVIDER_KEYS[@]}")
 
 # Vars this profile is allowed to populate. Caller passes the allow-list
 # as additional args after the env-file path. With no extra args we default to
@@ -77,6 +113,8 @@ EVICT_VARS=("${BASE_MANAGED_VARS[@]}" ANTHROPIC_API_KEY)
 # fallback evicts them rather than injecting them.
 if [ "$#" -gt 0 ]; then
     ALLOWED_VARS=("$@")
+elif [ "$PROFILE" = "agent" ]; then
+    ALLOWED_VARS=(AGENT_GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
 else
     ALLOWED_VARS=("${BASE_MANAGED_VARS[@]}")
 fi
@@ -90,6 +128,51 @@ contains() {
     done
     return 1
 }
+
+# ── Agent posture guard ─────────────────────────────────────────────
+# Fails CLOSED rather than filtering: the other profiles silently drop an
+# unrecognized allow-list entry and evict disallowed vars, but an agent
+# container runs unwatched, so a misconfiguration must stop the build (this
+# runs as initializeCommand, where a non-zero exit aborts it) instead of being
+# quietly repaired. Two checks, both before anything is written:
+#   1. every name the caller allow-lists must be admissible in the agent posture;
+#   2. the agent env-file may hold nothing but those allow-listed names. Docker
+#      also reads a bare `NAME` line (no `=`) as "pass the host's value
+#      through", so any non-comment line that is not `<allowed>=...` counts.
+# Names only, never values, in every message.
+if [ "$PROFILE" = "agent" ]; then
+    agent_guard_failed=0
+    for var in "${ALLOWED_VARS[@]}"; do
+        if ! contains "$var" "${AGENT_ADMITTED_VARS[@]}"; then
+            echo "init-env.sh: agent posture: '${var}' is not admitted (admissible: ${AGENT_ADMITTED_VARS[*]})" >&2
+            agent_guard_failed=1
+        fi
+    done
+    if [ -f "$ENV_FILE" ]; then
+        agent_line_no=0
+        while IFS= read -r agent_line || [ -n "$agent_line" ]; do
+            agent_line_no=$((agent_line_no + 1))
+            case "$agent_line" in
+            "" | \#*) continue ;;
+            esac
+            agent_name="${agent_line%%=*}"
+            if [ "$agent_name" = "$agent_line" ] || ! contains "$agent_name" "${ALLOWED_VARS[@]}"; then
+                # A bare line reports its whole text only when it is a plain
+                # identifier; anything else is reported by line number, so a
+                # malformed line holding a value never reaches the log.
+                case "$agent_name" in
+                *[!A-Za-z0-9_]* | "") agent_name="<line ${agent_line_no}>" ;;
+                esac
+                echo "init-env.sh: agent posture: ${ENV_FILE} holds '${agent_name}', which this profile does not admit" >&2
+                agent_guard_failed=1
+            fi
+        done <"$ENV_FILE"
+    fi
+    if [ "$agent_guard_failed" -ne 0 ]; then
+        echo "init-env.sh: agent posture: refusing to continue. Remove the names above from the env-file and the initializeCommand allow-list; see docs/guides/devcontainers.md." >&2
+        exit 1
+    fi
+fi
 
 # Restrict ALLOWED_VARS to the intersection with KNOWN_VARS, and strip
 # ANTHROPIC_API_KEY unconditionally. A caller cannot smuggle an unknown var

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # setup-github-project.sh — idempotently create and sync a GitHub Project V2 for a
-# repo owner (an organization OR a personal user account): the board, its
-# Status pipeline (docs/project-management.md), and the Size project NUMBER
-# field — the numeric estimate stays a project field for BOTH owner types,
-# because only project number fields sum in view group headers (issue-field
-# columns can group/filter/sort, not sum). The other metadata on an ORGANIZATION
-# are org-level ISSUE fields (Priority/Effort are GitHub built-ins, left at
-# their defaults; setup-github-issue-fields.sh adds Product); on a personal
-# account (no org issue fields) this script creates Priority/Product as
-# project fields too. Domain and Layer are deliberately NOT fields — the
+# repo owner (an organization OR a personal user account): the board and its
+# Status pipeline (docs/project-management.md). Status is the only field this
+# script manages on an ORGANIZATION and the only project field any agent or
+# workflow writes. The other metadata on an ORGANIZATION are org-level ISSUE fields
+# (setup-github-issue-fields.sh adds Product and the classification fields);
+# on a personal account (no org issue fields) this script creates Product as a
+# project field too. There is deliberately no Priority or Size project field on
+# either owner type (harmon-init#1451): Priority is an issue field on an organization and
+# a `priority:*` label on a personal account, and Size is retired in favour of
+# Effort and Complexity. Domain and Layer are deliberately NOT fields — the
 # `domain:`/`layer:` labels (setup-github-labels.sh) are their only surface
 # (#875).
 #
@@ -21,9 +22,10 @@
 # Usage:   setup-github-project.sh --owner <org-or-user-login> --title "<Project Title>"
 # Needs:   gh authed with the 'project' scope (gh auth refresh -s project) + jq.
 #
-# NOTE: this hits the live GitHub API, so it is not exercised by `task
-# test:template` (which never touches GitHub) — it is guarded by shellcheck +
-# shfmt only. Test it against a scratch project when changing it.
+# NOTE: `task test:template` runs scripts/test-setup-github-project.sh for the
+# full and minimal profiles, exercising this script against a stubbed `gh`.
+# Shellcheck + shfmt also guard it. CI never exercises the live GitHub API run,
+# so test it against a scratch project when changing it.
 set -euo pipefail
 
 owner=""
@@ -65,7 +67,7 @@ OUTPUT_FD=2
 # shellcheck source=scripts/lib/output.sh
 . "$script_dir/lib/output.sh"
 
-action_banner setup "GitHub Project" "Board, delivery pipeline, and planning fields"
+action_banner setup "GitHub Project" "Board and delivery pipeline"
 kv "Owner" "$owner"
 kv "Project" "$title"
 
@@ -143,7 +145,7 @@ case "$scopes_line" in
     esac
     printf '%s\n\n%s\n\n%s\n\n%s\n' \
         "This token cannot write GitHub Projects: 'gh auth status' reports no 'project' scope." \
-        "Every write below (the board, its Status pipeline, the Size field) would fail on
+        "Every write below (the board and its Status pipeline) would fail on
 the first API call. Fix it, then re-run:" \
         "$remedy" \
         "Note that read-only 'read:project' is enough to *see* a board but not to create
@@ -332,12 +334,12 @@ set_options() {
         >/dev/null
 }
 
-# A reused project may already carry a field with one of these names — of the
-# wrong data type. GitHub cannot change a project field's data type in place, so
-# its intended options are unavailable until it is renamed or deleted. Warn (and
-# repeat it in the summary) rather than exit non-zero: appending options to a
-# `text` field named `Domain` is impossible, and one pre-existing field is no
-# reason to abort the rest.
+# A reused project may already carry Status or Product — the only fields this
+# script reconciles — with the wrong data type. GitHub cannot change a project
+# field's data type in place, so the field stays unusable until it is renamed or
+# deleted. Warn (and repeat it in the summary) rather than exit non-zero:
+# appending options to a `text` field named `Status` is impossible, and one
+# pre-existing field is no reason to abort the rest.
 incompatible=""
 
 # Fields that are missing a starter option but have no room left for it.
@@ -396,8 +398,8 @@ finish_project() {
 
 # append_options NAME STARTERS — reconcile one existing single-select field: add
 # whatever starter option it lacks, keep everything else exactly as it is, and
-# write nothing when there is nothing to add. Used for Status and the custom
-# fields alike, so all of them get the same capacity guard and no-op behaviour.
+# write nothing when there is nothing to add. Status is the one single-select
+# this script manages, and it gets the capacity guard and the no-op behaviour.
 append_options() {
     name="$1"
     options_json="$2"
@@ -469,25 +471,8 @@ else
         >/dev/null
 fi
 
-# ── Custom fields: create if missing; an existing single-select is reconciled by
-#    append_options above. ──
-create_single_select() {
-    name="$1"
-    options_json="$2"
-    if field_exists "$name" SINGLE_SELECT; then
-        # A data-type mismatch already warned; options cannot be added to it.
-        if [ "$field_matched" = "1" ]; then
-            append_options "$name" "$options_json"
-        fi
-        return 0
-    fi
-    echo "    Creating single-select field '$name'"
-    frag=$(printf '%s' "$options_json" | jq -r "$opts_to_graphql")
-    gh api graphql -f p="$project_id" \
-        -f query="mutation(\$p:ID!){createProjectV2Field(input:{projectId:\$p,dataType:SINGLE_SELECT,name:\"$name\",singleSelectOptions:[$frag]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}" \
-        >/dev/null
-}
-
+# ── Custom fields: create if missing. Product is the only one, and a text field
+#    has no options to reconcile. ──
 create_text() {
     name="$1"
     if field_exists "$name" TEXT; then
@@ -502,55 +487,31 @@ create_text() {
         >/dev/null
 }
 
-create_number() {
-    name="$1"
-    if field_exists "$name" NUMBER; then
-        if [ "$field_matched" = "1" ]; then
-            echo "    Field '$name' already exists — leaving it as-is"
-        fi
-        return 0
-    fi
-    echo "    Creating number field '$name'"
-    gh api graphql -f p="$project_id" \
-        -f query="mutation(\$p:ID!){createProjectV2Field(input:{projectId:\$p,dataType:NUMBER,name:\"$name\"}){projectV2Field{... on ProjectV2FieldCommon{id}}}}" \
-        >/dev/null
-}
-
-# Size: a project NUMBER field for BOTH owner types — estimation points on the
-# Fibonacci ladder (1/2/3/5/8/13/21; the ladder is a convention, the field takes
-# free numeric entry). Project views can group/filter/sort by org ISSUE-field
-# columns, but group-header SUMS only work for project NUMBER fields — and the
-# per-group sum is Size's whole job (docs/project-management.md, Planning view).
-# GitHub's built-in Effort ISSUE field (single-select) is left at its default;
-# Size is the numeric, summable estimate.
-echo "==> Size project field (number — views sum it per group)"
-create_number "Size"
-
 # Other metadata: on an ORGANIZATION these are org-level ISSUE fields (durable —
 # the value is on the issue, shared across every project; see
-# docs/project-management.md). Priority is a GitHub built-in;
-# setup-github-issue-fields.sh adds Product. A personal account has no org
-# issue fields, so fall back to creating them as project fields here.
+# docs/project-management.md). Priority is a GitHub built-in, left as shipped;
+# setup-github-issue-fields.sh adds Product and the classification fields, and
+# the Effort ladder beside GitHub's own Effort options. A personal account has no
+# org issue fields, so Product falls back to a project field here.
 if [ "$owner_type" = "Organization" ]; then
-    echo "==> Other metadata are org issue fields (Priority/Effort built-ins, left at their defaults; run setup-github-issue-fields.sh for Product)"
+    echo "==> Other metadata are org issue fields (Priority is a GitHub built-in, left as shipped; run setup-github-issue-fields.sh for Product, the classification fields and the Effort ladder)"
     report_incompatible
     finish_project
     exit 0
 fi
 
-echo "==> Custom project fields (personal account; starters — re-runs append missing ones, never clobber yours)"
-create_single_select "Priority" '[
-  {"name":"Urgent","color":"RED","description":""},
-  {"name":"High","color":"ORANGE","description":""},
-  {"name":"Medium","color":"YELLOW","description":""},
-  {"name":"Low","color":"GRAY","description":""}
-]'
+echo "==> Custom project fields (personal account; re-runs never clobber yours)"
 create_text "Product"
-# There is deliberately no Agent field. Advisory agent routing is the
-# `suggest:*` label family (registry-driven via setup-github-labels.sh) plus
-# the `Status: Agent Queue` lane; the live claim is a `claim:*` label written
-# by the agent itself. A single-select field could carry neither answer without
-# duplicating the label vocabulary (docs/project-management.md, ADR 0005 D4).
+# There is deliberately no Priority or Size field, on either owner type (harmon-init#1451,
+# ADR 2026-09-30 D8). Priority is an issue field on an organization and a
+# `priority:*` label on a personal account, with Priority (AI) beside it; Size
+# is retired in favour of Effort and Complexity. A board that still carries
+# either is left exactly as it is — this script is additive and never deletes a
+# field — until the operator removes it (docs/CHECKLIST.md).
+# There is deliberately no Agent field. Which agent should take an issue is its
+# derived Tier (`tier:*`); the live claim is a `claim:*` label written by the
+# agent itself. A single-select field could carry neither answer without
+# duplicating the label vocabulary (docs/project-management.md, ADR 2026-08-07 D4).
 # There is likewise deliberately no Domain or Layer field (#875) — same
 # reasoning as Agent: the `domain:`/`layer:` labels in setup-github-labels.sh
 # are the only surface now. See docs/project-management.md, "Label or field?".

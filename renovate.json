@@ -1,8 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended"
+  ],
   "timezone": "America/Chicago",
-  "schedule": ["before 9am on Monday"],
+  "schedule": [
+    "* * * * 6",
+    "* 0-4 * * 0"
+  ],
+  "updateNotScheduled": false,
   "prConcurrentLimit": 10,
   "automerge": false,
   "dependencyDashboard": true,
@@ -14,27 +20,42 @@
     {
       "customType": "regex",
       "description": "Devcontainer Dockerfile ARG pins annotated with renovate comments",
-      "managerFilePatterns": ["/Dockerfile$/"],
+      "managerFilePatterns": [
+        "/Dockerfile$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+ARG \\w+=(?<currentValue>\\S+)"
       ]
     },
     {
       "customType": "regex",
-      "description": "Workflow tool pins — `version:`, `<tool>-version:` (e.g. setup-node's node-version) and `wranglerVersion:` styles",
-      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "description": "Workflow tool pins \u2014 `version:` and `<tool>-version:` (e.g. setup-node's node-version) styles",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+version:\\s*(?<currentValue>\\S+)",
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[\\w-]+[-_]version: \"?(?<currentValue>[^\"\\s]+)\"?",
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+wranglerVersion:\\s*\"(?<currentValue>[^\"]+)\""
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[\\w-]+[-_]version: \"?(?<currentValue>[^\"\\s]+)\"?"
       ]
     },
     {
       "customType": "regex",
       "description": "Workflow/composite-action and script tool pins, `FOO_VERSION=x.y.z` shell-variable style",
-      "managerFilePatterns": ["/^(\\.github/(actions|workflows)/.*\\.ya?ml|scripts/.*\\.sh)$/"],
+      "managerFilePatterns": [
+        "/^(\\.github/(actions|workflows)/.*\\.ya?ml|scripts/.*\\.sh)$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Z_]+_VERSION=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Per-architecture checksum pins, `*_sha256=<hex>` under a `# renovate: datasource=github-release-attachments ... digestVersion=<tag>` annotation, one annotated line per architecture. When the paired `*_VERSION` pin moves, Renovate bumps the tag and recomputes the hash of the same release asset in the same PR. digestVersion is the RAW release tag (v3.14.1, no extractVersion) because the datasource looks the release up by that exact tag.",
+      "managerFilePatterns": [
+        "/^\\.github/(actions|workflows)/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>github-release-attachments) depName=(?<depName>\\S+) digestVersion=(?<currentValue>\\S+)\\s+[a-z0-9_]+_sha256=(?<currentDigest>[0-9a-f]{64})"
       ]
     },
     {
@@ -50,8 +71,10 @@
     },
     {
       "customType": "regex",
-      "description": "Composite-action tool pins — a bare `version:` (setup-task) or a `<tool>-version:`/`<tool>_version:` input (setup-node, setup-tflint). The workflow manager above only looks at .github/workflows, so without this manager every pin in .github/actions/ is invisible to Renovate and silently frozen.",
-      "managerFilePatterns": ["/^\\.github/actions/.*\\.ya?ml$/"],
+      "description": "Composite-action tool pins \u2014 a bare `version:` (setup-task) or a `<tool>-version:`/`<tool>_version:` input (setup-node, setup-tflint). The workflow manager above only looks at .github/workflows, so without this manager every pin in .github/actions/ is invisible to Renovate and silently frozen.",
+      "managerFilePatterns": [
+        "/^\\.github/actions/.*\\.ya?ml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+version:\\s*(?<currentValue>\\S+)",
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[\\w-]+[-_]version: \"?(?<currentValue>[^\"\\s]+)\"?"
@@ -61,38 +84,99 @@
   "packageRules": [
     {
       "description": "Never auto-merge anything",
-      "matchPackageNames": ["*"],
+      "matchPackageNames": [
+        "*"
+      ],
       "automerge": false
     },
     {
       "description": "Wait 3 days before proposing any update",
-      "matchPackageNames": ["*"],
+      "matchPackageNames": [
+        "*"
+      ],
       "minimumReleaseAge": "3 days"
     },
     {
       "description": "Batch all GitHub Actions updates into one PR",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "GitHub Actions"
     },
     {
-      "description": "Batch regex-managed workflow and composite-action updates into one PR — the composite action provisions the same CI toolchain the workflows do, so its pins belong in the same batch",
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": [".github/workflows/**", ".github/actions/**"],
+      "description": "Batch regex-managed workflow and composite-action updates into one PR \u2014 the composite action provisions the same CI toolchain the workflows do, so its pins belong in the same batch",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchFileNames": [
+        ".github/workflows/**",
+        ".github/actions/**"
+      ],
       "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Give the checksum-pinned CI lint tools (shellcheck, shfmt, actionlint, yq, gitleaks) their own PR instead of the batched GitHub Actions group: their pins carry companion values (per-architecture hashes; for a formatter, what counts as correctly formatted), so one red lint-tool bump must not hold every Actions update back. Must come after the GitHub Actions grouping rules so this override wins.",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "koalaman/shellcheck",
+        "mvdan/sh",
+        "rhysd/actionlint",
+        "mikefarah/yq",
+        "gitleaks/gitleaks"
+      ],
+      "matchFileNames": [
+        ".github/**"
+      ],
+      "groupName": "CI lint tools",
+      "prBodyNotes": [
+        "Checksums move with their versions: every `*_sha256` pin carries a `github-release-attachments` annotation, so this PR should already contain the new hashes. If `task check` (scripts/test-tool-pin-pairs.sh) reports a hash left behind, retry this PR from the Dependency Dashboard rather than hand-editing the hash.",
+        "A formatter bump (shfmt) can change what `task check` accepts: run `task fix` and push the reformat as a separate commit; do not amend Renovate's commit."
+      ]
     },
     {
       "description": "Eject anthropics/claude-code-action from the batched GitHub Actions group and skip the 3-day release-age wait. It ships near-daily first-party releases, so grouping + minimumReleaseAge kept the whole Actions batch perpetually pending on the renovate/stability-days gate. Must come after the GitHub Actions group rules so this override wins.",
-      "matchPackageNames": ["anthropics/claude-code-action"],
+      "matchPackageNames": [
+        "anthropics/claude-code-action"
+      ],
       "groupName": null,
       "minimumReleaseAge": "0 days"
     },
     {
       "description": "Batch all Docker image updates into one PR",
-      "matchDatasources": ["docker"],
+      "matchDatasources": [
+        "docker"
+      ],
       "groupName": "Docker images"
     },
     {
-      "description": "Batch all devcontainer updates (base image + annotated tools) into one PR — must come after the Docker images rule so the base image lands here instead. The devcontainer-coupled scripts are listed explicitly (NOT scripts/** — that would couple unrelated pins like markdownlint-cli2 and pip-audit to this batch): the devcontainer CLI wrappers, plus run-semgrep.sh because semgrep is pinned in both the Dockerfile and that script and must move in one PR",
+      "description": "Keep Ubuntu pinned to 24.04 LTS for remote-bootstrap environment parity; digest updates only",
+      "matchPackageNames": [
+        "ubuntu"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Surface harmon-devkit releases for deliberate pin-and-sync updates",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "evanharmon1/harmon-devkit"
+      ],
+      "groupName": "harmon-devkit skills",
+      "dependencyDashboardApproval": true,
+      "dependencyDashboardCategory": "Agent skills",
+      "prBodyNotes": [
+        "This repository is the skills source and uses source dogfood links. Keep those links intact; do not self-vendor. A consumer pin-and-sync refresh does not apply here."
+      ]
+    },
+    {
+      "description": "Batch all devcontainer updates (base image + annotated tools) into one PR \u2014 must come after the Docker images rule so the base image lands here instead. The devcontainer-coupled scripts are listed explicitly (NOT scripts/** \u2014 that would couple unrelated pins like markdownlint-cli2 and pip-audit to this batch): the devcontainer CLI wrappers, plus run-semgrep.sh because semgrep is pinned in both the Dockerfile and that script and must move in one PR",
       "matchFileNames": [
         ".devcontainer/**",
         "scripts/devcontainer-assert.sh",
@@ -100,6 +184,17 @@
         "scripts/run-semgrep.sh"
       ],
       "groupName": "Devcontainer"
+    },
+    {
+      "description": "Batch prettier (with its plugins and shared config), markdownlint-cli2, and Black together as \"Formatters\": a formatter bump can reformat every file it touches with no code change behind it, so it gets its own PR and its own reminders rather than riding the generic npm/majors batches. Always present \u2014 markdownlint-cli2 is not gated by use_node \u2014 but must come after the npm major/non-major split above so a prettier major still lands here instead of getting its own solo PR (no other rule here matches these names, so ordering against ESLint/Astro/CI lint tools/Devcontainer is otherwise moot). shfmt is already isolated in the 'CI lint tools' group (#1352) and is deliberately not duplicated here.",
+      "matchPackageNames": [
+        "markdownlint-cli2"
+      ],
+      "groupName": "Formatters",
+      "prBodyNotes": [
+        "Run `task fix` and commit the reformat as a separate commit from this dependency bump; do not amend Renovate's commit.",
+        "web-astro only: before merging, run `task test:render-parity` \u2014 a prettier-plugin-astro bump can silently reflow whitespace-sensitive inline markup when this repo's `astroCompressHTML` setting (prettier.config.cjs) disagrees with `astro.config`'s `compressHTML` (see docs/CHECKLIST.md and scripts/test-astro-compress-parity.sh)."
+      ]
     }
   ]
 }

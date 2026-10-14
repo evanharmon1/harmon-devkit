@@ -27,9 +27,9 @@ concurrency:
 # inherit whatever this repository's ambient default token permission is
 # (which can be "read and write", including `packages`, entirely outside
 # this file's control) while checking out and executing scripts from the
-# queued candidate tree. `build`, `build-merge-group`, and
-# `devcontainer-assert-bot` each declare their own job-level block, which
-# always overrides this default for that job.
+# queued candidate tree. `build`, `build-merge-group`,
+# `devcontainer-assert-bot`, and `devcontainer-assert-agent` each declare their
+# own job-level block, which always overrides this default for that job.
 permissions:
   contents: read
 
@@ -125,6 +125,9 @@ jobs:
           - name: dev
             config_file: .devcontainer/dev/devcontainer.json
             image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer-dev
+          - name: agent
+            config_file: .devcontainer/agent/devcontainer.json
+            image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -218,6 +221,9 @@ jobs:
           - name: dev
             config_file: .devcontainer/dev/devcontainer.json
             image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer-dev
+          - name: agent
+            config_file: .devcontainer/agent/devcontainer.json
+            image_name: ghcr.io/evanharmon1/harmon-devkit-devcontainer-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -264,9 +270,7 @@ jobs:
   # bot-autonomy.sh verify inside it (via devcontainer-smoke.sh, which shares
   # this workflow's registry build cache, so this is a cache hit, not a full
   # rebuild), so every supported installed harness's effective policy is
-  # actually checked, not just its source files.
-  # (https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap/design.md -
-  # Non-Goals): #1137's fail-closed guarantee is satisfied by
+  # actually checked, not just its source files. #1137's fail-closed guarantee is satisfied by
   # apply/verify failing container creation/start directly; this job adds a
   # second, PR-visible signal on top. Deliberately NOT part of the local
   # `task ci` mirror — see docs/architecture/ci-cd.md and AGENTS.md's
@@ -331,12 +335,63 @@ jobs:
           TS_AUTHKEY: ""
         run: ./scripts/devcontainer-smoke.sh .devcontainer/devcontainer.json
 
+  # The AGENT posture's live proof (#1408), the counterpart of
+  # devcontainer-assert-bot above and gated on the same trust predicates for
+  # the same reasons: devcontainer-smoke.sh starts a real agent container,
+  # whose post-create/post-start install the default-deny egress filter and
+  # the agent harness policy (failing the start if either cannot be
+  # installed), and devcontainer-assert.sh's agent branch then proves an
+  # allowlisted host is reachable, a host outside the list is refused and
+  # recorded, refused harnesses stay refused, and no bot/operator credential or
+  # Docker reached the container. Deliberately NOT part of the local
+  # `task ci` mirror (CI-only infrastructure, like devcontainer-assert-bot);
+  # `task test:devcontainer:agent` runs the same smoke on demand.
+  devcontainer-assert-agent:
+    needs: [devcontainer-changes, build]
+    if: >-
+      needs.devcontainer-changes.outputs.changed == 'true' &&
+      github.event_name != 'merge_group' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              networkMode = "host"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Free up runner disk space
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/share/swift
+          sudo docker image prune --all --force || true
+          df -h /
+      - name: Assert the agent posture (egress, harness refusal, secrets, Docker) in a running agent container
+        env:
+          CODER: ""
+          GH_TOKEN: ""
+          AGENT_GH_TOKEN: ""
+          TS_AUTHKEY: ""
+        run: ./scripts/devcontainer-smoke.sh .devcontainer/agent/devcontainer.json
+
   devcontainer-verify:
     # The REQUIRED status check. `if: always()` so it reports on every
     # event — including the unrelated-path runs that used to be filtered
     # away, which is what lets it be required at all.
     if: always()
-    needs: [devcontainer-changes, build, build-merge-group, devcontainer-assert-bot]
+    needs: [devcontainer-changes, build, build-merge-group, devcontainer-assert-bot, devcontainer-assert-agent]
     # merge_group is pinned to GitHub-hosted regardless: for that event this
     # job checks out and runs scripts/verify-ci-results.sh from the queued
     # candidate tree, which can carry fork-authored content — see
@@ -349,6 +404,7 @@ jobs:
       BUILD_RESULT: ${{ needs.build.result }}
       BUILD_MERGE_GROUP_RESULT: ${{ needs.build-merge-group.result }}
       ASSERT_RESULT: ${{ needs.devcontainer-assert-bot.result }}
+      AGENT_ASSERT_RESULT: ${{ needs.devcontainer-assert-agent.result }}
     steps:
       # Never check out or run fork-controlled repository code on this path.
       - name: Verify deliberate skips at the untrusted-fork boundary
@@ -365,6 +421,7 @@ jobs:
           check_skipped build "$BUILD_RESULT"
           check_skipped build-merge-group "$BUILD_MERGE_GROUP_RESULT"
           check_skipped devcontainer-assert-bot "$ASSERT_RESULT"
+          check_skipped devcontainer-assert-agent "$AGENT_ASSERT_RESULT"
           if [ "$fail" -ne 0 ]; then
             exit 1
           fi
@@ -391,7 +448,8 @@ jobs:
           ./scripts/verify-ci-results.sh \
             "build=${BUILD_RESULT}" \
             "build-merge-group=${BUILD_MERGE_GROUP_RESULT}" \
-            "devcontainer-assert-bot=${ASSERT_RESULT}"
+            "devcontainer-assert-bot=${ASSERT_RESULT}" \
+            "devcontainer-assert-agent=${AGENT_ASSERT_RESULT}"
           echo "No devcontainer-relevant changes in this range — the build and assertion jobs were deliberately skipped."
       # build and build-merge-group are mutually exclusive by event (never
       # both applicable), so exactly one of these two steps' checks runs.
@@ -414,8 +472,11 @@ jobs:
       # boundary there (see devcontainer-assert-bot above). Its expected
       # result is derived from that same predicate, so `skipped` is never
       # merely tolerated.
-      - name: Verify the container assertion matched its predicate
+      - name: Verify the container assertions matched their predicate
         if: env.IS_FORK != 'true' && env.CHANGED != 'false'
         env:
           EXPECTED_RESULT: ${{ github.event_name != 'merge_group' && 'success' || 'skipped' }}
-        run: ./scripts/verify-ci-results.sh "devcontainer-assert-bot=${ASSERT_RESULT}"
+        run: |
+          ./scripts/verify-ci-results.sh \
+            "devcontainer-assert-bot=${ASSERT_RESULT}" \
+            "devcontainer-assert-agent=${AGENT_ASSERT_RESULT}"

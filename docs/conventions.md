@@ -183,6 +183,12 @@ skill at authoring time and by the **tracking guard**
   is the leaf: `lint:shell`, `lint:typescript`, `test:e2e`, `security:secrets`,
   `install:hooks`, `status:git`. **Never action-first** (`typescript:lint`,
   `yaml:lint`).
+- Use `{{.ROOT_DIR}}` for repository paths, including inside included taskfiles;
+  `{{.TASKFILE_DIR}}` for paths relative to the taskfile's own directory; and
+  `{{.USER_WORKING_DIR}}` when deliberately using the caller's directory.
+  Never `{{.PWD}}` — the caller's working directory is not the repository when
+  a task runs through `task -d`, a worktree tool, or an agent.
+  `test:tasks` rejects `{{.PWD}}` references in Taskfiles.
 - Pipeline order is **`check → build → validate → test → security`**, with
   `verify` (the definition-of-done gate — check + validate + test) and
   `ci` (full — verify + security) as the aggregates. `check` is the
@@ -231,12 +237,27 @@ skill at authoring time and by the **tracking guard**
 - **Pin third-party actions by full commit SHA** with a trailing `# vX.Y.Z`
   comment, and annotate tool versions with `# renovate: datasource=…` so
   Renovate keeps them current.
+- **A checksum-pinned download moves as a pair.** Each per-architecture
+  `*_sha256=` line sits under a `# renovate: datasource=github-release-attachments
+  depName=<owner/repo> digestVersion=<tag>` annotation (the raw release tag),
+  and the version line and every hash line carry a trailing
+  `# pin-pair: <tool>`. Renovate then moves version, tag and hashes in one PR;
+  `task lint:pin-pairs` (in `task check`) fails a change that bumps the version
+  and leaves a hash behind.
 - Third-party CI/SaaS integrations that require an account, app installation,
   trial, or payment must be explicit opt-ins that default off. Document free-tier
   and private-repository limitations before adding them to generated output.
 - **Least-privilege `permissions:`** per job; never log secrets.
 - CI authenticates as the **`evanharmon1-ci` GitHub App** (short-lived
   tokens), not a PAT — see [architecture/security.md](architecture/security.md).
+
+### When a grouped Renovate PR goes red
+
+Identify the suspect major from the failing job, revert only that package on
+the Renovate branch, and rerun `task verify`. Repeat until the remaining group
+is green. If a major is genuinely incompatible, file a narrowly scoped hold
+rule with the upstream compatibility condition and removal trigger instead of
+leaving the whole group blocked.
 
 ## Secrets
 
@@ -283,6 +304,30 @@ skill at authoring time and by the **tracking guard**
   `docs/guides/` (build it) · `docs/runbooks/` (operate it). Folder landing
   pages within `docs/` are `index.md`.
 
+## Issues
+
+- **Agent-authored issues arrive fully classified, except Priority.** This is
+  the contract. An agent that files an issue sets Impact, Risk and Complexity,
+  the Type (or work-type label), and one `area:*`, `layer:*` and `domain:*`
+  label (or that family's `none`) in the same write that creates it, plus the
+  Tier derived from Risk and Complexity, so the issue is **triaged** from the
+  start. It never sets Priority: that is the human's ranking, and an issue
+  without one is not startable by an agent. Priority (AI) is a separate,
+  optional suggestion an agent may add. The skills that write these axes at
+  filing are not all shipped: until harmon-devkit#1250 (triage), #1251
+  (track-work) and #1252 (breakdown) reach a skills-pin bump, set Impact, Risk
+  and Complexity by hand and do not write a derived Tier label, which the
+  reconciler derives.
+- **`needs-triage` is added at filing, then derived.** Whoever files an issue
+  that is not fully classified adds it at filing: the issue forms, people and
+  agents alike. It is present while any required classification is missing and
+  absent once all are present. After filing it is derived and nobody clears it
+  by hand: the classification reconciler maintains it, and so do the skills once
+  their pin carries the writers above. Do not hand-edit a derived Tier either: a
+  human who disagrees with it pins one with `tier:pinned`. The axes, the triaged
+  predicate and the Tier derivation are in
+  [project-management.md](project-management.md#classification).
+
 ## Releases
 
 - Releases are intentional via **release-please**: merge the rolling release PR
@@ -303,7 +348,9 @@ skill at authoring time and by the **tracking guard**
   the change. Retitle with `fix:`/`feat:` rather than bypass. Automated dependency
   PRs (Renovate/Dependabot) are skipped.
 - **Closing an issue is guarded separately.** The `closing-keywords` job in
-  `build.yml` reads only PR and issue metadata with a read-only token, and scans
+  `closing-keywords.yml` — its own workflow, so that it can keep the
+  `pull_request.edited` trigger `build.yml` deliberately drops — reads only PR
+  and issue metadata with a read-only token, and scans
   the PR title, body, and every commit message for
   `Closes`/`Fixes`/`Resolves` references.
   A bare `#N` is same-repository work: the gate refuses it while issue `#N`

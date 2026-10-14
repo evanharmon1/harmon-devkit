@@ -1,0 +1,22 @@
+{
+  "schema": 2,
+  "run_id": "run-split",
+  "stage": "integration",
+  "round": 1,
+  "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "adjudications": [
+    {
+      "finding_id": "integration-r1-codex-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P1",
+      "disposition": "split",
+      "reason": "Remove the mechanism and file it on the current milestone.",
+      "evidence": "Successive findings concentrate in scripts/mechanism.mjs.",
+      "override": null,
+      "reference": {
+        "type": "issue_number",
+        "value": "1617"
+      }
+    }
+  ]
+}

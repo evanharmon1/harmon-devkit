@@ -196,6 +196,25 @@ run_launcher "$db_prof" harmon-init
 grep -q 'token' <<<"$out" ||
     fail "the ambiguous message does not mention the token: ${out}"
 
+# ---- 2c. the agent posture is a third, distinct profile ----
+# The agent config (.devcontainer/agent/) shares the same container path and
+# authority as bot and dev; it must list as its own line and be selectable.
+echo "==> the agent posture lists distinctly from the bot and dev profiles"
+uri_agent="$(dc_uri /srv/coder/harmon-init ssh-remote+devbox /workspaces/harmon-init \
+    + /srv/coder/harmon-init/.devcontainer/agent/devcontainer.json)"
+db_three="$(make_db three "{\"entries\":[{\"folderUri\":\"${uri_dev}\"},{\"folderUri\":\"${uri_bot}\"},{\"folderUri\":\"${uri_agent}\"}]}")"
+three="$(VSCODE_STATE_DB="$db_three" bash "$launcher" 2>/dev/null)"
+[ "$(printf '%s\n' "$three" | grep -c .)" -eq 3 ] ||
+    fail "expected all three profiles listed, got: ${three}"
+[ "$(printf '%s\n' "$three" | sort -u | grep -c .)" -eq 3 ] ||
+    fail "two of the three profiles rendered identically: ${three}"
+grep -q 'config .devcontainer/agent/devcontainer.json' <<<"$three" ||
+    fail "the agent posture's config path was not decoded: ${three}"
+run_launcher "$db_three" agent/devcontainer.json
+[ "$rc" -eq 0 ] || fail "selecting the agent posture by config path exited ${rc}: ${out}"
+grep -qF -- "--folder-uri ${uri_agent}" <<<"$out" ||
+    fail "the agent config-path match launched the wrong profile: ${out}"
+
 # ---- 3. an ambiguous match refuses, and shows what to choose between ----
 # Silently opening the first of several is the failure mode worth designing
 # against: it is indistinguishable from success until the wrong window opens.

@@ -73,6 +73,11 @@ environment — against the items below
       previously used it, remove this repo from the CodeRabbit GitHub App
       installation. Deleting `.coderabbit.yaml` and bot trust does not revoke
       existing App access.
+- [ ] **[human-only] Connect Gemini Code Assist on GitHub** — in Google Cloud
+      Console (under your foundation project), navigate to **Gemini Code Assist →
+      Agents & Tools → Code Assist Source Code Management**, create/select the
+      connection in `us-east1`, install the Gemini Code Assist GitHub App for
+      this repository, and complete the Cloud-side repository link.
 - [ ] **[human-only] Connect Codex cloud review** — connect this repository in
       ChatGPT Codex settings, grant private-repository access if applicable,
       and confirm review activity is authored by GitHub actor ID `199175422`
@@ -183,23 +188,36 @@ environment — against the items below
       devcontainer prebuild populates `ghcr.io/evanharmon1/harmon-devkit-devcontainer` on merge to main
 - [ ] GitHub Project: run `task setup:github-project` (needs
       `gh auth refresh -s project`) to create the owner's default project (titled
-      `evanharmon1 Project`) and idempotently sync its `Status` pipeline and
-      `Size` number field — see
-      [project-management.md](project-management.md).
-      On a personal account it also creates Priority/Product/Size as project
-      fields (issue fields are org-only; there is deliberately no Domain or
-      Layer field — see [project-management.md](project-management.md), "Label
-      or field?"); status automation is a separate follow-up — the board is set
-      up, but issue/PR status isn't auto-synced yet. Re-runs **append** any
-      starter option a single-select field is missing (so a value added by a
-      later harmon-init release lands on the next run) and never touch,
-      reorder, or delete the options you added.
+      `evanharmon1 Project`) and idempotently sync its `Status` pipeline —
+      see [project-management.md](project-management.md).
+      On a personal account it also creates Product as a project field (issue
+      fields are org-only; there is deliberately no Priority, Size, Domain, or
+      Layer field — see [project-management.md](project-management.md),
+      "Fields" and "Label or field?"); status automation is a separate
+      follow-up — the board is set up, but issue/PR status isn't auto-synced
+      yet. Re-runs **append** any starter option the Status field is missing
+      (so a value added by a later harmon-init release lands on the next run)
+      and never touch, reorder, or delete the options you added.
 - [ ] **Upgrading from a release before harmon-init#875?**
       If this repo's board still carries `Domain`/`Layer` fields from an
       earlier release, they are not deleted automatically.
       Retiring them is a deliberate, irreversible operator step — see
       [project-management.md](project-management.md), "Migrating a board that
       still has one."
+- [ ] **[human-only] Delete the `Priority` and `Size` project fields on an
+      existing board** — only if this repo's board was set up by a release
+      before harmon-init#1451; they are not deleted automatically, and
+      deleting a field destroys every value on it, unrecoverably. Do it after
+      the classification labels exist (on a personal account,
+      `task setup:github-labels` provisions the `priority:*` labels that
+      replace `Priority`, plus `priority-ai:*` for the AI's separate
+      suggestion beside it) and
+      after enumerating every board and view that references each field
+      (harmon-init#910), as [project-management.md](project-management.md),
+      "Migrating a board that still has one" (the Priority / Size entry) lays
+      out. On a personal account both fields go; on an organization only `Size`
+      was ever a project field — its `Priority` is GitHub's built-in issue
+      field and stays.
 - [ ] **Upgrading from a release before harmon-init#1047
       (`method:*` → `strategy:*`)?** Run `task setup:github-labels` first so
       the `strategy:*` destinations exist, then use the read-only report and
@@ -217,7 +235,18 @@ environment — against the items below
       is product-independent and normally needs no edits. Labels are per-repo,
       so run it in each repo; org default labels (org Settings → Repository,
       UI-only) only seed new repos.
-- [ ] **After a `copier update` that adds label families** (e.g. `tier:*` — a
+- [ ] **[human-only] Pin any hand-applied Tier before the first classification
+      write** — on an existing repository an unqualified `tier:<value>` label
+      used to be a human's implementer override; it is now the cache automation
+      rewrites. On an unpinned issue with Risk and Complexity set, a writer of
+      those axes (such as the triage skill, once its pin carries
+      harmon-devkit#1250) adds the derived Tier and removes every other tier
+      label.
+      The classification reconciler does the same on its schedule (daily on a
+      personal-account repository, monthly on an organization one).
+      Before that first write, add `tier:pinned` to each open issue whose
+      hand-set tier label you want to keep.
+- [ ] **After a `copier update` that adds label families** (e.g. `impact:*` — a
       pure addition), re-run `task setup:github-labels` to provision the new
       labels here — it is additive and never deletes, so existing labels and
       the issues they sit on are untouched — then classify open issues with the
@@ -242,11 +271,17 @@ environment — against the items below
       run. `--report-unregistered` is read-only, but its counts are a snapshot;
       run it again immediately before `--prune`.
 
+      `suggest:*` (superseded by the derived Tier) and `tier:adaptive` (no rung
+      on the Tier scale) have no `--migrate` destination, and the command
+      refuses one: remove the label from every issue, pull request and
+      discussion that carries it (an issue then resolves through its derived
+      Tier), then run `--prune`.
+
       For fixed-family sources, these mappings are authoritative:
       `agent:claude-code` → `claim:claude`, `agent:codex` → `claim:gpt`,
       `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`, `agent:qwen-code` →
-      `claim:qwen`, `suggest:codex` → `suggest:gpt`, and `claim:codex` →
-      `claim:gpt`. Pass one repeatable `--migrate OLD=NEW` per exact live
+      `claim:qwen`, and `claim:codex` → `claim:gpt`. Pass one repeatable
+      `--migrate OLD=NEW` per exact live
       source, together with `--prune`; for example,
       `./scripts/setup-github-labels.sh --repo <owner/repo> --prune
       --migrate agent:gemini-cli=claim:gemini`. `--migrate` does not match a
@@ -254,8 +289,8 @@ environment — against the items below
       `OLD=NEW` form contains exactly one `=`; a label name containing `=` must
       be relabeled per record instead of passed to bulk migration. Move only
       the family segment for fixed mappings and preserve the recorded model
-      suffix, e.g. `suggest:codex:sol` → `suggest:gpt:sol` and
-      `claim:codex:sol` → `claim:gpt:sol`; model-level labels refine rather
+      suffix, e.g. `claim:codex:sol` → `claim:gpt:sol`; model-level labels
+      refine rather
       than replace their family-level label, and the command retains or adds
       both associations. If a recognized model-level
       destination is absent, the command creates it after confirmation by
@@ -271,7 +306,7 @@ environment — against the items below
       shows the source has zero associations. Enumerate
       model-level names explicitly with `gh label list --repo <owner/repo>
       --limit 1000 --json name --jq '.[].name' | grep -E
-      '^(suggest|claim):(codex|copilot):'`; for each source, inspect all-state
+      '^claim:(codex|copilot):'`; for each source, inspect all-state
       `gh issue list --label <old> --state all --limit 1000` **and**
       `gh pr list --label <old> --state all --limit 1000`. An exactly-full
       manual result is capped; increase the limit and rerun before writes. The
@@ -280,16 +315,13 @@ environment — against the items below
 
       Copilot is a broker, not a fixed family: `mai` is only the picker default
       and is never a guessed destination. Do **not** pass
-      `agent:github-copilot*`, `suggest:copilot*`, or `claim:copilot*` to bulk
+      `agent:github-copilot*` or `claim:copilot*` to bulk
       `--migrate` — the command rejects broker-derived sources because one
-      destination cannot represent mixed runtime records. For
-      `suggest:copilot`, there is no claim/session record: re-express each
-      issue/PR's planning intent as `suggest:<actual-family>` or drop the old
-      association; do not rename it to `suggest:mai`. For `claim:copilot`,
+      destination cannot represent mixed runtime records. For `claim:copilot`,
       inspect each issue/PR's claim/session record and relabel that record to
       `claim:<actual-family>`; use `claim:mai` only when the record confirms
       MAI. Apply the same per-record distinction to
-      `suggest:copilot:<model>`/`claim:copilot:<model>` and preserve a model
+      `claim:copilot:<model>` and preserve a model
       suffix only after the actual family is known. Include Discussions in that
       per-record inventory: the read-only report gives their association count,
       and the Discussions UI or GraphQL API identifies the records to relabel.
@@ -316,10 +348,11 @@ environment — against the items below
       the operation as incomplete, reconcile live associations, and rerun in a
       new quiet window; do not infer association preservation from a successful
       exit alone; this is a guarded best-effort operation at that API boundary.
-- [ ] Project views: create the starter views (Board / Triage / Agent queue /
-      Planning / Mine) in the Project UI — Projects V2 has no view API,
-      so this is a one-time manual step. Filters/layouts are in
-      [project-management.md](project-management.md).
+- [ ] Project views: create the starter views that the Views section of
+      [project-management.md](project-management.md) specifies — including
+      Needs review and Human queue — in the Project UI. Projects V2 has no view
+      API, so this is a one-time manual step; the filters and layouts are in
+      that section.
 - [ ] GitHub Project auto-add (**adds every issue to the board**): in the
       Project's **Settings → Workflows**, turn on **"Auto-add to project"** and
       point it at this repo (filter `is:issue`, `is:pr`) so *every* new issue and
@@ -344,7 +377,10 @@ environment — against the items below
       `GH_TOKEN` for the bot profile and `TS_AUTHKEY` for the dev one — the dev
       profile carries no `GH_TOKEN` and runs `gh auth login` instead.
       `init-env.sh` enforces the per-profile
-      allow-list; on Coder the values come from workspace parameters. See
+      allow-list; on Coder the values come from workspace parameters. The
+      agent posture's `.devcontainer/agent/devcontainer.env` takes only
+      `AGENT_GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` (plus opted-in provider
+      keys) and refuses to build with anything else. See
       [guides/devcontainers.md](guides/devcontainers.md)
 
 ## 5. Docs & meta

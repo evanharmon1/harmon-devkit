@@ -4394,6 +4394,8 @@ else
     rc=$?
     [ "$rc" -eq 1 ] || fail "missing canonical run: expected exit 1, got $rc"
 fi
+jq -e '.status == "run-not-found" and .run_id == "run-999-missing"' "$tmp/missing-run.out" >/dev/null ||
+    fail "missing canonical run: expected definitive JSON not-found signal"
 grep -Fq 'run "run-999-missing" not found (searched issue #999 in o/r)' "$tmp/missing-run.err" ||
     fail "missing canonical run: expected targeted run-not-found diagnostic"
 unset DFSTATS_GH_LOG

@@ -1,30 +1,19 @@
-# Bot-profile managed config. Structurally derived from
-# codex-managed-config.toml (the shared human/bot baseline): every key here
-# matches that file except sandbox_mode and approval_policy, enforced by
-# scripts/test-bot-autonomy.sh's structural parity test. Docker is the outer
-# isolation boundary in this profile, so there is no nested sandbox and no
-# interactive approval prompt.
-model = "gpt-6.1-sol"
-model_reasoning_effort = "medium"
-project_doc_max_bytes = 65536
+# Bot-profile BOUNDARY policy, installed to /etc/codex/managed_config.toml.
+# Structurally derived from codex-managed-config.toml (the shared human/bot
+# baseline): every key here matches that file except sandbox_mode and
+# approval_policy, enforced by scripts/test-bot-autonomy.sh's structural
+# parity test. Docker is the outer isolation boundary in this profile, so
+# there is no nested sandbox and no interactive approval prompt.
+#
+# Same rule as the shared file: this is Codex's legacy MDM layer, so every key
+# is an unoverridable requirement. Overridable defaults live in
+# codex-system-config.toml (/etc/codex/config.toml). See harmon-init#1186.
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 approvals_reviewer = "auto_review"
 
 [features]
 hooks = true
-
-[tui]
-status_line = [
-  "project-name",
-  "git-branch",
-  "model-with-reasoning",
-  "context-remaining",
-  "five-hour-limit",
-  "weekly-limit",
-  "used-tokens",
-  "run-state",
-]
 
 # Managed hooks are deliberately limited to policies implemented entirely by
 # image-owned scripts. Startup/context and formatter hooks delegate into the
