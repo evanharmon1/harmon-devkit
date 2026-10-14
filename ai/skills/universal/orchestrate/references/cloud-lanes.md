@@ -192,7 +192,8 @@ records the attach error above. Teleport was not tested.
 The post-shipping end-to-end check ran from 2026-10-12 to 2026-10-14 and ended
 in [harmon-devkit#1465](https://github.com/evanharmon1/harmon-devkit/pull/1465).
 Its fourth launch worked end to end: the orchestrator launched it with no human
-step, saw its pushed branch through GitHub, and carried the work to a draft PR.
+step under a pseudo-terminal into the `/remote-env` default, saw its pushed
+branch through GitHub, and carried the work to a draft PR.
 The lane pushed exactly its planned `claude/*` branch, as the account's
 `/web-setup` identity, and reported in its commit body. That lane was not
 messaged. Messaging with `claude -p … --cloud <id>` was exercised on the first
@@ -201,6 +202,8 @@ what it did. The lane's `Claude-Session` commit trailer named a different
 session ID from the one its launch printed; which one identifies the session
 was not established. Of the three earlier launches, the first and third had no
 GitHub credential that reached the repository, so the platform uploaded the
-checkout with no `origin`. The second was abandoned before it reported, when
-the CLI was found signed in to a different account from the one holding the
-credential.
+checkout with no `origin`: the first account's GitHub connection did not cover
+the repository, and the third ran after the account's GitHub connector had been
+disconnected following `/web-setup`. The second was abandoned before it
+reported, when the CLI was found signed in to a different account from the one
+holding the credential.
