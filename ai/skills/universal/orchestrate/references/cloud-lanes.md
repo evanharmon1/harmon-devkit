@@ -187,9 +187,10 @@ records the attach error above. Teleport was not tested.
 
 The post-shipping end-to-end check ran on 2026-10-14, on
 [harmon-devkit#1465](https://github.com/evanharmon1/harmon-devkit/pull/1465).
-The orchestrator launched a cloud lane with no human step, messaged it with
-`claude -p … --cloud <id>`, saw its pushed branch through GitHub, and carried the
-work to a draft PR. The lane pushed exactly its planned `claude/*` branch, as the
+The orchestrator launched a cloud lane with no human step, saw its pushed
+branch through GitHub, and carried the work to a draft PR. Messaging with
+`claude -p … --cloud <id>` was exercised on the run's first launch, where a
+steering note and two rulings reached the session and changed what it did. The lane pushed exactly its planned `claude/*` branch, as the
 account's `/web-setup` identity, and reported in its commit body. The session
 honoured the pinned model and effort. Three earlier launches failed for the
 reason the preconditions name: the CLI's own account lacked a GitHub credential,
