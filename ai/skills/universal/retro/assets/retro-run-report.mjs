@@ -45,7 +45,7 @@
 // that was never recorded (challenge round 1, confirmed P1).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync, statSync, constants, openSync, fstatSync, closeSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, mkdtempSync, writeFileSync, rmSync, statSync, constants, openSync, fstatSync, closeSync, readlinkSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -1561,6 +1561,9 @@ function renderLocalUnverified(args, runId, requestedPr) {
   if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
     throw new LocalRefusalError('local no-follow reads are unavailable on this platform')
   }
+  if (process.platform !== 'linux') {
+    throw new LocalRefusalError('local descriptor containment cannot be established on this platform')
+  }
   const file = path.join(runDirectory, 'run.json')
   let fd
   let resolved
@@ -1568,18 +1571,26 @@ function renderLocalUnverified(args, runId, requestedPr) {
   try {
     // O_NONBLOCK prevents a replaced FIFO from blocking before fstat refuses it.
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-    if (!fstatSync(fd).isFile()) throw new LocalRefusalError('local run.json is not a regular file')
-    // Resolve the OPEN object, including any ancestor symlink followed by open.
-    // Never check one pathname and then read another. Platforms without a
-    // resolvable descriptor path refuse rather than guessing containment.
-    const descriptorPath = process.platform === 'linux' ? `/proc/self/fd/${fd}` : `/dev/fd/${fd}`
+    const fileStat = fstatSync(fd, { bigint: true })
+    if (!fileStat.isFile()) throw new LocalRefusalError('local run.json is not a regular file')
+    // One kernel readlink describes the open object. realpath would walk that
+    // returned path again, letting renamed ancestors redirect the proof.
+    let pathStat
     try {
-      resolved = realpathSync(descriptorPath)
-    } catch {
+      resolved = readlinkSync(`/proc/self/fd/${fd}`)
+      if (!path.isAbsolute(resolved) || resolved.endsWith(' (deleted)')) {
+        throw new LocalRefusalError('local descriptor containment cannot be established')
+      }
+      if (!isLocalPathInside(parent, resolved)) {
+        throw new LocalRefusalError('local run.json descriptor resolves outside --record-dir')
+      }
+      pathStat = lstatSync(resolved, { bigint: true })
+    } catch (error) {
+      if (error instanceof LocalRefusalError) throw error
       throw new LocalRefusalError('local descriptor containment cannot be established')
     }
-    if (!isLocalPathInside(parent, resolved) || resolved === descriptorPath) {
-      throw new LocalRefusalError('local run.json descriptor resolves outside --record-dir')
+    if (fileStat.dev !== pathStat.dev || fileStat.ino !== pathStat.ino) {
+      throw new LocalRefusalError('local run.json descriptor identity differs from its path')
     }
     bytes = readFileSync(fd, 'utf8')
   } catch (error) {

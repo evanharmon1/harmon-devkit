@@ -2369,12 +2369,14 @@ const fs = require('node:fs')
 const {syncBuiltinESMExports} = require('node:module')
 const target = process.env.SWAP_TARGET
 const open = fs.openSync, fstat = fs.fstatSync, read = fs.readFileSync, close = fs.closeSync
+const realpath = fs.realpathSync, readlink = fs.readlinkSync
+let descriptorLinks = 0
 let targetFd, checked = false, opened = false
 fs.openSync = function(file, flags, ...rest) {
   if (file === target) {
     if (opened || !(flags & fs.constants.O_NOFOLLOW)) throw new Error('expected one no-follow open')
     opened = true
-    if (process.env.SWAP_MODE === 'ancestor') {
+    if (['ancestor', 'resolution'].includes(process.env.SWAP_MODE)) {
       const runDir = require('node:path').dirname(target)
       fs.renameSync(runDir, runDir + '.saved')
       fs.symlinkSync(process.env.SWAP_OUTSIDE_DIR, runDir)
@@ -2396,6 +2398,37 @@ fs.fstatSync = function(fd, ...rest) {
     }
   }
   return stat
+}
+function descriptorLink(file, ...rest) {
+  if (++descriptorLinks !== 1) throw new Error('expected one descriptor readlink')
+  const resolved = readlink.call(fs, file, ...rest)
+  if (process.env.SWAP_MODE === 'resolution') {
+    const outsideDir = require('node:path').dirname(resolved)
+    fs.renameSync(outsideDir, outsideDir + '.saved')
+    fs.symlinkSync(process.env.SWAP_INSIDE_DIR, outsideDir)
+    fs.appendFileSync(process.env.SWAP_LOG, 'swap-after-readlink\n')
+  } else if (process.env.SWAP_MODE === 'identity') {
+    fs.renameSync(resolved, resolved + '.saved')
+    fs.writeFileSync(resolved, 'replacement inode')
+    fs.appendFileSync(process.env.SWAP_LOG, 'swap-after-readlink\n')
+  } else if (process.env.SWAP_MODE === 'relative') {
+    return 'relative/run.json'
+  } else if (process.env.SWAP_MODE === 'deleted') {
+    return resolved + ' (deleted)'
+  }
+  return resolved
+}
+fs.readlinkSync = function(file, ...rest) {
+  if (file === `/proc/self/fd/${targetFd}`) return descriptorLink(file, ...rest)
+  return readlink.call(this, file, ...rest)
+}
+fs.realpathSync = function(file, ...rest) {
+  if (file === `/proc/self/fd/${targetFd}`) {
+    // Reproduce realpath's readlink-then-walk interleave. The directory moves
+    // after the kernel path is captured, before the old implementation walks it.
+    return realpath.call(this, descriptorLink(file), ...rest)
+  }
+  return realpath.call(this, file, ...rest)
 }
 fs.readFileSync = function(file, ...rest) {
   if (file === target) throw new Error('unsafe pathname read after check')
@@ -2441,6 +2474,38 @@ for mode in file ancestor; do
     fi
 done
 
+echo "==> descriptor containment rejects a swap after the kernel path is captured"
+for mode in resolution identity relative deleted; do
+    race_parent="$d/proof-$mode"
+    outside_dir="$d/outside-$mode"
+    mkdir -p "$race_parent/run-6000-fresh-kickoff" "$race_parent/inside" "$outside_dir"
+    cp "$FIXTURES/fresh-kickoff.json" "$race_parent/run-6000-fresh-kickoff/run.json"
+    cp "$FIXTURES/fresh-kickoff.json" "$race_parent/inside/run.json"
+    cp "$d/outside/run.json" "$outside_dir/run.json"
+    NODE_OPTIONS="--require=$d/swap.cjs" SWAP_MODE="$mode" \
+        SWAP_TARGET="$race_parent/run-6000-fresh-kickoff/run.json" \
+        SWAP_OUTSIDE_DIR="$outside_dir" SWAP_INSIDE_DIR="$race_parent/inside" SWAP_LOG="$d/swap-$mode.log" \
+        run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
+        --stats-script "$d/race-stats.mjs" --local-unverified
+    case "$mode" in
+    resolution)
+        reason='outside --record-dir'
+        expected_log=$'open\nfstat\nswap-after-readlink\nclose'
+        ;;
+    identity)
+        reason='descriptor identity differs'
+        expected_log=$'open\nfstat\nswap-after-readlink\nclose'
+        ;;
+    *)
+        reason='descriptor containment cannot be established'
+        expected_log=$'open\nfstat\nclose'
+        ;;
+    esac
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" "$reason" &&
+        [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+        ok "$mode descriptor proof refuses before reading, then closes" || bad "$mode descriptor proof: $RC $ERR"
+done
+
 echo "==> platforms without no-follow semantics refuse local reads"
 node -e '
   const fs=require("node:fs"), vm=require("node:vm"), path=require("node:path")
@@ -2455,6 +2520,22 @@ node -e '
   catch (e) { if (e.message==="local no-follow reads are unavailable on this platform") process.exit(0) }
   process.exit(1)
 ' "$REPORT" "$d/records" && ok "unsupported no-follow refuses before any open" || bad "unsupported no-follow used a pathname fallback"
+
+echo "==> non-Linux platforms refuse rather than walk /dev/fd"
+node -e '
+  const fs=require("node:fs"), vm=require("node:vm"), path=require("node:path")
+  const source=fs.readFileSync(process.argv[1],"utf8")
+  const fn=source.match(/function renderLocalUnverified\(args, runId, requestedPr\) \{[\s\S]*?\n\}/)
+  if (!fn) process.exit(1)
+  const render=vm.runInNewContext("("+fn[0]+")", {
+    path, constants:fs.constants, process:{platform:"darwin"},
+    realpathSync:fs.realpathSync, statSync:fs.statSync,
+    LocalRefusalError:Error, openSync:()=>{throw new Error("unsafe open")}
+  })
+  try { render({run:"run-6000-fresh-kickoff",recordDir:process.argv[2]},"run-6000-fresh-kickoff") }
+  catch (e) { if (e.message==="local descriptor containment cannot be established on this platform") process.exit(0) }
+  process.exit(1)
+' "$REPORT" "$d/records" && ok "non-Linux descriptor proof refuses before open" || bad "non-Linux used a pathname walk"
 
 printf '{}\n' >"$d/records/run-6000-fresh-kickoff/run.json"
 run_report "$d" "${local_args[@]}" --local-unverified
