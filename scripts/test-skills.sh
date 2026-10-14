@@ -3919,6 +3919,16 @@ expect_ok "gate attribution binds PR, head and the exact transition after resume
         grep -qF "promotion.promoted_at" "$1" &&
         grep -qF "with no intervening" "$1" &&
         grep -qF "account for a later flip" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "promotion attribution precedes current-head comparison and preserves later-push drift" \
+    sh -c 'grep -qF "First attribute the ready event; then compare the current head" "$1" &&
+        grep -qF "head confirmed by step 6" "$1" &&
+        grep -qF "Only after event attribution compare the current" "$1" &&
+        grep -qF "post-promotion drift — report, never undo" "$1" &&
+        grep -qF "even if the new" "$1" &&
+        grep -qF "B stays attributed to that promotion of A" "$1" &&
+        grep -qF "drift branch below before auditing" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_fail "gate attribution does not require the promotion head to equal today's head" \
+    grep -qF 'must equal the observed head' "$READY_FLIP_PROCEDURE"
 expect_ok "the undo guard matches exact per-PR ledger conversions across runs" \
     sh -c 'grep -qF "event ID matches" "$1" &&
         grep -qF "including undos from earlier runs" "$1" &&
@@ -3929,8 +3939,9 @@ expect_ok "automatic undos have a durable finite per-PR ceiling across runs" \
         grep -qF "thirteenth" "$1" &&
         grep -qF "fresh session or run does not reset" "$1" &&
         grep -qF "Count this PR" "$1"' sh "$READY_FLIP_PROCEDURE"
-expect_ok "the per-PR ledger uses the git directory and fails safe if evidence is missing" \
-    sh -c 'grep -qF "git rev-parse --path-format=absolute --git-path integrate-draft-undos/<owner>/<repo>/<pr>.json" "$1" &&
+expect_ok "the per-PR ledger uses the common Git directory and fails safe if evidence is missing" \
+    sh -c 'grep -qF "git rev-parse --path-format=absolute --git-common-dir)/integrate-draft-undos/<owner>/<repo>/<pr>.json" "$1" &&
+        grep -qF "Every linked worktree reads the same per-PR ledger" "$1" &&
         grep -qF "missing, unreadable or malformed" "$1" &&
         grep -qF "ledger leaves conversions unaccounted" "$1" &&
         grep -qF "escalate, fail-safe" "$1"' sh "$READY_FLIP_PROCEDURE"
@@ -4002,6 +4013,22 @@ expect_ok "integrator draft-flip and transient-read blocker paths select blocked
     sh -c '[ "$(grep -cF "status=blocked" "$1")" -ge 4 ] &&
         grep -qF "Set \`status=blocked\` for §7" "$1" &&
         grep -qF "if [ \"\$consecutive_16\" -ge 3 ]; then" "$1"' sh "$INTEGRATOR_AGENT"
+INTEGRATOR_PRETRIGGER="$TMPROOT/integrator-pretrigger.md"
+INTEGRATOR_PREREPLY="$TMPROOT/integrator-prereply.md"
+sed -n '/^\*\*Re-read the PR after the reservation/,/^\*\*The cycle/p' \
+    "$INTEGRATOR_AGENT" >"$INTEGRATOR_PRETRIGGER"
+sed -n '/^## 6\. Post only/,/^If your brief supplied exact reply text/p' \
+    "$INTEGRATOR_AGENT" >"$INTEGRATOR_PREREPLY"
+for integrator_write_guard in "$INTEGRATOR_PRETRIGGER" "$INTEGRATOR_PREREPLY"; do
+    expect_ok "integrator non-draft write guard selects the blocker path and preserves other mismatches" \
+        sh -c 'grep -qF "blocker path: set" "$1" &&
+            grep -qF "status=blocked" "$1" &&
+            grep -qF "status: \"blocked\"" "$1" &&
+            grep -qF "never" "$1" &&
+            grep -qF "manufacture a reviewer finding" "$1" &&
+            grep -qF "A closed PR or moved head" "$1" &&
+            grep -qF "as a finding" "$1"' sh "$integrator_write_guard"
+done
 
 expect_ok "integration freezes review content across promotion" \
     sh -c 'grep -qF "top-level comments, inline comments" "$1" &&

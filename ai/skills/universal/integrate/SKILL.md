@@ -902,16 +902,27 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `convert_to_draft` events with their IDs, times and actors. A failed read or
   invalid/missing run record is **unknown**, and unknown never licenses an undo.
 
-  **Gate-produced means the record names this PR, this head and this transition.**
+  **First attribute the ready event; then compare the current head.**
+  Gate-produced means the record names this PR, the head at promotion and this
+  transition, not necessarily the head observed now.
   `run.json.pr` binds the canonical PR number/URL; `run.json.promotion.head`
-  must equal the observed head, and `promotion.promoted_at` must be consistent
-  with the `ready_for_review` event's time and step 6's confirmed transition.
+  names the head confirmed by step 6's gate at promotion. Correlate the
+  `ready_for_review` event's time and order with `promotion.promoted_at` and
+  that confirmed transition, comparing the head at promotion to the recorded
+  `promotion.head`, never requiring it to equal the current head.
   Correlation must identify that exact transition, with no intervening
   conversion/re-promotion; a historical promotion on the same head does not
-  account for a later flip. If attribution is ambiguous, report unknown rather
-  than guessing. A valid record with no matching promotion leaves the observed
-  draft-workbench PR's event unexplained. Record its event ID, time, actor and
-  observed head; the current head alone is not proof of the head at event time.
+  account for a later flip. Only after event attribution compare the current
+  head to the recorded promotion head: a later head change on an attributed
+  promotion is **post-promotion drift — report, never undo**, even if the new
+  head fails the gate. A gate promotion of A followed by a contributor push of
+  B stays attributed to that promotion of A; B does not make its ready event
+  unexplained. Route it to the drift branch below before auditing the current
+  head for unexplained-promotion recovery. If attribution is ambiguous, report
+  unknown rather than guessing. A valid record with no matching promotion
+  leaves the observed draft-workbench PR's event unexplained. Record its event
+  ID, time, actor and observed head; the current head alone is not proof of the
+  head at event time.
 
   In this skill's home platform the identified mechanism is the ChatGPT Codex
   Connector's user-to-server authorization: its actions are attributed to the
@@ -971,8 +982,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     review, unanswered threads, unsettled deferred findings, a Codex cycle that
     is not clean. Only these.
     **Guard against unaccounted conversions, using a per-PR undo ledger and the
-    complete timeline together.** Resolve the ledger in the git directory:
-    `$(git rev-parse --path-format=absolute --git-path integrate-draft-undos/<owner>/<repo>/<pr>.json)`.
+    complete timeline together.** Resolve the ledger in the common Git directory:
+    `$(git rev-parse --path-format=absolute --git-common-dir)/integrate-draft-undos/<owner>/<repo>/<pr>.json`.
+    Every linked worktree reads the same per-PR ledger, so a new run or worktree
+    cannot lose earlier undo evidence or reset the ceiling.
     Its JSON object has `version: 1`, canonical `repo`, integer `pr` and an
     `undos` array. Validate that shape and PR identity before using its entries.
     A `convert_to_draft` event is accounted for only when its event ID matches

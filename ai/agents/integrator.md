@@ -411,8 +411,12 @@ pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exi
 
 Require all three on that one read: `.state` is `OPEN`, `.isDraft` is `true`,
 and `.headRefOid` equals the head your brief named. Any mismatch means **post
-no trigger**: skip the rest of this section, report `codex_cycle: null` with
-the mismatch as a finding (§5), and leave the reservation untouched — the next
+no trigger**: skip the rest of this section, report `codex_cycle: null`, and
+leave the reservation untouched. For an open PR whose `.isDraft` is not
+`true`, use §3's **Draft flips are report-only** blocker path: set
+`status=blocked`, report `status: "blocked"` through §7/§9, and never
+manufacture a reviewer finding for the promotion. A closed PR or moved head
+is still reported as a finding (§5), as before. The next
 dispatch's broker call runs this same read before it would post. Never substitute the head `pr_now` reports for the brief's. A head
 GitHub has not caught up to yet is `reserve`'s question, not this read's: its
 bounded head wait answers it (exit codes below) before this read runs, so do
@@ -968,11 +972,14 @@ pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exi
 
 If `.state` is not `OPEN`, `.isDraft` is not `true`, or `.headRefOid`
 disagrees with the head your brief named, **do not post anything** — stop
-here and report the mismatch as a finding instead (a closed PR, a promoted
-draft, or a moved head all mean the orchestrator's own next read supersedes
-whatever you were about to write, exactly as `/integrate`'s own re-check
-rule requires before every PR write). Only when all three still match do you
-proceed to the posts below.
+here. For an open PR whose `.isDraft` is not `true`, use §3's **Draft flips
+are report-only** blocker path: set `status=blocked`, report
+`status: "blocked"` through §7/§9, and never manufacture a reviewer finding
+for the promotion. A closed PR or moved head is still reported as a finding
+(§5), as before. These mismatches mean the orchestrator's own next read
+supersedes whatever you were about to write, exactly as `/integrate`'s own
+re-check rule requires before every PR write. Only when all three still match
+do you proceed to the posts below.
 
 If your brief supplied exact reply text with target comment IDs, post each
 one now, verbatim — never edited, summarized, or extended. This text is
