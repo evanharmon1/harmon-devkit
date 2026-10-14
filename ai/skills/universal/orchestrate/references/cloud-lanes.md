@@ -144,7 +144,12 @@ A cloud VM never holds a Codex login; never ask the lane to log in to Codex.
 log to the actual `GATE-EXIT=` line, retaining a failing or indeterminate result:
 
 ```sh
-nohup bash -c 'task verify; echo GATE-EXIT=$?' > /tmp/verify.log 2>&1 & disown
+g="$(mktemp /tmp/gate.XXXXXX)"
+cat >"$g" <<'GATE'
+task verify
+echo GATE-EXIT=$?
+GATE
+nohup bash "$g" >"$g.log" 2>&1 & disown
 ```
 
 With network level Custom plus `semgrep.dev`, the cloud lane can run
