@@ -510,6 +510,52 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
     beta:branch-beta:n2:evanharmon1/harmon-devkit >"$parity_dir/pane.out"
 assert_line "$parity_dir/pane.out" 'SENTINEL beta: HANDOFF-beta-n2 (pane only)'
 assert_line "$parity_dir/pane.out" 'HANDOFF beta: HANDOFF-beta-n2 (pane only)'
+# INT1 / integration-r1-codex-cloud-1: pane advisory must not consume the
+# later report confirmation. Each invocation restarts the watcher, testing
+# that both source facts survive persistence rather than only live memory.
+source_report="$parity_dir/source-report.md"
+source_state="$parity_dir/source.state"
+source_args=(--iterations 1 --state-file "$source_state" --registry "$registry"
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1
+    2099-01-01T00:00:00Z
+    "beta:branch-beta:n2:evanharmon1/harmon-devkit:$source_report")
+source_out="$parity_dir/source.out"
+bash "$watcher" "${source_args[@]}" >"$source_out"
+bash "$watcher" "${source_args[@]}" >>"$source_out"
+assert_count "$source_out" 1 '^SENTINEL beta: HANDOFF-beta-n2 \(pane only\)$'
+assert_count "$source_out" 1 '^HANDOFF beta: HANDOFF-beta-n2 \(pane only\)$'
+printf '%s\n' 'HANDOFF-beta-n2' >"$source_report"
+bash "$watcher" "${source_args[@]}" >>"$source_out"
+assert_count "$source_out" 1 '^SENTINEL beta: HANDOFF-beta-n2$'
+assert_count "$source_out" 1 '^HANDOFF beta: HANDOFF-beta-n2$'
+bash "$watcher" "${source_args[@]}" >"$parity_dir/source-restart.out"
+assert_count "$parity_dir/source-restart.out" 0 '^(SENTINEL|HANDOFF) '
+# Even if the report later has no terminal line, confirmation suppresses a
+# pane fallback for that same sentinel across restart.
+printf '%s\n' 'Report continuing.' >"$source_report"
+bash "$watcher" "${source_args[@]}" >"$parity_dir/source-fallback.out"
+assert_count "$parity_dir/source-fallback.out" 0 '^(SENTINEL|HANDOFF) '
+
+# Report-first: only the untagged pair, never a later pane-only duplicate.
+rm "$source_state"
+printf '%s\n' 'HANDOFF-beta-n2' >"$source_report"
+bash "$watcher" "${source_args[@]}" >"$source_out"
+assert_line "$source_out" 'SENTINEL beta: HANDOFF-beta-n2'
+assert_line "$source_out" 'HANDOFF beta: HANDOFF-beta-n2'
+printf '%s\n' 'Report continuing.' >"$source_report"
+bash "$watcher" "${source_args[@]}" >>"$source_out"
+assert_count "$source_out" 1 '^SENTINEL beta:'
+assert_count "$source_out" 1 '^HANDOFF beta:'
+assert_count "$source_out" 0 '\(pane only\)'
+
+# Adopting a source-less legacy state must not lose report confirmation.
+printf 'SENTINEL\tbeta\tHANDOFF-beta-n2\t\n' >"$source_state"
+printf '%s\n' 'HANDOFF-beta-n2' >"$source_report"
+bash "$watcher" "${source_args[@]}" >"$source_out"
+assert_line "$source_out" 'SENTINEL beta: HANDOFF-beta-n2'
+assert_line "$source_out" 'HANDOFF beta: HANDOFF-beta-n2'
+bash "$watcher" "${source_args[@]}" >"$parity_dir/legacy-restart.out"
+assert_count "$parity_dir/legacy-restart.out" 0 '^(SENTINEL|HANDOFF) '
 rm "$fixture_dir/pane-handoff"
 
 for invalid_spec in \

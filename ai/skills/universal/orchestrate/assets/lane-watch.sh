@@ -292,7 +292,9 @@ load_state() {
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
         AGENT | BRANCH | PR | USAGE | CLOSING | ARMED) state_set "$kind" "$lane" "$value" ;;
-        SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
+        # Legacy entries recorded no source and cannot attest confirmation.
+        SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
+        SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
         MALPROMO) state_set MALPROMO "$lane" "$value" "$extra" "$detail" ;;
@@ -320,7 +322,9 @@ save_state() {
             AGENT | BRANCH | PR | USAGE | CLOSING | ARMED)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
-            SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
+            SENTINEL-PANE | SENTINEL-REPORT)
+                printf '%s\t%s\t%s\t\n' "$kind" "${key%%:*}" "${key#*:}"
+                ;;
             WINDOW) printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             DEGRADE) printf 'DEGRADE\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             MALPROMO) printf 'MALPROMO\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
@@ -1303,8 +1307,14 @@ while true; do
                 [ -z "$sentinel" ] || pane_only=1
             fi
             sentinel_key="$lane:$sentinel"
-            if [ -n "$sentinel" ] && ! state_get SENTINEL "$sentinel_key" >/dev/null; then
-                state_set SENTINEL "$sentinel_key" 1
+            sentinel_kind=SENTINEL-REPORT
+            [ "$pane_only" -eq 0 ] || sentinel_kind=SENTINEL-PANE
+            # A pane observation is advisory, so it must not consume the
+            # report confirmation. Once confirmed, neither source repeats it.
+            if [ -n "$sentinel" ] &&
+                ! state_get SENTINEL-REPORT "$sentinel_key" >/dev/null &&
+                ! state_get "$sentinel_kind" "$sentinel_key" >/dev/null; then
+                state_set "$sentinel_kind" "$sentinel_key" 1
                 persist_state
                 suffix=
                 [ "$pane_only" -eq 0 ] || suffix=' (pane only)'
