@@ -1987,6 +1987,287 @@ Something is wrong.' ;;
         fail "$case_name should fail"
 done
 
+echo "==> metadata: breakdown-shaped draft with ## Surface passes, duplicates and out-of-order fail (#1197)"
+cat >"$tmp/metadata-breakdown-surface.md" <<'BODY'
+## Problem
+
+Decomposed chunks need a canonical surface listing for overlap analysis.
+
+## Surface
+
+- `ai/skills/universal/breakdown/SKILL.md`
+- `ai/skills/universal/track-work/SKILL.md`
+
+## Acceptance criteria
+
+- [ ] [CI] Breakdown drafts pass the metadata gate
+
+## Verify
+
+```sh
+task test:track-work
+```
+
+## Provenance
+
+Parent issue: #1197
+BODY
+[ "$(run_personal 'Accept breakdown-shaped draft with Surface' "$tmp/metadata-breakdown-surface.md")" = 0 ] ||
+    fail "breakdown-shaped draft with ## Surface should pass: $(cat "$tmp/metadata.out")"
+
+cat >"$tmp/metadata-current-and-surface.md" <<'BODY'
+## Problem
+
+Decomposed chunks with dated observations also carry a Surface section.
+
+## Current violation (observed 2026-10-14)
+
+`ai/skills/universal/breakdown/SKILL.md:264` requires `## Surface`.
+
+## Surface
+
+- `ai/skills/universal/breakdown/SKILL.md`
+
+## Acceptance criteria
+
+- [ ] [CI] Current violation before Surface is accepted
+
+## Verify
+
+```sh
+task test:track-work
+```
+
+## Out of scope
+
+Other authoring sections.
+
+## Provenance
+
+Parent issue: #1197
+BODY
+[ "$(run_personal 'Accept Current violation followed by Surface' "$tmp/metadata-current-and-surface.md")" = 0 ] ||
+    fail "Current violation followed by ## Surface should pass: $(cat "$tmp/metadata.out")"
+
+cat >"$tmp/metadata-duplicate-surface.md" <<'BODY'
+## Problem
+
+Duplicate optional Surface headings must be rejected.
+
+## Surface
+
+- `ai/skills/universal/breakdown/SKILL.md`
+
+## Surface
+
+- `ai/skills/universal/track-work/SKILL.md`
+
+## Acceptance criteria
+
+- [ ] [CI] Duplicate Surface is rejected
+
+## Verify
+
+```sh
+task test:track-work
+```
+BODY
+[ "$(run_personal 'Reject duplicate Surface heading' "$tmp/metadata-duplicate-surface.md")" = 1 ] ||
+    fail "duplicate ## Surface should fail"
+grep -qF "body repeats the optional surface heading" "$tmp/metadata.out" ||
+    fail "duplicate ## Surface must report 'body repeats the optional surface heading': $(cat "$tmp/metadata.out")"
+
+for surface_order_case in before-problem before-current after-acceptance; do
+    case "$surface_order_case" in
+    before-problem) body='## Surface
+
+- `ai/skills/universal/breakdown/SKILL.md`
+
+## Problem
+
+Surface precedes Problem.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Verify
+
+```sh
+task test:track-work
+```' ;;
+    before-current) body='## Problem
+
+Surface precedes Current violation.
+
+## Surface
+
+- `ai/skills/universal/breakdown/SKILL.md`
+
+## Current violation (observed 2026-10-14)
+
+`ai/skills/universal/breakdown/SKILL.md:264` observed.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Verify
+
+```sh
+task test:track-work
+```' ;;
+    after-acceptance) body='## Problem
+
+Surface follows Acceptance criteria.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Surface
+
+- `ai/skills/universal/breakdown/SKILL.md`
+
+## Verify
+
+```sh
+task test:track-work
+```' ;;
+    esac
+    printf '%s\n' "$body" >"$tmp/metadata-surface-$surface_order_case.md"
+    [ "$(run_personal 'Reject out-of-order Surface heading' "$tmp/metadata-surface-$surface_order_case.md")" = 1 ] ||
+        fail "out-of-order ## Surface ($surface_order_case) should fail"
+    grep -qF "canonical headings are duplicated or out of order" "$tmp/metadata.out" ||
+        fail "out-of-order ## Surface ($surface_order_case) must report order error: $(cat "$tmp/metadata.out")"
+done
+
+echo "==> metadata: breakdown/SKILL.md §5 headings are all accepted by canonical() (#1197)"
+breakdown_s5_headings="$(awk '
+  /^## 5\./ { in_s5 = 1; next }
+  /^## 6\./ { in_s5 = 0 }
+  in_s5 { buf = buf " " $0 }
+  END {
+    gsub(/[[:space:]]+/, " ", buf)
+    while (match(buf, /`## [A-Za-z][^`]*`/)) {
+      token = substr(buf, RSTART + 1, RLENGTH - 2)
+      print token
+      buf = substr(buf, RSTART + RLENGTH)
+    }
+  }
+' ./ai/skills/universal/breakdown/SKILL.md)"
+[ -n "$breakdown_s5_headings" ] ||
+    fail "expected breakdown/SKILL.md §5 to name at least one ## <Heading>"
+for expected_s5_heading in '## Acceptance Criteria' '## Out of scope' '## Surface'; do
+    grep -qxF "$expected_s5_heading" <<<"$breakdown_s5_headings" ||
+        fail "expected breakdown/SKILL.md §5 heading list to include '$expected_s5_heading' (got: $breakdown_s5_headings)"
+done
+while IFS= read -r s5_heading; do
+    [ -n "$s5_heading" ] || continue
+    s5_heading_lower="$(printf '%s' "$s5_heading" | tr '[:upper:]' '[:lower:]')"
+    case "$s5_heading_lower" in
+    '## problem')
+        cat >"$tmp/metadata-s5-heading.md" <<EOF
+$s5_heading
+
+Something is wrong.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+EOF
+        ;;
+    '## acceptance criteria')
+        cat >"$tmp/metadata-s5-heading.md" <<EOF
+## Problem
+
+Something is wrong.
+
+$s5_heading
+
+- [ ] [CI] Covered
+EOF
+        ;;
+    '## current violation'*)
+        cat >"$tmp/metadata-s5-heading.md" <<EOF
+## Problem
+
+Something is wrong.
+
+${s5_heading/YYYY-MM-DD/2026-10-14}
+
+Observed in live code.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Verify
+
+\`\`\`sh
+task test:track-work
+\`\`\`
+EOF
+        ;;
+    '## surface')
+        cat >"$tmp/metadata-s5-heading.md" <<EOF
+## Problem
+
+Something is wrong.
+
+$s5_heading
+
+- \`ai/skills/universal/breakdown/SKILL.md\`
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Verify
+
+\`\`\`sh
+task test:track-work
+\`\`\`
+EOF
+        ;;
+    *)
+        cat >"$tmp/metadata-s5-heading.md" <<EOF
+## Problem
+
+Something is wrong.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+$s5_heading
+
+Section content.
+EOF
+        ;;
+    esac
+    [ "$(run_personal "Validate breakdown §5 heading $s5_heading" "$tmp/metadata-s5-heading.md")" = 0 ] ||
+        fail "breakdown/SKILL.md §5 heading '$s5_heading' was rejected by check-issue-metadata.sh: $(cat "$tmp/metadata.out")"
+done <<<"$breakdown_s5_headings"
+
+cat >"$tmp/metadata-s5-negative.md" <<'BODY'
+## Problem
+
+Something is wrong.
+
+## Acceptance criteria
+
+- [ ] [CI] Covered
+
+## Noncanonical Section
+
+Section content.
+BODY
+[ "$(run_personal 'Reject noncanonical breakdown heading' "$tmp/metadata-s5-negative.md")" = 1 ] ||
+    fail "negative control with noncanonical ## heading must fail"
+grep -qF "has noncanonical level-two heading 'Noncanonical Section'" "$tmp/metadata.out" ||
+    fail "negative control must report noncanonical level-two heading: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: a list-wrapped skeleton cannot satisfy the canonical sections"
 # GitHub scopes a two-space-indented heading and task to the wrapping list
 # item, so a skeleton nested under `- wrapper` is not the top-level contract;

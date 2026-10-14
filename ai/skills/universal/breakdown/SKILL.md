@@ -262,7 +262,10 @@ judgment. The bar, concretely:
   is more load-bearing here than on a file-it-today issue.
 
 Each authored issue also carries a `## Surface` section listing the paths or
-areas it is expected to touch. Keep the list complete enough for dispatch-time
+areas it is expected to touch — the canonical optional heading
+[`track-work` §5](../track-work/SKILL.md#body-contract)'s pre-create checker
+accepts after `Problem` (and any dated `Current violation`) and before
+`Acceptance criteria`. Keep the list complete enough for dispatch-time
 pairwise overlap analysis while treating it as a starting hypothesis: the
 orchestrator re-verifies it against live code before assigning a lane.
 
