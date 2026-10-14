@@ -205,7 +205,7 @@ fourth time.
 | 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; a trusted actor's own marker that does not parse; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding and quote the reason from stderr. **Draft** the follow-up issue — do not create it unless asked, exactly as §5 requires of every other follow-up. Never downgrade any of these to "no run record" |
 | 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
 | 13 | `local-unverified` — opt-in schema-validated local record, not authenticated by a trusted GitHub evidence marker | Paste only with **unverified (local record, not authenticated by a trusted GitHub evidence marker)** on the heading and every measured line. Never treat it as authenticated evidence or a clean verified result |
-| 14 | Refused local record: unsafe or invalid local input (schema failure, `run_id` mismatch, PR mismatch, path or symlink escape, or not a regular file), or an unsupported platform | Report a **refused local record**, quote the reason, then fall back for measurements. For an unsupported platform, report the platform restriction rather than trying to repair a valid record. Never describe this local refusal as GitHub evidence tampering |
+| 14 | Refused local record: unsafe or invalid local input (schema failure, `run_id` mismatch, PR mismatch, path or symlink escape, or not a regular file), an unreadable filesystem path, or an unsupported platform | Report a **refused local record**, quote the reason, then fall back for measurements. For an unsupported platform, report the platform restriction rather than trying to repair a valid record. Never describe this local refusal as GitHub evidence tampering |
 
 `no-run-record` is the ordinary pre-v2 session and costs the retro only its
 evidence section — it is the **only** outcome that licenses the sentence "this
@@ -236,7 +236,11 @@ markers treated as corrupted evidence, blocks the local read with exit 11.
 That check never selects a run or changes `--run`. A local record whose own PR number differs from `--pr`, or whose normalized PR URL
 differs from the requested PR URL fetched by `gh`, is refused with exit 14. A record
 naming no PR explicitly says it is not bound to the requested PR.
-A missing local record retains exit 10 on the ordinary path. An attempted
+In local mode, exit 10 requires a real, unsymlinked run directory inside the
+resolved record root and an absent `run.json` at the no-follow open. Every
+filesystem error during local resolution, opening, or descriptor validation
+refuses with exit 14; failures after that read (temporary snapshot or validator
+execution) remain operational errors (exit 1). An attempted
 local read with `--as-of` is a usage error (exit 2), even if the local record
 is missing. A guard read failure uses the existing error exits: operational
 GitHub failures exit 1; discovery integrity errors or indeterminate hint
