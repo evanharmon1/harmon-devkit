@@ -6372,4 +6372,33 @@ out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run
 echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and (.marker_facts | length) == 1' >/dev/null ||
     fail "#1422 hyphenated longer identifier: expected valid evidence-only report ignoring checklist comments, got: $out"
 
+echo "== #1422 integration c1 (-2): a malformed marker with whitespace before the colon is scoped to its own run =="
+jq '.comments["187"] += [{
+      id: 7008,
+      user: {id: 9001, login: "orchestrator", type: "User"},
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      body: "<!-- dev-flow-v2 evidence : {\"run_id\":\"some-other-run\"} -->\nOther run"
+    }]' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/spaced-colon-other-run.json"
+export DFSTATS_DB="$tmp/scenarios/spaced-colon-other-run.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run' >/dev/null ||
+    fail "#1422 spaced colon: expected the other run's malformed marker to be skipped, got: $out"
+
+echo "== #1422 integration c1 (-3): duplicate or escaped run_id keys are ambiguous and fail closed =="
+for body in \
+    '<!-- dev-flow-v2-evidence: {"run_id":"run-1446-dup","run_id":"other-run"} -->' \
+    '<!-- dev-flow-v2-evidence: {"run_id":"run-1446-dup","\u0072un_id":"other-run"} -->'; do
+    jq --arg body "$body"$'\n### Dev Flow Evidence' '.comments["1446"][0].id = 7009 | .comments["1446"][0].body = $body' \
+        "$tmp/scenarios/escaped-runid-marker.json" >"$tmp/scenarios/dup-runid-marker.json"
+    export DFSTATS_DB="$tmp/scenarios/dup-runid-marker.json"
+    set +e
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-1446-dup --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7009 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+        fail "#1422 ambiguous run_id ($body): expected exit 3 naming comment 7009, got rc=$rc: $out"
+done
+
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

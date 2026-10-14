@@ -536,8 +536,12 @@ const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
 function malformedEvidenceSummaryRunId(body) {
   if (typeof body !== "string") return null;
   const firstLine = body.replace(/\r/g, "").split("\n", 1)[0];
-  const jsonMatch = /^[ \t]*<!--[ \t]*dev-flow-v2[- \t]+evidence:?[ \t]*(\{[^\r\n]*\})[ \t]*-->/.exec(firstLine);
+  const jsonMatch = /^[ \t]*<!--[ \t]*dev-flow-v2[- \t]+evidence[ \t]*:?[ \t]*(\{[^\r\n]*\})[ \t]*-->/.exec(firstLine);
   if (jsonMatch) {
+    // JSON.parse keeps the LAST duplicate key, so a second run_id could scope
+    // away a marker that names this run first: more than one is ambiguous, and
+    // so is any \u escape, which could spell the key without matching it.
+    if (/\\u/.test(jsonMatch[1]) || (jsonMatch[1].match(/"run_id"[ \t]*:/g) || []).length !== 1) return null;
     try {
       const parsed = JSON.parse(jsonMatch[1]);
       if (

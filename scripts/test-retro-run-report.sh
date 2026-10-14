@@ -2262,6 +2262,15 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.malformed_markers | length == 0' >/dev/null &&
     ok "a hyphenated longer comment identifier is ignored, not classified as a malformed evidence marker" ||
     bad "hyphenated longer comment identifier was misclassified as malformed: rc=$RC, out=$OUT, err=$ERR"
+write_file "$d/i1" $'<!-- dev-flow-v2 evidence\nrun=classification-1444-d1446 stage=challenge round=1 -->'
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+evidence_marker_file "$d/c1" run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.malformed_markers | length == 1' >/dev/null &&
+    ok "a non-canonical marker whose prefix is followed by a newline is still surfaced as malformed" ||
+    bad "non-canonical marker followed by a newline was not surfaced: rc=$RC, out=$OUT, err=$ERR"
 
 echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
 d="$TMPROOT/realpath"
