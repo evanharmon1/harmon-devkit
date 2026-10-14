@@ -12,8 +12,9 @@ environment selected with `/remote-env` (`remote.defaultEnvironmentId`), and
 have remote sessions permitted by `allow_remote_sessions`. The session runs on
 the account the CLI is signed in to (`claude auth status`), not the one open in a
 browser, so that account must hold both the web environment and a GitHub
-credential that reaches the repository, such as a `/web-setup` token. Then launch
-clones the remote at the current branch. Without one, the platform uploads the
+credential that reaches the repository, such as a `/web-setup` token;
+disconnecting the account's GitHub connector afterwards removes that token. Then
+launch clones the remote at the current branch. Without one, the platform uploads the
 checkout with no `origin`, and the lane cannot push; that is outside this mode.
 Claims are unchanged: the orchestrator claims before launch, and the lane never
 claims or refreshes the claim.
@@ -80,8 +81,9 @@ A Herdr terminal can instead run
 `claude --cloud "$(cat "$BRIEF")" --model "$MODEL" --effort "$EFFORT"` directly.
 `<model>` and `<effort>` are the implementer profile the orchestrator resolved;
 they are the dispatch-attested values it records at PR open with
-`record-implementer.sh apply`. The cloud session honours them: the 2026-10-14
-end-to-end run's session page showed the pinned model and effort.
+`record-implementer.sh apply`. The cloud session honours them: on 2026-10-12 the
+session page of the end-to-end check's first launch showed the pinned model and
+effort.
 Without a terminal it refuses with `Error: --cloud requires an interactive
 terminal.` Capture `Created cloud session: <title>`, the `View:` session URL and
 `Resume with: claude --teleport <session-id>` from the launch output. Keep the
@@ -186,14 +188,18 @@ relay. Two lanes were watched through pushed branches and carried to draft PRs:
 The [scope and spike record](https://github.com/evanharmon1/harmon-devkit/issues/1210)
 records the attach error above. Teleport was not tested.
 
-The post-shipping end-to-end check ran on 2026-10-14, on
-[harmon-devkit#1465](https://github.com/evanharmon1/harmon-devkit/pull/1465).
-The orchestrator launched a cloud lane with no human step, saw its pushed
-branch through GitHub, and carried the work to a draft PR. Messaging with
-`claude -p … --cloud <id>` was exercised on the run's first launch, where a
-steering note and two rulings reached the session and changed what it did.
+The post-shipping end-to-end check ran from 2026-10-12 to 2026-10-14 and ended
+in [harmon-devkit#1465](https://github.com/evanharmon1/harmon-devkit/pull/1465).
+Its fourth launch worked end to end: the orchestrator launched it with no human
+step, saw its pushed branch through GitHub, and carried the work to a draft PR.
 The lane pushed exactly its planned `claude/*` branch, as the account's
-`/web-setup` identity, and reported in its commit body. The session
-honoured the pinned model and effort. Three earlier launches failed for the
-reason the preconditions name: the CLI's own account lacked a GitHub credential,
-so the platform uploaded the checkout with no `origin`.
+`/web-setup` identity, and reported in its commit body. That lane was not
+messaged. Messaging with `claude -p … --cloud <id>` was exercised on the first
+launch, where a steering note and two rulings reached the session and changed
+what it did. The lane's `Claude-Session` commit trailer named a different
+session ID from the one its launch printed; which one identifies the session
+was not established. Of the three earlier launches, the first and third had no
+GitHub credential that reached the repository, so the platform uploaded the
+checkout with no `origin`. The second was abandoned before it reported, when
+the CLI was found signed in to a different account from the one holding the
+credential.
