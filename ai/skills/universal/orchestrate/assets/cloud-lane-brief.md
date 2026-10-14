@@ -53,9 +53,11 @@ cat >"$g" <<'GATE'
 echo GATE-EXIT=$?
 GATE
 nohup bash "$g" >"$g.log" 2>&1 & disown
+printf 'GATE-LOG=%s.log\n' "$g"
 ```
 
-Poll `$g.log` through `GATE-EXIT=`. Report the exact result and any unavailable
+Shell variables do not survive between tool calls, so poll the printed
+`GATE-LOG=` path through `GATE-EXIT=`. Report the exact result and any unavailable
 gate; a timeout or missing exit line is indeterminate. After your push and report, stop: the orchestrator reviews
 the pushed head and makes any confirmed fixes itself, not through this session.
 

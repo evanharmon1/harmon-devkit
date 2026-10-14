@@ -150,6 +150,7 @@ task verify
 echo GATE-EXIT=$?
 GATE
 nohup bash "$g" >"$g.log" 2>&1 & disown
+printf 'GATE-LOG=%s.log\n' "$g"
 ```
 
 With network level Custom plus `semgrep.dev`, the cloud lane can run
