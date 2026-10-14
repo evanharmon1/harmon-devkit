@@ -67,10 +67,9 @@ Report in the body of your final commit message on each push; commit no report
 file and use no pane sentinels. Include the branch, changes, gate results,
 remaining work and human follow-ups. Commit and push with the repository's round gate
 and secret scan, then stop. Never open the PR; the orchestrator opens the draft
-and owns integration. When the maintainer tells a cloud lane to drive its own integration,
-any session driving integration — orchestrator or lane — must run the vendored
-`check-codex-cloud-review.sh` (`reserve`, broker trigger, `attach` where applicable, and `check`)
-and `readiness-gate.sh`, never a hand-rolled poll or hand-evaluated table, because a clean
-verdict and its inline findings do not land atomically. Never write an at-sign immediately followed by the word `codex` into GitHub text.
+and owns integration. A cloud lane never drives integration itself, even when told to:
+its proxy refuses GraphQL and this brief forbids writing the review trigger, so report
+that instruction to the orchestrator, which runs `check-codex-cloud-review.sh` and
+`readiness-gate.sh` from its own host. Never write an at-sign immediately followed by the word `codex` into GitHub text.
 The orchestrator binds the draft through `pr` and `pr_bindings` and records its
 review host and reviewed head in the PR.
