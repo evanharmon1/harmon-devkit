@@ -2190,6 +2190,18 @@ INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 
+assert_codex_release_recipe() {
+    grep -qF 'release --state "$state" --note "PR changed before trigger"' "$1" &&
+        grep -qF 'release --state "$state" --note "trigger POST failed"' "$1"
+}
+for recovery_doc in "$INTEGRATE_SKILL" "$INTEGRATOR_AGENT"; do
+    expect_ok "Codex recovery recipe names release for head changes and failed POSTs: $recovery_doc" \
+        assert_codex_release_recipe "$recovery_doc"
+done
+expect_ok "integrate documents denied check-suite boundary and full-window fallback" \
+    sh -c 'grep -qF "Checks: read" "$1" && grep -qF "HTTP 403/404" "$1" &&
+        grep -qF "requires_full_window: true" "$1"' sh "$INTEGRATE_SKILL"
+
 # The fixed table and wrapped legend are copied byte-for-byte from the
 # harmon-init AGENTS.md stage-ledger contract. Keep this expectation local so
 # the skills-source tests stay hermetic and catch drift between the two skills.

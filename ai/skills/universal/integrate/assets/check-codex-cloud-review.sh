@@ -74,6 +74,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
+  check-codex-cloud-review.sh release --state FILE --note REASON
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
                                      [--previous-head SHA] [--run-id ID]
                                      [--integration-cap N] [--integration-exempt-cap N]
@@ -153,6 +154,15 @@ with every push, and `after-ci-first` waits on the PR's first head (no
 remediation push yet) and requests with the push after that. It reads and
 writes nothing and prints `{review_trigger, remediation, order}` where order
 is `after-ci` or `with-push`.
+
+`release --state FILE --note REASON` recovers a reserved cycle whose trigger
+was never posted (including a failed broker POST or a moved PR head). It
+requires a live, complete comment read proving no matching trigger exists
+since reserved_at, and refuses attached triggers or indeterminate reads.
+It records the old head, reserved_at and reason in superseded_reservations,
+leaves charged/exempt counters and the run-spend sidecar unchanged, and marks
+the reservation released. A following reserve begins at attempt 1 and charges
+normally; releasing does not refund spend. Never delete state to recover.
 
 `carry` (harmon-init#752) answers one question before a cycle is reserved:
 does the previously reviewed clean verdict still attest THIS head? It does
@@ -612,10 +622,11 @@ run_gh() {
         remaining=$((anchor_epoch + timeout_min * 60 - current_epoch))
         if [ "$remaining" -le 0 ]; then
             # A post-window check still owes one terminal evidence sweep. Give
-            # that sweep an independent normal request budget; reducing every
+            # that sweep, and attach's liveness reads, an independent normal
+            # request budget; reducing every
             # call to one second here makes a completed remote review look
             # absent precisely when the checker is deciding its final result.
-            if [ "$command_name" != "check" ]; then
+            if [ "$command_name" != "check" ] && [ "$command_name" != "attach" ]; then
                 call_timeout=1
             fi
         elif [ "$remaining" -lt "$call_timeout" ]; then
@@ -626,9 +637,9 @@ run_gh() {
             # sub-second budget and reported readable evidence absent — the
             # same failure the carve-out exists to prevent, one minute
             # earlier. `check` keeps its full budget on both sides of the
-            # boundary now; the clamp still applies to every other command,
-            # which has no terminal sweep to owe.
-            if [ "$command_name" != "check" ]; then
+            # boundary now. Attach owes liveness reads even on a late retry
+            # and uses the same independent budget on both sides.
+            if [ "$command_name" != "check" ] && [ "$command_name" != "attach" ]; then
                 call_timeout=$remaining
             fi
         fi
@@ -948,7 +959,7 @@ read_state() {
       (.pr | type == "number") and
       (.head | type == "string") and
       (.attempt == 1 or .attempt == 2) and
-      (.phase == "reserved" or .phase == "attached") and
+      (.phase == "reserved" or .phase == "attached" or .phase == "released") and
       (.last_reviewed_verdict == null or .last_reviewed_verdict == "clean" or
         .last_reviewed_verdict == "findings") and
       (.carry == null or ((.carry | type == "object") and
@@ -971,7 +982,8 @@ read_state() {
       (.quota_comment_id == null or
         (.quota_comment_id | type == "number" and . > 0)) and
       (.boundary_source == null or
-        (.boundary_source == "check-suite" or .boundary_source == "commit-date")) and
+        (.boundary_source == "check-suite" or .boundary_source == "commit-date" or
+         .boundary_source == "unavailable")) and
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
       (.check_suite_boundary == null or (.check_suite_boundary | type == "string")) and
       (.review_trigger == null or .review_trigger == "after-ci" or
@@ -2423,6 +2435,7 @@ reserve)
     fi
     gh_call_timeout_cap=
 
+    superseded_reservations='[]'
     replaced_trigger_comment_id=
     carried_first_trigger_comment_id=
     if [ -f "$state_file" ]; then
@@ -2432,6 +2445,7 @@ reserve)
         old_head=$(jq -r '.head' "$state_file")
         old_attempt=$(jq -r '.attempt' "$state_file")
         old_phase=$(jq -r '.phase' "$state_file")
+        superseded_reservations=$(jq -c '.superseded_reservations // []' "$state_file")
         [ "$old_repo" = "$repo" ] && [ "$old_pr" = "$pr" ] ||
             die "state belongs to a different PR"
         # Review round 3, P1 (confirmed): `check` refuses to resume state owned
@@ -2493,6 +2507,8 @@ reserve)
         # push or an operator clear the state.
         if [ "$foreign_run_state" = "1" ]; then
             :
+        elif [ "$old_phase" = "released" ]; then
+            [ "$attempt" = "1" ] || die "a released reservation must restart at attempt 1"
         elif [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
@@ -2919,6 +2935,7 @@ reserve)
         --arg reserved_at "$reserved_at" \
         --argjson timeout_min "$payload_timeout_min" \
         --argjson settled "$carried_settled" \
+        --argjson superseded_reservations "$superseded_reservations" \
         --argjson finder "$finder_payload" \
         --argjson previous_trigger_comment_id "$payload_previous_trigger_comment_id" \
         --arg charge "$charge_class" \
@@ -2941,6 +2958,7 @@ reserve)
           requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
+          superseded_reservations:$superseded_reservations,
           finder:$finder,
           charge:$charge,
           charge_reason:$charge_reason,
@@ -2967,6 +2985,40 @@ reserve)
             die "cannot record this run's spend in $spend_file; the reservation stands but its spend is not durable — re-run the reservation"
         }
     fi
+    release_state_lock
+    printf '%s\n' "$payload"
+    ;;
+
+release)
+    [ -n "$note" ] || die "release requires --note with a recovery reason"
+    acquire_state_lock
+    read_state
+    jq -e '.phase == "reserved" and .trigger_comment_id == null and
+        (.finder == null or ((.finder.trigger_mechanism // "review-comment") == "review-comment"
+          and (.finder.trigger_body // "@codex review") == "@codex review"))' \
+        "$state_file" >/dev/null || die "only an untriggered Codex reservation can be released"
+    state_repo=$(jq -r '.repo' "$state_file")
+    state_pr=$(jq -r '.pr' "$state_file")
+    release_reserved_at=$(jq -r '.reserved_at' "$state_file")
+    valid_repo "$state_repo" && valid_uint "$state_pr" && valid_time "$release_reserved_at" ||
+        die "reservation identity or time is invalid"
+    # Use the broker's classifier, with no author filter: a trigger posted by
+    # another actor is also evidence that the reservation cannot be released.
+    # shellcheck source=gh-write-broker.sh
+    . "$SCRIPT_DIR/gh-write-broker.sh"
+    release_comments=$(run_gh api --paginate --slurp \
+        "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
+        die "cannot read live triggers; reservation remains reserved"
+    release_candidates=$(reservation_trigger_candidates "$release_reserved_at" <<<"$release_comments") ||
+        die "cannot classify live triggers; reservation remains reserved"
+    [ "$(jq 'length' <<<"$release_candidates")" = 0 ] ||
+        die "a matching trigger exists; reconcile its attachment instead of releasing"
+    payload=$(jq --arg reason "$note" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+        .superseded_reservations = ((.superseded_reservations // []) +
+          [{head:.head,reserved_at:.reserved_at,reason:$reason,released_at:$at}]) |
+        .phase = "released"
+    ' "$state_file")
+    write_state "$state_file" "$payload"
     release_state_lock
     printf '%s\n' "$payload"
     ;;
@@ -3011,6 +3063,8 @@ attach)
     [ "$live_head" = "$state_head" ] ||
         die "PR head changed before trigger attachment"
     phase=$(jq -r '.phase' "$state_file")
+    [ "$phase" = reserved ] || [ "$phase" = attached ] ||
+        die "reservation was released; reserve a fresh cycle before attaching"
 
     if [ -n "$requested_at_arg" ]; then
         # Requested-reviewer finders: no trigger comment to verify; the
@@ -3140,16 +3194,28 @@ attach)
     if [ "$head_authored_at" \< "$commit_date_boundary" ]; then
         commit_date_boundary=$head_authored_at
     fi
-    check_suite_pages=$(run_gh api --paginate --slurp \
-        "repos/$state_repo/commits/$state_head/check-suites?per_page=100") ||
-        die "cannot fetch check suites for trigger reconstruction"
-    check_suite_boundary=$(printf '%s' "$check_suite_pages" | jq -r '
-          [.[] | (.check_suites // [])[] | .created_at |
-            select(type == "string")] | sort | first // empty
+    check_suite_boundary=
+    check_suite_boundary_reason=
+    check_suite_error=$(mktemp "${state_file}.suites-error.XXXXXX")
+    if check_suite_pages=$(run_gh api --paginate --slurp \
+        "repos/$state_repo/commits/$state_head/check-suites?per_page=100" 2>"$check_suite_error"); then
+        rm -f "$check_suite_error"
+        check_suite_boundary=$(printf '%s' "$check_suite_pages" | jq -er '
+            if type != "array" or length == 0 or
+              any(.[]; type != "object" or (.check_suites | type != "array"))
+            then error("invalid check-suite pages") else . end |
+            [.[] | .check_suites[] | .created_at |
+              if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+              then . else error("invalid check-suite creation time") end] |
+            sort | first // ""
         ') || die "cannot classify check-suite creation times"
-    if [ -n "$check_suite_boundary" ]; then
-        valid_time "$check_suite_boundary" ||
-            die "GitHub returned a malformed check-suite creation time"
+    else
+        check_suite_boundary_reason=$(sed -nE 's/^gh: .*\(HTTP (403|404)\).*$/HTTP \1/p' "$check_suite_error")
+        rm -f "$check_suite_error"
+        case "$check_suite_boundary_reason" in
+        "HTTP 403" | "HTTP 404") requires_full_window=true ;;
+        *) die "cannot fetch check suites for trigger reconstruction" ;;
+        esac
     fi
     head_trigger_boundary=$commit_date_boundary
     boundary_source=commit-date
@@ -3157,6 +3223,12 @@ attach)
         [ "$check_suite_boundary" \< "$head_trigger_boundary" ]; then
         head_trigger_boundary=$check_suite_boundary
         boundary_source=check-suite
+    fi
+    if [ -n "$check_suite_boundary_reason" ]; then
+        # No trusted server boundary: include all earlier triggers, never
+        # fall back to potentially future-dated commit timestamps alone.
+        head_trigger_boundary=
+        boundary_source=unavailable
     fi
     issue_comments=$(run_gh api --paginate --slurp \
         "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
@@ -3269,6 +3341,7 @@ attach)
         --argjson requires_full_window "$requires_full_window" \
         --arg boundary_source "$boundary_source" \
         --arg commit_date_boundary "$commit_date_boundary" \
+        --arg check_suite_boundary_reason "$check_suite_boundary_reason" \
         --arg check_suite_boundary "$check_suite_boundary" '
           .version = 2 |
           .phase = "attached" |
@@ -3296,6 +3369,8 @@ attach)
           .requires_full_window = $requires_full_window |
           .boundary_source = $boundary_source |
           .commit_date_boundary = $commit_date_boundary |
+          .check_suite_boundary_reason = (if $check_suite_boundary_reason == ""
+            then null else $check_suite_boundary_reason end) |
           .check_suite_boundary = (if $check_suite_boundary == ""
             then null else $check_suite_boundary end)
         ' "$state_file")

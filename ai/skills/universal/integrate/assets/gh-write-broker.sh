@@ -59,6 +59,29 @@
 # Exit codes: 2 for a refusal or usage error; 3 when a trigger exists but
 # attachment failed; otherwise `gh api`'s own.
 
+# Shared with the checker's release command. Reject incomplete/malformed
+# pagination instead of treating an unreadable trigger surface as empty.
+reservation_trigger_candidates() {
+    jq -ce --arg since "$1" '
+        if type != "array" or
+           any(.[]; type != "array") then error("invalid comment pages")
+        else (add // []) end |
+        if any(.[]; type != "object" or
+            (.body | type != "string") or
+            (.created_at | type != "string") or
+            (.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not) or
+            (.id | type != "number") or (.user.id | type != "number"))
+        then error("invalid comment") else . end |
+        map(select(
+            (.body | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
+            and .created_at >= $since))'
+}
+
+# Sourcing exports only the classifier; no broker command or GitHub write runs.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -163,6 +186,12 @@ trigger)
         state=$(git rev-parse --git-path "integrate-codex/$repo/$pr.json") ||
             refuse "cannot locate cycle state in the current checkout"
         [ -f "$state" ] || refuse "cycle state is missing: $state"
+        # Hold the checker lock through the POST. A release must not observe
+        # an empty surface while this broker is about to create its trigger.
+        trigger_lock="${state}.lock"
+        mkdir "$trigger_lock" 2>/dev/null || refuse "cycle state lock-held"
+        trap 'rm -f "$trigger_lock/pid"; rmdir "$trigger_lock" 2>/dev/null || true' EXIT
+        printf '%s\n' "$$" >"$trigger_lock/pid"
         jq -e --arg repo "$repo" --argjson pr "$pr" '
             .phase == "reserved" and .repo == $repo and .pr == $pr and
             (.head | type == "string" and length > 0)
@@ -175,11 +204,8 @@ trigger)
         valid_uint "$my_id" || refuse "invalid authenticated actor id"
         top_level=$("$SCRIPT_DIR/gh-ro.sh" --paginate --slurp "repos/$repo/issues/$pr/comments") ||
             refuse "cannot read existing triggers"
-        candidates=$(jq -c --arg since "$reserved_at" --argjson my_id "$my_id" '
-            (add // []) | map(select(
-                ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
-                and .created_at >= $since
-                and .user.id == $my_id))' <<<"$top_level") ||
+        candidates=$(reservation_trigger_candidates "$reserved_at" <<<"$top_level" |
+            jq -c --argjson my_id "$my_id" 'map(select(.user.id == $my_id))') ||
             refuse "cannot classify existing triggers"
         candidate_count=$(jq -r 'length' <<<"$candidates")
         case "$candidate_count" in
@@ -196,6 +222,9 @@ trigger)
             ;;
         *) refuse "anomaly: multiple matching triggers for this reservation" ;;
         esac
+        rm -f "$trigger_lock/pid"
+        rmdir "$trigger_lock"
+        trap - EXIT
         if ! "$SCRIPT_DIR/check-codex-cloud-review.sh" attach --state "$state" \
             --trigger-id "$trigger_id" >/dev/null; then
             printf 'gh-write-broker: trigger comment %s exists but attach failed; report it; a re-run adopts it only while reservation and PR state still match\n' "$trigger_id" >&2

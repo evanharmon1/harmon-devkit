@@ -116,12 +116,17 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
             reported_head="$(cat "$GH_FIXTURES/head-stale")"
     fi
     jq -cn --arg head "$reported_head" --arg state "$pr_state" \
-        '{headRefOid:$head,state:$state}'
+        '{headRefOid:$head,state:$state,isDraft:true}'
     exit 0
 fi
 
 [ "${1:-}" = api ] || exit 90
 shift
+if [[ "$*" == *"-f body=@codex review"* ]]; then
+    echo 'attempted trigger POST' >>"$GH_FIXTURES/post-attempts"
+    echo 'unexpected end of JSON input' >&2
+    exit 1
+fi
 if [[ "$*" == repos/*/contents/agent-registry.json?ref=* ]]; then
     cat "$GH_FIXTURES/registry.b64"
     exit 0
@@ -149,6 +154,7 @@ if [ -f "$GH_FIXTURES/slow-endpoint" ] &&
 fi
 
 case "$endpoint" in
+user) echo 37220977; exit 0 ;;
 users/*) file=actor.json ;;
 */reactions?per_page=100)
     reaction_id="${endpoint%/reactions?per_page=100}"
@@ -166,7 +172,7 @@ repos/*/issues/comments/*)
     file="comment-${endpoint##*/}.json"
     [ -f "$GH_FIXTURES/$file" ] || file=trigger.json
     ;;
-repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
+repos/*/issues/*/comments | repos/*/issues/*/comments?per_page=100) file=comments.pages.json ;;
 # harmon-devkit#1173: the base events recorded between the reviewed-base
 # samples. Empty by default, so a corroborated base is recorded as before.
 repos/*/issues/*/timeline?per_page=100)
@@ -216,7 +222,13 @@ repos/*/compare/*)
     ;;
 # Must sort before the bare-commit pattern below, which its trailing `*`
 # would otherwise also match.
-repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
+repos/*/commits/*/check-suites*)
+    if [ -f "$GH_FIXTURES/check-suites-error" ]; then
+        cat "$GH_FIXTURES/check-suites-error" >&2
+        exit 1
+    fi
+    file=check-suites.pages.json
+    ;;
 # harmon-devkit#1406: the workflow runs for a head SHA, read only when a
 # with-push / after-ci-first `check` settles its cycle's charge. The query
 # must name the expected head (`actions-runs-head`, else the PR head); any
@@ -332,6 +344,7 @@ write_defaults() {
         >"${fixtures}/check-suites.pages.json"
     printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
         >"${fixtures}/actions-runs.pages.json"
+    rm -f "${fixtures}/check-suites-error" "${fixtures}/post-attempts"
     rm -f "${fixtures}/actions-runs-head" "${fixtures}/runs-head-mismatch"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
         '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
@@ -2009,6 +2022,130 @@ set -e
     fail "head-change reservation should fail closed: $changed_reserve_out"
 [ "$(jq -r '.head' "$state")" = "$old_recorded_head" ] ||
     fail "head-change reservation overwrote unresolved state"
+
+echo "==> release preserves counters and history before reserving the moved head"
+jq '.charged_cycles = 2 | .exempt_cycles = 1 | .run_id = "recovery"' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s\n' '{"recovery":{"charged":2,"exempt":1}}' >"${state%.json}.spend.json"
+cp "${state%.json}.spend.json" "${test_tmp}/spend-before.json"
+"$helper" release --state "$state" --note 'head moved before trigger' >/dev/null
+jq -e --arg old "$old_recorded_head" '
+    .phase == "released" and .charged_cycles == 2 and .exempt_cycles == 1 and
+    .superseded_reservations[-1].head == $old and
+    .superseded_reservations[-1].reserved_at == .reserved_at and
+    .superseded_reservations[-1].reason == "head moved before trigger"
+' "$state" >/dev/null || fail 'release lost state or accounting'
+cmp "${test_tmp}/spend-before.json" "${state%.json}.spend.json" || fail 'release changed spend file'
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$new_live_head" --attempt 1 --run-id recovery \
+    --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+jq -e '.charged_cycles == 3 and .exempt_cycles == 1 and
+    (.superseded_reservations | length) == 1' "$state" >/dev/null || fail 'reserve lost release history/counters'
+jq -e '.recovery == {charged:3,exempt:1}' "${state%.json}.spend.json" >/dev/null || fail 'new reserve lost spend'
+
+echo "==> release never removes an attached trigger, including corrupt reserved phase"
+new_cycle
+for release_phase in attached reserved; do
+    jq --arg phase "$release_phase" '.phase = $phase' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    cp "$state" "${test_tmp}/release-before.json"
+    if "$helper" release --state "$state" --note 'must refuse' >"${test_tmp}/release.out" 2>&1; then
+        fail 'release accepted a recorded trigger'
+    fi
+    cmp "$state" "${test_tmp}/release-before.json" || fail 'refused release mutated state'
+done
+
+echo "==> release refuses live unrecorded triggers from any actor and indeterminate reads"
+jq '.trigger_comment_id = null | .requested_at = null' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+for release_case in own-trigger other-trigger unreadable malformed invalid-page; do
+    printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+    rm -f "${fixtures}/fail-endpoint"
+    case "$release_case" in
+    own-trigger | other-trigger)
+        release_actor=$trusted_trigger_actor_id
+        [ "$release_case" != other-trigger ] || release_actor=$outsider_id
+        jq --argjson actor "$release_actor" '[[. | .user.id = $actor]]' \
+            "${fixtures}/trigger.json" >"${fixtures}/comments.pages.json"
+        ;;
+    unreadable) printf '%s\n' 'issues/493/comments' >"${fixtures}/fail-endpoint" ;;
+    malformed) printf '%s\n' 'not json' >"${fixtures}/comments.pages.json" ;;
+    invalid-page) printf '%s\n' '[{}]' >"${fixtures}/comments.pages.json" ;;
+    esac
+    cp "$state" "${test_tmp}/release-before.json"
+    if "$helper" release --state "$state" --note "$release_case" >"${test_tmp}/release.out" 2>&1; then
+        fail "release accepted $release_case"
+    fi
+    cmp "$state" "${test_tmp}/release-before.json" || fail "release mutated state for $release_case"
+done
+
+echo "==> a failed broker POST recovers on the same head without resetting spend"
+write_defaults
+broker_state="$(git rev-parse --git-path integrate-codex/example/repo/493.json)"
+"$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id failed-post >/dev/null
+if "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigger \
+    --repo example/repo --pr 493 >"${test_tmp}/broker.out" 2>&1; then
+    fail 'broker unexpectedly succeeded with failed POST'
+fi
+[ -s "${fixtures}/post-attempts" ] || fail "broker never attempted POST: $(cat "${test_tmp}/broker.out")"
+[ ! -d "${broker_state}.lock" ] || fail 'failed POST leaked the broker lock'
+"$helper" release --state "$broker_state" --note 'trigger POST failed' >/dev/null
+"$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --run-id failed-post >/dev/null
+jq -e '.phase == "reserved" and .charged_cycles == 2 and
+    .superseded_reservations[-1].reason == "trigger POST failed"' \
+    "$broker_state" >/dev/null || fail 'failed POST recovery lost spend/history'
+
+echo "==> late attach receives independent budgets, before and after window expiry"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+for attach_now in '2026-07-31T08:14:30Z' '2026-07-31T09:00:00Z'; do
+    new_cycle
+    jq '.phase = "reserved" | .trigger_comment_id = null | .requested_at = null' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    : >"$timeout_args_log"
+    TIMEOUT_ARGS_LOG="$timeout_args_log" "$helper" attach --state "$state" \
+        --trigger-id "$trigger_id" --now "$attach_now" >/dev/null
+    awk '$3 != 60 {exit 1} END {if (NR < 5) exit 1}' "$timeout_args_log" ||
+        fail "late attach did not receive independent read budgets: $(cat "$timeout_args_log")"
+done
+
+echo "==> denied check-suite boundaries attach conservatively; other errors refuse"
+for suite_status in 403 404 500 network malformed bad-shape; do
+    new_cycle
+    jq '.phase = "reserved" | .trigger_comment_id = null | .requested_at = null' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    case "$suite_status" in
+    403 | 404 | 500) printf 'gh: Resource inaccessible (HTTP %s)\n' "$suite_status" >"${fixtures}/check-suites-error" ;;
+    network) printf '%s\n' 'network timeout' >"${fixtures}/check-suites-error" ;;
+    malformed) printf '%s\n' 'bad json' >"${fixtures}/check-suites.pages.json" ;;
+    bad-shape) printf '%s\n' '[{}]' >"${fixtures}/check-suites.pages.json" ;;
+    esac
+    if "$helper" attach --state "$state" --trigger-id "$trigger_id" >"${test_tmp}/suites.out" 2>&1; then
+        case "$suite_status" in 403 | 404) ;; *) fail "attach accepted $suite_status suites" ;; esac
+        jq -e --arg reason "HTTP $suite_status" '
+            .phase == "attached" and .requires_full_window == true and
+            .check_suite_boundary == null and .check_suite_boundary_reason == $reason and
+            .boundary_source == "unavailable"
+        ' "$state" >/dev/null || fail 'denied boundary did not persist fail-safe'
+        jq -cn --argjson actor "$actor_id" --arg login "$actor_login" --arg head "$head_sha" '
+            [[{id:166,user:{id:$actor,login:$login},
+              submitted_at:"2026-07-31T08:00:04Z",commit_id:$head,
+              body:"Codex Review: Didn\u0027t find any major issues."}]]
+        ' >"${fixtures}/reviews.pages.json"
+        run_check '2026-07-31T08:01:00Z'
+        assert_status 11 pending
+        run_check '2026-07-31T08:15:01Z'
+        assert_status 0 clean
+    else
+        case "$suite_status" in 403 | 404) fail "denied suites blocked attach: $(cat "${test_tmp}/suites.out")" ;; esac
+        [ "$(jq -r .phase "$state")" = reserved ] || fail 'failed attach changed phase'
+    fi
+done
 
 echo "==> reconstructed state around a pre-existing trusted trigger uses the full window"
 trigger_id=123
