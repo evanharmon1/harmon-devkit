@@ -2268,6 +2268,20 @@ BODY
 grep -qF "has noncanonical level-two heading 'Noncanonical Section'" "$tmp/metadata.out" ||
     fail "negative control must report noncanonical level-two heading: $(cat "$tmp/metadata.out")"
 
+expected_canonical_skeleton=$'## Problem\n## Current violation (observed YYYY-MM-DD)\n## Surface\n## Acceptance criteria\n## Verify\n## Out of scope\n## Provenance'
+for skeleton_doc in \
+    ./ai/skills/universal/track-work/SKILL.md \
+    ./ai/skills/universal/track-work/references/issue-authoring.md; do
+    doc_skeleton="$(awk '
+      /^### Body contract$/ || /^## Canonical body$/ { in_sec = 1; next }
+      in_sec && /^```markdown$/ { in_fence = 1; next }
+      in_fence && /^```$/ { exit }
+      in_fence && /^## / { print }
+    ' "$skeleton_doc")"
+    [ "$doc_skeleton" = "$expected_canonical_skeleton" ] ||
+        fail "$skeleton_doc canonical skeleton drifted (got: $doc_skeleton)"
+done
+
 echo "==> metadata: a list-wrapped skeleton cannot satisfy the canonical sections"
 # GitHub scopes a two-space-indented heading and task to the wrapping list
 # item, so a skeleton nested under `- wrapper` is not the top-level contract;

@@ -48,6 +48,10 @@ must stay in this position when present.
 
 <optional perishable evidence>
 
+## Surface
+
+<optional paths or areas the work is expected to touch>
+
 ## Acceptance criteria
 
 - [ ] [CI] <mechanically verified result>
@@ -112,6 +116,10 @@ a parallel list of perishable patterns. A `Verify` section is
 mandatory whenever that checker detects a perishable fact. Prefer a failing
 assertion in the repository's test harness when the invariant is mechanically
 expressible.
+
+`Surface` is optional and lists the paths or areas the work is expected to
+touch as a starting hypothesis that the orchestrator re-verifies against live
+code; `breakdown` drafts carry it for dispatch-time pairwise overlap analysis.
 
 ## Metadata checklist
 
