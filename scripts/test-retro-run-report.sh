@@ -2596,7 +2596,7 @@ const target = process.env.SWAP_TARGET
 const open = fs.openSync, fstat = fs.fstatSync, read = fs.readFileSync, close = fs.closeSync
 const realpath = fs.realpathSync, readlink = fs.readlinkSync
 let descriptorLinks = 0
-let targetFd, checked = false, opened = false
+let targetFd, checked = false, opened = false, swapped = false
 fs.openSync = function(file, flags, ...rest) {
   if (file === target) {
     if (opened || !(flags & fs.constants.O_NOFOLLOW)) throw new Error('expected one no-follow open')
@@ -2648,6 +2648,16 @@ fs.readlinkSync = function(file, ...rest) {
   return readlink.call(this, file, ...rest)
 }
 fs.realpathSync = function(file, ...rest) {
+  if (file === require('node:path').dirname(target) && !swapped &&
+      ['missing-symlink', 'missing-directory', 'missing-replacement'].includes(process.env.SWAP_MODE)) {
+    const resolved = realpath.call(this, file, ...rest)
+    swapped = true
+    fs.renameSync(file, file + '.saved')
+    if (process.env.SWAP_MODE === 'missing-symlink') fs.symlinkSync(process.env.SWAP_OUTSIDE_DIR, file)
+    if (process.env.SWAP_MODE === 'missing-replacement') fs.mkdirSync(file)
+    fs.appendFileSync(process.env.SWAP_LOG, 'swap-before-open\n')
+    return resolved
+  }
   if (file === `/proc/self/fd/${targetFd}`) {
     // Reproduce realpath's readlink-then-walk interleave. The directory moves
     // after the kernel path is captured, before the old implementation walks it.
@@ -2702,6 +2712,31 @@ for mode in file ancestor; do
         expect_local_platform_refusal "$mode race"
     fi
 done
+
+echo "==> ENOENT re-proves the same real run directory"
+mkdir -p "$d/empty-outside"
+for mode in missing-symlink missing-directory missing-replacement; do
+    race_parent="$d/race-$mode"
+    mkdir -p "$race_parent/run-6000-fresh-kickoff"
+    NODE_OPTIONS="--require=$d/swap.cjs" SWAP_MODE="$mode" \
+        SWAP_TARGET="$race_parent/run-6000-fresh-kickoff/run.json" \
+        SWAP_OUTSIDE_DIR="$d/empty-outside" SWAP_LOG="$d/swap-$mode.log" \
+        run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
+        --stats-script "$d/race-stats.mjs" --local-unverified
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
+        [ "$(cat "$d/swap-$mode.log")" = 'swap-before-open' ] &&
+        ok "$mode between proof and open refuses without rendering on $LOCAL_PLATFORM" || bad "$mode ENOENT race: $RC $ERR"
+done
+race_parent="$d/race-plain-absent"
+mkdir -p "$race_parent/run-6000-fresh-kickoff"
+run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
+    --stats-script "$d/race-stats.mjs" --local-unverified
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 10 ] && [ -z "$OUT" ] && contains "$ERR" 'run-not-found' &&
+        ok "stable directory with absent run.json still reports not-found" || bad "plain absence: $RC $ERR"
+else
+    expect_local_platform_refusal "plain absence in a stable directory"
+fi
 
 echo "==> descriptor containment rejects a swap after the kernel path is captured"
 for mode in resolution identity relative deleted; do

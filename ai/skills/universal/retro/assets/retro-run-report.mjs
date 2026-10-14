@@ -1574,7 +1574,8 @@ function renderLocalUnverified(args, runId, requestedPr) {
     const parent = realpathSync(args.recordDir)
     if (!statSync(parent).isDirectory()) throw new LocalRefusalError('--record-dir is not a directory')
     const runDirectory = path.join(parent, runId)
-    if (!lstatSync(runDirectory).isDirectory()) {
+    const directoryStat = lstatSync(runDirectory, { bigint: true })
+    if (!directoryStat.isDirectory()) {
       throw new LocalRefusalError('local run path is not a real directory (symlinks are refused)')
     }
     if (!isLocalPathInside(parent, realpathSync(runDirectory))) {
@@ -1591,9 +1592,20 @@ function renderLocalUnverified(args, runId, requestedPr) {
       try {
         fd = openSync(path.join(runDirectory, 'run.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
       } catch (error) {
-        // Absence is meaningful only after proving a real, contained directory.
+        if (error.code === 'ENOENT') {
+          const absentDirectoryStat = lstatSync(runDirectory, { bigint: true })
+          if (!absentDirectoryStat.isDirectory() || absentDirectoryStat.dev !== directoryStat.dev ||
+              absentDirectoryStat.ino !== directoryStat.ino) {
+            throw new LocalRefusalError('local run directory changed during the no-follow open')
+          }
+          if (!isLocalPathInside(parent, realpathSync(runDirectory))) {
+            throw new LocalRefusalError('local run directory resolves outside --record-dir')
+          }
+          // This pathname recheck cannot detect an ABA swap away and back
+          // between the proof and the failed open; it is not a directory pin.
+          return null
+        }
         // Every other failure belongs to the phase-wide refusal boundary below.
-        if (error.code === 'ENOENT') return null
         throw error
       }
       const fileStat = fstatSync(fd, { bigint: true })
