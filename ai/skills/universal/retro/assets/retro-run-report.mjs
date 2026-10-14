@@ -1587,49 +1587,54 @@ function renderLocalUnverified(args, runId, requestedPr) {
     if (process.platform !== 'linux') {
       throw new LocalRefusalError('local descriptor containment cannot be established on this platform')
     }
+    // O_NONBLOCK prevents a replaced FIFO from blocking before fstat refuses it.
     try {
-      // O_NONBLOCK prevents a replaced FIFO from blocking before fstat refuses it.
-      try {
-        fd = openSync(path.join(runDirectory, 'run.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-      } catch (error) {
-        if (error.code === 'ENOENT') {
-          const absentDirectoryStat = lstatSync(runDirectory, { bigint: true })
-          if (!absentDirectoryStat.isDirectory() || absentDirectoryStat.dev !== directoryStat.dev ||
-              absentDirectoryStat.ino !== directoryStat.ino) {
-            throw new LocalRefusalError('local run directory changed during the no-follow open')
-          }
-          if (!isLocalPathInside(parent, realpathSync(runDirectory))) {
-            throw new LocalRefusalError('local run directory resolves outside --record-dir')
-          }
-          // This pathname recheck cannot detect an ABA swap away and back
-          // between the proof and the failed open; it is not a directory pin.
-          return null
+      fd = openSync(path.join(runDirectory, 'run.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        const absentDirectoryStat = lstatSync(runDirectory, { bigint: true })
+        if (!absentDirectoryStat.isDirectory() || absentDirectoryStat.dev !== directoryStat.dev ||
+            absentDirectoryStat.ino !== directoryStat.ino) {
+          throw new LocalRefusalError('local run directory changed during the no-follow open')
         }
-        // Every other failure belongs to the phase-wide refusal boundary below.
-        throw error
+        if (!isLocalPathInside(parent, realpathSync(runDirectory))) {
+          throw new LocalRefusalError('local run directory resolves outside --record-dir')
+        }
+        // This pathname recheck cannot detect an ABA swap away and back
+        // between the proof and the failed open; it is not a directory pin.
+        return null
       }
-      const fileStat = fstatSync(fd, { bigint: true })
-      if (!fileStat.isFile()) throw new LocalRefusalError('local run.json is not a regular file')
-      // One kernel readlink describes the open object. realpath would walk that
-      // returned path again, letting renamed ancestors redirect the proof.
-      resolved = readlinkSync(`/proc/self/fd/${fd}`)
-      if (!path.isAbsolute(resolved) || resolved.endsWith(' (deleted)')) {
-        throw new LocalRefusalError('local descriptor containment cannot be established')
-      }
-      if (!isLocalPathInside(parent, resolved)) {
-        throw new LocalRefusalError('local run.json descriptor resolves outside --record-dir')
-      }
-      const pathStat = lstatSync(resolved, { bigint: true })
-      if (fileStat.dev !== pathStat.dev || fileStat.ino !== pathStat.ino) {
-        throw new LocalRefusalError('local run.json descriptor identity differs from its path')
-      }
-      bytes = readFileSync(fd, 'utf8')
-    } finally {
-      if (fd !== undefined) closeSync(fd)
+      // Every other failure belongs to the phase-wide refusal boundary below.
+      throw error
     }
+    const fileStat = fstatSync(fd, { bigint: true })
+    if (!fileStat.isFile()) throw new LocalRefusalError('local run.json is not a regular file')
+    // One kernel readlink describes the open object. realpath would walk that
+    // returned path again, letting renamed ancestors redirect the proof.
+    resolved = readlinkSync(`/proc/self/fd/${fd}`)
+    if (!path.isAbsolute(resolved) || resolved.endsWith(' (deleted)')) {
+      throw new LocalRefusalError('local descriptor containment cannot be established')
+    }
+    if (!isLocalPathInside(parent, resolved)) {
+      throw new LocalRefusalError('local run.json descriptor resolves outside --record-dir')
+    }
+    const pathStat = lstatSync(resolved, { bigint: true })
+    if (fileStat.dev !== pathStat.dev || fileStat.ino !== pathStat.ino) {
+      throw new LocalRefusalError('local run.json descriptor identity differs from its path')
+    }
+    bytes = readFileSync(fd, 'utf8')
   } catch (error) {
     if (error instanceof LocalRefusalError) throw error
     throw new LocalRefusalError(`local run.json no-follow read or directory validation failed: ${error.message}`)
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch (error) {
+        // Preserve an earlier refusal; cleanup after a successful read is operational.
+        if (bytes !== undefined) throw new OperationalError(`local run.json descriptor close failed: ${error.message}`)
+      }
+    }
   }
   const validator = path.join(ASSET_DIR, '..', '..', 'dev-flow-support', 'assets', 'validate-result-schemas.mjs')
   if (!existsSync(validator)) throw new OperationalError('local run schema validator is unavailable')

@@ -239,11 +239,12 @@ naming no PR explicitly says it is not bound to the requested PR.
 In local mode, exit 10 requires a real, unsymlinked run directory inside the
 resolved record root and an absent `run.json` at the no-follow open. Every
 filesystem error during local resolution, opening, or descriptor validation
-refuses with exit 14; failures after that read (temporary snapshot or validator
-execution) remain operational errors (exit 1). An attempted
+refuses with exit 14; failures after that read (descriptor close, temporary
+snapshot or validator execution) remain operational errors (exit 1). An attempted
 local read with `--as-of` is a usage error (exit 2), even if the local record
-is missing. A guard read failure uses the existing error exits: operational
-GitHub failures exit 1; discovery integrity errors or indeterminate hint
+is missing. A `--record-dir` that does not exist is a usage error (exit 2),
+checked before any local read. A guard read failure uses the existing error
+exits: operational GitHub failures exit 1; discovery integrity errors or indeterminate hint
 reads exit 11. A malformed trusted marker found by the guard also exits 11.
 Exit 13 is distinct from success, and
 both Markdown and JSON carry **unverified (local record, not authenticated

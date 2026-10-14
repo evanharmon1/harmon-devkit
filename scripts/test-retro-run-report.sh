@@ -2523,7 +2523,7 @@ else
         ok "unreadable record refuses without local data on $LOCAL_PLATFORM" || bad "unreadable record: $RC $ERR"
 fi
 
-# Inject at each actual filesystem call, including both resolution/lstat sites.
+# Inject at each filesystem call: open-phase failures refuse; post-read close is operational.
 # Darwin must refuse before Linux-only calls; those stubs must never be reached.
 echo "==> one phase boundary classifies filesystem failures on Linux and simulated Darwin"
 node - "$REPORT" "$d/records" <<'NODE_LOCAL_ERRORS'
@@ -2532,6 +2532,7 @@ const source = fs.readFileSync(process.argv[2], 'utf8')
 const fn = source.match(/function renderLocalUnverified\(args, runId, requestedPr\) \{[\s\S]*?\n\}/)
 if (!fn) throw new Error('local reader seam not found')
 class LocalRefusalError extends Error {}
+class OperationalError extends Error {}
 const runId = 'run-6000-fresh-kickoff', parent = process.argv[3]
 const file = path.join(parent, runId, 'run.json')
 const cases = ['realpathSync:1', 'statSync:1', 'lstatSync:1', 'realpathSync:2',
@@ -2541,7 +2542,7 @@ for (const platform of ['linux', 'darwin']) {
     const counts = {}, closed = [], calls = []
     let injected = false
     const context = { path, constants: { O_NOFOLLOW: 1, O_RDONLY: 2, O_NONBLOCK: 4 },
-      process: { platform }, LocalRefusalError,
+      process: { platform }, LocalRefusalError, OperationalError,
       isLocalPathInside: (root, resolved) => resolved.startsWith(root + path.sep) }
     const stat = { isDirectory: () => true, isFile: () => true, dev: 1n, ino: 2n }
     const results = { realpathSync: p => p, statSync: () => stat, lstatSync: () => stat,
@@ -2561,7 +2562,8 @@ for (const platform of ['linux', 'darwin']) {
     const render = vm.runInNewContext('(' + fn[0] + ')', context)
     let error
     try { render({run: runId, recordDir: parent}, runId) } catch (caught) { error = caught }
-    if (!(error instanceof LocalRefusalError)) throw new Error(`${platform} ${target}: not a typed refusal: ${error}`)
+    const expectedError = platform === 'linux' && target === 'closeSync:1' ? OperationalError : LocalRefusalError
+    if (!(error instanceof expectedError)) throw new Error(`${platform} ${target}: wrong error classification: ${error}`)
     const early = cases.indexOf(target) < cases.indexOf('openSync:1')
     if (platform === 'linux' || early) {
       if (!injected || !error.message.includes(`injected ${target}`)) throw new Error(`${platform} ${target}: missing classification`)
@@ -2583,7 +2585,7 @@ for (const platform of ['linux', 'darwin']) {
   catch (error) { if (!(error instanceof LocalRefusalError) || !error.message.includes('outside')) throw error }
 }
 NODE_LOCAL_ERRORS
-[ "$?" -eq 0 ] && ok "filesystem failures classify once; Darwin guards unreachable descriptor calls" || bad "filesystem classification matrix"
+[ "$?" -eq 0 ] && ok "open-phase failures refuse; post-read close is operational; Darwin guards descriptor calls" || bad "filesystem classification matrix"
 
 # Hook only this report's target file, preserving real syscalls everywhere else.
 # A redirected ancestor tests containment on the opened object; a file swap
@@ -2674,7 +2676,13 @@ fs.readFileSync = function(file, ...rest) {
   return read.call(this, file, ...rest)
 }
 fs.closeSync = function(fd) {
-  if (fd === targetFd) fs.appendFileSync(process.env.SWAP_LOG, 'close\n')
+  if (fd === targetFd) {
+    fs.appendFileSync(process.env.SWAP_LOG, 'close\n')
+    if (process.env.SWAP_MODE === 'close') {
+      close.call(this, fd)
+      throw Object.assign(new Error('injected close-only failure after read'), {code: 'EIO'})
+    }
+  }
   return close.call(this, fd)
 }
 syncBuiltinESMExports()
@@ -2685,7 +2693,7 @@ node -e '
   r.interventions=[{kind:"other",at:r.started_at,note:"OUTSIDE-CONTENT-MUST-NOT-BE-READ"}]
   fs.writeFileSync(process.argv[2],JSON.stringify(r))
 ' "$FIXTURES/fresh-kickoff.json" "$d/outside/run.json"
-for mode in file ancestor; do
+for mode in file ancestor close; do
     race_parent="$d/race-$mode"
     mkdir -p "$race_parent/run-6000-fresh-kickoff"
     cp "$FIXTURES/fresh-kickoff.json" "$race_parent/run-6000-fresh-kickoff/run.json"
@@ -2702,6 +2710,11 @@ for mode in file ancestor; do
             [ "$RC" -eq 13 ] && ! contains "$OUT" 'OUTSIDE-CONTENT-MUST-NOT-BE-READ' &&
                 [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
                 ok "path swapped after fstat reads original descriptor only, then closes it" || bad "file race: $RC $ERR"
+        elif [ "$mode" = close ]; then
+            expected_log=$'open\nfstat\nread-fd\nclose'
+            [ "$RC" -eq 1 ] && [ -z "$OUT" ] && contains "$ERR" 'descriptor close failed' &&
+                [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+                ok "close-only failure after successful read is operational exit 1" || bad "close failure: $RC $ERR"
         else
             expected_log=$'open\nfstat\nclose'
             [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
