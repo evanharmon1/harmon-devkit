@@ -285,13 +285,13 @@ add_issue_evidence_marker() {
 add_evidence_marker() {
     local stage="$1" round="$2" destination="${3:-issue}"
     local marker comment_id payload_digest registered_at prev content digest
-    comment_id="21${stage}${destination}$(printf '%04d' "$round")"
+    comment_id="21${#stage}${stage}${destination}$(printf '%04d' "$round")"
     comment_id="$(printf '%s' "$comment_id" | tr -cd '0-9')0"
     payload_digest="sha256:$(printf '%064d' "$round")"
-    registered_at="2026-01-01T00:30:00Z"
+    registered_at="${marker_registered_at:-2026-01-01T00:30:00Z}"
     marker="$(jq -cn --arg stage "$stage" --argjson round "$round" \
-        --arg destination "$destination" \
-        '{run_id:"test-run", stage:$stage, destination:$destination,
+        --arg destination "$destination" --arg run "${marker_run_id:-test-run}" \
+        '{run_id:$run, stage:$stage, destination:$destination,
           round:$round, sequence:1}')"
     prev="$(jq -r '(.evidence_registrations | last | .digest) // "genesis"' "${record_dir}/run.json")"
     content="$(jq -cn --arg id "$comment_id" --arg digest "$payload_digest" \
@@ -893,6 +893,97 @@ assert_gate 0 pass ready
     fail "checker-only verdict must record its cycle: $gate_out"
 ! compgen -G "${record_dir}/passes/integration-*.json" >/dev/null ||
     fail "checker-only test accidentally supplied an integrator pass"
+
+echo "==> #1183: a solo record written by the inline path passes the checker-only gate"
+# No orchestrator and no brief envelope: an interactive session reserves the
+# run with run-record.mjs solo-init and writes every stage through the real
+# writers (transition, receipt, adjudicate, bind-pr). The gate is handed that
+# record exactly as /integrate hands it one, with the session's own checker
+# state, and must accept it. The record's passes review the solo branch's real
+# head (receipt admits nothing else), so the gate is run against that head.
+solo="${test_tmp}/solo"
+# `|| exit 1` on every step: errexit is suppressed inside a subshell whose
+# status the caller tests, so it cannot be relied on here.
+make_solo_repo() {
+    rm -rf "$solo"
+    mkdir -p "$solo"
+    (
+        cd "$solo" || exit 1
+        git init -q -b main . || exit 1
+        git config user.name Test
+        git config user.email test@example.invalid
+        git config commit.gpgsign false
+        cp "${repo_root}/agent-registry.json" "${repo_root}/.devflow.toml" . || exit 1
+        git add . || exit 1
+        git commit -q -m "chore: initial" || exit 1
+        git update-ref refs/remotes/origin/main HEAD || exit 1
+        git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main || exit 1
+        git switch -q -c feature-branch || exit 1
+        printf 'the change\n' >change.txt
+        git add change.txt || exit 1
+        git commit -q -m "feat: a change" || exit 1
+        git rev-parse HEAD
+    ) || fail "could not build the solo scratch repository"
+}
+build_solo_record() {
+    local writer="${repo_root}/ai/skills/universal/dev-flow-support/assets/run-record.mjs"
+    local run=run-380-solo run_dir
+    (
+        cd "$solo" || exit 1
+        slate="solo-run-380-solo"
+        session="solo-session"
+        rc=0
+        node "${repo_root}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" resolve \
+            --policy .devflow.toml --registry agent-registry.json --json >policy.json || rc=$?
+        [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit 1
+        node "$writer" solo-init --session "$session" --run-id "$run" --issue 380 --title "A change" \
+            --url https://github.com/example/repo/issues/380 --branch feature-branch \
+            --base "$(git rev-parse main)" --policy policy.json \
+            --actor-id "$(jq -r '.trusted_orchestrator_actor_ids[0]' agent-registry.json)" \
+            --strategy-source default_strategy >/dev/null || exit 1
+        w() { node "$writer" "$1" --slate "$slate" --session "$session" --run-id "$run" "${@:2}" >/dev/null || exit 1; }
+        w transition --stage claim
+        w transition --stage implement --exit claimed
+        w transition --stage verify --exit "committed $head_sha"
+        for stage in challenge review; do
+            role=challenger finder=codex-adversarial
+            [ "$stage" = review ] && role=reviewer finder=codex-verification
+            w transition --stage "$stage" --exit green
+            now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            jq -n --arg role "$role" --arg stage "$stage" --arg finder "$finder" --arg head "$head_sha" \
+                --arg now "$now" --arg run "$run" '
+                {schema:2, role:$role, status:"completed", head:$head, produced_at:$now,
+                 producer:{harness:"claude-code", model:"claude-opus-5-5", tier:"frontier"},
+                 run:{run_id:$run, initiated_by:"human"},
+                 payload:({stage:$stage, round:1, reviewed_head:$head, finder:$finder, slot:$finder,
+                           findings:[], counts:{P0:0,P1:0,P2:0,P3:0}}
+                          + (if $role == "challenger" then {attack_scenarios:[{id:"as-1", description:"tried to break the change",
+                                                                               outcome:"held", finding_id:null}]} else {} end))}' >pass.json || exit 1
+            w receipt --pass pass.json
+            jq -n --arg stage "$stage" --arg head "$head_sha" --arg run "$run" \
+                '{schema:2, run_id:$run, stage:$stage, round:1, reviewed_head:$head, adjudications:[]}' >adj.json || exit 1
+            w adjudicate --file adj.json
+        done
+        w transition --stage security --exit "converged: empty_round"
+        w transition --stage integration --exit clean
+        w bind-pr --number 493 --url https://github.com/example/repo/pull/493
+    ) || fail "the inline path's real writers could not build a solo record"
+    run_dir="$(git -C "$solo" rev-parse --path-format=absolute --git-common-dir)/dev-flow-v2/runs/$run"
+    rm -rf "$record_dir"
+    mkdir -p "$record_dir"
+    cp -R "$run_dir/run.json" "$run_dir/policy.json" "$run_dir/passes" "$run_dir/adjudications" "$record_dir/"
+}
+saved_head_sha="$head_sha"
+head_sha="$(make_solo_repo)"
+write_checker_defaults
+build_solo_record
+jq '.run_id = "run-380-solo"' "$recheck_state" >"$recheck_state.next"
+mv "$recheck_state.next" "$recheck_state"
+marker_run_id=run-380-solo marker_registered_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" run_checker_gate
+assert_gate 0 pass ready
+[ "$(gate_field cycle_evidence | jq -r '.kind')" = checker-state ] ||
+    fail "the solo record must pass on checker-state evidence alone: $gate_out"
+head_sha="$saved_head_sha"
 
 echo "==> I1: integration finder selections require an integrator"
 write_checker_defaults
