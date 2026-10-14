@@ -45,23 +45,31 @@ if [ "${1:-}" != api ]; then
     exit 1
 fi
 shift
-# Drop --paginate/--slurp flags; find the endpoint (first non-flag arg).
+# Reject --slurp combined with --jq or --template (gh 2.89+ / 2.98+ contract),
+# then drop --paginate/--slurp flags and find the endpoint.
+has_slurp=0
+has_jq_or_template=0
 endpoint=""
-api_args="$*"
 for a in "$@"; do
     case "$a" in
-    --paginate | --slurp) ;;
-    *) endpoint="$a"; break ;;
+    --slurp) has_slurp=1 ;;
+    --jq | -q | --jq=* | -q=* | --template | -t | --template=* | -t=*) has_jq_or_template=1 ;;
+    --paginate) ;;
+    *)
+        if [ -z "$endpoint" ]; then
+            endpoint="$a"
+        fi
+        ;;
     esac
 done
+if [ "$has_slurp" -eq 1 ] && [ "$has_jq_or_template" -eq 1 ]; then
+    echo 'cannot use `--slurp` with `--jq` or `--template`' >&2
+    exit 1
+fi
 
 case "$endpoint" in
 repos/*/issues\?state=all\&per_page=100)
-    if [[ "$api_args" == *'--jq map(.[] | {number, pull_request})'* ]]; then
-        jq '[[.issues[] | {number, pull_request}]]' "$db"
-    else
-        jq '[.issues]' "$db"
-    fi
+    jq '[.issues]' "$db"
     ;;
 repos/*/issues/*/comments\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/issues/([0-9]+)/comments.*#\1#')"
@@ -4372,8 +4380,11 @@ export DFSTATS_GH_LOG="$tmp/large-buffer-discovery-gh.log"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .per_issue[0].issueNumber == 185' >/dev/null ||
     fail "large-buffer discovery: expected the oversized issue to be harvested"
-grep -Fq 'api --paginate --slurp repos/o/r/issues?state=all&per_page=100 --jq map(.[] | {number, pull_request})' "$DFSTATS_GH_LOG" ||
-    fail "large-buffer discovery: issue listing was not paginated and projected"
+grep -Fxq 'api --paginate --slurp repos/o/r/issues?state=all&per_page=100' "$DFSTATS_GH_LOG" ||
+    fail "large-buffer discovery: issue listing was not paginated without --jq"
+if grep -Fq -- '--jq' "$DFSTATS_GH_LOG"; then
+    fail "large-buffer discovery: unexpectedly combined --slurp with --jq"
+fi
 
 echo "== canonical --run reads only its issue and succeeds with >1 MiB gh output =="
 export DFSTATS_GH_LOG="$tmp/large-buffer-run-gh.log"
@@ -6251,5 +6262,145 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     corpus_count=$((corpus_count + 1))
 done
 [ "$corpus_count" -ge 18 ] || fail "registry-trust corpus: expected at least 18 cases, found $corpus_count"
+
+echo "== #1422 / #1199: stub gh rejects --slurp combined with --jq or --template, and dev-flow-stats exits 0 under that stub =="
+for bad_flag in '--jq .[]' '-q .[]' '--template {{.}}' '-t {{.}}'; do
+    set +e
+    # shellcheck disable=SC2086
+    bad_out="$("$stub/gh" api --paginate --slurp repos/o/r/issues $bad_flag 2>&1)"
+    bad_rc=$?
+    set -e
+    [ "$bad_rc" -ne 0 ] && grep -Fq 'cannot use `--slurp` with `--jq` or `--template`' <<<"$bad_out" ||
+        fail "#1422 stub gh: expected rejection for --slurp with $bad_flag, got rc=$bad_rc: $bad_out"
+done
+export DFSTATS_DB="$tmp/scenarios/large-buffer.json"
+node --input-type=module <<'NODE'
+import assert from 'node:assert/strict';
+import { fetchIssueList } from './ai/skills/universal/retro/assets/dev-flow-stats.mjs';
+const issues = fetchIssueList('o/r');
+assert.deepEqual(issues, [{ number: 185, pull_request: null }]);
+NODE
+export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run' >/dev/null ||
+    fail "#1422: expected non-canonical run-id discovery to succeed under gh 2.98 stub, got: $out"
+
+echo "== #1422: non-canonical dev-flow-v2 evidence marker is surfaced as an indeterminate integrity finding, not ignored =="
+cp "$tmp/scenarios/arbitrary-evidence-run.json" "$tmp/scenarios/noncanonical-evidence-marker.json"
+jq '.issues = [{number: 1376, pull_request: null}, {number: 1446, pull_request: null}]
+  | .comments = {
+      "1376": [{
+        id: 7001,
+        user: {id: 9001, login: "orchestrator", type: "User"},
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+        body: "<!-- dev-flow-v2 evidence run=classification-1375-d1376 stage=challenge round=1 destination=issue sequence=1 -->\n### Dev Flow Evidence"
+      }],
+      "1446": [{
+        id: 7002,
+        user: {id: 9001, login: "orchestrator", type: "User"},
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+        body: "<!-- dev-flow-v2 evidence run=classification-1444-d1446 stage=challenge round=1 destination=issue sequence=1 -->\n### Dev Flow Evidence"
+      }]
+    }' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/noncanonical-evidence-marker.json"
+export DFSTATS_DB="$tmp/scenarios/noncanonical-evidence-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run classification-1444-d1446 --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7002 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 non-canonical marker: expected exit 3 naming comment 7002, got rc=$rc: $out"
+
+echo "== #1422 challenge r1 (-1): malformed marker with JSON-escaped or undecodable run_id is not skipped as another run =="
+jq '.issues = [{number: 1446, pull_request: null}]
+  | .comments = {
+      "1446": [{
+        id: 7003,
+        user: {id: 9001, login: "orchestrator", type: "User"},
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+        body: "<!-- dev-flow-v2-evidence: {\"run_id\":\"run\\u002d1446-escaped\",\"stage\":\"BAD\",\"round\":1,\"sequence\":1,\"destination\":\"issue\"} -->\n### Dev Flow Evidence"
+      }]
+    }' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/escaped-runid-marker.json"
+export DFSTATS_DB="$tmp/scenarios/escaped-runid-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-1446-escaped --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7003 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 escaped run_id (\\u002d): expected exit 3 naming comment 7003, got rc=$rc: $out"
+
+jq '.comments["1446"][0].id = 7004
+  | .comments["1446"][0].body = "<!-- dev-flow-v2-evidence: {\"run_id\":\"run-1446-a\\\"b\",\"stage\":\"BAD\",\"round\":1,\"sequence\":1,\"destination\":\"issue\"} -->\n### Dev Flow Evidence"' \
+    "$tmp/scenarios/escaped-runid-marker.json" >"$tmp/scenarios/escaped-quote-runid-marker.json"
+export DFSTATS_DB="$tmp/scenarios/escaped-quote-runid-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run 'run-1446-a"b' --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7004 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 escaped run_id (quote): expected exit 3 naming comment 7004, got rc=$rc: $out"
+
+jq '.comments["1446"][0].id = 7005
+  | .comments["1446"][0].body = "<!-- dev-flow-v2-evidence: {\"run_id\":\"other-run\", broken -->\n### Dev Flow Evidence"' \
+    "$tmp/scenarios/escaped-runid-marker.json" >"$tmp/scenarios/undecodable-runid-marker.json"
+export DFSTATS_DB="$tmp/scenarios/undecodable-runid-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-1446-any --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7005 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 undecodable run_id: expected exit 3 naming comment 7005, got rc=$rc: $out"
+
+echo "== #1422 challenge r2 (-1): a trusted hyphenated longer identifier is ignored, not treated as a malformed evidence marker =="
+jq '.comments["187"] += [{
+      id: 7006,
+      user: {id: 9001, login: "orchestrator", type: "User"},
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      body: "<!-- dev-flow-v2-evidence-checklist: document evidence retention -->\nChecklist body"
+    }, {
+      id: 7007,
+      user: {id: 9001, login: "orchestrator", type: "User"},
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      body: "<!-- dev-flow-v2 evidence-checklist: document evidence retention -->\nChecklist body"
+    }]' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/hyphenated-longer-id.json"
+export DFSTATS_DB="$tmp/scenarios/hyphenated-longer-id.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and (.marker_facts | length) == 1' >/dev/null ||
+    fail "#1422 hyphenated longer identifier: expected valid evidence-only report ignoring checklist comments, got: $out"
+
+echo "== #1422 integration c1 (-2): a malformed marker with whitespace before the colon is scoped to its own run =="
+jq '.comments["187"] += [{
+      id: 7008,
+      user: {id: 9001, login: "orchestrator", type: "User"},
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      body: "<!-- dev-flow-v2 evidence : {\"run_id\":\"some-other-run\"} -->\nOther run"
+    }]' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/spaced-colon-other-run.json"
+export DFSTATS_DB="$tmp/scenarios/spaced-colon-other-run.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run' >/dev/null ||
+    fail "#1422 spaced colon: expected the other run's malformed marker to be skipped, got: $out"
+
+echo "== #1422 integration c1 (-3): duplicate or escaped run_id keys are ambiguous and fail closed =="
+for body in \
+    '<!-- dev-flow-v2-evidence: {"run_id":"run-1446-dup","run_id":"other-run"} -->' \
+    '<!-- dev-flow-v2-evidence: {"run_id":"run-1446-dup","\u0072un_id":"other-run"} -->'; do
+    jq --arg body "$body"$'\n### Dev Flow Evidence' '.comments["1446"][0].id = 7009 | .comments["1446"][0].body = $body' \
+        "$tmp/scenarios/escaped-runid-marker.json" >"$tmp/scenarios/dup-runid-marker.json"
+    export DFSTATS_DB="$tmp/scenarios/dup-runid-marker.json"
+    set +e
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-1446-dup --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7009 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+        fail "#1422 ambiguous run_id ($body): expected exit 3 naming comment 7009, got rc=$rc: $out"
+done
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"
