@@ -42,10 +42,23 @@ This lane's REST read command: `{{github-rest-read-path}}`.
 Gate commands: {{gate-commands}}
 Gate bounds and tier: {{gate-bounds-override}}
 
-Run each long gate command above detached, with its log outside the repository:
-`nohup bash -c '<gate command>; echo GATE-EXIT=$?' > /tmp/gate.log 2>&1 & disown`,
-then poll through `GATE-EXIT=`. Report the exact result and any unavailable gate;
-a timeout or missing exit line is indeterminate. After your push and report, stop: the orchestrator reviews
+Run each long gate command above detached, one at a time, with its own script
+and log outside the repository. Write the script through a quoted heredoc, so
+neither the command's quotes nor `$?` are expanded while it is written:
+
+```sh
+g="$(mktemp /tmp/gate.XXXXXX)"
+cat >"$g" <<'GATE'
+<gate command>
+echo GATE-EXIT=$?
+GATE
+nohup bash "$g" >"$g.log" 2>&1 & disown
+printf 'GATE-LOG=%s.log\n' "$g"
+```
+
+Shell variables do not survive between tool calls, so poll the printed
+`GATE-LOG=` path through `GATE-EXIT=`. Report the exact result and any unavailable
+gate; a timeout or missing exit line is indeterminate. After your push and report, stop: the orchestrator reviews
 the pushed head and makes any confirmed fixes itself, not through this session.
 
 ## Reporting protocol
