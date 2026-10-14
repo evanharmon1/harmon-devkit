@@ -371,8 +371,11 @@ One `RELEASE_MARGIN_SEC=600` constant sets both boundaries; broker adoption
 still uses the exact reservation time.
 Release records head, reservation time and reason in `superseded_reservations`,
 retains charged/exempt counters and the run-spend file, and permits the next
-`reserve --attempt 1` on either the same or a moved head. It does not refund a
-charged cycle; the next reservation charges normally. A refused release is a
+`reserve --attempt 1` on either the same or a moved head. Route same-head
+`phase:"released"` state through the fresh-reservation recipe, carrying its
+first and previous trigger-history anchors; only same-head `attached` state
+resumes at `check`, and same-head `reserved` state resumes at the broker.
+It does not refund a charged cycle; the next reservation charges normally. A refused release is a
 blocker to reconcile, never permission to delete state. Late
 `attach --trigger-id` retries have independent 60-second read budgets, like
 `check`, including after the review window expires.

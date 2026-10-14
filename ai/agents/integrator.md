@@ -436,12 +436,13 @@ blocked whoever owns it, because a trigger may already be out against it.
 
 **Inspect the state file yourself before calling `reserve` — do not call it
 unconditionally and branch on what it reports.** `reserve --attempt 1`
-**dies** (nonzero, no distinguishing message your `|| exit` could branch on)
-whenever state already exists for this exact head, and dies just as hard
-when existing state for *any* head is stuck at `phase:"reserved"` — it never
-returns a graceful "already attached" or "unresolved reservation" report for
-you to read. Resuming is therefore a decision you make by reading the file
-directly, before your first external write of this cycle:
+**dies** when this run already has `phase:"attached"` state for this exact
+head, or existing state for *any* head is `phase:"reserved"`, regardless of
+its owning run. The foreign attached-state exception above still applies.
+Same-head `phase:"released"` state permits a fresh `reserve --attempt 1`,
+carrying that head's trigger-history anchors. Inspect these states directly
+before your first external write of this cycle; a nonzero reservation never
+authorizes posting a trigger:
 
 ```sh
 repo="<owner/repo>"
@@ -495,7 +496,9 @@ nothing to carry otherwise, and `carry` will say so.
 
 Three cases, mutually exclusive:
 
-- **No state file, or state for a different head.** This is a fresh cycle.
+- **No state file, state for a different head, or same-head `released` state.**
+  This is a fresh `reserve --attempt 1` cycle. Same-head released state carries
+  its first and previous trigger-history anchors into the new reservation.
   Run these two steps, each as its own Bash tool call:
 
   **1. Reserve and re-read, posting nothing.** Use the same project-installed

@@ -2198,6 +2198,8 @@ for recovery_doc in "$INTEGRATE_SKILL" "$INTEGRATOR_AGENT"; do
     expect_ok "Codex recovery recipe names release for head changes and failed POSTs: $recovery_doc" \
         assert_codex_release_recipe "$recovery_doc"
 done
+expect_ok "integrator routes same-head released state through fresh reservation" \
+    grep -qF 'No state file, state for a different head, or same-head `released` state.' "$INTEGRATOR_AGENT"
 expect_ok "integrate documents denied check-suite boundary and full-window fallback" \
     sh -c 'grep -qF "Checks: read" "$1" && grep -qF "HTTP 403/404" "$1" &&
         grep -qF "requires_full_window: true" "$1"' sh "$INTEGRATE_SKILL"
