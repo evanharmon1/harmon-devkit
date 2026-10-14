@@ -6311,4 +6311,45 @@ set -e
 [ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7002 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
     fail "#1422 non-canonical marker: expected exit 3 naming comment 7002, got rc=$rc: $out"
 
+echo "== #1422 challenge r1 (-1): malformed marker with JSON-escaped or undecodable run_id is not skipped as another run =="
+jq '.issues = [{number: 1446, pull_request: null}]
+  | .comments = {
+      "1446": [{
+        id: 7003,
+        user: {id: 9001, login: "orchestrator", type: "User"},
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+        body: "<!-- dev-flow-v2-evidence: {\"run_id\":\"run\\u002d1446-escaped\",\"stage\":\"BAD\",\"round\":1,\"sequence\":1,\"destination\":\"issue\"} -->\n### Dev Flow Evidence"
+      }]
+    }' "$tmp/scenarios/arbitrary-evidence-run.json" >"$tmp/scenarios/escaped-runid-marker.json"
+export DFSTATS_DB="$tmp/scenarios/escaped-runid-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-1446-escaped --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7003 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 escaped run_id (\\u002d): expected exit 3 naming comment 7003, got rc=$rc: $out"
+
+jq '.comments["1446"][0].id = 7004
+  | .comments["1446"][0].body = "<!-- dev-flow-v2-evidence: {\"run_id\":\"run-1446-a\\\"b\",\"stage\":\"BAD\",\"round\":1,\"sequence\":1,\"destination\":\"issue\"} -->\n### Dev Flow Evidence"' \
+    "$tmp/scenarios/escaped-runid-marker.json" >"$tmp/scenarios/escaped-quote-runid-marker.json"
+export DFSTATS_DB="$tmp/scenarios/escaped-quote-runid-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run 'run-1446-a"b' --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7004 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 escaped run_id (quote): expected exit 3 naming comment 7004, got rc=$rc: $out"
+
+jq '.comments["1446"][0].id = 7005
+  | .comments["1446"][0].body = "<!-- dev-flow-v2-evidence: {\"run_id\":\"other-run\", broken -->\n### Dev Flow Evidence"' \
+    "$tmp/scenarios/escaped-runid-marker.json" >"$tmp/scenarios/undecodable-runid-marker.json"
+export DFSTATS_DB="$tmp/scenarios/undecodable-runid-marker.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run run-1446-any --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment 7005 has a malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "#1422 undecodable run_id: expected exit 3 naming comment 7005, got rc=$rc: $out"
+
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

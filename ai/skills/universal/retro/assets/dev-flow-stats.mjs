@@ -61,9 +61,6 @@ function ghApiPaginated(endpoint, project = null) {
   // --paginate --slurp yields one array per page; flatten.
   const items = pages.flat();
   if (typeof project === "function") return items.map(project);
-  if (project === "map(.[] | {number, pull_request})") {
-    return items.map((item) => ({ number: item.number, pull_request: item.pull_request ?? null }));
-  }
   if (project !== null) {
     throw new GhError(`gh api ${endpoint}: unsupported ghApiPaginated projection: ${String(project)}`);
   }
@@ -539,11 +536,30 @@ const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
 function malformedEvidenceSummaryRunId(body) {
   if (typeof body !== "string") return null;
   const firstLine = body.replace(/\r/g, "").split("\n", 1)[0];
-  const jsonRunId = /"run_id"\s*:\s*"([^"]+)"/.exec(firstLine);
-  if (jsonRunId) return jsonRunId[1];
-  const kvRunId = /\brun(?:_id)?=([^\s>"']+)/.exec(firstLine);
-  if (kvRunId) return kvRunId[1];
-  return null;
+  const jsonMatch = /^[ \t]*<!--[ \t]*dev-flow-v2[- \t]+evidence:?[ \t]*(\{[^\r\n]*\})[ \t]*-->/.exec(firstLine);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        typeof parsed.run_id === "string" &&
+        parsed.run_id.length > 0
+      ) {
+        return parsed.run_id;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  if (/^[ \t]*<!--[ \t]*dev-flow-v2-evidence:/.test(firstLine) || !/-->[ \t]*$/.test(firstLine)) return null;
+  const kvMatches = [...firstLine.matchAll(/(?:^|[ \t])run(?:_id)?=([^\s>]+)(?=[ \t]|-->|$)/g)];
+  if (kvMatches.length !== 1) return null;
+  const candidate = kvMatches[0][1];
+  if (/["'\\]/.test(candidate)) return null;
+  return candidate;
 }
 
 class EvidenceError extends Error {}
