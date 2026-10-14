@@ -43,6 +43,23 @@ reject_required "an unsupported expectation" neutral lint=neutral
 reject_required "an empty result set" success
 
 build_workflow="${repo}/.github/workflows/build.yml"
+# The shared suite's new parallel job must retain the same fork boundary as
+# lint, and both aggregate paths must account for its result.
+yq -e '.jobs.verify.needs | contains(["test-suite"])' "$build_workflow" >/dev/null ||
+    fail 'verify must depend on test-suite'
+[ "$(yq -r '.jobs."test-suite".if' "$build_workflow")" = "$(yq -r '.jobs.lint.if' "$build_workflow")" ] ||
+    fail 'test-suite must use the same untrusted-fork boundary as lint'
+yq -e '.jobs."test-suite".steps[] | select(.run == "task test:suite")' "$build_workflow" >/dev/null ||
+    fail 'the required suite job must run the shared Taskfile suite'
+yq -r '.jobs.verify.steps[] | select(.name == "Verify deliberate skips at the untrusted-fork boundary") | .run' "$build_workflow" |
+    grep -F 'check_skipped test-suite "$TEST_SUITE_RESULT"' >/dev/null ||
+    fail 'fork aggregation must verify the suite was deliberately skipped'
+for result in failure cancelled skipped; do
+    reject_required "a $result shared suite" success lint=success "test-suite=$result" security=success
+done
+accept_required "the shared suite succeeds" success lint=success test-suite=success security=success
+accept_required "the fork suite skips" skipped lint=skipped test-suite=skipped security=skipped
+
 workflow="${repo}/.github/workflows/closing-keywords.yml"
 grep -Fq 'types: [opened, edited, synchronize, reopened]' "$workflow" || fail 'metadata guard must re-check every PR edit'
 grep -q '^  merge_group:$' "$workflow" || fail 'guard must emit the required check for merge groups'
