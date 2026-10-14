@@ -4005,6 +4005,7 @@ function cliRun(args) {
     const searched = issueNumber === null
       ? `searched every issue's run record in ${args.repo}`
       : `searched issue #${issueNumber} in ${args.repo}`;
+    if (args.json) console.log(JSON.stringify({ status: "run-not-found", run_id: args.run }));
     console.error(`dev-flow-stats: run "${args.run}" not found (${searched})`);
     return 1;
   }

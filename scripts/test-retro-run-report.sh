@@ -199,6 +199,7 @@ import { appendFileSync, readFileSync } from 'node:fs'
 if (process.env.STATS_LOG) appendFileSync(process.env.STATS_LOG, process.argv.slice(2).join(' ') + '\n')
 const payload = process.env.STUB_PAYLOAD
 if (payload) process.stdout.write(readFileSync(payload, 'utf8'))
+else if (process.env.STUB_EXIT === '1') process.stdout.write(JSON.stringify({status: 'run-not-found'}))
 else process.stderr.write(`stub harvester: exit ${process.env.STUB_EXIT}\n`)
 process.exitCode = Number(process.env.STUB_EXIT)
 STATS_MJS
@@ -207,7 +208,13 @@ STATS_MJS
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"${STATS_LOG:-/dev/null}"
-if [ -n "${STUB_PAYLOAD:-}" ]; then cat "$STUB_PAYLOAD"; else echo "stub harvester: exit $STUB_EXIT" >&2; fi
+if [ -n "${STUB_PAYLOAD:-}" ]; then
+    cat "$STUB_PAYLOAD"
+elif [ "$STUB_EXIT" -eq 1 ]; then
+    printf '%s\n' '{"status":"run-not-found"}'
+else
+    echo "stub harvester: exit $STUB_EXIT" >&2
+fi
 exit "$STUB_EXIT"
 STATS_SH
     fi
@@ -430,7 +437,7 @@ OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_USER_ID="$ACTOR" \
     node "$discovered_report" --repo o/r --run r1 --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
-    ok "a discovered .sh harvester's exit 1 maps to fallback" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
+    ok "a discovered .sh harvester's exit 1 with structured run-not-found maps to fallback" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
 
 # ---------------------------------------------------------------------------
 # 2. Discovery, and the trust boundary around it
@@ -1955,16 +1962,14 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 11 ] && contains "$ERR" "record-missing" && contains "$ERR" "Authenticated evidence exists" &&
     ok "exit 11 preserves structured record-missing" || bad "expected exit 11 / record-missing, got $RC: $ERR"
 
-echo "==> a --run id containing the text 'record-missing' is not misclassified without a structured status"
+echo "==> a --run id containing 'record-missing' is classified only by structured stdout"
 d="$TMPROOT/notfound-explicit-collision"
 scaffold "$d" further-along "body"
-# Mirrors the real harvester's plain not-found message, which echoes the
-# requested run id verbatim and emits no structured JSON status. The run id
-# below contains the literal substring "record-missing" so a stderr-substring
-# classifier (the pre-fix behavior) would misclassify this as record-missing
-# and return exit 11 instead of the correct run-not-found fallback (exit 10).
+# The diagnostic echoes the run id; only the explicit stdout status proves
+# absence, regardless of a record-missing substring in stderr.
 cat >"$d/stats.mjs" <<'STATS_MJS'
 #!/usr/bin/env node
+process.stdout.write(JSON.stringify({status: 'run-not-found', run_id: 'run-804-record-missing'}))
 process.stderr.write('dev-flow-stats: run "run-804-record-missing" not found (searched every issue run record in o/r)\n')
 process.exitCode = 1
 STATS_MJS
@@ -1972,7 +1977,7 @@ chmod +x "$d/stats.mjs"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --run run-804-record-missing --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
-    ok "a stderr substring match on 'record-missing' no longer forces exit 11 without a structured status" ||
+    ok "a stderr substring cannot override structured run-not-found" ||
     bad "expected exit 10 / run-not-found (stderr-substring collision), got $RC: $ERR"
 
 echo "==> a harvester crash is an operational error, never a silent fallback"
@@ -2330,6 +2335,127 @@ run_report "$d" "${local_args[@]}"
 [ "$RC" -eq "$default_rc" ] && [ "$OUT" = "$default_out" ] && [ "$ERR" = "$default_err" ] &&
     ok "no-flag output stays byte-for-byte unchanged after opt-in reads" || bad "default output changed"
 
+echo "==> exit-1 harvester crashes never enter local fallback"
+for crash in throw empty malformed unknown; do
+    case "$crash" in
+    throw) printf '%s\n' 'throw new Error("harvester crashed")' >"$d/crashing-stats.mjs" ;;
+    empty) printf '%s\n' 'process.exitCode = 1' >"$d/crashing-stats.mjs" ;;
+    malformed) printf '%s\n' 'console.log("not JSON"); process.exitCode = 1' >"$d/crashing-stats.mjs" ;;
+    unknown) printf '%s\n' 'console.log(JSON.stringify({status:"unknown"})); process.exitCode = 1' >"$d/crashing-stats.mjs" ;;
+    esac
+    run_report "$d" "${local_args[@]}" --stats-script "$d/crashing-stats.mjs" --local-unverified
+    [ "$RC" -eq 1 ] && [ -z "$OUT" ] && contains "$ERR" 'exited 1' &&
+        ok "$crash exit-1 harvester is operational, with no local report" || bad "$crash crash fell back: $RC $ERR"
+done
+
+echo "==> non-directory record parents and run paths are refused"
+printf '{}\n' >"$d/record-file"
+run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$d/record-file" --local-unverified
+[ "$RC" -eq 2 ] && [ -z "$OUT" ] && contains "$ERR" '--record-dir must be a directory' &&
+    ok "regular-file --record-dir is a usage error" || bad "file parent mistaken for absence: $RC $ERR"
+printf '{}\n' >"$d/records/run-file"
+run_report "$d" --repo o/r --run run-file --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run path is not a directory' &&
+    ok "regular-file run directory is refused" || bad "file run mistaken for absence: $RC $ERR"
+run_report "$d" --repo o/r --run absent-run --record-dir "$d/records" --local-unverified
+[ "$RC" -eq 10 ] && [ -z "$OUT" ] && ok "absent run directory still reports absence" || bad "absent directory: $RC $ERR"
+
+# Hook only this report's target file, preserving real syscalls everywhere else.
+# A redirected ancestor tests containment on the opened object; a file swap
+# after fstat tests that the bytes are read from that same descriptor.
+echo "==> a raced local read uses one no-follow descriptor"
+cat >"$d/swap.cjs" <<'PRELOAD'
+const fs = require('node:fs')
+const {syncBuiltinESMExports} = require('node:module')
+const target = process.env.SWAP_TARGET
+const open = fs.openSync, fstat = fs.fstatSync, read = fs.readFileSync, close = fs.closeSync
+let targetFd, checked = false, opened = false
+fs.openSync = function(file, flags, ...rest) {
+  if (file === target) {
+    if (opened || !(flags & fs.constants.O_NOFOLLOW)) throw new Error('expected one no-follow open')
+    opened = true
+    if (process.env.SWAP_MODE === 'ancestor') {
+      const runDir = require('node:path').dirname(target)
+      fs.renameSync(runDir, runDir + '.saved')
+      fs.symlinkSync(process.env.SWAP_OUTSIDE_DIR, runDir)
+    }
+    targetFd = open.call(this, file, flags, ...rest)
+    fs.appendFileSync(process.env.SWAP_LOG, 'open\n')
+    return targetFd
+  }
+  return open.call(this, file, flags, ...rest)
+}
+fs.fstatSync = function(fd, ...rest) {
+  const stat = fstat.call(this, fd, ...rest)
+  if (fd === targetFd) {
+    checked = true
+    fs.appendFileSync(process.env.SWAP_LOG, 'fstat\n')
+    if (process.env.SWAP_MODE === 'file') {
+      fs.renameSync(target, target + '.saved')
+      fs.symlinkSync(process.env.SWAP_OUTSIDE_FILE, target)
+    }
+  }
+  return stat
+}
+fs.readFileSync = function(file, ...rest) {
+  if (file === target) throw new Error('unsafe pathname read after check')
+  if (file === targetFd) {
+    if (!checked) throw new Error('descriptor read before fstat')
+    fs.appendFileSync(process.env.SWAP_LOG, 'read-fd\n')
+  }
+  return read.call(this, file, ...rest)
+}
+fs.closeSync = function(fd) {
+  if (fd === targetFd) fs.appendFileSync(process.env.SWAP_LOG, 'close\n')
+  return close.call(this, fd)
+}
+syncBuiltinESMExports()
+PRELOAD
+mkdir -p "$d/outside"
+node -e '
+  const fs=require("node:fs"), r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))
+  r.interventions=[{kind:"other",at:r.started_at,note:"OUTSIDE-CONTENT-MUST-NOT-BE-READ"}]
+  fs.writeFileSync(process.argv[2],JSON.stringify(r))
+' "$FIXTURES/fresh-kickoff.json" "$d/outside/run.json"
+for mode in file ancestor; do
+    race_parent="$d/race-$mode"
+    mkdir -p "$race_parent/run-6000-fresh-kickoff"
+    cp "$FIXTURES/fresh-kickoff.json" "$race_parent/run-6000-fresh-kickoff/run.json"
+    # The explicit absence stub avoids an earlier harvester read of the target.
+    make_stats "$d/race-stats.mjs" 1
+    NODE_OPTIONS="--require=$d/swap.cjs" SWAP_MODE="$mode" \
+        SWAP_TARGET="$race_parent/run-6000-fresh-kickoff/run.json" \
+        SWAP_OUTSIDE_DIR="$d/outside" SWAP_OUTSIDE_FILE="$d/outside/run.json" SWAP_LOG="$d/swap-$mode.log" \
+        run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
+        --stats-script "$d/race-stats.mjs" --local-unverified
+    if [ "$mode" = file ]; then
+        expected_log=$'open\nfstat\nread-fd\nclose'
+        [ "$RC" -eq 13 ] && ! contains "$OUT" 'OUTSIDE-CONTENT-MUST-NOT-BE-READ' &&
+            [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+            ok "path swapped after fstat reads original descriptor only, then closes it" || bad "file race: $RC $ERR"
+    else
+        expected_log=$'open\nfstat\nclose'
+        [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
+            [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+            ok "ancestor redirected before open is refused without any descriptor read" || bad "ancestor race: $RC $ERR"
+    fi
+done
+
+echo "==> platforms without no-follow semantics refuse local reads"
+node -e '
+  const fs=require("node:fs"), vm=require("node:vm"), path=require("node:path")
+  const source=fs.readFileSync(process.argv[1],"utf8")
+  const fn=source.match(/function renderLocalUnverified\(args, runId, requestedPr\) \{[\s\S]*?\n\}/)
+  if (!fn) process.exit(1)
+  const render=vm.runInNewContext("("+fn[0]+")", {
+    path, constants:{}, realpathSync:fs.realpathSync, statSync:fs.statSync,
+    LocalRefusalError:Error, openSync:()=>{throw new Error("unsafe open")}
+  })
+  try { render({run:"run-6000-fresh-kickoff",recordDir:process.argv[2]},"run-6000-fresh-kickoff") }
+  catch (e) { if (e.message==="local no-follow reads are unavailable on this platform") process.exit(0) }
+  process.exit(1)
+' "$REPORT" "$d/records" && ok "unsupported no-follow refuses before any open" || bad "unsupported no-follow used a pathname fallback"
+
 printf '{}\n' >"$d/records/run-6000-fresh-kickoff/run.json"
 run_report "$d" "${local_args[@]}" --local-unverified
 [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'failed schema validation' &&
@@ -2348,7 +2474,7 @@ run_report "$d" --repo o/r --run '../outside' --record-dir "$d/records" --local-
 mkdir -p "$d/records/linked"
 ln -s "$FIXTURES/fresh-kickoff.json" "$d/records/linked/run.json"
 run_report "$d" --repo o/r --run linked --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
+[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'no-follow' &&
     ok "local symlinks cannot escape record parent" || bad "escaping symlink accepted: $RC $ERR"
 
 echo "==> local run.json must be a regular file"
@@ -2420,6 +2546,28 @@ printf '%s' "$OUT" >"$d/controls.json"
   const text=require("node:fs").readFileSync(process.argv[1],"utf8")
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) || JSON.parse(text).verified!==false) process.exit(1)
 ' "$d/controls.json" && ok "JSON escapes local control bytes and retains a valid unverified report" || bad "JSON control injection: $RC $ERR"
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+
+echo "==> bidi controls never reach local Markdown or JSON output raw"
+node -e '
+  const fs=require("node:fs"), file=process.argv[1], r=JSON.parse(fs.readFileSync(file,"utf8"))
+  r.interventions=[{kind:"other",at:r.started_at,
+    note:"before"+"\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"+"after"}]
+  fs.writeFileSync(file,JSON.stringify(r))
+' "$d/records/run-6000-fresh-kickoff/run.json"
+for format in markdown json; do
+    extra=()
+    [ "$format" = json ] && extra=(--json)
+    run_report "$d" "${local_args[@]}" --local-unverified "${extra[@]}"
+    printf '%s' "$OUT" >"$d/bidi-$format.txt"
+    [ "$RC" -eq 13 ] && node -e '
+      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+      if (/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text) ||
+          !text.includes("before") || !text.includes("after")) process.exit(1)
+      if (process.argv[2]==="json" && JSON.parse(text).verified!==false) process.exit(1)
+    ' "$d/bidi-$format.txt" "$format" &&
+        ok "$format neutralizes LRM/RLM, embeddings, overrides and isolates" || bad "$format bidi output: $RC $ERR"
+done
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
 echo "==> local notes render HTML and entities as literal text"
