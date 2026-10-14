@@ -346,11 +346,12 @@ not establish the historical head at event time.
 
 Carry the observation in the existing blocker report (§9), with
 `status: "blocked"` in the schema-valid envelope; do not add payload fields or
-manufacture a reviewer finding. Populate the existing payload from evidence
+manufacture a reviewer finding. Set `status=blocked` for §7's builder.
+Populate the existing payload from evidence
 already gathered (§7), leaving `codex_cycle: null` if no cycle ran. If missing
 evidence prevents a valid result, report that blocker to the orchestrator;
 never fabricate values to satisfy the schema. Only the orchestrator applies
-an undo and persists the intervention. **Never run `gh pr ready --undo`.**
+an undo and persists the per-PR ledger entry. **Never run `gh pr ready --undo`.**
 
 ## 4. Drive cloud review cycles (skip entirely when the cap is 0)
 
@@ -676,7 +677,8 @@ endpoint, a repository made private under you. Polling those to the end of the
 window and reporting `pending` asks the orchestrator to re-dispatch you into
 the identical failure, which spends the whole wall clock on a condition that
 was decided at the first read. So **count CONSECUTIVE 16s, and after the third
-break out of the loop** and return `status: "blocked"` with a blocker line
+break out of the loop**, set `status=blocked` for §7's builder, and return
+`status: "blocked"` with a blocker line
 naming the read that failed — the endpoint and the checker's own detail, so the
 operator can see it is an access problem and not a reviewer problem. The
 counter resets on any other exit code, because a 16 between two successful
@@ -710,12 +712,15 @@ while [ "$SECONDS" -lt "$window_end" ]; do
     # code breaks the loop.
     [ "$check_exit" != "11" ] && [ "$check_exit" != "16" ] && break
     # A read that fails three times running is not transient. Break and report
-    # `indeterminate` naming the failing read, rather than polling out the
+    # `blocked` naming the failing read, rather than polling out the
     # window and handing back a `pending` the orchestrator will re-dispatch
     # into the same wall.
     if [ "$check_exit" = "16" ]; then
         consecutive_16=$((consecutive_16 + 1))
-        [ "$consecutive_16" -lt 3 ] || break
+        if [ "$consecutive_16" -ge 3 ]; then
+            status=blocked
+            break
+        fi
     else
         consecutive_16=0
     fi
@@ -742,7 +747,8 @@ driving the cycle for this pass. If the window elapsed still pending, report
 `codex_cycle` with `exit_code: 11` and no `accepted` (§7 shows the shape); a
 caller that wants another look dispatches you again for a fresh window, rather
 than this pass looping indefinitely on its own. If the consecutive-16 budget
-broke it, report `status: "blocked"` with `codex_cycle.exit_code: 16`,
+broke it, set `status=blocked` for §7's builder and report
+`status: "blocked"` with `codex_cycle.exit_code: 16`,
 `verdict: "pending"` (16's own rule in EXIT_CODE_VERDICT_CONSTRAINTS, which
 does not change because the read stopped being retriable) and a blocker line
 naming the failing read — the endpoint and the checker's detail — so the
@@ -1029,9 +1035,14 @@ and is rejected before your evidence is even looked at. Build it with
 `jq -n` rather than hand-typing JSON — this is a mechanical composition
 step, not a place to improvise the schema:
 
+Set `status=completed` when starting the pass. Every blocked path sets
+`status=blocked` before assembly; preserve that outcome here rather than
+resetting it. A blocker reported under §9 also sets `status=blocked`.
+
 ```sh
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 jq -n \
+    --arg status "$status" \
     --arg head "<head>" \
     --arg produced_at "$now" \
     --arg harness "<producer.harness from your brief>" \
@@ -1048,7 +1059,7 @@ jq -n \
     --arg settled_at "$now" \
     --arg verdict "$verdict" \
     --argjson applied_dispositions "$applied_dispositions_json" \
-    '{schema: 2, role: "integrator", status: "completed", head: $head,
+    '{schema: 2, role: "integrator", status: $status, head: $head,
       produced_at: $produced_at,
       producer: {harness: $harness, model: $model, tier: $tier},
       run: {run_id: $run_id, initiated_by: $initiated_by},
@@ -1118,7 +1129,7 @@ unvalidated result, and never loosen the check to get past it.
 
 Decide a finding's disposition. Call `settle`. Post reply text you composed
 yourself. Edit the PR body. Trigger `gh pr ready` or any other promotion.
-Run `gh pr ready --undo` or record an automatic-undo intervention.
+Run `gh pr ready --undo` or record an automatic-undo ledger entry.
 Adjudicate whether a finding is real. Spawn another agent. Retry the Codex
 cycle more than the one bounded time in §4. Guess a missing brief field
 instead of stopping.

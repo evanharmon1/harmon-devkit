@@ -3919,16 +3919,21 @@ expect_ok "gate attribution binds PR, head and the exact transition after resume
         grep -qF "promotion.promoted_at" "$1" &&
         grep -qF "with no intervening" "$1" &&
         grep -qF "account for a later flip" "$1"' sh "$READY_FLIP_PROCEDURE"
-expect_ok "the undo guard exempts only exact conversions attributed to this run" \
-    sh -c 'grep -qF "only conversions the record does not account for" "$1" &&
-        grep -qF "event ID, time and actor" "$1" &&
-        grep -qF "undo whose durable record is missing" "$1" &&
-        grep -qF "Never adopt an older conversion" "$1"' sh "$READY_FLIP_PROCEDURE"
-expect_ok "automatic undos have a durable finite per-run ceiling" \
-    sh -c 'grep -qF "At most 12 automatic undos per PR in one run" "$1" &&
+expect_ok "the undo guard matches exact per-PR ledger conversions across runs" \
+    sh -c 'grep -qF "event ID matches" "$1" &&
+        grep -qF "including undos from earlier runs" "$1" &&
+        grep -qF "ledger does not account for" "$1" &&
+        grep -qF "Never adopt an older" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "automatic undos have a durable finite per-PR ceiling across runs" \
+    sh -c 'grep -qF "At most 12 automatic undos per PR across runs" "$1" &&
         grep -qF "thirteenth" "$1" &&
-        grep -qF "fresh session does not reset the counter" "$1" &&
-        grep -qF "never unrelated" "$1"' sh "$READY_FLIP_PROCEDURE"
+        grep -qF "fresh session or run does not reset" "$1" &&
+        grep -qF "Count this PR" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_ok "the per-PR ledger uses the git directory and fails safe if evidence is missing" \
+    sh -c 'grep -qF "git rev-parse --path-format=absolute --git-path integrate-draft-undos/<owner>/<repo>/<pr>.json" "$1" &&
+        grep -qF "missing, unreadable or malformed" "$1" &&
+        grep -qF "ledger leaves conversions unaccounted" "$1" &&
+        grep -qF "escalate, fail-safe" "$1"' sh "$READY_FLIP_PROCEDURE"
 expect_ok "recovery preserves reconcile and unknown-or-drift report-only branches" \
     sh -c 'grep -qF "reconcile" "$1" &&
         grep -qF "Indeterminate, or ordinary post-promotion drift — report, never undo" "$1" &&
@@ -3938,18 +3943,34 @@ expect_ok "each event gets only one undo with adjacent evidence and confirmation
         grep -qF "once for that event" "$1" &&
         grep -qF "unique new" "$1" &&
         grep -qF "do not retry the mutation" "$1"' sh "$READY_FLIP_PROCEDURE"
-expect_ok "confirmed undos persist complete intervention evidence before resuming" \
+expect_ok "confirmed undos persist atomic ledger evidence and exclude human interventions" \
     sh -c 'grep -qF "Every confirmed automatic undo appends" "$1" &&
-        grep -qF "{kind: \"other\", at: <undo time>, note: <evidence>}" "$1" &&
-        grep -qF "event ID and time" "$1" &&
+        grep -qF "version: 1" "$1" &&
+        grep -qF "event ID, time and actor" "$1" &&
         grep -qF "read-back" "$1" &&
         grep -qF "confirmed \`isDraft == true\`" "$1" &&
         grep -qF "append once per ready/conversion event pair" "$1" &&
-        grep -qF "candidate beside \`run.json\`" "$1" &&
-        grep -qF "validate-result-schemas.mjs run --receipts" "$1" &&
-        grep -qF "rename over the canonical record" "$1" &&
+        grep -qF "temporary file" "$1" &&
+        grep -qF "atomically rename" "$1" &&
         grep -qF "the canonical readback" "$1" &&
+        grep -qF "\`run.json.interventions\` remains" "$1" &&
+        grep -qF "human touchpoints only; never append automatic undos there" "$1" &&
         grep -qF "never resume before" "$1"' sh "$READY_FLIP_PROCEDURE"
+expect_fail "automatic recovery does not retain the old intervention append mechanism" \
+    grep -qF 'automatic undo appends a `run.json.interventions` entry' "$READY_FLIP_PROCEDURE"
+READY_FLIP_PREAMBLE="$TMPROOT/ready-flip-preamble.md"
+READY_FLIP_HANDOFF="$TMPROOT/ready-flip-handoff.md"
+sed -n '/^One case is not that:/,/^## Stage ledger/p' \
+    "$INTEGRATE_SKILL" >"$READY_FLIP_PREAMBLE"
+sed -n '/A later human request to reverse a/,/This confirmation is the final/p' \
+    "$INTEGRATE_SKILL" >"$READY_FLIP_HANDOFF"
+for ready_flip_section in "$READY_FLIP_PREAMBLE" "$READY_FLIP_HANDOFF"; do
+    expect_ok "recorded handoff follow-up reserves a fresh run and preserves the terminal run" \
+        sh -c 'grep -qF "fresh run" "$1" &&
+            grep -qF "new run id and record directory" "$1" &&
+            grep -qF "before any follow-up" "$1" &&
+            grep -qF "first handoff and accepts no later writes" "$1"' sh "$ready_flip_section"
+done
 expect_ok "integrator reports suspected flips through its existing blocker contract only" \
     sh -c 'grep -qF "Draft flips are report-only" "$1" &&
         grep -qF "latest \`ready_for_review\` event ID, time, actor and observed head" "$1" &&
@@ -3958,6 +3979,29 @@ expect_ok "integrator reports suspected flips through its existing blocker contr
         grep -qF "do not add payload fields" "$1" &&
         grep -qF "Only the orchestrator applies" "$1" &&
         grep -qF "Never run \`gh pr ready --undo\`" "$1"' sh "$INTEGRATOR_AGENT"
+INTEGRATOR_BUILDER="$TMPROOT/integrator-builder.sh"
+sed -n '/^## 7\. Assemble and validate the result/,/^## 8\. Never/p' \
+    "$INTEGRATOR_AGENT" | sed -n '/^now=/,/^```/p' | sed '$d' >"$INTEGRATOR_BUILDER"
+expect_ok "integrator builder takes the pass outcome instead of hard-coding completed" \
+    sh -c 'grep -qF -- "--arg status \"\$status\"" "$1" &&
+        grep -qF "status: \$status" "$1"' sh "$INTEGRATOR_BUILDER"
+expect_fail "integrator builder does not overwrite a blocked status" \
+    grep -qF 'status: "completed"' "$INTEGRATOR_BUILDER"
+for integrator_status in completed blocked; do
+    expect_ok "integrator result builder preserves $integrator_status" \
+        env status="$integrator_status" checks_json='[]' codex_cycle_json_or_null=null \
+        finder_cycles_json='[]' integration_round=1 findings_json='[]' \
+        unanswered_json='[]' verdict=pending applied_dispositions_json='[]' \
+        out_file="$TMPROOT/integrator-$integrator_status.json" \
+        sh "$INTEGRATOR_BUILDER"
+    expect_ok "integrator envelope reports $integrator_status" \
+        jq -e --arg status "$integrator_status" '.status == $status' \
+        "$TMPROOT/integrator-$integrator_status.json"
+done
+expect_ok "integrator draft-flip and transient-read blocker paths select blocked" \
+    sh -c '[ "$(grep -cF "status=blocked" "$1")" -ge 4 ] &&
+        grep -qF "Set \`status=blocked\` for §7" "$1" &&
+        grep -qF "if [ \"\$consecutive_16\" -ge 3 ]; then" "$1"' sh "$INTEGRATOR_AGENT"
 
 expect_ok "integration freezes review content across promotion" \
     sh -c 'grep -qF "top-level comments, inline comments" "$1" &&
