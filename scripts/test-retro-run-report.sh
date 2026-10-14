@@ -34,6 +34,7 @@ cd "$(git rev-parse --show-toplevel)"
 REPORT="$PWD/ai/skills/universal/retro/assets/retro-run-report.mjs"
 FIXTURES="$PWD/ai/schemas/fixtures/run.schema/valid"
 REAL_STATS="$PWD/ai/skills/universal/retro/assets/dev-flow-stats.mjs"
+LOCAL_PLATFORM="$(node -p 'process.platform')"
 PR=634
 ISSUE=664
 # The default trusted actor: the gh stub reports it as the authenticated user
@@ -2304,6 +2305,14 @@ verbatim_line='- Slot failures (retained verbatim): `[{"stage":"review","round":
 [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -Fx -- "$verbatim_line" >/dev/null &&
     ok "verified slot failure line matches base <stdin> & bytes" || bad "verified slot failure text changed: $RC $ERR"
 
+# The reader intentionally refuses local descriptor containment off Linux.
+# Assert that contract for the same inputs rather than requiring a report.
+expect_local_platform_refusal() {
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
+        contains "$ERR" 'on this platform' &&
+        ok "$1 refuses local data on $LOCAL_PLATFORM" || bad "$1 platform refusal: $RC $ERR"
+}
+
 echo "==> local-only record is opt-in and carries provenance on every measurement"
 d="$TMPROOT/local-unverified"
 make_permissive_gh "$d"
@@ -2315,22 +2324,30 @@ default_out="$OUT" default_err="$ERR" default_rc="$RC"
 [ "$RC" -eq 10 ] && contains "$ERR" run-not-found && [ -z "$OUT" ] &&
     ok "default local fixture still returns run-not-found exit 10" || bad "default changed: $RC $ERR"
 run_report "$d" "${local_args[@]}" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" 'not recorded — adjudications/ is absent' &&
-    ok "local report has distinct exit 13 and absent adjudications are not recorded" || bad "local fallback: $RC $ERR"
-if printf '%s\n' "$OUT" | node -e '
-  let text=""; process.stdin.on("data", d => text += d); process.stdin.on("end", () => {
-    const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
-    const lines=text.trim().split("\n").filter(Boolean)
-    if (!lines[0].startsWith("## ") || lines.some(line => !line.includes(label))) process.exit(1)
-  })
-'; then ok "heading and every measured line carry exact local provenance"; else bad "missing local provenance"; fi
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" 'not recorded — adjudications/ is absent' &&
+        ok "local report has distinct exit 13 and absent adjudications are not recorded" || bad "local fallback: $RC $ERR"
+    if printf '%s\n' "$OUT" | node -e '
+      let text=""; process.stdin.on("data", d => text += d); process.stdin.on("end", () => {
+        const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
+        const lines=text.trim().split("\n").filter(Boolean)
+        if (!lines[0].startsWith("## ") || lines.some(line => !line.includes(label))) process.exit(1)
+      })
+    '; then ok "heading and every measured line carry exact local provenance"; else bad "missing local provenance"; fi
+else
+    expect_local_platform_refusal "Markdown local report"
+fi
 run_report "$d" "${local_args[@]}" --local-unverified --json
-printf '%s' "$OUT" >"$d/local.json"
-node -e '
-  const r=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))
-  if (r.status!=="local-unverified" || r.verified!==false || r.measurements.length===0 ||
-      r.measurements.some(m=>m.provenance!=="unverified (local record, not authenticated by a trusted GitHub evidence marker)")) process.exit(1)
-' "$d/local.json" && ok "JSON measurements carry provenance and verified false" || bad "JSON local provenance"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    printf '%s' "$OUT" >"$d/local.json"
+    node -e '
+      const r=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))
+      if (r.status!=="local-unverified" || r.verified!==false || r.measurements.length===0 ||
+          r.measurements.some(m=>m.provenance!=="unverified (local record, not authenticated by a trusted GitHub evidence marker)")) process.exit(1)
+    ' "$d/local.json" && ok "JSON measurements carry provenance and verified false" || bad "JSON local provenance"
+else
+    expect_local_platform_refusal "JSON local report"
+fi
 run_report "$d" "${local_args[@]}"
 [ "$RC" -eq "$default_rc" ] && [ "$OUT" = "$default_out" ] && [ "$ERR" = "$default_err" ] &&
     ok "no-flag output stays byte-for-byte unchanged after opt-in reads" || bad "default output changed"
@@ -2461,16 +2478,20 @@ for mode in file ancestor; do
         SWAP_OUTSIDE_DIR="$d/outside" SWAP_OUTSIDE_FILE="$d/outside/run.json" SWAP_LOG="$d/swap-$mode.log" \
         run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
         --stats-script "$d/race-stats.mjs" --local-unverified
-    if [ "$mode" = file ]; then
-        expected_log=$'open\nfstat\nread-fd\nclose'
-        [ "$RC" -eq 13 ] && ! contains "$OUT" 'OUTSIDE-CONTENT-MUST-NOT-BE-READ' &&
-            [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
-            ok "path swapped after fstat reads original descriptor only, then closes it" || bad "file race: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        if [ "$mode" = file ]; then
+            expected_log=$'open\nfstat\nread-fd\nclose'
+            [ "$RC" -eq 13 ] && ! contains "$OUT" 'OUTSIDE-CONTENT-MUST-NOT-BE-READ' &&
+                [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+                ok "path swapped after fstat reads original descriptor only, then closes it" || bad "file race: $RC $ERR"
+        else
+            expected_log=$'open\nfstat\nclose'
+            [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
+                [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+                ok "ancestor redirected before open is refused without any descriptor read" || bad "ancestor race: $RC $ERR"
+        fi
     else
-        expected_log=$'open\nfstat\nclose'
-        [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'outside --record-dir' &&
-            [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
-            ok "ancestor redirected before open is refused without any descriptor read" || bad "ancestor race: $RC $ERR"
+        expect_local_platform_refusal "$mode race"
     fi
 done
 
@@ -2487,23 +2508,27 @@ for mode in resolution identity relative deleted; do
         SWAP_OUTSIDE_DIR="$outside_dir" SWAP_INSIDE_DIR="$race_parent/inside" SWAP_LOG="$d/swap-$mode.log" \
         run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
         --stats-script "$d/race-stats.mjs" --local-unverified
-    case "$mode" in
-    resolution)
-        reason='outside --record-dir'
-        expected_log=$'open\nfstat\nswap-after-readlink\nclose'
-        ;;
-    identity)
-        reason='descriptor identity differs'
-        expected_log=$'open\nfstat\nswap-after-readlink\nclose'
-        ;;
-    *)
-        reason='descriptor containment cannot be established'
-        expected_log=$'open\nfstat\nclose'
-        ;;
-    esac
-    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" "$reason" &&
-        [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
-        ok "$mode descriptor proof refuses before reading, then closes" || bad "$mode descriptor proof: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        case "$mode" in
+        resolution)
+            reason='outside --record-dir'
+            expected_log=$'open\nfstat\nswap-after-readlink\nclose'
+            ;;
+        identity)
+            reason='descriptor identity differs'
+            expected_log=$'open\nfstat\nswap-after-readlink\nclose'
+            ;;
+        *)
+            reason='descriptor containment cannot be established'
+            expected_log=$'open\nfstat\nclose'
+            ;;
+        esac
+        [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" "$reason" &&
+            [ "$(cat "$d/swap-$mode.log")" = "$expected_log" ] &&
+            ok "$mode descriptor proof refuses before reading, then closes" || bad "$mode descriptor proof: $RC $ERR"
+    else
+        expect_local_platform_refusal "$mode descriptor proof"
+    fi
 done
 
 echo "==> platforms without no-follow semantics refuse local reads"
@@ -2539,14 +2564,22 @@ node -e '
 
 printf '{}\n' >"$d/records/run-6000-fresh-kickoff/run.json"
 run_report "$d" "${local_args[@]}" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'failed schema validation' &&
-    ok "schema-invalid record is refused without rendering" || bad "invalid record rendered: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'failed schema validation' &&
+        ok "schema-invalid record is refused without rendering" || bad "invalid record rendered: $RC $ERR"
+else
+    expect_local_platform_refusal "schema-invalid local record"
+fi
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 mkdir -p "$d/records/wrong-id"
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/wrong-id/run.json"
 run_report "$d" --repo o/r --run wrong-id --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'run_id differs' &&
-    ok "schema-valid record with mismatched run id is refused" || bad "mismatch rendered: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'run_id differs' &&
+        ok "schema-valid record with mismatched run id is refused" || bad "mismatch rendered: $RC $ERR"
+else
+    expect_local_platform_refusal "mismatched local run id"
+fi
 run_report "$d" "${local_args[@]}" --local-unverified --as-of 2026-08-30T09:00:00Z
 [ "$RC" -eq 2 ] && [ -z "$OUT" ] && contains "$ERR" '--as-of is unavailable' &&
     ok "local reads cannot claim historical reconstruction" || bad "local as-of accepted: $RC $ERR"
@@ -2555,15 +2588,23 @@ run_report "$d" --repo o/r --run '../outside' --record-dir "$d/records" --local-
 mkdir -p "$d/records/linked"
 ln -s "$FIXTURES/fresh-kickoff.json" "$d/records/linked/run.json"
 run_report "$d" --repo o/r --run linked --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'no-follow' &&
-    ok "local symlinks cannot escape record parent" || bad "escaping symlink accepted: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'no-follow' &&
+        ok "local symlinks cannot escape record parent" || bad "escaping symlink accepted: $RC $ERR"
 
+else
+    expect_local_platform_refusal "symlink local record"
+fi
 echo "==> local run.json must be a regular file"
 mkdir -p "$d/records/not-file/run.json"
 run_report "$d" --repo o/r --run not-file --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json is not a regular file' &&
-    ok "directory run.json is a typed refusal without rendering" || bad "non-file record: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json is not a regular file' &&
+        ok "directory run.json is a typed refusal without rendering" || bad "non-file record: $RC $ERR"
 
+else
+    expect_local_platform_refusal "non-file local record"
+fi
 echo "==> a legitimate dot-dot-prefixed run id stays inside its parent"
 mkdir -p "$d/records/..candidate"
 node -e '
@@ -2571,8 +2612,12 @@ node -e '
   r.run_id="..candidate"; fs.writeFileSync(process.argv[2],JSON.stringify(r))
 ' "$FIXTURES/fresh-kickoff.json" "$d/records/..candidate/run.json"
 run_report "$d" --repo o/r --run ..candidate --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 13 ] && ok "dot-dot-prefixed candidate is accepted, unlike a parent escape" || bad "candidate refused: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && ok "dot-dot-prefixed candidate is accepted, unlike a parent escape" || bad "candidate refused: $RC $ERR"
 
+else
+    expect_local_platform_refusal "dot-dot-prefixed local run"
+fi
 echo "==> containment accepts a filesystem-root parent"
 node -e '
   const fs=require("node:fs"), vm=require("node:vm"), path=require("node:path")
@@ -2595,13 +2640,17 @@ node -e '
   fs.writeFileSync(file,JSON.stringify(record))
 ' "$d/records/run-6000-fresh-kickoff/run.json"
 run_report "$d" "${local_args[@]}" --local-unverified
-printf '%s' "$OUT" >"$d/terminators.txt"
-[ "$RC" -eq 13 ] && node -e '
-  const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-  const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/).filter(line=>line.trim())
-  const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
-  if (!text.includes("injected VERIFIED") || lines.some(line=>!line.includes(label))) process.exit(1)
-' "$d/terminators.txt" && ok "CR/LF/CRLF/LS/PS/NEL/VT/FF cannot forge unlabelled local lines" || bad "local terminator injection: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    printf '%s' "$OUT" >"$d/terminators.txt"
+    [ "$RC" -eq 13 ] && node -e '
+      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+      const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/).filter(line=>line.trim())
+      const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
+      if (!text.includes("injected VERIFIED") || lines.some(line=>!line.includes(label))) process.exit(1)
+    ' "$d/terminators.txt" && ok "CR/LF/CRLF/LS/PS/NEL/VT/FF cannot forge unlabelled local lines" || bad "local terminator injection: $RC $ERR"
+else
+    expect_local_platform_refusal "line-terminator local note"
+fi
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
 echo "==> local values strip C0/C1 terminal controls but keep tab"
@@ -2614,19 +2663,27 @@ node -e '
   fs.writeFileSync(file,JSON.stringify(r))
 ' "$d/records/run-6000-fresh-kickoff/run.json"
 run_report "$d" "${local_args[@]}" --local-unverified
-printf '%s' "$OUT" >"$d/controls.txt"
-[ "$RC" -eq 13 ] && node -e '
-  const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-  const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
-  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) ||
-      !text.includes("kept\ttab") || text.split("\n").filter(Boolean).some(line=>!line.includes(label))) process.exit(1)
-' "$d/controls.txt" && ok "no terminal control reaches local output, tab and labels remain" || bad "local terminal injection: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    printf '%s' "$OUT" >"$d/controls.txt"
+    [ "$RC" -eq 13 ] && node -e '
+      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+      const label="unverified (local record, not authenticated by a trusted GitHub evidence marker)"
+      if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) ||
+          !text.includes("kept\ttab") || text.split("\n").filter(Boolean).some(line=>!line.includes(label))) process.exit(1)
+    ' "$d/controls.txt" && ok "no terminal control reaches local output, tab and labels remain" || bad "local terminal injection: $RC $ERR"
+else
+    expect_local_platform_refusal "control-character Markdown note"
+fi
 run_report "$d" "${local_args[@]}" --local-unverified --json
-printf '%s' "$OUT" >"$d/controls.json"
-[ "$RC" -eq 13 ] && node -e '
-  const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) || JSON.parse(text).verified!==false) process.exit(1)
-' "$d/controls.json" && ok "JSON escapes local control bytes and retains a valid unverified report" || bad "JSON control injection: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    printf '%s' "$OUT" >"$d/controls.json"
+    [ "$RC" -eq 13 ] && node -e '
+      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+      if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text) || JSON.parse(text).verified!==false) process.exit(1)
+    ' "$d/controls.json" && ok "JSON escapes local control bytes and retains a valid unverified report" || bad "JSON control injection: $RC $ERR"
+else
+    expect_local_platform_refusal "control-character JSON note"
+fi
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
 echo "==> bidi controls never reach local Markdown or JSON output raw"
@@ -2640,14 +2697,18 @@ for format in markdown json; do
     extra=()
     [ "$format" = json ] && extra=(--json)
     run_report "$d" "${local_args[@]}" --local-unverified "${extra[@]}"
-    printf '%s' "$OUT" >"$d/bidi-$format.txt"
-    [ "$RC" -eq 13 ] && node -e '
-      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-      if (/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text) ||
-          !text.includes("before") || !text.includes("after")) process.exit(1)
-      if (process.argv[2]==="json" && JSON.parse(text).verified!==false) process.exit(1)
-    ' "$d/bidi-$format.txt" "$format" &&
-        ok "$format neutralizes LRM/RLM, embeddings, overrides and isolates" || bad "$format bidi output: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        printf '%s' "$OUT" >"$d/bidi-$format.txt"
+        [ "$RC" -eq 13 ] && node -e '
+          const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+          if (/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text) ||
+              !text.includes("before") || !text.includes("after")) process.exit(1)
+          if (process.argv[2]==="json" && JSON.parse(text).verified!==false) process.exit(1)
+        ' "$d/bidi-$format.txt" "$format" &&
+            ok "$format neutralizes LRM/RLM, embeddings, overrides and isolates" || bad "$format bidi output: $RC $ERR"
+    else
+        expect_local_platform_refusal "$format bidi note"
+    fi
 done
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
@@ -2660,14 +2721,18 @@ for note in '<br>' '<details><summary>verified</summary>' '&lt;br&gt;'; do
       fs.writeFileSync(file,JSON.stringify(r))
     ' "$d/records/run-6000-fresh-kickoff/run.json" "$note"
     run_report "$d" "${local_args[@]}" --local-unverified
-    printf '%s' "$OUT" >"$d/html.txt"
-    [ "$RC" -eq 13 ] && node -e '
-      const text=require("node:fs").readFileSync(process.argv[1],"utf8")
-      const literal=process.argv[2].replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-      const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/).filter(line=>line.trim())
-      if (!text.includes(literal) || /[<>]/.test(text) ||
-          lines.some(line=>!line.includes("unverified (local record, not authenticated by a trusted GitHub evidence marker)"))) process.exit(1)
-    ' "$d/html.txt" "$note" && ok "local note $note is inert literal text with labelled lines" || bad "HTML note injection: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        printf '%s' "$OUT" >"$d/html.txt"
+        [ "$RC" -eq 13 ] && node -e '
+          const text=require("node:fs").readFileSync(process.argv[1],"utf8")
+          const literal=process.argv[2].replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+          const lines=text.split(/\r\n|[\r\n\u2028\u2029\u0085\u000b\u000c]/).filter(line=>line.trim())
+          if (!text.includes(literal) || /[<>]/.test(text) ||
+              lines.some(line=>!line.includes("unverified (local record, not authenticated by a trusted GitHub evidence marker)"))) process.exit(1)
+        ' "$d/html.txt" "$note" && ok "local note $note is inert literal text with labelled lines" || bad "HTML note injection: $RC $ERR"
+    else
+        expect_local_platform_refusal "HTML local note"
+    fi
 done
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
@@ -2675,9 +2740,13 @@ echo "==> untrusted markers do not imply marker absence"
 evidence_marker_file "$d/untrusted-marker" run-6000-fresh-kickoff challenge issue 1
 COMMENT_ACTOR=999 set_comments "$d/comments" 6000 "$d/untrusted-marker"
 GH_COMMENTS_DIR="$d/comments" run_report "$d" "${local_args[@]}" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
-    ! contains "$OUT" 'no GitHub evidence marker' &&
-    ok "local provenance makes no unsupported marker-absence claim" || bad "false marker-absence claim: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
+        ! contains "$OUT" 'no GitHub evidence marker' &&
+        ok "local provenance makes no unsupported marker-absence claim" || bad "false marker-absence claim: $RC $ERR"
+else
+    expect_local_platform_refusal "untrusted-marker local record"
+fi
 set_comments "$d/comments" 6000
 
 echo "==> --pr binds markerless local records"
@@ -2687,25 +2756,41 @@ write_file "$d/body" ""
 PR_NUMBER="$((PR + 1))" make_pr_json "$d/pr.json" "$d/body"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$((PR + 1))" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json records PR' &&
-    ok "local record bound to another PR is refused" || bad "local PR mismatch: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'local run.json records PR' &&
+        ok "local record bound to another PR is refused" || bad "local PR mismatch: $RC $ERR"
+else
+    expect_local_platform_refusal "mismatched local PR"
+fi
 make_pr_json "$d/pr.json" "$d/body"
 node -e 'const fs=require("node:fs"),f=process.argv[1],r=JSON.parse(fs.readFileSync(f,"utf8")); r.url="https://github.com/evanharmon1/harmon-devkit/pull/634"; fs.writeFileSync(f,JSON.stringify(r))' "$d/pr.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo evanharmon1/harmon-devkit --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
-    ok "matching local PR with no marker renders as unverified" || bad "matching local PR refused: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" 'not authenticated by a trusted GitHub evidence marker' &&
+        ok "matching local PR with no marker renders as unverified" || bad "matching local PR refused: $RC $ERR"
 
+else
+    expect_local_platform_refusal "matching local PR"
+fi
 make_pr_json "$d/pr.json" "$d/body"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'PR URL does not name the requested repository' &&
-    ok "matching PR number in another repository is refused" || bad "foreign local PR accepted: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'PR URL does not name the requested repository' &&
+        ok "matching PR number in another repository is refused" || bad "foreign local PR accepted: $RC $ERR"
+else
+    expect_local_platform_refusal "foreign local PR"
+fi
 node -e 'const fs=require("node:fs"),f=process.argv[1],r=JSON.parse(fs.readFileSync(f,"utf8")); r.url="HTTPS://GITHUB.COM/EVANHARMON1/HARMON-DEVKIT/pull/634/"; fs.writeFileSync(f,JSON.stringify(r))' "$d/pr.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo EVANHARMON1/HARMON-DEVKIT --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 13 ] && ok "local PR repository binding is case-insensitive" || bad "normalized local PR refused: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && ok "local PR repository binding is case-insensitive" || bad "normalized local PR refused: $RC $ERR"
 
+else
+    expect_local_platform_refusal "case-insensitive local PR"
+fi
 echo "==> local PR binding follows the fetched Enterprise host"
 node --input-type=module -e '
   import fs from "node:fs"
@@ -2720,16 +2805,24 @@ node --input-type=module -e '
 ' "$d/records/run-6001-further-along/run.json" "$d/pr.json"
 GH_HOST=git.example.test GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo evanharmon1/harmon-devkit --pr "$PR" --run run-6001-further-along --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" 'git.example.test' &&
-    ok "local binding accepts the host already resolved by gh" || bad "Enterprise local binding refused: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" 'git.example.test' &&
+        ok "local binding accepts the host already resolved by gh" || bad "Enterprise local binding refused: $RC $ERR"
+else
+    expect_local_platform_refusal "Enterprise local PR"
+fi
 cp "$FIXTURES/further-along.json" "$d/records/run-6001-further-along/run.json"
 make_pr_json "$d/pr.json" "$d/body"
 
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" \
     --repo o/r --pr "$PR" --run run-6000-fresh-kickoff --record-dir "$d/records" --local-unverified
-[ "$RC" -eq 13 ] && contains "$OUT" "no PR is recorded locally; this record is not bound to PR #$PR — unverified" &&
-    ok "local record without a PR explicitly labels the requested PR as unbound" || bad "unbound PR missing: $RC $ERR"
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" "no PR is recorded locally; this record is not bound to PR #$PR — unverified" &&
+        ok "local record without a PR explicitly labels the requested PR as unbound" || bad "unbound PR missing: $RC $ERR"
 
+else
+    expect_local_platform_refusal "unbound local PR"
+fi
 # Exercise both authenticated success and authenticated missing-record with
 # --run: neither may render the local record. Existing fixtures supply the
 # same verified trajectory consumed throughout this suite.
@@ -2749,8 +2842,12 @@ for failure in signal no-output runtime; do
     OUT="$(PATH="$d/bin:$PATH" node "$validator_report" "${local_args[@]}" \
         --trusted-actor-id "$ACTOR" --stats-script "$d/validator-stats.mjs" --local-unverified 2>"$d/stderr")" || RC=$?
     ERR="$(cat "$d/stderr")"
-    [ "$RC" -eq 1 ] && [ -z "$OUT" ] && contains "$ERR" 'local run schema validator' &&
-        ok "$failure validator failure is operational exit 1" || bad "$failure validator misclassified: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        [ "$RC" -eq 1 ] && [ -z "$OUT" ] && contains "$ERR" 'local run schema validator' &&
+            ok "$failure validator failure is operational exit 1" || bad "$failure validator misclassified: $RC $ERR"
+    else
+        expect_local_platform_refusal "$failure local validator"
+    fi
 done
 
 echo "==> trusted evidence ignores the local flag"
@@ -2891,8 +2988,17 @@ for ignored_case in malformed hint; do
     GH_PR_JSON="$trusted_dir/pr.json" GH_COMMENTS_DIR="$trusted_dir/comments" \
         run_report "$trusted_dir" --repo o/r --pr "$PR" --run run-6000-fresh-kickoff \
         --record-dir "$d/records" --stats-script "$trusted_dir/stats.mjs" --local-unverified
-    [ "$disclosure_rc" -eq 10 ] && [ "$RC" -eq 13 ] && [ -n "$disclosure" ] && [ "$ERR" = "$disclosure" ] &&
-        ok "$ignored_case input disclosure matches ordinary discovery before local rendering" || bad "lost ignored $ignored_case disclosure: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        [ "$disclosure_rc" -eq 10 ] && [ "$RC" -eq 13 ] && [ -n "$disclosure" ] && [ "$ERR" = "$disclosure" ] &&
+            ok "$ignored_case input disclosure matches ordinary discovery before local rendering" || bad "lost ignored $ignored_case disclosure: $RC $ERR"
+    else
+        local_disclosure="$(printf '%s\n' "$ERR" | grep '^retro-run-report: ignoring ' || true)"
+        if [ "$disclosure_rc" -eq 10 ] && [ -n "$disclosure" ] && [ "$local_disclosure" = "$disclosure" ]; then
+            expect_local_platform_refusal "$ignored_case input disclosure"
+        else
+            bad "lost ignored $ignored_case disclosure before platform refusal: $RC $ERR"
+        fi
+    fi
 done
 write_file "$trusted_dir/body" "body"
 make_pr_json "$trusted_dir/pr.json" "$trusted_dir/body"
