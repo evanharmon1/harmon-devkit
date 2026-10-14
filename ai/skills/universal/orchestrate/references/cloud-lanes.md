@@ -15,9 +15,6 @@ browser, so that account must hold both the web environment and a GitHub
 credential that reaches the repository, such as a `/web-setup` token. Then
 launch clones the remote at the current branch. Without one, the platform uploads
 the checkout with no `origin`, and the lane cannot push; that is outside this mode.
-Disconnect any earlier GitHub connection on claude.ai's connectors page before
-`/web-setup`, never after: in the end-to-end check below, the token was gone
-after the connector was disconnected following `/web-setup`.
 Claims are unchanged: the orchestrator claims before launch, and the lane never
 claims or refreshes the claim.
 Launch from a checkout on the default branch at its pushed tip, because the
