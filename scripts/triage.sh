@@ -99,12 +99,15 @@ fi
 # the skill it is executing, nothing else on disk — file contents outside
 # those trees must never be copyable into a published report entry. Glob/Grep
 # are omitted entirely; scan.json is the worker's data.
+# Permission rules are prefix matches: SKILL.md's allowed-tools spells each
+# script ./$skill_dir/assets/... while Step 0 sets DIR to the bare relative
+# $skill_dir, so grant both spellings (#1455).
 skill_abs="$(cd "$skill_dir" && pwd)"
 tools="Read(//${scratch#/}/**),Read(//${skill_abs#/}/**)"
 tools="$tools,Edit(//${scratch#/}/**)"
-tools="$tools,Bash($skill_dir/assets/triage-scan.sh:*)"
-tools="$tools,Bash($skill_dir/assets/triage-apply.sh:*)"
-tools="$tools,Bash($skill_dir/assets/triage-report.sh:*)"
+for s in triage-scan.sh triage-apply.sh triage-report.sh; do
+    tools="$tools,Bash($skill_dir/assets/$s:*),Bash(./$skill_dir/assets/$s:*)"
+done
 tools="$tools,Bash(gh issue view:*),Bash(gh issue list:*)"
 
 prompt="You are running the triage skill headlessly over one repository.

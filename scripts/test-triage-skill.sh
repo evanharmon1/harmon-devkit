@@ -396,6 +396,12 @@ if [ "${1:-}" = "--help" ]; then
     exit 0
 fi
 printf '%s\n' "ARGS: $*" >>"${GH_STUB_LOG:?}"
+prev=""
+for a in "$@"; do
+    [ "$prev" != "--allowedTools" ] ||
+        printf 'ALLOWED_TOOLS=%s\n' "$a" >>"${GH_STUB_LOG:?}"
+    prev="$a"
+done
 printf '%s\n' "TRIAGE_EXECUTE=${TRIAGE_EXECUTE:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "TRIAGE_REPO=${TRIAGE_REPO:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "TRIAGE_SCRATCH=${TRIAGE_SCRATCH:-unset}" >>"${GH_STUB_LOG:?}"
@@ -2303,6 +2309,134 @@ grep -q 'labels, native Issue Types, and the rolling report' "$wrapper" ||
 grep -q 'native Issue Types: <n> applied|would-apply' \
     ai/skills/universal/triage/SKILL.md ||
     fail "final summary must account for native Issue Type writes"
+
+# check_wrapper_skill_grants TOOLS_CSV SKILL_MD SKILL_DIR — verify that
+# TOOLS_CSV grants every script path in SKILL_MD's allowed-tools and every
+# "$DIR/assets/..." invocation in its body for SKILL_DIR, in both the
+# ./-prefixed and bare relative spellings, and no extra Bash(...) grants.
+check_wrapper_skill_grants() {
+    local tools_csv="$1" skill_md="$2" skill_dir="$3"
+    local actual_rules actual_bash fm_tools fm_rules fm_dir_rules
+    local fm_dir_scripts body_scripts expected_bash rule s
+    actual_rules="$(printf '%s\n' "$tools_csv" | tr ',' '\n')"
+    actual_bash="$(printf '%s\n' "$actual_rules" | grep '^Bash(' | sort || true)"
+    fm_tools="$(awk '
+        NR == 1 && $0 == "---" { in_fm = 1; next }
+        in_fm && $0 == "---" { exit }
+        in_fm && /^allowed-tools:[[:space:]]*/ {
+            sub(/^allowed-tools:[[:space:]]*/, "")
+            print
+        }
+    ' "$skill_md")"
+    [ -n "$fm_tools" ] || return 1
+    fm_rules="$(printf '%s\n' "$fm_tools" | tr ',' '\n' |
+        sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    fm_dir_rules="$(printf '%s\n' "$fm_rules" | grep -F "$skill_dir" || true)"
+    [ -n "$fm_dir_rules" ] || return 1
+    while IFS= read -r rule; do
+        [ -n "$rule" ] || continue
+        grep -qxF -- "$rule" <<<"$actual_rules" || return 1
+    done <<<"$fm_dir_rules"
+    fm_dir_scripts="$(printf '%s\n' "$fm_dir_rules" | awk -v d="$skill_dir" '
+        index($0, "Bash(./" d "/assets/") == 1 && /:\*\)$/ {
+            s = substr($0, length("Bash(./" d "/assets/") + 1)
+            sub(/:\*\)$/, "", s)
+            print s
+            next
+        }
+        index($0, "Bash(" d "/assets/") == 1 && /:\*\)$/ {
+            s = substr($0, length("Bash(" d "/assets/") + 1)
+            sub(/:\*\)$/, "", s)
+            print s
+            next
+        }
+        { exit 1 }
+    ')" || return 1
+    fm_dir_scripts="$(printf '%s\n' "$fm_dir_scripts" | sort -u)"
+    [ -n "$fm_dir_scripts" ] || return 1
+    body_scripts="$(awk '
+        NR == 1 && $0 == "---" { in_fm = 1; next }
+        in_fm && $0 == "---" { in_fm = 0; next }
+        !in_fm { print }
+    ' "$skill_md" | grep -oE '\$DIR/assets/[A-Za-z0-9._-]+' |
+        sed 's|^\$DIR/assets/||' | sort -u || true)"
+    [ -n "$body_scripts" ] || return 1
+    [ "$fm_dir_scripts" = "$body_scripts" ] || return 1
+    while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        grep -qxF -- "Bash($skill_dir/assets/$s:*)" <<<"$actual_rules" || return 1
+        grep -qxF -- "Bash(./$skill_dir/assets/$s:*)" <<<"$actual_rules" || return 1
+    done <<<"$body_scripts"
+    expected_bash="$(
+        while IFS= read -r s; do
+            [ -n "$s" ] || continue
+            printf 'Bash(%s/assets/%s:*)\n' "$skill_dir" "$s"
+            printf 'Bash(./%s/assets/%s:*)\n' "$skill_dir" "$s"
+        done <<<"$body_scripts"
+        printf 'Bash(gh issue view:*)\nBash(gh issue list:*)\n'
+    )"
+    expected_bash="$(printf '%s\n' "$expected_bash" | sort)"
+    [ "$actual_bash" = "$expected_bash" ] || return 1
+}
+
+echo "==> wrapper: Bash grants cover SKILL.md allowed-tools and \$DIR/assets/... spellings (#1455)"
+allowed_tools="$(grep -m1 '^ALLOWED_TOOLS=' "$GH_STUB_LOG" | cut -d= -f2-)"
+[ -n "$allowed_tools" ] || fail "wrapper must pass --allowedTools to claude"
+check_wrapper_skill_grants "$allowed_tools" \
+    ai/skills/universal/triage/SKILL.md ai/skills/universal/triage ||
+    fail "wrapper Bash grants must cover SKILL.md spellings for ai/skills/universal/triage: $allowed_tools"
+
+for vendored_dir in .agents/skills/triage .claude/skills/triage; do
+    consumer_root="$tmp/wrapper-consumer-${vendored_dir%%/*}"
+    rm -rf "$consumer_root"
+    mkdir -p "$consumer_root/scripts" "$consumer_root/$vendored_dir"
+    git init -q "$consumer_root"
+    git -C "$consumer_root" remote add origin "https://github.com/$repo"
+    cp "$wrapper" "$consumer_root/scripts/triage.sh"
+    cp ai/skills/universal/triage/SKILL.md "$consumer_root/$vendored_dir/SKILL.md"
+    : >"$GH_STUB_LOG"
+    [ "$(run "$consumer_root/scripts/triage.sh")" = 0 ] ||
+        fail "wrapper in $vendored_dir layout failed: $(cat "$tmp/out")"
+    vendored_tools="$(grep -m1 '^ALLOWED_TOOLS=' "$GH_STUB_LOG" | cut -d= -f2-)"
+    check_wrapper_skill_grants "$vendored_tools" \
+        "$consumer_root/$vendored_dir/SKILL.md" "$vendored_dir" ||
+        fail "wrapper Bash grants must cover SKILL.md spellings for $vendored_dir: $vendored_tools"
+done
+
+# Drift checks: omitting ./-prefixed rules (the #1455 regression), omitting
+# bare relative rules, dropping one script, or SKILL.md adding an ungranted
+# script in allowed-tools or body must all fail.
+no_dot_slash="$(printf '%s\n' "$allowed_tools" | tr ',' '\n' |
+    grep -v '^Bash(\./' | paste -sd, -)"
+! check_wrapper_skill_grants "$no_dot_slash" \
+    ai/skills/universal/triage/SKILL.md ai/skills/universal/triage ||
+    fail "grant check must fail when ./-prefixed script rules are missing"
+no_bare_rel="$(printf '%s\n' "$allowed_tools" | tr ',' '\n' |
+    grep -v '^Bash(ai/' | paste -sd, -)"
+! check_wrapper_skill_grants "$no_bare_rel" \
+    ai/skills/universal/triage/SKILL.md ai/skills/universal/triage ||
+    fail "grant check must fail when bare relative script rules are missing"
+missing_one="${allowed_tools/,Bash(.\/ai\/skills\/universal\/triage\/assets\/triage-report.sh:\*)/}"
+! check_wrapper_skill_grants "$missing_one" \
+    ai/skills/universal/triage/SKILL.md ai/skills/universal/triage ||
+    fail "grant check must fail when a single script spelling is missing"
+! check_wrapper_skill_grants "$allowed_tools,Bash(task:*)" \
+    ai/skills/universal/triage/SKILL.md ai/skills/universal/triage ||
+    fail "grant check must fail when an extra Bash rule widens the grant"
+drifted_fm="$tmp/drifted-fm-SKILL.md"
+sed 's|^allowed-tools: |allowed-tools: Bash(./ai/skills/universal/triage/assets/triage-extra.sh:*), |' \
+    ai/skills/universal/triage/SKILL.md >"$drifted_fm"
+! check_wrapper_skill_grants "$allowed_tools" \
+    "$drifted_fm" ai/skills/universal/triage ||
+    fail "grant check must fail when SKILL.md allowed-tools adds an ungranted script"
+drifted_body="$tmp/drifted-body-SKILL.md"
+{
+    cat ai/skills/universal/triage/SKILL.md
+    printf '\n"$DIR/assets/triage-extra.sh" --repo "$REPO"\n'
+} >"$drifted_body"
+! check_wrapper_skill_grants "$allowed_tools" \
+    "$drifted_body" ai/skills/universal/triage ||
+    fail "grant check must fail when SKILL.md body invokes an ungranted script"
 
 echo "==> wrapper: --execute without a terminal is refused"
 [ "$(run "$wrapper" --execute)" = 2 ] ||
