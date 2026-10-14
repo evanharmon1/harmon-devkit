@@ -1848,10 +1848,14 @@ function assembleIntegrationCycles(rounds) {
       if (roundGating) streak = 0;
       continue;
     }
+    const charged = typeof cc.charged === "number" ? cc.charged : cc.cycle;
+    const exempt = typeof cc.exempt === "number" ? cc.exempt : cc.cycle - charged;
     if (latest && cc.cycle === latest.cycle) {
       if (cc.head !== latest.head) {
         throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} on ${cc.head}, but that cycle reviewed ${latest.head}`, "cycle-regression");
       }
+      latest.charged = charged;
+      latest.exempt = exempt;
       latest.rounds.push(r.round);
       foldLateRound(latest, entries);
       if (roundGating) streak = 0;
@@ -1866,7 +1870,8 @@ function assembleIntegrationCycles(rounds) {
     const cycle = {
       cycle: cc.cycle,
       head: cc.head,
-      charged: typeof cc.charged === "number" ? cc.charged : cc.cycle,
+      charged,
+      exempt,
       rounds: [r.round],
       entries: [...entries],
       clean: !roundGating,
