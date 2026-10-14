@@ -152,6 +152,12 @@ assert.equal(JSON.parse(r.stdout).generation, 1)
 assert.equal(readFileSync(runJson, 'utf8'), before)
 pass('solo-init re-arms idempotently: same generation, run.json untouched')
 
+r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-typo', issue: 1, branch: '1-sloo' })])
+assert.equal(r.status, 1, r.stderr)
+assert.match(r.stderr, /--branch 1-sloo names no local branch \(refs\/heads\/1-sloo\)/)
+assert.ok(nothingWritten('run-1-typo'))
+sh('git', ['branch', '1-elsewhere', base])
+sh('git', ['branch', '5-rollback', base])
 r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-other', issue: 1, branch: BRANCH })])
 assert.equal(r.status, 1)
 assert.match(r.stderr, /already has live active run run-1-solo/)
@@ -160,7 +166,7 @@ r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-elsewhere', issue: 1, br
 assert.equal(r.status, 1)
 assert.match(r.stderr, /issue\(s\) 1 are already locked by session solo-session/)
 assert.ok(nothingWritten('run-1-elsewhere'))
-pass('solo-init refuses a branch whose run is still live, and an issue another session holds, writing nothing')
+pass('solo-init refuses a misspelled branch, a branch whose run is still live, and an issue another session holds, writing nothing')
 
 if (process.getuid?.() !== 0) {
   // A failure after the writes began (here: activation, against an
@@ -231,6 +237,9 @@ const challengePass = passFile('challenge-r1', envelope('challenger', 'challenge
 // within the stage's span. Each refusal publishes nothing.
 const inadmissible = [
   ['wrong stage', envelope('reviewer', 'review', 1, reviewFinder, []), /the run's active stage is challenge/],
+  ['reviewer in a challenge slot', envelope('reviewer', 'challenge', 1, challengeFinder, []), /stage challenge is filled only by a challenger envelope, not reviewer/],
+  ['tier below the role', envelope('challenger', 'challenge', 1, challengeFinder, [], { producer: { harness: 'claude-code', model: 'claude-opus-5-5', tier: 'economy' } }),
+    new RegExp(`producer tier "economy" is below the run's resolved challenger tier ${policy.roles.challenger.tier}`)],
   ['blocked', envelope('challenger', 'challenge', 1, challengeFinder, [], { status: 'blocked' }), /status is "blocked"/],
   ['unconfigured slot', envelope('challenger', 'challenge', 1, 'not-a-finder', []), /slot not-a-finder is not a configured challenge finder/],
   ['unsafe slot', envelope('challenger', 'challenge', 1, '../escape', []), /do not form a safe file name/],
@@ -246,7 +255,7 @@ refused(slateArgs, ['receipt', '--pass', passFile('foreign-run', envelope('chall
 assert.equal(existsSync(join(record, 'passes')), false)
 assert.equal(existsSync(join(record, 'escape.json')), false)
 assert.deepEqual(read(runJson).receipts.filter((x) => x.kind === 'pass'), [])
-pass('receipt refuses a pass for another stage, a blocked one, an unconfigured or unsafe slot, a skipped round, a foreign head, a future or stale one, or another run, publishing nothing')
+pass('receipt refuses a pass for another stage or role, below the resolved role tier, a blocked one, an unconfigured or unsafe slot, a skipped round, a foreign head, a future or stale one, or another run, publishing nothing')
 
 assert.match(write('receipt', '--pass', challengePass), /recorded pass receipt challenge-r1-/)
 assert.equal(readFileSync(join(record, 'passes', `challenge-r1-${challengeFinder}.json`), 'utf8'), readFileSync(challengePass, 'utf8'))
@@ -467,14 +476,14 @@ assert.match(section('Stage `challenge`'), /Findings: 0 across 1 pass\(es\)/)
 assert.match(section('Stage `review`'), new RegExp(`Rounds spent: 2 / cap ${policy.rounds.review} `))
 assert.match(section('Stage `review`'), /Findings: 1 across 2 pass\(es\)/)
 assert.match(section('Stage `review`'), /Round 1 evidence: 1 pass\(es\), 0 blocked pass\(es\), 1 adjudication\(s\)/)
-// The harvester re-runs the exit engine without the run's ledger, so it
-// discloses provenance as unavailable for exactly the round with a finding —
-// stated, never silently substituted — while the record itself verifies it
-// (section 2's verification projection above).
-assert.match(section('Stage `review`'), /Verified provenance\/fingerprint unavailable for round\(s\): 1$/m)
+// The harvester passes the run's per-stage ledger and head map to the exit
+// engine (#1444), so the review finding's provenance renders verified — the
+// same verdict section 2's verification projection reached.
+assert.match(section('Stage `review`'), /Findings by class and provenance:\n {2}- hardening \/ original: 1$/m)
+assert.doesNotMatch(report.stdout, /provenance\/fingerprint unavailable/)
 assert.match(report.stdout, /Interventions during this stage: asked at [0-9T:-]+Z \(maintainer confirmed deferring the P2 to integration\)/)
 assert.match(report.stdout, /Forged-author comments: 0/)
-pass('retro-run-report.mjs discovers the trusted marker on the linked issue and renders ## Run evidence (exit 0): rounds against caps, findings per stage, provenance disclosure, the intervention')
+pass('retro-run-report.mjs discovers the trusted marker on the linked issue and renders ## Run evidence (exit 0): rounds against caps, findings per stage, verified provenance, the intervention')
 
 const untrusted = retro(PR, 999)
 assert.equal(untrusted.status, 11, `${untrusted.stdout}\n${untrusted.stderr}`)
@@ -512,6 +521,7 @@ assert.equal(readFileSync(runJson, 'utf8'), finalRecord)
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
 refused(slateArgs, ['transition', '--stage', 'implement', '--exit', 'late'], /run already ended/)
 assert.equal(read(runJson).outcome, 'ready-for-review')
+assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
 pass('a promoted solo run releases its slate lock, refuses every later write, and is never re-armed by solo-init')
 
 // A second run whose challenge stage diverges: round 2 repeats round 1's

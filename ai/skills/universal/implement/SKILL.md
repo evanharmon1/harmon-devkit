@@ -535,23 +535,32 @@ on with the inline procedure.
    entered at reservation, the next at that stage's handoff, and none at all
    when both are 0 (no reservation — "No stages, no record" above). The
    reservation happens where that first stage begins, so the stages before it
-   are recorded **retroactively, now**: `transition --stage claim`, then
-   `implement`, `verify` and the first enabled stage, each with `--exit`
-   naming how the stage being left ended (the claim, the commit,
-   `VERIFY-EXIT=0`). Their `entered_at` is the time of this write,
+   are recorded **retroactively, now**: `transition --stage claim` **with no
+   `--exit`** (`solo-init` already recorded kickoff's exit, and an exit is
+   never rewritten), then `implement`, `verify` and the first enabled stage,
+   each with `--exit` naming how the stage being left ended (the claim, the
+   commit, `VERIFY-EXIT=0`). Their `entered_at` is the time of this write,
    not of the work; the exits carry the facts.
 3. **One pass per configured finder slot, per round.** Capture the head first.
-   Where the finder's runner publishes in envelope mode, run it so
-   (`task challenge -- --envelope --run-id … --head … --stage challenge
-   --round <n> --slot <finder> --tier <challenger tier> --record-dir <record>
-   --base <default branch>`). Otherwise — every Codex finder today,
-   harmon-devkit#1365 — run the task as usual and have the
+   Where the finder's runner publishes in envelope mode, run **that finder's
+   own task target** so — for a `scripts/finder-review.sh` finder, for
+   example `task challenge:copilot -- --model <model> --envelope --run-id …
+   --head … --stage challenge --round <n> --slot <finder> --tier <challenger
+   tier> --record-dir <record> --base <default branch>`. The bare `task
+   challenge` / `task review` targets run Codex, whose envelope mode fails
+   closed today (harmon-devkit#1365), so for every Codex finder run the task
+   as usual and have the
    `challenger`/`reviewer` role agent assemble `result.<role>` from its output,
    or, where the harness has no role agent, assemble it yourself the way the
    role would: decode the finder's badges against its registry `severity_map`,
    and set `producer` to **your own** harness, model and tier — the finder's
-   CLI did not produce the envelope. Then `receipt --pass <file>`. It admits
-   only a **completed** pass for a **configured** slot of the **active**
+   CLI did not produce the envelope. That last option exists only when your
+   own tier is **at least the run's resolved tier for that role**
+   (`policy.json` `roles.<challenger|reviewer>.tier`); below it, dispatch the
+   role agent. Then `receipt --pass <file>`. It admits only a **completed**
+   pass of the stage's own role (`challenger` for challenge, `reviewer` for
+   review), produced at no lower than that resolved tier, for a
+   **configured** slot of the **active**
    stage's **next unadjudicated** round, reviewing the branch's **current
    head**, produced inside the stage's span; anything else is refused with
    nothing published. **A round's head is fixed from its first receipt to its

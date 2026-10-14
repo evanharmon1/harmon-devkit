@@ -660,18 +660,26 @@ function recordWrite(command, args) {
     throw error
   }
   const canonical = join(root, 'runs', runId, 'run.json')
-  const summary = withMutex(canonical, () => {
-    const record = readJson(canonical, 'run record')
-    if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
-    if (!Array.isArray(record.stage_transitions) || record.stage_transitions.length === 0) {
-      throw new Refusal(`${canonical} has no stage_transitions`)
-    }
-    validateFile('run', canonical, `existing ${canonical}`)
-    const result = MUTATORS[command](record, args, { common })
-    if (result === null) return null
-    writeValidated('run', canonical, record)
-    return result
-  })
+  let summary
+  try {
+    summary = withMutex(canonical, () => {
+      const record = readJson(canonical, 'run record')
+      if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+      if (!Array.isArray(record.stage_transitions) || record.stage_transitions.length === 0) {
+        throw new Refusal(`${canonical} has no stage_transitions`)
+      }
+      validateFile('run', canonical, `existing ${canonical}`)
+      const result = MUTATORS[command](record, args, { common })
+      if (result === null) return null
+      writeValidated('run', canonical, record)
+      return result
+    })
+  } catch (error) {
+    // A refused write never leaves behind a lock this invocation took, so an
+    // ended run's released lock stays released.
+    if (lock.created === true) releaseSlateLock({ root, slate, session })
+    throw error
+  }
   if (command === 'close') {
     const moved = archiveOrchestratorFiles(root, slate, runId)
     const closed = summary === null ? 'run already closed' : `recorded ${summary}`
@@ -811,11 +819,11 @@ function governingRegistryRevision(repoRoot, base, branch) {
   } catch {
     throw new Refusal('could not resolve the default branch (refs/remotes/origin/HEAD is unset)')
   }
-  let tip = 'HEAD'
+  let tip
   try {
     tip = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], repoRoot)
   } catch {
-    // the branch has no local ref yet: its head is the checkout's
+    throw new Refusal(`--branch ${branch} names no local branch (refs/heads/${branch}); a solo run is reserved for an existing branch`)
   }
   const mergeBase = git(['merge-base', ref, tip], repoRoot)
   if (mergeBase !== base) throw new Refusal(`--base ${base} is not the merge base ${mergeBase} of ${ref} and ${branch}`)
@@ -960,6 +968,7 @@ function soloInit(args) {
       if (existsSync(canonical)) {
         const record = readJson(canonical, 'run record')
         if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+        if (record.outcome !== null) throw new Refusal(`run ${runId} has ended (outcome ${record.outcome}); reserve a fresh run id`)
         validateFile('run', canonical, `existing ${canonical}`)
         return
       }
@@ -1105,6 +1114,15 @@ function admitPass(record, envelope, runDir) {
     refuse('it names no confidence stage, positive round and slot')
   }
   if (envelope.status !== 'completed') refuse(`its status is ${JSON.stringify(envelope.status)}, not "completed"`)
+  const role = stage === 'challenge' ? 'challenger' : 'reviewer'
+  if (envelope.role !== role) refuse(`stage ${stage} is filled only by a ${role} envelope, not ${envelope.role}`)
+  const resolution = readJson(join(runDir, 'policy.json'), 'run policy projection')
+  const order = Array.isArray(resolution?.tier_order) ? resolution.tier_order : null
+  const resolvedTier = resolution?.roles?.[role]?.tier
+  if (order !== null && typeof resolvedTier === 'string' && order.includes(resolvedTier) &&
+      !(order.indexOf(envelope.producer?.tier) >= order.indexOf(resolvedTier))) {
+    refuse(`its producer tier ${JSON.stringify(envelope.producer?.tier)} is below the run's resolved ${role} tier ${resolvedTier}`)
+  }
   const active = record.stage_transitions.at(-1)
   if (active.stage !== stage) refuse(`the run's active stage is ${active.stage}`)
   const slots = resolvedSlots(record, runDir, stage)
