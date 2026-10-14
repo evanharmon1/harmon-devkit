@@ -417,8 +417,19 @@ report-only** blocker path: set `status=blocked`, report `status: "blocked"`
 through §7/§9, never manufacture a reviewer finding for the promotion, and
 leave the reservation untouched (its head has not moved).
 A closed PR or moved head is still reported as a finding (§5), as before; for a
-moved head also run
+moved head first report the mismatch, wait until `reserved_at + 600 s`, then run once
 `"$helper" release --state "$state" --note "PR changed before trigger"`.
+
+**Wait-then-release and resume:** report the mismatch and the old reserved head,
+then wait only until `reserved_at + 600 s` before running release once. Bound
+the wait to the remaining part of those 600 seconds; malformed/future times,
+an interrupted wait, or a refused release are blockers naming the old head.
+When `reserve` refuses an unresolved reservation for a different head, the next
+dispatch follows this same wait-then-release path with
+`"$helper" release --state "$state" --note "PR changed before trigger"`, then
+runs `reserve` once more for its dispatched head. A refused release stays a
+blocker; never retry reserve after that refusal or post a trigger.
+
 Release succeeds only for an untriggered Codex reservation after a live comment
 scan with the 10-minute skew margin proves no trigger exists; a refusal remains a blocker. The next
 dispatch reserves its own head with the retained counters and history, and its
@@ -539,6 +550,15 @@ Three cases, mutually exclusive:
       --head "<head>" --attempt 1 --run-id "<run id>" \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
       --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
+  release_after_margin() {
+      reserved_epoch=$(jq -er '.reserved_at | fromdateiso8601' "$state") || return
+      release_wait=$((reserved_epoch + 600 - $(date -u +%s)))
+      [ "$release_wait" -le 600 ] || return 2
+      if [ "$release_wait" -gt 0 ]; then
+          sleep "$release_wait" || return
+      fi
+      "$helper" release --state "$state" --note "PR changed before trigger"
+  }
   reserve_exit=0
   "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   if [ "$reserve_exit" -eq 18 ]; then
@@ -546,15 +566,28 @@ Three cases, mutually exclusive:
       reserve_exit=0
       "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   fi
+  if [ "$reserve_exit" -eq 2 ] && jq -e --arg head "<head>" \
+      '.phase == "reserved" and .head != $head and .trigger_comment_id == null' \
+      "$state" >/dev/null; then
+      # Report the old head before waiting; interrupted/refused release blocks.
+      jq -r '"Unresolved reservation for old head: " + .head' "$state" >&2
+      release_after_margin || exit
+      reserve_exit=0
+      "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
+  fi
   # A second 18 is a blocker; any other non-zero is a refusal. Either way:
   # post no trigger, codex_cycle null, report it (below).
   [ "$reserve_exit" -eq 0 ] || exit "$reserve_exit"
   pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
-  # Any mismatch: release safely, post no trigger, report codex_cycle null.
+  # Any mismatch: post no trigger, report codex_cycle null.
   if ! jq -e --arg head "<head>" \
       '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
       <<<"$pr_now" >/dev/null; then
-      "$helper" release --state "$state" --note "PR changed before trigger" || exit
+      # A draft flip leaves the reservation untouched (report-only blocker).
+      if jq -e --arg head "<head>" '.headRefOid != $head' <<<"$pr_now" >/dev/null; then
+          jq -r '"PR changed; old reserved head: " + .head' "$state" >&2
+          release_after_margin || exit
+      fi
       exit 2
   fi
   echo "RESERVED <head>"

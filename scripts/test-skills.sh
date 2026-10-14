@@ -2192,7 +2192,10 @@ CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 
 assert_codex_release_recipe() {
     grep -qF 'release --state "$state" --note "PR changed before trigger"' "$1" &&
-        grep -qF 'release --state "$state" --note "trigger POST failed"' "$1"
+        grep -qF 'release --state "$state" --note "trigger POST failed"' "$1" &&
+        grep -qF 'reserved_at + 600 s' "$1" &&
+        grep -qF 'When `reserve` refuses an unresolved reservation for a different head' "$1" &&
+        grep -qF 'runs `reserve` once more' "$1"
 }
 for recovery_doc in "$INTEGRATE_SKILL" "$INTEGRATOR_AGENT"; do
     expect_ok "Codex recovery recipe names release for head changes and failed POSTs: $recovery_doc" \

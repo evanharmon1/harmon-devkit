@@ -124,6 +124,10 @@ fi
 shift
 if [[ "$*" == *"-f body=@codex review"* ]]; then
     echo 'attempted trigger POST' >>"$GH_FIXTURES/post-attempts"
+    if [ -f "$GH_FIXTURES/hang-post" ]; then
+        sleep 65
+        exit 95
+    fi
     if [ -f "$GH_FIXTURES/finder-lock-state" ]; then
         lock_probe_rc=0
         "$(cat "$GH_FIXTURES/finder-lock-helper")" release \
@@ -2078,6 +2082,27 @@ printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
 "$helper" release --state "$state" --note 'old and trigger-free' --now '2026-07-31T08:10:00Z' >/dev/null
 [ "$(jq -r .phase "$state")" = released ] || fail 'old trigger-free reservation did not release'
 
+echo "==> post-window release tolerates slow reads and deleted comment authors"
+new_cycle
+jq '.phase = "reserved" | .trigger_comment_id = null | .requested_at = null' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq '[[. | .user = null]]' "${fixtures}/trigger.json" >"${fixtures}/comments.pages.json"
+if "$helper" release --state "$state" --note 'deleted trigger author' --now '2026-07-31T09:00:00Z' \
+    >"${test_tmp}/release.out" 2>&1; then
+    fail 'deleted-author trigger did not block release'
+fi
+grep -qF 'matching trigger exists' "${test_tmp}/release.out" || fail 'deleted author rejected as malformed'
+jq '.[0][0].body = "ordinary comment"' "${fixtures}/comments.pages.json" >"${fixtures}/comments.next"
+mv "${fixtures}/comments.next" "${fixtures}/comments.pages.json"
+printf '%s\n' 'issues/493/comments' >"${fixtures}/slow-endpoint"
+printf '%s\n' 2 >"${fixtures}/slow-sec"
+: >"$timeout_args_log"
+TIMEOUT_ARGS_LOG="$timeout_args_log" "$helper" release --state "$state" \
+    --note 'slow post-window recovery' --now '2026-07-31T09:00:00Z' >/dev/null
+[ "$(jq -r .phase "$state")" = released ] || fail 'slow release failed'
+awk '$3 != 60 {exit 1} END {if (NR == 0) exit 1}' "$timeout_args_log" || fail 'release budget is not independent'
+
 echo "==> release never removes an attached trigger, including corrupt reserved phase"
 new_cycle
 for release_phase in attached reserved; do
@@ -2132,6 +2157,19 @@ broker_release_now=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601
 jq -e '.phase == "reserved" and .charged_cycles == 2 and
     .superseded_reservations[-1].reason == "trigger POST failed"' \
     "$broker_state" >/dev/null || fail 'failed POST recovery lost spend/history'
+
+echo "==> timed-out broker POST releases its lock and reports no trigger id"
+: >"${fixtures}/hang-post"
+: >"$timeout_args_log"
+broker_timeout_rc=0
+TIMEOUT_ARGS_LOG="$timeout_args_log" "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" \
+    trigger --repo example/repo --pr 493 >"${test_tmp}/broker-timeout.out" 2>&1 || broker_timeout_rc=$?
+rm -f "${fixtures}/hang-post"
+[ "$broker_timeout_rc" -eq 124 ] || fail "broker did not time out: $broker_timeout_rc"
+[ ! -d "${broker_state}.lock" ] || fail 'timed-out POST leaked lock'
+[ ! -s "${test_tmp}/broker-timeout.out" ] || fail 'timed-out POST reported a trigger id'
+jq -e '.phase == "reserved" and .trigger_comment_id == null' "$broker_state" >/dev/null || fail 'timeout changed reservation'
+awk '$3 != 60 {exit 1} END {if (NR < 4) exit 1}' "$timeout_args_log" || fail 'broker network calls lack normal timeouts'
 
 echo "==> release and same-head reserve preserve deleted-first-trigger anchors"
 trigger_id=123
@@ -2254,6 +2292,41 @@ for suite_status in 403 404 500 network malformed bad-shape; do
         [ "$(jq -r .phase "$state")" = reserved ] || fail 'failed attach changed phase'
     fi
 done
+
+echo "==> denied suites exclude previous-head history and refuse unknown boundaries"
+new_cycle
+printf '%s\n' "$new_live_head" >"${fixtures}/head"
+printf '%s\n' "$new_live_head" >"${fixtures}/resolved-head"
+jq --arg head "$new_live_head" '.head.sha = $head' "${fixtures}/pr.json" >"${fixtures}/pr.next"
+mv "${fixtures}/pr.next" "${fixtures}/pr.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$new_live_head" --attempt 1 >/dev/null
+jq -e '.previous_head_trigger_comment_id == 123' "$state" >/dev/null || fail 'moved head lost exclusive anchor'
+jq '.reserved_at = "2026-07-31T08:29:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+jq '[[.]]' "${fixtures}/trigger.json" >"${fixtures}/comments.pages.json"
+jq '.id = 200 | .created_at = "2026-07-31T08:30:00Z"' "${fixtures}/trigger.json" >"${fixtures}/trigger.next"
+mv "${fixtures}/trigger.next" "${fixtures}/trigger.json"
+jq --argjson actor "$actor_id" --arg login "$actor_login" --arg head "$new_live_head" '
+    .[0] += [{id:150,user:{id:$actor,login:$login},created_at:"2026-07-31T08:01:00Z",
+        updated_at:"2026-07-31T08:01:00Z",body:"**P1** old-head unbound finding"},
+      {id:250,user:{id:$actor,login:$login},created_at:"2026-07-31T08:31:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $head + "`")}]
+' "${fixtures}/comments.pages.json" >"${fixtures}/comments.next"
+mv "${fixtures}/comments.next" "${fixtures}/comments.pages.json"
+printf '%s\n' 'gh: Resource inaccessible (HTTP 403)' >"${fixtures}/check-suites-error"
+cp "$state" "${test_tmp}/anchored-reservation.json"
+jq 'del(.previous_head_trigger_comment_id)' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted earlier triggers without a previous-head anchor'
+fi
+grep -qF 'earlier triggers lack a previous-head anchor' "${test_tmp}/suites.out" || fail "ambiguous history refusal not actionable: $(cat "${test_tmp}/suites.out")"
+cp "${test_tmp}/anchored-reservation.json" "$state"
+"$helper" attach --state "$state" --trigger-id 200 >/dev/null
+jq -e '.first_trigger_comment_id == 200 and .requires_full_window == true' "$state" >/dev/null || fail 'old head lowered first trigger'
+run_check '2026-07-31T09:00:00Z'
+assert_status 0 clean
 
 echo "==> reconstructed state around a pre-existing trusted trigger uses the full window"
 trigger_id=123

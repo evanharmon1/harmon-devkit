@@ -70,14 +70,22 @@ reservation_trigger_candidates() {
             (.body | type != "string") or
             (.created_at | type != "string") or
             (.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not) or
-            (.id | type != "number") or (.user.id | type != "number"))
+            (.id | type != "number") or
+            (.user != null and (.user.id | type != "number")))
         then error("invalid comment") else . end |
         map(select(
             (.body | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
             and .created_at >= $since))'
 }
 
-# Sourcing exports only the classifier; no broker command or GitHub write runs.
+# One timeout primitive for checker reads and broker calls under the cycle lock.
+bounded_gh_call() {
+    local timeout_command=$1 budget=$2
+    shift 2
+    "$timeout_command" -k 1 "$budget" "$@"
+}
+
+# Sourcing exports only helpers; no broker command or GitHub write runs.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     return 0
 fi
@@ -188,6 +196,14 @@ trigger)
     [ -f "$state" ] || refuse "cycle state is missing: $state"
     # Hold the checker lock through the POST. A release must not observe
     # an empty surface while this broker is about to create its trigger.
+    timeout_bin=$(command -v timeout || command -v gtimeout) ||
+        refuse "GNU timeout is required (coreutils; gtimeout on macOS)"
+    gh_bin=$(command -v gh)
+    # Registry resolution also calls this wrapper; no network call under the
+    # lock can outlive the normal checker per-call budget.
+    gh() {
+        bounded_gh_call "$timeout_bin" 60 "$gh_bin" "$@"
+    }
     trigger_lock="${state}.lock"
     mkdir "$trigger_lock" 2>/dev/null || refuse "cycle state lock-held"
     trap 'rm -f "$trigger_lock/pid"; rmdir "$trigger_lock" 2>/dev/null || true' EXIT
@@ -200,10 +216,10 @@ trigger)
     if [ -z "$finder" ]; then
         reserved_at=$(jq -er '.reserved_at | select(type == "string" and length > 0)' "$state") ||
             refuse "reservation has no creation time"
-        my_id=$("$SCRIPT_DIR/gh-ro.sh" user --jq .id) ||
+        my_id=$(bounded_gh_call "$timeout_bin" 60 "$SCRIPT_DIR/gh-ro.sh" user --jq .id) ||
             refuse "cannot read the authenticated actor id"
         valid_uint "$my_id" || refuse "invalid authenticated actor id"
-        top_level=$("$SCRIPT_DIR/gh-ro.sh" --paginate --slurp "repos/$repo/issues/$pr/comments") ||
+        top_level=$(bounded_gh_call "$timeout_bin" 60 "$SCRIPT_DIR/gh-ro.sh" --paginate --slurp "repos/$repo/issues/$pr/comments") ||
             refuse "cannot read existing triggers"
         candidates=$(reservation_trigger_candidates "$reserved_at" <<<"$top_level" |
             jq -c --argjson my_id "$my_id" 'map(select(.user.id == $my_id))') ||

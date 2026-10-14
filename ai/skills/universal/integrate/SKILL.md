@@ -337,16 +337,29 @@ trigger, which posts or adopts and attaches; callers do not attach again.
 Check each call's exit status on its own — never
 `reserve … | jq`, whose status is the pipe's last command, so a refused
 reservation reads as success and the trigger is orphaned when `attach` fails.
-A resumed `reserved` cycle, whose reservation already exists, enters that
+A resumed same-head `reserved` cycle, whose reservation already exists, enters that
 same sequence at the broker call, which performs the read. `reserve` makes no GitHub write, so the read
 after it is the last thing before the post, exactly as §2 requires; it must
 show `OPEN`, a draft, and the dispatched head, and any mismatch there means no
-trigger. Run `"$helper" release --state "$state" --note "PR changed before trigger"`
-before returning the mismatch. It releases only an untriggered Codex reservation
+trigger. Report the mismatch, wait until `reserved_at + 600 s`, then run once
+`"$helper" release --state "$state" --note "PR changed before trigger"`
+before returning the mismatch. For a draft flip without a head change, leave
+the reservation untouched and report the draft-flip blocker. It releases only an untriggered Codex reservation
 after the age check and live comment scan with the 10-minute skew margin; attached
 triggers, matching live comments and unreadable evidence refuse recovery. The
 same order binds every per-finder trigger (#804) — its fresh cycle, its
 attempt-2 retry, and its reconcile path alike.
+
+**Wait-then-release and resume:** report the mismatch and the old reserved head,
+then wait only until `reserved_at + 600 s` before running release once. Bound
+the wait to the remaining part of those 600 seconds; malformed/future times,
+an interrupted wait, or a refused release are blockers naming the old head.
+When `reserve` refuses an unresolved reservation for a different head, the next
+dispatch follows this same wait-then-release path with
+`"$helper" release --state "$state" --note "PR changed before trigger"`, then
+runs `reserve` once more for its dispatched head. A refused release stays a
+blocker; never retry reserve after that refusal or post a trigger.
+
 `reserve` itself waits a bounded time (`CODEX_RESERVE_HEAD_WAIT_SEC`, default
 30s, at most 120s, never sleeping past it) for GitHub to report a just-pushed
 head, which is why the read comes after it rather than before. Exit
@@ -389,8 +402,11 @@ permission. A fine-grained token or GitHub App token needs **Checks: read** for
 check-suite reconstruction (a classic token needs repository access, `repo` for
 private repositories). A bot token denied check suites with HTTP 403/404 may
 still attach: the checker records `check_suite_boundary: null` and the denial
-reason, considers earlier triggers without a commit-date-only bound, and sets
-`requires_full_window: true`. Other read failures remain indeterminate.
+reason, bounds earlier triggers by the recorded previous-head trigger id, and
+sets `requires_full_window: true`. Earlier triggers without that anchor make
+attachment indeterminate; grant Checks: read or restore verified previous-head
+state before retrying. A first cycle with no earlier triggers can still attach.
+Other read failures remain indeterminate.
 
 `<project-dir>` is Claude Code's `CLAUDE_PROJECT_DIR`; `<skills-dir>` is
 the skills sync install location. The hook approves only the unresolved

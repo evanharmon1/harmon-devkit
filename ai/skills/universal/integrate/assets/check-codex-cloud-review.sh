@@ -418,6 +418,8 @@ valid_slug() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gh-write-broker.sh
+. "$SCRIPT_DIR/gh-write-broker.sh"
 
 valid_time() {
     grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$1"
@@ -620,34 +622,15 @@ provider_head() {
 run_gh() {
     call_timeout=60
     window_anchor=${state_requested:-${state_reserved:-}}
-    if [ -n "$window_anchor" ] && valid_time "$window_anchor"; then
-        anchor_epoch=$(jq -nr \
-            --arg value "$window_anchor" '$value | fromdateiso8601') ||
-            return 1
+    # The review window bounds only an in-window attachment. Evidence reads
+    # and recovery (including release and late attach) always retain the normal
+    # per-call budget; elapsed reviewer time is not a network deadline.
+    if [ "$command_name" = attach ] && [ -n "$window_anchor" ] && valid_time "$window_anchor"; then
+        anchor_epoch=$(jq -nr --arg value "$window_anchor" '$value | fromdateiso8601') || return 1
         current_epoch=$(clock_epoch) || return 1
         remaining=$((anchor_epoch + timeout_min * 60 - current_epoch))
-        if [ "$remaining" -le 0 ]; then
-            # After the window, check still owes a terminal evidence sweep
-            # and attach must be able to recover a late trigger attachment.
-            # Give both the normal request budget; a one-second budget can
-            # make readable evidence appear absent or strand a late attach.
-            if [ "$command_name" != "check" ] && [ "$command_name" != "attach" ]; then
-                call_timeout=1
-            fi
-        elif [ "$remaining" -lt "$call_timeout" ]; then
-            # Challenge round 3, finding `challenge-r3-codex-adversarial-9`
-            # (confirmed P2): the carve-out above covered `remaining <= 0` but
-            # not the last minute before it, so a `check` landing inside the
-            # final 59 seconds of its window clamped every read to a
-            # sub-second budget and reported readable evidence absent — the
-            # same failure the carve-out exists to prevent, one minute
-            # earlier. `check` keeps its full budget on both sides of the
-            # boundary. Attach still honors the remaining in-window budget
-            # (harmon-devkit#223); only a post-window retry gets the independent
-            # budget above (harmon-devkit#1178).
-            if [ "$command_name" != "check" ]; then
-                call_timeout=$remaining
-            fi
+        if [ "$remaining" -gt 0 ] && [ "$remaining" -lt "$call_timeout" ]; then
+            call_timeout=$remaining
         fi
     elif [ -n "${reap_deadline_epoch:-}" ]; then
         # A sweep has no reservation to budget against, so without this every
@@ -667,7 +650,7 @@ run_gh() {
         [ "$gh_call_timeout_cap" -lt "$call_timeout" ]; then
         call_timeout=$gh_call_timeout_cap
     fi
-    "$timeout_bin" -k 1 "$call_timeout" gh "$@"
+    bounded_gh_call "$timeout_bin" "$call_timeout" gh "$@"
 }
 
 # Sets the per-call cap for the next `reserve` head-wait read: the wait left,
@@ -2442,6 +2425,7 @@ reserve)
     gh_call_timeout_cap=
 
     superseded_reservations='[]'
+    previous_head_trigger_comment_id=null
     replaced_trigger_comment_id=
     carried_first_trigger_comment_id=
     if [ -f "$state_file" ]; then
@@ -2451,6 +2435,13 @@ reserve)
         old_head=$(jq -r '.head' "$state_file")
         old_attempt=$(jq -r '.attempt' "$state_file")
         old_phase=$(jq -r '.phase' "$state_file")
+        previous_head_trigger_comment_id=$(jq -r '.previous_head_trigger_comment_id // null' "$state_file")
+        if [ "$old_head" != "$head" ]; then
+            previous_head_trigger_comment_id=$(jq -r '.trigger_comment_id // .previous_trigger_comment_id // .previous_head_trigger_comment_id // null' "$state_file")
+        fi
+        if [ "$previous_head_trigger_comment_id" != null ]; then
+            valid_uint "$previous_head_trigger_comment_id" || die "invalid previous-head trigger anchor"
+        fi
         superseded_reservations=$(jq -c '.superseded_reservations // []' "$state_file")
         [ "$old_repo" = "$repo" ] && [ "$old_pr" = "$pr" ] ||
             die "state belongs to a different PR"
@@ -2950,6 +2941,7 @@ reserve)
         --argjson settled "$carried_settled" \
         --argjson superseded_reservations "$superseded_reservations" \
         --argjson finder "$finder_payload" \
+        --argjson previous_head_trigger_comment_id "$previous_head_trigger_comment_id" \
         --argjson previous_trigger_comment_id "$payload_previous_trigger_comment_id" \
         --arg charge "$charge_class" \
         --arg charge_reason "$charge_reason" \
@@ -2966,6 +2958,7 @@ reserve)
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
+          previous_head_trigger_comment_id:$previous_head_trigger_comment_id,
           previous_trigger_comment_id:$previous_trigger_comment_id,
           first_trigger_comment_id:$first_trigger_comment_id,
           requires_full_window:false,
@@ -3246,8 +3239,8 @@ attach)
         boundary_source=check-suite
     fi
     if [ -n "$check_suite_boundary_reason" ]; then
-        # No trusted server boundary: include all earlier triggers, never
-        # fall back to potentially future-dated commit timestamps alone.
+        # No trusted server boundary: use the previous head's trigger id below,
+        # never potentially future-dated commit timestamps alone.
         head_trigger_boundary=
         boundary_source=unavailable
     fi
@@ -3280,6 +3273,14 @@ attach)
              ((.created_at == $before) and (.id < $attached)))
           )]
         ') || die "cannot classify prior review triggers"
+
+    if [ "$boundary_source" = unavailable ] &&
+        [ "$(jq 'length' <<<"$prior_trigger_candidates")" -gt 0 ]; then
+        previous_head_anchor=$(jq -r '.previous_head_trigger_comment_id // empty' "$state_file")
+        valid_uint "$previous_head_anchor" && [ "$previous_head_anchor" -lt "$trigger_id" ] ||
+            die "check-suite boundary unavailable and earlier triggers lack a previous-head anchor; restore verified previous-head state or grant Checks: read before retrying attach"
+        prior_trigger_candidates=$(jq -c --argjson anchor "$previous_head_anchor" 'map(select(.id > $anchor))' <<<"$prior_trigger_candidates")
+    fi
 
     # With no reconstruction evidence the only same-head trigger in view is the
     # one being attached, so it IS the minimum. The branch below lowers this
