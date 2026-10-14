@@ -14,8 +14,9 @@ the account the CLI is signed in to (`claude auth status`), not the one open in 
 browser, so that account must hold both the web environment and a GitHub
 credential that reaches the repository, such as a `/web-setup` token. Then launch
 clones the remote at the current branch. Without one, the platform uploads the
-checkout with no `origin`, and the lane cannot push; that is outside this mode. Claims are unchanged: the orchestrator claims before
-launch, and the lane never claims or refreshes the claim.
+checkout with no `origin`, and the lane cannot push; that is outside this mode.
+Claims are unchanged: the orchestrator claims before launch, and the lane never
+claims or refreshes the claim.
 Launch from a checkout on the default branch at its pushed tip, because the
 platform clones the current branch; review fetched lane heads in a separate
 worktree, never by switching the launching checkout.
@@ -190,8 +191,9 @@ The post-shipping end-to-end check ran on 2026-10-14, on
 The orchestrator launched a cloud lane with no human step, saw its pushed
 branch through GitHub, and carried the work to a draft PR. Messaging with
 `claude -p … --cloud <id>` was exercised on the run's first launch, where a
-steering note and two rulings reached the session and changed what it did. The lane pushed exactly its planned `claude/*` branch, as the
-account's `/web-setup` identity, and reported in its commit body. The session
+steering note and two rulings reached the session and changed what it did.
+The lane pushed exactly its planned `claude/*` branch, as the account's
+`/web-setup` identity, and reported in its commit body. The session
 honoured the pinned model and effort. Three earlier launches failed for the
 reason the preconditions name: the CLI's own account lacked a GitHub credential,
 so the platform uploaded the checkout with no `origin`.
