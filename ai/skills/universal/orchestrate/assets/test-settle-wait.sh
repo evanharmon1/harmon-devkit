@@ -9,7 +9,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-wait_sh="$here/settle-wait.sh"
+wait_sh="$here/../../dev-flow-support/assets/settle-wait.sh"
+orchestrate_wait_sh="$here/settle-wait.sh"
 test_tmp="$(mktemp -d -t settle-wait-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
@@ -246,6 +247,16 @@ for id in 11 12 13; do
 done
 run_checks --timeout-seconds 5 --interval-seconds 1
 expect_rc 0 "all completed"
+# The legacy orchestrate entry point delegates to the same shared helper and
+# preserves its verdict. Both packages must remain usable independently of
+# the source repository's root layout.
+set +e
+wrapper_out="$("$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 5 --interval-seconds 1 2>&1)"
+wrapper_rc=$?
+set -e
+[ "$wrapper_rc" -eq "$rc" ] && [ "$wrapper_out" = "$out" ] ||
+    fail "orchestrate entry point differs from shared settle: $wrapper_rc: $wrapper_out"
 expect_out "SETTLED success head=aaaaaaaa runs=3" "all completed"
 
 # Stale attempt: the list still shows attempt 2's conclusion, but the run's
@@ -275,6 +286,13 @@ run_checks --timeout-seconds 1 --interval-seconds 1 --per-page 5
 expect_rc 4 "skipped flood must not hide page 2"
 expect_out "runs=6 pending=1 failing=0 skipped=5" "skipped flood"
 expect_out "PENDING 106" "skipped flood"
+case "$out" in *SETTLED*) fail "skipped page 1 hid pending page 2: $out" ;; esac
+set +e
+"$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 1 --interval-seconds 1 --per-page 5 >/dev/null 2>&1
+wrapper_rc=$?
+set -e
+[ "$wrapper_rc" -eq 4 ] || fail "orchestrate masked pending-page expiry: $wrapper_rc"
 grep -Fq 'per_page=5&page=2' "$fix/gh.calls" || fail "page 2 was never requested"
 if grep -Fq -- '--paginate' "$fix/gh.calls"; then
     fail "gh --paginate was used"

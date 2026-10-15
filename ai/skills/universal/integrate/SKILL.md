@@ -1119,8 +1119,36 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
+  **Permission fallback:** a fine-grained token can be denied access to the
+  Checks rollup (`Resource not accessible by personal access token`, including
+  `statusCheckRollup`) even when it can read Actions runs. When `gh pr checks`
+  fails with that permission error, use the existing shared helper, resolved
+  as `$support_dir` above, for the exact full head SHA captured for this round:
+
+  ```sh
+  "$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n> \
+      --head <headRefOid> --timeout-seconds 1800 --interval-seconds 30
+  ```
+
+  It reads `repos/$repo/actions/runs?head_sha=<headRefOid>` with explicit
+  pagination through every page (a list hitting GitHub's 1000-run search cap
+  is indeterminate), then each run's own `status` and `conclusion`. Completed
+  `skipped` runs count separately and never as pending. A superseded PR run is
+  dropped only when its own read is completed and its latest attempt predates
+  the newest run; an older attempt still running or re-run later still counts.
+  Never improvise a wait over `gh run list`'s default 20-run page.
+  Exit 0 means the counted Actions runs settled green; 1 means settled with
+  failures to diagnose; 3 is indeterminate; 4 is an expired pending wait;
+  every other nonzero exit also stops progress. Preserve the exit status.
+  While the helper runs, re-read PR `state` every poll interval as required
+  above; a merge/close stops the whole stage, regardless of the wait result.
+  This fallback covers Actions only: external checks and the final verdict
+  still belong to `readiness-gate.sh`, which must read check runs and commit
+  statuses successfully. A fallback success cannot authorize promotion past
+  an unreadable Checks API; leave the PR draft and report that blocker.
   **CI has settled only when every required check has CONCLUDED; a pending
-  check, or an empty check list, is indeterminate and never a pass**
+  check, an empty check list, or a permission failure on the checks read is
+  indeterminate and never a pass**
   (`AGENTS.md` § Readiness gate — GitHub populates that list
   asynchronously, so a read taken moments after a push reports nothing
   *having run*, not nothing *to run*).

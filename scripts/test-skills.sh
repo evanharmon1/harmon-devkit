@@ -3891,6 +3891,25 @@ expect_ok "new-repo and adopt guidance note the skills-source waiver" \
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
     "$STANDARDIZE_REFS/mode-update.md"
+# #1195: CI permission fallback uses the shared, paginated exact-head helper.
+expect_ok "integration documents the Actions fallback and keeps permission reads indeterminate" \
+    python3 - "$INTEGRATE_SKILL" <<'PYTEST'
+import pathlib
+import sys
+text = pathlib.Path(sys.argv[1]).read_text()
+checks = text.split('- Checks (under a `with-push` order', 1)[1].split('- **Findings deferred', 1)[0]
+for required in (
+    '"$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n>',
+    '--head <headRefOid> --timeout-seconds 1800',
+    'pagination through every page',
+    '`skipped` runs count separately and never as pending',
+    'permission failure on the checks read is',
+    'indeterminate and never a pass',
+    'A fallback success cannot authorize promotion',
+):
+    assert required in checks, required
+PYTEST
+
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$INTEGRATOR_AGENT"

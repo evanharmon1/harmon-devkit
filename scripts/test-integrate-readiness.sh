@@ -164,6 +164,9 @@ done
 
 if [ -f "$GH_FIXTURES/fail-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/fail-endpoint")" <<<"$endpoint"; then
+    if [ -f "$GH_FIXTURES/fail-diagnostic" ]; then
+        cat "$GH_FIXTURES/fail-diagnostic" >&2
+    fi
     exit 92
 fi
 
@@ -2024,6 +2027,27 @@ jq -cn --arg head "$moved_sha" \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail head-mismatch
+
+echo "==> permission-denied check evidence is indeterminate despite green Actions runs"
+# The gate deliberately reads page-safe REST check-runs, not the GraphQL
+# rollup. Simulate both observed permission diagnostics at that read boundary
+# with green Actions evidence available: neither can pass.
+for diagnostic in \
+    'GraphQL: Resource not accessible by personal access token (node.statusCheckRollup)' \
+    'gh: Resource not accessible by personal access token (HTTP 403)'; do
+    write_defaults
+    jq -cn --arg head "$head_sha" '[{total_count:1,workflow_runs:[
+        {id:1,head_sha:$head,status:"completed",conclusion:"success",
+         workflow_id:1,event:"pull_request",check_suite_id:1,
+         head_branch:"feature-branch",pull_requests:[{number:493}]}]}]' \
+        >"${fixtures}/workflow-runs.pages.json"
+    printf 'check-runs' >"${fixtures}/fail-endpoint"
+    printf '%s\n' "$diagnostic" >"${fixtures}/fail-diagnostic"
+    run_gate
+    assert_gate 2 indeterminate fetch-failed
+    grep -Fq 'cannot fetch check runs for the head' <<<"$gate_out" ||
+        fail "permission denial lost the decisive check evidence gap: $gate_out"
+done
 
 echo "==> a failing check run fails as checks-failing and names the check"
 write_defaults

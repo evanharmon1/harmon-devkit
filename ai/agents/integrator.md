@@ -208,6 +208,17 @@ cycle this pass owes is requested — never a cycle the rounds policy does not
 require, and never a second request for a head beyond the one bounded
 attempt-2 retry §4 already describes.
 
+Under either order, a permission error on the checks rollup is indeterminate,
+never an empty list or a green result. Use integrate §2's bounded Actions-runs
+fallback, `"$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo "$repo" --pr <n>
+--head <head> --timeout-seconds 1800 --interval-seconds 30`, to settle the wait
+for the exact briefed head. It fully paginates and never counts completed
+skipped runs as pending. Its exit 0 covers Actions only, not external checks
+or unreadable check-run evidence: if the reads below remain inaccessible,
+return a blocked result with that evidence gap; do not reserve or trigger a
+review or fabricate `checks[]` from Actions runs. The readiness gate still
+must read its complete check-run/status evidence before promotion.
+
 Under either order, read the checks for the exact head your brief named:
 
 ```sh
