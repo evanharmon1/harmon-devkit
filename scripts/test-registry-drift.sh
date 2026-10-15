@@ -34,6 +34,7 @@
 # Every failure names the offending registry row / file and the remediation.
 set -euo pipefail
 
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
 
@@ -349,13 +350,13 @@ if [ "${REGISTRY_DRIFT_LOCALE_SUBRUN:-0}" != 1 ]; then
     done <<<"${preferred_candidates}${available_locales}"
 
     if ! REGISTRY_DRIFT_LOCALE_SUBRUN=1 LC_ALL=C LANG=C \
-        bash "$0" "$registry" "$schema" >/dev/null; then
+        bash "$self" "$registry" "$schema" >/dev/null; then
         fail "drift check failed under explicit LC_ALL=C collation sub-run"
     fi
 
     if [ -n "$diff_locale" ]; then
         if ! REGISTRY_DRIFT_LOCALE_SUBRUN=1 LC_ALL="$diff_locale" LANG="$diff_locale" \
-            bash "$0" "$registry" "$schema" >/dev/null; then
+            bash "$self" "$registry" "$schema" >/dev/null; then
             fail "drift check failed under non-C collation locale '$diff_locale'"
         else
             collation_note="  (collation check: passed under non-C collation locale '$diff_locale' and LC_ALL=C)"
@@ -363,7 +364,7 @@ if [ "${REGISTRY_DRIFT_LOCALE_SUBRUN:-0}" != 1 ]; then
     elif [ -n "$fallback_locale" ]; then
         echo "note: no locale with non-C sort order found in 'locale -a'; falling back to installed locale '$fallback_locale'" >&2
         if ! REGISTRY_DRIFT_LOCALE_SUBRUN=1 LC_ALL="$fallback_locale" LANG="$fallback_locale" \
-            bash "$0" "$registry" "$schema" >/dev/null; then
+            bash "$self" "$registry" "$schema" >/dev/null; then
             fail "drift check failed under fallback locale '$fallback_locale'"
         else
             collation_note="  (collation check: passed under fallback locale '$fallback_locale' and LC_ALL=C)"
