@@ -840,6 +840,7 @@ awk '
     lower = tolower(s)
     if (lower == "problem") return "problem"
     if (lower ~ /^current violation \(observed [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)$/) return "current"
+    if (lower == "surface") return "surface"
     if (lower == "acceptance criteria") return "acceptance"
     if (lower == "verify") return "verify"
     if (lower == "out of scope") return "out-of-scope"
@@ -869,14 +870,15 @@ for required in problem acceptance; do
     count="$(awk -F '|' -v name="$required" '$2 == name { n++ } END { print n + 0 }' "$headings")"
     [ "$count" -eq 1 ] || violation "body requires exactly one $required heading (found $count)"
 done
-for optional in current verify out-of-scope provenance; do
+for optional in current surface verify out-of-scope provenance; do
     count="$(awk -F '|' -v name="$optional" '$2 == name { n++ } END { print n + 0 }' "$headings")"
     [ "$count" -le 1 ] || violation "body repeats the optional $optional heading"
 done
 
 order_error="$(awk -F '|' '
-  BEGIN { rank["problem"]=1; rank["current"]=2; rank["acceptance"]=3;
-          rank["verify"]=4; rank["out-of-scope"]=5; rank["provenance"]=6 }
+  BEGIN { rank["problem"]=1; rank["current"]=2; rank["surface"]=3;
+          rank["acceptance"]=4; rank["verify"]=5; rank["out-of-scope"]=6;
+          rank["provenance"]=7 }
   $2 != "unknown" { if (rank[$2] <= prior) { print $1; exit }; prior=rank[$2] }
 ' "$headings")"
 [ -z "$order_error" ] || violation "canonical headings are duplicated or out of order at body line $order_error"

@@ -607,8 +607,8 @@ For a proposed retitle, validate the title and guard against truncation:
 
 ### Body contract
 
-Use these level-two headings in this order. The first and third are required;
-the others are conditional or optional exactly as marked:
+Use these level-two headings in this order. `Problem` and `Acceptance criteria`
+are required; the others are conditional or optional exactly as marked:
 
 ```markdown
 ## Problem
@@ -618,6 +618,10 @@ the others are conditional or optional exactly as marked:
 ## Current violation (observed YYYY-MM-DD)
 
 <optional perishable observation: path, line, date-bound state, current behaviour>
+
+## Surface
+
+<optional paths or areas the work is expected to touch>
 
 ## Acceptance criteria
 
@@ -669,6 +673,10 @@ guessing that every dotted word is a filename; omit it only when no checkout is
 available. Exit 1 means a perishable claim has no usable re-check. The strongest `Verify`
 is a failing assertion in the repository's own test harness: it cannot rot,
 because the codebase evaluates it, and it closes when the assertion passes.
+
+`Surface` is optional and lists the paths or areas the work is expected to
+touch as a starting hypothesis that the orchestrator re-verifies against live
+code; `breakdown` drafts carry it for dispatch-time pairwise overlap analysis.
 
 GitHub Issue Form field names map to this contract: `Problem`, `Acceptance
 criteria` (called `Definition of done` on older forms), and `Verify` carry the

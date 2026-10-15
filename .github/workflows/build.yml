@@ -65,17 +65,34 @@ jobs:
       # only CI step that could notice — this one still fails then.
       - name: Verify-CI parity guard (runs outside the suite it guards)
         run: task test:verify-ci-parity
-      # The ONE step for every `test:*` target `task verify` runs. The list
-      # lives in Taskfile.yml's `test:suite` and nowhere else, so a check added
-      # to `verify` can no longer be missed here (harmon-init#962, #1461) —
-      # each entry carries the same answer gate in both places.
-      # `test:verify-ci-parity` (the step above) fails if this step is ever
-      # dropped.
-      #
-      # This source runs validate here and its project test tier in test-skills.
+      - run: task validate
+
+  # Give the shared suite its own runner and 30-minute budget. Serializing it
+  # behind lint left validation racing the job timeout after v0.58.0.
+  test-suite:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+        with:
+          lint-tools: "true"
+          gitleaks: "true"
+      - name: Install devkit test tools
+        run: |
+          # renovate: datasource=pypi depName=copier
+          COPIER_VERSION=9.18.2
+          python -m pip install "copier==${COPIER_VERSION}"
+      # The Taskfile remains the one list shared with local verify. The parity
+      # guard also runs in lint, so removing this step cannot silence it.
       - name: Test suite (every test:* target verify runs)
         run: task test:suite
-      - run: task validate
 
   # The old lint job serialized ~18–22 minutes of checks. Keep the same
   # Taskfile targets on every code change, in independent runner workspaces.
@@ -196,7 +213,7 @@ jobs:
 
   verify:
     if: always()
-    needs: [lint, test-contracts, test-helpers, test-skills, security]
+    needs: [lint, test-suite, test-contracts, test-helpers, test-skills, security]
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
@@ -208,6 +225,7 @@ jobs:
         if: env.IS_FORK == 'true'
         env:
           LINT_RESULT: ${{ needs.lint.result }}
+          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
           TEST_CONTRACTS_RESULT: ${{ needs.test-contracts.result }}
           TEST_HELPERS_RESULT: ${{ needs.test-helpers.result }}
           TEST_SKILLS_RESULT: ${{ needs.test-skills.result }}
@@ -221,6 +239,7 @@ jobs:
             fi
           }
           check_skipped lint "$LINT_RESULT"
+          check_skipped test-suite "$TEST_SUITE_RESULT"
           check_skipped test-contracts "$TEST_CONTRACTS_RESULT"
           check_skipped test-helpers "$TEST_HELPERS_RESULT"
           check_skipped test-skills "$TEST_SKILLS_RESULT"
@@ -238,10 +257,11 @@ jobs:
         env:
           EXPECTED_RESULT: success
           LINT_RESULT: ${{ needs.lint.result }}
+          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
           TEST_CONTRACTS_RESULT: ${{ needs.test-contracts.result }}
           TEST_HELPERS_RESULT: ${{ needs.test-helpers.result }}
           TEST_SKILLS_RESULT: ${{ needs.test-skills.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "test-contracts=${TEST_CONTRACTS_RESULT}" "test-helpers=${TEST_HELPERS_RESULT}" "test-skills=${TEST_SKILLS_RESULT}" "security=${SECURITY_RESULT}"
+        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "test-suite=${TEST_SUITE_RESULT}" "test-contracts=${TEST_CONTRACTS_RESULT}" "test-helpers=${TEST_HELPERS_RESULT}" "test-skills=${TEST_SKILLS_RESULT}" "security=${SECURITY_RESULT}"
 # Keep a literal final line after the inline Jinja conditionals above; with
 # trim_blocks enabled, ending on a block tag would strip the workflow's EOF newline.

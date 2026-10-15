@@ -6,6 +6,8 @@
 # section fakes `gh` on PATH, the way scripts/test-shepherd-*.sh do, to
 # exercise the read-modify-write transaction with no network access.
 
+# Emit captured numbers with stdout.write(String(...)): console.log inspects
+# numbers with ANSI colours when FORCE_COLOR=3, even with stdout piped.
 set -euo pipefail
 
 # The renderer is this test's own sibling asset; the golden fixtures are an
@@ -146,8 +148,8 @@ assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [ ] `review-r2
 assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [x] `review-r1-codex-cli-1` ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs:300'
 
 echo "==> readiness-input separates settled from unsettled deferred findings"
-settled_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/readiness-input.json','utf8')).deferred_findings.settled.length)")"
-unsettled_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/readiness-input.json','utf8')).deferred_findings.unsettled.length)")"
+settled_count="$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('${golden_dir}/readiness-input.json','utf8')).deferred_findings.settled.length))")"
+unsettled_count="$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('${golden_dir}/readiness-input.json','utf8')).deferred_findings.unsettled.length))")"
 [ "$settled_count" = 3 ] || fail "expected 3 settled deferred findings, got $settled_count"
 [ "$unsettled_count" = 1 ] || fail "expected 1 unsettled deferred finding, got $unsettled_count"
 
@@ -193,7 +195,7 @@ assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
 assert_contains "$out" '<br>- [x] fake'
 
 echo "==> thread-reply-plan carries only unanswered integration-stage inline threads"
-entry_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/thread-reply-plan.json','utf8')).entries.length)")"
+entry_count="$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('${golden_dir}/thread-reply-plan.json','utf8')).entries.length))")"
 [ "$entry_count" = 1 ] || fail "expected 1 unanswered-thread entry (the fixture pass answers the other two), got $entry_count"
 entry="$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('${golden_dir}/thread-reply-plan.json','utf8')).entries[0]))")"
 for field in root_comment_id reply_text head adjudicated_priority classification evidence action; do
@@ -238,7 +240,7 @@ cat >"${stale_thread}/passes/integration-r2-human.json" <<'JSON'
 JSON
 run thread-reply-plan --record "$stale_thread"
 assert_rc 0
-entries_now="$(node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length)" <<<"$out")"
+entries_now="$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length))" <<<"$out")"
 [ "$entries_now" = 0 ] ||
     fail "expected 0 entries once round 2 reports the thread answered, got $entries_now: $out"
 
@@ -629,7 +631,7 @@ fs.writeFileSync('${foreign_integration_pass}/passes/foreign-integration.json', 
 "
 run thread-reply-plan --record "$foreign_integration_pass"
 assert_rc 0
-entry_count_foreign="$(node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length)" <<<"$out")"
+entry_count_foreign="$(node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length))" <<<"$out")"
 [ "$entry_count_foreign" = 1 ] ||
     fail "a foreign-run pass must not win 'latest' and hide the real run's open thread, got $entry_count_foreign entries: $out"
 

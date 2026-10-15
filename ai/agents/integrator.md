@@ -432,13 +432,29 @@ pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exi
 
 Require all three on that one read: `.state` is `OPEN`, `.isDraft` is `true`,
 and `.headRefOid` equals the head your brief named. Any mismatch means **post
-no trigger**: skip the rest of this section, report `codex_cycle: null`, and
-leave the reservation untouched. For an open PR whose `.isDraft` is not
-`true`, use §3's **Draft flips are report-only** blocker path: set
-`status=blocked`, report `status: "blocked"` through §7/§9, and never
-manufacture a reviewer finding for the promotion. A closed PR or moved head
-is still reported as a finding (§5), as before. The next
-dispatch's broker call runs this same read before it would post. Never substitute the head `pr_now` reports for the brief's. A head
+no trigger**: skip the rest of this section and report `codex_cycle: null`.
+For an open PR whose `.isDraft` is not `true`, use §3's **Draft flips are
+report-only** blocker path: set `status=blocked`, report `status: "blocked"`
+through §7/§9, never manufacture a reviewer finding for the promotion, and
+leave the reservation untouched (its head has not moved).
+A closed PR or moved head is still reported as a finding (§5), as before; for a
+moved head first report the mismatch, wait until `reserved_at + 600 s`, then run once
+`"$helper" release --state "$state" --note "PR changed before trigger"`.
+
+**Wait-then-release and resume:** report the mismatch and the old reserved head,
+then wait only until `reserved_at + 600 s` before running release once. Bound
+the wait to the remaining part of those 600 seconds; malformed/future times,
+an interrupted wait, or a refused release are blockers naming the old head.
+When `reserve` refuses an unresolved reservation for a different head, the next
+dispatch follows this same wait-then-release path with
+`"$helper" release --state "$state" --note "PR changed before trigger"`, then
+runs `reserve` once more for its dispatched head. A refused release stays a
+blocker; never retry reserve after that refusal or post a trigger.
+
+Release succeeds only for an untriggered Codex reservation after a live comment
+scan with the 10-minute skew margin proves no trigger exists; a refusal remains a blocker. The next
+dispatch reserves its own head with the retained counters and history, and its
+broker call runs this same read before it would post. Never substitute the head `pr_now` reports for the brief's. A head
 GitHub has not caught up to yet is `reserve`'s question, not this read's: its
 bounded head wait answers it (exit codes below) before this read runs, so do
 not read the PR ahead of `reserve` to second-guess it. A
@@ -478,12 +494,13 @@ blocked whoever owns it, because a trigger may already be out against it.
 
 **Inspect the state file yourself before calling `reserve` — do not call it
 unconditionally and branch on what it reports.** `reserve --attempt 1`
-**dies** (nonzero, no distinguishing message your `|| exit` could branch on)
-whenever state already exists for this exact head, and dies just as hard
-when existing state for *any* head is stuck at `phase:"reserved"` — it never
-returns a graceful "already attached" or "unresolved reservation" report for
-you to read. Resuming is therefore a decision you make by reading the file
-directly, before your first external write of this cycle:
+**dies** when this run already has `phase:"attached"` state for this exact
+head, or existing state for *any* head is `phase:"reserved"`, regardless of
+its owning run. The foreign attached-state exception above still applies.
+Same-head `phase:"released"` state permits a fresh `reserve --attempt 1`,
+carrying that head's trigger-history anchors. Inspect these states directly
+before your first external write of this cycle; a nonzero reservation never
+authorizes posting a trigger:
 
 ```sh
 repo="<owner/repo>"
@@ -537,7 +554,9 @@ nothing to carry otherwise, and `carry` will say so.
 
 Three cases, mutually exclusive:
 
-- **No state file, or state for a different head.** This is a fresh cycle.
+- **No state file, state for a different head, or same-head `released` state.**
+  This is a fresh `reserve --attempt 1` cycle. Same-head released state carries
+  its first and previous trigger-history anchors into the new reservation.
   Run these two steps, each as its own Bash tool call:
 
   **1. Reserve and re-read, posting nothing.** Use the same project-installed
@@ -552,6 +571,15 @@ Three cases, mutually exclusive:
       --head "<head>" --attempt 1 --run-id "<run id>" \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
       --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
+  release_after_margin() {
+      reserved_epoch=$(jq -er '.reserved_at | fromdateiso8601' "$state") || return
+      release_wait=$((reserved_epoch + 600 - $(date -u +%s)))
+      [ "$release_wait" -le 600 ] || return 2
+      if [ "$release_wait" -gt 0 ]; then
+          sleep "$release_wait" || return
+      fi
+      "$helper" release --state "$state" --note "PR changed before trigger"
+  }
   reserve_exit=0
   "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   if [ "$reserve_exit" -eq 18 ]; then
@@ -559,14 +587,30 @@ Three cases, mutually exclusive:
       reserve_exit=0
       "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   fi
+  if [ "$reserve_exit" -eq 2 ] && jq -e --arg head "<head>" \
+      '.phase == "reserved" and .head != $head and .trigger_comment_id == null' \
+      "$state" >/dev/null; then
+      # Report the old head before waiting; interrupted/refused release blocks.
+      jq -r '"Unresolved reservation for old head: " + .head' "$state" >&2
+      release_after_margin || exit
+      reserve_exit=0
+      "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
+  fi
   # A second 18 is a blocker; any other non-zero is a refusal. Either way:
   # post no trigger, codex_cycle null, report it (below).
   [ "$reserve_exit" -eq 0 ] || exit "$reserve_exit"
   pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
-  # Any mismatch: post no trigger, codex_cycle null, report it (above).
-  jq -e --arg head "<head>" \
+  # Any mismatch: post no trigger, report codex_cycle null.
+  if ! jq -e --arg head "<head>" \
       '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
-      <<<"$pr_now" >/dev/null || exit
+      <<<"$pr_now" >/dev/null; then
+      # A draft flip leaves the reservation untouched (report-only blocker).
+      if jq -e --arg head "<head>" '.headRefOid != $head' <<<"$pr_now" >/dev/null; then
+          jq -r '"PR changed; old reserved head: " + .head' "$state" >&2
+          release_after_margin || exit
+      fi
+      exit 2
+  fi
   echo "RESERVED <head>"
   ```
 
@@ -594,8 +638,21 @@ Three cases, mutually exclusive:
   call, and this call needs neither `$helper` nor `$state` from step 1.
   On exit 2, the broker refused before posting. On exit 3, report a blocker
   (§5) with the existing trigger's id; a re-run adopts it only while the
-  reservation and PR state still match. Report any other failure without
-  re-running blindly.
+  reservation and PR state still match. For a failed trigger write with no
+  returned id, run the same recovery command:
+  `"$helper" release --state "$state" --note "trigger POST failed"`.
+  Wait 10 minutes after a failed trigger before releasing: the reservation
+  must be at least 10 minutes old by the local clock, and the live scan must
+  find no matching trigger from any author at or after `reserved_at` minus
+  10 minutes. One `RELEASE_MARGIN_SEC=600` constant sets both boundaries;
+  broker adoption still uses the exact reservation time.
+  Its live scan refuses if the POST actually created a trigger despite a lost
+  response; report that blocker and reconcile the existing id. Never delete
+  state. Successful release preserves charged/exempt spend and records the
+  superseded head, reservation time and reason; the next dispatch may reserve
+  attempt 1 on its head, which charges normally (there is no refund).
+  A late retry of `attach --trigger-id` uses independent 60-second liveness
+  read budgets, even after the review window, so no state deletion is needed.
 
   **Any non-zero `reserve` means post no trigger.** Keep each call's exit
   status visible, exactly as above — captured in `reserve_exit`, never ended

@@ -12,6 +12,12 @@ The filename stays `codex-review.md`: AGENTS.md links it by that path and
 AGENTS.md is template-owned, so renaming the guide here would break the link
 without fixing anything.
 
+Never commit secret-shaped fixture strings: build them at runtime in throwaway
+repositories, or mark an intentional fixture line with `# gitleaks:allow`.
+Round-push scans only the pinned merge-base-to-head commit range plus the working
+tree; `task security:secrets` and CI retain the full-history scan, including other
+branches in the shared Git directory.
+
 ## Which reviewer runs — the finder catalog
 
 A **finder** is one registered review product. `agent-registry.json`'s
