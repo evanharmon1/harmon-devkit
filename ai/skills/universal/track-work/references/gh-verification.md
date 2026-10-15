@@ -1,5 +1,12 @@
 # Verification reads set an explicit `--limit`
 
+**Agent-posture REST reads:** For each REST read shown as `gh api` below,
+agent-posture sessions use `/usr/local/bin/gh-api-read` instead, keeping the
+endpoint, pagination and output flags. When a read names `--hostname "$host"`,
+remove that flag and set `GH_HOST="$host"` on the wrapper invocation. In dev
+and bot postures the shown command remains valid. This substitution is for
+GET reads only; do not route writes or GraphQL through the GET-only wrapper.
+
 A `gh … list` run to **verify state** — did the labels get created, is the PR
 closed, is the issue claimed — sets an explicit `--limit`, or `--paginate`
 **and `--slurp`** for `gh api`. The default returns one page, so a verification

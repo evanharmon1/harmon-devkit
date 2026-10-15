@@ -103,9 +103,9 @@ for token in "${placeholders[@]}"; do
         value="$(awk '/^```json$/{capture=1;next} /^```$/{capture=0} capture' \
             ai/schemas/fixtures/brief.envelope/valid/minimal.md)"
         ;;
-    ready-sentinel) value="LANE-FIXTURE-READY" ;;
-    handoff-sentinel) value="LANE-FIXTURE-HANDOFF" ;;
-    blocked-sentinel) value="LANE-FIXTURE-BLOCKED" ;;
+    ready-sentinel) value="READY-L-fixture" ;;
+    handoff-sentinel) value="HANDOFF-L-fixture" ;;
+    blocked-sentinel) value="BLOCKED-L-fixture" ;;
     attempt-nonce) value="a1b2c3" ;;
     *) value="fixture-$key" ;;
     esac
@@ -225,9 +225,9 @@ if grep -Fq '| Placeholder | Source |' "$rendered_file"; then
 fi
 
 for sentinel in \
-    LANE-FIXTURE-READY-a1b2c3 \
-    LANE-FIXTURE-HANDOFF-a1b2c3 \
-    LANE-FIXTURE-BLOCKED-a1b2c3; do
+    READY-L-fixture-a1b2c3 \
+    HANDOFF-L-fixture-a1b2c3 \
+    BLOCKED-L-fixture-a1b2c3; do
     count="$(grep -Fc "$sentinel" "$rendered_file")"
     [ "$count" -eq 1 ] || fail "$sentinel must appear exactly once (found $count)"
     line="$(grep -nF "$sentinel" "$rendered_file" | cut -d: -f1)"
@@ -1277,6 +1277,20 @@ for needed in \
     *) fail "lane-brief Codex contract is missing: $needed" ;;
     esac
 done
+# #1151: the lane Codex procedure itself must carry the complete ladder.
+for needed in \
+    '`.agents/skills/implement/SKILL.md`' \
+    '`.claude/skills/implement/SKILL.md`' \
+    'harness-specific skills location' \
+    'one bounded glob' \
+    'first readable path' \
+    'If none is readable, report BLOCKED and stop'; do
+    case "$lane_codex" in
+    *"$needed"*) ;;
+    *) fail "lane Codex skill resolution is missing: $needed" ;;
+    esac
+done
+
 # The launch COMMAND, extracted, not the section: the section names the bypass
 # flag in prose as the override, so a section-wide search cannot tell a
 # rendered policy from a hardcoded one.

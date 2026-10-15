@@ -14,6 +14,13 @@ allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), B
 
 # Breakdown
 
+**Agent-posture REST reads:** For each REST read shown as `gh api` below,
+agent-posture sessions use `/usr/local/bin/gh-api-read` instead, keeping the
+endpoint, pagination and output flags. When a read names `--hostname "$host"`,
+remove that flag and set `GH_HOST="$host"` on the wrapper invocation. In dev
+and bot postures the shown command remains valid. This substitution is for
+GET reads only; do not route writes or GraphQL through the GET-only wrapper.
+
 **Arguments:** $ARGUMENTS
 
 Turn a lump of work into GitHub issues an agent can execute and a human can
