@@ -2569,8 +2569,15 @@ that loops indefinitely:
    The helper writes `promotion`, the `ready-for-review` outcome and its
    outcome-transition chain together, under the shared mutex, validating
    the candidate and canonical readback with `run --receipts` and the run's
-   adjudications. A refused or failed write is a blocker, never a successful
-   recorded handoff; report the confirmed remote state and writer error.
+   adjudications. On any writer error, re-read the canonical `run.json`.
+   Accept a lost-response success only if its `promotion.head` exactly matches
+   the confirmed head and its `promotion.gate_fingerprint` exactly matches
+   the confirmed gate fingerprint. Otherwise run
+   `gh pr ready --undo <n> --repo "$repo"` once, then bounded-fetch until
+   `isDraft == true` is confirmed and stop **blocked**, naming the writer
+   error and the confirmed draft state. If the remote state cannot be
+   re-established, stop indeterminate under the once-then-stop logic below;
+   do not attempt a second undo or claim a handoff or confirmed draft.
    This is the write side of an invariant the readiness
    gate's `--head` check and evidence binding already enforce on the read side:
    a supplied `--integrator-result` binds its schema-valid envelope's `head`

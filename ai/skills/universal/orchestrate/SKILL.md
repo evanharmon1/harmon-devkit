@@ -310,7 +310,12 @@ previous lock in `locks/recoveries/<slate>/<id>.json` before removing the lock;
 failure to record it leaves the lock held. Re-read status after any failure:
 the audit records intent, so a crash may leave the lock still held. Acquire
 normally as the recovering session only after release; ordinary scope
-contention checks still apply. Name the recovery and its audit in the handoff.
+contention checks still apply. Once reacquisition succeeds, the completed
+recovery transfers the writer identity to the recovering session: every later
+write for that slate uses the recovering session's name, including after a
+restart, instead of the original kickoff/claim identity. The recovery audit's
+previous lock and recovering session identify the requested transfer; name both
+identities, the completed transfer and that audit in the handoff.
 
 Durable means *this clone*: the common directory survives restarts, `/clear`
 and worktree removal, but not a fresh clone, a rebuilt devcontainer without a

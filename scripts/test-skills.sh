@@ -3914,6 +3914,22 @@ expect_ok "integration reconciles partial or raced promotion" \
         grep -qF "non-draft on a changed head" "$1" &&
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$INTEGRATE_SKILL"
+# #1371 R1: pin the writer-error branch itself, not unrelated remote undo prose.
+PROMOTION_WRITE_RECOVERY="$TMPROOT/promotion-write-recovery.md"
+sed -n '/   adjudications. On any writer error,/,/   This is the write side/p' \
+    "$INTEGRATE_SKILL" >"$PROMOTION_WRITE_RECOVERY"
+expect_ok "integration re-reads canonical promotion after any writer error" \
+    sh -c 'grep -qF "re-read the canonical \`run.json\`" "$1" &&
+        grep -qF "Accept a lost-response success only if its \`promotion.head\` exactly matches" "$1" &&
+        grep -qF "the confirmed head and its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
+        grep -qF "the confirmed gate fingerprint. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
+expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
+    sh -c 'grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "once, then bounded-fetch until" "$1" &&
+        grep -qF "\`isDraft == true\` is confirmed and stop **blocked**, naming the writer" "$1" &&
+        grep -qF "error and the confirmed draft state" "$1" &&
+        grep -qF "re-established, stop indeterminate under the once-then-stop logic below" "$1" &&
+        grep -qF "do not attempt a second undo or claim a handoff or confirmed draft" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration paginates the draft-conversion undo guard" \
     sh -c 'grep -qF "/assets/gh-ro.sh --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
         grep -qF "convert_to_draft" "$1"' sh "$INTEGRATE_SKILL"
@@ -11725,6 +11741,13 @@ expect_ok "integrate: delegates never write the run record (#1371)" \
     grep -qF 'and `/integrate`; polling delegates return evidence and never write the record.' "$repo/ai/skills/universal/integrate/SKILL.md"
 expect_ok "orchestrate: session identity comes from the claim record (#1371)" \
     grep -qF 'ends. `--session` is the `/kickoff` session name recorded by `/claim` on the' "$ORCH_MD"
+expect_ok "orchestrate: completed recovery transfers identity for all subsequent writes (#1371 R1)" \
+    sh -c 'grep -qF "Once reacquisition succeeds, the completed" "$1" &&
+        grep -qF "recovery transfers the writer identity to the recovering session: every later" "$1" &&
+        grep -qF "write for that slate uses the recovering session" "$1" &&
+        grep -qF "restart, instead of the original kickoff/claim identity" "$1" &&
+        grep -qF "previous lock and recovering session identify the requested transfer; name both" "$1" &&
+        grep -qF "identities, the completed transfer and that audit in the handoff" "$1"' sh "$ORCH_MD"
 if grep -qF 'Write the run record only through' "$ORCH_MD"; then
     bad "orchestrate: still claims every run-record write goes through run-record.mjs (#1296 challenge r1 -4)"
 else

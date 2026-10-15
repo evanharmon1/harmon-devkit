@@ -324,9 +324,12 @@ node "$asset_dir/validate-result-schemas.mjs" run "$state/runs/run-c/run.json" -
     fail "strict validation with the challenge adjudication fails after the writer's transitions"
 pass "transitions written after an adjudication keep strict --receipts validation passing"
 rr alice bind-pr --run-id run-c --number 44 --url https://example.test/pr/44 --at 2026-01-01T00:05:00Z >/dev/null
+cp "$state/runs/run-c/run.json" "$tmp/before-unsettled-promotion.json"
 expect_refused "promotion over an unsettled deferred finding" "has no settlement" \
     rr alice promote --run-id run-c --head "$(printf '%040d' 0 | tr 0 a)" --fingerprint fp --at 2026-01-01T00:10:00Z
-pass "a promotion over an unsettled deferred finding is refused"
+cmp -s "$state/runs/run-c/run.json" "$tmp/before-unsettled-promotion.json" ||
+    fail "a refused promotion over an unsettled finding changed the canonical record"
+pass "a promotion over an unsettled deferred finding is refused with a byte-identical canonical record"
 cp "$run" "$tmp/before-promotion.json"
 expect_refused "promotion before PR binding" "before PR binding #42" \
     rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:04:30Z
