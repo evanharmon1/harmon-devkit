@@ -96,4 +96,8 @@ const extraPayloadKey = structuredClone(valid.get('integrator'))
 extraPayloadKey.payload.unexpected = true
 assertInvalid(engine, composed, extraPayloadKey, 'role payload with an unknown key')
 
+const completedWithBlocker = readJson(path.join(fixtures,
+  'result.integrator.schema/invalid/completed-with-blocker.json'))
+assertInvalid(engine, composed, completedWithBlocker, 'completed integrator carrying blocker evidence')
+
 console.log('native result schema composition OK')
