@@ -230,10 +230,16 @@ jobs:
           allowed_bots: "renovate[bot],dependabot[bot]"
           base_branch: main
           branch_prefix: claude/
-          # --max-budget-usd caps API-key spend; likely a no-op under
-          # CLAUDE_CODE_OAUTH_TOKEN (subscription) billing. Real runaway guards
-          # are timeout-minutes (job- and step-level) and --max-turns.
-          claude_args: "--model opus --effort max --max-budget-usd 6 --disallowedTools Edit Write Bash --max-turns 60"
+          # --max-budget-usd is ENFORCED under CLAUDE_CODE_OAUTH_TOKEN
+          # (subscription) billing too, at list prices: a review of a
+          # spec-sized PR cached 771k input tokens on Opus in one turn
+          # ($6.18) and stopped at the old review cap of 6
+          # (ponderousdev/omator#1494, 2026-10-15). Budgets since then:
+          # review 40, plan 40, implement 50; review and plan at --effort xhigh,
+          # implement at --effort medium.
+          # timeout-minutes (job- and step-level) and --max-turns remain
+          # the runaway guards.
+          claude_args: "--model opus --effort xhigh --max-budget-usd 40 --disallowedTools Edit Write Bash --max-turns 60"
           prompt: |
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
@@ -276,10 +282,16 @@ jobs:
           allowed_bots: "renovate[bot],dependabot[bot]"
           base_branch: main
           branch_prefix: claude/
-          # --max-budget-usd caps API-key spend; likely a no-op under
-          # CLAUDE_CODE_OAUTH_TOKEN (subscription) billing. Real runaway guards
-          # are timeout-minutes (job- and step-level) and --max-turns.
-          claude_args: "--model opus --effort max --max-budget-usd 6 --disallowedTools Edit Write Bash --max-turns 60"
+          # --max-budget-usd is ENFORCED under CLAUDE_CODE_OAUTH_TOKEN
+          # (subscription) billing too, at list prices: a review of a
+          # spec-sized PR cached 771k input tokens on Opus in one turn
+          # ($6.18) and stopped at the old review cap of 6
+          # (ponderousdev/omator#1494, 2026-10-15). Budgets since then:
+          # review 40, plan 40, implement 50; review and plan at --effort xhigh,
+          # implement at --effort medium.
+          # timeout-minutes (job- and step-level) and --max-turns remain
+          # the runaway guards.
+          claude_args: "--model opus --effort xhigh --max-budget-usd 40 --disallowedTools Edit Write Bash --max-turns 60"
           prompt: |
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
