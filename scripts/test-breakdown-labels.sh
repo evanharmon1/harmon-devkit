@@ -2461,8 +2461,16 @@ else
     bad "breakdown enforces exactly one repository-appropriate work classification"
 fi
 
+authoring_section="$(sed -n '/^## 5\./,/^## 6\./p' "$skill")"
 proposal_section="$(sed -n '/^## 6\./,/^## 7\./p' "$skill")"
 execution_section="$(sed -n '/^## 7\./,/^## 8\./p' "$skill")"
+if grep -qF 'Each authored issue also carries a `## Surface` section' <<<"$authoring_section" &&
+    grep -qF 'the canonical optional heading' <<<"$authoring_section" &&
+    grep -qF 'pre-create checker' <<<"$authoring_section"; then
+    ok "authoring section states ## Surface is the canonical optional heading track-work §5's pre-create checker accepts"
+else
+    bad "authoring section states ## Surface is the canonical optional heading track-work §5's pre-create checker accepts"
+fi
 if grep -qF 'Impact, Risk and Complexity per chunk' <<<"$proposal_section" &&
     grep -qF 'a one-line reason' <<<"$proposal_section"; then
     ok "proposal section requires each chunk's three ratings and one-line reasons"
