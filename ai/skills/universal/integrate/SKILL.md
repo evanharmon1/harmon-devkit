@@ -977,8 +977,23 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   review activity on an actively-worked PR (harmon-devkit#276). The actor field
   cannot separate that from the owner's own click. Elsewhere treat the writer
   as unidentified; recovery remains actor-agnostic. A dispatched integrator
-  reports this evidence and stops its writes; only the session owning
-  integration (the orchestrator in a run) may audit, undo and record it.
+  returns `status: "blocked"` and this evidence in the validated result's
+  `payload.blocker`, then stops its writes. Read the event from the envelope
+  alone, never parse the agent's prose blocker report:
+
+  ```sh
+  blocker_json="$(jq -ce 'select(.role == "integrator" and .status == "blocked")
+      | .payload.blocker | select(.kind == "unexplained-promotion")' \
+      "$integrator_result")" || exit 1
+  ```
+
+  Correlate `blocker_json.ready_event_id`, `.ready_at`, and `.actor.id` /
+  `.actor.login` with the complete timeline and the validated run record as
+  above; `.observed_head` identifies the observed head for the subsequent
+  drift check, never the historical head. Missing `payload.blocker` (for
+  example, a failed timeline read) leaves attribution unknown and cannot
+  license an undo. Only the session owning integration (the orchestrator in
+  a run) may audit, undo and record it.
   Branch on the current head's gate status, freshly audited:
   - **The head independently passes the full readiness gate** — checks
     concluded green, current-head Codex terminal-clean, every thread answered,
