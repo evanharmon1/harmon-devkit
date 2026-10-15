@@ -2055,7 +2055,7 @@ is optional in addition, never a substitute for per-thread replies.
     # before sending, over the comments you actually adjudicated:
     jq -c --arg me "$me" "$fingerprint" <<<"$comments" >"$snap"
     # after sending, over a fresh fetch — guarded, exactly like step 2's:
-    fresh="$(gh api --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
+    fresh="$("${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
       || { echo 'post-send fetch failed — reconcile UNKNOWN, not clean'; exit 1; }
     jq -c --arg me "$me" --slurpfile before "$snap" "$fingerprint"'
         | (INDEX($before[0][]; .root)) as $b

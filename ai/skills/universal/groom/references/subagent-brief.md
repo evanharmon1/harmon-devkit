@@ -13,6 +13,13 @@ subagent (Step 2 of `SKILL.md`). Fill in the bracketed values. The brief must
 be self-contained — the subagent has no memory of this conversation.
 
 ```text
+**Agent-posture REST reads:** For each REST read shown as `gh api` below,
+agent-posture sessions use `/usr/local/bin/gh-api-read` instead, keeping the
+endpoint, pagination and output flags. When a read names `--hostname "$host"`,
+remove that flag and set `GH_HOST="$host"` on the wrapper invocation. In dev
+and bot postures the shown command remains valid. This substitution is for
+GET reads only; do not route writes or GraphQL through the GET-only wrapper.
+
 You are verifying a cluster of GitHub issues in <owner/repo> for a backlog
 groom. You are READ-ONLY: you may call `gh issue view`, `gh issue list`,
 `gh pr view`, `gh pr list`, `gh api` (GET only), Read, Glob, and Grep against
