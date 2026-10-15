@@ -3440,6 +3440,16 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
     if [ "$n" -eq 1 ]; then cat "$STUB_BODY_1"; else cat "${STUB_BODY_2:-$STUB_BODY_1}"; fi
     exit 0
 fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+    # R1 requires the current-branch form (`gh pr view --json number,state,headRefName,body,title`)
+    # with no positional PR number or branch argument.
+    if [ "${3:-}" != "--json" ] || [ "${4:-}" != "number,state,headRefName,body,title" ] || [ "$#" -ne 4 ]; then
+        exit 97
+    fi
+    [ -n "${STUB_PR_JSON:-}" ] || exit 1
+    printf '%s\n' "$STUB_PR_JSON"
+    exit 0
+fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "edit" ]; then
     while [ "$#" -gt 0 ]; do
         if [ "$1" = "--body-file" ]; then
@@ -3520,18 +3530,107 @@ env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
     "$tick" --repo "$repo" --issue 30 --index 1 >/dev/null 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "an unreadable issue should exit 2 (got $_rc)"
 
-echo "==> a tick is refused on an issue this account has not claimed"
-# The claim scopes the ordinary open-issue path to work a human authorised.
+echo "==> a tick is refused on an issue that is neither assigned nor referenced by the current branch's open PR"
+# The refusal names both sanctioned alternatives: claim the issue, or reference
+# it from the current branch's open PR (`Refs #N`).
+pr_branch_repo="$tmp/pr-branch-repo"
+mkdir -p "$pr_branch_repo"
+git -C "$pr_branch_repo" init -q
+git -C "$pr_branch_repo" checkout -q -b feat/partial-work
+
+run_tick_pr() {
+    _rc=0
+    (
+        cd "$pr_branch_repo" &&
+            env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+                STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
+                STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" \
+                STUB_ASSIGNEES="${STUB_ASSIGNEES-someone-else}" \
+                STUB_PR_JSON="${STUB_PR_JSON-}" \
+                "$tick" --repo "$repo" --issue 30 "$@" >"$tmp/tick-pr.out" 2>&1
+    ) || _rc=$?
+    echo "$_rc"
+}
+
 printf '%s' "$body_three" >"$tmp/b1"
 cp "$tmp/b1" "$tmp/b2"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
-_rc=0
-env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
-    STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" \
-    STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_ASSIGNEES="someone-else" \
-    "$tick" --repo "$repo" --issue 30 --match 'first' >/dev/null 2>&1 || _rc=$?
-[ "$_rc" = 1 ] || fail "an unclaimed issue should exit 1 (got $_rc)"
-[ ! -f "$tmp/edited" ] || fail "an unclaimed issue must not be written to"
+[ "$(STUB_ASSIGNEES="someone-else" STUB_PR_JSON="" run_tick_pr --match 'first')" = 1 ] ||
+    fail "an unassigned, unreferenced issue should exit 1"
+[ ! -f "$tmp/edited" ] || fail "an unassigned, unreferenced issue must not be written to"
+grep -q "neither assigned to tester nor referenced by the current branch's open PR" "$tmp/tick-pr.out" ||
+    fail "the refusal should state both missing scoping signals: $(cat "$tmp/tick-pr.out")"
+grep -q "claim it or add 'Refs #30' to the current branch's open PR" "$tmp/tick-pr.out" ||
+    fail "the refusal should name both sanctioned alternatives: $(cat "$tmp/tick-pr.out")"
+
+echo "==> an unassigned issue referenced by the current branch's open PR ticks"
+for pr_json in \
+    '{"number":42,"state":"OPEN","headRefName":"feat/partial-work","title":"feat: partial work","body":"Delivers part one.\n\nRefs #30"}' \
+    '{"number":42,"state":"OPEN","headRefName":"feat/partial-work","title":"fix: finish #30 (Closes #30)","body":"Nothing in body."}' \
+    '{"number":42,"state":"OPEN","headRefName":"feat/partial-work","title":"feat: partial","body":"Refs: evanharmon1/harmon-devkit#30"}' \
+    '{"number":42,"state":"OPEN","headRefName":"feat/partial-work","title":"feat: partial","body":"Fixes https://github.com/evanharmon1/harmon-devkit/issues/30"}'; do
+    printf '%s' "$body_three" >"$tmp/b1"
+    cp "$tmp/b1" "$tmp/b2"
+    rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+    [ "$(STUB_ASSIGNEES="" STUB_PR_JSON="$pr_json" run_tick_pr --match 'first')" = 0 ] ||
+        fail "an unassigned issue referenced by the current branch's open PR should tick ($pr_json): $(cat "$tmp/tick-pr.out")"
+    [ "$(cat "$tmp/edited")" = "$(printf '%s' '## Acceptance
+
+- [x] first criterion
+- [ ] second criterion
+- [x] already done
+')" ] || fail "the referenced unassigned issue should have only the matched criterion ticked"
+done
+
+echo "==> an unassigned issue referenced only by a PR whose head is a different branch is refused"
+printf '%s' "$body_three" >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+[ "$(STUB_ASSIGNEES="" STUB_PR_JSON='{"number":42,"state":"OPEN","headRefName":"feat/other-branch","title":"feat: other","body":"Refs #30"}' run_tick_pr --match 'first')" = 1 ] ||
+    fail "a PR on a different head branch must not authorise a tick"
+[ ! -f "$tmp/edited" ] || fail "a foreign-branch PR must not write"
+
+echo "==> an unassigned issue referenced only in the issue body itself is refused"
+printf '%s' '## Context
+
+Refs #30 and Closes #30 in PR #42.
+
+## Acceptance
+
+- [ ] first criterion
+- [ ] second criterion
+' >"$tmp/b1"
+cp "$tmp/b1" "$tmp/b2"
+rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+[ "$(STUB_ASSIGNEES="" STUB_PR_JSON='{"number":42,"state":"OPEN","headRefName":"feat/partial-work","title":"feat: unrelated","body":"Refs #99"}' run_tick_pr --match 'first')" = 1 ] ||
+    fail "issue body text must never authorise a tick on its own"
+[ ! -f "$tmp/edited" ] || fail "an issue self-reference must not write"
+
+echo "==> an unassigned issue referenced only by a closed or merged PR is refused"
+for closed_state in CLOSED MERGED; do
+    printf '%s' "$body_three" >"$tmp/b1"
+    cp "$tmp/b1" "$tmp/b2"
+    rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+    [ "$(STUB_ASSIGNEES="" STUB_PR_JSON="{\"number\":42,\"state\":\"$closed_state\",\"headRefName\":\"feat/partial-work\",\"title\":\"feat: done\",\"body\":\"Refs #30\"}" run_tick_pr --match 'first')" = 1 ] ||
+        fail "a $closed_state PR must not authorise a tick"
+    [ ! -f "$tmp/edited" ] || fail "a $closed_state PR must not write"
+done
+
+echo "==> partial tokens, other-repo references, and keywordless mentions in the open PR are refused"
+for non_match_body in \
+    'Refs #300' \
+    'Refs #3' \
+    'Refs other/repo#30' \
+    'Refs https://github.com/other/repo/issues/30' \
+    'See #30 for background' \
+    'prefixes #30'; do
+    printf '%s' "$body_three" >"$tmp/b1"
+    cp "$tmp/b1" "$tmp/b2"
+    rm -f "$tmp/count" "$tmp/edited" "$tmp/state"
+    [ "$(STUB_ASSIGNEES="" STUB_PR_JSON="{\"number\":42,\"state\":\"OPEN\",\"headRefName\":\"feat/partial-work\",\"title\":\"feat: partial\",\"body\":\"$non_match_body\"}" run_tick_pr --match 'first')" = 1 ] ||
+        fail "PR body '$non_match_body' must not authorise a tick on #30"
+    [ ! -f "$tmp/edited" ] || fail "PR body '$non_match_body' must not write"
+done
 
 echo "==> an issue claimed alongside others is still tickable"
 rm -f "$tmp/count" "$tmp/edited" "$tmp/state"

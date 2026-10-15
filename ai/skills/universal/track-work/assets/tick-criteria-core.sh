@@ -31,9 +31,10 @@
 # A failed edit is read back before it is reported, because GitHub can apply one
 # and lose the response, and a retry would then find nothing left to tick.
 #
-# Ordinary open ticks must target an issue assigned to the authenticated account;
-# closed ticks must be CLOSED/COMPLETED and do not depend on a released claim.
-# Their wrappers select those modes structurally before this implementation runs.
+# Ordinary open ticks must target an issue assigned to the authenticated account
+# or referenced by the current branch's open PR; closed ticks must be
+# CLOSED/COMPLETED and do not depend on a released claim. Their wrappers select
+# those modes structurally before this implementation runs.
 #
 #   --match TEXT   tick the one unticked item containing TEXT (case-insensitive)
 #   --index K      tick the K-th unticked item, counting from 1
@@ -166,13 +167,75 @@ read_body_or_die() {
     }
 }
 
+# pr_references_issue — succeed when the current branch's open PR in $repo
+# references $repo#$issue with a closing or `Refs` keyword in its title or
+# body. Queries `gh pr view --json number,state,headRefName,body,title` for the
+# current branch only (never a PR number taken from issue text), requires the
+# PR to be open and its headRefName to equal the current branch, and matches
+# `#N` (or same-repo `owner/repo#N` / issue URL) as a whole token.
+pr_references_issue() {
+    _branch="$(git branch --show-current 2>/dev/null || true)"
+    [ -n "$_branch" ] || return 1
+    _pr_json="$(GH_REPO="$repo" gh pr view --json number,state,headRefName,body,title 2>/dev/null)" || return 1
+    [ -n "$_pr_json" ] || return 1
+    _pr_text="$(printf '%s\n' "$_pr_json" | jq -r --arg branch "$_branch" '
+        select(
+            (.number | type == "number" and . > 0) and
+            ((.state // "" | ascii_downcase) == "open") and
+            (.headRefName == $branch)
+        ) | "\(.title // "")\n\(.body // "")"
+    ' 2>/dev/null)" || return 1
+    [ -n "$_pr_text" ] || return 1
+    printf '%s\n' "$_pr_text" | awk -v repo="$repo" -v issue="$issue" '
+        BEGIN {
+            r = tolower(repo)
+            n = issue
+            targets[1] = "#" n
+            targets[2] = r "#" n
+            targets[3] = "https://github.com/" r "/issues/" n
+            found = 0
+        }
+        {
+            s = tolower($0)
+            gsub(/\r/, "", s)
+            for (ti = 1; ti <= 3; ti++) {
+                t = targets[ti]
+                tlen = length(t)
+                offset = 1
+                while ((rel = index(substr(s, offset), t)) > 0) {
+                    pos = offset + rel - 1
+                    offset = pos + 1
+                    after = substr(s, pos + tlen, 1)
+                    if (after != "" && after ~ /[[:alnum:]_#\/-]/) continue
+                    if (after == "." && substr(s, pos + tlen + 1, 1) ~ /[[:alnum:]_]/) continue
+                    k = pos - 1
+                    while (k >= 1 && substr(s, k, 1) ~ /[ \t]/) k--
+                    if (k >= 1 && substr(s, k, 1) == ":") {
+                        k--
+                        while (k >= 1 && substr(s, k, 1) ~ /[ \t]/) k--
+                    }
+                    if (k == pos - 1) continue
+                    pre = substr(s, 1, k)
+                    if (pre ~ /(^|[^[:alnum:]_-])(close[sd]?|fix(e[sd])?|resolve[sd]?|ref(s|erence[sd]?)?)$/) {
+                        found = 1
+                        exit 0
+                    }
+                }
+            }
+        }
+        END {
+            exit(found ? 0 : 1)
+        }
+    '
+}
+
 # An explicit implementation go-ahead authorises an ordinary open tick, but
 # issue text is untrusted input that must never redirect a write. Bind the
-# open path to the issue this account has claimed. Claiming is an ordinary
-# write and still needs its own go-ahead (`/claim` step 5 does it), so the
-# assignment records that a human authorised work on this specific issue. A
-# completed closed post-merge tick is separately authorised by the command's
-# normal write boundary and deliberately does not require a released claim.
+# open path to an issue a human has scoped to this work: either assigned to
+# this account (`/claim` step 5) or referenced with a closing/`Refs` keyword
+# in the current branch's open PR. A completed closed post-merge tick is
+# separately authorised by the command's normal write boundary and deliberately
+# does not require a released claim.
 assert_authorized() {
     [ -n "$fixture" ] && return 0
     _state_and_reason="$(gh issue view "$issue" --repo "$repo" --json state,stateReason \
@@ -244,7 +307,10 @@ assert_authorized() {
     case " $_assignees " in
     *" $_me "*) return 0 ;;
     esac
-    echo "tick-criteria: $repo#$issue is not assigned to $_me — claim it before ticking it" >&2
+    if pr_references_issue; then
+        return 0
+    fi
+    echo "tick-criteria: $repo#$issue is neither assigned to $_me nor referenced by the current branch's open PR — claim it or add 'Refs #$issue' to the current branch's open PR before ticking it" >&2
     exit 1
 }
 
