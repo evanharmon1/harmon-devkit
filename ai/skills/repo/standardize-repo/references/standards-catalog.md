@@ -441,8 +441,21 @@ Shared structure:
   explicit change/enabled predicate proves that exact result. Reject `failure`,
   `cancelled`, `timed_out`, unexpected `skipped`, unexpected `success`, and every
   unknown state. A check that rejects only `failure` is fail-open. The
-  `devcontainer-verify` aggregate follows the identical fork-skipped/trusted-
-  success contract for its build leaf.
+  `devcontainer-verify` aggregate follows the identical contract for the change detector,
+  event-specific builds, and container assertions. Exact expectations may be
+  step-level `EXPECTED_RESULT`, predicate-derived expressions (`cond &&
+  'success' || 'skipped'`), or per-call inline assignments. A literal `skipped`
+  on a trusted path must match the leaf job’s own skip predicate, resolved
+  through its environment binding. Every result must actually be asserted on
+  every supported trusted branch (changed/unchanged × merge/non-merge), as well
+  as the fork path; declaring it in `env` is not verification. The auditor
+  accepts the template’s exact condition shapes and rejects unprovable ones.
+  Aggregate runs use literal `|`/`|-` blocks or single commands, with the default
+  shell or exactly `bash`; folded scalars, custom shell commands, and YAML
+  anchors, aliases, or merge keys in the aggregate are rejected. Classify fork-suppressed leaves from the boundary's
+  `skipped` assertions: a leaf asserted `success` on forks does not need the
+  same-repository guard. A fork-skipped leaf can also exclude fork PRs through
+  an exact job-level `merge_group` event condition with no OR alternative.
 - **Every required context must report unconditionally.** The workflow behind a
   required check triggers on `pull_request` **and** `merge_group`, and no trigger
   filter may keep it from starting on a protected ref — a workflow that does not
