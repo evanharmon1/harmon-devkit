@@ -890,6 +890,12 @@ aggregate_job_contract_is_safe() {
             gsub(/[[:space:]]+/, " ", value)
             return trim(value)
         }
+        function env_expression(value) {
+            value = unquote(trim(value))
+            # Unlike if:, env values are literals without expression delimiters.
+            if (value !~ /^\$\{\{.*\}\}$/) return ""
+            return condition(value)
+        }
         # Four fixed template paths: unchanged/non-merge, unchanged/merge,
         # changed/non-merge, changed/merge. These are a structural contract,
         # not an evaluator for arbitrary Actions expressions.
@@ -929,7 +935,7 @@ aggregate_job_contract_is_safe() {
             if (value != "success" && value != "skipped") {
                 # The expression form is bound to a leaf whose own condition
                 # has this exact event term, never merely to a plausible name.
-                if (condition(value) != nonmerge_test " && " q "success" q " || " q "skipped" q ||
+                if (env_expression(value) != nonmerge_test " && " q "success" q " || " q "skipped" q ||
                     (paths != "1010" && paths != "0010")) { unsafe = 1; return }
             }
             for (path = 1; path <= 4; path++) {
@@ -1160,12 +1166,12 @@ aggregate_job_contract_is_safe() {
             if (!in_step && line ~ /^    defaults:[ ]*[^ ]/) unsafe = 1
             if (!in_step && line ~ /^      run:[ ]*[^ ]/) unsafe = 1
             if (line ~ /^      CHANGED:/) {
-                changed_source = condition(substr(line, index(line, ":") + 1))
+                changed_source = env_expression(substr(line, index(line, ":") + 1))
                 if (changed_source !~ /^needs\.[A-Za-z0-9_-]+\.outputs\.changed$/) unsafe = 1
             }
             if (line ~ /^    if:[ ]*always\(\)[ ]*$/) always_job = 1
             if (line ~ /^      IS_FORK:/ &&
-                condition(substr(line, index(line, ":") + 1)) == fork_test) fork_expression = 1
+                env_expression(substr(line, index(line, ":") + 1)) == fork_test) fork_expression = 1
             if (in_needs && line ~ /^      - [A-Za-z0-9_-]+[ ]*$/) {
                 dependency_name = trim(substr(line, 9))
                 all_refs["needs." dependency_name ".result"] = 1
@@ -1193,7 +1199,7 @@ aggregate_job_contract_is_safe() {
                 step_if = condition(line)
             }
             if (line ~ /uses:/) uses_any = 1
-            if (line ~ /uses:[ ]*actions\/checkout@/) checkout = 1
+            if (line ~ ("uses:[ ]*[\"" q "]?actions/checkout@")) checkout = 1
             if (line ~ /^          EXPECTED_RESULT:/) {
                 sub(/^.*EXPECTED_RESULT:[ ]*/, "", line)
                 step_expected = line

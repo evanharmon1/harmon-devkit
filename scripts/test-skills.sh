@@ -5977,10 +5977,22 @@ expect_fail_contains "verify-applied still requires guards for fork-skipped temp
     "is aggregated as fork-skipped but lacks the same-repository PR guard" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 
-for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit negated-merge missing-merge-path unrelated-predicate folded-run shell-override yaml-alias fork-early-success fork-extra-noop; do
+for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit negated-merge missing-merge-path unrelated-predicate folded-run shell-override yaml-alias fork-early-success fork-extra-noop bare-fork-env bare-expected-env double-quoted-fork-checkout single-quoted-fork-checkout; do
     write_rendered_aggregate_workflows
     aggregate_fixture="$AGG_TARGET/.github/workflows/devcontainer-build.yml"
     case "$aggregate_mutation" in
+    bare-fork-env)
+        sed -i.bak '/^      IS_FORK:/ { s/\${{ //; s/ }}$//; }' "$aggregate_fixture"
+        ;;
+    bare-expected-env)
+        sed -i.bak '/^          EXPECTED_RESULT:/ { s/\${{ //; s/ }}$//; }' "$aggregate_fixture"
+        ;;
+    double-quoted-fork-checkout | single-quoted-fork-checkout)
+        checkout_quote='"'
+        if [ "$aggregate_mutation" = single-quoted-fork-checkout ]; then checkout_quote="'"; fi
+        printf '\n      - name: Quoted fork checkout\n        if: env.IS_FORK == '\''true'\''\n        uses: %sactions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1%s\n' \
+            "$checkout_quote" "$checkout_quote" >>"$aggregate_fixture"
+        ;;
     fork-early-success)
         sed -i.bak '/          check_skipped() {/a\
             if [ "$2" = "success" ]; then\
