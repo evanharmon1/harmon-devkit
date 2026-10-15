@@ -193,8 +193,8 @@ fails, an answer `jq` cannot read, or an order other than the two
   The attempt window
   starts when the trigger is created, so posting during CI would consume the
   reviewer's promised post-CI response window.
-- **`with-push`** — request the review with the push: reserve and trigger
-  without waiting for CI, and settle CI alongside the cycle. Both still have
+- **`with-push`** — after the primary rollup probe succeeds, request the
+  review with the push: reserve and trigger without waiting for CI, and settle CI alongside the cycle. Both still have
   to end green and terminal-clean before the orchestrator's readiness gate
   passes; only the ordering changed.
 
@@ -208,40 +208,42 @@ cycle this pass owes is requested — never a cycle the rounds policy does not
 require, and never a second request for a head beyond the one bounded
 attempt-2 retry §4 already describes.
 
-**CI settlement invariants — two read paths, one decision:**
+**CI settlement invariants — probe first, fail closed:**
 
-- **Read path.** The primary read is `gh pr checks <n> --repo "$repo" --json
-  bucket,name,workflow,event,link`; capture its stdout, exit status AND stderr
-  separately, including for `--required`, never discard stderr. Only a
-  recognised permission error (HTTP 403 or `Resource not accessible by
-  integration`) selects `"$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo
-  "$repo" --pr <n> --head <head> --timeout-seconds 1800 --interval-seconds 30
-  --format checks-json`. Preserve the helper's exit status and use its JSON
-  stdout as `checks[]`; mapping and counted-run selection belong to that
-  tested helper, never a second listing or an agent-written jq program.
-  Every other read failure, including malformed output, stays indeterminate
-  and follows the schema-valid pending result flow rather than exiting.
-  Parseable rollup arrays accompanied by the ordinary pending/failing CLI
-  statuses are check outcomes, not read failures.
+- **Read path.** Before §4 reserves or triggers anything, under every
+  `review_trigger` value including `with-push`, probe the primary rollup with
+  `gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link`;
+  capture stdout, exit status AND stderr separately, including for
+  `--required`, never discard stderr. Only a recognised permission error
+  (HTTP 403 or `Resource not accessible by integration`) selects
+  `"$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo "$repo" --pr <n>
+  --head <head> --timeout-seconds 1800 --interval-seconds 30 --format checks-json`.
+  Preserve the helper's exit status and use its JSON stdout as `checks[]`;
+  mapping and counted-run selection belong to that tested helper, never a
+  second listing or an agent-written jq program. Every other read failure,
+  including malformed output, stays indeterminate and returns a schema-valid
+  pending result without entering §4. Parseable rollup arrays accompanied by
+  ordinary pending/failing CLI statuses are check outcomes, not read failures.
   Keep successfully read primary arrays as `$checks` and `$required_checks`
   for the identity mapping below.
-- **Outcome.** Settled green sets `checks_ready=true`; settled failing
-  (including fallback exit 1) signals `failed_required=true` and carries the
-  failing run IDs into the ordinary §5/§7 findings/result flow, never a bare
-  exit. Indeterminate or expired (fallback exits 3/4) produces a schema-valid
-  pending result. A merged/closed PR (exit 5) stops the whole stage.
-- **Timing.** `review_trigger` alone controls §4 reservation and triggering,
-  independent of which read path settles CI: under `with-push`, reserve and
-  trigger first, then settle CI; `after-ci` waits for settled green, and
-  `after-ci-first` resolves through the existing timing helper. A failed read
-  cannot change that ordering or spend another cycle.
-- **Evidence gap.** A fallback result is non-clean: helper `checks[]` entries
-  have `required:false` because requiredness is unknown; report verdict
-  `pending` with `status=blocked`, never blocked+clean, and state that
-  external/non-Actions checks and requiredness were not verifiable in §9's
-  existing blocker report. Preserve any failing run findings in that result.
-  This evidence gap cannot suppress a review that the timing policy requires.
-  The readiness gate still needs its own complete check-run/status evidence.
+- **Outcome.** On the primary path, settled green sets `checks_ready=true`;
+  settled failing signals `failed_required=true`. On the permission fallback,
+  exit 0 is settled green Actions evidence only; fallback exit 1 carries the
+  failing run IDs into §5/§7's findings/result flow. Exits 3/4 are indeterminate
+  or expired: preserve the diagnostic and use `checks[]=[]` when the helper
+  supplied no JSON, never fabricate settled evidence. A merged/closed PR
+  (exit 5) stops the whole stage.
+- **Timing.** Only a successful primary rollup probe permits the existing
+  `review_trigger` ordering: `with-push` reserves and triggers without waiting
+  for CI, `after-ci` waits for settled green, and `after-ci-first` resolves
+  through the existing timing helper. On a recognised permission error,
+  reserve nothing and trigger nothing; do not enter §4 or resume an old cycle.
+- **Evidence gap.** Every permission fallback result reports `pending` with
+  `status=blocked`, `codex_cycle:null` and `finder_cycles:[]`: no review ran
+  this pass, so never attach an earlier pass's cycle. Helper `checks[]` entries
+  have `required:false` because requiredness is unknown; preserve any failing
+  run findings even with this pending verdict. Report §9's prescribed blocker;
+  the readiness gate still needs its own complete check-run/status evidence.
 
 The following check-run/status identity mapping applies only to a successfully
 read primary rollup; the Actions fallback already supplies `checks[]` and
@@ -1172,8 +1174,14 @@ a CARRIED cycle (harmon-init#752), where `accepted.reviewed_commit` names
 `carried.origin_head` instead; every other field on that list still equals
 this head, including `codex_cycle.head` itself.
 
-Apply §3's fallback-path `pending`/`blocked` invariant first; the following
-verdict derivation applies to the primary rollup path. Derive `$verdict`
+For §3's permission fallback, set `status=blocked`, `verdict=pending`,
+`codex_cycle_json_or_null=null` and `finder_cycles_json='[]'` before assembly;
+keep `blocker_json=null` unless a separate draft-flip blocker was captured.
+The schema requires `codex_cycle` even when no cycle ran, so emit JSON null,
+not an omitted key; do not reuse any earlier cycle or invent a Codex exit code
+from the Actions helper's status. This no-cycle result validates even with a
+positive integration cap, but cannot pass readiness. The following verdict
+derivation applies to the primary rollup path. Derive `$verdict`
 mechanically, never by feel: `clean` only when every
 required check is `pass` (or non-required and `skipping`), the Codex cycle
 (when the cap is not 0) is terminal-clean or was skipped by a 0 cap, **every
@@ -1240,7 +1248,13 @@ your transcript. Cover:
 - **Blocked** — anything §1 stopped you on, or any read that failed and left
   a field `unknown` rather than a real value. Draft-flip evidence lives in the
   validated envelope's `payload.blocker`; prose supplements missing reads and
-  never substitutes for the captured event object.
+  never substitutes for the captured event object. For the permission fallback,
+  report: "the token cannot read the checks rollup; CI settled from Actions
+  runs (exit N); no Codex review was requested; the readiness gate needs a
+  token with checks read (see #1502)" — substitute the actual helper exit for
+  N, and identify exits 3/4 as indeterminate/expired rather than settled.
+  No Codex cycle was requested on this path; the §7 result carries null/empty
+  cycle fields, not an exit code for a review that never ran.
 
 The delegation contract that governs every dispatched agent here — exit plan
 mode before spawning, keep the core work in your own context, the shared

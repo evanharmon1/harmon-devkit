@@ -1134,9 +1134,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
-  **Permission fallback:** capture the primary rollup read's exit status and
-  stderr, and switch only on HTTP 403 or `Resource not accessible by integration`
-  to the exact-head, fully paginated Actions helper shown below, where skipped
+  **Permission fallback:** before reserving or triggering a review under any
+  `review_trigger` ordering, capture the primary rollup read's stdout, exit
+  status and stderr, switching only on HTTP 403 or `Resource not accessible by integration`
+  to the exact-head, fully paginated Actions helper below, where skipped
   runs never count as pending.
 
   ```sh
@@ -1145,10 +1146,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
       --format checks-json
   ```
 
-  Apply the integrator §3 outcome invariants and `review_trigger` ordering on
-  either path; every fallback result stays `pending` with `status=blocked`
-  and the external/non-Actions checks gap, while promotion still requires
-  the readiness gate's complete evidence.
+  Apply integrator §3: on permission fallback, reserve nothing and trigger
+  nothing, return `pending` with `status=blocked`, `codex_cycle:null` and
+  `finder_cycles:[]`, preserve failing run IDs, and report the checks-read
+  blocker (see #1502); promotion still requires the readiness gate's complete evidence.
   **CI has settled only when every required check has CONCLUDED; a pending
   check, an empty check list, or a permission failure on the checks read is
   indeterminate and never a pass**

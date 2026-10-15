@@ -2028,6 +2028,27 @@ jq -cn --arg head "$moved_sha" \
 run_gate
 assert_gate 1 fail head-mismatch
 
+# #1195 / integration-r3-codex-cloud-1: permission fallback runs no review.
+# Prove the documented no-cycle blocked/pending envelope validates for green,
+# failing and unavailable Actions evidence; never attach a prior clean cycle.
+echo "==> permission fallback returns schema-valid blocked pending without a cycle"
+for fallback_bucket in pass fail unavailable; do
+    write_defaults
+    fallback_base="$(write_integrator_result "fallback-${fallback_bucket}-base" null)"
+    fallback_result="${fixtures}/integrator-result-fallback-${fallback_bucket}.json"
+    jq --arg bucket "$fallback_bucket" '
+        .status = "blocked" | .payload.verdict = "pending" |
+        .payload.codex_cycle = null | .payload.finder_cycles = [] |
+        del(.payload.applied_dispositions) |
+        .payload.checks = (if $bucket == "unavailable" then [] else
+            [{name:"build",bucket:$bucket,run_id:"1195",required:false}] end) |
+        .payload.findings = (if $bucket == "fail" then
+            [{id:"integration-r1-human-1",body:"Actions run failed",source_id:"1195"}]
+            else [] end)' "$fallback_base" >"$fallback_result"
+    node "$validator" envelope "$fallback_result" >/dev/null ||
+        fail "permission fallback ${fallback_bucket}: no-cycle result failed validation"
+done
+
 echo "==> permission-denied check evidence is indeterminate despite green Actions runs"
 # The gate deliberately reads page-safe REST check-runs, not the GraphQL
 # rollup. Simulate both observed permission diagnostics at that read boundary

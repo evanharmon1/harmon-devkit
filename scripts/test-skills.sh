@@ -3907,6 +3907,8 @@ for required in (
     'permission failure on the checks read is',
     'indeterminate and never a pass',
     '`review_trigger` ordering',
+    'reserve nothing and trigger\n  nothing',
+    '`codex_cycle:null` and\n  `finder_cycles:[]`',
     'readiness gate\'s complete evidence',
 ):
     assert required in checks, required
@@ -3918,12 +3920,22 @@ for grant in (
     assert grant in text.split('---', 2)[1], grant
 agent = (pathlib.Path(sys.argv[1]).parents[3] / 'agents/integrator.md').read_text()
 settle = agent.split('**CI settlement invariants', 1)[1].split('On the normal rollup path, `$checks`', 1)[0]
-for required in ('exit status AND stderr', 'HTTP 403', 'Resource not accessible by',
+for required in ('exit status AND stderr', 'HTTP 403', 'Resource not accessible by integration',
                  '--format checks-json', 'checks_ready=true', 'failed_required=true',
-                 'fallback exit 1', 'exits 3/4', 'exit 5', '`review_trigger` alone',
-                 'trigger first, then settle CI', '`pending` with `status=blocked`',
-                 'external/non-Actions checks and requiredness were not verifiable'):
+                 'fallback exit 1', 'Exits 3/4', 'exit 5',
+                 'Before §4 reserves or triggers anything',
+                 '`review_trigger` value including `with-push`',
+                 'reserve nothing and trigger nothing',
+                 'do not enter §4 or resume an old cycle',
+                 '`pending` with\n  `status=blocked`',
+                 '`codex_cycle:null` and `finder_cycles:[]`'):
     assert required in settle, required
+for forbidden in ('independent of which read path', 'trigger first, then settle CI',
+                  'cannot suppress a review'):
+    assert forbidden not in agent, forbidden
+for required in ('`codex_cycle_json_or_null=null`', "`finder_cycles_json='[]'`",
+                 'no Codex review was requested', 'token with checks read (see #1502)'):
+    assert required in agent, required
 assert 'actions_out=' not in agent
 assert '2>/dev/null' not in settle
 assert "sed -n 's/^RUN" not in agent
