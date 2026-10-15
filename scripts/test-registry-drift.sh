@@ -22,6 +22,10 @@
 #   5. adapters      — the provisionable Foreman adapters are internally coherent;
 #                      the LIVE comparison against the pinned Foreman release is
 #                      `task foreman:audit-adapters` (network — out of this gate).
+#   6. collation     — re-runs the drift check under a runtime-discovered non-C
+#                      collation locale from `locale -a` (preferring one whose
+#                      sort order genuinely differs from C, e.g. en_US.UTF-8)
+#                      and under explicit LC_ALL=C.
 #
 # Dimensions 3 and 4 target files that only some render profiles ship
 # (setup-github-labels.sh, claude-providers.sh); each is skipped, loudly, when
@@ -305,6 +309,71 @@ if [ -n "$stem_mismatch" ]; then
     fail "foreman adapter slug != source_file stem [$(echo "$stem_mismatch" | tr '\n' ' ')] — foreman:<slug> would not resolve to its backend file; rename the slug or the source_file so they match"
 fi
 
+# ── 6. collation independence (non-C locale) ───────────────────────────────
+# CI runs under C/C.UTF-8 by default, where byte and codepoint order agree.
+# Re-run the full drift check in a child process under an installed locale
+# whose sort order genuinely differs from C (preferring en_US.UTF-8 /
+# en_US.utf8 from `locale -a`), plus an explicit LC_ALL=C run, so `task
+# test:registry-drift` exercises non-C collation in CI as well as locally.
+collation_note=""
+if [ "${REGISTRY_DRIFT_LOCALE_SUBRUN:-0}" != 1 ]; then
+    c_probe="$(printf 'a-c\na:b\nB\na\n' | LC_ALL=C sort)"
+    available_locales="$(locale -a 2>/dev/null || true)"
+    diff_locale=""
+    fallback_locale=""
+
+    preferred_candidates=""
+    while IFS= read -r loc; do
+        [ -n "$loc" ] || continue
+        case "$loc" in
+        en_US.UTF-8 | en_US.utf8 | en_US.utf-8)
+            preferred_candidates="${preferred_candidates}${loc}"$'\n'
+            ;;
+        esac
+    done <<<"$available_locales"
+
+    while IFS= read -r loc; do
+        [ -n "$loc" ] || continue
+        case "$loc" in
+        C | POSIX) continue ;;
+        esac
+        loc_probe="$(printf 'a-c\na:b\nB\na\n' | LC_ALL="$loc" LANG="$loc" sort 2>/dev/null || true)"
+        [ -n "$loc_probe" ] || continue
+        if [ "$loc_probe" != "$c_probe" ]; then
+            diff_locale="$loc"
+            break
+        fi
+        if [ -z "$fallback_locale" ]; then
+            fallback_locale="$loc"
+        fi
+    done <<<"${preferred_candidates}${available_locales}"
+
+    if ! REGISTRY_DRIFT_LOCALE_SUBRUN=1 LC_ALL=C LANG=C \
+        bash "$0" "$registry" "$schema" >/dev/null; then
+        fail "drift check failed under explicit LC_ALL=C collation sub-run"
+    fi
+
+    if [ -n "$diff_locale" ]; then
+        if ! REGISTRY_DRIFT_LOCALE_SUBRUN=1 LC_ALL="$diff_locale" LANG="$diff_locale" \
+            bash "$0" "$registry" "$schema" >/dev/null; then
+            fail "drift check failed under non-C collation locale '$diff_locale'"
+        else
+            collation_note="  (collation check: passed under non-C collation locale '$diff_locale' and LC_ALL=C)"
+        fi
+    elif [ -n "$fallback_locale" ]; then
+        echo "note: no locale with non-C sort order found in 'locale -a'; falling back to installed locale '$fallback_locale'" >&2
+        if ! REGISTRY_DRIFT_LOCALE_SUBRUN=1 LC_ALL="$fallback_locale" LANG="$fallback_locale" \
+            bash "$0" "$registry" "$schema" >/dev/null; then
+            fail "drift check failed under fallback locale '$fallback_locale'"
+        else
+            collation_note="  (collation check: passed under fallback locale '$fallback_locale' and LC_ALL=C)"
+        fi
+    else
+        echo "note: no non-C locale available in 'locale -a' — ran the LC_ALL=C collation case only" >&2
+        collation_note="  (collation check: no non-C locale installed; passed under LC_ALL=C)"
+    fi
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "test-registry-drift: $fails drift finding(s) above." >&2
     echo "Live Foreman adapter roster check (network, non-gating): task foreman:audit-adapters" >&2
@@ -313,3 +382,6 @@ fi
 
 echo "test-registry-drift: registry, labels, provisioning, wrappers, and adapters agree."
 echo "  (live Foreman roster check is task foreman:audit-adapters — network, not part of this gate)"
+if [ -n "$collation_note" ]; then
+    echo "$collation_note"
+fi
