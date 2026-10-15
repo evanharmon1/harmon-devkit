@@ -8947,5 +8947,91 @@ run_ci_check run-b
 [ "$(cat "$state")" = "$foreign_before" ] || fail "another run's check must leave the state untouched"
 assert_ci_charge 1/0 "another run's check"
 
+# Exercise the shipped snippets, including envelope-only consumption, so the
+# draft-flip evidence survives a resumed orchestrator without the prose report.
+echo "==> draft-flip builder carries typed evidence for envelope-only correlation"
+node --input-type=module - "$repo_root" "$test_tmp" <<'NODE'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+const [repo, scratch] = process.argv.slice(2)
+const agent = fs.readFileSync(path.join(repo, 'ai/agents/integrator.md'), 'utf8')
+const procedure = fs.readFileSync(path.join(repo, 'ai/skills/universal/integrate/SKILL.md'), 'utf8')
+function snippet(text, token) {
+  const blocks = [...text.matchAll(/^ *```sh\n([\s\S]*?)^ *```/gm)]
+  const matches = blocks.filter((block) => block[1].includes(token))
+  assert.equal(matches.length, 1, `one executable snippet containing ${token}`)
+  return matches[0][1]
+}
+const capture = snippet(agent, 'ready_event_id:')
+assert.match(agent, /gh-ro\.sh --paginate --slurp\b/)
+let builder = snippet(agent, "'{schema: 2, role:")
+const fixture = JSON.parse(fs.readFileSync(path.join(repo,
+  'ai/schemas/fixtures/result.integrator.schema/valid/blocked-unexplained-promotion.json'), 'utf8'))
+const replacements = {
+  '<head>': fixture.head,
+  '<producer.harness from your brief>': fixture.producer.harness,
+  '<producer.model from your brief>': fixture.producer.model,
+  '<producer.tier from your brief>': fixture.producer.tier,
+  '<run_id from your brief>': fixture.run.run_id,
+  '<initiated_by from your brief>': fixture.run.initiated_by
+}
+for (const [from, to] of Object.entries(replacements)) builder = builder.replaceAll(from, to)
+const consumer = snippet(procedure, '| .payload.blocker |')
+function run(script, extraEnv = {}) {
+  const result = spawnSync('bash', ['-eu', '-c', script], {
+    encoding: 'utf8', env: { ...process.env, ...extraEnv }
+  })
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  return result.stdout
+}
+const ready = fixture.payload.blocker
+const event = { id: Number(ready.ready_event_id), event: 'ready_for_review',
+  created_at: ready.ready_at, actor: { id: Number(ready.actor.id), login: ready.actor.login } }
+const out = path.join(scratch, 'draft-flip-envelope.json')
+const env = { observed_head: ready.observed_head,
+  timeline_json: JSON.stringify([[{ ...event, id: event.id - 1 }, event,
+    { id: event.id + 1, event: 'commented', created_at: ready.ready_at }].reverse()]),
+  checks_json: '[]', codex_cycle_json_or_null: 'null', finder_cycles_json: '[]',
+  integration_round: '1', findings_json: '[]', unanswered_json: '[]',
+  verdict: 'pending', applied_dispositions_json: '[]', out_file: out,
+  integrator_result: out }
+run(`${capture}\n${builder}`, env)
+const result = JSON.parse(fs.readFileSync(out, 'utf8'))
+assert.equal(result.status, 'blocked')
+assert.deepEqual(result.payload.blocker, ready)
+const validation = spawnSync('node', [path.join(repo,
+  'ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs'),
+  'envelope', out, '--schemas-dir', path.join(repo, 'ai/schemas')], { encoding: 'utf8' })
+assert.equal(validation.status, 0, validation.stderr)
+// Consumer gets only the immutable envelope, with no report or transcript.
+const recovered = JSON.parse(run(`${consumer}\nprintf '%s' "$blocker_json"`, env))
+assert.deepEqual(recovered, ready)
+assert.equal(recovered.ready_event_id, String(event.id))
+assert.equal(recovered.ready_at, event.created_at)
+assert.equal(recovered.actor.id, String(event.actor.id))
+// Each page has a ready event: emit one blocker for the global newest event,
+// including when that event is not on the last page.
+const pages = [[{ ...event, id: event.id - 1 }], [event,
+  { id: event.id + 1, event: 'commented', created_at: ready.ready_at }]]
+for (const pageOrder of [pages, [...pages].reverse()]) {
+  run(`${capture}\n${builder}`, { ...env, timeline_json: JSON.stringify(pageOrder) })
+  const multiPageResult = JSON.parse(fs.readFileSync(out, 'utf8'))
+  assert.equal(multiPageResult.status, 'blocked')
+  assert.deepEqual(multiPageResult.payload.blocker, ready)
+  assert.deepEqual(JSON.parse(run(`${consumer}\nprintf '%s' "$blocker_json"`, env)), ready)
+}
+console.log('draft-flip multi-page timeline selects one global newest blocker: PASS')
+// Unknown timeline evidence must not produce an invented event object.
+for (const timeline_json of ['[]', 'unreadable', JSON.stringify([[{ ...event, actor: null }]])]) {
+  run(`${capture}\n${builder}`, { ...env, timeline_json })
+  assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
+}
+// Ordinary completed results retain their previous payload shape.
+run(builder, { ...env, status: 'completed', blocker_json: 'null' })
+assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
+NODE
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

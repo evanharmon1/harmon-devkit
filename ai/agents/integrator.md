@@ -336,7 +336,7 @@ merely `pending` (neither failed nor settled) belongs in `checks_ready`
 **Draft flips are report-only.** On entry, in every poll and immediately before
 any brokered write, re-read `state,isDraft,headRefOid`. If an open draft-workbench
 PR is now non-draft, stop writes and fetch its complete timeline through the
-resolved `gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`. Report the
+resolved `gh-ro.sh --paginate --slurp repos/"$repo"/issues/<n>/timeline`. Report the
 latest `ready_for_review` event ID, time, actor and observed head to the
 orchestrator, who correlates it with `run.json.pr` and `run.json.promotion`
 under `/integrate` §2. You report a suspected unexplained flip; you never decide
@@ -344,9 +344,31 @@ whether it is gate-produced. A failed timeline read is unknown: name it in the
 blocker report rather than inventing event evidence. The observed head does
 not establish the historical head at event time.
 
-Carry the observation in the existing blocker report (§9), with
-`status: "blocked"` in the schema-valid envelope; do not add payload fields or
-manufacture a reviewer finding. Set `status=blocked` for §7's builder.
+Carry the observation in `payload.blocker`, with `status: "blocked"` in the
+schema-valid envelope; never manufacture a reviewer finding.
+Set `status=blocked` for §7's builder. After a successful complete timeline read,
+`timeline_json` holds the slurped array of timeline pages and `observed_head`
+the freshly observed head. Flatten the pages before selecting the latest ready
+event globally with this snippet; if it fails or the read
+failed, leave `blocker_json=null` and name the missing evidence in §9 instead
+of inventing it:
+
+```sh
+status=blocked
+blocker_json=null
+if ! blocker_json="$(jq -ce --arg observed_head "$observed_head" '
+    (add // []) | [.[] | select(.event == "ready_for_review")]
+    | sort_by(.created_at, .id) | last
+    | select(.id != null and .created_at != null
+             and .actor.id != null and .actor.login != null)
+    | {kind: "unexplained-promotion", ready_event_id: (.id | tostring),
+       ready_at: .created_at,
+       actor: {id: (.actor.id | tostring), login: .actor.login},
+       observed_head: $observed_head}' <<<"$timeline_json")"; then
+    blocker_json=null
+fi
+```
+
 Populate the existing payload from evidence
 already gathered (§7), leaving `codex_cycle: null` if no cycle ran. If missing
 evidence prevents a valid result, report that blocker to the orchestrator;
@@ -1099,7 +1121,8 @@ and is rejected before your evidence is even looked at. Build it with
 `jq -n` rather than hand-typing JSON — this is a mechanical composition
 step, not a place to improvise the schema:
 
-Set `status=completed` when starting the pass. Every blocked path sets
+Set `status=completed` and `blocker_json=null` when starting the pass. Preserve
+§3's captured blocker object on the draft-flip path. Every blocked path sets
 `status=blocked` before assembly; preserve that outcome here rather than
 resetting it. A blocker reported under §9 also sets `status=blocked`.
 
@@ -1114,6 +1137,7 @@ jq -n \
     --arg tier "<producer.tier from your brief>" \
     --arg run_id "<run_id from your brief>" \
     --arg initiated_by "<initiated_by from your brief>" \
+    --argjson blocker "$blocker_json" \
     --argjson checks "$checks_json" \
     --argjson codex_cycle "$codex_cycle_json_or_null" \
     --argjson finder_cycles "$finder_cycles_json" \
@@ -1132,7 +1156,8 @@ jq -n \
                  integration_round: $integration_round, findings: $findings,
                  unanswered_thread_roots: $unanswered_thread_roots,
                  settled_at: $settled_at, verdict: $verdict}
-        + (if $verdict == "clean" then {applied_dispositions: $applied_dispositions} else {} end))}' \
+        + (if $verdict == "clean" then {applied_dispositions: $applied_dispositions} else {} end)
+        + (if $blocker != null then {blocker: $blocker} else {} end))}' \
     >"$out_file"
 ```
 
@@ -1215,7 +1240,9 @@ your transcript. Cover:
 - **Posted** — the exact writes you made: the trigger comment (if any), and
   each reply you posted from §6, by comment ID.
 - **Blocked** — anything §1 stopped you on, or any read that failed and left
-  a field `unknown` rather than a real value.
+  a field `unknown` rather than a real value. Draft-flip evidence lives in the
+  validated envelope's `payload.blocker`; prose supplements missing reads and
+  never substitutes for the captured event object.
 
 The delegation contract that governs every dispatched agent here — exit plan
 mode before spawning, keep the core work in your own context, the shared
