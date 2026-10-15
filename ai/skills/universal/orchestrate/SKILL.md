@@ -390,9 +390,9 @@ table before their intended sections.
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
-| `{{ready-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
-| `{{handoff-sentinel}}` | Orchestrator-generated draft-handoff sentinel prefix |
-| `{{blocked-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
+| `{{ready-sentinel}}` | `READY-<lane-name>` using the brief lane label |
+| `{{handoff-sentinel}}` | `HANDOFF-<lane-name>` using the brief lane label |
+| `{{blocked-sentinel}}` | `BLOCKED-<lane-name>` using the brief lane label |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
 
 Every local PR-owning lane brief MUST carry the active run identity so the lane worker can
@@ -680,10 +680,24 @@ manual polling.
 Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
 their command under a non-Bash shell, so always invoke the file as
 `bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state --registry
-<kickoff-registry-snapshot> <deadline> <lane:branch:nonce:owner/repo>...`;
-never paste its loop inline. Keep the state file across re-arms so reported
+<kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>...`;
+never paste its loop inline. The first spec token is the **herdr agent name**;
+herdr requires lowercase names (for example `lane-d1220`), while the brief's
+lane label may be `L-d1220`. Pass the exact rendered `{{report-path}}` as an
+absolute path and `{{lane-name}}` as the separate lane-label field. Neither
+field may contain a colon. Four-field specs still default to
+`<checkout>/.worktrees/<agent>/.lane-report.md` with lane-label equal to agent;
+with `--workspace-root`, checkout is `<workspace-root>/<repo-name>`. A fifth
+field of `cloud` retains the GitHub-only spec and takes no report or label.
+The ready/handoff/blocked prefixes must be `READY-<lane-label>`,
+`HANDOFF-<lane-label>`, and `BLOCKED-<lane-label>`; labels and nonces contain
+only ASCII letters, digits, underscores and hyphens. Both report and pane
+observations match the whole final nonblank line `<kind>-<lane-label>-<nonce>`.
+A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
+`SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
+Keep the state file across re-arms so reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds
-every `herdr` and `gh` read, prefers each lane's `.lane-report.md` sentinel,
+every `herdr` and `gh` read, prefers each lane's explicit report-path sentinel,
 tags pane-only fallback results, and watches reviews plus top-level and inline
 comments for 15 minutes after a draft becomes ready. When a lane's
 post-promotion window's promotion event cannot be resolved before that
