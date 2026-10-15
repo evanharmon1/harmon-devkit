@@ -1030,7 +1030,7 @@ aggregate_job_contract_is_safe() {
             step_if = step_expected = ""
             boundary = checkout = uses_any = 0
         }
-        function finish_step(i, line, run, command, prefix, fork, has_exit, message, function_declared, records_failure, helper_step) {
+        function finish_step(i, line, run, command, prefix, fork, has_exit, message, function_count, function_body, in_function, helper_step) {
             if (!in_step) return
             step_paths = trusted_paths(step_if)
             trusted = step_paths != ""
@@ -1042,13 +1042,26 @@ aggregate_job_contract_is_safe() {
             skipped_function = 0
             for (i = 1; i <= nlines; i++) {
                 if (index(lines[i], "verify-ci-results.sh")) helper_step = 1
-                if (trim(lines[i]) == "check_skipped() {") function_declared = 1
-                if (trim(lines[i]) == "fail=1") records_failure = 1
-                if (lines[i] ~ /if \[ "\$2" != "skipped" \]; then/) skipped_function = 1
+                line = trim(lines[i])
+                gsub(/[[:space:]]+/, " ", line)
+                if (line ~ /check_skipped/ && line !~ /^check_skipped [A-Za-z0-9_-]+ /) {
+                    function_count++
+                    in_function = 1
+                }
+                if (in_function) {
+                    function_body = function_body line "\n"
+                    if (line == "}") in_function = 0
+                }
                 if (trim(lines[i]) == "exit 1") has_exit = 1
                 if (index(lines[i], "Untrusted fork trust boundary enforced:")) message = 1
             }
-            skipped_function = skipped_function && function_declared && records_failure
+            # Certify the entire template function, never independent tokens
+            # that an early return or a second definition could make inert.
+            skipped_function = function_count == 1 && function_body == canonical_skipped
+            if (function_count && !skipped_function) {
+                print "aggregate check_skipped must match the canonical template body exactly (one definition)" > "/dev/stderr"
+                unsafe = 1
+            }
             run = 0
             command = ""
             for (i = 1; i <= nlines; i++) {
@@ -1085,6 +1098,10 @@ aggregate_job_contract_is_safe() {
         }
         BEGIN {
             q = sprintf("%c", 39)
+            canonical_skipped = "check_skipped() {\n" \
+                "if [ \"$2\" != \"skipped\" ]; then\n" \
+                "echo \"Job $1 result: $2 (expected skipped for an untrusted fork)\"\n" \
+                "fail=1\nfi\n}\n"
             fork_test = "github.event_name == " q "pull_request" q " && github.event.pull_request.head.repo.full_name != github.repository"
             trusted_test = "env.IS_FORK != " q "true" q
             same_repo_test = "github.event_name != " q "pull_request" q " || github.event.pull_request.head.repo.full_name == github.repository"

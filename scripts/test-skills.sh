@@ -5960,10 +5960,20 @@ expect_fail_contains "verify-applied still requires guards for fork-skipped temp
     "is aggregated as fork-skipped but lacks the same-repository PR guard" \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 
-for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit negated-merge missing-merge-path unrelated-predicate folded-run shell-override yaml-alias; do
+for aggregate_mutation in tolerance unconditional-skip unverified-leaf fork-helper unguarded-checkout mismatched-refs shadowed-result masked-failure undeclared-coverage redundant-fork-predicate hidden-call disabled-errexit negated-merge missing-merge-path unrelated-predicate folded-run shell-override yaml-alias fork-early-success fork-extra-noop; do
     write_rendered_aggregate_workflows
     aggregate_fixture="$AGG_TARGET/.github/workflows/devcontainer-build.yml"
     case "$aggregate_mutation" in
+    fork-early-success)
+        sed -i.bak '/          check_skipped() {/a\
+            if [ "$2" = "success" ]; then\
+              return 0\
+            fi' "$aggregate_fixture"
+        ;;
+    fork-extra-noop)
+        sed -i.bak '/          check_skipped() {/a\
+            :' "$aggregate_fixture"
+        ;;
     negated-merge)
         sed -i.bak "/^  build-merge-group:/,/^  devcontainer-assert-bot:/ { /needs.devcontainer-changes.outputs.changed/d; s/github.event_name == 'merge_group'/!(true \&\& github.event_name == 'merge_group' \&\& true)/; }" "$aggregate_fixture"
         ;;
