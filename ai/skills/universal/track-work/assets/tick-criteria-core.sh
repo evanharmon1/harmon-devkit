@@ -169,22 +169,38 @@ read_body_or_die() {
 
 # pr_references_issue — succeed when the current branch's open PR in $repo
 # references $repo#$issue with a closing or `Refs` keyword in its title or
-# body. Queries `gh pr view --json number,state,headRefName,body,title` for the
-# current branch only (never a PR number taken from issue text), requires the
-# PR to be open and its headRefName to equal the current branch, and matches
-# `#N` (or same-repo `owner/repo#N` / issue URL) as a whole token.
+# body. Queries `gh pr view --json number,state,headRefName,headRefOid,body,title`
+# for the current branch only (never a PR number taken from issue text),
+# requires the PR to be open, its headRefName to equal the current branch, and
+# its headRefOid to be a full 40-hex SHA that exists in the local object store
+# and is HEAD or an ancestor of HEAD (`git cat-file -e "$oid^{commit}"` and
+# `git merge-base --is-ancestor "$oid" HEAD`), and matches `#N` (or same-repo
+# `owner/repo#N` / issue URL) as a whole token.
 pr_references_issue() {
     _branch="$(git branch --show-current 2>/dev/null || true)"
     [ -n "$_branch" ] || return 1
-    _pr_json="$(GH_REPO="$repo" gh pr view --json number,state,headRefName,body,title 2>/dev/null)" || return 1
+    _pr_json="$(GH_REPO="$repo" gh pr view --json number,state,headRefName,headRefOid,body,title 2>/dev/null)" || return 1
     [ -n "$_pr_json" ] || return 1
-    _pr_text="$(printf '%s\n' "$_pr_json" | jq -r --arg branch "$_branch" '
+    _pr_out="$(printf '%s\n' "$_pr_json" | jq -r --arg branch "$_branch" '
         select(
             (.number | type == "number" and . > 0) and
             ((.state // "" | ascii_downcase) == "open") and
-            (.headRefName == $branch)
-        ) | "\(.title // "")\n\(.body // "")"
+            (.headRefName == $branch) and
+            ((.headRefOid // "") | type == "string" and test("^[0-9a-fA-F]{40}$"))
+        ) | "\(.headRefOid)\n\(.title // "")\n\(.body // "")"
     ' 2>/dev/null)" || return 1
+    [ -n "$_pr_out" ] || return 1
+    oid="${_pr_out%%$'\n'*}"
+    case "$oid" in
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+    *) return 1 ;;
+    esac
+    git cat-file -e "$oid^{commit}" 2>/dev/null || return 1
+    git merge-base --is-ancestor "$oid" HEAD 2>/dev/null || return 1
+    case "$_pr_out" in
+    *$'\n'*) _pr_text="${_pr_out#*$'\n'}" ;;
+    *) return 1 ;;
+    esac
     [ -n "$_pr_text" ] || return 1
     printf '%s\n' "$_pr_text" | awk -v repo="$repo" -v issue="$issue" '
         BEGIN {

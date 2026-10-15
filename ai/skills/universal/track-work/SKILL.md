@@ -220,9 +220,10 @@ Two human-authored scoping signals bound that ordinary path further:
   authorised work on that specific issue before a tick can land on it.
 - **Referenced by your current branch's open PR** — a closing or `Refs`
   keyword (`Refs #N`, `Closes #N`, … for that same repository) in the open
-  PR's title or body (read from `gh pr view --json number,state,headRefName,body,title`
+  PR's title or body (read from `gh pr view --json number,state,headRefName,headRefOid,body,title`
   for the current branch, requiring the PR to be open, its head branch to
-  equal the current branch, and `#N` to match as a whole token) authorises
+  equal the current branch, its head commit to be `HEAD` or an ancestor of
+  `HEAD` in the local checkout, and `#N` to match as a whole token) authorises
   ticking verified partial progress without claiming the issue. Issue body
   text never authorises anything.
 
@@ -245,8 +246,10 @@ authorisation.
 The remaining gap is deliberate and worth naming: neither signal records that
 *this* conversation asked for *that* tick, so a misdirected invocation could
 still tick another issue that is open and either assigned to you or referenced
-by your branch's open PR. The scoping check and the narrow body transformation
-limit that risk; neither makes issue text a source of write authority.
+by your branch's open PR. The reference is read lexically from the PR title and
+body, which the branch's own author writes, so a quoted or negated reference
+there still counts. The scoping check and the narrow body transformation limit
+that risk; neither makes issue text a source of write authority.
 
 Three cautions it does **not** enforce for you:
 
