@@ -76,13 +76,13 @@ tasks:
 
   test:suite:
     # The ONE list of `test:*` targets that both `verify` and the required Build
-    # workflow's `lint` job run (build.yml calls this task in a single step), so
+    # workflow's `test-suite` job run (build.yml calls this task in one step), so
     # the two cannot drift and nothing parses the workflow to police them.
     # A new `test:*` guard that belongs in the gate is added HERE and nowhere
     # else; `test:verify-ci-parity` fails if either caller stops running it.
     # Not in this list: `build`, `validate` and `test` (the project's own tiers
     # — this skills source runs validate/test explicitly in CI) and `ci`-only checks.
-    desc: The test:* targets verify and the Build workflow's lint job both run
+    desc: The test:* targets verify and the Build workflow's test-suite job both run
     cmds:
       - task: test:agent-instructions-size
       - task: test:agent-skill-links

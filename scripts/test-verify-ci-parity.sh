@@ -2,7 +2,7 @@
 # `verify` and the required Build workflow run their `test:*` targets through
 # ONE aggregate Taskfile task (test:suite), so the two lists cannot drift
 # (harmon-init#962, #1461). This is the whole guard: it fails when the Build
-# workflow's lint job stops calling that task, when `verify` stops calling it,
+# workflow stops gating on that task, when `verify` stops calling it,
 # or when `verify` gains a `test:*` entry of its own that the workflow would
 # never run. Plain text only — a block is the lines from its key to the next
 # key at the same two-space indent; no YAML or shell is parsed, and `task`
@@ -27,11 +27,18 @@ block() {
         on' "$1"
 }
 
-# An uncommented `run: task test:suite` step inside the `lint` job (a comment
-# starts with `#`, so it can never satisfy the anchor; another job cannot
-# satisfy it either).
+# Consumers may still run the suite in lint. The source runs it in a separate
+# test-suite job, which must feed its result into the required verify aggregate.
+# Comments and a suite step in an unrelated job never satisfy these anchors.
 workflow_calls_suite() {
-    block "$1" lint | grep -E '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+task test:suite[[:space:]]*$' >/dev/null
+    local suite_step='^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+task test:suite[[:space:]]*$'
+    if block "$1" lint | grep -E "$suite_step" >/dev/null; then
+        return 0
+    fi
+    block "$1" test-suite | grep -E "$suite_step" >/dev/null || return 1
+    block "$1" verify | grep -E '^[[:space:]]+needs:.*(\[|,)[[:space:]]*test-suite[[:space:]]*(,|\])' >/dev/null || return 1
+    block "$1" verify | grep -Ev '^[[:space:]]*#' | grep -F 'TEST_SUITE_RESULT: ${{ needs.test-suite.result }}' >/dev/null || return 1
+    block "$1" verify | grep -E '^[[:space:]]*(-[[:space:]]+)?run:' | grep -F '"test-suite=${TEST_SUITE_RESULT}"' >/dev/null
 }
 
 # `verify` itself lists `task: test:suite` — calling a leaf the suite also
@@ -62,7 +69,7 @@ verify_has_no_stray_tests() {
 [ -f "$workflow" ] || fail "${workflow} not found"
 [ -f "$taskfile" ] || fail "${taskfile} not found"
 workflow_calls_suite "$workflow" ||
-    fail "the Build workflow's lint job no longer runs \`task test:suite\` in a step — add it back rather than listing test:* targets in build.yml"
+    fail "the Build workflow no longer gates on \`task test:suite\` in a step — add it back rather than listing test:* targets in build.yml"
 verify_runs_suite "$taskfile" ||
     fail "\`verify\` no longer lists \`task: test:suite\` itself"
 verify_has_no_stray_tests "$taskfile" "$workflow" ||
@@ -85,6 +92,29 @@ printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task check' \
 printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task test:suite' '  security:' '    steps:' >"${scratch}/ok.yml"
 workflow_calls_suite "${scratch}/ok.yml" ||
     fail "planted case: a lint job that runs the aggregate step was rejected"
+
+printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task check' \
+    '  test-suite:' '    steps:' '      - run: task test:suite' \
+    '  verify:' '    needs: [lint, test-suite, security]' '    steps:' \
+    '      - env:' '          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}' \
+    '        run: ./scripts/verify-ci-results.sh "test-suite=${TEST_SUITE_RESULT}"' >"${scratch}/split.yml"
+workflow_calls_suite "${scratch}/split.yml" ||
+    fail "planted case: a suite feeding the required verify aggregate was rejected"
+grep -v '^    needs:' "${scratch}/split.yml" >"${scratch}/ungated.yml"
+! workflow_calls_suite "${scratch}/ungated.yml" ||
+    fail "planted case: an ungated test-suite job still passed"
+grep -v 'TEST_SUITE_RESULT:' "${scratch}/split.yml" >"${scratch}/missing-result.yml"
+! workflow_calls_suite "${scratch}/missing-result.yml" ||
+    fail "planted case: a suite whose result is not captured still passed"
+grep -v 'run: ./scripts/verify-ci-results.sh' "${scratch}/split.yml" >"${scratch}/unused-result.yml"
+! workflow_calls_suite "${scratch}/unused-result.yml" ||
+    fail "planted case: a suite whose result is not checked still passed"
+sed 's/TEST_SUITE_RESULT:/# TEST_SUITE_RESULT:/' "${scratch}/split.yml" >"${scratch}/commented-result.yml"
+! workflow_calls_suite "${scratch}/commented-result.yml" ||
+    fail "planted case: a commented-out result capture still passed"
+sed 's/run: .\/scripts\/verify-ci-results.sh/# run: .\/scripts\/verify-ci-results.sh/' "${scratch}/split.yml" >"${scratch}/commented-check.yml"
+! workflow_calls_suite "${scratch}/commented-check.yml" ||
+    fail "planted case: a commented-out result check still passed"
 
 printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task test:suite' '  template-test:' '    steps:' >"${scratch}/with-matrix.yml"
 printf '%s\n' 'tasks:' '  verify:' '    cmds:' '      - task: check' '      - task: test:suite' '      - task: test:template' \

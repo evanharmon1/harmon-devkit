@@ -195,8 +195,10 @@ never the bot's own `GH_TOKEN`:
 Revoke it independently of the bot's PAT: rotating one never touches the
 other. For Claude Code on the web, where `/web-setup` holds a single token
 across resource owners, the agent identity is instead a **classic** PAT on the bot
-account with `repo` scope and no `workflow` scope, handed to `/web-setup` with
-the account's Claude GitHub App connection removed. It is bounded by the bot's
+account with `repo` scope and no `workflow` scope, handed to `/web-setup` after
+the account's Claude GitHub App connection is removed. Disconnect GitHub on
+claude.ai's connectors page before `/web-setup`, never after: a disconnect
+removes the token `/web-setup` stored. It is bounded by the bot's
 per-repo collaborator grants rather than by a selected-repository list (a
 classic token reaches every repository the bot can, across owners), and GitHub
 refuses a push that changes `.github/workflows/` (observed 2026-10-07). The one
@@ -208,8 +210,10 @@ for the procedure, the account pitfall and the costs (harmon-init#1407).
 That classic web PAT has its own lifecycle. Set an expiry (180 days at most, like
 the agent PAT), keep it in the bot's item in your secret store, and rotate it by
 minting a new token and re-running `/web-setup`. Retire it by revoking it on
-GitHub (Settings → Developer settings → Tokens (classic)): whether disconnecting
-GitHub on claude.ai's connectors page removes a stored token was not observed.
+GitHub (Settings → Developer settings → Tokens (classic)). Disconnecting GitHub
+on claude.ai's connectors page also drops the stored token from cloud sessions:
+in the 2026-10-14 cloud-lane check, a session started after that disconnect
+reported no linked GitHub account until `/web-setup` was run again.
 Per-session repository scope does not limit this agent: a session can attach,
 when a human approves, any repository the bot can push to. A classic `repo`
 token also carries `repo:status`, `repo_deployment` and `security_events` on

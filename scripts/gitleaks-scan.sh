@@ -4,7 +4,10 @@
 # merge-base-extracted closure (specs/dev-flow-v2.md § Configuration "Gate
 # authority separates policy from branch implementation").
 #
-# Two modes, picked off GITHUB_STEP_SUMMARY: interactively gitleaks just prints;
+# With --range BASE..HEAD, scan only those commits plus the working tree.
+# Without --range, retain the full-history scan used by security:secrets/CI.
+#
+# Two output modes, picked off GITHUB_STEP_SUMMARY: interactively gitleaks just prints;
 # in a job with a step summary it writes a JSON report that summarize-gitleaks
 # renders into the run summary.
 #
@@ -41,12 +44,57 @@
 set -euo pipefail
 
 config_path=
-if [ "${1:-}" = "--config" ]; then
-    [ "$#" -ge 2 ] || {
-        echo "gitleaks-scan: --config requires a path" >&2
+scan_range=
+have_range=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --config | --range)
+        option=$1
+        [ "$#" -ge 2 ] && [ -n "$2" ] || {
+            echo "gitleaks-scan: ${option} requires a value" >&2
+            exit 2
+        }
+        if [ "$option" = "--config" ]; then
+            config_path=$2
+        else
+            [ "$have_range" -eq 0 ] || {
+                echo "gitleaks-scan: --range may only be given once" >&2
+                exit 2
+            }
+            scan_range=$2
+            have_range=1
+        fi
+        shift 2
+        ;;
+    *)
+        echo "gitleaks-scan: unknown argument: $1" >&2
+        exit 2
+        ;;
+    esac
+done
+
+if [ "$have_range" -eq 1 ]; then
+    range_base=${scan_range%%..*}
+    range_head=${scan_range#*..}
+    # Exactly two revisions, no log options/pathspecs or extra range operators.
+    # Resolve each to a commit SHA before passing anything to --log-opts, so
+    # ref movement cannot change the requested endpoints during the scan.
+    revision_pattern='^[[:alnum:]_][[:alnum:]_./@{}~^-]*$'
+    if [ "$range_base" = "$scan_range" ] ||
+        [[ "$range_base" == *..* || "$range_head" == *..* ]] ||
+        [[ ! "$range_base" =~ $revision_pattern || ! "$range_head" =~ $revision_pattern ]]; then
+        echo "gitleaks-scan: --range requires two commit revisions joined by .." >&2
+        exit 2
+    fi
+    range_base_sha="$(git rev-parse --verify --quiet "${range_base}^{commit}")" || {
+        echo "gitleaks-scan: --range base does not resolve to a commit" >&2
         exit 2
     }
-    config_path=$2
+    range_head_sha="$(git rev-parse --verify --quiet "${range_head}^{commit}")" || {
+        echo "gitleaks-scan: --range head does not resolve to a commit" >&2
+        exit 2
+    }
+    scan_range="${range_base_sha}..${range_head_sha}"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -90,15 +138,18 @@ if [ -n "$config_path" ]; then
     have_config=1
 fi
 
+scan_source=.
 run_gitleaks() {
     if [ "$have_config" -eq 1 ]; then
-        gitleaks detect --no-banner --redact --source . "${config_args[@]}" "$@"
+        gitleaks detect --no-banner --redact --source "$scan_source" "${config_args[@]}" "$@"
     else
-        gitleaks detect --no-banner --redact --source . "$@"
+        gitleaks detect --no-banner --redact --source "$scan_source" "$@"
     fi
 }
 
-if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+# Preserve the interactive full-history exec path. Scoped mode needs two
+# scans; CI summarizes each scan with a separate fresh report.
+if [ "$have_range" -eq 0 ] && [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
     if [ "$have_config" -eq 1 ]; then
         exec gitleaks detect --no-banner --redact --source . "${config_args[@]}"
     else
@@ -106,10 +157,103 @@ if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
     fi
 fi
 
-report="$(mktemp)"
-trap 'rm -f "$report"' EXIT
+report=
+working_tree_tmp=
+trap 'if [ -n "$report" ]; then rm -f "$report"; fi; if [ -n "$working_tree_tmp" ]; then rm -rf "$working_tree_tmp"; fi' EXIT
+trap 'exit 1' HUP INT TERM
+
+scan_once() {
+    local scan_rc=0 summary_rc=0
+    if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+        run_gitleaks "$@" || scan_rc=$?
+    else
+        report="$(mktemp)" || return $?
+        run_gitleaks "$@" --report-format json --report-path "$report" || scan_rc=$?
+        node "${script_dir}/summarize-gitleaks.mjs" "$report" || summary_rc=$?
+        if [ "$scan_rc" -eq 0 ]; then
+            scan_rc=$summary_rc
+        fi
+        rm -f "$report"
+        report=
+    fi
+    return "$scan_rc"
+}
+
+scan_working_tree() {
+    local worktree_root path scan_source ignore_file entry revision_pattern
+    worktree_root="$(git rev-parse --show-toplevel)" || return $?
+    working_tree_tmp="$(mktemp -d)" || return $?
+    scan_source="${working_tree_tmp}/tree"
+    mkdir "$scan_source" || return $?
+    # A directory scan ignores .gitignore. Snapshot only Git-visible paths:
+    # tracked files (including force-added ones) and non-ignored untracked
+    # files. Materialize the manifest first so a git failure cannot appear
+    # to be an empty, clean tree. NUL delimiters preserve every path byte.
+    git -C "$worktree_root" ls-files -z --cached --others --exclude-standard \
+        >"${working_tree_tmp}/paths" || return $?
+    while IFS= read -r -d '' path; do
+        if [ -L "${worktree_root}/${path}" ] || [ -f "${worktree_root}/${path}" ]; then
+            case "$path" in
+            */*) mkdir -p "${scan_source}/${path%/*}" || return $? ;;
+            esac
+            # Preserve symlinks rather than importing their external targets;
+            # gitleaks' default directory scan does not follow them either.
+            cp -P "${worktree_root}/${path}" "${scan_source}/${path}" || return $?
+        elif [ -e "${worktree_root}/${path}" ] && [ ! -d "${worktree_root}/${path}" ]; then
+            echo "gitleaks-scan: refusing — Git-visible path is not a regular file or symlink" >&2
+            return 1
+        fi
+        # Deleted paths have no current bytes; gitlinks are directories, not
+        # files, and must not import a submodule's ignored credential files.
+    done <"${working_tree_tmp}/paths"
+    # Keep the invocation cwd: relative [extend].path in the config resolves
+    # there. Directory-source findings use the absolute snapshot prefix, so
+    # derive equivalent ignore fingerprints without modifying history's file.
+    ignore_file="${working_tree_tmp}/.gitleaksignore"
+    : >"$ignore_file" || return $?
+    if [ -f "${worktree_root}/.gitleaksignore" ]; then
+        cp "${worktree_root}/.gitleaksignore" "$ignore_file" || return $?
+        # Separate additions from a final original entry lacking a newline.
+        printf '\n' >>"$ignore_file" || return $?
+        revision_pattern='^[[:xdigit:]]{40}:'
+        while IFS= read -r entry || [ -n "$entry" ]; do
+            # gitleaks trims entries; preserve originals above while matching
+            # their meaningful fingerprint bytes in the derived additions.
+            entry=${entry#"${entry%%[![:space:]]*}"}
+            entry=${entry%"${entry##*[![:space:]]}"}
+            case "$entry" in
+            '' | '#'*) continue ;;
+            esac
+            if [[ "$entry" =~ $revision_pattern ]]; then
+                entry=${entry#*:}
+                printf '%s\n' "$entry" >>"$ignore_file" || return $?
+            fi
+            printf '%s/%s\n' "$scan_source" "$entry" >>"$ignore_file" || return $?
+        done <"${worktree_root}/.gitleaksignore"
+    fi
+    # The derived file keeps the original ignore lookup even when that file
+    # is itself ignored. Explicit/environment config keep their precedence;
+    # otherwise discover the checkout config, not the snapshot's config.
+    if [ "$have_config" -eq 0 ] && [ -z "${GITLEAKS_CONFIG:-}${GITLEAKS_CONFIG_TOML:-}" ] &&
+        [ -f "${worktree_root}/.gitleaks.toml" ]; then
+        scan_once --no-git --gitleaks-ignore-path "$ignore_file" \
+            --config "${worktree_root}/.gitleaks.toml"
+    else
+        scan_once --no-git --gitleaks-ignore-path "$ignore_file"
+    fi
+}
 
 rc=0
-run_gitleaks --report-format json --report-path "$report" || rc=$?
-node "${script_dir}/summarize-gitleaks.mjs" "$report"
+if [ "$have_range" -eq 1 ]; then
+    scan_once "--log-opts=${scan_range}" || rc=$?
+    # Still scan the checkout if history failed; success of either half must
+    # never hide a failure of the other. Both share the config/ignore policy.
+    working_tree_rc=0
+    scan_working_tree || working_tree_rc=$?
+    if [ "$rc" -eq 0 ]; then
+        rc=$working_tree_rc
+    fi
+else
+    scan_once || rc=$?
+fi
 exit "$rc"

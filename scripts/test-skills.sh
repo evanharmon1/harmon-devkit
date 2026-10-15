@@ -2190,6 +2190,23 @@ INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 
+assert_codex_release_recipe() {
+    grep -qF 'release --state "$state" --note "PR changed before trigger"' "$1" &&
+        grep -qF 'release --state "$state" --note "trigger POST failed"' "$1" &&
+        grep -qF 'reserved_at + 600 s' "$1" &&
+        grep -qF 'When `reserve` refuses an unresolved reservation for a different head' "$1" &&
+        grep -qF 'runs `reserve` once more' "$1"
+}
+for recovery_doc in "$INTEGRATE_SKILL" "$INTEGRATOR_AGENT"; do
+    expect_ok "Codex recovery recipe names release for head changes and failed POSTs: $recovery_doc" \
+        assert_codex_release_recipe "$recovery_doc"
+done
+expect_ok "integrator routes same-head released state through fresh reservation" \
+    grep -qF 'No state file, state for a different head, or same-head `released` state.' "$INTEGRATOR_AGENT"
+expect_ok "integrate documents denied check-suite boundary and full-window fallback" \
+    sh -c 'grep -qF "Checks: read" "$1" && grep -qF "HTTP 403/404" "$1" &&
+        grep -qF "requires_full_window: true" "$1"' sh "$INTEGRATE_SKILL"
+
 # The fixed table and wrapped legend are copied byte-for-byte from the
 # harmon-init AGENTS.md stage-ledger contract. Keep this expectation local so
 # the skills-source tests stay hermetic and catch drift between the two skills.
@@ -11740,6 +11757,37 @@ expect_ok "review: the verification call reads the per-stage ledger and the shar
     grep -qF -- '--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only' "$REVIEW_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
     grep -qF './scripts/test-inline-record.sh' "$repo/Taskfile.yml"
+
+# harmon-devkit#1077: any session driving integration — orchestrator or a lane
+# told to drive its own integration — must use the vendored checker protocol
+# and readiness-gate.sh wherever they apply, never a hand-rolled poll or
+# hand-evaluated table; orchestrate/SKILL.md and lane-brief.md point at
+# integrate/SKILL.md §2's qualified rule.
+LANE_BRIEF_MD="$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
+for doc in "$INTEGRATE_MD" "$ORCH_MD" "$LANE_BRIEF_MD"; do
+    doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
+    expect_ok "$doc_label: binds any session driving integration (#1077)" \
+        grep -qF 'any session driving integration' "$doc"
+    expect_ok "$doc_label: names check-codex-cloud-review.sh (#1077)" \
+        grep -qF 'check-codex-cloud-review.sh' "$doc"
+    expect_ok "$doc_label: names readiness-gate.sh (#1077)" \
+        grep -qF 'readiness-gate.sh' "$doc"
+    expect_ok "$doc_label: qualifies where the vendored checker and gate apply (#1077 C1-1)" \
+        grep -qiF 'wherever the vendored checker and gate apply' "$doc"
+    expect_ok "$doc_label: forbids a hand-rolled poll or hand-evaluated table (#1077)" \
+        grep -qF 'never a hand-rolled poll or hand-evaluated table' "$doc"
+done
+expect_ok "integrate: states the cap-0 exception to the checker requirement (#1077 C1-1)" \
+    grep -qF 'whenever the resolved integration cap is above 0; cap 0 runs no Codex cycle' "$INTEGRATE_MD"
+expect_ok "integrate: states the no-record exception to readiness-gate.sh (#1077 C1-1)" \
+    grep -qF "whenever a run record exists; the no-record path keeps \`AGENTS.md\`'s hand-run readiness" "$INTEGRATE_MD"
+expect_ok "integrate: cites why — clean verdict and inline findings are not atomic (#1077)" \
+    grep -qF 'a clean verdict and its inline findings do not land atomically' "$INTEGRATE_MD"
+for doc in "$ORCH_MD" "$LANE_BRIEF_MD"; do
+    doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
+    expect_ok "$doc_label: points at integrate/SKILL.md §2's rule (#1077 C1-1)" \
+        grep -qF "follow \`integrate/SKILL.md\` §2's rule" "$doc"
+done
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
