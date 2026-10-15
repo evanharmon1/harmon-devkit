@@ -291,9 +291,15 @@ printf 'Ruling 1: keep the scope.\n' >"$ruling"
 rr alice intervention --run-id run-a --kind other --note "scope ruling" --ruling "$ruling" --at 2026-01-01T00:04:00Z >/dev/null
 digest="$(sha256_file "$ruling")"
 note="$(jq -r '.interventions[-1].note' "$run")"
-[ "$note" = "scope ruling [ruling dev-flow-v2/slates/s1/orchestrator/run-a/a1/ruling-1.md sha256=$digest]" ] ||
+[ "$note" = "scope ruling [ruling dev-flow-v2/runs/run-a/rulings/$digest sha256=$digest]" ] ||
     fail "ruling digest not recorded: $note"
-pass "an intervention pointing at a ruling file records its SHA-256"
+snapshot="$state/runs/run-a/rulings/$digest"
+cmp -s "$ruling" "$snapshot" || fail "ruling snapshot differs from the recorded source"
+printf 'Later working-file edit.\n' >"$ruling"
+[ "$(sha256_file "$snapshot")" = "$digest" ] || fail "editing a source changed its ruling snapshot"
+rr alice intervention --run-id run-a --kind other --note "same ruling" --ruling "$snapshot" --at 2026-01-01T00:04:00Z >/dev/null
+[ "$(find "$state/runs/run-a/rulings" -type f | wc -l | tr -d ' ')" = 1 ] || fail "identical ruling bytes were duplicated"
+pass "an intervention snapshots the exact ruling bytes at a stable digest path"
 
 # -- PR binding --------------------------------------------------------------
 rr alice bind-pr --run-id run-a --number 42 --url https://example.test/pr/42 --at 2026-01-01T00:05:00Z >/dev/null
@@ -309,6 +315,10 @@ pass "a PR binding extends the chain and sets the projection; a repeat is a no-o
 new_run run-c
 (cd "$repo" && node "$writer" transition --slate s1 --session alice --run-id run-c --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
 walk run-c defer
+head_sha="$(printf '%040d' 0 | tr 0 a)"
+expect_refused "promotion before last transition" "must not be before the last stage_transitions entry" \
+    rr alice promote --run-id run-c --head "$head_sha" --fingerprint fp --at 2026-01-01T00:02:30Z
+pass "a promotion dated before the last transition is refused"
 node "$asset_dir/validate-result-schemas.mjs" run "$state/runs/run-c/run.json" --receipts "$state/runs/run-c/run.json" \
     --adjudication "$state/runs/run-c/adjudications/challenge-r1.json" >/dev/null ||
     fail "strict validation with the challenge adjudication fails after the writer's transitions"
@@ -317,15 +327,35 @@ rr alice bind-pr --run-id run-c --number 44 --url https://example.test/pr/44 --a
 expect_refused "promotion over an unsettled deferred finding" "has no settlement" \
     rr alice promote --run-id run-c --head "$(printf '%040d' 0 | tr 0 a)" --fingerprint fp --at 2026-01-01T00:10:00Z
 pass "a promotion over an unsettled deferred finding is refused"
-head_sha="$(printf '%040d' 0 | tr 0 a)"
-expect_refused "promotion before last transition" "must not be before the last stage_transitions entry" \
-    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:02:30Z
-pass "a promotion dated before the last transition is refused"
+cp "$run" "$tmp/before-promotion.json"
+expect_refused "promotion before PR binding" "before PR binding #42" \
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:04:30Z
+cmp -s "$run" "$tmp/before-promotion.json" || fail "a backfilled promotion changed the record"
+rr alice bind-pr --run-id run-a --number 46 --url https://example.test/pr/46 --at 2026-01-01T00:10:00Z >/dev/null
+cp "$run" "$tmp/before-promotion.json"
+expect_refused "promotion before a later PR binding" "before PR binding #46" \
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:09:00Z
+cmp -s "$run" "$tmp/before-promotion.json" || fail "a promotion before a later binding changed the record"
+pass "promotion cannot predate the initial or a later PR binding"
 
-rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z >/dev/null
+# Execute the command actually documented in integrate's promotion step,
+# rather than a second hand-maintained version of that recipe. The fixture
+# confirms that equal promotion/binding times are allowed.
+awk '
+    /<!-- promotion-record-command -->/ { marker = 1; next }
+    marker && /```sh/ { code = 1; next }
+    code && /```/ { exit }
+    code { sub(/^   /, ""); print }
+' "$asset_dir/../../integrate/SKILL.md" >"$tmp/documented-promote.sh"
+[ -s "$tmp/documented-promote.sh" ] || fail "integrate promotion command is missing"
+(cd "$repo" && support_dir="$asset_dir" slate=s1 session=alice run_id=run-a \
+    head="$head_sha" gate_fingerprint=fp promoted_at=2026-01-01T00:10:00Z \
+    bash -eu "$tmp/documented-promote.sh") >/dev/null
+node "$asset_dir/validate-result-schemas.mjs" run "$run" --receipts "$run" --no-adjudications >/dev/null ||
+    fail "the documented promotion command did not produce a strict-valid run"
 [ "$(jq -r '.outcome + ":" + .promotion.promoted_at + ":" + (.outcome_transitions|length|tostring)' "$run")" = \
     "ready-for-review:2026-01-01T00:10:00Z:1" ] || fail "promotion not recorded"
-pass "promotion records the promotion, the outcome chain and the projection"
+pass "the documented promotion command records promotion, outcome and chain and passes run --receipts"
 
 expect_refused "intervention after promotion" "run already ended with outcome ready-for-review" \
     rr alice intervention --run-id run-a --kind other --note late --at 2026-01-01T00:11:00Z
@@ -372,7 +402,10 @@ rr alice close --run-id run-a >/dev/null
 for archived in a1/dispatch.md a1/ruling-1.md a2/watch.json; do
     [ -f "$state/runs/run-a/orchestrator/$archived" ] || fail "orchestrator file $archived not archived into the run directory"
 done
-[ "$(sha256_file "$state/runs/run-a/orchestrator/a1/ruling-1.md")" = "$digest" ] || fail "archived ruling changed"
+[ "$(cat "$state/runs/run-a/orchestrator/a1/ruling-1.md")" = 'Later working-file edit.' ] || fail "archive changed the working ruling"
+[ "$(sha256_file "$snapshot")" = "$digest" ] || fail "close broke the ruling reference"
+[ "$(jq -r '.interventions[] | select(.note | startswith("scope ruling")) | .note' "$run")" = "$note" ] ||
+    fail "close rewrote a historical intervention note"
 pass "closing a promoted run moves its orchestrator files into the run directory"
 
 out="$(rr alice close --run-id run-a)"
@@ -390,6 +423,43 @@ rmdir "$state/runs/run-b/orchestrator/a1"
 rr alice close --run-id run-b >/dev/null
 [ -f "$state/runs/run-b/orchestrator/a1/dispatch.md" ] || fail "retried close did not archive"
 pass "closing an open run records its outcome, refuses to overwrite an archive, and archives on retry"
+
+# Fail the second attempt's rename after the first one actually moved. A
+# retry must preserve the terminal record and the archived first attempt,
+# move the remainder, and still refuse genuine destination conflicts above.
+new_run run-partial
+write_plan s-partial 101:run-partial
+partial_source="$state/slates/s-partial/orchestrator/run-partial"
+partial_target="$state/runs/run-partial/orchestrator"
+mkdir -p "$partial_source/a1" "$partial_source/a2"
+printf 'first\n' >"$partial_source/a1/dispatch.md"
+printf 'second\n' >"$partial_source/a2/dispatch.md"
+cat >"$tmp/fail-second-archive.mjs" <<'JS'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const rename = fs.renameSync
+fs.renameSync = (source, target) => {
+  if (source.endsWith('/orchestrator/run-partial/a2')) throw new Error('injected second archive failure')
+  return rename(source, target)
+}
+syncBuiltinESMExports()
+JS
+partial_rc=0
+(cd "$repo" && node --import "$tmp/fail-second-archive.mjs" "$writer" close \
+    --slate s-partial --session alice --run-id run-partial --outcome abandoned \
+    --exit 'operator stopped' --at 2026-01-01T00:02:00Z) >"$tmp/partial.log" 2>&1 || partial_rc=$?
+[ "$partial_rc" -ne 0 ] || fail "injected partial archive unexpectedly succeeded"
+grep -qF 'injected second archive failure' "$tmp/partial.log" || fail "partial archive did not reach injected failure"
+[ ! -e "$partial_source/a1" ] && [ -f "$partial_target/a1/dispatch.md" ] && [ -f "$partial_source/a2/dispatch.md" ] ||
+    fail "fixture did not stop after exactly one attempt moved"
+cp "$state/runs/run-partial/run.json" "$tmp/partial-closed.json"
+(cd "$repo" && node "$writer" close --slate s-partial --session alice --run-id run-partial) >/dev/null
+cmp -s "$state/runs/run-partial/run.json" "$tmp/partial-closed.json" || fail "archive retry changed the terminal record"
+[ ! -e "$partial_source" ] || fail "retry left the partial source behind"
+[ "$(cat "$partial_target/a1/dispatch.md")" = first ] && [ "$(cat "$partial_target/a2/dispatch.md")" = second ] ||
+    fail "retry lost or changed an archived attempt"
+(cd "$repo" && node "$writer" lock release --slate s-partial --session alice) >/dev/null
+pass "close resumes after an actual partial archive without overwriting attempts or rewriting the terminal record"
 
 cp "$state/runs/run-b/run.json" "$tmp/run-b-closed.json"
 expect_refused "intervention after abandon" "run already ended with outcome abandoned" \
@@ -437,11 +507,34 @@ new_run run-d
 pass "a linked worktree writes the common directory's record"
 
 # -- release ---------------------------------------------------------------
+cp "$state/locks/s4.json" "$tmp/held-lock.json"
+force_rc=0
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice --force) >"$tmp/no-reason.log" 2>&1 || force_rc=$?
+[ "$force_rc" -eq 2 ] || fail "force release without a reason was not a usage error"
+cmp -s "$state/locks/s4.json" "$tmp/held-lock.json" || fail "missing reason changed the held lock"
+
+# An unwritable audit destination must leave the old session's reservation.
+mkdir -p "$state/locks/recoveries"
+printf 'blocked\n' >"$state/locks/recoveries/s4"
+force_rc=0
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice --force --reason 'dead session') >"$tmp/audit-failure.log" 2>&1 || force_rc=$?
+[ "$force_rc" -ne 0 ] || fail "force release succeeded without its audit"
+cmp -s "$state/locks/s4.json" "$tmp/held-lock.json" || fail "audit failure released the lock"
+rm "$state/locks/recoveries/s4"
 (cd "$repo" && node "$writer" lock release --slate s4 --session alice --force --reason "dead session") >/dev/null
 [ ! -e "$state/locks/s4.json" ] || fail "force release left the lock"
+audits=("$state/locks/recoveries/s4/"*.json)
+[ "${#audits[@]}" -eq 1 ] && [ -f "${audits[0]}" ] || fail "force release did not leave exactly one audit"
+jq -e --slurpfile held "$tmp/held-lock.json" '
+    .action == "force-release" and .session == "alice" and .reason == "dead session" and
+    .lock == $held[0] and (.at | test("Z$"))
+' "${audits[0]}" >/dev/null || fail "recovery audit lost attribution, reason, time or the old lock"
+(cd "$repo" && node "$writer" lock acquire --slate s4 --session alice --milestone 8 --issues 15) >/dev/null
+[ "$(lock_scope s4)" = "alice:8:15" ] || fail "new session could not acquire after explicit recovery"
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice) >/dev/null
 (cd "$repo" && node "$writer" lock release --slate s1 --session alice) >/dev/null
 [ ! -e "$state/locks/s1.json" ] || fail "holder release left the lock"
-pass "the holder releases its lock; --force --reason breaks another session's"
+pass "explicit recovery requires a reason, retains an audit before release, and permits normal reacquisition"
 
 no_candidates "suite"
 echo "test-run-record: all cases passed"

@@ -87,6 +87,15 @@ the slate lock, the same value on every write — or a non-promotion ending with
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
 session>` (`/implement` § 6a step 6).
 
+**One supervising writer per run.** The supervising orchestrator (or the
+owning solo session) performs run-record writes sequentially across `/review`
+and `/integrate`; polling delegates return evidence and never write the record.
+Use `run-record.mjs` for its supported operations. The existing settlement
+recipe below remains owned by that same session; do not run it concurrently
+with another record write. The writer's mutex cannot serialize a caller that
+does not take it. Parallel record writers require routing through the shared
+`run-record.mjs` mutex and validated writer first, never a second lock.
+
 **The scripted gate applies only when a record exists.** `assets/readiness-gate.sh`
 requires `--record`, so everything below that runs it — the checker fast path,
 the integrator pass, the gate itself — is for a run that has a record. Where no
@@ -2541,10 +2550,28 @@ that loops indefinitely:
    and a fingerprint identical to the passing gate's.
 
    Once success is confirmed, record it in the run record (where one is kept
-   for this run — harmon-devkit#685's `promotion.head` invariant): append
-   `promotion: {head, promoted_at, gate_fingerprint}` to `run.json`, `head`
-   and `gate_fingerprint` copied verbatim from the confirmed reads above,
-   never re-derived. This is the write side of an invariant the readiness
+   for this run — harmon-devkit#685's `promotion.head` invariant) through
+   `run-record.mjs promote`. Bind `slate`, `session` and `run_id` to the
+   run's existing owner and session identity; copy `head` and
+   `gate_fingerprint` verbatim from the confirmed reads above, never
+   re-derive them. Set `promoted_at` to the UTC time of that confirmation,
+   no earlier than any PR binding or stage transition. With `support_dir`
+   resolved physically as at entry, run:
+
+   <!-- promotion-record-command -->
+
+   ```sh
+   node "$support_dir/run-record.mjs" promote \
+     --slate "$slate" --session "$session" --run-id "$run_id" \
+     --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
+   ```
+
+   The helper writes `promotion`, the `ready-for-review` outcome and its
+   outcome-transition chain together, under the shared mutex, validating
+   the candidate and canonical readback with `run --receipts` and the run's
+   adjudications. A refused or failed write is a blocker, never a successful
+   recorded handoff; report the confirmed remote state and writer error.
+   This is the write side of an invariant the readiness
    gate's `--head` check and evidence binding already enforce on the read side:
    a supplied `--integrator-result` binds its schema-valid envelope's `head`
    and `codex_cycle.accepted.reviewed_commit`; checker-only evidence binds the

@@ -269,10 +269,19 @@ record keeps its existing writers:
   transitions — `/review`'s own write recipe;
 - settlements — `/integrate`.
 
-Each of those writers runs the same candidate, validate, rename and readback
-sequence. Point an intervention that rests on a ruling file at it with
-`--ruling FILE`: the note records the file's SHA-256. That digest identifies
-the bytes you relied on. It does not protect them: the note lives in a
+All writes for a run are performed sequentially by its one supervising
+orchestrator, including the `/review` and `/integrate` recipes above. Delegates
+return evidence; they never write the run record. Each of those writers runs
+the same candidate, validate, rename and readback sequence. Parallel writers
+must first use `run-record.mjs`'s shared mutex and validated writer; its lock
+does not protect a caller that bypasses it.
+
+Point an intervention that rests on a ruling file at it with
+`--ruling FILE`: the writer copies those bytes into the run's
+`rulings/<sha256>` file without overwriting an existing snapshot, and the
+note records that stable path and the file's SHA-256. The reference survives
+archiving and subsequent source edits. That digest identifies the bytes you
+relied on. It does not protect them: the note lives in a
 lane-writable record and nothing verifies it automatically, so an edit is
 caught only by someone who re-hashes the file and compares. `close` records a non-promotion outcome if
 the run is still open, then moves the run's orchestrator directory into
@@ -287,9 +296,21 @@ id — every write is refused. Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
 implicit lock taken at a first write records no milestone, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate
-ends. `--force
---reason` breaking a dead session's lock is an operator decision; name it in
-the handoff.
+ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
+claim comment's `session:` line. Reuse it after a restart; it is not a PID or
+a liveness signal. A different session is refused even on the same host.
+
+Recovery is an explicit operator decision, never an automatic timeout or a
+cross-host process probe. Inspect `lock status --slate <slate>`, have the
+operator confirm that the previous session and its writers have stopped, then
+run `lock release --slate <slate> --session <recovering-session> --force
+--reason "<operator attribution and why the old session is abandoned>"` once.
+The helper records that request, its session, reason, timestamp and complete
+previous lock in `locks/recoveries/<slate>/<id>.json` before removing the lock;
+failure to record it leaves the lock held. Re-read status after any failure:
+the audit records intent, so a crash may leave the lock still held. Acquire
+normally as the recovering session only after release; ordinary scope
+contention checks still apply. Name the recovery and its audit in the handoff.
 
 Durable means *this clone*: the common directory survives restarts, `/clear`
 and worktree removal, but not a fresh clone, a rebuilt devcontainer without a

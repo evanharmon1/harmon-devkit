@@ -11368,6 +11368,14 @@ expect_ok "orchestrate: no entry lands after a run ends, whatever its outcome (#
     grep -qF 'or any entry written after the run has ended — promoted, capped, escalated or' "$ORCH_MD"
 expect_ok "orchestrate: the run-record fields run-record.mjs does not write keep their named writers (#1296)" \
     grep -qF 'record keeps its existing writers:' "$ORCH_MD"
+expect_ok "orchestrate: one supervisor serializes run-record writes across stages (#1371)" \
+    grep -qF 'All writes for a run are performed sequentially by its one supervising' "$ORCH_MD"
+expect_ok "review: delegates never write the run record (#1371)" \
+    grep -qF 'and never write the run record. Keep this ownership rule' "$repo/ai/skills/universal/review/SKILL.md"
+expect_ok "integrate: delegates never write the run record (#1371)" \
+    grep -qF 'and `/integrate`; polling delegates return evidence and never write the record.' "$repo/ai/skills/universal/integrate/SKILL.md"
+expect_ok "orchestrate: session identity comes from the claim record (#1371)" \
+    grep -qF 'ends. `--session` is the `/kickoff` session name recorded by `/claim` on the' "$ORCH_MD"
 if grep -qF 'Write the run record only through' "$ORCH_MD"; then
     bad "orchestrate: still claims every run-record write goes through run-record.mjs (#1296 challenge r1 -4)"
 else
