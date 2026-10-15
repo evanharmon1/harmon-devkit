@@ -3891,7 +3891,7 @@ expect_ok "new-repo and adopt guidance note the skills-source waiver" \
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
     "$STANDARDIZE_REFS/mode-update.md"
-# #1195: CI permission fallback uses the shared, paginated exact-head helper.
+# #1195: CI settlement is stated as invariants, with mapping in the helper.
 expect_ok "integration documents the Actions fallback and keeps permission reads indeterminate" \
     python3 - "$INTEGRATE_SKILL" <<'PYTEST'
 import pathlib
@@ -3901,35 +3901,33 @@ checks = text.split('- Checks (under a `with-push` order', 1)[1].split('- **Find
 for required in (
     '"$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n>',
     '--head <headRefOid> --timeout-seconds 1800',
-    'pagination through every page',
-    '`skipped` runs count separately and never as pending',
+    '--format checks-json',
+    'fully paginated Actions helper',
+    'skipped\n  runs never count as pending',
     'permission failure on the checks read is',
     'indeterminate and never a pass',
-    'A fallback success cannot authorize promotion',
-    'Exit 0 unlocks the review trigger even under `after-ci`',
-    '5 means the PR merged or closed and stops the whole integration stage',
+    '`review_trigger` ordering',
+    'readiness gate\'s complete evidence',
 ):
     assert required in checks, required
+for grant in (
+    'Bash(${CLAUDE_SKILL_DIR}/../dev-flow-support/assets/settle-wait.sh checks:*)',
+    'Bash(.claude/skills/dev-flow-support/assets/settle-wait.sh checks:*)',
+    'Bash(ai/skills/universal/dev-flow-support/assets/settle-wait.sh checks:*)',
+):
+    assert grant in text.split('---', 2)[1], grant
 agent = (pathlib.Path(sys.argv[1]).parents[3] / 'agents/integrator.md').read_text()
-fallback = agent.split('**Exit 0\nunlocks the review trigger**', 1)[1].split('On the normal rollup path, read', 1)[0]
-assert 'checks_ready=true' in fallback
-assert 'sed -n' in fallback and 'RUN ' in fallback
-assert 'required:false' in fallback
-assert 'external/non-Actions' in fallback
-assert 'must not short-circuit' in fallback
-# Exercise the documented jq mapping itself, including neutral/skipped and
-# per-run IDs, so a prose promise cannot conceal lossy checks[] conversion.
-import json
-import subprocess
-mapping = fallback.split("| jq -cs '", 1)[1].split("')\" || exit 1", 1)[0]
-rows = [dict(name=f'run-{i}', run_id=str(i), status='completed', conclusion=c)
-        for i, c in enumerate(('success', 'neutral', 'skipped'), 1)]
-converted = subprocess.run(['jq', '-cs', mapping],
-    input='\n'.join(json.dumps(row) for row in rows), text=True,
-    capture_output=True, check=True)
-assert json.loads(converted.stdout) == [
-    dict(name=f'run-{i}', run_id=str(i), required=False, bucket=b)
-    for i, b in enumerate(('pass', 'pass', 'skipping'), 1)]
+settle = agent.split('**CI settlement invariants', 1)[1].split('On the normal rollup path, `$checks`', 1)[0]
+for required in ('exit status AND stderr', 'HTTP 403', 'Resource not accessible by',
+                 '--format checks-json', 'checks_ready=true', 'failed_required=true',
+                 'fallback exit 1', 'exits 3/4', 'exit 5', '`review_trigger` alone',
+                 'trigger first, then settle CI', '`pending` with `status=blocked`',
+                 'external/non-Actions checks and requiredness were not verifiable'):
+    assert required in settle, required
+assert 'actions_out=' not in agent
+assert '2>/dev/null' not in settle
+assert "sed -n 's/^RUN" not in agent
+assert 'applies to the primary rollup path' in agent
 PYTEST
 
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \

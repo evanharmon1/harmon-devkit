@@ -41,7 +41,7 @@ Usage:
   settle-wait.sh agent LANE --timeout-seconds N [--until STATE]
   settle-wait.sh checks --repo OWNER/REPO --pr N --head SHA --timeout-seconds N
                         [--interval-seconds N] [--call-timeout-seconds N]
-                        [--per-page N]
+                        [--per-page N] [--format text|checks-json]
 
 Every duration is in SECONDS.
 
@@ -102,6 +102,16 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
                             plus one call timeout has passed, and that poll is
                             then indeterminate
         --per-page  runs listed per page (default 100; tests)
+        --format text         default human-readable diagnostics and RUN rows
+        --format checks-json  on settled success (exit 0) or failure (exit 1),
+                            stdout is one nonempty checks[] JSON array with
+                            name, run_id, required:false and bucket. Success
+                            and neutral map to pass, skipped to skipping,
+                            cancelled to cancel, other completed conclusions
+                            to fail. Diagnostics go to stderr; non-settled
+                            exits produce no array. Empty evidence is an error,
+                            never [] success. This does not verify requiredness
+                            or external checks.
 
 Exit status, agent mode:
   0    settled: the lane is idle or done (with --until: herdr reached STATE)
@@ -247,9 +257,10 @@ want_head=
 interval_seconds=30
 call_timeout_seconds=30
 per_page=100
+format=text
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --timeout-seconds | --interval-seconds | --call-timeout-seconds | --per-page)
+    --repo | --pr | --head | --timeout-seconds | --interval-seconds | --call-timeout-seconds | --per-page | --format)
         [ "$#" -ge 2 ] || die_usage "$1 needs a value"
         case "$1" in
         --repo) repo=$2 ;;
@@ -259,6 +270,7 @@ while [ "$#" -gt 0 ]; do
         --interval-seconds) interval_seconds=$2 ;;
         --call-timeout-seconds) call_timeout_seconds=$2 ;;
         --per-page) per_page=$2 ;;
+        --format) format=$2 ;;
         esac
         shift 2
         ;;
@@ -288,6 +300,10 @@ seconds_value "$call_timeout_seconds" ||
 if ! positive_int "$per_page" || [ "$per_page" -gt 100 ]; then
     die_usage "--per-page must be an integer from 1 to 100"
 fi
+case "$format" in
+text | checks-json) ;;
+*) die_usage "--format must be text or checks-json" ;;
+esac
 [ -n "$timeout_bin" ] || die_usage "GNU timeout (timeout or gtimeout) is required"
 command -v gh >/dev/null 2>&1 || die_usage "gh is not on PATH"
 command -v jq >/dev/null 2>&1 || die_usage "jq is not on PATH"
@@ -315,6 +331,32 @@ api() {
     "$timeout_bin" --kill-after=2 "$call_timeout_seconds" gh api "$1" </dev/null 2>/dev/null
 }
 
+# Keep machine-readable stdout separate from diagnostics. The JSON format
+# exposes the same counted evidence as text mode, never a fresh API listing.
+log() {
+    if [ "$format" = checks-json ]; then
+        echo "$@" >&2
+    else
+        echo "$@"
+    fi
+}
+
+emit_runs() {
+    if [ "$format" = text ]; then
+        printf '%s' "$run_rows"
+    else
+        printf '%s' "$run_rows" | sed -n 's/^RUN //p' | jq -cs '
+            if length == 0 then error("no counted Actions evidence") else
+              map({name, run_id, required:false,
+                   bucket:(if .status != "completed" then "pending"
+                           elif .conclusion == "skipped" then "skipping"
+                           elif .conclusion == "success" or .conclusion == "neutral" then "pass"
+                           elif .conclusion == "cancelled" then "cancel"
+                           else "fail" end)})
+            end'
+    fi
+}
+
 # Read in the parent shell so a closed PR exits the entire wait, not only
 # a command substitution. REST uses lower-case state and merged=true; accept
 # the upper-case state shape too (callers and fixtures also use it).
@@ -326,7 +368,7 @@ read_pr() {
         | select(. == "OPEN" or . == "CLOSED" or . == "MERGED")' 2>/dev/null)" || return 1
     case "$pr_state" in
     CLOSED | MERGED)
-        echo "STOPPED PR $pr state=$pr_state: stop the whole integration stage"
+        log "STOPPED PR $pr state=$pr_state: stop the whole integration stage"
         exit "$EXIT_PR_CLOSED"
         ;;
     esac
@@ -535,8 +577,12 @@ EOF
                     detail="could not read run $read_failed"
                 fi
             else
-                echo "POLL $poll head=$short runs=$total pending=$pending failing=$failing skipped=$skipped superseded=$superseded other_pr=$other_pr"
-                printf '%s' "$lines"
+                log "POLL $poll head=$short runs=$total pending=$pending failing=$failing skipped=$skipped superseded=$superseded other_pr=$other_pr"
+                if [ "$format" = checks-json ]; then
+                    printf '%s' "$lines" >&2
+                else
+                    printf '%s' "$lines"
+                fi
                 if [ "$pending" -eq 0 ]; then
                     # Bind the verdict to the pushed head: re-read the PR
                     # head after the run reads and settle only if it is
@@ -561,24 +607,24 @@ EOF
     fi
     case "$verdict" in
     success)
-        printf '%s' "$run_rows"
-        echo "SETTLED success head=$short runs=$total"
+        emit_runs || exit "$EXIT_INDETERMINATE"
+        log "SETTLED success head=$short runs=$total"
         exit "$EXIT_SETTLED"
         ;;
     failure)
-        printf '%s' "$run_rows"
-        echo "SETTLED failure head=$short runs=$total failing=$failing"
+        emit_runs || exit "$EXIT_INDETERMINATE"
+        log "SETTLED failure head=$short runs=$total failing=$failing"
         exit "$EXIT_FAILING"
         ;;
     esac
-    [ "$last" = pending ] || echo "POLL $poll $last: $detail"
+    [ "$last" = pending ] || log "POLL $poll $last: $detail"
     remaining=$((deadline - $(now)))
     if [ "$remaining" -le 0 ]; then
         if [ "$last" = pending ]; then
-            echo "EXPIRED after ${timeout_seconds}s: $detail"
+            log "EXPIRED after ${timeout_seconds}s: $detail"
             exit "$EXIT_EXPIRED"
         fi
-        echo "INDETERMINATE at expiry: $detail"
+        log "INDETERMINATE at expiry: $detail"
         exit "$EXIT_INDETERMINATE"
     fi
     wait_for=$interval_seconds

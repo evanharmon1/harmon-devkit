@@ -265,6 +265,52 @@ jq -e 'length == 3 and
     all(.[]; .status == "completed" and .run_attempt == 1)' <<<"$rows" >/dev/null ||
     fail "settled output lost the counted per-run evidence: $out"
 
+# checks-json uses the same counted evidence and emits a single checks[]
+# array, even for a failing settle; diagnostics must never enter JSON stdout.
+for spec in 'success pass 0' 'skipped skipping 0' 'neutral pass 0' 'cancelled cancel 1' 'failure fail 1'; do
+    IFS=' ' read -r conclusion bucket expected_rc <<EOF
+$spec
+EOF
+    reset_fixtures
+    write_page 1 "$(run_json 14 completed "$conclusion" 1)"
+    run_files 14
+    set +e
+    out="$("$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+        --timeout-seconds 5 --interval-seconds 1 --format checks-json 2>"$fix/json.stderr")"
+    rc=$?
+    set -e
+    expect_rc "$expected_rc" "checks-json $conclusion"
+    jq -e --arg bucket "$bucket" '
+        . == [{name:"wf-14",run_id:"14",required:false,bucket:$bucket}]' <<<"$out" >/dev/null ||
+        fail "checks-json $conclusion did not preserve counted check: $out"
+    grep -q '^POLL ' "$fix/json.stderr" || fail "JSON diagnostics were not sent to stderr"
+    rm -f "$fix/pull.count"
+    set +e
+    wrapper_out="$("$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+        --timeout-seconds 5 --interval-seconds 1 --format checks-json 2>"$fix/wrapper.stderr")"
+    wrapper_rc=$?
+    set -e
+    [ "$wrapper_rc" -eq "$rc" ] && [ "$wrapper_out" = "$out" ] ||
+        fail "delegator changed checks-json $conclusion: $wrapper_rc: $wrapper_out"
+done
+
+# Empty evidence remains an error, not an empty-success array or text stdout.
+reset_fixtures
+set +e
+out="$("$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 1 --interval-seconds 1 --format checks-json 2>"$fix/json.stderr")"
+rc=$?
+set -e
+expect_rc 3 "checks-json empty evidence"
+[ -z "$out" ] || fail "empty evidence produced a JSON result: $out"
+grep -q 'no runs listed' "$fix/json.stderr" || fail "empty evidence lost its diagnostic"
+set +e
+"$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" --timeout-seconds 1 \
+    --format unknown >/dev/null 2>&1
+rc=$?
+set -e
+expect_rc 2 "unknown checks output format"
+
 # Stale attempt: the list still shows attempt 2's conclusion, but the run's
 # own read is attempt 3, queued. Not settled; expiry exits non-zero.
 reset_fixtures

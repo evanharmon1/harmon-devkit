@@ -10,7 +10,7 @@ description: >-
   .devflow.toml's review policy). Use when a draft PR exists and the dev loop
   calls for integrating it to ready-for-review. Invoke as /integrate [PR # or
   URL].
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*), Bash(${CLAUDE_SKILL_DIR}/../dev-flow-support/assets/settle-wait.sh checks:*), Bash(.claude/skills/dev-flow-support/assets/settle-wait.sh checks:*), Bash(ai/skills/universal/dev-flow-support/assets/settle-wait.sh checks:*)
 ---
 
 # Integrate
@@ -1134,37 +1134,21 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
-  **Permission fallback:** a fine-grained token can be denied access to the
-  Checks rollup (`Resource not accessible by personal access token`, including
-  `statusCheckRollup`) even when it can read Actions runs. When `gh pr checks`
-  fails with that permission error, use the existing shared helper, resolved
-  as `$support_dir` above, for the exact full head SHA captured for this round:
+  **Permission fallback:** capture the primary rollup read's exit status and
+  stderr, and switch only on HTTP 403 or `Resource not accessible by integration`
+  to the exact-head, fully paginated Actions helper shown below, where skipped
+  runs never count as pending.
 
   ```sh
   "$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n> \
-      --head <headRefOid> --timeout-seconds 1800 --interval-seconds 30
+      --head <headRefOid> --timeout-seconds 1800 --interval-seconds 30 \
+      --format checks-json
   ```
 
-  It reads `repos/$repo/actions/runs?head_sha=<headRefOid>` with explicit
-  pagination through every page (a list hitting GitHub's 1000-run search cap
-  is indeterminate), then each run's own `status` and `conclusion`. Completed
-  `skipped` runs count separately and never as pending. A superseded PR run is
-  dropped only when its own read is completed and its latest attempt predates
-  the newest run; an older attempt still running or re-run later still counts.
-  Never improvise a wait over `gh run list`'s default 20-run page.
-  Exit 0 means the counted Actions runs settled green; 1 means settled with
-  failures to diagnose; 3 is indeterminate; 4 is an expired pending wait;
-  5 means the PR merged or closed and stops the whole integration stage.
-  Every other nonzero exit also stops progress. Preserve the exit status.
-  The helper reads PR `state` on every poll and again before settling, so a
-  merge/close stops the whole stage immediately, regardless of the run results.
-  Exit 0 unlocks the review trigger even under `after-ci`; the integrator
-  records the helper's counted Actions runs in `checks[]` and reports the
-  unverifiable external/non-Actions checks gap after driving the review.
-  This fallback covers Actions only: external checks and the final verdict
-  still belong to `readiness-gate.sh`, which must read check runs and commit
-  statuses successfully. A fallback success cannot authorize promotion past
-  an unreadable Checks API; leave the PR draft and report that blocker.
+  Apply the integrator §3 outcome invariants and `review_trigger` ordering on
+  either path; every fallback result stays `pending` with `status=blocked`
+  and the external/non-Actions checks gap, while promotion still requires
+  the readiness gate's complete evidence.
   **CI has settled only when every required check has CONCLUDED; a pending
   check, an empty check list, or a permission failure on the checks read is
   indeterminate and never a pass**
