@@ -18,6 +18,13 @@ allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), B
 
 # Track Work
 
+**Agent-posture REST reads:** For each REST read shown as `gh api` below,
+agent-posture sessions use `/usr/local/bin/gh-api-read` instead, keeping the
+endpoint, pagination and output flags. When a read names `--hostname "$host"`,
+remove that flag and set `GH_HOST="$host"` on the wrapper invocation. In dev
+and bot postures the shown command remains valid. This substitution is for
+GET reads only; do not route writes or GraphQL through the GET-only wrapper.
+
 Tracking mistakes are not knowledge failures. Every one this skill exists to
 prevent was made with the repo's conventions loaded and understood — what was
 missing was a command, run at a specific moment. So this skill is commands with
@@ -442,9 +449,10 @@ gh api --paginate repos/<target>/pulls/<n>/comments \
 
 `gh api` takes no `--repo` flag, so `<target>` goes literally in the path, and
 without `--paginate` anything past the first page is invisible. It is read-only
-and it **will prompt**: `gh api` cannot be pre-approved here, because an
-allowlist entry cannot constrain arguments (§2) and the prefix that reads
-comments also posts them.
+and raw `gh api` **will prompt** in dev and bot postures: it cannot be
+pre-approved here, because an allowlist entry cannot constrain arguments (§2)
+and the prefix that reads comments also posts them. In the agent posture use
+the GET-only wrapper as specified above.
 
 Every field in that projection earns its place. `html_url` is the
 `#discussion_r…` anchor the disposition below tells you to link, so a
