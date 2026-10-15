@@ -3982,12 +3982,12 @@ for ready_flip_section in "$READY_FLIP_PREAMBLE" "$READY_FLIP_HANDOFF"; do
             grep -qF "before any follow-up" "$1" &&
             grep -qF "first handoff and accepts no later writes" "$1"' sh "$ready_flip_section"
 done
-expect_ok "integrator reports suspected flips through its existing blocker contract only" \
+expect_ok "integrator reports suspected flips through its typed blocker contract" \
     sh -c 'grep -qF "Draft flips are report-only" "$1" &&
         grep -qF "latest \`ready_for_review\` event ID, time, actor and observed head" "$1" &&
-        grep -qF "existing blocker report" "$1" &&
+        grep -qF "payload.blocker" "$1" &&
         grep -qF "status: \"blocked\"" "$1" &&
-        grep -qF "do not add payload fields" "$1" &&
+        ! grep -qF "do not add payload fields" "$1" &&
         grep -qF "Only the orchestrator applies" "$1" &&
         grep -qF "Never run \`gh pr ready --undo\`" "$1"' sh "$INTEGRATOR_AGENT"
 INTEGRATOR_BUILDER="$TMPROOT/integrator-builder.sh"
@@ -4000,7 +4000,7 @@ expect_fail "integrator builder does not overwrite a blocked status" \
     grep -qF 'status: "completed"' "$INTEGRATOR_BUILDER"
 for integrator_status in completed blocked; do
     expect_ok "integrator result builder preserves $integrator_status" \
-        env status="$integrator_status" checks_json='[]' codex_cycle_json_or_null=null \
+        env status="$integrator_status" blocker_json=null checks_json='[]' codex_cycle_json_or_null=null \
         finder_cycles_json='[]' integration_round=1 findings_json='[]' \
         unanswered_json='[]' verdict=pending applied_dispositions_json='[]' \
         out_file="$TMPROOT/integrator-$integrator_status.json" \
