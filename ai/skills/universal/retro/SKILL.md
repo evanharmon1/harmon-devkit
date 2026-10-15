@@ -431,6 +431,11 @@ the current repo's numbering.
   resolution, so use a read-only GraphQL query (this one is not pre-approved
   and will prompt):
 
+  **Agent-posture GraphQL reads:** The agent posture has no GraphQL read
+  path. Run this step from the dev or bot posture, or skip it and report
+  unresolved review-thread resolution as unverified. Do not route this query
+  through either GET-only wrapper.
+
   ```sh
   gh api graphql -f query='query($o:String!,$r:String!,$n:Int!,$c:String){
     repository(owner:$o,name:$r){pullRequest(number:$n){
