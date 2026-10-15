@@ -336,7 +336,7 @@ merely `pending` (neither failed nor settled) belongs in `checks_ready`
 **Draft flips are report-only.** On entry, in every poll and immediately before
 any brokered write, re-read `state,isDraft,headRefOid`. If an open draft-workbench
 PR is now non-draft, stop writes and fetch its complete timeline through the
-resolved `gh-ro.sh --paginate repos/"$repo"/issues/<n>/timeline`. Report the
+resolved `gh-ro.sh --paginate --slurp repos/"$repo"/issues/<n>/timeline`. Report the
 latest `ready_for_review` event ID, time, actor and observed head to the
 orchestrator, who correlates it with `run.json.pr` and `run.json.promotion`
 under `/integrate` §2. You report a suspected unexplained flip; you never decide
@@ -347,8 +347,9 @@ not establish the historical head at event time.
 Carry the observation in `payload.blocker`, with `status: "blocked"` in the
 schema-valid envelope; never manufacture a reviewer finding.
 Set `status=blocked` for §7's builder. After a successful complete timeline read,
-`timeline_json` holds its event array and `observed_head` the freshly observed
-head. Capture the latest ready event with this snippet; if it fails or the read
+`timeline_json` holds the slurped array of timeline pages and `observed_head`
+the freshly observed head. Flatten the pages before selecting the latest ready
+event globally with this snippet; if it fails or the read
 failed, leave `blocker_json=null` and name the missing evidence in §9 instead
 of inventing it:
 
@@ -356,7 +357,7 @@ of inventing it:
 status=blocked
 blocker_json=null
 if ! blocker_json="$(jq -ce --arg observed_head "$observed_head" '
-    [.[] | select(.event == "ready_for_review")]
+    (add // []) | [.[] | select(.event == "ready_for_review")]
     | sort_by(.created_at, .id) | last
     | select(.id != null and .created_at != null
              and .actor.id != null and .actor.login != null)

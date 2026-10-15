@@ -8965,6 +8965,7 @@ function snippet(text, token) {
   return matches[0][1]
 }
 const capture = snippet(agent, 'ready_event_id:')
+assert.match(agent, /gh-ro\.sh --paginate --slurp\b/)
 let builder = snippet(agent, "'{schema: 2, role:")
 const fixture = JSON.parse(fs.readFileSync(path.join(repo,
   'ai/schemas/fixtures/result.integrator.schema/valid/blocked-unexplained-promotion.json'), 'utf8'))
@@ -8990,8 +8991,8 @@ const event = { id: Number(ready.ready_event_id), event: 'ready_for_review',
   created_at: ready.ready_at, actor: { id: Number(ready.actor.id), login: ready.actor.login } }
 const out = path.join(scratch, 'draft-flip-envelope.json')
 const env = { observed_head: ready.observed_head,
-  timeline_json: JSON.stringify([{ ...event, id: event.id - 1 }, event,
-    { id: event.id + 1, event: 'commented', created_at: ready.ready_at }].reverse()),
+  timeline_json: JSON.stringify([[{ ...event, id: event.id - 1 }, event,
+    { id: event.id + 1, event: 'commented', created_at: ready.ready_at }].reverse()]),
   checks_json: '[]', codex_cycle_json_or_null: 'null', finder_cycles_json: '[]',
   integration_round: '1', findings_json: '[]', unanswered_json: '[]',
   verdict: 'pending', applied_dispositions_json: '[]', out_file: out,
@@ -9010,8 +9011,20 @@ assert.deepEqual(recovered, ready)
 assert.equal(recovered.ready_event_id, String(event.id))
 assert.equal(recovered.ready_at, event.created_at)
 assert.equal(recovered.actor.id, String(event.actor.id))
+// Each page has a ready event: emit one blocker for the global newest event,
+// including when that event is not on the last page.
+const pages = [[{ ...event, id: event.id - 1 }], [event,
+  { id: event.id + 1, event: 'commented', created_at: ready.ready_at }]]
+for (const pageOrder of [pages, [...pages].reverse()]) {
+  run(`${capture}\n${builder}`, { ...env, timeline_json: JSON.stringify(pageOrder) })
+  const multiPageResult = JSON.parse(fs.readFileSync(out, 'utf8'))
+  assert.equal(multiPageResult.status, 'blocked')
+  assert.deepEqual(multiPageResult.payload.blocker, ready)
+  assert.deepEqual(JSON.parse(run(`${consumer}\nprintf '%s' "$blocker_json"`, env)), ready)
+}
+console.log('draft-flip multi-page timeline selects one global newest blocker: PASS')
 // Unknown timeline evidence must not produce an invented event object.
-for (const timeline_json of ['[]', 'unreadable', JSON.stringify([{ ...event, actor: null }])]) {
+for (const timeline_json of ['[]', 'unreadable', JSON.stringify([[{ ...event, actor: null }]])]) {
   run(`${capture}\n${builder}`, { ...env, timeline_json })
   assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
 }
