@@ -11455,10 +11455,13 @@ done
 # harmon-devkit#1338: session-facing REST reads must work in the agent posture.
 # This is a documented text pattern, NOT a shell/Markdown parser: inspect raw
 # API commands naming an endpoint or option, joining backslash continuations.
-# Non-GET methods and request fields mark writes; GraphQL is checked even with
-# fields (query transport uses POST). A per-file canonical REST note covers
-# only REST reads; a GraphQL query requires the exact adjacent posture note. Exceptional writes may use "gh-api-write: <reason>" on the
-# command; prose merely naming the API prefix is outside this pattern.
+# POST/PATCH/PUT/DELETE methods mark writes; fields imply POST only without
+# an explicit method (GET fields are query parameters). GraphQL is checked
+# even with fields. A per-file canonical REST note covers only REST reads;
+# GraphQL requires the exact adjacent posture note. Exceptional writes may use
+# "gh-api-write: <reason>" on their command. Standalone API code spans followed
+# by (GET ...) or (read-only ...) authorize reads and also require the note;
+# prose merely naming the API prefix is outside this pattern.
 # Scan only SKILL.md and references/**/*.md, never executable assets.
 GH_READ_LINT="$TMPROOT/gh-read-lint.py"
 cat >"$GH_READ_LINT" <<'PYLINT'
@@ -11477,8 +11480,9 @@ path. Run this step from the dev or bot posture, or skip it and report
 unresolved review-thread resolution as unverified. Do not route this query
 through either GET-only wrapper."""
 COMMAND = re.compile(r"\bgh\s+api\s+(?=[^\s`])")
-WRITE = re.compile(r"(?:-X\s*|--method[=\s]+)(?:POST|PATCH|PUT|DELETE)\b|"
-                   r"(?:^|\s)(?:-[fF]|--(?:raw-)?field)(?:\s|=)")
+METHOD = re.compile(r"(?:-X\s*|--method[=\s]+)([A-Z]+)\b")
+FIELDS = re.compile(r"(?:^|\s)(?:-[fF]|--(?:raw-)?field)(?:\s|=)")
+AUTHORIZATION = re.compile(r"`gh\s+api`[ \t]*\((?:GET|read-only)\b[^)]*\)", re.I)
 GRAPHQL = re.compile(r"\bgh\s+api\s+[^\n]*\bgraphql\b")
 errors = []
 for name in sys.argv[1:]:
@@ -11497,13 +11501,15 @@ for name in sys.argv[1:]:
         # A prose example may wrap an inline code span across physical lines.
         if re.search(r"\bgh\s+api\s*$", command) and index < len(lines):
             command += " " + lines[index].strip()
+        if AUTHORIZATION.search(command) and not noted:
+            errors.append(f"{path}:{number}: raw gh api read needs a posture-safe wrapper or REST note")
         for match in COMMAND.finditer(command):
             # Evaluate each command independently; a write later on the line
             # must not exempt an earlier read (or an ID read inside a POST).
             invocation = command[match.start():]
-            invocation = re.split(r"`|\$\(|[;]|\)\"", invocation, maxsplit=1)[0]
+            invocation = re.split(r"`|\$\(|&&|\|\||[;|]|\)\"", invocation, maxsplit=1)[0]
             graphql = bool(GRAPHQL.search(invocation))
-            if not graphql and "gh-api-write:" in command:
+            if not graphql and "gh-api-write:" in invocation:
                 continue
             # GraphQL's note must sit immediately before this fenced query,
             # not elsewhere in the document beside an unrelated read.
@@ -11511,7 +11517,12 @@ for name in sys.argv[1:]:
             graphql_noted = preceding.endswith(" ".join(GRAPHQL_NOTE.split()) + " ```sh")
             if graphql and graphql_noted:
                 continue
-            if not graphql and (WRITE.search(invocation) or noted):
+            methods = METHOD.findall(invocation)
+            method = methods[-1] if methods else None
+            write = method in {"POST", "PATCH", "PUT", "DELETE"} or (
+                method is None and FIELDS.search(invocation)
+            )
+            if not graphql and (write or noted):
                 continue
             errors.append(f"{path}:{number}: raw gh api read needs a posture-safe wrapper or REST note")
 if errors:
@@ -11544,8 +11555,20 @@ printf '%s\n' 'gh api repos/o/r/issues/1 -X POST -f body=reply' \
     'gh api repos/o/r/issues/1 \' '  -F body=reply' >"$GH_READ_FIXTURE"
 expect_ok "API lint permits writes, including continued fields (#1338)" \
     python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
-printf '%s\n' 'gh api user; gh api repos/o/r/issues/1 -f body=reply' >"$GH_READ_FIXTURE"
-expect_fail_contains "API lint does not let a later write excuse a read (#1338)" \
+for boundary in ';' '&&' '||' '|'; do
+    printf 'gh api user %s gh api repos/o/r/issues/1 -f body=reply\n' "$boundary" >"$GH_READ_FIXTURE"
+    expect_fail_contains "API lint isolates reads before $boundary writes (#1338 INT1-1)" \
+        'raw gh api read needs' python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
+done
+for get_method in '-X GET' '--method GET' '--method=GET'; do
+    for field_flag in '-f' '-F' '--field' '--raw-field'; do
+        printf 'gh api %s search/issues %s q=is:open\n' "$get_method" "$field_flag" >"$GH_READ_FIXTURE"
+        expect_fail_contains "API lint treats $get_method $field_flag as a read (#1338 INT1-2)" \
+            'raw gh api read needs' python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
+    done
+done
+printf '%s\n' 'You may call `gh api` (GET only).' >"$GH_READ_FIXTURE"
+expect_fail_contains "API lint rejects standalone raw API read authorization (#1338 INT1-3)" \
     'raw gh api read needs' python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
 printf '%s\n' '/usr/local/bin/gh-api-read user --jq .login' \
     '"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/o/r/pulls/1/comments' \
@@ -11559,9 +11582,10 @@ from pathlib import Path
 module = ast.parse(Path(sys.argv[1]).read_text())
 note = next(ast.literal_eval(node.value) for node in module.body
             if isinstance(node, ast.Assign) and node.targets[0].id == "NOTE")
-Path(sys.argv[2]).write_text(note + '\nme="$(gh api user --jq .login)"\n')
+Path(sys.argv[2]).write_text(note + '\nme="$(gh api user --jq .login)"\n'
+                           + 'You may call `gh api` (GET only).\n')
 PYFIXTURE
-expect_ok "API lint permits REST reads with the exact posture note (#1338)" \
+expect_ok "API lint permits REST reads and authorization with the exact posture note (#1338 INT1-3)" \
     python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
 printf '%s\n' "gh api graphql -f query='query { viewer { login } }'" >>"$GH_READ_FIXTURE"
 expect_fail_contains "API lint does not treat a GraphQL query as a write or covered REST read (#1338)" \
