@@ -861,98 +861,292 @@ $(cat "$composite_file")"
 fi
 
 # ── 3e. Build/devcontainer aggregate result contracts ──────────────
-# A generic "success or skipped" aggregate is not fail-closed: on a trusted
-# event it can disguise a job that never ran, and on a fork it can disguise a
-# repository-controlled job that unexpectedly ran. The standard has two exact
-# branches. Fork PRs validate every suppressed leaf as `skipped` in workflow-
-# inline shell without checkout/repo code; trusted events check out only after
-# the fork branch and require every leaf to be `success` through the tested
-# helper.
+# Recognize the shipped aggregate dialect, not arbitrary shell/YAML. Bind result
+# variables before inspecting assertions, and count only arguments actually
+# checked. Fork classification comes from the asserted value; trusted skips
+# require a predicate, never a success-or-skipped tolerance.
+# On success, print only leaves asserted skipped at the fork boundary.
 aggregate_job_contract_is_safe() {
     local workflow="$1"
     local aggregate_job="$2"
 
     awk -v target="$aggregate_job" '
-        function clear_step_refs(key) {
-            for (key in step_refs) {
-                delete step_refs[key]
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        function unquote(value) {
+            if ((substr(value, 1, 1) == q && substr(value, length(value), 1) == q) ||
+                (substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"")) {
+                return substr(value, 2, length(value) - 2)
+            }
+            return value
+        }
+        function condition(value) {
+            value = trim(value)
+            sub(/^\$\{\{[ ]*/, "", value)
+            sub(/[ ]*\}\}$/, "", value)
+            gsub(/[[:space:]]+/, " ", value)
+            return trim(value)
+        }
+        function env_expression(value) {
+            value = unquote(trim(value))
+            # Unlike if:, env values are literals without expression delimiters.
+            if (value !~ /^\$\{\{.*\}\}$/) return ""
+            return condition(value)
+        }
+        # Four fixed template paths: unchanged/non-merge, unchanged/merge,
+        # changed/non-merge, changed/merge. These are a structural contract,
+        # not an evaluator for arbitrary Actions expressions.
+        function trusted_paths(value, suffix) {
+            if (value == trusted_test) return "1111"
+            if (substr(value, 1, length(trusted_test) + 4) != trusted_test " && ") return ""
+            suffix = substr(value, length(trusted_test) + 5)
+            if (suffix == nonmerge_test) return "1010"
+            if (suffix == merge_test) return "0101"
+            if (changed_source == "" || ("CHANGED" in step_env)) return ""
+            if (suffix == unchanged_test) return "1100"
+            if (suffix == changed_test) return "0011"
+            if (suffix == changed_test " && " nonmerge_test) return "0010"
+            if (suffix == changed_test " && " merge_test) return "0001"
+            return ""
+        }
+        function leaf_paths(ref, job, value, changed) {
+            job = ref
+            sub(/^needs\./, "", job)
+            sub(/\.result$/, "", job)
+            if (!(job in job_exists)) return ""
+            value = condition(job_if[job])
+            if (value == "" || value == "true" || value == same_repo_test) return "1111"
+            if (value == merge_test) return "0101"
+            if (value == nonmerge_test " && (" same_repo_test ")") return "1010"
+            if (changed_source == "") return ""
+            changed = changed_source " == " q "true" q
+            if (value == changed " && (" same_repo_test ")") return "0011"
+            if (value == changed " && " merge_test) return "0001"
+            if (value == changed " && " nonmerge_test " && (" same_repo_test ")") return "0010"
+            return ""
+        }
+        function record_expectation(ref, value, paths, expected, path, actual) {
+            paths = leaf_paths(ref)
+            value = unquote(trim(value))
+            if (paths == "") { unsafe = 1; return }
+            if (value != "success" && value != "skipped") {
+                # The expression form is bound to a leaf whose own condition
+                # has this exact event term, never merely to a plausible name.
+                if (env_expression(value) != nonmerge_test " && " q "success" q " || " q "skipped" q ||
+                    (paths != "1010" && paths != "0010")) { unsafe = 1; return }
+            }
+            for (path = 1; path <= 4; path++) {
+                if (substr(step_paths, path, 1) != "1") continue
+                expected = value
+                if (expected != "success" && expected != "skipped") {
+                    expected = (path == 1 || path == 3) ? "success" : "skipped"
+                }
+                actual = substr(paths, path, 1) == "1" ? "success" : "skipped"
+                if (expected != actual) unsafe = 1
+                trusted_refs[ref, path] = 1
             }
         }
-        function reset_step() {
-            clear_step_refs()
+        function bind_result(line, name, ref) {
+            if (line !~ /^[ ]*[A-Za-z_][A-Za-z0-9_]*:/) return
+            name = trim(substr(line, 1, index(line, ":") - 1))
+            # A step override shadows a job binding even when its value is not
+            # a result expression. Never certify a constant as the real result.
+            if (in_step) {
+                step_env[name] = ""
+                if (name == "IS_FORK" || name == "CHANGED") unsafe = 1
+            } else job_env[name] = ""
+            if (line !~ /^[ ]*[A-Za-z_][A-Za-z0-9_]*:[ ]*\$\{\{ needs\.[A-Za-z0-9_-]+\.result \}\}[ ]*$/) return
+            match(line, /needs\.[A-Za-z0-9_-]+\.result/)
+            ref = substr(line, RSTART, RLENGTH)
+            if (in_step) step_env[name] = ref
+            else job_env[name] = ref
+            all_refs[ref] = 1
+        }
+        function resolve(value, name) {
+            value = unquote(trim(value))
+            if (value ~ /^\$\{\{ needs\.[A-Za-z0-9_-]+\.result \}\}$/) {
+                sub(/^\$\{\{ /, "", value)
+                sub(/ \}\}$/, "", value)
+                all_refs[value] = 1
+                return value
+            }
+            if (value !~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/) return ""
+            name = value
+            gsub(/[${}]/, "", name)
+            return (name in step_env) ? step_env[name] : job_env[name]
+        }
+        function fork_assert(value, expected, ref) {
+            ref = resolve(value)
+            if (ref == "") { unsafe = 1; return }
+            if ((ref in fork_refs) && fork_refs[ref] != expected) unsafe = 1
+            fork_refs[ref] = expected
+        }
+        function boundary_line(line, token, value, expected) {
+            # Supported inline function used by current renders. Its definition
+            # must reject unequal results and propagate a nonzero exit below.
+            if (line ~ /^check_skipped [A-Za-z0-9_-]+ /) {
+                sub(/^check_skipped [A-Za-z0-9_-]+ /, "", line)
+                if (!skipped_function) unsafe = 1
+                fork_assert(line, "skipped")
+            }
+            # Earlier renders use direct shell comparisons (including a leaf
+            # which deliberately runs on forks and is asserted success).
+            while (match(line, /"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" != "(success|skipped)"/)) {
+                token = substr(line, RSTART, RLENGTH)
+                value = substr(token, 1, index(token, " != ") - 1)
+                expected = unquote(substr(token, index(token, " != ") + 4))
+                fork_assert(value, expected)
+                line = substr(line, RSTART + RLENGTH)
+            }
+        }
+        function helper_call(line, expected, arg, value, ref, count) {
+            expected = step_expected
+            if (line ~ /^EXPECTED_RESULT=/) {
+                arg = substr(line, 1, index(line, " ") - 1)
+                expected = substr(arg, length("EXPECTED_RESULT=") + 1)
+                line = trim(substr(line, length(arg) + 1))
+            }
+            if (line !~ /^\.\/scripts\/verify-ci-results\.sh[ ]+/) { unsafe = 1; return }
+            if (!trusted || !safe_checkout) unsafe = 1
+            sub(/^\.\/scripts\/verify-ci-results\.sh[ ]+/, "", line)
+            count = 0
+            # Only quoted name=result arguments are accepted, with no shell
+            # operators or ignored trailing words that could mask failure.
+            while (match(line, /^"[A-Za-z0-9_-]+=\$[^";`]+"/)) {
+                arg = substr(line, RSTART, RLENGTH)
+                value = substr(arg, index(arg, "=") + 1)
+                sub(/"$/, "", value)
+                ref = resolve(value)
+                if (ref == "") unsafe = 1
+                else record_expectation(ref, expected)
+                count++
+                line = trim(substr(line, RLENGTH + 1))
+            }
+            if (!count || line != "") unsafe = 1
+            safe_helper = 1
+        }
+        function reset_step(key) {
+            for (key in step_env) delete step_env[key]
+            for (key in lines) delete lines[key]
             in_step = 0
-            is_boundary = 0
-            fork_condition = 0
-            trusted_condition = 0
-            is_checkout = 0
-            is_helper = 0
-            has_run = 0
-            checks_skipped = 0
-            boundary_message = 0
-            expected_success = 0
-            uses_any = 0
-            repo_code = 0
+            nlines = 0
+            step_if = step_expected = ""
+            boundary = checkout = uses_any = 0
         }
-        function finish_step(key) {
-            if (!in_step) {
-                return
+        function finish_step(i, line, run, command, prefix, fork, has_exit, message, function_count, function_body, in_function, helper_step) {
+            if (!in_step) return
+            step_paths = trusted_paths(step_if)
+            trusted = step_paths != ""
+            fork = step_if == "env.IS_FORK == " q "true" q
+            if (checkout) {
+                if (step_paths != "1111" || !safe_boundary) unsafe = 1
+                else safe_checkout = 1
             }
-            if (is_boundary) {
-                if (fork_condition && has_run && checks_skipped &&
-                    boundary_message && !uses_any && !repo_code) {
-                    safe_boundary = 1
+            skipped_function = 0
+            for (i = 1; i <= nlines; i++) {
+                if (index(lines[i], "verify-ci-results.sh")) helper_step = 1
+                line = trim(lines[i])
+                gsub(/[[:space:]]+/, " ", line)
+                if (line ~ /check_skipped/ && line !~ /^check_skipped [A-Za-z0-9_-]+ /) {
+                    function_count++
+                    in_function = 1
                 }
-                for (key in step_refs) {
-                    fork_refs[key] = 1
+                if (in_function) {
+                    function_body = function_body line "\n"
+                    if (line == "}") in_function = 0
                 }
+                if (trim(lines[i]) == "exit 1") has_exit = 1
+                if (index(lines[i], "Untrusted fork trust boundary enforced:")) message = 1
             }
-            if (is_checkout) {
-                if (trusted_condition) {
-                    safe_checkout = 1
-                } else {
-                    unsafe_checkout = 1
-                }
+            # Certify the entire template function, never independent tokens
+            # that an early return or a second definition could make inert.
+            skipped_function = function_count == 1 && function_body == canonical_skipped
+            if (function_count && !skipped_function) {
+                print "aggregate check_skipped must match the canonical template body exactly (one definition)" > "/dev/stderr"
+                unsafe = 1
             }
-            if (is_helper) {
-                if (trusted_condition && expected_success) {
-                    safe_helper = 1
-                } else {
-                    unsafe_helper = 1
+            run = 0
+            command = ""
+            for (i = 1; i <= nlines; i++) {
+                line = lines[i]
+                if (line ~ /^        run:/ || line ~ /^      - run:/) {
+                    sub(/^.*run:[ ]*/, "", line)
+                    run = 1
+                    if (line == "|" || line == "|-") continue
+                    if (line ~ /^[|>]/) { unsafe = 1; continue }
+                } else if (run && line !~ /^          /) run = 0
+                if (!run) continue
+                line = trim(line)
+                if (line ~ /^#/) continue
+                if (boundary) {
+                    if (line ~ /scripts\// || line ~ /^(\.\/|bash |sh )/) unsafe = 1
+                    boundary_line(line)
                 }
-                for (key in step_refs) {
-                    trusted_refs[key] = 1
+                command = command line
+                if (sub(/\\$/, "", command)) continue
+                if (index(command, "verify-ci-results.sh")) helper_call(command)
+                else if (helper_step && command != "" && command !~ /^echo "[^$`"]*"$/) {
+                    # Multiline support must not count a call hidden behind
+                    # shell control flow, or one run after disabling errexit.
+                    unsafe = 1
                 }
+                command = ""
+            }
+            if (command != "") unsafe = 1
+            if (boundary) {
+                if (!fork || uses_any || !has_exit || !message) unsafe = 1
+                else safe_boundary = 1
             }
             reset_step()
-        }
-        function collect_refs(value, token) {
-            value = $0
-            while (match(value, /needs\.[A-Za-z0-9_-]+\.result/)) {
-                token = substr(value, RSTART, RLENGTH)
-                step_refs[token] = 1
-                value = substr(value, RSTART + RLENGTH)
-            }
         }
         BEGIN {
-            in_job = 0
-            found_job = 0
-            always_job = 0
-            fork_expression = 0
-            safe_boundary = 0
-            safe_checkout = 0
-            safe_helper = 0
-            unsafe_checkout = 0
-            unsafe_helper = 0
-            generic_allowlist = 0
+            q = sprintf("%c", 39)
+            canonical_skipped = "check_skipped() {\n" \
+                "if [ \"$2\" != \"skipped\" ]; then\n" \
+                "echo \"Job $1 result: $2 (expected skipped for an untrusted fork)\"\n" \
+                "fail=1\nfi\n}\n"
+            fork_test = "github.event_name == " q "pull_request" q " && github.event.pull_request.head.repo.full_name != github.repository"
+            trusted_test = "env.IS_FORK != " q "true" q
+            same_repo_test = "github.event_name != " q "pull_request" q " || github.event.pull_request.head.repo.full_name == github.repository"
+            merge_test = "github.event_name == " q "merge_group" q
+            nonmerge_test = "github.event_name != " q "merge_group" q
+            unchanged_test = "env.CHANGED == " q "false" q
+            changed_test = "env.CHANGED != " q "false" q
             reset_step()
+        }
+        # First pass: collect only job-level conditions, including folded if:
+        # text. Reading all jobs first also supports leaves after the aggregate.
+        NR == FNR {
+            line = $0
+            if (line ~ /^[[:space:]]*#/) next
+            if (line ~ /^[A-Za-z0-9_-]+:/) source_job = ""
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
+                source_job = $1
+                sub(/:$/, "", source_job)
+                job_exists[source_job] = 1
+                collecting_if = 0
+            }
+            if (source_job == "" && line ~ /shell:/) {
+                sub(/^.*shell:[ ]*/, "", line)
+                if (unquote(trim(line)) != "bash") unsafe = 1
+            }
+            if (source_job != "" && line ~ /^    if:/) {
+                sub(/^    if:[ ]*/, "", line)
+                if (line == ">-" || line == "|") line = ""
+                job_if[source_job] = line
+                collecting_if = 1
+            } else if (collecting_if && line ~ /^      /) {
+                job_if[source_job] = job_if[source_job] " " trim(line)
+            } else collecting_if = 0
+            next
         }
         {
             line = $0
             if (!in_job) {
-                if (line ~ ("^  " target ":[ ]*(#.*)?$")) {
-                    in_job = 1
-                    found_job = 1
-                }
+                if (line ~ ("^  " target ":[ ]*(#.*)?$")) in_job = found_job = 1
                 next
             }
             if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
@@ -960,84 +1154,78 @@ aggregate_job_contract_is_safe() {
                 in_job = 0
                 next
             }
-            if (line ~ /^[[:space:]]*if:[[:space:]]*always\(\)/) {
-                always_job = 1
+            if (line ~ /^[[:space:]]*#/) next
+            # No YAML indirection is resolved by this checker. A result binding
+            # must be the value Actions sees, not a default hidden by an alias.
+            if (line ~ /(^|[[:space:]:,{]|\[)[&*][A-Za-z0-9_-]+/ || index(line, "<<:")) unsafe = 1
+            if (line ~ /^[ ]*(- )?shell:/) {
+                shell_value = line
+                sub(/^.*shell:[ ]*/, "", shell_value)
+                if (unquote(trim(shell_value)) != "bash") unsafe = 1
             }
-            if (index(line, "IS_FORK:") &&
-                index(line, "github.event_name ==") && index(line, "pull_request") &&
-                index(line, "head.repo.full_name != github.repository")) {
-                fork_expression = 1
+            if (!in_step && line ~ /^    defaults:[ ]*[^ ]/) unsafe = 1
+            if (!in_step && line ~ /^      run:[ ]*[^ ]/) unsafe = 1
+            if (line ~ /^      CHANGED:/) {
+                changed_source = env_expression(substr(line, index(line, ":") + 1))
+                if (changed_source !~ /^needs\.[A-Za-z0-9_-]+\.outputs\.changed$/) unsafe = 1
             }
-            if (index(line, "success") && index(line, "skipped") &&
-                index(line, "||")) {
-                generic_allowlist = 1
-            }
-            if (line ~ /^      - /) {
-                finish_step()
-                in_step = 1
-            }
-            if (!in_step || line ~ /^[[:space:]]*#/) {
+            if (line ~ /^    if:[ ]*always\(\)[ ]*$/) always_job = 1
+            if (line ~ /^      IS_FORK:/ &&
+                env_expression(substr(line, index(line, ":") + 1)) == fork_test) fork_expression = 1
+            if (in_needs && line ~ /^      - [A-Za-z0-9_-]+[ ]*$/) {
+                dependency_name = trim(substr(line, 9))
+                all_refs["needs." dependency_name ".result"] = 1
                 next
             }
-            if (index(line, "name:") && index(line, "untrusted-fork boundary")) {
-                is_boundary = 1
+            in_needs = 0
+            if (line ~ /^    needs:/) {
+                dependencies = line
+                sub(/^    needs:[ ]*/, "", dependencies)
+                if (dependencies == "") { in_needs = 1; next }
+                gsub(/[\[\],]/, " ", dependencies)
+                dependency_count = split(trim(dependencies), dependency, /[ ]+/)
+                for (d = 1; d <= dependency_count; d++) {
+                    if (dependency[d] !~ /^[A-Za-z0-9_-]+$/) unsafe = 1
+                    else all_refs["needs." dependency[d] ".result"] = 1
+                }
             }
-            if (index(line, "if:") && index(line, "env.IS_FORK ==") &&
-                index(line, "true")) {
-                fork_condition = 1
+            if (line ~ /^      - /) { finish_step(); in_step = 1 }
+            bind_result(line)
+            if (!in_step) next
+            lines[++nlines] = line
+            if (line ~ /name:/ && index(line, "untrusted-fork boundary")) boundary = 1
+            if (line ~ /^        if:/ || line ~ /^      - if:/) {
+                sub(/^.*if:[ ]*/, "", line)
+                step_if = condition(line)
             }
-            if (index(line, "if:") && index(line, "env.IS_FORK !=") &&
-                index(line, "true")) {
-                trusted_condition = 1
+            if (line ~ /uses:/) uses_any = 1
+            if (line ~ ("uses:[ ]*[\"" q "]?actions/checkout@")) checkout = 1
+            if (line ~ /^          EXPECTED_RESULT:/) {
+                sub(/^.*EXPECTED_RESULT:[ ]*/, "", line)
+                step_expected = line
             }
-            if (line ~ /uses:[ ]*actions\/checkout@/) {
-                is_checkout = 1
-            }
-            if (line ~ /run:[ ]*\.\/scripts\/verify-ci-results\.sh/) {
-                is_helper = 1
-            }
-            if (line ~ /^[[:space:]]*run:/) {
-                has_run = 1
-            }
-            if (index(line, "EXPECTED_RESULT:") && index(line, "success")) {
-                expected_success = 1
-            }
-            if (index(line, "!=") && index(line, "skipped")) {
-                checks_skipped = 1
-            }
-            if (index(line, "Untrusted fork trust boundary enforced:")) {
-                boundary_message = 1
-            }
-            if (line ~ /uses:/) {
-                uses_any = 1
-            }
-            if (is_boundary &&
-                (line ~ /scripts\// || line ~ /run:[ ]*(\.\/|bash |sh )/)) {
-                repo_code = 1
-            }
-            collect_refs()
         }
         END {
             finish_step()
-            ref_count = 0
-            refs_match = 1
+            count = 0
+            for (key in all_refs) {
+                count++
+                if (!(key in fork_refs)) unsafe = 1
+                for (path = 1; path <= 4; path++) {
+                    if (!((key SUBSEP path) in trusted_refs)) unsafe = 1
+                }
+            }
+            if (!found_job || !always_job || !fork_expression || !safe_boundary ||
+                !safe_checkout || !safe_helper || unsafe || !count) exit 1
             for (key in fork_refs) {
-                ref_count++
-                if (!(key in trusted_refs)) {
-                    refs_match = 0
+                if (fork_refs[key] == "skipped") {
+                    sub(/^needs\./, "", key)
+                    sub(/\.result$/, "", key)
+                    print key
                 }
             }
-            for (key in trusted_refs) {
-                if (!(key in fork_refs)) {
-                    refs_match = 0
-                }
-            }
-            exit(found_job && always_job && fork_expression && safe_boundary &&
-                 safe_checkout && safe_helper && !unsafe_checkout &&
-                 !unsafe_helper && !generic_allowlist && ref_count > 0 &&
-                 refs_match ? 0 : 1)
         }
-    ' "$workflow"
+    ' "$workflow" "$workflow"
 }
 
 workflow_job_has_fork_guard() {
@@ -1045,28 +1233,51 @@ workflow_job_has_fork_guard() {
     local leaf_job="$2"
 
     awk -v target="$leaf_job" '
-        BEGIN { in_job = 0; found = 0; event_guard = 0; repo_guard = 0 }
+        BEGIN { q = sprintf("%c", 39) }
         {
             line = $0
             if (!in_job) {
-                if (line ~ ("^  " target ":[ ]*(#.*)?$")) {
-                    in_job = 1
-                    found = 1
-                }
+                if (line ~ ("^  " target ":[ ]*(#.*)?$")) in_job = found = 1
                 next
             }
-            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) {
-                in_job = 0
+            if (line ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) exit
+            if (line ~ /^[[:space:]]*#/) next
+            # Only the JOB condition suppresses a leaf. Comments and step-level
+            # guards cannot prove that the job itself is skipped on fork PRs.
+            if (line ~ /^    if:/) {
+                sub(/^    if:[ ]*/, "", line)
+                if (line == ">-" || line == "|") line = ""
+                collecting = 1
+            } else if (!collecting || line !~ /^      /) {
+                collecting = 0
                 next
             }
-            if (index(line, "github.event_name !=") && index(line, "pull_request")) {
-                event_guard = 1
-            }
-            if (index(line, "head.repo.full_name == github.repository")) {
-                repo_guard = 1
-            }
+            expression = expression " " line
         }
-        END { exit(found && event_guard && repo_guard ? 0 : 1) }
+        END {
+            gsub(/[[:space:]]+/, " ", expression)
+            sub(/^ /, "", expression)
+            sub(/ $/, "", expression)
+            sub(/^\$\{\{ */, "", expression)
+            sub(/ *\}\}$/, "", expression)
+            same_repo_test = "github.event_name != " q "pull_request" q " || github.event.pull_request.head.repo.full_name == github.repository"
+            merge_test = "github.event_name == " q "merge_group" q
+            nonmerge_test = "github.event_name != " q "merge_group" q
+            # Whole expressions only: a positive-looking comparison inside a
+            # negation or another grouping is not a fork exclusion.
+            same_repo = expression == same_repo_test
+            merge_only = expression == merge_test
+            changed = "needs\\.[A-Za-z0-9_-]+\\.outputs\\.changed == " q "true" q
+            suffix = " && " merge_test
+            if (length(expression) > length(suffix) &&
+                substr(expression, length(expression) - length(suffix) + 1) == suffix &&
+                substr(expression, 1, length(expression) - length(suffix)) ~ ("^" changed "$")) merge_only = 1
+            suffix = " && " nonmerge_test " && (" same_repo_test ")"
+            if (length(expression) > length(suffix) &&
+                substr(expression, length(expression) - length(suffix) + 1) == suffix &&
+                substr(expression, 1, length(expression) - length(suffix)) ~ ("^" changed "$")) same_repo = 1
+            exit(found && (same_repo || merge_only) ? 0 : 1)
+        }
     ' "$workflow"
 }
 
@@ -1148,25 +1359,10 @@ if [ -n "$aggregate_workflows" ]; then
 
     while IFS=: read -r aggregate_workflow aggregate_job; do
         [ -n "$aggregate_workflow" ] || continue
-        if ! aggregate_job_contract_is_safe "$aggregate_workflow" "$aggregate_job"; then
+        if ! aggregate_leaves="$(aggregate_job_contract_is_safe "$aggregate_workflow" "$aggregate_job")"; then
             err "$aggregate_workflow job '$aggregate_job' must enforce exact fork-skipped/trusted-success results without fork checkout or repository code"
             continue
         fi
-        aggregate_leaves="$(
-            awk -v target="$aggregate_job" '
-                BEGIN { in_job = 0 }
-                {
-                    if (!in_job) {
-                        if ($0 ~ ("^  " target ":[ ]*(#.*)?$")) in_job = 1
-                        next
-                    }
-                    if ($0 ~ /^  [A-Za-z0-9_-]+:[ ]*(#.*)?$/) exit
-                    print
-                }
-            ' "$aggregate_workflow" |
-                grep -oE 'needs\.[A-Za-z0-9_-]+\.result' |
-                sed -E 's/^needs\.//; s/\.result$//' | sort -u || true
-        )"
         for aggregate_leaf in $aggregate_leaves; do
             if ! workflow_job_has_fork_guard "$aggregate_workflow" "$aggregate_leaf"; then
                 err "$aggregate_workflow leaf '$aggregate_leaf' is aggregated as fork-skipped but lacks the same-repository PR guard"
