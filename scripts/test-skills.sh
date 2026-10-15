@@ -3906,8 +3906,30 @@ for required in (
     'permission failure on the checks read is',
     'indeterminate and never a pass',
     'A fallback success cannot authorize promotion',
+    'Exit 0 unlocks the review trigger even under `after-ci`',
+    '5 means the PR merged or closed and stops the whole integration stage',
 ):
     assert required in checks, required
+agent = (pathlib.Path(sys.argv[1]).parents[3] / 'agents/integrator.md').read_text()
+fallback = agent.split('**Exit 0\nunlocks the review trigger**', 1)[1].split('On the normal rollup path, read', 1)[0]
+assert 'checks_ready=true' in fallback
+assert 'sed -n' in fallback and 'RUN ' in fallback
+assert 'required:false' in fallback
+assert 'external/non-Actions' in fallback
+assert 'must not short-circuit' in fallback
+# Exercise the documented jq mapping itself, including neutral/skipped and
+# per-run IDs, so a prose promise cannot conceal lossy checks[] conversion.
+import json
+import subprocess
+mapping = fallback.split("| jq -cs '", 1)[1].split("')\" || exit 1", 1)[0]
+rows = [dict(name=f'run-{i}', run_id=str(i), status='completed', conclusion=c)
+        for i, c in enumerate(('success', 'neutral', 'skipped'), 1)]
+converted = subprocess.run(['jq', '-cs', mapping],
+    input='\n'.join(json.dumps(row) for row in rows), text=True,
+    capture_output=True, check=True)
+assert json.loads(converted.stdout) == [
+    dict(name=f'run-{i}', run_id=str(i), required=False, bucket=b)
+    for i, b in enumerate(('pass', 'pass', 'skipping'), 1)]
 PYTEST
 
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \

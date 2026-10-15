@@ -32,6 +32,7 @@ readonly EXIT_FAILING=1
 readonly EXIT_USAGE=2
 readonly EXIT_INDETERMINATE=3
 readonly EXIT_EXPIRED=4
+readonly EXIT_PR_CLOSED=5
 readonly EXIT_AGENT_UNSETTLED=5
 
 usage() {
@@ -61,7 +62,9 @@ agent   Wait for a herdr lane agent to settle. Runs
 checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         --head is REQUIRED: the full 40-hex SHA you pushed. While the PR
         still reports another head (GitHub lags after a push) the poll is
-        not settled. Each poll lists the runs for exactly --head (paged
+        not settled. Each poll also reads the PR state; a merged or closed
+        PR stops immediately with exit 5, including on the final head re-read.
+        Each poll lists the runs for exactly --head (paged
         explicitly until a short page, up to enough pages to cover GitHub's
         1000-run search cap at --per-page; a list reporting 1000 or more
         runs is indeterminate). A `pull_request` or
@@ -88,7 +91,10 @@ checks  Wait for the GitHub Actions runs on the head you pushed to settle.
         earlier failure: the readiness gate owns the final verdict.
         Covers Actions workflow runs
         only, not external status checks, and cannot see a run GitHub has
-        not created yet.
+        not created yet. On a settled verdict, RUN lines carry one JSON
+        object per counted run from that poll's own reads (run_id, name,
+        status, conclusion, run_attempt). They preserve evidence for callers
+        without Checks access; they do not attest external checks.
         --interval-seconds  poll interval (default 30)
         --call-timeout-seconds  bound on each gh call (default 30); the last
                             poll may overrun the deadline by at most about two
@@ -115,6 +121,7 @@ Exit status, checks mode:
        or that poll could not be read, listed no runs, or hit GitHub's
        1000-run search cap; never a settle
   4    expired: the timeout passed with runs on --head still pending
+  5    PR merged or closed: stop the whole integration stage, NOT settled
 
 Never follow a wait with `; echo`, `|| true`, or anything else that discards
 this status.
@@ -308,15 +315,26 @@ api() {
     "$timeout_bin" --kill-after=2 "$call_timeout_seconds" gh api "$1" </dev/null 2>/dev/null
 }
 
-head_sha() {
-    local body sha
+# Read in the parent shell so a closed PR exits the entire wait, not only
+# a command substitution. REST uses lower-case state and merged=true; accept
+# the upper-case state shape too (callers and fixtures also use it).
+read_pr() {
+    local body pr_state
     body="$(api "repos/$repo/pulls/$pr")" || return 1
+    pr_state="$(printf '%s' "$body" | jq -er '
+        (if .merged == true then "MERGED" else (.state | ascii_upcase) end)
+        | select(. == "OPEN" or . == "CLOSED" or . == "MERGED")' 2>/dev/null)" || return 1
+    case "$pr_state" in
+    CLOSED | MERGED)
+        echo "STOPPED PR $pr state=$pr_state: stop the whole integration stage"
+        exit "$EXIT_PR_CLOSED"
+        ;;
+    esac
     sha="$(printf '%s' "$body" | jq -r '.head.sha // empty' 2>/dev/null)" || return 1
     case "$sha" in
     '' | *[!0-9a-f]*) return 1 ;;
     esac
     [ "${#sha}" -eq 40 ] || return 1
-    printf '%s\n' "$sha"
 }
 
 # Every run to consider for exactly this head, one token per line, then a
@@ -397,7 +415,7 @@ poll=0
 while :; do
     poll=$((poll + 1))
     verdict=
-    if ! sha="$(head_sha)"; then
+    if ! read_pr; then
         last=indeterminate
         detail="could not read the PR head"
     elif [ "$sha" != "$want_head" ]; then
@@ -427,6 +445,7 @@ while :; do
             skipped=0
             superseded=0
             lines=
+            run_rows=
             read_failed=
             starts=
             for entry in $ids; do
@@ -483,6 +502,14 @@ EOF
                         continue
                     fi
                 fi
+                evidence="$(printf '%s' "$body" | jq -c --arg id "$id" '
+                    {run_id:$id, name:(.name // "unnamed"), status, conclusion,
+                     run_attempt:(.run_attempt // 0)}')" || {
+                    read_failed=$id
+                    break
+                }
+                run_rows="${run_rows}RUN $evidence
+"
                 total=$((total + 1))
                 if [ "$status" != completed ]; then
                     pending=$((pending + 1))
@@ -514,7 +541,7 @@ EOF
                     # Bind the verdict to the pushed head: re-read the PR
                     # head after the run reads and settle only if it is
                     # still --head.
-                    if ! sha="$(head_sha)"; then
+                    if ! read_pr; then
                         last=indeterminate
                         detail="could not re-read the PR head after the run reads"
                     elif [ "$sha" != "$want_head" ]; then
@@ -534,10 +561,12 @@ EOF
     fi
     case "$verdict" in
     success)
+        printf '%s' "$run_rows"
         echo "SETTLED success head=$short runs=$total"
         exit "$EXIT_SETTLED"
         ;;
     failure)
+        printf '%s' "$run_rows"
         echo "SETTLED failure head=$short runs=$total failing=$failing"
         exit "$EXIT_FAILING"
         ;;

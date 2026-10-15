@@ -1139,9 +1139,13 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   Never improvise a wait over `gh run list`'s default 20-run page.
   Exit 0 means the counted Actions runs settled green; 1 means settled with
   failures to diagnose; 3 is indeterminate; 4 is an expired pending wait;
-  every other nonzero exit also stops progress. Preserve the exit status.
-  While the helper runs, re-read PR `state` every poll interval as required
-  above; a merge/close stops the whole stage, regardless of the wait result.
+  5 means the PR merged or closed and stops the whole integration stage.
+  Every other nonzero exit also stops progress. Preserve the exit status.
+  The helper reads PR `state` on every poll and again before settling, so a
+  merge/close stops the whole stage immediately, regardless of the run results.
+  Exit 0 unlocks the review trigger even under `after-ci`; the integrator
+  records the helper's counted Actions runs in `checks[]` and reports the
+  unverifiable external/non-Actions checks gap after driving the review.
   This fallback covers Actions only: external checks and the final verdict
   still belong to `readiness-gate.sh`, which must read check runs and commit
   statuses successfully. A fallback success cannot authorize promotion past

@@ -208,18 +208,55 @@ cycle this pass owes is requested — never a cycle the rounds policy does not
 require, and never a second request for a head beyond the one bounded
 attempt-2 retry §4 already describes.
 
-Under either order, a permission error on the checks rollup is indeterminate,
-never an empty list or a green result. Use integrate §2's bounded Actions-runs
-fallback, `"$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo "$repo" --pr <n>
---head <head> --timeout-seconds 1800 --interval-seconds 30`, to settle the wait
-for the exact briefed head. It fully paginates and never counts completed
-skipped runs as pending. Its exit 0 covers Actions only, not external checks
-or unreadable check-run evidence: if the reads below remain inaccessible,
-return a blocked result with that evidence gap; do not reserve or trigger a
-review or fabricate `checks[]` from Actions runs. The readiness gate still
-must read its complete check-run/status evidence before promotion.
+Under either order, a permission error on the checks rollup is indeterminate
+for the rollup, never an empty list or proof of green external checks. Use
+integrate §2's bounded Actions fallback for the exact briefed head. **Exit 0
+unlocks the review trigger**, including under `after-ci`: use this branch
+instead of the remaining rollup/check-run snippets in this section, then
+rejoin at `failed_required` below and continue to §4. Preserve the helper's
+counted per-run evidence, not a second run listing:
 
-Under either order, read the checks for the exact head your brief named:
+```sh
+actions_out="$("$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo "$repo" --pr <n> \
+    --head <head> --timeout-seconds 1800 --interval-seconds 30)"
+actions_rc=$?
+case "$actions_rc" in
+0) ;;
+5)
+    echo 'PR merged or closed — stop the whole integration stage'
+    exit 1
+    ;;
+*)
+    # 1 failing; 3 indeterminate; 4 expired pending; no review trigger.
+    printf '%s\n' "$actions_out"
+    exit 1
+    ;;
+esac
+checks_json="$(printf '%s\n' "$actions_out" | sed -n 's/^RUN //p' | jq -cs '
+    if length == 0 then error("no counted Actions evidence") else
+      map({name, run_id, required:false,
+           bucket:(if .status != "completed" then "pending"
+                   elif .conclusion == "skipped" then "skipping"
+                   elif .conclusion == "success" or .conclusion == "neutral" then "pass"
+                   elif .conclusion == "cancelled" then "cancel"
+                   else "fail" end)})
+    end')" || exit 1
+checks_ready=true
+```
+
+`checks[]` now has one entry per counted Actions run, its bucket mapped from
+that run's own status/conclusion as read; retain `actions_out` with the result
+so the exact conclusions remain available. `required:false` means requiredness
+could not be verified, not proof that no checks are required. After driving
+the review, state in §9's existing blocker report that external/non-Actions
+checks and requiredness were not verifiable, and set `status=blocked` for §7.
+This gap must not short-circuit §4's trigger after a successful Actions settle.
+The readiness gate still must read its complete check-run/status evidence
+before promotion; Actions success never substitutes for that evidence.
+Exit 5 is a merged/closed PR and stops the whole stage immediately; exits
+1/3/4 keep their existing stop behavior and never unlock a trigger.
+
+On the normal rollup path, read the checks for the exact head your brief named:
 
 ```sh
 checks="$(gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link 2>/dev/null)"
@@ -257,7 +294,7 @@ schema-valid `pending` or `findings` result, exactly as one is owed whenever
 CI has not settled — §4 below is what actually reads `checks_ready` to decide
 whether reserving or triggering is safe.
 
-`$checks` decides pass/fail here, and **stays the source of `checks[]`'s own
+On the normal rollup path, `$checks` decides pass/fail here, and **stays the source of `checks[]`'s own
 `bucket` in your result too** — `gh pr checks` reads the same server-side
 rollup GitHub's Checks tab shows, already collapsed across reruns. The raw
 check-runs REST endpoint's `filter=latest` collapses only WITHIN one check
