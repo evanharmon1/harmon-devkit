@@ -946,6 +946,9 @@ function checkIntegratorSettledAtAgreement(envelope, errors) {
 // status vs payload verdict), so this is the envelope-level receipt check,
 // like checkImplementerStatus.
 function checkIntegratorBlockedStatus(envelope, errors) {
+  if (Object.hasOwn(envelope.payload, 'blocker') && envelope.status !== 'blocked') {
+    errors.push('$result.payload.blocker: requires envelope status blocked')
+  }
   if (envelope.status === 'blocked' && envelope.payload.verdict === 'clean') {
     errors.push('$result.payload.verdict: cannot be clean when the envelope status is blocked')
   }

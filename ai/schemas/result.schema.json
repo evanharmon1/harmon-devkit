@@ -134,6 +134,17 @@
           }
         }
       }
+    },
+    {
+      "$comment": "An integrator blocker records an interrupted pass and is valid only on a blocked envelope. The standalone payload schema cannot see status; checkIntegratorBlockedStatus enforces the same rule for its receipt-validation path.",
+      "if": {
+        "properties": {
+          "role": { "const": "integrator" },
+          "payload": { "required": ["blocker"] }
+        },
+        "required": ["role", "payload"]
+      },
+      "then": { "properties": { "status": { "const": "blocked" } } }
     }
   ],
   "$defs": {
@@ -488,6 +499,30 @@
         }
       ],
       "properties": {
+        "blocker": {
+          "description": "Optional evidence of a suspected unexplained promotion, present only on a blocked envelope. The orchestrator correlates this ready event with the timeline and run promotion; observed_head is the head read now, not proof of the head at event time. Omit when the timeline evidence could not be read; never fabricate it.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ready_event_id", "ready_at", "actor", "observed_head"],
+          "properties": {
+            "kind": { "const": "unexplained-promotion" },
+            "ready_event_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "ready_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            "actor": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "login"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+                "login": { "type": "string", "minLength": 1 }
+              }
+            },
+            "observed_head": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        },
         "checks": {
           "description": "One entry per CI check gh pr checks reports.",
           "type": "array",
