@@ -96,16 +96,16 @@ fi
 # `claim:claude` nine times would satisfy a count check (and collapse under a
 # later sort -u) while provisioning only one of the nine expected families.
 for ns in claim; do
-    want_ns="$(jq -r --arg p "$ns" '.families[].slug | $p + ":" + .' "$registry" | sort -u)"
-    got_ns="$(printf '%s\n' "$names" | grep "^${ns}:" | sort -u || true)"
+    want_ns="$(jq -r --arg p "$ns" '.families[].slug | $p + ":" + .' "$registry" | LC_ALL=C sort -u)"
+    got_ns="$(printf '%s\n' "$names" | grep "^${ns}:" | LC_ALL=C sort -u || true)"
     [ "$want_ns" = "$got_ns" ] ||
         fail "rendered ${ns}:* labels [$(echo "$got_ns" | tr '\n' ' ')] != one-per-family expected [$(echo "$want_ns" | tr '\n' ' ')] — regenerate from agent-registry.json"
 done
 
 # 2d. foreman:<adapter> selectors are provisioned for EXACTLY the adapters the
 # registry marks provision_label — no more (phantom selector), no fewer.
-want_foreman="$(jq -r '.foreman_adapters[] | select(.provision_label == true) | "foreman:" + .slug' "$registry" | sort)"
-got_foreman="$(printf '%s\n' "$names" | grep '^foreman:' | sort || true)"
+want_foreman="$(jq -r '.foreman_adapters[] | select(.provision_label == true) | "foreman:" + .slug' "$registry" | LC_ALL=C sort)"
+got_foreman="$(printf '%s\n' "$names" | grep '^foreman:' | LC_ALL=C sort || true)"
 if [ "$want_foreman" != "$got_foreman" ]; then
     fail "provisioned foreman:<adapter> selectors [$(echo "$got_foreman" | tr '\n' ' ')] != registry provision_label adapters [$(echo "$want_foreman" | tr '\n' ' ')] — a selector without a production adapter can strand armed work (ADR 2026-08-07 D11)"
 fi
@@ -120,8 +120,8 @@ want_tier="$(node -e '
   for (const role of reg.roles ?? [])
     for (const tier of TIER_ORDER)
       console.log("tier:" + role.slug + ":" + tier);
-' "$registry" | sort)"
-got_tier="$(printf '%s\n' "$names" | grep -E '^tier:[a-z0-9-]+:[a-z0-9-]+$' | sort || true)"
+' "$registry" | LC_ALL=C sort)"
+got_tier="$(printf '%s\n' "$names" | grep -E '^tier:[a-z0-9-]+:[a-z0-9-]+$' | LC_ALL=C sort || true)"
 if [ "$want_tier" != "$got_tier" ]; then
     fail "rendered tier:<role>:<tier> labels [$(echo "$got_tier" | tr '\n' ' ')] != roles[]×TIER_ORDER expected [$(echo "$want_tier" | tr '\n' ' ')] — regenerate from agent-registry.json"
 fi
@@ -160,7 +160,7 @@ STUB
     chmod +x "$stub_dir/gh"
     STUB_EMITTED="$emitted_file" PATH="$stub_dir:$PATH" \
         bash "$labels_script" --repo drift/check --foreman >/dev/null 2>&1
-    emitted="$(sort -u "$emitted_file")"
+    emitted="$(LC_ALL=C sort -u "$emitted_file")"
     rm -rf "$stub_dir"
     # LC_ALL=C on the producers AND the consumer: `comm` re-derives the ordering
     # its inputs must already be in, so both sides have to agree on collation,
@@ -226,7 +226,7 @@ if [ -f "$wrappers_glob" ]; then
 
         declared_ids="$(jq -r --arg f "$family" --arg h "$harness" '
             .families[] | select(.slug == $f) | .models[] | .cli_ids[$h] // empty
-        ' "$registry" | sort -u)"
+        ' "$registry" | LC_ALL=C sort -u)"
         if [ -n "$declared_ids" ]; then
             wrapper_body="$(awk -v fn="$fn" '
                 $0 == fn "() {" { in_wrapper = 1 }
@@ -235,7 +235,7 @@ if [ -f "$wrappers_glob" ]; then
             ' "$wrappers_glob")"
             exported_ids="$(printf '%s\n' "$wrapper_body" |
                 sed -n -E 's/^[[:space:]]*export (ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU|FABLE)_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)="([^"]+)"/\3/p' |
-                sort -u)"
+                LC_ALL=C sort -u)"
             if [ "$exported_ids" != "$declared_ids" ]; then
                 fail "provider wrapper '$fn' exports model IDs [$exported_ids] but registry harness '$harness' declares [$declared_ids] — update the wrapper exports and model cli_ids together"
             fi
