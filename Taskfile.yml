@@ -898,7 +898,7 @@ tasks:
     desc: "Groom the issue backlog (audit by default; task groom -- --execute to apply, supervised)"
     interactive: true
     cmds:
-      - ./scripts/groom.sh {{.CLI_ARGS}}
+      - ./ai/skills/universal/groom/assets/groom.sh {{.CLI_ARGS}}
 
   review:codex:
     desc: "Codex verification review (usage: task review:codex -- [--base <ref>|--uncommitted] [focus text])"

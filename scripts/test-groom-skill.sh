@@ -24,7 +24,7 @@ verdicts="./ai/skills/universal/groom/assets/groom-verdicts.sh"
 report="./ai/skills/universal/groom/assets/groom-report.sh"
 apply="./ai/skills/universal/groom/assets/groom-apply.sh"
 decide="./ai/skills/universal/groom/assets/groom-decide.sh"
-wrapper="./scripts/groom.sh"
+wrapper="./ai/skills/universal/groom/assets/groom.sh"
 repo="testowner/testrepo"
 
 fail() {
@@ -44,7 +44,9 @@ test_sha256() {
     fi
 }
 
-tmp="$(mktemp -d)"
+# Resolve symlinks (macOS /var -> /private/var): the wrapper names its
+# physical skill path, so expectations built under $tmp must match it.
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 stub_dir="$tmp/fixtures"
 mkdir -p "$tmp/bin" "$stub_dir"
@@ -2531,9 +2533,25 @@ export GH_STUB_REPO="$repo"
 # let it default to the real user's state directory).
 export GROOM_OUT_DIR="$tmp/groom-out"
 
+# The runner's DIR instruction and Bash grant prefixes must agree: the
+# headless worker has no repository settings to grant a relative alias.
+assert_audit_dir_grants() {
+    local expected_dir="$1" named_dir actual_grants expected_grants
+    named_dir="$(sed -n 's/^Skill directory (use exactly this path as DIR for groom commands; triage and any other skill keep their own DIR): //p' "$GH_STUB_LOG")"
+    [ "$named_dir" = "$expected_dir" ] ||
+        fail "audit prompt must name DIR as '$expected_dir', got '$named_dir'"
+    actual_grants="$(grep -o 'Bash([^)]*/assets/groom-[^)]*)' "$GH_STUB_LOG" | sort)"
+    expected_grants="$(printf 'Bash(%s/assets/%s:*)\n' \
+        "$named_dir" groom-scan.sh "$named_dir" groom-verdicts.sh \
+        "$named_dir" groom-report.sh | sort)"
+    [ "$actual_grants" = "$expected_grants" ] ||
+        fail "every groom Bash grant must use the prompt's exact DIR: $actual_grants"
+}
+
 echo "==> wrapper: audit mode forces GROOM_EXECUTE=0"
 : >"$GH_STUB_LOG"
 [ "$(run "$wrapper")" = 0 ] || fail "wrapper audit run failed: $(cat "$tmp/out" "$tmp/err")"
+assert_audit_dir_grants "$(cd "$(dirname "$wrapper")/.." && pwd -P)"
 grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
@@ -2597,11 +2615,11 @@ grep -qF "test-registry-drift.sh" "$skill_md" ||
 grep -q "Do not pass a family's raw registry model slug" "$skill_md" ||
     fail "SKILL.md Step 2 must warn against passing a raw registry model slug (e.g. deepseek-flash) as the Agent tool's model argument — it only accepts Claude Code's own aliases (Codex review round 5 on PR #1045)"
 
-echo "==> canary: opus is still agent-registry.json's frontier-tier model for the claude family (Codex review on PR #1045) — this must fail loudly if the registry ever retiers or renames it, since scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's own example both hardcode the literal 'opus'"
+echo "==> canary: opus is still agent-registry.json's frontier-tier model for the claude family (Codex review on PR #1045) — this must fail loudly if the registry ever retiers or renames it, since groom/assets/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's own example both hardcode the literal 'opus'"
 [ -f agent-registry.json ] || fail "agent-registry.json must exist"
 registry_claude_frontier="$(jq -r '.families[] | select(.slug == "claude") | .models[] | select(.tier == "frontier") | .slug' agent-registry.json)"
 [ "$registry_claude_frontier" = "opus" ] ||
-    fail "agent-registry.json's claude/frontier model is '$registry_claude_frontier', not 'opus' — update scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's example to match"
+    fail "agent-registry.json's claude/frontier model is '$registry_claude_frontier', not 'opus' — update groom/assets/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's example to match"
 
 echo "==> canary: claude-code-qwen-local is still fixed to one model regardless of requested tier (Codex review on PR #1045) — this must fail loudly if the registry ever changes so SKILL.md's own worked example goes stale"
 qwen_local_resolution="$(jq -r '.harnesses[] | select(.slug == "claude-code-qwen-local") | .model_resolution.details' agent-registry.json)"
@@ -2700,17 +2718,19 @@ echo "==> wrapper: a confirmed --execute execs the named script verbatim, with G
 # direct-exec path (below) needs no pty; only the confirmed
 # apply.sh/decide.sh path does.
 fake_root="$tmp/fake-repo"
-mkdir -p "$fake_root/scripts" "$fake_root/ai/skills/universal/groom/assets"
-cp "$wrapper" "$fake_root/scripts/groom.sh"
-chmod +x "$fake_root/scripts/groom.sh"
-: >"$fake_root/ai/skills/universal/groom/SKILL.md"
+fake_skill="$fake_root/.claude/skills/groom"
+mkdir -p "$fake_skill/assets"
+cp "$wrapper" "$fake_skill/assets/groom.sh"
+chmod +x "$fake_skill/assets/groom.sh"
+: >"$fake_skill/SKILL.md"
 git -C "$fake_root" init -q
 git -C "$fake_root" remote add origin https://github.com/testowner/testrepo.git
 
 for stub_script in groom-apply.sh groom-decide.sh groom-report.sh; do
-    cat >"$fake_root/ai/skills/universal/groom/assets/$stub_script" <<'STUB'
+    cat >"$fake_skill/assets/$stub_script" <<'STUB'
 #!/usr/bin/env bash
 {
+    printf 'CWD=%s\n' "$PWD"
     printf 'SCRIPT=%s\n' "$(basename "$0")"
     printf 'GROOM_EXECUTE=%s\n' "${GROOM_EXECUTE:-unset}"
     printf 'GROOM_REPO=%s\n' "${GROOM_REPO:-unset}"
@@ -2719,14 +2739,14 @@ for stub_script in groom-apply.sh groom-decide.sh groom-report.sh; do
     printf '\n'
 } >>"${EXEC_LOG:?}"
 STUB
-    chmod +x "$fake_root/ai/skills/universal/groom/assets/$stub_script"
+    chmod +x "$fake_skill/assets/$stub_script"
 done
 
 echo "==> wrapper: --execute groom-report.sh execs directly — no tty, no confirmation prompt, no GROOM_EXECUTE (challenge round 2 confirming round, finding 4)"
 report_exec_log="$tmp/report-exec.log"
 : >"$report_exec_log"
 report_rc=0
-env PATH="$tmp/bin:$PATH" EXEC_LOG="$report_exec_log" "$fake_root/scripts/groom.sh" \
+env PATH="$tmp/bin:$PATH" EXEC_LOG="$report_exec_log" "$fake_skill/assets/groom.sh" \
     --execute groom-report.sh --marker report-arg \
     --outcomes /tmp/does-not-need-to-exist.jsonl \
     </dev/null >"$tmp/report-wrap-out" 2>"$tmp/report-wrap-err" || report_rc=$?
@@ -2744,12 +2764,53 @@ grep -q "ARGV: --marker report-arg --outcomes /tmp/does-not-need-to-exist.jsonl"
 grep -qi 'type "yes"' "$tmp/report-wrap-out" "$tmp/report-wrap-err" &&
     fail "groom-report.sh must never be gated behind the confirmation prompt"
 
+echo "==> wrapper: copied and directory-symlinked flattened skill resolves siblings without repository scripts"
+[ ! -e "$fake_root/scripts" ] || fail "consumer fixture must have no root scripts directory"
+ln -s "$fake_skill" "$fake_root/groom-link"
+for consumer_wrapper in "$fake_skill/assets/groom.sh" "$fake_root/groom-link/assets/groom.sh"; do
+    : >"$report_exec_log"
+    consumer_rc=0
+    (
+        cd "$fake_root"
+        env PATH="$tmp/bin:$PATH" EXEC_LOG="$report_exec_log" "$consumer_wrapper" \
+            --execute groom-report.sh render --dispositions dispositions.json \
+            --outcomes outcomes.jsonl --out-html report.html --out-md report.md
+    ) >"$tmp/consumer-out" 2>"$tmp/consumer-err" || consumer_rc=$?
+    [ "$consumer_rc" = 0 ] ||
+        fail "flattened wrapper must resolve its sibling: $(cat "$tmp/consumer-out" "$tmp/consumer-err")"
+    grep -qx "CWD=$fake_root" "$report_exec_log" ||
+        fail "wrapper must preserve the consumer's cwd for relative arguments"
+    grep -qx "SCRIPT=groom-report.sh" "$report_exec_log" ||
+        fail "wrapper must exec the copied skill's own sibling"
+    grep -qx "ARGV: render --dispositions dispositions.json --outcomes outcomes.jsonl --out-html report.html --out-md report.md" "$report_exec_log" ||
+        fail "consumer Step 6 report arguments must pass through unchanged"
+done
+
+echo "==> wrapper: copied and symlinked audits name the exact DIR used by every groom Bash grant"
+for consumer_wrapper in "$fake_skill/assets/groom.sh" "$fake_root/groom-link/assets/groom.sh"; do
+    : >"$GH_STUB_LOG"
+    consumer_audit_rc=0
+    (
+        cd "$fake_root"
+        env PATH="$tmp/bin:$PATH" GROOM_EXECUTE=1 "$consumer_wrapper"
+    ) >"$tmp/consumer-audit-out" 2>"$tmp/consumer-audit-err" || consumer_audit_rc=$?
+    [ "$consumer_audit_rc" = 0 ] ||
+        fail "consumer audit failed: $(cat "$tmp/consumer-audit-out" "$tmp/consumer-audit-err")"
+    assert_audit_dir_grants "$fake_skill"
+    grep -qF "Skill: $fake_skill/SKILL.md" "$GH_STUB_LOG" ||
+        fail "audit prompt must name the physical skill directory"
+    grep -qx "GROOM_EXECUTE=0" "$GH_STUB_LOG" ||
+        fail "consumer audit must reset an inherited GROOM_EXECUTE=1"
+    grep -qF "repo view https://github.com/testowner/testrepo.git" "$GH_STUB_LOG" ||
+        fail "consumer audit must resolve the caller's origin"
+done
+
 echo "==> wrapper: --execute groom-report.sh works even when 'gh repo view' would fail (Codex 4012242636)"
 report_offline_log="$tmp/report-offline.log"
 : >"$report_offline_log"
 offline_rc=0
 env -u GH_STUB_REPO PATH="$tmp/bin:$PATH" EXEC_LOG="$report_offline_log" \
-    "$fake_root/scripts/groom.sh" --execute groom-report.sh --marker offline-arg \
+    "$fake_skill/assets/groom.sh" --execute groom-report.sh --marker offline-arg \
     </dev/null >"$tmp/report-offline-out" 2>"$tmp/report-offline-err" || offline_rc=$?
 [ "$offline_rc" = 0 ] ||
     fail "groom-report.sh must run even though 'gh repo view' would fail:" \
@@ -2764,7 +2825,7 @@ if [ "$PTY_OK" = true ]; then
         : >"$exec_log"
         {
             printf 'yes\n' | pty_exec env PATH="$tmp/bin:$PATH" EXEC_LOG="$exec_log" \
-                "$fake_root/scripts/groom.sh" --execute "$script_name" \
+                "$fake_skill/assets/groom.sh" --execute "$script_name" \
                 --marker "$script_name-arg" --outcomes "/tmp/does-not-need-to-exist.jsonl"
         } >"$tmp/pty-out" 2>&1 || true
         grep -q "SCRIPT=$script_name" "$exec_log" ||

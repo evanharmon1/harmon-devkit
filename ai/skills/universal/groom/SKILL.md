@@ -75,7 +75,8 @@ recommending a `/triage` run.
 
 ## Step 0 — Setup
 
-- `DIR` — the first of these directories that contains a `SKILL.md`:
+- `DIR` — the skill directory your runner named; when none was named, the
+  first of these directories that contains a `SKILL.md`:
   `ai/skills/universal/groom`, `.agents/skills/groom`, `.claude/skills/groom`.
 - `REPO` — the `owner/repo` your runner named, or
   `gh repo view --json nameWithOwner -q .nameWithOwner` when none was named.
@@ -284,6 +285,26 @@ further for this session to do once the plan and decisions files are
 written.
 
 ## Step 6 — Apply
+
+The wrapper ships with the skill at `assets/groom.sh`. Run it from the target
+repository's root. In a consumer with a flattened skills tree, invoke
+`./.claude/skills/groom/assets/groom.sh` (or
+`./.agents/skills/groom/assets/groom.sh`). A consumer's `task groom` target
+calls that vendored wrapper and forwards `{{.CLI_ARGS}}`, with
+`interactive: true`; harmon-init #1387 supplies that target. For example:
+
+```yaml
+groom:
+  interactive: true
+  cmds:
+    - ./.claude/skills/groom/assets/groom.sh {{.CLI_ARGS}}
+```
+
+The Step 6 commands below use that target. Where it is not installed yet,
+replace `task groom --` with `./.claude/skills/groom/assets/groom.sh`.
+The wrapper resolves sibling scripts from its own physical location while
+repository operations use the caller's working directory. harmon-devkit's
+own target calls `./ai/skills/universal/groom/assets/groom.sh`.
 
 Applying is its OWN, separately supervised run — a deterministic, model-free
 sequence with no Claude session involved (issue #1015 challenge round 2,
