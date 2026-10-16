@@ -3,11 +3,7 @@
 # run time: a Taskfile that no longer compiles, and setup tasks that fail when
 # they should be safe no-ops. Run via `task test:tasks`.
 #
-# Coverage note: the bootstrap assertion only exercises the "Homebrew already
-# installed" path, so it is skipped on runners without brew (e.g. the default
-# ubuntu-latest CI). It still guards the common local/macOS case — the exact
-# regression where `task bootstrap` aborted on a sudo precheck despite brew
-# already being installed.
+# Setup uses isolated stubs: tests never install a global toolchain.
 set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
@@ -20,7 +16,7 @@ fail() {
 }
 
 test_tmp="$(mktemp -d)"
-trap 'rm -rf "$test_tmp"' EXIT
+trap 'chmod -R u+w "$test_tmp" 2>/dev/null || true; rm -rf "$test_tmp"' EXIT
 
 echo "==> Taskfile compiles (every task parses)"
 if ! task --list-all >/dev/null 2>&1; then
@@ -269,6 +265,66 @@ case "$out" in
 *) fail "closing-keyword guard reported the wrong commit-cap failure: $out" ;;
 esac
 
+echo "==> brew-less setup requires a positive toolchain marker"
+brewless_bin="${test_tmp}/brewless-bin"
+toolchain_manifest="${test_tmp}/toolchain-manifest.json"
+mkdir -p "$brewless_bin"
+# Restrict PATH rather than assuming the runner has no Homebrew or Node.
+for tool in bash dirname; do
+    ln -s "$(command -v "$tool")" "${brewless_bin}/${tool}"
+done
+printf '%s\n' '{}' >"$toolchain_manifest"
+for helper in scripts/install-brewfile.sh scripts/bootstrap-pnpm.sh; do
+    [ -x "$helper" ] || continue
+    out=$(PATH="$brewless_bin" HARMON_TOOLCHAIN_MANIFEST="$toolchain_manifest" \
+        "$helper" 2>&1) && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || fail "$helper rejected the toolchain manifest: $out"
+    out=$(PATH="$brewless_bin" HARMON_TOOLCHAIN_MANIFEST="${test_tmp}/absent-manifest" \
+        "$helper" 2>&1) && rc=0 || rc=$?
+    [ "$rc" -ne 0 ] || fail "$helper silently skipped setup on a brew-less host"
+    case "$out" in
+    *"Homebrew not found"*"task bootstrap"*) ;;
+    *) fail "$helper failed without setup instructions: $out" ;;
+    esac
+done
+if [ -x scripts/bootstrap-pnpm.sh ]; then
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"${brewless_bin}/node"
+    chmod +x "${brewless_bin}/node"
+    out=$(PATH="$brewless_bin" HARMON_TOOLCHAIN_MANIFEST="${test_tmp}/absent-manifest" \
+        ./scripts/bootstrap-pnpm.sh 2>&1) && rc=0 || rc=$?
+    [ "$rc" -ne 0 ] || fail "Node alone allowed an unmarked brew-less bootstrap"
+    case "$out" in
+    *"Homebrew not found"*"task bootstrap"*) ;;
+    *) fail "Node-only bootstrap failed without setup instructions: $out" ;;
+    esac
+fi
+# Generated installs must reach dependency installation and hook setup. Stubs
+# prove task wiring; a real consumer devcontainer install remains a QA check.
+if [ ! -f scripts/install-copier.sh ]; then
+    install_marker="${test_tmp}/dependencies-installed"
+    for tool in task; do
+        ln -s "$(command -v "$tool")" "${brewless_bin}/${tool}"
+    done
+    for stub in pnpm uv lefthook; do
+        printf '%s\n' '#!/usr/bin/env bash' 'echo "$0 $*" >>"${INSTALL_MARKER:?}"' >"${brewless_bin}/${stub}"
+        chmod +x "${brewless_bin}/${stub}"
+    done
+    PATH="$brewless_bin" HARMON_TOOLCHAIN_MANIFEST="$toolchain_manifest" \
+        INSTALL_MARKER="$install_marker" task install >/dev/null ||
+        fail "rendered task install failed with the toolchain manifest"
+    grep -q 'lefthook install' "$install_marker" || fail "rendered install never installed hooks"
+    if [ -f package.json ]; then
+        grep -q 'pnpm install' "$install_marker" || fail "rendered install never installed Node dependencies"
+    fi
+    if [ -f pyproject.toml ]; then
+        grep -q 'uv sync' "$install_marker" || fail "rendered install never installed Python dependencies"
+    fi
+    if PATH="$brewless_bin" HARMON_TOOLCHAIN_MANIFEST="${test_tmp}/absent-manifest" \
+        INSTALL_MARKER="$install_marker" task install >/dev/null 2>&1; then
+        fail "rendered task install succeeded on an unmarked brew-less host"
+    fi
+fi
+
 echo "==> bootstrap is a no-op when Homebrew is already installed"
 # Run against STUBS, never the real toolchain. `test:tasks` is part of `verify`,
 # and in a generated use_node repo `bootstrap` runs `brew install node` plus
@@ -390,13 +446,85 @@ if [ -n "${HARMON_TEST_PNPM_BOOTSTRAP_ONLY:-}" ]; then
     exit 0
 fi
 
+echo "==> Markdown lint excludes lane artifact paths regardless of Git tracking"
+markdown_repo="${test_tmp}/markdown-repo"
+mkdir -p "${markdown_repo}/.lane"
+git -C "$markdown_repo" init -q
+printf '%s\n' '.lane/' '.lane-report.md' >>"${markdown_repo}/.git/info/exclude"
+printf '%s\n' '# Fixture' >"${markdown_repo}/valid.md"
+printf '%s\n' '| A | B |' '| --- | --- |' '| one |' >"${markdown_repo}/.lane-report.md"
+cp "${markdown_repo}/.lane-report.md" "${markdown_repo}/.lane/x.md"
+printf '%s\n' '{"unformatted":true}' >"${markdown_repo}/.lane/x.json"
+(
+    cd "$markdown_repo"
+    "$repo/scripts/markdownlint.sh" check
+) || fail "Markdown lint scanned untracked lane artifacts"
+git -C "$markdown_repo" add -f .lane/x.md
+(
+    cd "$markdown_repo"
+    "$repo/scripts/markdownlint.sh" check
+) || fail "Markdown lint scanned tracked files under .lane/"
+# A non-lane Markdown file must still be checked, including spaces in paths.
+cp "${markdown_repo}/.lane/x.md" "${markdown_repo}/bad file.md"
+out=$(
+    cd "$markdown_repo"
+    "$repo/scripts/markdownlint.sh" check 2>&1
+) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "Markdown lint skipped non-lane Markdown"
+case "$out" in
+*'MD056'*) ;;
+*) fail "non-lane Markdown failed for the wrong reason: $out" ;;
+esac
+rm "${markdown_repo}/bad file.md"
+
+prettier_ignore="$repo/.prettierignore"
+if [ ! -f "$prettier_ignore" ]; then
+    prettier_ignore="$repo/template/${taskfile_jinja_open} if use_node %].prettierignore${taskfile_jinja_open} endif %].jinja"
+fi
+if [ -f "$prettier_ignore" ]; then
+    echo "==> Prettier excludes lane reports and envelopes"
+    cp "$prettier_ignore" "${markdown_repo}/.prettierignore"
+    prettier_bin=""
+    if prettier_bin="$(command -v prettier)"; then
+        :
+    elif [ -x "$repo/node_modules/.bin/prettier" ]; then
+        prettier_bin="$repo/node_modules/.bin/prettier"
+    fi
+    if [ -n "$prettier_bin" ]; then
+        (
+            cd "$markdown_repo"
+            "$prettier_bin" --check .
+        ) || fail "Prettier scanned lane artifacts"
+        cp "${markdown_repo}/.lane/x.json" "${markdown_repo}/bad.json"
+        out=$(
+            cd "$markdown_repo"
+            "$prettier_bin" --check . 2>&1
+        ) && rc=0 || rc=$?
+        [ "$rc" -ne 0 ] || fail "Prettier fixture did not detect nonignored unformatted JSON"
+        case "$out" in
+        *'bad.json'*) ;;
+        *) fail "Prettier negative control failed for the wrong reason: $out" ;;
+        esac
+    else
+        grep -Fxq '.lane/' "${markdown_repo}/.prettierignore" ||
+            fail "Prettier ignore entries omit .lane/"
+        grep -Fxq '.lane-report.md' "${markdown_repo}/.prettierignore" ||
+            fail "Prettier ignore entries omit .lane-report.md"
+        echo "SKIP: live Prettier check — Prettier is not installed; ignore entries verified."
+    fi
+fi
+
 echo "==> Semgrep wrapper preserves explicit scan targets"
 semgrep_bin="${test_tmp}/semgrep-bin"
 semgrep_args="${test_tmp}/semgrep-args"
+semgrep_env="${test_tmp}/semgrep-env"
 mkdir -p "$semgrep_bin"
 cat >"${semgrep_bin}/uvx" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"${SEMGREP_ARGS:?}"
+if [ -n "${SEMGREP_ENV:-}" ]; then
+    printf 'UV_TOOL_DIR=%s\nUV_CACHE_DIR=%s\n' "${UV_TOOL_DIR:-}" "${UV_CACHE_DIR:-}" >"$SEMGREP_ENV"
+fi
 EOF
 chmod +x "${semgrep_bin}/uvx"
 PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" \
@@ -406,6 +534,101 @@ PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" \
 if grep -Fxq . "$semgrep_args"; then
     fail "Semgrep wrapper appended a repository-wide target"
 fi
+
+echo "==> Semgrep wrapper falls back when default uv dirs are read-only and fails clearly when none is writable"
+semgrep_ro_home="${test_tmp}/semgrep-ro-home"
+semgrep_ro_xdg_data="${test_tmp}/semgrep-ro-xdg-data"
+semgrep_ro_xdg_cache="${test_tmp}/semgrep-ro-xdg-cache"
+semgrep_ro_tmp="${test_tmp}/semgrep-ro-tmp"
+semgrep_tmp="${test_tmp}/semgrep-tmp"
+semgrep_custom_tools="${test_tmp}/semgrep-custom-tools"
+semgrep_custom_cache="${test_tmp}/semgrep-custom-cache"
+mkdir -p "$semgrep_ro_home" "$semgrep_ro_xdg_data" "$semgrep_ro_xdg_cache" "$semgrep_ro_tmp" "$semgrep_tmp"
+chmod 500 "$semgrep_ro_home" "$semgrep_ro_xdg_data" "$semgrep_ro_xdg_cache" "$semgrep_ro_tmp"
+if [ -w "$semgrep_ro_home" ]; then
+    # Root with CAP_DAC_OVERRIDE ignores 0500 on directories; regular files still block mkdir -p.
+    chmod 700 "$semgrep_ro_home" "$semgrep_ro_xdg_data" "$semgrep_ro_xdg_cache" "$semgrep_ro_tmp"
+    rm -rf "$semgrep_ro_home" "$semgrep_ro_xdg_data" "$semgrep_ro_xdg_cache" "$semgrep_ro_tmp"
+    : >"$semgrep_ro_home"
+    : >"$semgrep_ro_xdg_data"
+    : >"$semgrep_ro_xdg_cache"
+    : >"$semgrep_ro_tmp"
+fi
+
+rm -f "$semgrep_args" "$semgrep_env"
+env -u UV_TOOL_DIR -u UV_CACHE_DIR -u XDG_DATA_HOME -u XDG_CACHE_HOME \
+    HOME="$semgrep_ro_home" TMPDIR="$semgrep_tmp" \
+    PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" SEMGREP_ENV="$semgrep_env" \
+    ./scripts/run-semgrep.sh scripts
+[ "$(tail -n 1 "$semgrep_args")" = "scripts" ] ||
+    fail "Semgrep wrapper lost explicit target under read-only HOME fallback"
+expected_fallback_tools="${semgrep_tmp}/uv-$(id -u)/tools"
+expected_fallback_cache="${semgrep_tmp}/uv-$(id -u)/cache"
+grep -Fxq "UV_TOOL_DIR=${expected_fallback_tools}" "$semgrep_env" ||
+    fail "Semgrep wrapper did not export fallback UV_TOOL_DIR under read-only HOME: $(cat "$semgrep_env")"
+grep -Fxq "UV_CACHE_DIR=${expected_fallback_cache}" "$semgrep_env" ||
+    fail "Semgrep wrapper did not export fallback UV_CACHE_DIR under read-only HOME: $(cat "$semgrep_env")"
+
+rm -f "$semgrep_args" "$semgrep_env"
+env -u UV_TOOL_DIR -u UV_CACHE_DIR \
+    XDG_DATA_HOME="$semgrep_ro_xdg_data" XDG_CACHE_HOME="$semgrep_ro_xdg_cache" TMPDIR="$semgrep_tmp" \
+    PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" SEMGREP_ENV="$semgrep_env" \
+    ./scripts/run-semgrep.sh scripts
+grep -Fxq "UV_TOOL_DIR=${expected_fallback_tools}" "$semgrep_env" ||
+    fail "Semgrep wrapper did not export fallback UV_TOOL_DIR under read-only XDG_DATA_HOME: $(cat "$semgrep_env")"
+grep -Fxq "UV_CACHE_DIR=${expected_fallback_cache}" "$semgrep_env" ||
+    fail "Semgrep wrapper did not export fallback UV_CACHE_DIR under read-only XDG_CACHE_HOME: $(cat "$semgrep_env")"
+
+rm -f "$semgrep_args" "$semgrep_env"
+HOME="$semgrep_ro_home" TMPDIR="$semgrep_tmp" \
+    UV_TOOL_DIR="$semgrep_custom_tools" UV_CACHE_DIR="$semgrep_custom_cache" \
+    PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" SEMGREP_ENV="$semgrep_env" \
+    ./scripts/run-semgrep.sh scripts
+grep -Fxq "UV_TOOL_DIR=${semgrep_custom_tools}" "$semgrep_env" ||
+    fail "Semgrep wrapper did not respect caller-exported UV_TOOL_DIR: $(cat "$semgrep_env")"
+grep -Fxq "UV_CACHE_DIR=${semgrep_custom_cache}" "$semgrep_env" ||
+    fail "Semgrep wrapper did not respect caller-exported UV_CACHE_DIR: $(cat "$semgrep_env")"
+
+rm -f "$semgrep_args" "$semgrep_env"
+out=$(env -u UV_TOOL_DIR -u UV_CACHE_DIR -u XDG_DATA_HOME -u XDG_CACHE_HOME \
+    HOME="$semgrep_ro_home" TMPDIR="$semgrep_ro_tmp" \
+    PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" \
+    ./scripts/run-semgrep.sh scripts 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] ||
+    fail "Semgrep wrapper succeeded when neither default nor TMPDIR was writable"
+[ ! -e "$semgrep_args" ] ||
+    fail "Semgrep wrapper invoked uvx despite unwritable uv directories"
+case "$out" in
+*"${semgrep_ro_home}/.local/share/uv/tools"*UV_TOOL_DIR*UV_CACHE_DIR*) ;;
+*) fail "Semgrep wrapper did not report the unwritable directory and UV_TOOL_DIR/UV_CACHE_DIR: $out" ;;
+esac
+
+rm -f "$semgrep_args" "$semgrep_env"
+semgrep_writable_home="${test_tmp}/semgrep-writable-home"
+mkdir -p "$semgrep_writable_home"
+env -u UV_TOOL_DIR -u UV_CACHE_DIR -u XDG_DATA_HOME -u XDG_CACHE_HOME \
+    HOME="$semgrep_writable_home" TMPDIR="$semgrep_tmp" \
+    PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" SEMGREP_ENV="$semgrep_env" \
+    ./scripts/run-semgrep.sh scripts
+grep -Fxq "UV_TOOL_DIR=" "$semgrep_env" ||
+    fail "Semgrep wrapper exported UV_TOOL_DIR when default tool dir was already writable: $(cat "$semgrep_env")"
+grep -Fxq "UV_CACHE_DIR=" "$semgrep_env" ||
+    fail "Semgrep wrapper exported UV_CACHE_DIR when default cache dir was already writable: $(cat "$semgrep_env")"
+
+rm -f "$semgrep_args" "$semgrep_env"
+out=$(HOME="$semgrep_ro_home" TMPDIR="$semgrep_tmp" \
+    UV_TOOL_DIR="${semgrep_ro_home}/tools" UV_CACHE_DIR="$semgrep_custom_cache" \
+    PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" \
+    ./scripts/run-semgrep.sh scripts 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] ||
+    fail "Semgrep wrapper succeeded with unwritable caller-exported UV_TOOL_DIR"
+[ ! -e "$semgrep_args" ] ||
+    fail "Semgrep wrapper invoked uvx despite unwritable caller-exported UV_TOOL_DIR"
+case "$out" in
+*"${semgrep_ro_home}/tools"*UV_TOOL_DIR*UV_CACHE_DIR*) ;;
+*) fail "Semgrep wrapper did not report unwritable caller-exported UV_TOOL_DIR: $out" ;;
+esac
+chmod -R u+w "$semgrep_ro_home" "$semgrep_ro_xdg_data" "$semgrep_ro_xdg_cache" "$semgrep_ro_tmp" 2>/dev/null || true
 
 echo "==> shell formatter preserves tracked paths and failures"
 format_repo="${test_tmp}/format-repo"

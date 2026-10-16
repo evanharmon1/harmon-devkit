@@ -53,8 +53,9 @@
 // classifies head moves from that record only.
 //
 // `--ruling FILE` appends ` [ruling <path> sha256=<hex>]` to the intervention
-// note: run.schema.json closes intervention items, so the digest travels in
-// the note, where a later reader can compare it against the file.
+// note, referencing a no-clobber snapshot in `runs/<run-id>/rulings/<hex>`.
+// The snapshot survives close's archive and later edits to the source file.
+// run.schema.json closes intervention items, so the digest travels in the note.
 //
 // Exit codes: 0 written (or an idempotent no-op), 1 refused, 2 usage.
 // The state root is always resolved from the current directory's
@@ -76,7 +77,7 @@ import {
   linkSync,
 } from 'node:fs'
 import { hostname } from 'node:os'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
@@ -465,6 +466,9 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
 }
 
 export function releaseSlateLock({ root, slate, session, force, reason }) {
+  if (force && (typeof reason !== 'string' || reason.trim() === '')) {
+    throw new UsageError('--force requires --reason')
+  }
   const { dir, file, registry } = lockPaths(root, slate)
   if (!existsSync(dir)) return null
   return withMutex(registry, () => {
@@ -473,8 +477,13 @@ export function releaseSlateLock({ root, slate, session, force, reason }) {
     if (held.session !== session && !force) {
       throw new Refusal(`slate ${slate} is locked by session ${held.session}; only that session may release it (or --force --reason)`)
     }
-    if (force && (typeof reason !== 'string' || reason.trim() === '')) {
-      throw new UsageError('--force requires --reason')
+    if (force) {
+      // Retain the observed owner and the operator's attribution BEFORE
+      // removing the reservation. If audit publication fails, keep the lock.
+      // This records intent: a crash before unlink may leave the lock held.
+      const audit = { action: 'force-release', at: resolveAt(undefined), session, reason, lock: held }
+      const auditPath = join(dir, 'recoveries', slate, `${randomBytes(16).toString('hex')}.json`)
+      publishExclusive(auditPath, `${JSON.stringify(audit, null, 2)}\n`, 'lock recovery')
     }
     unlinkSync(file)
     return held
@@ -522,16 +531,19 @@ function closeLastExit(record, exit, { required }) {
   last.exit = exit
 }
 
-function rulingSuffix(common, file) {
+function rulingSuffix(common, runId, file) {
   let absolute
   try {
     absolute = realpathSync(resolve(file))
   } catch {
     throw new Refusal(`ruling file not found: ${file}`)
   }
-  const rel = relative(common, absolute)
-  const shown = rel !== '' && !rel.startsWith('..') && !rel.startsWith(sep) ? rel : absolute
-  return ` [ruling ${shown} sha256=${sha256File(absolute)}]`
+  // Hash and publish the same read, not two reads of a mutable source.
+  const content = readFileSync(absolute)
+  const digest = createHash('sha256').update(content).digest('hex')
+  const snapshot = join(common, 'dev-flow-v2', 'runs', runId, 'rulings', digest)
+  publishExclusive(snapshot, content, 'ruling')
+  return ` [ruling ${relative(common, snapshot)} sha256=${digest}]`
 }
 
 // remediationRecord — the explicit remediation-push record (harmon-devkit#1386),
@@ -575,7 +587,7 @@ const MUTATORS = {
     if (args.kind !== 'asked' && args.kind !== 'other') throw new UsageError('--kind must be asked or other')
     if (typeof args.note !== 'string' || args.note.trim() === '') throw new UsageError('--note is required')
     guardTimestamp(record, args.at)
-    const note = args.ruling === undefined ? args.note : `${args.note}${rulingSuffix(context.common, args.ruling)}`
+    const note = args.ruling === undefined ? args.note : `${args.note}${rulingSuffix(context.common, record.run_id, args.ruling)}`
     record.interventions.push({ kind: args.kind, at: args.at, note })
     return `intervention (${args.kind})`
   },
@@ -594,6 +606,11 @@ const MUTATORS = {
     if (typeof args.head !== 'string' || !/^[0-9a-f]{40}$/.test(args.head)) throw new UsageError('--head must be a 40-hex SHA')
     if (typeof args.fingerprint !== 'string' || args.fingerprint === '') throw new UsageError('--fingerprint is required')
     guardTimestamp(record, args.at)
+    for (const binding of record.pr_bindings) {
+      if (isBefore(args.at, binding.bound_at)) {
+        throw new Refusal(`${args.at} is before PR binding #${binding.number} at ${binding.bound_at}; promotion cannot predate a recorded PR binding`)
+      }
+    }
     closeLastExit(record, args.exit ?? `ready-for-review: promoted at ${args.head}`, { required: true })
     record.outcome_transitions = appendChain(record.outcome_transitions, OUTCOME_FIELDS, {
       outcome: 'ready-for-review',
