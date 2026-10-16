@@ -330,6 +330,11 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
+The one supervising orchestrator (or owning solo session) performs run-record
+writes sequentially across `/review` and `/integrate`. Delegates return evidence
+and never write the run record. Keep this ownership rule even when a helper
+takes a mutex: it does not protect another writer that bypasses it.
+
 Every `run.json` replacement, including pass receipts, evidence registrations
 and stage transitions, must perform its read-modify-write inside
 `run-record.mjs`'s `withMutex(runPath, ...)` (`run.json.wlock`) and publish
