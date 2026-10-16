@@ -285,6 +285,26 @@ written.
 
 ## Step 6 — Apply
 
+The wrapper ships with the skill at `assets/groom.sh`. Run it from the target
+repository's root. In a consumer with a flattened skills tree, invoke
+`./.claude/skills/groom/assets/groom.sh` (or
+`./.agents/skills/groom/assets/groom.sh`). A consumer's `task groom` target
+calls that vendored wrapper and forwards `{{.CLI_ARGS}}`, with
+`interactive: true`; harmon-init #1387 supplies that target. For example:
+
+```yaml
+groom:
+  interactive: true
+  cmds:
+    - ./.claude/skills/groom/assets/groom.sh {{.CLI_ARGS}}
+```
+
+The Step 6 commands below use that target. Where it is not installed yet,
+replace `task groom --` with `./.claude/skills/groom/assets/groom.sh`.
+The wrapper resolves sibling scripts from its own physical location while
+repository operations use the caller's working directory. harmon-devkit's
+own target calls `./ai/skills/universal/groom/assets/groom.sh`.
+
 Applying is its OWN, separately supervised run — a deterministic, model-free
 sequence with no Claude session involved (issue #1015 challenge round 2,
 findings 1 and 2; challenge round 3 further deleted the wrapper's own
