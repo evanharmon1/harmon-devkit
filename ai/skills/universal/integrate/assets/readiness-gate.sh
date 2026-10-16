@@ -957,7 +957,9 @@ assert_closing_linkage "$scalars" "initial snapshot"
 # 3. Checks, page-safe from the commit itself: check runs plus legacy commit
 # statuses are what the PR's checks tab aggregates. `gh pr view`'s
 # statusCheckRollup caps at one page, so it cannot be the evidence here. The
-# evaluation is a function because it runs twice: here, and again immediately
+# A permission denial here is indeterminate, even if the Actions-only settle
+# fallback succeeded: workflow runs cannot prove external checks or statuses.
+# The evaluation is a function because it runs twice: here, and again immediately
 # before the verdict — the fetches between the two take real time, a rerun or
 # late-triggered workflow can turn the commit red inside that window, and
 # checks are deliberately not part of the content fingerprint, so nothing

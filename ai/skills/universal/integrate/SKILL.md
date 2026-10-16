@@ -10,7 +10,7 @@ description: >-
   .devflow.toml's review policy). Use when a draft PR exists and the dev loop
   calls for integrating it to ready-for-review. Invoke as /integrate [PR # or
   URL].
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*), Bash(${CLAUDE_SKILL_DIR}/../dev-flow-support/assets/settle-wait.sh checks:*), Bash(.claude/skills/dev-flow-support/assets/settle-wait.sh checks:*), Bash(ai/skills/universal/dev-flow-support/assets/settle-wait.sh checks:*)
 ---
 
 # Integrate
@@ -1143,8 +1143,27 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
+  **Permission fallback:** before reserving or triggering a review under any
+  `review_trigger` ordering, capture the primary rollup read's stdout, exit
+  status and stderr. A checks read is a recognised permission denial when its stderr contains
+  `Resource not accessible by` (any token kind) or it reports HTTP 403.
+  Only that denial selects the exact-head, fully paginated Actions helper
+  below, where skipped runs never count as pending; every other read failure
+  stays indeterminate.
+
+  ```sh
+  "$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n> \
+      --head <headRefOid> --timeout-seconds 1800 --interval-seconds 30 \
+      --format checks-json
+  ```
+
+  Apply integrator §3: on permission fallback, reserve nothing and trigger
+  nothing, return `pending` with `status=blocked`, `codex_cycle:null` and
+  `finder_cycles:[]`, preserve failing run IDs, and report the checks-read
+  blocker (see #1502); promotion still requires the readiness gate's complete evidence.
   **CI has settled only when every required check has CONCLUDED; a pending
-  check, or an empty check list, is indeterminate and never a pass**
+  check, an empty check list, or a permission failure on the checks read is
+  indeterminate and never a pass**
   (`AGENTS.md` § Readiness gate — GitHub populates that list
   asynchronously, so a read taken moments after a push reports nothing
   *having run*, not nothing *to run*).
@@ -1375,6 +1394,12 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
   Branch on the validated result:
 
+  - **`status: "blocked"` is terminal for the stage**, regardless of verdict,
+    cycle presence or review timing. Surface the integrator's §9 blocker
+    report (for the permission fallback, the token cannot read the checks
+    rollup; see #1502), preserve any failing-run findings it carries, do not
+    re-dispatch, and leave the PR draft. This rule takes precedence over every
+    pending-result retry below.
   - `verdict: "pending"` with `codex_cycle: null` — CI had not settled when
     the agent read it under an `after-ci` order, so it skipped the cycle
     without driving one (`ai/agents/integrator.md` §4 skips on an unsettled

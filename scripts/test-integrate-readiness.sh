@@ -164,6 +164,9 @@ done
 
 if [ -f "$GH_FIXTURES/fail-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/fail-endpoint")" <<<"$endpoint"; then
+    if [ -f "$GH_FIXTURES/fail-diagnostic" ]; then
+        cat "$GH_FIXTURES/fail-diagnostic" >&2
+    fi
     exit 92
 fi
 
@@ -2024,6 +2027,50 @@ jq -cn --arg head "$moved_sha" \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail head-mismatch
+
+# #1195 / integration-r3-codex-cloud-1: permission fallback runs no review.
+# Prove the documented no-cycle blocked/pending envelope validates for green,
+# failing and unavailable Actions evidence; never attach a prior clean cycle.
+echo "==> permission fallback returns schema-valid blocked pending without a cycle"
+for fallback_bucket in pass fail unavailable; do
+    write_defaults
+    fallback_base="$(write_integrator_result "fallback-${fallback_bucket}-base" null)"
+    fallback_result="${fixtures}/integrator-result-fallback-${fallback_bucket}.json"
+    jq --arg bucket "$fallback_bucket" '
+        .status = "blocked" | .payload.verdict = "pending" |
+        .payload.codex_cycle = null | .payload.finder_cycles = [] |
+        del(.payload.applied_dispositions) |
+        .payload.checks = (if $bucket == "unavailable" then [] else
+            [{name:"build",bucket:$bucket,run_id:"1195",required:false}] end) |
+        .payload.findings = (if $bucket == "fail" then
+            [{id:"integration-r1-human-1",body:"Actions run failed",source_id:"1195"}]
+            else [] end)' "$fallback_base" >"$fallback_result"
+    node "$validator" envelope "$fallback_result" >/dev/null ||
+        fail "permission fallback ${fallback_bucket}: no-cycle result failed validation"
+done
+
+echo "==> permission denials and other read failures stay indeterminate despite green Actions runs"
+# The gate deliberately reads page-safe REST check-runs, not the GraphQL
+# rollup. Exercise token-independent denial wording and a non-permission
+# failure at that read boundary: none can certify green Actions as readiness.
+for diagnostic in \
+    'GraphQL: Resource not accessible by integration (node.statusCheckRollup)' \
+    'GraphQL: Resource not accessible by personal access token (node.statusCheckRollup)' \
+    'HTTP 403' \
+    'HTTP 502: Bad Gateway'; do
+    write_defaults
+    jq -cn --arg head "$head_sha" '[{total_count:1,workflow_runs:[
+        {id:1,head_sha:$head,status:"completed",conclusion:"success",
+         workflow_id:1,event:"pull_request",check_suite_id:1,
+         head_branch:"feature-branch",pull_requests:[{number:493}]}]}]' \
+        >"${fixtures}/workflow-runs.pages.json"
+    printf 'check-runs' >"${fixtures}/fail-endpoint"
+    printf '%s\n' "$diagnostic" >"${fixtures}/fail-diagnostic"
+    run_gate
+    assert_gate 2 indeterminate fetch-failed
+    grep -Fq 'cannot fetch check runs for the head' <<<"$gate_out" ||
+        fail "read failure lost the decisive check evidence gap: $gate_out"
+done
 
 echo "==> a failing check run fails as checks-failing and names the check"
 write_defaults
