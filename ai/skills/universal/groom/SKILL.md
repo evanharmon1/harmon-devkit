@@ -75,7 +75,8 @@ recommending a `/triage` run.
 
 ## Step 0 — Setup
 
-- `DIR` — the first of these directories that contains a `SKILL.md`:
+- `DIR` — the skill directory your runner named; when none was named, the
+  first of these directories that contains a `SKILL.md`:
   `ai/skills/universal/groom`, `.agents/skills/groom`, `.claude/skills/groom`.
 - `REPO` — the `owner/repo` your runner named, or
   `gh repo view --json nameWithOwner -q .nameWithOwner` when none was named.

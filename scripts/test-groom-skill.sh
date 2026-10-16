@@ -2531,9 +2531,25 @@ export GH_STUB_REPO="$repo"
 # let it default to the real user's state directory).
 export GROOM_OUT_DIR="$tmp/groom-out"
 
+# The runner's DIR instruction and Bash grant prefixes must agree: the
+# headless worker has no repository settings to grant a relative alias.
+assert_audit_dir_grants() {
+    local expected_dir="$1" named_dir actual_grants expected_grants
+    named_dir="$(sed -n 's/^Skill directory (use exactly this path as DIR in every command): //p' "$GH_STUB_LOG")"
+    [ "$named_dir" = "$expected_dir" ] ||
+        fail "audit prompt must name DIR as '$expected_dir', got '$named_dir'"
+    actual_grants="$(grep -o 'Bash([^)]*/assets/groom-[^)]*)' "$GH_STUB_LOG" | sort)"
+    expected_grants="$(printf 'Bash(%s/assets/%s:*)\n' \
+        "$named_dir" groom-scan.sh "$named_dir" groom-verdicts.sh \
+        "$named_dir" groom-report.sh | sort)"
+    [ "$actual_grants" = "$expected_grants" ] ||
+        fail "every groom Bash grant must use the prompt's exact DIR: $actual_grants"
+}
+
 echo "==> wrapper: audit mode forces GROOM_EXECUTE=0"
 : >"$GH_STUB_LOG"
 [ "$(run "$wrapper")" = 0 ] || fail "wrapper audit run failed: $(cat "$tmp/out" "$tmp/err")"
+assert_audit_dir_grants "$(cd "$(dirname "$wrapper")/.." && pwd -P)"
 grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
@@ -2768,24 +2784,24 @@ for consumer_wrapper in "$fake_skill/assets/groom.sh" "$fake_root/groom-link/ass
         fail "consumer Step 6 report arguments must pass through unchanged"
 done
 
-echo "==> wrapper: symlinked audit uses physical skill paths and resets an inherited execute gate"
-: >"$GH_STUB_LOG"
-consumer_audit_rc=0
-(
-    cd "$fake_root"
-    env PATH="$tmp/bin:$PATH" GROOM_EXECUTE=1 \
-        ./groom-link/assets/groom.sh
-) >"$tmp/consumer-audit-out" 2>"$tmp/consumer-audit-err" || consumer_audit_rc=$?
-[ "$consumer_audit_rc" = 0 ] ||
-    fail "symlinked consumer audit failed: $(cat "$tmp/consumer-audit-out" "$tmp/consumer-audit-err")"
-grep -qF "Skill: $fake_skill/SKILL.md" "$GH_STUB_LOG" ||
-    fail "audit prompt must name the physical skill directory"
-grep -qF "Bash($fake_skill/assets/groom-scan.sh:*)" "$GH_STUB_LOG" ||
-    fail "audit grants must name the physical sibling assets"
-grep -qx "GROOM_EXECUTE=0" "$GH_STUB_LOG" ||
-    fail "consumer audit must reset an inherited GROOM_EXECUTE=1"
-grep -qF "repo view https://github.com/testowner/testrepo.git" "$GH_STUB_LOG" ||
-    fail "consumer audit must resolve the caller's origin"
+echo "==> wrapper: copied and symlinked audits name the exact DIR used by every groom Bash grant"
+for consumer_wrapper in "$fake_skill/assets/groom.sh" "$fake_root/groom-link/assets/groom.sh"; do
+    : >"$GH_STUB_LOG"
+    consumer_audit_rc=0
+    (
+        cd "$fake_root"
+        env PATH="$tmp/bin:$PATH" GROOM_EXECUTE=1 "$consumer_wrapper"
+    ) >"$tmp/consumer-audit-out" 2>"$tmp/consumer-audit-err" || consumer_audit_rc=$?
+    [ "$consumer_audit_rc" = 0 ] ||
+        fail "consumer audit failed: $(cat "$tmp/consumer-audit-out" "$tmp/consumer-audit-err")"
+    assert_audit_dir_grants "$fake_skill"
+    grep -qF "Skill: $fake_skill/SKILL.md" "$GH_STUB_LOG" ||
+        fail "audit prompt must name the physical skill directory"
+    grep -qx "GROOM_EXECUTE=0" "$GH_STUB_LOG" ||
+        fail "consumer audit must reset an inherited GROOM_EXECUTE=1"
+    grep -qF "repo view https://github.com/testowner/testrepo.git" "$GH_STUB_LOG" ||
+        fail "consumer audit must resolve the caller's origin"
+done
 
 echo "==> wrapper: --execute groom-report.sh works even when 'gh repo view' would fail (Codex 4012242636)"
 report_offline_log="$tmp/report-offline.log"
