@@ -562,6 +562,8 @@ Three cases, mutually exclusive:
 
   **1. Reserve and re-read, posting nothing.** Use the same project-installed
   integrate assets as step 2; shell variables do not survive between calls.
+  Use the dispatch's run record directory for `<record dir>` in both reservation
+  recipes below — the same directory the readiness gate takes as `--record`.
 
   ```bash
   repo="<owner/repo>"
@@ -570,6 +572,7 @@ Three cases, mutually exclusive:
   state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
+      --record "<record dir>" \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
       --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
   release_after_margin() {
@@ -914,6 +917,7 @@ explicit `--actor-id`:
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 reserve_args=(--state "$state_finder" --repo "$repo" --pr <n> \
     --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
+    --record "<record dir>" \
     --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
     --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
 reserve_exit=0

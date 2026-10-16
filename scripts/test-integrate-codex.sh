@@ -8296,6 +8296,18 @@ fi
 # documented recipe regresses to piping the helper into jq.
 echo "==> the integrator's trigger-timing snippet stops on any unknown order"
 integrator_md="$repo_root/ai/agents/integrator.md"
+echo "==> every shipped reservation recipe forwards the run record, including retries"
+node --input-type=module - "$integrator_md" <<'NODE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const text = fs.readFileSync(process.argv[2], 'utf8');
+const recipes = [...text.matchAll(/reserve_args=\(([\s\S]*?)\)/g)];
+assert.ok(recipes.length >= 2, 'extract both codex-cloud and per-finder reservation recipes');
+for (const [index, recipe] of recipes.entries()) {
+  assert.match(recipe[1], /(?:^|\s)--record\s+"<record dir>"(?:\s|$)/,
+    `reservation recipe ${index + 1} must forward the dispatch run record directory`);
+}
+NODE
 timing_snippet="$(awk '
     /^```sh$/ { block = ""; inside = 1; next }
     /^```$/ && inside { if (block ~ /trigger-timing/) { printf "%s", block; exit } inside = 0; next }
