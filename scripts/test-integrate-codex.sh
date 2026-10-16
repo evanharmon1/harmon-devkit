@@ -8297,10 +8297,17 @@ fi
 echo "==> the integrator's trigger-timing snippet stops on any unknown order"
 integrator_md="$repo_root/ai/agents/integrator.md"
 echo "==> every shipped reservation recipe forwards the run record, including retries"
-node --input-type=module - "$integrator_md" <<'NODE'
+node --input-type=module - "$integrator_md" "$repo_root/ai/skills/universal/integrate/SKILL.md" <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const text = fs.readFileSync(process.argv[2], 'utf8');
+const briefInputs = text.split('## 1. Read the brief before touching anything')[1]?.split('\n## 2.')[0];
+assert.match(briefInputs ?? '', /\*\*run record directory\*\*[\s\S]*?--record/,
+  'integrator required inputs must name the run record directory used by readiness');
+const skill = fs.readFileSync(process.argv[3], 'utf8');
+const dispatchInputs = skill.split('Hand the brief — every item')[1]?.split('\n  - `producer`')[0];
+assert.match(dispatchInputs ?? '', /\*\*run record directory\*\*[\s\S]*?--record/,
+  'dispatch checklist must hand over the run record directory itself');
 const recipes = [...text.matchAll(/reserve_args=\(([\s\S]*?)\)/g)];
 assert.ok(recipes.length >= 2, 'extract both codex-cloud and per-finder reservation recipes');
 for (const [index, recipe] of recipes.entries()) {

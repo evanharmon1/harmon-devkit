@@ -37,6 +37,9 @@ A workable brief names:
 - **`run_id` and `initiated_by`** — the dev-flow-v2 run's own identity
   (`human` or `foreman`), stamped verbatim into the envelope's `run` object.
   This is run-level bookkeeping only the orchestrator holds; never guess it.
+- **run record directory** — the directory containing this run's `run.json`,
+  supplied by the dispatch. It is the same directory the readiness gate takes
+  as `--record`; use it for `<record dir>` in the reservation recipes.
 - **`producer`** — the `{harness, model, tier}` triple identifying you, for
   the envelope's own `producer` object. The orchestrator dispatched you and
   knows which harness and model it invoked; you have no reliable way to
