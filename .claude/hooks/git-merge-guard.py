@@ -66,17 +66,20 @@ before the error -- so a parser gap costs a prompt, not a silent merge.
 The only silent (normal permission flow) shape is one fully literal command
 -- no quotes, escapes, expansions, globs, operators, newlines, `cd` or `-C`:
 
-    git merge [--no-edit|--no-ff|--ff|--ff-only] <ref>
-    git merge (--continue|--quit)
-    git pull (--ff-only|--no-rebase) [--no-edit] [<remote> [<ref>]]
+    git merge <ref>, with any of --no-edit --no-ff --ff --ff-only
+    git merge --continue | git merge --quit, alone
+    git pull [<remote> [<ref>]], with --ff-only and/or --no-rebase,
+             and optionally --no-edit
 
-run in the working directory Claude Code reports in the hook payload (a lane
-merges from its own worktree), where that checkout is on a named branch that
-is not main/master and
-differs from every remote's resolved default branch -- at least one remote
-default must resolve (`git remote set-head <remote> --auto`), or it asks. With
-several remotes, a branch that is the default of one remote whose HEAD is unset
-stays silent unless another remote's HEAD names it.
+Flags are a set: any combination of the listed flags, in any order and
+position, is the same shape (`git merge --no-edit --no-ff main` is silent).
+A shape is silent only when run in the working directory Claude Code reports
+in the hook payload (a lane merges from its own worktree), where that checkout
+is on a named branch that is not main/master and differs from every remote's
+resolved default branch -- at least one remote default must resolve
+(`git remote set-head <remote> --auto`), or it asks. With several remotes, a
+branch that is the default of one remote whose HEAD is unset stays silent
+unless another remote's HEAD names it.
 
 (The decision to remove guard-process-kill,
 https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-02-remove-guard-process-kill-hook.md,
