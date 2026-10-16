@@ -116,7 +116,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
-import { authorizedCeiling, isAuthorizedOverCap } from './lib/cap-authorizations.mjs'
+import { authorizedCeiling, isAuthorizedOverCap, integrationCycleAccounting } from './lib/cap-authorizations.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -790,15 +790,14 @@ function validateCrossDocumentConsistency(record, options = {}) {
   // admitted only when run.json's cap_authorizations[] authorizes it and every
   // round between (lib/cap-authorizations.mjs, the predicate dev-flow-exit.mjs
   // shares — harmon-devkit#1239); the cap itself is still the resolved value.
-  // Integration and remediation keep the plain comparison: no authorization
-  // covers them.
+  // Integration uses cumulative charged cycles from passes, never pass rounds.
   if (record.policy?.rounds) {
     const maxRoundByStage = new Map()
     for (const { doc } of record.adjudications) {
       const current = maxRoundByStage.get(doc.stage) ?? 0
       if (doc.round > current) maxRoundByStage.set(doc.stage, doc.round)
     }
-    for (const stage of ['challenge', 'review', 'integration', 'remediation']) {
+    for (const stage of ['challenge', 'review', 'remediation']) {
       const cap = record.policy.rounds[stage]
       const maxRound = maxRoundByStage.get(stage)
       const authorizable = stage === 'challenge' || stage === 'review'
@@ -809,6 +808,11 @@ function validateCrossDocumentConsistency(record, options = {}) {
             (authorizable ? ' and run.json records no cap authorization admitting it' : '')
         )
       }
+    }
+    for (const { envelope } of record.passes) {
+      if (envelope.role !== 'integrator') continue
+      const spend = integrationCycleAccounting(envelope.payload.codex_cycle, { run: record.run, cap: record.policy.rounds.integration })
+      if (!spend.admitted) fail(`policy.json: rounds.integration cap is ${record.policy.rounds.integration}, but charged cycle ${spend.charged} has no cap authorization admitting it`)
     }
   }
 
@@ -1285,8 +1289,19 @@ function renderDeferredFindings(record) {
 // run record authorizes; the plain `round n` otherwise. An unauthorized
 // over-cap round never reaches here: validateCrossDocumentConsistency
 // refuses the record first.
+function integrationSpendForRound(record, doc) {
+  const passes = record.passes.filter(({ envelope }) => envelope.role === 'integrator' && envelope.payload.integration_round === doc.round)
+  // Audit projections can omit passes; without one, disclose no cycle count.
+  if (passes.length !== 1) return null
+  return integrationCycleAccounting(passes[0].envelope.payload.codex_cycle, { run: record.run, cap: record.policy?.rounds?.integration })
+}
+
 function roundLabel(record, doc) {
   const cap = record.policy?.rounds?.[doc.stage]
+  if (doc.stage === 'integration' && cap !== undefined) {
+    const spend = integrationSpendForRound(record, doc)
+    return spend?.authorized ? `round ${doc.round} · charged cycle ${spend.charged}/${cap} (authorized)` : `round ${doc.round}`
+  }
   return isAuthorizedOverCap(record.run, doc.stage, doc.round, cap) ? `round ${doc.round}/${cap} (authorized)` : `round ${doc.round}`
 }
 

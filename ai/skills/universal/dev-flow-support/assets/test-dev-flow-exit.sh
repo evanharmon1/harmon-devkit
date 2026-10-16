@@ -999,10 +999,10 @@ const trajectory = (disposition) => [
 // The pushes are the explicit run-record entries (harmon-devkit#1386).
 const at = (m) => Date.parse(`2026-10-08T00:${m}:00Z`);
 const pushes = { pushes: [{ index: 2, head: head(2), findings: [entry(1).finding_id], at: at(15) }, { index: 4, head: head(3), findings: [entry(2).finding_id], at: at(25) }], unrecorded: 0 };
-assert.throws(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
-assert.equal(computeIntegrationExit(trajectory("delete"), 4, pushes).outcome, "converged");
+await assert.rejects(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
+assert.equal((await computeIntegrationExit(trajectory("delete"), 4, pushes)).outcome, "converged");
 // The same head move with no push recorded is a catch-up, never judged as a fix push.
-assert.equal(computeIntegrationExit(trajectory("fix"), 4, { pushes: pushes.pushes.slice(0, 1), unrecorded: 0 }).outcome, "converged");
+assert.equal((await computeIntegrationExit(trajectory("fix"), 4, { pushes: pushes.pushes.slice(0, 1), unrecorded: 0 })).outcome, "converged");
 console.log("tell-guard disposition check OK");
 '
 
@@ -1031,24 +1031,24 @@ for (const lastCharged of [2, 1]) {
     round(2, 2, 2, 1, [entry(2, "P2", disposition, { attacks_remediation: true, remedy: "delete" })]),
     round(3, 3, 3, lastCharged, []),
   ];
-  assert.throws(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
-  assert.equal(computeIntegrationExit(trajectory("delete"), 4, pushes).outcome, "converged");
+  await assert.rejects(() => computeIntegrationExit(trajectory("fix"), 4, pushes), (err) => err instanceof ExitIndeterminate && err.code === "tell-remediation-unrecorded");
+  assert.equal((await computeIntegrationExit(trajectory("delete"), 4, pushes)).outcome, "converged");
 }
 // Gating findings on an exempt cycle: one charged cycle of a cap of 2 is not capped,
 // although two cycles ran; charging the same cycle reaches the cap.
 const gating = (charged) => [round(1, 1, 1, 1, [entry(1, "P1", "fix")]), round(2, 2, 2, charged, [entry(2, "P1", "fix", { attacks_remediation: false, remedy: "fix" })])];
 const onePush = { pushes: pushes.pushes.slice(0, 1), unrecorded: 0 };
-assert.equal(computeIntegrationExit(gating(1), 2, onePush).outcome, "continue");
-assert.equal(computeIntegrationExit(gating(2), 2, onePush).outcome, "capped");
+assert.equal((await computeIntegrationExit(gating(1), 2, onePush)).outcome, "continue");
+assert.equal((await computeIntegrationExit(gating(2), 2, onePush)).outcome, "capped");
 // harmon-devkit#1446: a later integration pass repeating the same cycle ordinal
 // updates the cycle charged/exempt counts — rising to the cap escalates, while
 // an unchanged count keeps the continue outcome.
 const repeated = (recharged) => [...gating(1), round(3, 2, 2, recharged, [])];
-const unchanged = computeIntegrationExit(repeated(1), 2, onePush);
+const unchanged = await computeIntegrationExit(repeated(1), 2, onePush);
 assert.equal(unchanged.outcome, "continue");
 assert.equal(unchanged.reason, "gating_findings");
 assert.equal(unchanged.action, "fix");
-const escalated = computeIntegrationExit(repeated(2), 2, onePush);
+const escalated = await computeIntegrationExit(repeated(2), 2, onePush);
 assert.equal(escalated.outcome, "capped");
 assert.equal(escalated.reason, "cap_reached_with_gating_findings");
 assert.equal(escalated.action, "escalate");
@@ -1096,10 +1096,38 @@ const r = run(auth("review", 5));
 assert.equal(isAuthorizedOverCap(r, "review", 5, 4), true);
 assert.equal(isAuthorizedOverCap(r, "review", 4, 4), false);
 assert.equal(isAuthorizedOverCap(r, "review", 6, 4), false);
-// Integration authorizations are not supported: an integration entry admits nothing.
-assert.equal(authorizedCeiling(run(auth("integration", 5)), "integration", 4), 4);
+// Integration authorizations use charged cycles.
+assert.equal(authorizedCeiling(run(auth("integration", 5)), "integration", 4), 5);
 console.log("cap-authorization predicate OK");
 '
+
+echo "== integration authorization uses charged cycles, including retries and exemptions =="
+node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { computeIntegrationExit } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
+import { integrationCycleAccounting } from "./ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs";
+const auth = (round) => ({stage: "integration", round, actor: "maintainer", instruction: "one more cycle", at: "2026-10-16T00:00:00Z"});
+const run = { cap_authorizations: [auth(2)] };
+const round = (n, cycle, charged, exit_code = 0) => ({round:n, pass:{envelope:{payload:{findings:[], settled_at:"2026-10-16T00:00:00Z", codex_cycle:{head:String(cycle).repeat(40),cycle,charged,exempt:cycle-charged,exit_code}}}}});
+// Second pass is an incomplete first attempt of the authorized charged cycle;
+// its completed retry is still charged cycle 2, and cycle 3 is exempt.
+const rounds = [round(1,1,1),round(2,2,2,11),round(3,2,2),round(4,3,2)];
+const result = await computeIntegrationExit(rounds,1,{run});
+assert.equal(result.outcome,"converged");
+assert.equal(result.authorized_ceiling,2);
+assert.equal(result.cycles.length,3);
+for (const refused of [{}, {cap_authorizations:[auth(3)]}, {cap_authorizations:[{...auth(2),actor:""}]}]) {
+  await assert.rejects(computeIntegrationExit(rounds,1,{run:refused}), (err) => err.code === "cycle-over-cap");
+}
+await assert.rejects(computeIntegrationExit([...rounds,round(5,4,3)],1,{run}), (err) => err.code === "cycle-over-cap");
+await assert.rejects(computeIntegrationExit(rounds,0,{run}), (err) => err.code === "cycle-under-cap-zero");
+const snapshot = {cycle:3,charged:2,exempt:1,carried:{}};
+assert.equal(integrationCycleAccounting(snapshot,{run,cap:1}).charged,2);
+assert.equal(integrationCycleAccounting(snapshot,{run,cap:1,next:"exempt"}).charged,2);
+assert.equal(integrationCycleAccounting(snapshot,{run,cap:1,next:"charged"}).admitted,false);
+assert.throws(() => integrationCycleAccounting({cycle:3,charged:2}), /counts/);
+console.log("integration authorization accounting OK");
+JS
 
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"

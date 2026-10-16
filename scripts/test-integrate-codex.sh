@@ -5969,6 +5969,37 @@ esac
 [ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
     fail "a refused reservation must not increment: $(jq -r '.charged_cycles' "$state")"
 
+echo "==> integration authorization admits exactly charged cycle C+1 and its retry"
+auth_record="${test_tmp}/cap-authorization"
+mkdir -p "$auth_record"
+jq -n '{run_id:"run-a",cap_authorizations:[{stage:"integration",round:2,actor:"maintainer",instruction:"run charged cycle 2",at:"2026-10-16T00:00:00Z"}]}' >"$auth_record/run.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "authorized cycle must reserve"
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "authorization must charge exactly cycle 2"
+jq '.phase="attached" | .trigger_comment_id=4242 | .requested_at="2020-01-01T00:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 2 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "retry must retain authorized cycle"
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "retry spent another charged cycle"
+jq '.phase="attached" | .trigger_comment_id=4243 | .requested_at=.reserved_at' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s' "$classifier_prev" >"${fixtures}/head"
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null 2>&1; then
+    fail "one authorization cannot reserve charged cycle C+2"
+fi
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "refusal changed spend"
+jq '.run_id="another-run"' "$auth_record/run.json" >"$auth_record/foreign.json"
+mv "$auth_record/foreign.json" "$auth_record/run.json"
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null 2>&1; then
+    fail "foreign run authorization must be refused"
+fi
+
 echo "==> state from a different run cannot license an exemption"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"

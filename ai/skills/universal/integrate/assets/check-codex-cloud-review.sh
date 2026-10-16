@@ -80,7 +80,7 @@ Usage:
   check-codex-cloud-review.sh release --state FILE --note REASON
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
                                      [--previous-head SHA] [--run-id ID]
-                                     [--integration-cap N] [--integration-exempt-cap N]
+                                     [--integration-cap N] [--integration-exempt-cap N] [--record DIR]
                                      [--review-trigger after-ci|with-push|after-ci-first] [--remediation N]
   check-codex-cloud-review.sh trigger-timing --review-trigger after-ci|with-push|after-ci-first --remediation N
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
@@ -108,6 +108,10 @@ caller: a caller free to name any SHA could otherwise skip past a fix commit
 and manufacture an exemption. `--previous-head` is therefore optional and
 purely confirmatory — supply it to have the reservation refuse rather than
 proceed if your idea of the last reviewed head disagrees with the record.
+
+--record DIR optionally supplies run.json cap_authorizations, bound to --run-id.
+Only contiguous integration authorizations admit extra charged cycles; they never
+raise the exempt ceiling or enable a cap-0 stage.
 
 --integration-cap and --integration-exempt-cap make `reserve` REFUSE a cycle
 that would exceed the ceiling it belongs to. A ceiling checked only by the
@@ -302,6 +306,7 @@ reap_deadline_epoch=
 finder_slug=
 previous_head=
 run_id=
+record_dir=
 # harmon-init#752: the checkout `carry` computes patch identities in. Every
 # identity is taken between two named commits, so this directory supplies the
 # object database and nothing else — the index and the working tree are never
@@ -342,7 +347,7 @@ eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --review-trigger | --remediation | --repo-dir)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --record | --integration-cap | --integration-exempt-cap | --review-trigger | --remediation | --repo-dir)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -358,6 +363,7 @@ while [ "$#" -gt 0 ]; do
         --previous-head) previous_head=$2 ;;
         --run-id) run_id=$2 ;;
         --repo-dir) repo_dir=$2 ;;
+        --record) record_dir=$2 ;;
         --integration-cap) integration_cap=$2 ;;
         --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --review-trigger) review_trigger=$2 ;;
@@ -2738,12 +2744,6 @@ reserve)
             [ -z "$integration_exempt_cap" ] ||
                 [ "$((carried_exempt + 1))" -le "$integration_exempt_cap" ] ||
                 die "this cycle is exempt but the exempt ceiling ($integration_exempt_cap) is already spent; no cycle remains to reserve"
-            carried_exempt=$((carried_exempt + 1))
-        else
-            [ -z "$integration_cap" ] ||
-                [ "$((carried_charged + 1))" -le "$integration_cap" ] ||
-                die "the integration cap ($integration_cap) is already spent; no charged cycle remains to reserve"
-            carried_charged=$((carried_charged + 1))
         fi
     else
         # Attempt 2 re-triggers the SAME cycle after an incomplete first
@@ -2789,6 +2789,19 @@ reserve)
             integration_exempt_cap=$recorded_exempt_cap
         fi
     fi
+    # One accounting function serves reserve, the exit engine, renderer and gate.
+    # Only attempt 1 adds spend; retries retain the same cumulative snapshot.
+    accounting_module="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../dev-flow-support/assets/lib" && pwd -P)/cap-authorizations.mjs"
+    accounting_args=(--cycle "$(jq -cn --argjson c "$carried_charged" --argjson e "$carried_exempt" '{cycle:($c+$e),charged:$c,exempt:$e}')")
+    [ -z "$integration_cap" ] || accounting_args+=(--cap "$integration_cap")
+    [ -z "$record_dir" ] || accounting_args+=(--run "$record_dir/run.json" --run-id "$run_id")
+    [ "$attempt" != "1" ] || accounting_args+=(--next "$charge_class")
+    cycle_accounting="$(node "$accounting_module" "${accounting_args[@]}")" ||
+        die "cannot read integration cycle accounting or authorization record"
+    [ "$(jq -r '.admitted' <<<"$cycle_accounting")" = true ] ||
+        die "the integration cap ($integration_cap) is already spent; no authorized charged cycle remains to reserve"
+    carried_charged=$(jq -r '.charged' <<<"$cycle_accounting")
+    carried_exempt=$(jq -r '.exempt' <<<"$cycle_accounting")
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
         # that did not answer. A reviewer that answered "my code-review usage

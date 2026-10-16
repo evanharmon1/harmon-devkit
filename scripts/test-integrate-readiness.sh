@@ -3406,6 +3406,36 @@ cp "$clean_result" "${record_dir}/passes/integration-r2-codex-cloud.json"
 run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 2
 assert_gate 0 pass ready
 
+echo "==> integration authorization admits cycle C+1 without raising the resolved cap"
+# Reuse the complete two-cycle record above, first under cap 1 with no authority.
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
+assert_gate 2 indeterminate codex-cap-mismatch
+jq '.cap_authorizations=[{stage:"integration",round:2,actor:"maintainer",instruction:"run charged cycle 2",at:"2026-10-16T00:00:00Z"}]' \
+    "$record_dir/run.json" >"$record_dir/run.next"
+mv "$record_dir/run.next" "$record_dir/run.json"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
+assert_gate 0 pass ready
+# A retry adds a pass round, not a charged cycle. Persist that snapshot for 9f.
+jq '.payload.integration_round=3 | .payload.codex_cycle.attempt=2' "$clean_result" >"${clean_result}.next"
+mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "$record_dir/passes/integration-r3-codex-cloud.json"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
+assert_gate 0 pass ready
+# One exempt cycle after the authorized charged cycle keeps charged spend at 2.
+jq '.payload.integration_round=4 | .payload.codex_cycle.cycle=3 |
+    .payload.codex_cycle.attempt=1 | .payload.codex_cycle.charged=2 | .payload.codex_cycle.exempt=1' \
+    "$clean_result" >"${clean_result}.next"
+mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "$record_dir/passes/integration-r4-codex-cloud.json"
+jq '.charged_cycles=2 | .exempt_cycles=1' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1 --integration-exempt-cap 1
+assert_gate 0 pass ready
+jq '.payload.codex_cycle.charged=3 | .payload.codex_cycle.exempt=0' "$clean_result" >"${clean_result}.next"
+mv "${clean_result}.next" "$clean_result"
+run_gate --integrator-result "$clean_result" --integration-cap 1
+assert_gate 2 indeterminate codex-cap-mismatch
+
 echo "==> codex_cycle.cycle exceeding --integration-cap is codex-cap-mismatch"
 write_defaults
 cycle_three="$(jq -c '.cycle = 3' <<<"$(codex_cycle_json 0)")"

@@ -1689,6 +1689,11 @@ if [ "$codex_cycle" != null ]; then
         <<<"$codex_cycle" 2>/dev/null)" ||
         indeterminate malformed-data "codex_cycle carries no exit_code"
     if [ -n "$integration_cap" ]; then
+        cycle_accounting="$(node "$support_dir/lib/cap-authorizations.mjs" \
+            --run "$run_json" --run-id "$active_run_id" --cap "$integration_cap" --cycle "$codex_cycle")" ||
+            indeterminate malformed-data "integration cycle accounting or authorization record is unreadable"
+        [ "$(jq -r '.admitted' <<<"$cycle_accounting")" = true ] ||
+            indeterminate codex-cap-mismatch "codex_cycle exceeds --integration-cap $integration_cap without a contiguous authorization"
         cycle_number="$(jq -er '.cycle | select(type == "number")' \
             <<<"$codex_cycle" 2>/dev/null)" ||
             indeterminate malformed-data "codex_cycle carries no cycle number"
@@ -1725,8 +1730,6 @@ if [ "$codex_cycle" != null ]; then
                 indeterminate malformed-data "codex_cycle reports charged but no exempt count"
             [ "$((cycle_charged + cycle_exempt))" -eq "$cycle_number" ] ||
                 indeterminate malformed-data "codex_cycle.charged $cycle_charged + .exempt $cycle_exempt does not equal .cycle $cycle_number"
-            [ "$cycle_charged" -le "$integration_cap" ] ||
-                indeterminate codex-cap-mismatch "codex_cycle.charged $cycle_charged exceeds --integration-cap $integration_cap"
             # An unbounded exemption is a budget hole: without a declared
             # ceiling there is nothing to check an exempt count against, so a
             # pass claiming exempt cycles under a caller that never declared
@@ -1764,9 +1767,6 @@ if [ "$codex_cycle" != null ]; then
                     indeterminate codex-cap-mismatch "codex_cycle reports a charged/exempt split but the checker state records no counters to confirm it against"
                 fi
             fi
-        else
-            [ "$cycle_number" -le "$integration_cap" ] ||
-                indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
         fi
     fi
     # harmon-init#752. A CARRIED cycle is the one shape where no reviewer
@@ -2060,7 +2060,7 @@ integration_record="$(node --input-type=module -e '
 const [record, cap, validator, gated, engine] = process.argv.slice(1);
 const { integrationExitForRunDir, loadRunDir, ExitIndeterminate } = await import(engine);
 try {
-  integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
+  await integrationExitForRunDir(record, { integrationCap: Number(cap), validatorPath: validator });
 } catch (err) {
   if (!(err instanceof ExitIndeterminate)) throw err;
   console.log(JSON.stringify({ ok: false, reason: err.message }));
