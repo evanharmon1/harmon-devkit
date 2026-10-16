@@ -1136,9 +1136,11 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   on reviews alone rather than treating the absence as pass or fail.
   **Permission fallback:** before reserving or triggering a review under any
   `review_trigger` ordering, capture the primary rollup read's stdout, exit
-  status and stderr, switching only on HTTP 403 or `Resource not accessible by integration`
-  to the exact-head, fully paginated Actions helper below, where skipped
-  runs never count as pending.
+  status and stderr. A checks read is a recognised permission denial when its stderr contains
+  `Resource not accessible by` (any token kind) or it reports HTTP 403.
+  Only that denial selects the exact-head, fully paginated Actions helper
+  below, where skipped runs never count as pending; every other read failure
+  stays indeterminate.
 
   ```sh
   "$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n> \
@@ -1383,6 +1385,12 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
   Branch on the validated result:
 
+  - **`status: "blocked"` is terminal for the stage**, regardless of verdict,
+    cycle presence or review timing. Surface the integrator's §9 blocker
+    report (for the permission fallback, the token cannot read the checks
+    rollup; see #1502), preserve any failing-run findings it carries, do not
+    re-dispatch, and leave the PR draft. This rule takes precedence over every
+    pending-result retry below.
   - `verdict: "pending"` with `codex_cycle: null` — CI had not settled when
     the agent read it under an `after-ci` order, so it skipped the cycle
     without driving one (`ai/agents/integrator.md` §4 skips on an unsettled

@@ -214,8 +214,9 @@ attempt-2 retry §4 already describes.
   `review_trigger` value including `with-push`, probe the primary rollup with
   `gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link`;
   capture stdout, exit status AND stderr separately, including for
-  `--required`, never discard stderr. Only a recognised permission error
-  (HTTP 403 or `Resource not accessible by integration`) selects
+  `--required`, never discard stderr. A checks read is a recognised permission denial when its stderr contains
+  `Resource not accessible by` (any token kind) or it reports HTTP 403.
+  Only that permission denial selects
   `"$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo "$repo" --pr <n>
   --head <head> --timeout-seconds 1800 --interval-seconds 30 --format checks-json`.
   Preserve the helper's exit status and use its JSON stdout as `checks[]`;

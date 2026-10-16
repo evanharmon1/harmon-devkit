@@ -3903,7 +3903,7 @@ for required in (
     '--head <headRefOid> --timeout-seconds 1800',
     '--format checks-json',
     'fully paginated Actions helper',
-    'skipped\n  runs never count as pending',
+    'skipped runs never count as pending',
     'permission failure on the checks read is',
     'indeterminate and never a pass',
     '`review_trigger` ordering',
@@ -3920,7 +3920,7 @@ for grant in (
     assert grant in text.split('---', 2)[1], grant
 agent = (pathlib.Path(sys.argv[1]).parents[3] / 'agents/integrator.md').read_text()
 settle = agent.split('**CI settlement invariants', 1)[1].split('On the normal rollup path, `$checks`', 1)[0]
-for required in ('exit status AND stderr', 'HTTP 403', 'Resource not accessible by integration',
+for required in ('exit status AND stderr', 'HTTP 403', '`Resource not accessible by` (any token kind)',
                  '--format checks-json', 'checks_ready=true', 'failed_required=true',
                  'fallback exit 1', 'Exits 3/4', 'exit 5',
                  'Before §4 reserves or triggers anything',
@@ -3936,6 +3936,29 @@ for forbidden in ('independent of which read path', 'trigger first, then settle 
 for required in ('`codex_cycle_json_or_null=null`', "`finder_cycles_json='[]'`",
                  'no Codex review was requested', 'token with checks read (see #1502)'):
     assert required in agent, required
+# The same invariant must govern both documents, independent of token kind.
+permission_rule = ('A checks read is a recognised permission denial when its stderr contains '
+                   '`Resource not accessible by` (any token kind) or it reports HTTP 403.')
+for document in (settle, checks):
+    assert permission_rule in ' '.join(document.split()), permission_rule
+for diagnostic, denied in (
+    ('GraphQL: Resource not accessible by integration (node.statusCheckRollup)', True),
+    ('GraphQL: Resource not accessible by personal access token (node.statusCheckRollup)', True),
+    ('HTTP 403', True),
+    ('HTTP 502: Bad Gateway', False),
+):
+    assert ('Resource not accessible by' in diagnostic or 'HTTP 403' in diagnostic) == denied
+assert 'every other read failure' in checks
+assert 'Every other read failure' in settle
+branches = text.split('Branch on the validated result:', 1)[1]
+blocked = branches.index('**`status: "blocked"` is terminal for the stage**')
+pending = branches.index('`verdict: "pending"` with `codex_cycle: null`')
+assert blocked < pending, 'blocked results must stop before the generic pending retry'
+terminal = ' '.join(branches[blocked:pending].split())
+for required in ('regardless of verdict', "integrator's §9 blocker", '#1502',
+                 'preserve any failing-run findings', 'do not re-dispatch',
+                 'leave the PR draft', 'takes precedence'):
+    assert required in terminal, required
 assert 'actions_out=' not in agent
 assert '2>/dev/null' not in settle
 assert "sed -n 's/^RUN" not in agent

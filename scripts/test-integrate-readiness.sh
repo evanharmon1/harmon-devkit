@@ -2049,13 +2049,15 @@ for fallback_bucket in pass fail unavailable; do
         fail "permission fallback ${fallback_bucket}: no-cycle result failed validation"
 done
 
-echo "==> permission-denied check evidence is indeterminate despite green Actions runs"
+echo "==> permission denials and other read failures stay indeterminate despite green Actions runs"
 # The gate deliberately reads page-safe REST check-runs, not the GraphQL
-# rollup. Simulate both observed permission diagnostics at that read boundary
-# with green Actions evidence available: neither can pass.
+# rollup. Exercise token-independent denial wording and a non-permission
+# failure at that read boundary: none can certify green Actions as readiness.
 for diagnostic in \
+    'GraphQL: Resource not accessible by integration (node.statusCheckRollup)' \
     'GraphQL: Resource not accessible by personal access token (node.statusCheckRollup)' \
-    'gh: Resource not accessible by personal access token (HTTP 403)'; do
+    'HTTP 403' \
+    'HTTP 502: Bad Gateway'; do
     write_defaults
     jq -cn --arg head "$head_sha" '[{total_count:1,workflow_runs:[
         {id:1,head_sha:$head,status:"completed",conclusion:"success",
@@ -2067,7 +2069,7 @@ for diagnostic in \
     run_gate
     assert_gate 2 indeterminate fetch-failed
     grep -Fq 'cannot fetch check runs for the head' <<<"$gate_out" ||
-        fail "permission denial lost the decisive check evidence gap: $gate_out"
+        fail "read failure lost the decisive check evidence gap: $gate_out"
 done
 
 echo "==> a failing check run fails as checks-failing and names the check"
