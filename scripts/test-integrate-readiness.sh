@@ -1169,6 +1169,29 @@ printf '%s\n' '[[{"id":50,"body":"","user":{"id":1}}]]' >"${fixtures}/top.pages.
 run_checker_gate
 assert_gate 2 indeterminate checker-fast-path-unavailable
 
+# #1504: readiness delegates receipt classification to the live checker;
+# this suite's sibling checker stub supplies the clean result, while the
+# checker suite exercises actual marked/unmarked receipts and negative cases.
+for receipt_profile in legacy finder; do
+    echo "==> receipt comment keeps the $receipt_profile checker-only path available"
+    write_checker_defaults
+    if [ "$receipt_profile" = finder ]; then
+        jq --slurpfile registry "${repo_root}/agent-registry.json" '
+          .finder = ($registry[0].finders[] | select(.slug == "codex-cloud") |
+            {slug:.slug,actor_id:(.trusted_actor_id | tostring),actor_login:.trusted_actor_login,
+             trigger_mechanism:.collection.trigger.mechanism,trigger_body:.collection.trigger.body,
+             reviewer_login:.collection.trigger.reviewer_login} + .collection.terminal_signals)
+          ' "$recheck_state" >"$recheck_state.next"
+        mv "$recheck_state.next" "$recheck_state"
+    fi
+    jq -cn --arg head "$head_sha" '[[{id:8400,user:{id:199175422},
+      body:("<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn\u0027t find any major issues. Keep them coming!\n\n**Reviewed commit:** `" + $head + "`")}]]' \
+        >"${fixtures}/top.pages.json"
+    run_checker_gate
+    assert_gate 0 pass ready
+    grep -Fq 'CHECKER check' "$log" || fail "readiness did not recheck the receipt"
+done
+
 echo "==> R2: only resolved codex-cloud alone qualifies"
 for finders in '[]' '["coderabbit-cloud"]' '["codex-cloud","coderabbit-cloud"]'; do
     write_checker_defaults

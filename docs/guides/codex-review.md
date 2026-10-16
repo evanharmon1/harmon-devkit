@@ -878,6 +878,16 @@ implementation was split back out for deriving a head by parsing markdown, and
 is carried in harmon-devkit#1117. Do not expect a head to go clean from that
 row.
 
+Clean comment receipts may start with the exact line
+`<!-- codex-review-receipt:v1 -->` (with surrounding blank lines), followed by
+the existing clean sentence. The checker removes only that leading wrapper;
+actor, freshness, Reviewed-commit binding, severity badges and trailing-prose
+checks still apply to the original evidence. Unknown marker versions and
+markers after other content do not supply a clean verdict. Legacy unmarked
+receipts still work. This normalization is shared by legacy and
+`--finder codex-cloud` cycles; the registry's `clean_verdict` remains the
+sentence, and the readiness gate rechecks the same classifier.
+
 **Two shapes that are neither clean nor findings.** A **self-fix summary** —
 an unbadged report from the bot describing a fix *it* made, in a thread or as
 a top-level comment — is informational (harmon-devkit#675); a badged follow-up
