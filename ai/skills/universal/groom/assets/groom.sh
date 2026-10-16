@@ -297,7 +297,7 @@ prompt="You are running the groom skill's AUDIT mode headlessly over one reposit
 
 Repo: $repo
 Skill: $skill_dir/SKILL.md
-Skill directory (use exactly this path as DIR in every command): $skill_dir
+Skill directory (use exactly this path as DIR for groom commands; triage and any other skill keep their own DIR): $skill_dir
 Scratch directory (already created — write every dataset and report file
 here; do not run mktemp): $run_dir
 Mode: $mode_text

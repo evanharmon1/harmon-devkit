@@ -2535,7 +2535,7 @@ export GROOM_OUT_DIR="$tmp/groom-out"
 # headless worker has no repository settings to grant a relative alias.
 assert_audit_dir_grants() {
     local expected_dir="$1" named_dir actual_grants expected_grants
-    named_dir="$(sed -n 's/^Skill directory (use exactly this path as DIR in every command): //p' "$GH_STUB_LOG")"
+    named_dir="$(sed -n 's/^Skill directory (use exactly this path as DIR for groom commands; triage and any other skill keep their own DIR): //p' "$GH_STUB_LOG")"
     [ "$named_dir" = "$expected_dir" ] ||
         fail "audit prompt must name DIR as '$expected_dir', got '$named_dir'"
     actual_grants="$(grep -o 'Bash([^)]*/assets/groom-[^)]*)' "$GH_STUB_LOG" | sort)"
