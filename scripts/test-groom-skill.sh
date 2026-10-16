@@ -44,7 +44,9 @@ test_sha256() {
     fi
 }
 
-tmp="$(mktemp -d)"
+# Resolve symlinks (macOS /var -> /private/var): the wrapper names its
+# physical skill path, so expectations built under $tmp must match it.
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 stub_dir="$tmp/fixtures"
 mkdir -p "$tmp/bin" "$stub_dir"
