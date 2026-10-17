@@ -161,6 +161,29 @@ if [ "${1:-}" = "--help" ]; then
     exit 0
 fi
 printf '%s\n' "ARGS: $*" >>"${GH_STUB_LOG:?}"
+prev=""
+saw_settings=false
+for arg in "$@"; do
+    case "$arg" in
+    --allowedTools | --allowedTools=* | --allowed-tools | --allowed-tools=*)
+        echo "claude stub: --allowedTools is forbidden (splits spaced/comma paths): $arg" >&2
+        exit 96
+        ;;
+    esac
+    if [ "$prev" = "--settings" ]; then
+        saw_settings=true
+        printf 'SETTINGS_JSON=%s\n' "$arg" >>"${GH_STUB_LOG:?}"
+        jq -er '.permissions.allow[] | "GRANT:" + .' <<<"$arg" >>"${GH_STUB_LOG:?}" || {
+            echo "claude stub: invalid --settings JSON: $arg" >&2
+            exit 95
+        }
+    fi
+    prev="$arg"
+done
+if [ "$saw_settings" != true ]; then
+    echo "claude stub: missing --settings" >&2
+    exit 94
+fi
 printf '%s\n' "GROOM_EXECUTE=${GROOM_EXECUTE:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "GROOM_REPO=${GROOM_REPO:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "GROOM_SCRATCH=${GROOM_SCRATCH:-unset}" >>"${GH_STUB_LOG:?}"
@@ -2540,7 +2563,9 @@ assert_audit_dir_grants() {
     named_dir="$(sed -n 's/^Skill directory (use exactly this path as DIR for groom commands; triage and any other skill keep their own DIR): //p' "$GH_STUB_LOG")"
     [ "$named_dir" = "$expected_dir" ] ||
         fail "audit prompt must name DIR as '$expected_dir', got '$named_dir'"
-    actual_grants="$(grep -o 'Bash([^)]*/assets/groom-[^)]*)' "$GH_STUB_LOG" | sort)"
+    grep -qxF "GRANT:Read(//${expected_dir#/}/**)" "$GH_STUB_LOG" ||
+        fail "audit mode must grant Read on the exact skill directory '$expected_dir'"
+    actual_grants="$(sed -n 's/^GRANT:\(Bash(.*\/assets\/groom-.*)\)$/\1/p' "$GH_STUB_LOG" | sort)"
     expected_grants="$(printf 'Bash(%s/assets/%s:*)\n' \
         "$named_dir" groom-scan.sh "$named_dir" groom-verdicts.sh \
         "$named_dir" groom-report.sh | sort)"
@@ -2552,6 +2577,15 @@ echo "==> wrapper: audit mode forces GROOM_EXECUTE=0"
 : >"$GH_STUB_LOG"
 [ "$(run "$wrapper")" = 0 ] || fail "wrapper audit run failed: $(cat "$tmp/out" "$tmp/err")"
 assert_audit_dir_grants "$(cd "$(dirname "$wrapper")/.." && pwd -P)"
+expected_triage_dir="$(cd "ai/skills/universal/triage" && pwd -P)"
+grep -qxF "Triage skill: $expected_triage_dir/SKILL.md" "$GH_STUB_LOG" ||
+    fail "audit prompt must name the resolved triage SKILL.md"
+grep -qxF "Triage skill directory (use exactly this path as DIR for triage commands): $expected_triage_dir" "$GH_STUB_LOG" ||
+    fail "audit prompt must name the exact DIR for triage commands"
+grep -qxF "GRANT:Read(//${expected_triage_dir#/}/**)" "$GH_STUB_LOG" ||
+    fail "audit mode must grant Read on the resolved triage directory"
+grep -qxF "GRANT:Bash($expected_triage_dir/assets/triage-scan.sh:*)" "$GH_STUB_LOG" ||
+    fail "audit mode must grant triage-scan.sh under the exact path its prompt names"
 grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
@@ -2563,19 +2597,23 @@ grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
 scratch_val="$(grep -m1 '^GROOM_SCRATCH=' "$GH_STUB_LOG" | cut -d= -f2-)"
 expected_grant="Edit(//${scratch_val#/}/**)"
-# Anchored on the leading comma the wrapper always emits before the grant
-# (tools="$tools,Edit(...)"), so a MultiEdit(...)/NotebookEdit(...) grant —
-# which has no comma directly before "Edit(" — cannot satisfy this on its
-# own; no separate denylist needed (challenge round 2 finding).
-grep -qF -- ",$expected_grant" "$GH_STUB_LOG" ||
+# Anchored to the full discrete GRANT line emitted from --settings
+# permissions.allow, so a MultiEdit(...)/NotebookEdit(...) grant cannot
+# satisfy this on its own; no separate denylist needed (challenge round 2
+# finding, updated for issue #1507's JSON array grants).
+grep -qxF "GRANT:$expected_grant" "$GH_STUB_LOG" ||
     fail "worker Edit grant must be exactly run-dir-scoped"
 grep -q -- "Write(//" "$GH_STUB_LOG" &&
     fail "worker must not be granted a Write(path) rule (Claude Code does not honor it)"
 grep -q -- "--tools Read,Write,Bash,Agent,Task,Glob,Grep" "$GH_STUB_LOG" ||
     fail "worker must run with the audit-mode built-in tool set (Write included, per the comment above the grant)"
-for grant in "groom-scan.sh" "groom-verdicts.sh" "groom-report.sh" "Agent,Task,Glob,Grep"; do
-    grep -qF "$grant" "$GH_STUB_LOG" ||
+for grant in "groom-scan.sh" "groom-verdicts.sh" "groom-report.sh"; do
+    grep -q "^GRANT:Bash(.*/assets/$grant:\*)$" "$GH_STUB_LOG" ||
         fail "audit mode's tool grant must be unchanged — missing '$grant'"
+done
+for tool_grant in Agent Task Glob Grep "Bash(gh issue view:*)" "Bash(gh issue list:*)" "Bash(gh pr view:*)" "Bash(gh pr list:*)"; do
+    grep -qxF "GRANT:$tool_grant" "$GH_STUB_LOG" ||
+        fail "audit mode's tool grant must be unchanged — missing '$tool_grant'"
 done
 grep -qF "groom-apply.sh" "$GH_STUB_LOG" &&
     fail "audit mode's tool grant must not include groom-apply.sh (finding 7 — a fan-out session never applies)"
@@ -2803,6 +2841,133 @@ for consumer_wrapper in "$fake_skill/assets/groom.sh" "$fake_root/groom-link/ass
         fail "consumer audit must reset an inherited GROOM_EXECUTE=1"
     grep -qF "repo view https://github.com/testowner/testrepo.git" "$GH_STUB_LOG" ||
         fail "consumer audit must resolve the caller's origin"
+    # fake_root has no triage skill at all, so no triage grant or prompt line may appear.
+    grep -qF "triage-scan.sh" "$GH_STUB_LOG" &&
+        fail "audit without a triage skill must not grant triage-scan.sh"
+    grep -q "^Triage skill" "$GH_STUB_LOG" &&
+        fail "audit without a triage skill must not emit a Triage skill prompt line"
+done
+
+echo "==> wrapper: custom flattened destination resolves sibling triage (\$skill_dir/../triage) before relative fallbacks and grants triage-scan.sh under the exact path named in the prompt (issue #1507)"
+custom_root="$tmp/custom-dest-repo"
+custom_skills="$custom_root/vendored/skills"
+mkdir -p "$custom_skills/groom/assets" "$custom_skills/triage/assets" "$custom_root/.claude/skills/triage/assets"
+cp "$wrapper" "$custom_skills/groom/assets/groom.sh"
+chmod +x "$custom_skills/groom/assets/groom.sh"
+: >"$custom_skills/groom/SKILL.md"
+: >"$custom_skills/triage/SKILL.md"
+: >"$custom_root/.claude/skills/triage/SKILL.md"
+ln -s "$custom_skills/groom" "$custom_root/groom-entry"
+git -C "$custom_root" init -q
+git -C "$custom_root" remote add origin https://github.com/testowner/testrepo.git
+
+expected_custom_groom="$(cd "$custom_skills/groom" && pwd -P)"
+expected_custom_triage="$(cd "$custom_skills/triage" && pwd -P)"
+for custom_wrapper in "$custom_skills/groom/assets/groom.sh" "$custom_root/groom-entry/assets/groom.sh"; do
+    : >"$GH_STUB_LOG"
+    custom_rc=0
+    (
+        cd "$custom_root"
+        env PATH="$tmp/bin:$PATH" "$custom_wrapper"
+    ) >"$tmp/custom-audit-out" 2>"$tmp/custom-audit-err" || custom_rc=$?
+    [ "$custom_rc" = 0 ] ||
+        fail "custom flattened audit failed: $(cat "$tmp/custom-audit-out" "$tmp/custom-audit-err")"
+    assert_audit_dir_grants "$expected_custom_groom"
+    grep -qxF "Triage skill: $expected_custom_triage/SKILL.md" "$GH_STUB_LOG" ||
+        fail "custom flattened audit prompt must name sibling triage SKILL.md"
+    grep -qxF "Triage skill directory (use exactly this path as DIR for triage commands): $expected_custom_triage" "$GH_STUB_LOG" ||
+        fail "custom flattened audit prompt must name sibling triage DIR"
+    grep -qxF "GRANT:Read(//${expected_custom_triage#/}/**)" "$GH_STUB_LOG" ||
+        fail "custom flattened audit must grant Read on sibling triage directory"
+    grep -qxF "GRANT:Bash($expected_custom_triage/assets/triage-scan.sh:*)" "$GH_STUB_LOG" ||
+        fail "custom flattened audit must grant triage-scan.sh under the exact path named in the prompt"
+    grep -qF ".claude/skills/triage" "$GH_STUB_LOG" &&
+        fail "sibling triage (\$skill_dir/../triage) must take precedence over relative fallback (.claude/skills/triage)"
+done
+
+# When no sibling triage sits beside groom, the relative fallback still resolves
+# to a physical path and agrees between prompt and grant.
+rm -rf "$custom_skills/triage"
+expected_fallback_triage="$(cd "$custom_root/.claude/skills/triage" && pwd -P)"
+: >"$GH_STUB_LOG"
+fallback_rc=0
+(
+    cd "$custom_root"
+    env PATH="$tmp/bin:$PATH" "$custom_skills/groom/assets/groom.sh"
+) >"$tmp/fallback-audit-out" 2>"$tmp/fallback-audit-err" || fallback_rc=$?
+[ "$fallback_rc" = 0 ] ||
+    fail "relative-fallback triage audit failed: $(cat "$tmp/fallback-audit-out" "$tmp/fallback-audit-err")"
+grep -qxF "Triage skill: $expected_fallback_triage/SKILL.md" "$GH_STUB_LOG" ||
+    fail "fallback audit prompt must name the resolved fallback triage SKILL.md"
+grep -qxF "Triage skill directory (use exactly this path as DIR for triage commands): $expected_fallback_triage" "$GH_STUB_LOG" ||
+    fail "fallback audit prompt must name the resolved fallback triage DIR"
+grep -qxF "GRANT:Read(//${expected_fallback_triage#/}/**)" "$GH_STUB_LOG" ||
+    fail "fallback audit must grant Read on the resolved fallback triage directory"
+grep -qxF "GRANT:Bash($expected_fallback_triage/assets/triage-scan.sh:*)" "$GH_STUB_LOG" ||
+    fail "fallback audit must grant triage-scan.sh under the exact path named in the prompt"
+
+grep -qF '$DIR/../triage' "$skill_md" ||
+    fail "SKILL.md must document looking for triage beside the groom skill (\$DIR/../triage) before relative fallbacks"
+
+echo "==> wrapper: audit mode grants survive checkout and scratch paths containing a space or a comma as intact entries (issue #1507)"
+for special_case in "space:My Projects/space repo:My Projects/space out" "comma:acme,inc/comma,repo:acme,inc/comma,out"; do
+    label="${special_case%%:*}"
+    rest="${special_case#*:}"
+    repo_rel="${rest%%:*}"
+    out_rel="${rest#*:}"
+    special_root="$tmp/$repo_rel"
+    special_out="$tmp/$out_rel"
+    special_skills="$special_root/vendored/skills"
+    mkdir -p "$special_skills/groom/assets" "$special_skills/triage/assets"
+    cp "$wrapper" "$special_skills/groom/assets/groom.sh"
+    chmod +x "$special_skills/groom/assets/groom.sh"
+    : >"$special_skills/groom/SKILL.md"
+    : >"$special_skills/triage/SKILL.md"
+    git -C "$special_root" init -q
+    git -C "$special_root" remote add origin https://github.com/testowner/testrepo.git
+
+    : >"$GH_STUB_LOG"
+    special_rc=0
+    (
+        cd "$special_root"
+        env PATH="$tmp/bin:$PATH" GROOM_OUT_DIR="$special_out" "$special_skills/groom/assets/groom.sh"
+    ) >"$tmp/special-$label-out" 2>"$tmp/special-$label-err" || special_rc=$?
+    [ "$special_rc" = 0 ] ||
+        fail "$label-path audit run failed: $(cat "$tmp/special-$label-out" "$tmp/special-$label-err")"
+
+    special_groom="$(cd "$special_skills/groom" && pwd -P)"
+    special_triage="$(cd "$special_skills/triage" && pwd -P)"
+    special_scratch="$(grep -m1 '^GROOM_SCRATCH=' "$GH_STUB_LOG" | cut -d= -f2-)"
+    [ -n "$special_scratch" ] || fail "$label-path audit must record GROOM_SCRATCH"
+    assert_audit_dir_grants "$special_groom"
+
+    for intact_grant in \
+        "Read(//${special_scratch#/}/**)" \
+        "Read(//${special_groom#/}/**)" \
+        "Read(//${special_triage#/}/**)" \
+        "Edit(//${special_scratch#/}/**)" \
+        "Bash($special_groom/assets/groom-scan.sh:*)" \
+        "Bash($special_groom/assets/groom-verdicts.sh:*)" \
+        "Bash($special_groom/assets/groom-report.sh:*)" \
+        "Bash($special_triage/assets/triage-scan.sh:*)" \
+        "Bash(gh issue view:*)" \
+        "Bash(gh issue list:*)" \
+        "Bash(gh pr view:*)" \
+        "Bash(gh pr list:*)" \
+        "Agent" \
+        "Task" \
+        "Glob" \
+        "Grep"; do
+        grep -qxF "GRANT:$intact_grant" "$GH_STUB_LOG" ||
+            fail "$label-path audit lost or split grant '$intact_grant': $(grep '^GRANT:' "$GH_STUB_LOG")"
+    done
+    grant_count="$(grep -c '^GRANT:' "$GH_STUB_LOG")"
+    [ "$grant_count" -eq 16 ] ||
+        fail "$label-path audit must pass exactly 16 intact grants (got $grant_count): $(grep '^GRANT:' "$GH_STUB_LOG")"
+    [ -f "$special_scratch/report.html" ] ||
+        fail "$label-path audit report.html must survive in '$special_scratch'"
+    [ -f "$special_scratch/report.md" ] ||
+        fail "$label-path audit report.md must survive in '$special_scratch'"
 done
 
 echo "==> wrapper: --execute groom-report.sh works even when 'gh repo view' would fail (Codex 4012242636)"

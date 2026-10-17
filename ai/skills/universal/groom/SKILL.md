@@ -114,6 +114,10 @@ Before clustering and fanning out to subagents (Step 2), check whether the backl
   still counts once. Running a triage pass first ensures issues carry labels
   for every active classification axis and a work type, which produces
   coherent domain clusters for Step 2.
+- **Locating `triage`**: Use the triage skill directory your runner named as
+  `triage`'s `DIR`; when none was named, use the first of `$DIR/../triage`,
+  `ai/skills/universal/triage`, `.agents/skills/triage`,
+  `.claude/skills/triage` that contains a `SKILL.md`.
 - **Sharing `$SCRATCH`**: Both skills run in the same `$SCRATCH` workspace. Triage writes its scan to `$SCRATCH/triage-scan.json` and its report to `$SCRATCH/triage-report.md`. Both skills share the underlying scan projection (`ai/skills/universal/issue-title-support/assets/issue-conformance.jq`) and label vocabulary discovery (`ai/skills/universal/triage/assets/triage-apply.sh`).
 - **Reporting**: Groom's consolidation step records whether the pre-audit triage pass ran via `groom-verdicts.sh join ... --pre-audit-triage <ran|not run>`, and the generated report's `## Stats` summary block explicitly reports `- Pre-audit triage pass: <ran|not run>`.
 
