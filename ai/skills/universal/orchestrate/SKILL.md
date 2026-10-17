@@ -245,6 +245,7 @@ it supports, never a hand edit:
 
 - `transition`, which also appends the matching transition receipt;
 - `intervention`;
+- `authorize-cap` for one attributable maintainer instruction, shared with solo runs;
 - `bind-pr`;
 - `close`.
 
@@ -275,6 +276,22 @@ return evidence; they never write the run record. Each of those writers runs
 the same candidate, validate, rename and readback sequence. Parallel writers
 must first use `run-record.mjs`'s shared mutex and validated writer; its lock
 does not protect a caller that bypasses it.
+
+For a maintainer-authorized round above the resolved cap, use
+`run-record.mjs authorize-cap --slate <id> --session <id> --run-id <id>
+--stage <challenge|review|integration> --round <n> --actor <maintainer-identity>
+--instruction '<verbatim session instruction>' --at <instruction-UTC-time>`.
+An agent never authorizes itself: the writer records the maintainer's instruction,
+which may precede or follow the round. For integration, `round` names the charged
+cycle count, not a pass or retry. Each intervening over-cap round needs its own
+entry; malformed or duplicate entries refuse. A cap of 0 stays disabled. Never
+rewrite the resolved caps in `policy.json`. Continue the same run's numbering
+and show `round n/cap (authorized) — maintainer authorized on <date>` in the
+stage ledger, citing the instruction verbatim, actor and time; the PR body's
+budget line discloses that same overage alongside rigor overrides
+(harmon-devkit#683). Follow `/review`'s authorization procedure and ordinary
+convergence rules. An older merge-base engine/schema under `--closure` fails
+closed; report compatibility refusal rather than bypassing that trusted engine.
 
 Point an intervention that rests on a ruling file at it with
 `--ruling FILE`: the writer copies those bytes into the run's

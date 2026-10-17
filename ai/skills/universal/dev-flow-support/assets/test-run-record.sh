@@ -161,6 +161,35 @@ expect_refused "reservation narrower than the plan" "names issue(s) 12, 13, 14 o
 [ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "a refused narrowing changed the lock"
 pass "--issues that would leave plan issues unreserved are refused"
 
+# -- attributable cap authorizations use the same validated writer ----------
+instruction=$'Please run review round 2.
+Keep the resolved cap unchanged.'
+rr alice authorize-cap --run-id run-a --stage review --round 2 --actor maintainer \
+    --instruction "$instruction" --at 2026-01-01T00:00:30Z >/dev/null
+jq -e --arg instruction "$instruction" '.cap_authorizations == [{stage:"review",round:2,actor:"maintainer",instruction:$instruction,at:"2026-01-01T00:00:30Z"}]' "$run" >/dev/null ||
+    fail "authorization did not retain all fields verbatim"
+cp "$run" "$tmp/auth-before.json"
+expect_refused "duplicate authorization" "duplicates cap_authorizations" \
+    rr alice authorize-cap --run-id run-a --stage review --round 2 --actor maintainer --instruction again
+cmp -s "$run" "$tmp/auth-before.json" || fail "duplicate authorization changed run.json"
+for field in stage round actor instruction; do
+    args=(--stage challenge --round 2 --actor maintainer --instruction authorize)
+    case "$field" in
+    stage) args[1]=remediation ;;
+    round) args[3]=0 ;;
+    actor) args[5]=' ' ;;
+    instruction) args[7]=' ' ;;
+    esac
+    expect_refused "malformed authorization $field" "malformed entry" \
+        rr alice authorize-cap --run-id run-a "${args[@]}"
+    cmp -s "$run" "$tmp/auth-before.json" || fail "malformed $field changed run.json"
+done
+expect_refused "foreign-session authorization" "alice" \
+    rr bob authorize-cap --run-id run-a --stage challenge --round 2 --actor maintainer --instruction authorize
+cmp -s "$run" "$tmp/auth-before.json" || fail "foreign session changed run.json"
+no_candidates authorization
+pass "authorization preserves attribution, refuses duplicates/malformed entries and enforces session ownership atomically"
+
 # -- transitions -----------------------------------------------------------
 rr alice transition --run-id run-a --stage claim --exit "resolved" --at 2026-01-01T00:01:00Z >/dev/null
 [ "$(jq -r '.stage_transitions | map(.stage) | join(",")' "$run")" = "kickoff,claim" ] || fail "claim transition not recorded"

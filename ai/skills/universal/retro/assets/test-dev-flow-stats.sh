@@ -4995,6 +4995,16 @@ echo "$out" | jq -e '.rounds[0].pass_count == 0 and .rounds[0].blocked_passes ==
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
+echo "== cap authorization ceilings survive real stats and retro projections =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+jq '.cap_authorizations = [{stage:"review",round:4,actor:"maintainer",instruction:"run review round 4",at:"2026-10-17T00:00:00Z"},{stage:"integration",round:5,actor:"maintainer",instruction:"run charged cycle 5",at:"2026-10-17T00:00:00Z"}]' \
+    "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.authorized_ceiling.review == 4' >/dev/null || fail "stats lost authorized review ceiling: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq 'authorized ceiling 4' <<<"$report_out" || fail "retro lost authorized ceiling: $report_out"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+
 echo "== engine attribution stays unverified when no verification ledger exists =="
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"

@@ -3143,6 +3143,13 @@ such instruction as `{stage, round, actor, instruction, at}`: the stage
 the instruction verbatim, and when. An entry records a human instruction; an agent never writes
 one on its own judgement, including after the fact to make a recorded round
 fit; a maintainer may authorize a round before or after it runs.
+The orchestrator or solo session records that instruction through
+`run-record.mjs authorize-cap --slate <id> --session <id> --run-id <id>
+--stage <stage> --round <n> --actor <identity> --instruction '<verbatim>' --at <UTC>`.
+The writer uses the ordinary candidate, validate, rename and readback discipline;
+it does not authenticate the speaker, so the caller must retain the attributable
+maintainer instruction. An older merge-base engine/schema under `--closure`
+refuses unsupported authorizations; keep that fail-closed compatibility blocker.
 `validate-result-schemas.mjs run` rejects an entry with any field missing or
 blank, any other stage, and a second entry for the same `(stage, round)`.
 Whether the round really lies above the cap is not the validator's to decide,
@@ -3160,6 +3167,9 @@ refuses an unauthorized one. `policy.json`'s `rounds` are never rewritten to
 admit a round, and nothing reads a raised copy as authority. The effective
 ceiling is computed in memory and reported beside the resolved cap as the
 verdict's `authorized_ceiling`, which is absent when nothing was authorized.
+The stats trajectory carries those ceilings in an optional `authorized_ceiling`
+map keyed by stage; retro shows each stage's ceiling beside its original cap.
+Integration permission is disclosed without claiming a measured cycle count.
 
 **For integration authorizations, `round` is the charged cycle count, not
 the adjudication pass round.** Retries fold into the same cycle; exempt
