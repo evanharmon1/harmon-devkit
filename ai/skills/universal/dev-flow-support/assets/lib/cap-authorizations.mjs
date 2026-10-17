@@ -141,6 +141,18 @@ async function main(argv) {
     const { readFileSync } = await import("node:fs");
     run = JSON.parse(readFileSync(args["--run"], "utf8"));
     if (!args["--run-id"] || run.run_id !== args["--run-id"]) throw new Error("authorization record does not match --run-id");
+    // Reserve must reject the whole collection that readiness would reject,
+    // even when one valid entry alone would authorize the requested cycle.
+    if (Object.hasOwn(run, "cap_authorizations")) {
+      if (!Array.isArray(run.cap_authorizations)) throw new Error("cap_authorizations must be an array");
+      const seen = new Set();
+      for (const entry of run.cap_authorizations) {
+        if (!isWellFormed(entry)) throw new Error("cap_authorizations contains a malformed entry");
+        const key = `${entry.stage}:${entry.round}`;
+        if (seen.has(key)) throw new Error("cap_authorizations contains a duplicate (stage, round)");
+        seen.add(key);
+      }
+    }
   }
   const result = integrationCycleAccounting(JSON.parse(args["--cycle"]), {
     run, cap: args["--cap"] === undefined ? undefined : Number(args["--cap"]), next: args["--next"] ?? null,

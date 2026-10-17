@@ -6039,6 +6039,26 @@ echo "==> integration authorization admits exactly charged cycle C+1 and its ret
 auth_record="${test_tmp}/cap-authorization"
 mkdir -p "$auth_record"
 jq -n '{run_id:"run-a",cap_authorizations:[{stage:"integration",round:2,actor:"maintainer",instruction:"run charged cycle 2",at:"2026-10-16T00:00:00Z"}]}' >"$auth_record/run.json"
+cp "$auth_record/run.json" "$auth_record/valid.json"
+cp "$state" "$auth_record/state-before.json"
+for invalid_authorization in \
+    '.cap_authorizations += [(.cap_authorizations[0] | .round=0)]' \
+    '.cap_authorizations += [(.cap_authorizations[0] | .instruction="another instruction")]' \
+    '.cap_authorizations += [(.cap_authorizations[0] | .stage="remediation")]' \
+    '.cap_authorizations += [(.cap_authorizations[0] | del(.actor))]' \
+    '.cap_authorizations = {}'; do
+    echo "==> reserve rejects an invalid authorization collection: $invalid_authorization"
+    jq "$invalid_authorization" "$auth_record/valid.json" >"$auth_record/run.json"
+    if invalid_auth_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
+        --integration-cap 1 --integration-exempt-cap 1 2>&1)"; then
+        fail "invalid authorization collection must not reserve: $invalid_authorization"
+    fi
+    grep -Fq 'cap_authorizations' <<<"$invalid_auth_out" ||
+        fail "refusal must identify the invalid collection: $invalid_auth_out"
+    cmp -s "$state" "$auth_record/state-before.json" || fail "invalid collection changed the reserved state"
+done
+cp "$auth_record/valid.json" "$auth_record/run.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
     --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
     --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "authorized cycle must reserve"
