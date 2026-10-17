@@ -77,7 +77,8 @@ it in the summary; never work around it).
 
 Set two values and a scratch directory:
 
-- `DIR` — the first of these directories that contains a `SKILL.md`:
+- `DIR` — the skill directory your runner named; when none was named, the
+  first of these directories that contains a `SKILL.md`:
   `ai/skills/universal/triage`, `.agents/skills/triage`,
   `.claude/skills/triage`.
 - `REPO` — the `owner/repo` your runner named. If none was named, run
