@@ -32,7 +32,7 @@ jobs:
       # CI GitHub App token, not GITHUB_TOKEN: PRs opened by GITHUB_TOKEN never
       # trigger CI, and branch protection requires those checks to pass before
       # the release PR can merge. (Same App the claude-* workflows use.)
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.CI_APP_CLIENT_ID }}
@@ -63,7 +63,7 @@ jobs:
       # `if: steps.release.outputs.release_created` would also fire when the
       # output is the string "false", running these release-only steps (with an
       # empty TAG) on every ordinary push to main.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: dispatch-token
         if: steps.release.outputs.release_created == 'true'
         with:
