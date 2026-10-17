@@ -6035,6 +6035,57 @@ esac
 [ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
     fail "a refused reservation must not increment: $(jq -r '.charged_cycles' "$state")"
 
+echo "==> integration authorization admits exactly charged cycle C+1 and its retry"
+auth_record="${test_tmp}/cap-authorization"
+mkdir -p "$auth_record"
+jq -n '{run_id:"run-a",cap_authorizations:[{stage:"integration",round:2,actor:"maintainer",instruction:"run charged cycle 2",at:"2026-10-16T00:00:00Z"}]}' >"$auth_record/run.json"
+cp "$auth_record/run.json" "$auth_record/valid.json"
+cp "$state" "$auth_record/state-before.json"
+for invalid_authorization in \
+    '.cap_authorizations += [(.cap_authorizations[0] | .round=0)]' \
+    '.cap_authorizations += [(.cap_authorizations[0] | .instruction="another instruction")]' \
+    '.cap_authorizations += [(.cap_authorizations[0] | .stage="remediation")]' \
+    '.cap_authorizations += [(.cap_authorizations[0] | del(.actor))]' \
+    '.cap_authorizations = {}'; do
+    echo "==> reserve rejects an invalid authorization collection: $invalid_authorization"
+    jq "$invalid_authorization" "$auth_record/valid.json" >"$auth_record/run.json"
+    if invalid_auth_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
+        --integration-cap 1 --integration-exempt-cap 1 2>&1)"; then
+        fail "invalid authorization collection must not reserve: $invalid_authorization"
+    fi
+    grep -Fq 'cap_authorizations' <<<"$invalid_auth_out" ||
+        fail "refusal must identify the invalid collection: $invalid_auth_out"
+    cmp -s "$state" "$auth_record/state-before.json" || fail "invalid collection changed the reserved state"
+done
+cp "$auth_record/valid.json" "$auth_record/run.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "authorized cycle must reserve"
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "authorization must charge exactly cycle 2"
+jq '.phase="attached" | .trigger_comment_id=4242 | .requested_at="2020-01-01T00:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_new" --attempt 2 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "retry must retain authorized cycle"
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "retry spent another charged cycle"
+jq '.phase="attached" | .trigger_comment_id=4243 | .requested_at=.reserved_at' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+printf '%s' "$classifier_prev" >"${fixtures}/head"
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null 2>&1; then
+    fail "one authorization cannot reserve charged cycle C+2"
+fi
+[ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "refusal changed spend"
+jq '.run_id="another-run"' "$auth_record/run.json" >"$auth_record/foreign.json"
+mv "$auth_record/foreign.json" "$auth_record/run.json"
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" \
+    --integration-cap 1 --integration-exempt-cap 1 >/dev/null 2>&1; then
+    fail "foreign run authorization must be refused"
+fi
+
 echo "==> state from a different run cannot license an exemption"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
@@ -8331,6 +8382,25 @@ fi
 # documented recipe regresses to piping the helper into jq.
 echo "==> the integrator's trigger-timing snippet stops on any unknown order"
 integrator_md="$repo_root/ai/agents/integrator.md"
+echo "==> every shipped reservation recipe forwards the run record, including retries"
+node --input-type=module - "$integrator_md" "$repo_root/ai/skills/universal/integrate/SKILL.md" <<'NODE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const text = fs.readFileSync(process.argv[2], 'utf8');
+const briefInputs = text.split('## 1. Read the brief before touching anything')[1]?.split('\n## 2.')[0];
+assert.match(briefInputs ?? '', /\*\*run record directory\*\*[\s\S]*?--record/,
+  'integrator required inputs must name the run record directory used by readiness');
+const skill = fs.readFileSync(process.argv[3], 'utf8');
+const dispatchInputs = skill.split('Hand the brief — every item')[1]?.split('\n  - `producer`')[0];
+assert.match(dispatchInputs ?? '', /\*\*run record directory\*\*[\s\S]*?--record/,
+  'dispatch checklist must hand over the run record directory itself');
+const recipes = [...text.matchAll(/reserve_args=\(([\s\S]*?)\)/g)];
+assert.ok(recipes.length >= 2, 'extract both codex-cloud and per-finder reservation recipes');
+for (const [index, recipe] of recipes.entries()) {
+  assert.match(recipe[1], /(?:^|\s)--record\s+"<record dir>"(?:\s|$)/,
+    `reservation recipe ${index + 1} must forward the dispatch run record directory`);
+}
+NODE
 timing_snippet="$(awk '
     /^```sh$/ { block = ""; inside = 1; next }
     /^```$/ && inside { if (block ~ /trigger-timing/) { printf "%s", block; exit } inside = 0; next }

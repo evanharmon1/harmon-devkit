@@ -1343,6 +1343,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   - `run_id` and `initiated_by` — the active run's identity, read from
     `--record <dir>`'s own `run.json` (the same two values §6's gate binds
     the result to before trusting it);
+  - the **run record directory** itself — the same directory §6's readiness
+    gate takes as `--record`, for the agent's reservation recipes;
   - `producer` — the `{harness, model, tier}` triple naming the harness and
     model you are dispatching it with and the tier resolved for the
     integrator role (economy by default); the agent cannot introspect this

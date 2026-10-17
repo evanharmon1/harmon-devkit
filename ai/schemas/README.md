@@ -3132,13 +3132,15 @@ suspect for all of them alike.
 read `n/a` when no matching pass supplies them (always true for integration-
 stage findings, which carry neither field at all).
 
-**A challenge or review round above the resolved cap needs an attributable
-authorization** ([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239)).
+**A challenge or review round, or charged integration cycle, above the
+resolved cap needs an attributable authorization**
+([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239),
+[#1426](https://github.com/evanharmon1/harmon-devkit/issues/1426)).
 A cap is a ceiling the agent never raises on its own; a maintainer may still
 order one more round. `run.json`'s optional `cap_authorizations[]` records each
 such instruction as `{stage, round, actor, instruction, at}`: the stage
-(`challenge` or `review`), the round it admits, who gave it, the instruction
-verbatim, and when. An entry records a human instruction; an agent never writes
+(`challenge`, `review`, or `integration`), the round it admits, who gave it,
+the instruction verbatim, and when. An entry records a human instruction; an agent never writes
 one on its own judgement, including after the fact to make a recorded round
 fit; a maintainer may authorize a round before or after it runs.
 `validate-result-schemas.mjs run` rejects an entry with any field missing or
@@ -3159,13 +3161,17 @@ admit a round, and nothing reads a raised copy as authority. The effective
 ceiling is computed in memory and reported beside the resolved cap as the
 verdict's `authorized_ceiling`, which is absent when nothing was authorized.
 
-**Integration cycles above the cap are not yet authorizable.** The
-integration cap counts charged Codex cycles rather than pass rounds, and
-admitting one above the cap would need the exit engine, the renderer and the
-integrate assets (`check-codex-cloud-review.sh reserve` and
-`readiness-gate.sh`) to agree on that count. Until they do, every one of them
-compares against the resolved integration cap, and an integration cycle above
-it is refused.
+**For integration authorizations, `round` is the charged cycle count, not
+the adjudication pass round.** Retries fold into the same cycle; exempt
+cycles and carried heads add no charged spend. The shared
+`integrationCycleAccounting` function applies that counter and the same
+contiguous authorization predicate across the exit engine, renderer,
+`check-codex-cloud-review.sh reserve` (given the run directory via `--record`),
+and `readiness-gate.sh`. All four admit an authorized charged cycle and refuse
+an unauthorized cycle above the resolved cap. The reservation adapter rejects
+the entire authorization collection if any entry is malformed or duplicates
+a `(stage, round)` pair, before spending a cycle. Integration authorization
+never enables a cap of 0 and never raises the separate exempt-cycle ceiling.
 
 Free-text fields pulled from a finding's evidence, an adjudication's reason,
 or a policy disclosure detail are reviewer- or human-authored prose this

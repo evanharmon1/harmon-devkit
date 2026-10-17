@@ -1807,7 +1807,7 @@ function foldLateRound(cycle, entries) {
 // Assembles completed cycles from integration rounds in order (the rules in
 // the section comment above), plus the review history: every head a new
 // completed cycle reviewed or a carry attested, with the round that did it.
-function assembleIntegrationCycles(rounds) {
+function assembleIntegrationCycles(rounds, accounting) {
   const cycles = [];
   const reviewed = [];
   let streak = 0;
@@ -1848,8 +1848,7 @@ function assembleIntegrationCycles(rounds) {
       if (roundGating) streak = 0;
       continue;
     }
-    const charged = typeof cc.charged === "number" ? cc.charged : cc.cycle;
-    const exempt = typeof cc.exempt === "number" ? cc.exempt : cc.cycle - charged;
+    const { charged, exempt } = accounting(cc);
     if (latest && cc.cycle === latest.cycle) {
       if (cc.head !== latest.head) {
         throw integrationIndeterminate(`integration round ${r.round} reports cycle ${cc.cycle} on ${cc.head}, but that cycle reviewed ${latest.head}`, "cycle-regression");
@@ -1894,8 +1893,28 @@ function roundHead(r) {
   return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
 }
 
-function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map() } = {}) {
-  const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds);
+async function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map(), run = null } = {}) {
+  // Deferred until invocation, after the CLI's closure delegation boundary.
+  const { integrationCycleAccounting, authorizedCeiling } = await import("./lib/cap-authorizations.mjs");
+  const accounting = (cycle) => {
+    let spend;
+    try {
+      spend = integrationCycleAccounting(cycle, { run, cap: integrationCap });
+    } catch (err) {
+      throw integrationIndeterminate(err.message, "cycle-accounting");
+    }
+    if (!spend.admitted) {
+      throw integrationIndeterminate(
+        `integration charged cycle ${spend.charged} exceeds the resolved cap ${integrationCap} without a contiguous authorization (total cycles ${spend.cycle})`,
+        integrationCap === 0 ? "cycle-under-cap-zero" : "cycle-over-cap",
+      );
+    }
+    return spend;
+  };
+  // Check incomplete attempts too: awaiting adjudication cannot hide spend.
+  for (const r of rounds) accounting(r.pass.envelope.payload?.codex_cycle ?? null);
+  const ceiling = authorizedCeiling(run, "integration", integrationCap);
+  const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds, accounting);
   // A remediation push is judged only by the rounds that completed before
   // its re-entry and reviewed another head, never by its findings' origin: a
   // finding first adjudicated on the pushed head, or later, never authorizes
@@ -1948,7 +1967,7 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
       }
     }
     // The state before the push: only rounds that reviewed another head.
-    const prefix = assembleIntegrationCycles(before.filter((r) => roundHead(r) !== push.head));
+    const prefix = assembleIntegrationCycles(before.filter((r) => roundHead(r) !== push.head), accounting);
     const prior = prefix.cycles.at(-1) ?? null;
     // A pure base reconciliation, or a push before the first cycle, has
     // nothing to judge. The reconciliation stays open after convergence: a
@@ -1982,6 +2001,7 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
 
   const summary = cycles.map((c) => ({ cycle: c.cycle, rounds: c.rounds, head: c.head, clean: c.clean, tell: isTell(c) }));
   const base = { stage: "integration", rounds_counted: cycles.length, next_round: null, clean_streak: streak, cycles: summary };
+  if (ceiling > integrationCap) base.authorized_ceiling = ceiling;
   if (awaiting !== null) base.incomplete_round = awaiting;
   if (integrationCap === 0) {
     if (cycles.length > 0) {
@@ -1998,17 +2018,18 @@ function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorde
       : { ...base, outcome: "diverging", reason: "tell", action: "stop-fix-loop" };
   }
   if (streak >= 2) return { ...base, outcome: "converged", reason: "two_consecutive_clean", action: "settle-without-push" };
-  if (streak === 0 && latest.charged >= integrationCap) return { ...base, outcome: "capped", reason: "cap_reached_with_gating_findings", action: "escalate" };
+  if (streak === 0 && latest.charged >= ceiling) return { ...base, outcome: "capped", reason: "cap_reached_with_gating_findings", action: "escalate" };
   if (streak === 0) return { ...base, outcome: "continue", reason: "gating_findings", action: "fix", next_round: latest.cycle + 1 };
   return { ...base, outcome: "continue", reason: "last_cycle_clean", action: "settle", next_round: latest.cycle + 1 };
 }
 
 // The one entry point both the CLI and readiness-gate.sh use: load, validate,
-// compute. Throws ExitIndeterminate (with a `code`) on anything it cannot
-// establish.
+// compute. Returns a promise; rejects with ExitIndeterminate (with a `code`)
+// on anything it cannot establish. The helper import remains behind closure
+// delegation, so the CLI never loads candidate authorization code first.
 function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
   const runDir = loadRunDir(dir);
-  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, loadRemediationPushes(runDir.runRecord, runDir.adjudications));
+  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord });
 }
 
 // ---------------------------------------------------------------------------
@@ -2336,10 +2357,10 @@ async function main() {
   if (args.stage === "integration") {
     let verdict;
     try {
-      verdict = computeIntegrationExit(
+      verdict = await computeIntegrationExit(
         loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
         resolved.rounds.integration,
-        loadRemediationPushes(runDir.runRecord, runDir.adjudications),
+        { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord },
       );
     } catch (err) {
       if (err instanceof ExitIndeterminate) return indeterminate(args, err.message, err.code ?? null);

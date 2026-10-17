@@ -46,10 +46,10 @@
   "cap_authorizations": [
     {
       "stage": "integration",
-      "round": 5,
-      "actor": "evanharmon1",
-      "instruction": "run one more Codex cycle",
-      "at": "2026-09-14T12:30:00Z"
+      "round": 3,
+      "actor": "maintainer",
+      "instruction": "Run charged cycle 3 above cap 2",
+      "at": "2026-10-16T00:00:00Z"
     }
   ]
 }

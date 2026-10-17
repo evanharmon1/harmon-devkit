@@ -960,6 +960,41 @@ done
 [ "$(node -e "process.stdout.write(String(require('${over_cap}/policy.json').rounds.review))")" = "1" ] ||
     fail "rendering an authorized over-cap round rewrote policy.json's resolved review cap"
 
+echo "==> integration renderer uses charged cycles rather than adjudication rounds"
+integration_cap_record="${test_tmp}/integration-cap-authorized"
+cp -r "$record_dir" "$integration_cap_record"
+node --input-type=module - "$integration_cap_record" <<'JS'
+import fs from 'node:fs';
+const dir = process.argv[2];
+const edit = (file, fn) => { const p = `${dir}/${file}`; const d=JSON.parse(fs.readFileSync(p)); fn(d); fs.writeFileSync(p,JSON.stringify(d)); };
+edit('policy.json', d => {d.rounds.integration=1;});
+edit('run.json', d => {d.cap_authorizations=[{stage:'integration',round:2,actor:'maintainer',instruction:'run charged cycle 2',at:'2026-10-16T00:00:00Z'}];});
+// Cycle 3 is exempt; round 4 reflects the retry of charged cycle 2.
+edit('passes/integration-r1-human.json', d => {
+ d.payload.integration_round=4;
+ Object.assign(d.payload.codex_cycle,{cycle:3,charged:2,exempt:1});
+ for (const f of d.payload.findings) f.id=f.id.replace('integration-r1-','integration-r4-');
+});
+edit('adjudications/integration-r1.json', d => {
+ d.round=4;
+ for (const e of d.adjudications) { e.finding_id=e.finding_id.replace('integration-r1-','integration-r4-'); e.checkpoint={attacks_remediation:false}; }
+});
+JS
+run round-table --record "$integration_cap_record" --stage integration --round 4
+assert_rc 0
+assert_contains "$out" 'round 4 · charged cycle 2/1 (authorized)'
+jq 'del(.cap_authorizations)' "$integration_cap_record/run.json" >"$integration_cap_record/run.next"
+mv "$integration_cap_record/run.next" "$integration_cap_record/run.json"
+run round-table --record "$integration_cap_record" --stage integration --round 4
+assert_rc 1
+assert_contains "$err" 'charged cycle 2 has no cap authorization'
+# Pass round 4 still fits cap 1 when both extra cycles were exempt.
+jq '.payload.codex_cycle.charged=1 | .payload.codex_cycle.exempt=2' \
+    "$integration_cap_record/passes/integration-r1-human.json" >"$integration_cap_record/pass.next"
+mv "$integration_cap_record/pass.next" "$integration_cap_record/passes/integration-r1-human.json"
+run round-table --record "$integration_cap_record" --stage integration --round 4
+assert_rc 0
+
 echo "==> cross-document consistency is re-checked after a --policy override, not just against the record directory's own copy"
 # main() applies --policy AFTER the first validateCrossDocumentConsistency
 # call, so it re-runs the check whenever an override was supplied —
