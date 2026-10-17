@@ -196,8 +196,8 @@ fails, an answer `jq` cannot read, or an order other than the two
   The attempt window
   starts when the trigger is created, so posting during CI would consume the
   reviewer's promised post-CI response window.
-- **`with-push`** — request the review with the push: reserve and trigger
-  without waiting for CI, and settle CI alongside the cycle. Both still have
+- **`with-push`** — after the primary rollup probe succeeds, request the
+  review with the push: reserve and trigger without waiting for CI, and settle CI alongside the cycle. Both still have
   to end green and terminal-clean before the orchestrator's readiness gate
   passes; only the ordering changed.
 
@@ -211,45 +211,50 @@ cycle this pass owes is requested — never a cycle the rounds policy does not
 require, and never a second request for a head beyond the one bounded
 attempt-2 retry §4 already describes.
 
-Under either order, read the checks for the exact head your brief named:
+**CI settlement invariants — probe first, fail closed:**
 
-```sh
-checks="$(gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link 2>/dev/null)"
-jq -e 'type == "array"' <<<"$checks" >/dev/null 2>&1 || {
-    echo 'cannot read check status — do not reserve or trigger'
-    exit 1
-}
-required_checks="$(gh pr checks <n> --repo "$repo" --json name,link --required \
-    --jq '[.[] | {name, link}]' 2>/dev/null)"
-jq -e 'type == "array"' <<<"$required_checks" >/dev/null 2>&1 || required_checks='[]'
-checks_ready="$(jq -r 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' \
-    <<<"$checks" 2>/dev/null)"
-```
+- **Read path.** Before §4 reserves or triggers anything, under every
+  `review_trigger` value including `with-push`, probe the primary rollup with
+  `gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link`;
+  capture stdout, exit status AND stderr separately, including for
+  `--required`, never discard stderr. A checks read is a recognised permission denial when its stderr contains
+  `Resource not accessible by` (any token kind) or it reports HTTP 403.
+  Only that permission denial selects
+  `"$DEV_FLOW_SUPPORT/settle-wait.sh" checks --repo "$repo" --pr <n>
+  --head <head> --timeout-seconds 1800 --interval-seconds 30 --format checks-json`.
+  Preserve the helper's exit status and use its JSON stdout as `checks[]`;
+  mapping and counted-run selection belong to that tested helper, never a
+  second listing or an agent-written jq program. Every other read failure,
+  including malformed output, stays indeterminate and returns a schema-valid
+  pending result without entering §4. Parseable rollup arrays accompanied by
+  ordinary pending/failing CLI statuses are check outcomes, not read failures.
+  Keep successfully read primary arrays as `$checks` and `$required_checks`
+  for the identity mapping below.
+- **Outcome.** On the primary path, settled green sets `checks_ready=true`;
+  settled failing signals `failed_required=true`. On the permission fallback,
+  exit 0 is settled green Actions evidence only; fallback exit 1 carries the
+  failing run IDs into §5/§7's findings/result flow. Exits 3/4 are indeterminate
+  or expired: preserve the diagnostic and use `checks[]=[]` when the helper
+  supplied no JSON, never fabricate settled evidence. A merged/closed PR
+  (exit 5) stops the whole stage.
+- **Timing.** Only a successful primary rollup probe permits the existing
+  `review_trigger` ordering: `with-push` reserves and triggers without waiting
+  for CI, `after-ci` waits for settled green, and `after-ci-first` resolves
+  through the existing timing helper. On a recognised permission error,
+  reserve nothing and trigger nothing; do not enter §4 or resume an old cycle.
+- **Evidence gap.** Every permission fallback result reports `pending` with
+  `status=blocked`, `codex_cycle:null` and `finder_cycles:[]`: no review ran
+  this pass, so never attach an earlier pass's cycle. Helper `checks[]` entries
+  have `required:false` because requiredness is unknown; preserve any failing
+  run findings even with this pending verdict. Report §9's prescribed blocker;
+  the readiness gate still needs its own complete check-run/status evidence.
 
-`required_checks` needs the same reading as `$checks` just above, for the
-identical reason: `gh pr checks --required` exits nonzero for the same
-ordinary pending/failing cases (harmon-devkit#639 gauntlet review, PR #758
-Codex cloud cycle 1) — the old `|| required_names='[]'` treated that
-exactly like ${checks}'s old bug did, discarding real required-check names
-whenever any one of them wasn't yet green and marking every check
-`required: false` in `$failed_required` below for the rest of this pass.
-Only output that fails to parse as a JSON array is genuinely unreadable;
-everything else is real data, read the same way regardless of the exit
-code that came with it.
+The following check-run/status identity mapping applies only to a successfully
+read primary rollup; the Actions fallback already supplies `checks[]` and
+bypasses this mapping. An unavailable identity read follows the pending-result
+invariant above; no partial array may stand in for missing evidence.
 
-`gh pr checks` exits nonzero for the two ordinary, expected cases this step
-exists to detect — 8 while any check is still pending, and nonzero again
-once a required check has failed — so a nonzero exit is not by itself
-evidence the read failed; only output that fails to parse as a JSON array (a
-network error, a bad PR reference, an authentication failure) is. `2>/dev/null`
-keeps a diagnostic on stderr from ever landing inside `$checks` and being
-mistaken for its data. `checks_ready` is not an early exit: a `false` here
-still flows through the rest of this section and on to §5–§7 to produce a
-schema-valid `pending` or `findings` result, exactly as one is owed whenever
-CI has not settled — §4 below is what actually reads `checks_ready` to decide
-whether reserving or triggering is safe.
-
-`$checks` decides pass/fail here, and **stays the source of `checks[]`'s own
+On the normal rollup path, `$checks` decides pass/fail here, and **stays the source of `checks[]`'s own
 `bucket` in your result too** — `gh pr checks` reads the same server-side
 rollup GitHub's Checks tab shows, already collapsed across reruns. The raw
 check-runs REST endpoint's `filter=latest` collapses only WITHIN one check
@@ -267,15 +272,9 @@ from data you already trust:
 
 ```sh
 check_runs_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
-    "repos/$repo/commits/<head>/check-runs?per_page=100&filter=latest")" || {
-    echo 'cannot fetch check-runs — do not reserve or trigger'
-    exit 1
-}
+    "repos/$repo/commits/<head>/check-runs?per_page=100&filter=latest")"
 statuses_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
-    "repos/$repo/commits/<head>/statuses?per_page=100")" || {
-    echo 'cannot fetch commit statuses — do not reserve or trigger'
-    exit 1
-}
+    "repos/$repo/commits/<head>/statuses?per_page=100")"
 checks_json="$(jq -c --argjson required "$required_checks" \
     --slurpfile runs_sf <(printf '%s' "$check_runs_pages") \
     --slurpfile statuses_sf <(printf '%s' "$statuses_pages") '
@@ -293,7 +292,7 @@ checks_json="$(jq -c --argjson required "$required_checks" \
         bucket: $c.bucket,
         run_id: ($run_ids[$c.link // ""] // $status_ids[$c.name] // "0"),
         required: (($required | map(select(.name == $c.name and .link == $c.link)) | length) > 0)
-    }]' <<<"$checks")" || checks_json='[]'
+    }]' <<<"$checks")"
 ```
 
 `run_id` is keyed by the row's own `link` — the check run's `details_url` /
@@ -324,10 +323,10 @@ confirmed absence), it will say so explicitly; do not infer that yourself
 from an empty or failed read. This step feeds `checks[]` in your result (§7)
 either way — capture the full array, not just the pass/fail verdict.
 
-```sh
-failed_required="$(jq -c '[.[] | select(.required and (.bucket == "fail" or .bucket == "cancel"))
-    | {name, run_id}]' <<<"$checks_json" 2>/dev/null)"
-```
+For §5, retain the `failed_required` list of `{name, run_id}` entries from
+failed/cancelled required rollup checks, or from failed/cancelled counted
+Actions runs when the fallback cannot establish requiredness; this list is
+the evidence behind the failure condition above.
 
 A non-empty `$failed_required` is exactly the "a CI failure needing
 adjudication" case §5 already asks you to carry into `findings[]` — one
@@ -1183,7 +1182,15 @@ a CARRIED cycle (harmon-init#752), where `accepted.reviewed_commit` names
 `carried.origin_head` instead; every other field on that list still equals
 this head, including `codex_cycle.head` itself.
 
-Derive `$verdict` mechanically, never by feel: `clean` only when every
+For §3's permission fallback, set `status=blocked`, `verdict=pending`,
+`codex_cycle_json_or_null=null` and `finder_cycles_json='[]'` before assembly;
+keep `blocker_json=null` unless a separate draft-flip blocker was captured.
+The schema requires `codex_cycle` even when no cycle ran, so emit JSON null,
+not an omitted key; do not reuse any earlier cycle or invent a Codex exit code
+from the Actions helper's status. This no-cycle result validates even with a
+positive integration cap, but cannot pass readiness. The following verdict
+derivation applies to the primary rollup path. Derive `$verdict`
+mechanically, never by feel: `clean` only when every
 required check is `pass` (or non-required and `skipping`), the Codex cycle
 (when the cap is not 0) is terminal-clean or was skipped by a 0 cap, **every
 finder cycle** is terminal-clean (exit_code 0 with accepted present), and
@@ -1249,7 +1256,13 @@ your transcript. Cover:
 - **Blocked** — anything §1 stopped you on, or any read that failed and left
   a field `unknown` rather than a real value. Draft-flip evidence lives in the
   validated envelope's `payload.blocker`; prose supplements missing reads and
-  never substitutes for the captured event object.
+  never substitutes for the captured event object. For the permission fallback,
+  report: "the token cannot read the checks rollup; CI settled from Actions
+  runs (exit N); no Codex review was requested; the readiness gate needs a
+  token with checks read (see #1502)" — substitute the actual helper exit for
+  N, and identify exits 3/4 as indeterminate/expired rather than settled.
+  No Codex cycle was requested on this path; the §7 result carries null/empty
+  cycle fields, not an exit code for a review that never ran.
 
 The delegation contract that governs every dispatched agent here — exit plan
 mode before spawning, keep the core work in your own context, the shared

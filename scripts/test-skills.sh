@@ -3891,6 +3891,80 @@ expect_ok "new-repo and adopt guidance note the skills-source waiver" \
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
     "$STANDARDIZE_REFS/mode-update.md"
+# #1195: CI settlement is stated as invariants, with mapping in the helper.
+expect_ok "integration documents the Actions fallback and keeps permission reads indeterminate" \
+    python3 - "$INTEGRATE_SKILL" <<'PYTEST'
+import pathlib
+import sys
+text = pathlib.Path(sys.argv[1]).read_text()
+checks = text.split('- Checks (under a `with-push` order', 1)[1].split('- **Findings deferred', 1)[0]
+for required in (
+    '"$support_dir/settle-wait.sh" checks --repo "$repo" --pr <n>',
+    '--head <headRefOid> --timeout-seconds 1800',
+    '--format checks-json',
+    'fully paginated Actions helper',
+    'skipped runs never count as pending',
+    'permission failure on the checks read is',
+    'indeterminate and never a pass',
+    '`review_trigger` ordering',
+    'reserve nothing and trigger\n  nothing',
+    '`codex_cycle:null` and\n  `finder_cycles:[]`',
+    'readiness gate\'s complete evidence',
+):
+    assert required in checks, required
+for grant in (
+    'Bash(${CLAUDE_SKILL_DIR}/../dev-flow-support/assets/settle-wait.sh checks:*)',
+    'Bash(.claude/skills/dev-flow-support/assets/settle-wait.sh checks:*)',
+    'Bash(ai/skills/universal/dev-flow-support/assets/settle-wait.sh checks:*)',
+):
+    assert grant in text.split('---', 2)[1], grant
+agent = (pathlib.Path(sys.argv[1]).parents[3] / 'agents/integrator.md').read_text()
+settle = agent.split('**CI settlement invariants', 1)[1].split('On the normal rollup path, `$checks`', 1)[0]
+for required in ('exit status AND stderr', 'HTTP 403', '`Resource not accessible by` (any token kind)',
+                 '--format checks-json', 'checks_ready=true', 'failed_required=true',
+                 'fallback exit 1', 'Exits 3/4', 'exit 5',
+                 'Before §4 reserves or triggers anything',
+                 '`review_trigger` value including `with-push`',
+                 'reserve nothing and trigger nothing',
+                 'do not enter §4 or resume an old cycle',
+                 '`pending` with\n  `status=blocked`',
+                 '`codex_cycle:null` and `finder_cycles:[]`'):
+    assert required in settle, required
+for forbidden in ('independent of which read path', 'trigger first, then settle CI',
+                  'cannot suppress a review'):
+    assert forbidden not in agent, forbidden
+for required in ('`codex_cycle_json_or_null=null`', "`finder_cycles_json='[]'`",
+                 'no Codex review was requested', 'token with checks read (see #1502)'):
+    assert required in agent, required
+# The same invariant must govern both documents, independent of token kind.
+permission_rule = ('A checks read is a recognised permission denial when its stderr contains '
+                   '`Resource not accessible by` (any token kind) or it reports HTTP 403.')
+for document in (settle, checks):
+    assert permission_rule in ' '.join(document.split()), permission_rule
+for diagnostic, denied in (
+    ('GraphQL: Resource not accessible by integration (node.statusCheckRollup)', True),
+    ('GraphQL: Resource not accessible by personal access token (node.statusCheckRollup)', True),
+    ('HTTP 403', True),
+    ('HTTP 502: Bad Gateway', False),
+):
+    assert ('Resource not accessible by' in diagnostic or 'HTTP 403' in diagnostic) == denied
+assert 'every other read failure' in checks
+assert 'Every other read failure' in settle
+branches = text.split('Branch on the validated result:', 1)[1]
+blocked = branches.index('**`status: "blocked"` is terminal for the stage**')
+pending = branches.index('`verdict: "pending"` with `codex_cycle: null`')
+assert blocked < pending, 'blocked results must stop before the generic pending retry'
+terminal = ' '.join(branches[blocked:pending].split())
+for required in ('regardless of verdict', "integrator's §9 blocker", '#1502',
+                 'preserve any failing-run findings', 'do not re-dispatch',
+                 'leave the PR draft', 'takes precedence'):
+    assert required in terminal, required
+assert 'actions_out=' not in agent
+assert '2>/dev/null' not in settle
+assert "sed -n 's/^RUN" not in agent
+assert 'applies to the primary rollup path' in agent
+PYTEST
+
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$INTEGRATOR_AGENT"

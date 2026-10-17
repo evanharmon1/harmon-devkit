@@ -9,7 +9,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-wait_sh="$here/settle-wait.sh"
+wait_sh="$here/../../dev-flow-support/assets/settle-wait.sh"
+orchestrate_wait_sh="$here/settle-wait.sh"
 test_tmp="$(mktemp -d -t settle-wait-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
@@ -88,7 +89,7 @@ chmod +x "$bin_dir/herdr" "$bin_dir/gh"
 
 reset_fixtures() {
     rm -f "$fix"/*
-    printf '{"head":{"sha":"%s"}}\n' "$sha_a" >"$fix/pull.json"
+    printf '{"state":"OPEN","head":{"sha":"%s"}}\n' "$sha_a" >"$fix/pull.json"
 }
 
 # run_json ID STATUS CONCLUSION ATTEMPT [SHA [WORKFLOW_ID EVENT RUN_NUMBER CREATED_AT [PR_NUMBERS]]]
@@ -130,7 +131,7 @@ run_checks() {
 
 # pull_head N SHA: the Nth read of the PR endpoint reports SHA.
 pull_head() {
-    printf '{"head":{"sha":"%s"}}\n' "$2" >"$fix/pull.$1.json"
+    printf '{"state":"OPEN","head":{"sha":"%s"}}\n' "$2" >"$fix/pull.$1.json"
 }
 
 expect_rc() {
@@ -246,7 +247,69 @@ for id in 11 12 13; do
 done
 run_checks --timeout-seconds 5 --interval-seconds 1
 expect_rc 0 "all completed"
+# The legacy orchestrate entry point delegates to the same shared helper and
+# preserves its verdict. Both packages must remain usable independently of
+# the source repository's root layout.
+set +e
+wrapper_out="$("$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 5 --interval-seconds 1 2>&1)"
+wrapper_rc=$?
+set -e
+[ "$wrapper_rc" -eq "$rc" ] && [ "$wrapper_out" = "$out" ] ||
+    fail "orchestrate entry point differs from shared settle: $wrapper_rc: $wrapper_out"
 expect_out "SETTLED success head=aaaaaaaa runs=3" "all completed"
+rows="$(printf '%s\n' "$out" | sed -n 's/^RUN //p' | jq -cs '.')"
+jq -e 'length == 3 and
+    (map(.run_id) | sort) == ["11","12","13"] and
+    (map(.conclusion) | sort) == ["neutral","skipped","success"] and
+    all(.[]; .status == "completed" and .run_attempt == 1)' <<<"$rows" >/dev/null ||
+    fail "settled output lost the counted per-run evidence: $out"
+
+# checks-json uses the same counted evidence and emits a single checks[]
+# array, even for a failing settle; diagnostics must never enter JSON stdout.
+for spec in 'success pass 0' 'skipped skipping 0' 'neutral pass 0' 'cancelled cancel 1' 'failure fail 1'; do
+    IFS=' ' read -r conclusion bucket expected_rc <<EOF
+$spec
+EOF
+    reset_fixtures
+    write_page 1 "$(run_json 14 completed "$conclusion" 1)"
+    run_files 14
+    set +e
+    out="$("$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+        --timeout-seconds 5 --interval-seconds 1 --format checks-json 2>"$fix/json.stderr")"
+    rc=$?
+    set -e
+    expect_rc "$expected_rc" "checks-json $conclusion"
+    jq -e --arg bucket "$bucket" '
+        . == [{name:"wf-14",run_id:"14",required:false,bucket:$bucket}]' <<<"$out" >/dev/null ||
+        fail "checks-json $conclusion did not preserve counted check: $out"
+    grep -q '^POLL ' "$fix/json.stderr" || fail "JSON diagnostics were not sent to stderr"
+    rm -f "$fix/pull.count"
+    set +e
+    wrapper_out="$("$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+        --timeout-seconds 5 --interval-seconds 1 --format checks-json 2>"$fix/wrapper.stderr")"
+    wrapper_rc=$?
+    set -e
+    [ "$wrapper_rc" -eq "$rc" ] && [ "$wrapper_out" = "$out" ] ||
+        fail "delegator changed checks-json $conclusion: $wrapper_rc: $wrapper_out"
+done
+
+# Empty evidence remains an error, not an empty-success array or text stdout.
+reset_fixtures
+set +e
+out="$("$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 1 --interval-seconds 1 --format checks-json 2>"$fix/json.stderr")"
+rc=$?
+set -e
+expect_rc 3 "checks-json empty evidence"
+[ -z "$out" ] || fail "empty evidence produced a JSON result: $out"
+grep -q 'no runs listed' "$fix/json.stderr" || fail "empty evidence lost its diagnostic"
+set +e
+"$wait_sh" checks --repo o/r --pr 7 --head "$sha_a" --timeout-seconds 1 \
+    --format unknown >/dev/null 2>&1
+rc=$?
+set -e
+expect_rc 2 "unknown checks output format"
 
 # Stale attempt: the list still shows attempt 2's conclusion, but the run's
 # own read is attempt 3, queued. Not settled; expiry exits non-zero.
@@ -275,6 +338,13 @@ run_checks --timeout-seconds 1 --interval-seconds 1 --per-page 5
 expect_rc 4 "skipped flood must not hide page 2"
 expect_out "runs=6 pending=1 failing=0 skipped=5" "skipped flood"
 expect_out "PENDING 106" "skipped flood"
+case "$out" in *SETTLED*) fail "skipped page 1 hid pending page 2: $out" ;; esac
+set +e
+"$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+    --timeout-seconds 1 --interval-seconds 1 --per-page 5 >/dev/null 2>&1
+wrapper_rc=$?
+set -e
+[ "$wrapper_rc" -eq 4 ] || fail "orchestrate masked pending-page expiry: $wrapper_rc"
 grep -Fq 'per_page=5&page=2' "$fix/gh.calls" || fail "page 2 was never requested"
 if grep -Fq -- '--paginate' "$fix/gh.calls"; then
     fail "gh --paginate was used"
@@ -340,7 +410,7 @@ expect_out "POLL 2 head=aaaaaaaa" "settled on poll 2"
 
 # C1-2: the PR never reports the pushed head: never settled, indeterminate.
 reset_fixtures
-printf '{"head":{"sha":"%s"}}\n' "$sha_b" >"$fix/pull.json"
+printf '{"state":"OPEN","head":{"sha":"%s"}}\n' "$sha_b" >"$fix/pull.json"
 write_page 1 "$(run_json 63 completed success 1 "$sha_a")"
 run_json 63 completed success 1 >"$fix/run.63.json"
 run_checks --timeout-seconds 2 --interval-seconds 1
@@ -348,6 +418,46 @@ expect_rc 3 "PR head never reaches --head"
 expect_out "INDETERMINATE at expiry: PR head bbbbbbbb is not the pushed head aaaaaaaa" \
     "PR head never reaches --head"
 case "$out" in *SETTLED*) fail "settled for a head the PR never reported: $out" ;; esac
+
+# A PR can close during a pending wait or between the last run and final
+# head read. Neither path may report settled, even when the runs are green.
+for state_json in '"state":"MERGED"' '"state":"closed","merged":true' '"state":"closed"'; do
+    for boundary in pending final; do
+        reset_fixtures
+        if [ "$boundary" = pending ]; then
+            write_page 1 "$(run_json 64 in_progress null 1)"
+            run_json 64 in_progress null 1 >"$fix/run.64.json"
+        else
+            write_page 1 "$(run_json 64 completed success 1)"
+            run_files 64
+        fi
+        printf '{%s,"head":{"sha":"%s"}}\n' "$state_json" "$sha_a" >"$fix/pull.2.json"
+        # Keep later reads closed too: a broken helper must not eventually
+        # settle on the default OPEN fixture and satisfy this case.
+        cp "$fix/pull.2.json" "$fix/pull.json"
+        pull_head 1 "$sha_a"
+        run_checks --timeout-seconds 10 --interval-seconds 1
+        expect_rc 5 "closed PR at $boundary ($state_json)"
+        expect_out "STOPPED PR 7" "closed PR"
+        [ "$(cat "$fix/pull.count")" -eq 2 ] || fail "closed PR was not stopped promptly"
+        case "$out" in *SETTLED*) fail "closed PR settled: $out" ;; esac
+        rm -f "$fix/pull.count"
+        set +e
+        "$orchestrate_wait_sh" checks --repo o/r --pr 7 --head "$sha_a" \
+            --timeout-seconds 10 --interval-seconds 1 >/dev/null 2>&1
+        wrapper_rc=$?
+        set -e
+        [ "$wrapper_rc" -eq 5 ] || fail "orchestrate masked closed PR status: $wrapper_rc"
+    done
+done
+
+# Missing or unknown state is unreadable, never an OPEN PR.
+for state_json in '{}' '{"state":"UNKNOWN"}'; do
+    reset_fixtures
+    printf '%s\n' "$state_json" >"$fix/pull.json"
+    run_checks --timeout-seconds 1 --interval-seconds 1
+    expect_rc 3 "unreadable PR state"
+done
 
 # --head is required and must be a full lowercase 40-hex SHA.
 for bad in '' abc "${sha_a:0:39}" "${sha_a}a" AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; do
@@ -380,6 +490,10 @@ done
 run_checks --timeout-seconds 5 --interval-seconds 1
 expect_rc 0 "superseded cancelled and failed runs"
 expect_out "runs=2 pending=0 failing=0 skipped=0 superseded=2" "superseded runs"
+printf '%s\n' "$out" | sed -n 's/^RUN //p' | jq -se '
+    length == 2 and (map(.run_id) | sort) == ["73","74"]' >/dev/null ||
+    fail "superseded runs leaked into settled evidence: $out"
+
 expect_out "SETTLED success head=aaaaaaaa runs=2" "superseded runs"
 for id in 71 72; do
     grep -Fxq "api repos/o/r/actions/runs/$id" "$fix/gh.calls" ||

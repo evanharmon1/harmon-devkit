@@ -9,6 +9,23 @@ helper="${repo_root}/ai/skills/universal/integrate/assets/check-codex-cloud-revi
 test_tmp="$(mktemp -d -t integrate-codex-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
+# #1471: bash 3.2 scans quoted heredocs inside command substitutions for
+# backquotes. Keep every such checker heredoc backquote-free, including comments.
+python3 - "$helper" <<'PYGUARD'
+from pathlib import Path
+import re
+import sys
+
+source = Path(sys.argv[1]).read_text()
+blocks = re.findall(r"\$\(\s*\n\s*cat <<'([^']+)'\n(.*?)\n\1\n\)", source, re.S)
+assert blocks, "checker command-substitution heredoc guard matched no blocks"
+for delimiter, body in blocks:
+    assert chr(96) not in body, f"{delimiter}: backquote breaks bash 3.2 parsing"
+PYGUARD
+if /bin/bash -c '[[ $BASH_VERSION == 3.2* ]]'; then
+    /bin/bash -n "$helper"
+fi
+
 bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
 state="${test_tmp}/state.json"
@@ -542,6 +559,55 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted comment 77
+
+# #1504: both legacy and registry-reserved cycles share the same clean-body
+# normalization. Keep the registry phrase unchanged; the marker is a wrapper,
+# not a second terminal signal or a new head-binding mechanism.
+for receipt_mode in legacy finder; do
+    for receipt_case in clean blank-lines old wrong-head badge nonleading unknown-version finding trailing-prose untrusted; do
+        echo "==> receipt $receipt_mode / $receipt_case"
+        new_cycle
+        if [ "$receipt_mode" = finder ]; then
+            base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+            rm -f "$state" "${state%.json}.spend.json"
+            "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+                --head "$head_sha" --attempt 1 --finder codex-cloud >/dev/null
+            jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
+            mv "${state}.next" "$state"
+            "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+        fi
+        jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+            --arg head "$head_sha" --arg case "$receipt_case" '
+          "<!-- codex-review-receipt:v1 -->" as $marker |
+          "Codex Review: Didn\u0027t find any major issues. Keep them coming!" as $phrase |
+          (if $case == "wrong-head" then "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" else $head end) as $reviewed |
+          ($marker + "\n\n" + $phrase) as $receipt |
+          (if $case == "blank-lines" then "\n\n" + $receipt
+           elif $case == "old" then $phrase
+           elif $case == "badge" then $receipt + "\n\n**P1** A race remains."
+           elif $case == "nonleading" then "Context\n" + $receipt
+           elif $case == "unknown-version" then "<!-- codex-review-receipt:v2 -->\n\n" + $phrase
+           elif $case == "finding" then $marker + "\n\nA race remains."
+           elif $case == "trailing-prose" then $receipt + "\n\nA race remains."
+           else $receipt end) as $body |
+          [[{id:8400,user:{id:(if $case == "untrusted" then 5150 else $id end),login:$login,type:"Bot"},
+             created_at:"2026-07-31T08:00:02Z",
+             body:($body + "\n\n**Reviewed commit:** `" + $reviewed + "`\n\n" +
+               "<details>\n<summary>About Codex</summary>\nMention @codex for help.\n</details>")}]]
+          ' >"${fixtures}/comments.pages.json"
+        run_check '2026-07-31T08:01:00Z'
+        case "$receipt_case" in
+        clean | blank-lines | old)
+            assert_status 0 clean
+            assert_accepted comment 8400
+            ;;
+        wrong-head) assert_status 11 pending ;;
+        untrusted) assert_status 2 indeterminate ;;
+        trailing-prose) assert_status 2 indeterminate ;;
+        *) assert_status 10 findings ;;
+        esac
+    done
+done
 
 # Codex does not emit the bare sentence — it appends a praise clause, and the
 # clause varies. "Keep it up!" (#239), "Nice work!" (#225) and "Chef's kiss."

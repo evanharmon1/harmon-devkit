@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.58.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.0...v0.58.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **ci:** give the shared test suite its own required job ([#1482](https://github.com/evanharmon1/harmon-devkit/issues/1482)) ([42c34d8](https://github.com/evanharmon1/harmon-devkit/commit/42c34d88890cdd91b73f0b5d02a0b429edb9607d))
+* **dev-flow-support:** harden the run-record writer's carried edge cases and record integrate promotion through run-record.mjs promote ([#1494](https://github.com/evanharmon1/harmon-devkit/issues/1494)) ([1a8363e](https://github.com/evanharmon1/harmon-devkit/commit/1a8363e7bda10b5274a5f93caca4081d3394e850))
+* **groom:** ship the task groom wrapper with the skill so consumers can apply decisions ([#1506](https://github.com/evanharmon1/harmon-devkit/issues/1506)) ([8182248](https://github.com/evanharmon1/harmon-devkit/commit/8182248adf5be2dc08798a0b3a3c9b07610b4d08))
+* **integrate:** carry draft-flip blocker evidence in the typed integrator result ([#1487](https://github.com/evanharmon1/harmon-devkit/issues/1487)) ([48e7dc5](https://github.com/evanharmon1/harmon-devkit/commit/48e7dc55a8f953354322582104443b7915fed92e))
+* **integrate:** recognise Codex receipts and restore bash 3.2 parsing ([#1505](https://github.com/evanharmon1/harmon-devkit/issues/1505)) ([68edbbf](https://github.com/evanharmon1/harmon-devkit/commit/68edbbff9c6cfe53f146dcd3eefda1f003412b37))
+* **integrate:** recover untriggered reservations, tolerate check-suite 403s, budget late attaches ([#1469](https://github.com/evanharmon1/harmon-devkit/issues/1469)) ([19c8c1a](https://github.com/evanharmon1/harmon-devkit/commit/19c8c1a34469fe1553f00390a6f0377372458afb))
+* **integrate:** require the vendored checker and readiness gate for any session driving integration ([#1481](https://github.com/evanharmon1/harmon-devkit/issues/1481)) ([67e676f](https://github.com/evanharmon1/harmon-devkit/commit/67e676fc0b28c311075db5fb8afc134b04eb9f70)), closes [#1077](https://github.com/evanharmon1/harmon-devkit/issues/1077)
+* **integrate:** settle CI from Actions runs when the token cannot read the checks rollup ([#1490](https://github.com/evanharmon1/harmon-devkit/issues/1490)) ([ee1d8cd](https://github.com/evanharmon1/harmon-devkit/commit/ee1d8cd5fe68b48c2ae128e5dc508ae9a8f697f0))
+* **orchestrate:** let lane-watch read the brief's report path and HANDOFF sentinel ([#1478](https://github.com/evanharmon1/harmon-devkit/issues/1478)) ([09772d6](https://github.com/evanharmon1/harmon-devkit/commit/09772d60b2c1cc5fd1c0c2f0da116ea1d79964f2))
+* **orchestrate:** record the cloud-lane end-to-end check and its account precondition ([#1470](https://github.com/evanharmon1/harmon-devkit/issues/1470)) ([2e932b0](https://github.com/evanharmon1/harmon-devkit/commit/2e932b0213026b08aa83d762d22fe7ad2b226bff))
+* **retro:** classify every local-read filesystem error as an exit-14 refusal ([#1480](https://github.com/evanharmon1/harmon-devkit/issues/1480)) ([21813d5](https://github.com/evanharmon1/harmon-devkit/commit/21813d57e538f39a5fad5088c0af714369f1f81c))
+* **security:** scope the round-push secret scan to the pushed range ([#1479](https://github.com/evanharmon1/harmon-devkit/issues/1479)) ([4fe454f](https://github.com/evanharmon1/harmon-devkit/commit/4fe454f6e724c2d87a28c3d5cf78f3814f541565))
+* **skills:** accept an optional ## Surface heading in track-work's pre-create gate ([#1472](https://github.com/evanharmon1/harmon-devkit/issues/1472)) ([0f27e1f](https://github.com/evanharmon1/harmon-devkit/commit/0f27e1fc8fd9dd7e4c5859f6ed54431e81d654d3))
+* **skills:** route session gh api reads through a path that works in the agent posture ([#1489](https://github.com/evanharmon1/harmon-devkit/issues/1489)) ([699f121](https://github.com/evanharmon1/harmon-devkit/commit/699f121f10619a3eacf49678025d40a45dbda9dd))
+* **standardize-repo:** accept predicate-derived expected results in verify-applied aggregates ([#1486](https://github.com/evanharmon1/harmon-devkit/issues/1486)) ([ec6c205](https://github.com/evanharmon1/harmon-devkit/commit/ec6c205b032d496d6ed5717811feebf4ed7cb757))
+* **template:** update harmon-init to v5.8.2 ([#1503](https://github.com/evanharmon1/harmon-devkit/issues/1503)) ([d377431](https://github.com/evanharmon1/harmon-devkit/commit/d3774314e13bf1453d9c9e4fe32a6105b38e1303))
+* **test:** make test-registry-drift.sh collation-independent so local verify passes ([#1492](https://github.com/evanharmon1/harmon-devkit/issues/1492)) ([8f7e059](https://github.com/evanharmon1/harmon-devkit/commit/8f7e059149ef80397df84c89cdfca024907cace0))
+* **track-work:** let tick-criteria tick issues the current branch's open PR references ([#1496](https://github.com/evanharmon1/harmon-devkit/issues/1496)) ([60cd209](https://github.com/evanharmon1/harmon-devkit/commit/60cd20988a1103b5c8f78eed173c5edaa1a72194))
+
 ## [0.58.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.57.0...v0.58.0) (2026-10-14)
 
 

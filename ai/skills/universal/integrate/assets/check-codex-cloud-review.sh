@@ -1574,58 +1574,68 @@ codex_verdict_defs=$(
           def clean_sentence:
             "codex review: didn't find any major issues.";
           def body_text: (.body // "");
-          # `first // ""`, never `[0]`: jq's `"" | split("\n")` is `[]`, so an
+          # first // "", never [0]: jq's "" | split("\n") is [], so an
           # empty body would pipe null into gsub and crash the whole program
           # with jq's own exit 5 — outside the documented code set
           # (harmon-devkit#392, hit live on harmon-init#766).
+          # Only an exact leading v1 receipt line may wrap the clean verdict.
+          # Keep the original body for severity and head-binding checks.
+          def clean_body:
+            body_text as $body |
+            ($body | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              until(length == 0 or .[0] != ""; .[1:])) as $lines |
+            if $lines[0] == "<!-- codex-review-receipt:v1 -->" then
+              ($lines[1:] | until(length == 0 or .[0] != ""; .[1:]) | join("\n"))
+            else $body end;
           def first_line:
-            (body_text | split("\n") | first // "" |
+            (clean_body | split("\n") | first // "" |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-9]+\\b"));
           # Integration remediation 1 (2026-09-14, Codex cloud review on
-          # `a5bc99a`, confirmed finding `4010207997`): a bare `type ==
-          # "number"` check on a provider-supplied id admits `0`, a negative
-          # number, and a fraction like `1.5` — none of them a real GitHub
+          # a5bc99a, confirmed finding 4010207997): a bare type ==
+          # "number" check on a provider-supplied id admits 0, a negative
+          # number, and a fraction like 1.5 — none of them a real GitHub
           # object id, all of them silently usable as the accepted evidence's
-          # `accepted.id` once inside `newest_result_record`/
-          # `comment_candidates`. Mirrors `valid_uint`'s bash-level shape
-          # (positive, integral) inside jq. Deliberately not `% 1 == 0` as
-          # the fractional-part test: jq's `%` truncates BOTH operands to
-          # integers before dividing (`1.5 % 1` is `0`, not `0.5`), so it
+          # accepted.id once inside newest_result_record/
+          # comment_candidates. Mirrors valid_uint's bash-level shape
+          # (positive, integral) inside jq. Deliberately not % 1 == 0 as
+          # the fractional-part test: jq's % truncates BOTH operands to
+          # integers before dividing (1.5 % 1 is 0, not 0.5), so it
           # would silently accept 1.5 as "integral" — comparing against
-          # `floor` does not have that trap. `> 0` rejects zero and negative
-          # values the same way `valid_uint`'s `[1-9][0-9]*` anchor does.
+          # floor does not have that trap. > 0 rejects zero and negative
+          # values the same way valid_uint's [1-9][0-9]* anchor does.
           def is_positive_integer:
             (type == "number") and (. == (. | floor)) and (. > 0);
-          # Factored out of `rest_is_boilerplate` so the carrier defs below can
+          # Factored out of rest_is_boilerplate so the carrier defs below can
           # reuse the exact same removal and the exact same metadata pattern
           # instead of restating them. Same regexes, same flags, same order —
-          # `rest_is_boilerplate` behaves identically to before the split.
-          # Challenge round 3, finding `challenge-r3-codex-adversarial-1`
+          # rest_is_boilerplate behaves identically to before the split.
+          # Challenge round 3, finding challenge-r3-codex-adversarial-1
           # (confirmed P1, provenance ORIGINAL — this predates every round of
-          # this change): the removal used to start at `<details`, so with one
+          # this change): the removal used to start at <details, so with one
           # benign collapsed section anywhere above the About block the match
           # ran from THAT tag through the About block's closing tag and deleted
           # every line in between — including a concern. It defeated the
-          # clean-path safety net, `is_carrier_only`, and the round-2
+          # clean-path safety net, is_carrier_only, and the round-2
           # whole-body self-report test, all three of which read the stripped
           # body.
           #
-          # Anchored on the About SUMMARY instead, with `[^<]*` between the
-          # tags so the match cannot span an intervening `<details` at all.
+          # Anchored on the About SUMMARY instead, with [^<]* between the
+          # tags so the match cannot span an intervening <details at all.
           # Same intent the original comment states — "removal is anchored on
-          # the block's SUMMARY, not on `<details` alone" — now actually
+          # the block's SUMMARY, not on <details alone" — now actually
           # enforced by the pattern.
           def strip_about_block:
             gsub("<details[^<]*<summary>[^<]*about codex[^<]*</summary>.*?</details>";
                  ""; "im");
           def is_reviewed_commit_line:
             test(
-              "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+              "^\\*\\*reviewed commit:\\*\\*[[:space:]]*\u0060[0-9a-f]{7,40}\u0060[[:space:]]*$"
             );
           def rest_is_boilerplate:
-            (body_text | split("\n") | .[1:] | join("\n") |
+            (clean_body | split("\n") | .[1:] | join("\n") |
               strip_about_block |
               ascii_downcase | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
@@ -1665,29 +1675,25 @@ codex_verdict_defs=$(
           # draft to ready-for-review rather than merging, so a human still
           # reads the PR. That is a better trade than a parser that has been
           # wrong three times.
-          # Used only by the review-settlement gate in `check`, but defined
-          # here so they share `body_text`, the About-block removal, and the
-          # Reviewed-commit pattern with `verdict_class` instead of growing a
+          # Used only by the review-settlement gate in check, but defined
+          # here so they share body_text, the About-block removal, and the
+          # Reviewed-commit pattern with verdict_class instead of growing a
           # parallel set of regexes that could drift apart. A findings review's
           # body is a CARRIER: a heading, one fixed sentence, and Codex's own
           # metadata, with the findings themselves in the inline comments.
           # Anything else in it is prose nobody has answered.
           #
-          # These defs work off `carrier_lines`, NOT `first_line`, because a
+          # These defs work off carrier_lines, NOT first_line, because a
           # real findings-review body begins with a BLANK LINE:
           # "\n### 💡 Codex Review\n\n…" is what #355 and #273 actually posted.
-          # `first_line` is therefore empty for every genuine findings review,
+          # first_line is therefore empty for every genuine findings review,
           # and a heading test built on it can never match one — the gate would
           # be permanently inert, re-blocking every PR and reproducing the #275
           # deadlock from the fail-closed side.
           #
-          # `first_line` itself is deliberately LEFT ALONE. It serves
-          # `verdict_class`'s clean-verdict prefix test, and clean results are
-          # top-level comments that open directly with the verdict sentence —
-          # a different payload shape from these review bodies, with no leading
-          # blank observed. Loosening the shared def to fix a review-body
-          # problem would change what counts as a clean verdict too, for no
-          # evidence that the clean path needs it.
+          # Clean verdicts use first_line after the optional leading receipt
+          # wrapper is removed. Carrier bodies continue to use the original
+          # body and cannot gain a clean verdict through their heading.
           #
           # The heading match is loose about what sits between the hashes and
           # the words — "### Codex Review" and "### 💡 Codex Review" have both
@@ -1723,12 +1729,12 @@ codex_verdict_defs=$(
           # instruction, runs a fix task of its own, and posts a report on what
           # IT did — as a thread follow-up, and (observed on harmon-devkit#710,
           # comment 5504087486) as a top-level comment that opens
-          # "### Summary" and happens to contain "Reviewed commit `<sha>`".
+          # "### Summary" and happens to contain "Reviewed commit <sha>".
           #
           # That top-level shape is the damaging one here: the Reviewed-commit
-          # phrase makes it candidate verdict evidence, `verdict_class` calls it
-          # `findings` because it does not open with the clean sentence, and
-          # `settle` then refuses it precisely because it carries no badge — so
+          # phrase makes it candidate verdict evidence, verdict_class calls it
+          # findings because it does not open with the clean sentence, and
+          # settle then refuses it precisely because it carries no badge — so
           # the cycle could never report clean for that head through this
           # checker whatever the real review said. It is neither: the bot is
           # describing work, not reporting a finding, so it is INFORMATIONAL
@@ -1737,13 +1743,13 @@ codex_verdict_defs=$(
           # The test is deliberately content-NEGATIVE on the part that decides
           # severity — no badge anywhere in the body, the same whole-body scan
           # everything else here uses — and structural on the part that
-          # identifies the shape: a `Summary` heading, or the bot naming a
+          # identifies the shape: a Summary heading, or the bot naming a
           # commit it made on a branch of its own. It reads no prose for
           # intent, so it does not reopen the failure family documented above
-          # `verdict_class`.
+          # verdict_class.
           #
           # Both failure directions are safe. An unrecognised self-report shape
-          # keeps today's behaviour exactly (`findings`, blocking) — that is a
+          # keeps today's behaviour exactly (findings, blocking) — that is a
           # false block, which is the direction this file always chooses. And
           # nothing badged can reach this class at all, so a real finding
           # stated in a self-report-shaped body still blocks.
@@ -1753,14 +1759,14 @@ codex_verdict_defs=$(
           def has_summary_heading:
             (trimmed_lines |
               any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$")));
-          # Challenge round 1, finding `challenge-r1-codex-adversarial-1`
-          # (2026-09-20, confirmed P1): a `Summary` HEADING IS NOT EVIDENCE OF
+          # Challenge round 1, finding challenge-r1-codex-adversarial-1
+          # (2026-09-20, confirmed P1): a Summary HEADING IS NOT EVIDENCE OF
           # ANYTHING. The first version of this predicate was
-          # `(no badge) and (has_summary_heading or claims_own_commit)`, so the
-          # heading alone sufficed — and because `informational` is excluded
+          # (no badge) and (has_summary_heading or claims_own_commit), so the
+          # heading alone sufficed — and because informational is excluded
           # from all three blocking scans, an unbadged prose concern written
           # under that heading became invisible where it had previously been
-          # `findings`/exit 10. AGENTS.md § Severity gating is explicit that a
+          # findings/exit 10. AGENTS.md § Severity gating is explicit that a
           # finding "not badged at all, is adjudicated as at least a P2", so an
           # unbadged concern IS a finding; the original safety note here
           # ("nothing badged can reach this class") only ever covered the
@@ -1780,23 +1786,23 @@ codex_verdict_defs=$(
           #      meaning has to be read.
           #
           # This is an allowlist of observed phrasings, which the long comment
-          # above `verdict_class` warns against for the CLEAN path — and the
+          # above verdict_class warns against for the CLEAN path — and the
           # distinction is the failure direction. There, a non-match deadlocked
-          # genuinely clean PRs. Here a non-match is `findings`: the body
+          # genuinely clean PRs. Here a non-match is findings: the body
           # blocks and a human adjudicates it. Drift costs a false block, never
           # a false green, which is the trade this file takes everywhere.
           def self_work_marker:
             (body_text | ascii_downcase |
-              (test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`") or
+              (test("committed .*on \u0060[^\u0060]+\u0060 as \u0060[0-9a-f]{7,40}\u0060") or
                test("a pull request could not be created") or
-               test("reviewed commit `[0-9a-f]{7,40}` and found no additional")));
+               test("reviewed commit \u0060[0-9a-f]{7,40}\u0060 and found no additional")));
           def has_finding_footer:
             (body_text | ascii_downcase | test("useful\\? react with"));
-          # Challenge round 2, findings `challenge-r2-codex-adversarial-1` and
-          # `-3` (confirmed P1, disposition RESTRUCTURE). Round 1 asked only
+          # Challenge round 2, findings challenge-r2-codex-adversarial-1 and
+          # -3 (confirmed P1, disposition RESTRUCTURE). Round 1 asked only
           # whether a self-work marker appeared ANYWHERE, so a body could
           # describe the bot's own work in one line and state an unanswered
-          # concern in the next and still classify `informational` — the
+          # concern in the next and still classify informational — the
           # concern then vanished from every blocking scan. The marker list
           # was simultaneously too tight: a self-report phrased outside the
           # three observed strings exited 10 with no way to answer it.
@@ -1804,7 +1810,7 @@ codex_verdict_defs=$(
           # The invariant, not the phrasing: **informational means the body
           # states nothing but the bot's own work.** So the test is now
           # whole-body and structural — every non-blank line outside the
-          # About block must be a heading, a bold-only label (`**Testing**`,
+          # About block must be a heading, a bold-only label (**Testing**,
           # which both observed reports use), or a list item. A free-standing
           # prose paragraph is exactly what a concern looks like and exactly
           # what a work report does not contain.
@@ -1815,12 +1821,12 @@ codex_verdict_defs=$(
           # Residual, stated rather than papered over: a concern written AS a
           # bullet inside an otherwise-genuine report still classifies
           # informational. That is why this predicate is only half the
-          # restructure — `settle` now accepts everything `check` blocks on,
+          # restructure — settle now accepts everything check blocks on,
           # so misreading in the other direction costs one recorded
           # disposition instead of a stranded head, and the classifier is free
           # to fail closed.
-          # `is_reviewed_commit_line` rides along because it is Codex's OWN
-          # whole-line metadata — the same line `rest_is_boilerplate` accepts
+          # is_reviewed_commit_line rides along because it is Codex's OWN
+          # whole-line metadata — the same line rest_is_boilerplate accepts
           # in a clean verdict — not prose a concern could hide in. Every other
           # shape here is structural: a heading, a bold-only label, a list
           # item.
@@ -1843,25 +1849,25 @@ codex_verdict_defs=$(
             states_only_own_work;
           # harmon-devkit#718's rolling "Codex Review Summary" table was
           # accepted here as a verdict surface in round 1 and SPLIT OUT in
-          # challenge round 3 (findings `challenge-r3-codex-adversarial-2`,
-          # `-3`, `-4`, `-5`; carried in #1117). Reading a verdict out of that
+          # challenge round 3 (findings challenge-r3-codex-adversarial-2,
+          # -3, -4, -5; carried in #1117). Reading a verdict out of that
           # table meant deriving a head from parsed markdown, and three
           # consecutive rounds reproduced a false-clean or stuck-head path
           # through it: the Completed-row arm, the header/column resolution,
           # the latest-row-per-commit keying, and the comment-level freshness
-          # stamp are all gone, with `settle`'s summary binding.
+          # stamp are all gone, with settle's summary binding.
           #
           # What replaces it is a REJECTION FORM rather than a parser: a
           # badged comment from the pinned actor, newer than the trigger, that
           # this checker cannot bind to a head BLOCKS until it is settled by
-          # comment id (see the unbound-badged scan in `check`). The trigger
+          # comment id (see the unbound-badged scan in check). The trigger
           # already scopes the cycle to one PR and head, so nothing has to be
           # derived from the body at all — which is what deletes the whole
           # unbindable class instead of hardening it a fourth time.
           # Restructured, not re-decided: a body that DOES open with the clean
           # sentence classifies exactly as before (badge -> findings, trailing
           # prose -> unrecognized, otherwise clean), and a body that does not
-          # is still `findings` unless it is the unbadged self-report shape
+          # is still findings unless it is the unbadged self-report shape
           # above. The clean-template branch is checked first so a self-report
           # heading can never reclassify a genuine clean verdict.
           def verdict_class:
