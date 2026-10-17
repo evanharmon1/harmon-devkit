@@ -2566,11 +2566,12 @@ assert_audit_dir_grants() {
     grep -qxF "GRANT:Read(//${expected_dir#/}/**)" "$GH_STUB_LOG" ||
         fail "audit mode must grant Read on the exact skill directory '$expected_dir'"
     actual_grants="$(sed -n 's/^GRANT:\(Bash(.*\/assets\/groom-.*)\)$/\1/p' "$GH_STUB_LOG" | sort)"
-    expected_grants="$(printf 'Bash(%s/assets/%s:*)\n' \
-        "$named_dir" groom-scan.sh "$named_dir" groom-verdicts.sh \
-        "$named_dir" groom-report.sh | sort)"
+    expected_grants="$(printf 'Bash(%s/assets/%s:*)\nBash("%s/assets/%s":*)\n' \
+        "$named_dir" groom-scan.sh "$named_dir" groom-scan.sh \
+        "$named_dir" groom-verdicts.sh "$named_dir" groom-verdicts.sh \
+        "$named_dir" groom-report.sh "$named_dir" groom-report.sh | sort)"
     [ "$actual_grants" = "$expected_grants" ] ||
-        fail "every groom Bash grant must use the prompt's exact DIR: $actual_grants"
+        fail "every groom Bash grant must emit both plain and quoted forms using the prompt's exact DIR: $actual_grants"
 }
 
 echo "==> wrapper: audit mode forces GROOM_EXECUTE=0"
@@ -2585,7 +2586,9 @@ grep -qxF "Triage skill directory (use exactly this path as DIR for triage comma
 grep -qxF "GRANT:Read(//${expected_triage_dir#/}/**)" "$GH_STUB_LOG" ||
     fail "audit mode must grant Read on the resolved triage directory"
 grep -qxF "GRANT:Bash($expected_triage_dir/assets/triage-scan.sh:*)" "$GH_STUB_LOG" ||
-    fail "audit mode must grant triage-scan.sh under the exact path its prompt names"
+    fail "audit mode must grant unquoted triage-scan.sh under the exact path its prompt names"
+grep -qxF "GRANT:Bash(\"$expected_triage_dir/assets/triage-scan.sh\":*)" "$GH_STUB_LOG" ||
+    fail "audit mode must grant double-quoted triage-scan.sh under the exact path its prompt names"
 grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
@@ -2880,7 +2883,9 @@ for custom_wrapper in "$custom_skills/groom/assets/groom.sh" "$custom_root/groom
     grep -qxF "GRANT:Read(//${expected_custom_triage#/}/**)" "$GH_STUB_LOG" ||
         fail "custom flattened audit must grant Read on sibling triage directory"
     grep -qxF "GRANT:Bash($expected_custom_triage/assets/triage-scan.sh:*)" "$GH_STUB_LOG" ||
-        fail "custom flattened audit must grant triage-scan.sh under the exact path named in the prompt"
+        fail "custom flattened audit must grant unquoted triage-scan.sh under the exact path named in the prompt"
+    grep -qxF "GRANT:Bash(\"$expected_custom_triage/assets/triage-scan.sh\":*)" "$GH_STUB_LOG" ||
+        fail "custom flattened audit must grant double-quoted triage-scan.sh under the exact path named in the prompt"
     grep -qF ".claude/skills/triage" "$GH_STUB_LOG" &&
         fail "sibling triage (\$skill_dir/../triage) must take precedence over relative fallback (.claude/skills/triage)"
 done
@@ -2904,7 +2909,9 @@ grep -qxF "Triage skill directory (use exactly this path as DIR for triage comma
 grep -qxF "GRANT:Read(//${expected_fallback_triage#/}/**)" "$GH_STUB_LOG" ||
     fail "fallback audit must grant Read on the resolved fallback triage directory"
 grep -qxF "GRANT:Bash($expected_fallback_triage/assets/triage-scan.sh:*)" "$GH_STUB_LOG" ||
-    fail "fallback audit must grant triage-scan.sh under the exact path named in the prompt"
+    fail "fallback audit must grant unquoted triage-scan.sh under the exact path named in the prompt"
+grep -qxF "GRANT:Bash(\"$expected_fallback_triage/assets/triage-scan.sh\":*)" "$GH_STUB_LOG" ||
+    fail "fallback audit must grant double-quoted triage-scan.sh under the exact path named in the prompt"
 
 grep -qF '$DIR/../triage' "$skill_md" ||
     fail "SKILL.md must document looking for triage beside the groom skill (\$DIR/../triage) before relative fallbacks"
@@ -2947,9 +2954,13 @@ for special_case in "space:My Projects/space repo:My Projects/space out" "comma:
         "Read(//${special_triage#/}/**)" \
         "Edit(//${special_scratch#/}/**)" \
         "Bash($special_groom/assets/groom-scan.sh:*)" \
+        "Bash(\"$special_groom/assets/groom-scan.sh\":*)" \
         "Bash($special_groom/assets/groom-verdicts.sh:*)" \
+        "Bash(\"$special_groom/assets/groom-verdicts.sh\":*)" \
         "Bash($special_groom/assets/groom-report.sh:*)" \
+        "Bash(\"$special_groom/assets/groom-report.sh\":*)" \
         "Bash($special_triage/assets/triage-scan.sh:*)" \
+        "Bash(\"$special_triage/assets/triage-scan.sh\":*)" \
         "Bash(gh issue view:*)" \
         "Bash(gh issue list:*)" \
         "Bash(gh pr view:*)" \
@@ -2962,8 +2973,8 @@ for special_case in "space:My Projects/space repo:My Projects/space out" "comma:
             fail "$label-path audit lost or split grant '$intact_grant': $(grep '^GRANT:' "$GH_STUB_LOG")"
     done
     grant_count="$(grep -c '^GRANT:' "$GH_STUB_LOG")"
-    [ "$grant_count" -eq 16 ] ||
-        fail "$label-path audit must pass exactly 16 intact grants (got $grant_count): $(grep '^GRANT:' "$GH_STUB_LOG")"
+    [ "$grant_count" -eq 20 ] ||
+        fail "$label-path audit must pass exactly 20 intact grants (got $grant_count): $(grep '^GRANT:' "$GH_STUB_LOG")"
     [ -f "$special_scratch/report.html" ] ||
         fail "$label-path audit report.html must survive in '$special_scratch'"
     [ -f "$special_scratch/report.md" ] ||

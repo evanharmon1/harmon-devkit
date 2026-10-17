@@ -270,7 +270,11 @@ scripts say they WOULD write."
 # Grants are built one per array element and passed via --settings as a JSON
 # permissions.allow array (which still applies under --setting-sources "")
 # rather than --allowedTools: --allowedTools parses a comma- or space-separated
-# list, splitting paths that contain spaces or commas (issue #1507).
+# list, splitting paths that contain spaces or commas (issue #1507). Every
+# filesystem script Bash grant is emitted in both unquoted Bash(<path>:*) and
+# double-quoted Bash("<path>":*) form because a shell command over a spaced
+# checkout quotes the script path, and Claude Code's Bash permission matcher
+# only matches a quoted invocation against a quoted rule.
 skill_abs="$skill_dir"
 grants=(
     "Read(//${run_dir#/}/**)"
@@ -291,11 +295,17 @@ fi
 grants+=(
     "Edit(//${run_dir#/}/**)"
     "Bash($skill_dir/assets/groom-scan.sh:*)"
+    "Bash(\"$skill_dir/assets/groom-scan.sh\":*)"
     "Bash($skill_dir/assets/groom-verdicts.sh:*)"
+    "Bash(\"$skill_dir/assets/groom-verdicts.sh\":*)"
     "Bash($skill_dir/assets/groom-report.sh:*)"
+    "Bash(\"$skill_dir/assets/groom-report.sh\":*)"
 )
 if [ -n "$triage_dir" ]; then
-    grants+=("Bash($triage_dir/assets/triage-scan.sh:*)")
+    grants+=(
+        "Bash($triage_dir/assets/triage-scan.sh:*)"
+        "Bash(\"$triage_dir/assets/triage-scan.sh\":*)"
+    )
 fi
 grants+=(
     "Bash(gh issue view:*)"
