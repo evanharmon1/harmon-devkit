@@ -179,6 +179,7 @@ if [ "$mode" = "apply" ] && [ "$apply_script" = "groom-report.sh" ]; then
 fi
 
 if [ "$mode" = "audit" ]; then
+    command -v jq >/dev/null 2>&1 || die "the jq CLI is required"
     command -v claude >/dev/null 2>&1 ||
         die "the claude CLI is required (or run the skill interactively via" \
             "your agent session instead)"
@@ -265,39 +266,72 @@ scripts say they WOULD write."
 # matched by file permission checks, and only Edit(path) covers every
 # file-editing tool (Write included). claude_tools below still lists Write
 # as a built-in; only the permission-rule spelling changes (issue #1060).
+#
+# Grants are built one per array element and passed via --settings as a JSON
+# permissions.allow array (which still applies under --setting-sources "")
+# rather than --allowedTools: --allowedTools parses a comma- or space-separated
+# list, splitting paths that contain spaces or commas (issue #1507). Every
+# filesystem script Bash grant is emitted in both unquoted Bash(<path>:*) and
+# double-quoted Bash("<path>":*) form because a shell command over a spaced
+# checkout quotes the script path, and Claude Code's Bash permission matcher
+# only matches a quoted invocation against a quoted rule.
 skill_abs="$skill_dir"
-tools="Read(//${run_dir#/}/**),Read(//${skill_abs#/}/**)"
+grants=(
+    "Read(//${run_dir#/}/**)"
+    "Read(//${skill_abs#/}/**)"
+)
 
 triage_dir=""
-for d in ai/skills/universal/triage .agents/skills/triage .claude/skills/triage; do
+for d in "$skill_dir/../triage" ai/skills/universal/triage .agents/skills/triage .claude/skills/triage; do
     if [ -f "$d/SKILL.md" ]; then
-        triage_dir="$d"
+        triage_dir="$(cd "$d" && pwd -P)"
         break
     fi
 done
 if [ -n "$triage_dir" ]; then
-    triage_abs="$(cd "$triage_dir" && pwd)"
-    tools="$tools,Read(//${triage_abs#/}/**)"
+    grants+=("Read(//${triage_dir#/}/**)")
 fi
 
-tools="$tools,Edit(//${run_dir#/}/**)"
-gh_read_tools="Bash(gh issue view:*),Bash(gh issue list:*)"
-gh_read_tools="$gh_read_tools,Bash(gh pr view:*),Bash(gh pr list:*)"
-tools="$tools,Bash($skill_dir/assets/groom-scan.sh:*)"
-tools="$tools,Bash($skill_dir/assets/groom-verdicts.sh:*)"
-tools="$tools,Bash($skill_dir/assets/groom-report.sh:*)"
+grants+=(
+    "Edit(//${run_dir#/}/**)"
+    "Bash($skill_dir/assets/groom-scan.sh:*)"
+    "Bash(\"$skill_dir/assets/groom-scan.sh\":*)"
+    "Bash($skill_dir/assets/groom-verdicts.sh:*)"
+    "Bash(\"$skill_dir/assets/groom-verdicts.sh\":*)"
+    "Bash($skill_dir/assets/groom-report.sh:*)"
+    "Bash(\"$skill_dir/assets/groom-report.sh\":*)"
+)
 if [ -n "$triage_dir" ]; then
-    tools="$tools,Bash($triage_dir/assets/triage-scan.sh:*)"
+    grants+=(
+        "Bash($triage_dir/assets/triage-scan.sh:*)"
+        "Bash(\"$triage_dir/assets/triage-scan.sh\":*)"
+    )
 fi
-tools="$tools,$gh_read_tools"
-tools="$tools,Agent,Task,Glob,Grep"
+grants+=(
+    "Bash(gh issue view:*)"
+    "Bash(gh issue list:*)"
+    "Bash(gh pr view:*)"
+    "Bash(gh pr list:*)"
+    "Agent"
+    "Task"
+    "Glob"
+    "Grep"
+)
 claude_tools="Read,Write,Bash,Agent,Task,Glob,Grep"
+settings_json="$(jq -cn --args '{permissions:{allow:$ARGS.positional}}' "${grants[@]}")"
+
+triage_prompt=""
+if [ -n "$triage_dir" ]; then
+    triage_prompt="
+Triage skill: $triage_dir/SKILL.md
+Triage skill directory (use exactly this path as DIR for triage commands): $triage_dir"
+fi
 
 prompt="You are running the groom skill's AUDIT mode headlessly over one repository.
 
 Repo: $repo
 Skill: $skill_dir/SKILL.md
-Skill directory (use exactly this path as DIR for groom commands; triage and any other skill keep their own DIR): $skill_dir
+Skill directory (use exactly this path as DIR for groom commands; triage and any other skill keep their own DIR): $skill_dir$triage_prompt
 Scratch directory (already created — write every dataset and report file
 here; do not run mktemp): $run_dir
 Mode: $mode_text
@@ -320,4 +354,4 @@ claude -p "$prompt" \
     --model "${GROOM_MODEL:-sonnet}" \
     --setting-sources "" \
     --tools "$claude_tools" \
-    --allowedTools "$tools"
+    --settings "$settings_json"
