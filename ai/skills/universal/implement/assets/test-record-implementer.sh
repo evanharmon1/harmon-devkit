@@ -33,7 +33,8 @@ cat >"$registry" <<'EOF'
       {"slug": "opus", "versions": [{"slug": "5.5", "retired": false}]},
       {"slug": "sonnet", "versions": [{"slug": "5.5", "retired": false}]}]},
     {"slug": "gpt", "models": [
-      {"slug": "sol", "versions": [{"slug": "6.1", "retired": false}]}]},
+      {"slug": "sol", "versions": [{"slug": "6.1", "retired": false}]},
+      {"slug": "luna", "versions": [{"slug": "6", "retired": false}]}]},
     {"slug": "gemini", "models": [
       {"slug": "flash", "versions": [{"slug": "3.8", "retired": false},
                                       {"slug": "3.7", "retired": true}]}]}
@@ -42,7 +43,7 @@ cat >"$registry" <<'EOF'
     {"slug": "claude-code", "family_constraint": {"kind": "fixed", "family": "claude"},
      "efforts": ["low", "medium", "high", "xhigh", "max"]},
     {"slug": "codex-cli", "family_constraint": {"kind": "fixed", "family": "gpt"},
-     "efforts": ["minimal", "low", "medium", "high", "xhigh"]},
+     "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]},
     {"slug": "antigravity", "family_constraint": {"kind": "fixed", "family": "gemini"},
      "efforts": []},
     {"slug": "opencode", "family_constraint": {"kind": "broker"},
@@ -217,11 +218,16 @@ labels_of() {
 
 claude_opus=(--harness claude-code --family claude --model opus --version 5.5 --effort medium)
 gpt_sol=(--harness codex-cli --family gpt --model sol --version 6.1 --effort high)
+gpt_luna_max=(--harness codex-cli --family gpt --model luna --version 6 --effort max)
 
 # --- validate -----------------------------------------------------------------
 out="$(run validate --registry "$registry" "${claude_opus[@]}")" || fail "valid tuple refused"
 [ "$out" = "$(printf 'model-family:claude\nmodel:opus\nmodel-version:5.5\nmodel-effort:medium')" ] ||
     fail "validate printed: $out"
+ok
+out="$(run validate --registry "$registry" "${gpt_luna_max[@]}")" || fail "Codex CLI max tuple refused"
+[ "$out" = "$(printf 'model-family:gpt\nmodel:luna\nmodel-version:6\nmodel-effort:max')" ] ||
+    fail "Codex CLI max tuple printed: $out"
 ok
 run validate --registry "$registry" --harness opencode --family gpt --model sol \
     --version 6.1 --effort low >/dev/null || fail "a broker harness must admit any family"
