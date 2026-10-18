@@ -3313,6 +3313,7 @@ assert_receipt_refusal() {
     [ "$(run_receipt "$@")" = 1 ] || fail "receipt must refuse: $(cat "$tmp/receipt.out")"
     grep -qF 'check-issue-metadata.sh' "$tmp/receipt.out" || fail "refusal must name preflight"
     grep -qF -- '--repo testowner/testrepo' "$tmp/receipt.out" || fail "refusal must bind repo"
+    assert_suggested_preflight "$@"
 }
 assert_suggested_preflight() {
     python3 - "$tmp/receipt.out" "$@" <<'PY_SUGGESTION' || fail "suggested preflight must preserve the refused draft"
@@ -3326,7 +3327,7 @@ assert line.endswith(suffix), line
 suggestion = shlex.split(line[:-len(suffix)])
 
 def fields(args, split_labels):
-    values, labels = {}, set()
+    values, labels = {'--title': '<current-title>', '--body-file': '<draft-file>'}, set()
     for index, token in enumerate(args):
         if token in ('--title', '--body-file'):
             values[token] = args[index + 1]
@@ -3339,16 +3340,15 @@ def fields(args, split_labels):
 expected, labels = fields(sys.argv[2:], True)
 actual, suggested_labels = fields(suggestion, False)
 assert actual == expected, (actual, expected)
-assert suggested_labels == labels - {'needs-triage'}, (suggested_labels, labels)
+assert suggested_labels == labels, (suggested_labels, labels)
 if 'needs-triage' in labels:
-    assert ('needs-triage is derived, not authored: for an agent inapplicability fallback, '
-            'pass --inapplicable <axis>; for an incomplete human draft, pass --human-authored.') in output
+    assert ('An --agent-authored preflight omits --label needs-triage (it is derived; '
+            'pass --inapplicable <axis> instead), while a --human-authored preflight keeps it.') in output
 PY_SUGGESTION
 }
 echo "==> receipts: missing, failing and partial preflights cannot authorize filing"
 rm -rf "$receipt_dir"
 assert_receipt_refusal -- "${receipt_create[@]}"
-assert_suggested_preflight "${receipt_create[@]}"
 [ "$(run_personal 'Receipt contract' "$perishable_body")" = 1 ] || fail "invalid body must fail"
 [ ! -e "$receipt_dir" ] || fail "failed validation must not write a receipt"
 [ "$(run_metadata --title-only --title 'Receipt contract')" = 0 ] || fail "title-only must pass"
@@ -3402,12 +3402,12 @@ PY_RECEIPT
 [ "$(run_receipt -- "${receipt_create[@]}")" = 0 ] || fail "receipt must remain reusable"
 assert_receipt_refusal -- "${receipt_create[@]}" --label human
 assert_receipt_refusal -- "${receipt_create[@]}" --label needs-triage
-assert_suggested_preflight "${receipt_create[@]}" --label needs-triage
 cp "$valid_body" "$tmp/receipt-edited.md"
 printf '\nEdited bytes.\n' >>"$tmp/receipt-edited.md"
 assert_receipt_refusal -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
     --body-file "$tmp/receipt-edited.md"
-[ "$(run_receipt --max-age-seconds 0 -- "${receipt_create[@]}")" = 1 ] || fail "zero age must expire"
+assert_receipt_refusal --max-age-seconds 0 -- "${receipt_create[@]}"
+grep -qF 'no fresh matching receipt; run the full preflight with the same draft bytes' "$tmp/receipt.out" || fail "zero-age refusal must explain the missing fresh receipt"
 python3 - "$receipt_file" <<'PY_RECEIPT'
 import json, pathlib, sys, time
 p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text())
@@ -3464,6 +3464,47 @@ human_inapplicable_create=(gh issue create --repo testowner/testrepo
 [ "$(run_receipt -- "${human_inapplicable_create[@]}")" = 1 ] || fail "human inapplicable create without needs-triage must be refused"
 grep -qF -- 'requires --label needs-triage' "$tmp/receipt.out" || fail "human inapplicable refusal must name needs-triage"
 
+echo "==> receipts: suggested preflights recover human and agent needs-triage creates"
+run_suggested_preflight() {
+    python3 - "$tmp/receipt.out" "$metadata_repo" "$1" "$2" "${@:3}" <<'PY_RUN_SUGGESTION' >"$tmp/suggested-preflight.out" 2>&1
+import pathlib, shlex, subprocess, sys
+
+output, cwd, target, authorship, *extra = sys.argv[1:]
+line = next(line.strip() for line in pathlib.Path(output).read_text().splitlines()
+            if line.startswith('  ') and 'check-issue-metadata.sh' in line)
+command = shlex.split(line.removesuffix(' --agent-authored (or --human-authored)'))
+command = [target if value == '<target checkout>' else
+           'personal' if value == '<personal|organization>' else value for value in command]
+if authorship == '--agent-authored':
+    command = [value for index, value in enumerate(command)
+               if not (value == '--label' and command[index + 1] == 'needs-triage')
+               and not (value == 'needs-triage' and command[index - 1] == '--label')]
+sys.exit(subprocess.run(command + [authorship] + extra, cwd=cwd).returncode)
+PY_RUN_SUGGESTION
+}
+human_marker_create=(gh issue create --repo testowner/testrepo
+    --title '(tests): Human suggested preflight' --body-file "$valid_body"
+    --label feature --label area:fixture --label layer:none --label domain:fixture
+    --label impact:medium --label risk:low --label complexity:s --label needs-triage)
+assert_receipt_refusal -- "${human_marker_create[@]}"
+run_suggested_preflight "$metadata_repo" --human-authored || fail "suggested human preflight must pass: $(cat "$tmp/suggested-preflight.out")"
+[ "$(run_receipt -- "${human_marker_create[@]}")" = 0 ] || fail "suggested human preflight must admit the original create"
+
+agent_suggestion_target="$tmp/receipt-agent-suggestion-target"
+mkdir -p "$agent_suggestion_target"
+git -C "$agent_suggestion_target" init -q
+git -C "$agent_suggestion_target" remote add origin https://github.com/testowner/testrepo.git
+cp "$metadata_repo/agent-registry.json" "$agent_suggestion_target/agent-registry.json"
+jq '(.families[] | select(.family == "layer").values) |= map(select(.value != "none"))' \
+    "$metadata_repo/label-registry.json" >"$agent_suggestion_target/label-registry.json"
+agent_marker_create=(gh issue create --repo testowner/testrepo
+    --title '(tests): Agent suggested preflight' --body-file "$valid_body"
+    --label feature --label area:fixture --label domain:fixture --label ai-generated
+    --label impact:medium --label risk:low --label complexity:s --label needs-triage)
+assert_receipt_refusal -- "${agent_marker_create[@]}"
+run_suggested_preflight "$agent_suggestion_target" --agent-authored --inapplicable layer || fail "suggested agent preflight with the marker advice must pass: $(cat "$tmp/suggested-preflight.out")"
+[ "$(run_receipt -- "${agent_marker_create[@]}")" = 0 ] || fail "suggested agent preflight must admit the original create"
+
 echo "==> receipts: full human validation, inline UTF-8 and explicit repository"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
     --title 'Human receipt' --body-file "$valid_body" --human-authored)" = 0 ] || fail "human receipt must pass"
@@ -3482,6 +3523,7 @@ inline_body="${inline_body%x}"
 [ "$(run_receipt -- gh issue edit 12 -R testowner/testrepo -b "$inline_body")" = 0 ] || fail "inline bytes with original newline must match"
 git -C "$metadata_repo" remote add origin https://github.com/testowner/testrepo.git
 [ "$(run_receipt -- gh issue create --title '(tests): Human receipt' --body-file "$valid_body")" = 1 ] || fail "omitted repo must be refused despite origin"
+grep -qF -- 'specify --repo (or GH_REPO) for issue writes' "$tmp/receipt.out" || fail "omitted-repo refusal must name --repo"
 [ "$(run_receipt -- gh issue create --web)" = 2 ] || fail "interactive create cannot be authorized"
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title x --body-file -)" = 2 ] || fail "stdin is indeterminate"
 [ "$(run_receipt -- gh issue create --repo testowner/testrepo --title x --unknown value)" = 2 ] || fail "unknown argv must fail closed"

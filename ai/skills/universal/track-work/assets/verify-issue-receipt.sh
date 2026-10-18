@@ -220,10 +220,9 @@ def verify(args, script):
                '--body-file', values.get('--body-file', '<draft-file>')]
     proposed_labels = sorted(set(label.strip() for label in labels if label.strip()))
     for label in proposed_labels:
-        if label != 'needs-triage':
-            command += ['--label', label]
-    marker_advice = ('\nneeds-triage is derived, not authored: for an agent inapplicability fallback, '
-                     'pass --inapplicable <axis>; for an incomplete human draft, pass --human-authored.'
+        command += ['--label', label]
+    marker_advice = ('\nAn --agent-authored preflight omits --label needs-triage (it is derived; '
+                     'pass --inapplicable <axis> instead), while a --human-authored preflight keeps it.'
                      if 'needs-triage' in proposed_labels else '')
     raise Refused('no fresh matching receipt; run the full preflight with the same draft bytes '
                   '(supply the target owner type, authorship, and required metadata):\n  '
