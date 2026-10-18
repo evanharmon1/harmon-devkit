@@ -61,13 +61,16 @@ if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; the
     sleep 5
 fi
 if [ -f "$WATCH_FIXTURES/events-mode" ]; then
+    printf '%s\n' "$*" >>"$WATCH_FIXTURES/events-calls"
     case "${1:-} ${2:-}" in
     'agent list')
+        [ ! -f "$WATCH_FIXTURES/events-fail-list" ] || exit 92
         revision="$(cat "$WATCH_FIXTURES/events-revision")"
-        printf '{"result":{"agents":[{"name":"events","agent_status":"idle","revision":%s,"state_change_seq":1}]}}\n' "$revision"
+        printf '{"result":{"agents":[{"name":"events","agent_status":"%s","revision":%s,"state_change_seq":1}]}}\n' "$(cat "$WATCH_FIXTURES/events-status" 2>/dev/null || printf idle)" "$revision"
         exit 0
         ;;
     'agent explain')
+        [ ! -f "$WATCH_FIXTURES/events-fail-explain" ] || exit 92
         if [ -f "$WATCH_FIXTURES/events-fallback" ]; then
             printf '%s\n' '{"fallback_reason":"default_known_agent_idle_fallback"}'
         else
@@ -75,8 +78,14 @@ if [ -f "$WATCH_FIXTURES/events-mode" ]; then
         fi
         exit 0
         ;;
-    'agent read') cat "$WATCH_FIXTURES/events-pane"; exit 0 ;;
+    'agent read')
+        [ ! -f "$WATCH_FIXTURES/events-fail-visible" ] || [ "${5:-}" != visible ] || exit 92
+        cat "$WATCH_FIXTURES/events-pane"; exit 0 ;;
     esac
+fi
+if [ "${1:-} ${2:-}" = "agent explain" ]; then
+    printf '%s\n' '{"fallback_reason":null}'
+    exit 0
 fi
 if [ "${1:-} ${2:-}" = "agent list" ]; then
     if [ -f "$WATCH_FIXTURES/malformed-list" ]; then
@@ -2586,6 +2595,60 @@ events_poll
 printf '%s\n' 'Do you want to proceed?' >"$fixture_dir/events-pane"
 events_poll
 assert_line "$events_out" 'PROMPT events: Do you want to proceed?'
+# Claude edit, create and command approvals each start a visible episode.
+for approval in 'Do you want to make this edit to file.sh?' 'Do you want to create file.sh?' 'Do you want to run echo hello?'; do
+    printf '%s\n' working >"$fixture_dir/events-pane"
+    events_poll
+    printf '%s\n' "$approval" >"$fixture_dir/events-pane"
+    events_poll
+    assert_line "$events_out" "PROMPT events: $approval"
+done
+# A failed explain retains pane-derived blocked state, never raw idle.
+touch "$fixture_dir/events-fail-explain"
+events_poll
+assert_line "$events_out" 'AGENT events: idle -> blocked (fallback)'
+events_poll
+assert_count "$events_out" 0 '^AGENT events: blocked \(fallback\) -> idle$'
+rm "$fixture_dir/events-fail-explain"
+# An answered approval above the bottom window must neither block nor repeat.
+printf '%s\n' 'Do you want to create old.sh?' >"$fixture_dir/events-pane"
+for row in {1..9}; do printf 'working %s\n' "$row" >>"$fixture_dir/events-pane"; done
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+printf '%s\n' 2000000720 >"$clock_file"
+events_poll
+assert_count "$events_out" "$prompt_count" '^PROMPT '
+assert_line "$events_out" 'AGENT events: blocked (fallback) -> idle'
+# Usage text above the last eight lines is historical output.
+sed '1s/.*/Usage limit reached/' "$fixture_dir/events-pane" >"$test_tmp/usage-pane"
+cp "$test_tmp/usage-pane" "$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 0 '^USAGE-PAUSED events$'
+printf '%s\n' 'Usage limit reached' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 1 '^USAGE-PAUSED events$'
+# Failed visible reads report unknown age despite previously observed progress.
+touch "$fixture_dir/events-fail-visible"
+printf '%s\n' 2000000780 >"$clock_file"
+events_poll
+grep -Eq '^HEARTBEAT events: state=idle age=unknown pr=' "$events_out" || fail 'failed pane read retained heartbeat age'
+rm "$fixture_dir/events-fail-visible"
+# Failed list polls read only the visible pane: no explain/recent fan-out.
+touch "$fixture_dir/events-fail-list"
+: >"$fixture_dir/events-calls"
+events_poll
+assert_count "$fixture_dir/events-calls" 1 '^agent list$'
+assert_count "$fixture_dir/events-calls" 1 '^agent read events --source visible '
+assert_count "$fixture_dir/events-calls" 0 '^agent (explain|read events --source recent-unwrapped)'
+rm "$fixture_dir/events-fail-list"
+# Working panes cannot announce advisory sentinels or handoffs.
+printf '%s\n' working >"$fixture_dir/events-status"
+for terminal in READY HANDOFF BLOCKED; do
+    events_state="$test_tmp/working-$terminal.state"
+    printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
+    events_poll
+done
+assert_count "$events_out" 0 '^(SENTINEL|HANDOFF) events: .* \(pane only\)$'
 rm "$fixture_dir/events-mode"
 
 # Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.

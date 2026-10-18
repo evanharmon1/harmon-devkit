@@ -600,8 +600,8 @@ sentinel_from_report() {
 # A prompt episode survives pane redraws and repeated text; only an observed
 # disappearance ends it. Persist first-seen and last-emitted times separately.
 approval_request() {
-    awk '
-      /^[[:space:]│›>]*(Requesting permission for:|Run this command[?]|Would you like to run the following command[?]|Do you want to (proceed|allow)|Allow .*([?]|once)|.* requires your approval[.:]?$)/ {
+    tail -n 8 | awk '
+      /^[[:space:]│›>]*(Requesting permission for:|Run this command[?]|Would you like to run the following command[?]|Do you want to (proceed|allow|make this edit to .*|create .*|run .*)|Allow .*([?]|once)|.* requires your approval[.:]?$)/ {
         line = $0
         if (line ~ /Requesting permission for:[[:space:]]*$/ && getline > 0) line = line " " $0
         print line
@@ -1363,10 +1363,12 @@ while true; do
                 pane_available=1
             fi
             prompt="$(approval_request <<<"$pane_visible")"
-            fallback=0
-            if explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
-                jq -e '.fallback_reason | type == "string" and length > 0' >/dev/null 2>&1 <<<"$explanation"; then
-                fallback=1
+            fallback=1
+            if [ "$agents_available" -eq 1 ] && explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
+                jq -e 'has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
+                if [ "$(jq -r .fallback_reason <<<"$explanation")" = null ]; then
+                    fallback=0
+                fi
             fi
             if [ "$agents_available" -eq 1 ]; then
                 agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
@@ -1393,7 +1395,8 @@ while true; do
             fi
             sentinel="$(sentinel_from_report "$report" "$lane_label" "$nonce")"
             pane_only=0
-            if [ -z "$sentinel" ]; then
+            if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] &&
+                [[ "$agent_state" =~ ^(idle|done|blocked)(\ \(fallback\))?$ ]]; then
                 # Keep historical sentinel reads separate from visible approval UI.
                 pane_recent="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
                 sentinel="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_recent")"
@@ -1425,7 +1428,7 @@ while true; do
                 pane_terminal="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_visible")"
                 now="$(date -u +%s)"
                 observe_pane_progress "$progress_key" "$pane_visible" "$metadata" "${sentinel:-$pane_terminal}" "$prompt" "$fallback"
-                if grep -Fq 'Usage limit reached' <<<"$pane_visible"; then
+                if tail -n 8 <<<"$pane_visible" | grep -F 'Usage limit reached' >/dev/null; then
                     if [ "$(state_get USAGE "$lane" || printf 0)" -eq 0 ]; then
                         state_set USAGE "$lane" 1
                         persist_state
@@ -1554,7 +1557,9 @@ while true; do
         fi
         changed="$(state_get PROGRESS "$progress_key" extra || true)"
         age=unknown
-        [ -z "$changed" ] || age="$((now - changed))s"
+        if [ "$extra" = cloud ] || [ "$pane_available" -eq 1 ]; then
+            [ -z "$changed" ] || age="$((now - changed))s"
+        fi
         pr_summary="$(state_get PR "$lane" || printf absent)"
         heartbeat_summary="${heartbeat_summary:+$heartbeat_summary; }$lane: state=$agent_state age=$age pr=$pr_summary"
     done
