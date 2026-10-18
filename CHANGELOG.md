@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.58.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.1...v0.58.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* **dev-flow:** authorize extra charged integration cycles ([#1511](https://github.com/evanharmon1/harmon-devkit/issues/1511)) ([e6f0a7c](https://github.com/evanharmon1/harmon-devkit/commit/e6f0a7c483fc7d0366ce754ecc06d2417696cb72))
+* **dev-flow:** complete cap authorization recording and reporting ([#1521](https://github.com/evanharmon1/harmon-devkit/issues/1521)) ([fc1b05a](https://github.com/evanharmon1/harmon-devkit/commit/fc1b05a849afd887134a575494f8b3ae9b6760bd))
+* **groom:** keep audit grants intact for spaced paths and find triage beside the synced skill ([#1512](https://github.com/evanharmon1/harmon-devkit/issues/1512)) ([8ba39b3](https://github.com/evanharmon1/harmon-devkit/commit/8ba39b333bbc973e428a263647dd3ba726cf0197))
+
 ## [0.58.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.0...v0.58.1) (2026-10-16)
 
 
