@@ -218,11 +218,16 @@ def verify(args, script):
                '--repo', repo, '--repo-root', '<target checkout>', '--owner-type', '<personal|organization>',
                '--title', title if title is not None else '<current-title>',
                '--body-file', values.get('--body-file', '<draft-file>')]
-    for label in sorted(set(label.strip() for label in labels if label.strip())):
-        command += ['--label', label]
+    proposed_labels = sorted(set(label.strip() for label in labels if label.strip()))
+    for label in proposed_labels:
+        if label != 'needs-triage':
+            command += ['--label', label]
+    marker_advice = ('\nneeds-triage is derived, not authored: for an agent inapplicability fallback, '
+                     'pass --inapplicable <axis>; for an incomplete human draft, pass --human-authored.'
+                     if 'needs-triage' in proposed_labels else '')
     raise Refused('no fresh matching receipt; run the full preflight with the same draft bytes '
                   '(supply the target owner type, authorship, and required metadata):\n  '
-                  + shlex.join(command) + ' --agent-authored (or --human-authored)')
+                  + shlex.join(command) + ' --agent-authored (or --human-authored)' + marker_advice)
 
 
 try:

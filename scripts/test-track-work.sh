@@ -3314,9 +3314,41 @@ assert_receipt_refusal() {
     grep -qF 'check-issue-metadata.sh' "$tmp/receipt.out" || fail "refusal must name preflight"
     grep -qF -- '--repo testowner/testrepo' "$tmp/receipt.out" || fail "refusal must bind repo"
 }
+assert_suggested_preflight() {
+    python3 - "$tmp/receipt.out" "$@" <<'PY_SUGGESTION' || fail "suggested preflight must preserve the refused draft"
+import pathlib, shlex, sys
+
+output = pathlib.Path(sys.argv[1]).read_text()
+line = next(line.strip() for line in output.splitlines()
+            if line.startswith('  ') and 'check-issue-metadata.sh' in line)
+suffix = ' --agent-authored (or --human-authored)'
+assert line.endswith(suffix), line
+suggestion = shlex.split(line[:-len(suffix)])
+
+def fields(args, split_labels):
+    values, labels = {}, set()
+    for index, token in enumerate(args):
+        if token in ('--title', '--body-file'):
+            values[token] = args[index + 1]
+        elif token == '--label':
+            value = args[index + 1]
+            labels.update(label.strip() for label in (value.split(',') if split_labels else [value])
+                          if label.strip())
+    return values, labels
+
+expected, labels = fields(sys.argv[2:], True)
+actual, suggested_labels = fields(suggestion, False)
+assert actual == expected, (actual, expected)
+assert suggested_labels == labels - {'needs-triage'}, (suggested_labels, labels)
+if 'needs-triage' in labels:
+    assert ('needs-triage is derived, not authored: for an agent inapplicability fallback, '
+            'pass --inapplicable <axis>; for an incomplete human draft, pass --human-authored.') in output
+PY_SUGGESTION
+}
 echo "==> receipts: missing, failing and partial preflights cannot authorize filing"
 rm -rf "$receipt_dir"
 assert_receipt_refusal -- "${receipt_create[@]}"
+assert_suggested_preflight "${receipt_create[@]}"
 [ "$(run_personal 'Receipt contract' "$perishable_body")" = 1 ] || fail "invalid body must fail"
 [ ! -e "$receipt_dir" ] || fail "failed validation must not write a receipt"
 [ "$(run_metadata --title-only --title 'Receipt contract')" = 0 ] || fail "title-only must pass"
@@ -3370,6 +3402,7 @@ PY_RECEIPT
 [ "$(run_receipt -- "${receipt_create[@]}")" = 0 ] || fail "receipt must remain reusable"
 assert_receipt_refusal -- "${receipt_create[@]}" --label human
 assert_receipt_refusal -- "${receipt_create[@]}" --label needs-triage
+assert_suggested_preflight "${receipt_create[@]}" --label needs-triage
 cp "$valid_body" "$tmp/receipt-edited.md"
 printf '\nEdited bytes.\n' >>"$tmp/receipt-edited.md"
 assert_receipt_refusal -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
