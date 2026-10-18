@@ -598,6 +598,20 @@ echo "three backticks inside"
 ````
 ')" = 0 ] || fail "a matching-length closer should close the fence"
 
+# All checker invocations, including standalone copies, mint receipts only in
+# this throwaway checkout. Target selection remains explicit via --repo-root.
+isolated_metadata() (
+    cd "$metadata_repo"
+    "$@"
+)
+real_receipts="$(git rev-parse --path-format=absolute --git-common-dir)/track-work/receipts"
+receipt_files() {
+    if [ -d "$real_receipts" ]; then
+        find "$real_receipts" -type f | LC_ALL=C sort
+    fi
+}
+receipt_files >"$tmp/real-receipts-before"
+
 # --- check-issue-metadata.sh ------------------------------------------------
 
 metadata_repo="$tmp/metadata-repo"
@@ -742,7 +756,7 @@ run_metadata() {
             shift
         fi
     done
-    (cd "$metadata_repo" && "$metadata" "${_metadata_args[@]}") >"$tmp/metadata.out" 2>&1 || _rc=$?
+    isolated_metadata "$metadata" "${_metadata_args[@]}" >"$tmp/metadata.out" 2>&1 || _rc=$?
     echo "$_rc"
 }
 
@@ -907,7 +921,7 @@ for manifest_kind in present absent; do
     remote_manifest=""
     [ "$manifest_kind" != present ] || remote_manifest="$metadata_host/label-registry.json"
     axis_contract="$(METADATA_GH_LOG="$tmp/metadata-host-gh.log" \
-        METADATA_REMOTE_MANIFEST="$remote_manifest" "$metadata" \
+        METADATA_REMOTE_MANIFEST="$remote_manifest" isolated_metadata "$metadata" \
         --required-axes --repo ghe.example.com/testowner/testrepo)" ||
         fail "host-qualified remote discovery must handle $manifest_kind manifests"
     jq -e '.axes | length > 0' <<<"$axis_contract" >/dev/null ||
@@ -938,7 +952,7 @@ echo "==> metadata: bare targets preserve gh arguments without --hostname"
     'Preserve bare metadata reads' "$valid_body")" = 0 ] ||
     fail "bare agent preflight must still pass"
 METADATA_GH_LOG="$tmp/metadata-bare-gh.log" \
-    "$metadata" --required-axes --repo testowner/testrepo >/dev/null ||
+    isolated_metadata "$metadata" --required-axes --repo testowner/testrepo >/dev/null ||
     fail "bare remote axis discovery must still pass"
 if grep -q -- '--hostname' "$tmp/metadata-bare-gh.log"; then
     fail "bare targets must not gain --hostname"
@@ -1005,14 +1019,14 @@ for remote_url in 'https://ghe.example.com/testowner/testrepo.git' \
     'https://ghe.example.com/testowner/testrepo.git/' \
     'https://ghe.example.com/testowner/testrepo/'; do
     git -C "$metadata_host" remote set-url personal "$remote_url"
-    "$metadata" --required-axes --repo ghe.example.com/testowner/testrepo \
+    isolated_metadata "$metadata" --required-axes --repo ghe.example.com/testowner/testrepo \
         --repo-root "$metadata_host" >/dev/null || fail "enterprise remote must bind: $remote_url"
     for target in testowner/testrepo github.com/testowner/testrepo other.example.com/testowner/testrepo; do
         for mode in discovery filing; do
             _rc=0
             : >"$tmp/metadata-mismatch-gh.log"
             if [ "$mode" = discovery ]; then
-                METADATA_GH_LOG="$tmp/metadata-mismatch-gh.log" "$metadata" \
+                METADATA_GH_LOG="$tmp/metadata-mismatch-gh.log" isolated_metadata "$metadata" \
                     --required-axes --repo "$target" --repo-root "$metadata_host" \
                     >"$tmp/metadata.out" 2>&1 || _rc=$?
             else
@@ -1034,7 +1048,7 @@ for remote_url in 'https://github.com/testowner/testrepo.git' \
     'ssh://git@SSH.GITHUB.COM/testowner/testrepo.git'; do
     git -C "$metadata_host" remote set-url personal "$remote_url"
     for target in testowner/testrepo github.com/testowner/testrepo; do
-        "$metadata" --required-axes --repo "$target" --repo-root "$metadata_host" \
+        isolated_metadata "$metadata" --required-axes --repo "$target" --repo-root "$metadata_host" \
             >/dev/null || fail "GitHub remote alias must bind: $remote_url ($target)"
     done
 done
@@ -1044,7 +1058,7 @@ for target in owner /owner/repo owner/repo/ /owner/repo/ host//owner/repo host/o
     for mode in discovery filing; do
         _rc=0
         if [ "$mode" = discovery ]; then
-            "$metadata" --required-axes --repo "$target" >"$tmp/metadata.out" 2>&1 || _rc=$?
+            isolated_metadata "$metadata" --required-axes --repo "$target" >"$tmp/metadata.out" 2>&1 || _rc=$?
         else
             _rc="$(run_metadata --repo "$target" --repo-root "$metadata_repo" \
                 --owner-type personal --title 'Refuse malformed target' --body-file "$valid_body" --human-authored)"
@@ -1106,7 +1120,7 @@ jq '.families += [(.families[] | select(.family == "area") |
                {"value":"none","description":"Fixture explicit absence"}])]' \
     "$tmp/metadata-registry-axes.json" >"$metadata_axes/label-registry.json"
 : >"$tmp/required-axes-gh.log"
-axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
+axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" isolated_metadata "$metadata" \
     --required-axes --repo testowner/testrepo --repo-root "$metadata_axes/nested")" ||
     fail "required axes must be readable from a custom manifest"
 [ ! -s "$tmp/required-axes-gh.log" ] || fail "required-axes must make no GitHub reads or writes"
@@ -1119,13 +1133,13 @@ jq -e '.source == "manifest" and
 local_axis_contract="$axis_contract"
 : >"$tmp/remote-axes-gh.log"
 remote_axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" \
-    METADATA_GH_LOG="$tmp/remote-axes-gh.log" "$metadata" --required-axes --repo testowner/testrepo)" ||
+    METADATA_GH_LOG="$tmp/remote-axes-gh.log" isolated_metadata "$metadata" --required-axes --repo testowner/testrepo)" ||
     fail "remote manifest must supply required axes without a checkout"
 [ "$(jq -S . <<<"$remote_axis_contract")" = "$(jq -S . <<<"$local_axis_contract")" ] ||
     fail "remote and local modes must derive identical axes from the same manifest"
 grep -qF 'api repos/testowner/testrepo/contents/label-registry.json -H Accept: application/vnd.github.raw+json' \
     "$tmp/remote-axes-gh.log" || fail "remote mode must read the default-branch manifest as raw content"
-remote_axis_contract="$("$metadata" --required-axes --repo testowner/testrepo)" ||
+remote_axis_contract="$(isolated_metadata "$metadata" --required-axes --repo testowner/testrepo)" ||
     fail "missing remote manifest must retain the canonical fallback"
 jq -e '.source == "canonical-fallback" and [.axes[].axis] == ["area", "layer", "domain"] and
     all(.axes[]; .agent_writable_value == null and .agent_writable_none == null)' \
@@ -1133,10 +1147,10 @@ jq -e '.source == "canonical-fallback" and [.axes[].axis] == ["area", "layer", "
 for root_case in denied present; do
     _rc=0
     if [ "$root_case" = denied ]; then
-        METADATA_ROOT_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
+        METADATA_ROOT_FAIL=1 isolated_metadata "$metadata" --required-axes --repo testowner/testrepo \
             >"$tmp/remote-axes.out" 2>&1 || _rc=$?
     else
-        METADATA_ROOT_CONTENTS='[{"name":"label-registry.json"}]' "$metadata" \
+        METADATA_ROOT_CONTENTS='[{"name":"label-registry.json"}]' isolated_metadata "$metadata" \
             --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
     fi
     [ "$_rc" = 2 ] || fail "contents 404 with $root_case root listing must fail closed"
@@ -1145,24 +1159,24 @@ for root_case in denied present; do
 done
 _rc=0
 METADATA_ROOT_CONTENTS="$(jq -cn '[range(1000) | {name: ("fixture-" + tostring)}]')" \
-    "$metadata" --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
+    isolated_metadata "$metadata" --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "contents 404 with 1000 root entries must fail closed"
 grep -q 'remote label-registry.json is unreadable.*listing may be truncated' "$tmp/remote-axes.out" ||
     fail "1000-entry root refusal must explain possible truncation"
 printf '{invalid json\n' >"$tmp/remote-invalid-manifest.json"
 _rc=0
-METADATA_REMOTE_MANIFEST="$tmp/remote-invalid-manifest.json" "$metadata" \
+METADATA_REMOTE_MANIFEST="$tmp/remote-invalid-manifest.json" isolated_metadata "$metadata" \
     --required-axes --repo testowner/testrepo >"$tmp/remote-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "invalid remote manifest must fail closed"
 _rc=0
-METADATA_REMOTE_FAIL=1 "$metadata" --required-axes --repo testowner/testrepo \
+METADATA_REMOTE_FAIL=1 isolated_metadata "$metadata" --required-axes --repo testowner/testrepo \
     >"$tmp/remote-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "unreadable remote manifest must fail closed"
 grep -q 'remote label-registry.json is unreadable' "$tmp/remote-axes.out" ||
     fail "unreadable remote manifest must not fall back"
 
 _rc=0
-"$metadata" --required-axes --repo another/repository --repo-root "$metadata_axes" \
+isolated_metadata "$metadata" --required-axes --repo another/repository --repo-root "$metadata_axes" \
     >"$tmp/required-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "required-axes must refuse a checkout bound to another repository"
 grep -q 'no GitHub remote matching --repo another/repository' "$tmp/required-axes.out" ||
@@ -1199,7 +1213,7 @@ for sibling_kind in classification open-concern nonexclusive; do
         else . end)]' \
         "$tmp/metadata-axes-unambiguous.json" >"$metadata_axes/label-registry.json"
     _rc=0
-    "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+    isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
         >"$tmp/required-axes.out" 2>&1 || _rc=$?
     [ "$_rc" = 2 ] || fail "mode must refuse a shared required prefix ($sibling_kind)"
     [ "$(run_metadata "${axes_draft[@]}" "${reported_labels[@]}")" = 2 ] ||
@@ -1215,7 +1229,7 @@ jq '.families |= map(select(.family != "layer" and .family != "domain" and .fami
     "$metadata_axes/label-registry.json" >"$tmp/metadata-axes-subset.json"
 cp "$metadata_axes/label-registry.json" "$tmp/metadata-axes-custom.json"
 cp "$tmp/metadata-axes-subset.json" "$metadata_axes/label-registry.json"
-axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+axis_contract="$(isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
     fail "subset axis contract must be readable"
 jq -e '[.axes[].axis] == ["area"]' <<<"$axis_contract" >/dev/null || fail "subset mode must require only the provisioned axis"
 [ "$(run_metadata "${axes_draft[@]}" --label area:none)" = 0 ] ||
@@ -1224,7 +1238,7 @@ jq -e '[.axes[].axis] == ["area"]' <<<"$axis_contract" >/dev/null || fail "subse
 
 jq '(.families[] | select(.family == "delivery-target").writers) = ["human"]' \
     "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
-axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+axis_contract="$(isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
     fail "an unavailable writer must be reported, not fail discovery"
 jq -e '.axes[] | select(.axis == "surface") |
     .agent_writable_value == false and .agent_writable_none == false' \
@@ -1232,7 +1246,7 @@ jq -e '.axes[] | select(.axis == "surface") |
 jq '(.families[] | select(.family == "delivery-target").values[] |
     select(.value == "none").writers) = ["human"]' \
     "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
-axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+axis_contract="$(isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
     fail "human-only none must remain discoverable"
 jq -e '.axes[] | select(.axis == "surface") |
     .agent_writable_value == true and .agent_writable_none == false' \
@@ -1248,9 +1262,9 @@ for unsupported in open prefixless reserved; do
     for mode in local remote preflight; do
         _rc=0
         case "$mode" in
-        local) "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+        local) isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
             >"$tmp/unsupported-axis.out" 2>&1 || _rc=$? ;;
-        remote) METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" "$metadata" \
+        remote) METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" isolated_metadata "$metadata" \
             --required-axes --repo testowner/testrepo >"$tmp/unsupported-axis.out" 2>&1 || _rc=$? ;;
         preflight)
             _rc="$(run_metadata "${axes_draft[@]}" --label area:none --label domain:none --label layer:none)"
@@ -1267,10 +1281,10 @@ jq '(.families[] | select(.family == "delivery-target")) |=
     "$tmp/metadata-axes-custom.json" >"$metadata_axes/label-registry.json"
 for mode in local remote; do
     if [ "$mode" = local ]; then
-        axis_contract="$("$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
+        axis_contract="$(isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes")" ||
             fail "retired open classification must not be refused locally"
     else
-        axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" "$metadata" \
+        axis_contract="$(METADATA_REMOTE_MANIFEST="$metadata_axes/label-registry.json" isolated_metadata "$metadata" \
             --required-axes --repo testowner/testrepo)" || fail "retired open classification must not be refused remotely"
     fi
     jq -e '[.axes[].axis] == ["area", "domain", "layer"]' <<<"$axis_contract" >/dev/null ||
@@ -1280,7 +1294,7 @@ done
     fail "retired open classification must not block filing: $(cat "$tmp/metadata.out")"
 
 : >"$tmp/required-axes-gh.log"
-axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" "$metadata" \
+axis_contract="$(METADATA_GH_LOG="$tmp/required-axes-gh.log" isolated_metadata "$metadata" \
     --required-axes --repo fallback/repo --repo-root "$metadata_fallback")" ||
     fail "no-manifest mode must return its canonical fallback"
 jq -e '.source == "canonical-fallback" and
@@ -1301,13 +1315,13 @@ done < <(jq -r '.axes[].axis' <<<"$axis_contract")
     fail "canonical mode and enforcement must agree"
 printf '{invalid json\n' >"$metadata_axes/label-registry.json"
 _rc=0
-"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
     >"$tmp/required-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "required-axes must refuse an invalid manifest"
 rm "$metadata_axes/label-registry.json"
 mkdir "$metadata_axes/label-registry.json"
 _rc=0
-"$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
+isolated_metadata "$metadata" --required-axes --repo testowner/testrepo --repo-root "$metadata_axes" \
     >"$tmp/required-axes.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "required-axes must refuse a non-readable manifest path"
 
@@ -1486,7 +1500,7 @@ cp -R ai/skills/universal/triage "$standalone_track_work/triage"
 standalone_metadata="$standalone_track_work/track-work/assets/check-issue-metadata.sh"
 standalone_guidance="$standalone_track_work/track-work/assets/discover-label-guidance.sh"
 _rc=0
-PATH="$metadata_stub:$PATH" "$standalone_metadata" \
+PATH="$metadata_stub:$PATH" isolated_metadata "$standalone_metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title '(tests): Validate standalone metadata' \
     --body-file "$valid_body" --agent-authored --label feature \
@@ -1608,7 +1622,7 @@ _rc=0
 "$receipt_verifier" --repo-root "$metadata_repo" -- "${fallback_create[@]}" \
     >"$tmp/fallback-receipt.out" 2>&1 || _rc=$?
 [ "$_rc" = 1 ] || fail "fallback create without required marker must be refused"
-jq -se 'any(.[]; .inapplicability_fallback == true and
+jq -se 'any(.[]; .needs_triage_reason == "inapplicability-fallback" and
     (.proposed_labels | index("needs-triage") == null) and
     (.draft.labels | index("needs-triage") != null))' \
     "$metadata_repo"/.git/track-work/receipts/*.json >/dev/null ||
@@ -2724,7 +2738,7 @@ grep -q 'actor-verifying trusted-human workflow' "$tmp/metadata.out" ||
 echo "==> metadata: manifest open-value families resolve proposed live labels"
 : >"$tmp/metadata-gh.log"
 _rc=0
-METADATA_GH_LOG="$tmp/metadata-gh.log" "$metadata" \
+METADATA_GH_LOG="$tmp/metadata-gh.log" isolated_metadata "$metadata" \
     --repo testowner/testrepo --repo-root "$metadata_repo" \
     --owner-type personal --title '(tests): Allow a live open-value label' \
     --body-file "$valid_body" --human-authored --label feature \
@@ -2755,7 +2769,7 @@ jq '.families |= map(
       else . end)' "$metadata_repo/label-registry.json" \
     >"$metadata_open_general/label-registry.json"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_general" --owner-type personal \
     --title '(tests): Allow a general open family' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture \
@@ -2776,7 +2790,7 @@ jq '.families |= map(
     >"$metadata_open_enumerated/label-registry.json"
 _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' enhancement 'Area:track-work' domain:fixture needs-triage)" \
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_open_enumerated" --owner-type personal \
     --title '(tests): Allow a case-insensitive open member' --body-file "$valid_body" \
     --human-authored --label feature --label 'Area:track-work' \
@@ -2798,7 +2812,7 @@ jq '.families += [{
       "values": []
     }]' "$metadata_repo/label-registry.json" >"$metadata_ambiguous/label-registry.json"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_ambiguous" --owner-type personal \
     --title '(tests): Reject ambiguous open-value prefixes' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
@@ -2821,7 +2835,7 @@ jq '.families |= map(
       else . end)' "$metadata_repo/label-registry.json" \
     >"$metadata_enumerated/label-registry.json"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_enumerated" --owner-type personal \
     --title '(tests): Reject absent enumerated open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
@@ -2840,7 +2854,7 @@ printf '{not json\n' >"$metadata_subdir_root/label-registry.json"
 : >"$tmp/metadata-gh.log"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
-    "$metadata" --repo testowner/testrepo --repo-root "$metadata_subdir_root/nested/deeper" \
+    isolated_metadata "$metadata" --repo testowner/testrepo --repo-root "$metadata_subdir_root/nested/deeper" \
     --owner-type personal --title '(tests): Resolve the top-level manifest' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -2863,7 +2877,7 @@ jq '.families += [{
       "values": [{"value": "fast", "description": "Fixture routing hint"}]
     }]' "$metadata_repo/label-registry.json" >"$metadata_strategy/label-registry.json"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_strategy" --owner-type personal \
     --title '(tests): Reject renamed strategy families' --body-file "$valid_body" \
     --agent-authored --label feature --label area:fixture --label layer:none \
@@ -2891,7 +2905,7 @@ jq '.families |= map(
       else . end)' "$metadata_repo/label-registry.json" \
     >"$metadata_retired/label-registry.json"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_retired" --owner-type personal \
     --title '(tests): Reject retired open members' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
@@ -2954,7 +2968,7 @@ jq '.families += [{
       "values": [{"value": "fix", "description": "Fixture shadowing value"}]
     }]' "$metadata_repo/label-registry.json" >"$metadata_shadowed/label-registry.json"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo testowner/testrepo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo testowner/testrepo \
     --repo-root "$metadata_shadowed" --owner-type personal \
     --title '(tests): Reject shadowed open-value labels' --body-file "$valid_body" \
     --human-authored --label feature --label area:fixture --inapplicable layer \
@@ -3042,7 +3056,7 @@ echo "==> metadata: an absent manifest falls back to one bounded label read"
 : >"$tmp/metadata-gh.log"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    isolated_metadata "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(tests): Validate fallback metadata' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --label layer:none --label domain:fixture \
@@ -3146,7 +3160,7 @@ unset METADATA_GH_LABELS
 
 echo "==> metadata: forbidden fallback families are case-insensitive"
 _rc=0
-PATH="$metadata_stub:$PATH" "$metadata" --repo fallback/repo \
+PATH="$metadata_stub:$PATH" isolated_metadata "$metadata" --repo fallback/repo \
     --repo-root "$metadata_fallback" --owner-type personal \
     --title '(tests): Reject authoring controls' --body-file "$valid_body" \
     --agent-authored --work-type-label 'Rigor:deep' --label area:fixture \
@@ -3159,7 +3173,7 @@ echo "==> metadata: pipe-bearing fallback labels cannot forge writer records"
 _rc=0
 METADATA_GH_LABELS="$(printf '%s\n' enhancement area:fixture domain:fixture \
     ai-generated sec 'sec|concern|concern|human,agent|false')" \
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    isolated_metadata "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(tests): Reject forged fallback writers' \
     --body-file "$valid_body" --agent-authored --work-type-label enhancement \
     --label area:fixture --label layer:none --label domain:fixture \
@@ -3173,7 +3187,7 @@ printf '{not json\n' >"$metadata_fallback/label-registry.json"
 : >"$tmp/metadata-gh.log"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    isolated_metadata "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(tests): Reject an invalid manifest' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -3185,7 +3199,7 @@ jq '.families[0].writers = "agent"' label-registry.json >"$metadata_fallback/lab
 : >"$tmp/metadata-gh.log"
 _rc=0
 PATH="$metadata_stub:$PATH" METADATA_GH_LOG="$tmp/metadata-gh.log" \
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    isolated_metadata "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
     --owner-type personal --title '(tests): Reject an invalid manifest shape' \
     --body-file "$valid_body" --human-authored --label feature --inapplicable area \
     --inapplicable layer --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
@@ -3205,7 +3219,7 @@ for mutation in missing-required duplicate-value; do
         ;;
     esac
     _rc=0
-    "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
+    isolated_metadata "$metadata" --repo fallback/repo --repo-root "$metadata_fallback" \
         --owner-type personal --title '(tests): Reject invalid manifest records' \
         --body-file "$valid_body" --human-authored --label feature \
         --inapplicable area --inapplicable layer --inapplicable domain \
@@ -3237,14 +3251,14 @@ printf '%s\n' "$guidance_sshport" |
 
 echo "==> metadata: the checkout remote must match the requested repository"
 _rc=0
-"$metadata" --repo another/repo --repo-root "$metadata_repo" \
+isolated_metadata "$metadata" --repo another/repo --repo-root "$metadata_repo" \
     --owner-type personal --title '(tests): Bind the target checkout' --body-file "$valid_body" \
     --human-authored --label feature --inapplicable area --inapplicable layer \
     --inapplicable domain >"$tmp/metadata.out" 2>&1 || _rc=$?
 [ "$_rc" = 2 ] || fail "mismatched repo-root should exit 2 (got $_rc)"
 
 echo "==> metadata: help documents both owner-type examples and bad usage exits 2"
-help="$($metadata --help 2>&1 || true)"
+help="$(isolated_metadata "$metadata" --help 2>&1 || true)"
 grep -q 'Personal-account example' <<<"$help" || fail "help needs a personal example"
 grep -q 'Organization example' <<<"$help" || fail "help needs an organization example"
 [ "$(run_metadata --repo testowner/testrepo --title x --body-file "$valid_body" \
@@ -3307,7 +3321,7 @@ assert_receipt_refusal -- "${receipt_create[@]}"
 [ ! -e "$receipt_dir" ] || fail "failed validation must not write a receipt"
 [ "$(run_metadata --title-only --title 'Receipt contract')" = 0 ] || fail "title-only must pass"
 [ "$(run_metadata --required-axes --repo testowner/testrepo --repo-root "$metadata_repo")" = 0 ] || fail "axis discovery must pass"
-"$metadata" --help >/dev/null
+isolated_metadata "$metadata" --help >/dev/null
 [ ! -e "$receipt_dir" ] || fail "partial and help modes must not write receipts"
 
 echo "==> receipts: full agent validation writes the canonical exact-draft key"
@@ -3354,6 +3368,12 @@ for prefix in 'gh -R testowner/testrepo issue create' 'gh issue -R testowner/tes
 done
 [ "$(run_receipt -- gh issue create --repo testowner/testrepo --title -h --body-file "$valid_body")" = 1 ] ||
     fail "a help token used as a title value must require a receipt"
+for operation in list ls view status close reopen comment develop transfer pin unpin lock unlock delete; do
+    [ "$(run_receipt -- gh issue "$operation" 12)" = 3 ] || fail "known issue operation must be uncovered: $operation"
+done
+[ "$(run_receipt -- gh issue edit 12 --add-label feature)" = 3 ] || fail "label-only edit must be uncovered"
+[ "$(run_receipt -- gh issue create --help)" = 3 ] || fail "help flag must be uncovered"
+[ "$(run_receipt -- "${receipt_create[@]}" --recover fixture)" = 2 ] || fail "recovered create must be unclassifiable"
 [ "$(run_receipt -- gh issue unknown-write --title x)" = 2 ] || fail "unknown issue operation must fail closed"
 [ "$(run_receipt --write --repo-root "$metadata_repo")" = 2 ] || fail "receipt writer must not be a CLI mode"
 
@@ -3372,6 +3392,8 @@ done
 echo "==> receipts: full human validation, inline UTF-8 and explicit repository"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
     --title 'Human receipt' --body-file "$valid_body" --human-authored)" = 0 ] || fail "human receipt must pass"
+jq -se 'any(.[]; .needs_triage_reason == "incomplete-human-draft")' \
+    "$receipt_dir"/*.json >/dev/null || fail "human receipt must record incomplete draft reason"
 [ "$(run_receipt -- gh issue create -R TESTOWNER/TESTREPO -t '(tests): Human receipt' -F "$valid_body" --label needs-triage)" = 0 ] || fail "incomplete human receipt should authorize needs-triage create"
 [ "$(run_receipt -- gh issue create -R testowner/testrepo -t '(tests): Human receipt' -F "$valid_body")" = 1 ] || fail "incomplete human create needs needs-triage"
 [ "$(run_receipt -- gh issue edit 12 -R testowner/testrepo -b "$(cat "$valid_body")")" = 1 ] || fail "removing trailing newline must change inline digest"
@@ -5792,4 +5814,7 @@ echo "==> implement: record-implementer.sh writes and checks the implementer rec
 bash ./ai/skills/universal/implement/assets/test-record-implementer.sh ||
     fail "record-implementer.sh behavior regressed"
 
+receipt_files >"$tmp/real-receipts-after"
+[ -z "$(comm -13 "$tmp/real-receipts-before" "$tmp/real-receipts-after")" ] ||
+    fail "suite added receipts to the developer repository"
 echo "✓ track-work checks behave"

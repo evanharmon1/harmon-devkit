@@ -1325,7 +1325,7 @@ if [ "$author_type" = human ] && { [ -n "$undecided" ] ||
     receipt_needs_triage=1
 fi
 # Receipt minting is internal to this successful full-validation path.
-python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" \
+python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" "$author_type" \
     "${labels[@]+"${labels[@]}"}" <<'PY_RECEIPT' || die "could not write local issue receipt"
 import hashlib
 import json
@@ -1336,7 +1336,7 @@ import sys
 import tempfile
 import time
 
-repo, title, body_file, needs_triage, *labels = sys.argv[1:]
+repo, title, body_file, needs_triage, author_type, *labels = sys.argv[1:]
 host, owner, name = repo.lower().split('/')
 repo = owner + '/' + name if host == 'github.com' else repo.lower()
 proposed = sorted(set(label.strip() for label in labels if label.strip()))
@@ -1350,7 +1350,9 @@ common = Path(subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], 
 directory = common.resolve() / 'track-work' / 'receipts'
 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
 document = dict(schema_version=1, draft=value, proposed_labels=proposed,
-                inapplicability_fallback=needs_triage == '1', validated_at=time.time())
+                needs_triage_reason=(('incomplete-human-draft' if author_type == 'human'
+                                      else 'inapplicability-fallback') if needs_triage == '1' else None),
+                validated_at=time.time())
 temporary = None
 try:
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,

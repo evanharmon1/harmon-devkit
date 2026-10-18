@@ -930,7 +930,7 @@ Run the combined gate immediately before creation. For a personal account:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh \
-  --repo <[host/]owner/repo> --repo-root <caller-checkout> \
+  --repo <[host/]owner/repo> --repo-root <target-checkout> \
   --owner-type personal --title '<title>' --body-file <draft-file> \
   --work-type-label <work-type> --label <area:value> --label layer:none \
   --label <domain:value> --label impact:<value> --label risk:<value> \

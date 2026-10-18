@@ -109,7 +109,9 @@ def verify(args, script):
     if command() != 'issue':
         return 3
     operation = command()
-    if operation is None or operation in ('view', 'list', 'status'):
+    if operation is None or operation in (
+            'list', 'ls', 'view', 'status', 'close', 'reopen', 'comment',
+            'develop', 'transfer', 'pin', 'unpin', 'lock', 'unlock', 'delete'):
         return 3
     if operation not in ('create', 'new', 'edit'):
         raise ValueError('unclassified gh issue operation ' + operation)
@@ -118,7 +120,7 @@ def verify(args, script):
     values, labels, positional = global_values, [], []
     aliases = {'-R': '--repo', '-t': '--title', '-b': '--body', '-F': '--body-file', '-l': '--label'}
     ignored_values = {'--assignee', '-a', '--milestone', '-m', '--project', '-p', '--type',
-                      '--recover', '--add-label', '--remove-label', '--add-assignee',
+                      '--add-label', '--remove-label', '--add-assignee',
                       '--remove-assignee', '--add-project', '--remove-project'}
     while args:
         token = args.pop(0)
