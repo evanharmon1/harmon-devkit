@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Verify an already-tokenized gh invocation; never evaluate shell command text.
+# --write is internal to the full metadata checker, after validation succeeds.
+set -euo pipefail
+exec python3 - "$0" "$@" <<'PY'
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import urlsplit
+
+
+class Refused(Exception):
+    pass
+
+
+def git(root, *args):
+    return subprocess.check_output(
+        ['git', '-C', str(root), *args], stderr=subprocess.DEVNULL, text=True
+    ).strip()
+
+
+def canonical_repo(value):
+    if value.startswith(('https://', 'http://', 'ssh://')):
+        url = urlsplit(value)
+        host, path = url.hostname, url.path.strip('/')
+    elif ':' in value and '/' not in value.split(':', 1)[0]:
+        host, path = value.split(':', 1)
+        host = host.rsplit('@', 1)[-1]
+    else:
+        parts = value.strip('/').split('/')
+        if len(parts) == 2:
+            host, path = os.environ.get('GH_HOST') or 'github.com', '/'.join(parts)
+        elif len(parts) == 3:
+            host, path = parts[0], '/'.join(parts[1:])
+        else:
+            raise ValueError('repository must be [HOST/]OWNER/REPO')
+    host = (host or '').lower()
+    if host == 'ssh.github.com':
+        host = 'github.com'
+    path = path.removesuffix('.git').lower()
+    if not re.fullmatch(r'[^/\s:]+/[^/\s:]+', path) or not re.fullmatch(r'[\w.-]+', host):
+        raise ValueError('cannot resolve repository')
+    return path if host == 'github.com' else host + '/' + path
+
+
+def draft(repo, title, body, labels):
+    return dict(repo=canonical_repo(repo), title=title,
+                body_sha256=hashlib.sha256(body).hexdigest(),
+                labels=sorted(set(label.strip() for label in labels if label.strip())))
+
+
+def key(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def receipt_dir(root):
+    common = Path(git(root, 'rev-parse', '--git-common-dir'))
+    if not common.is_absolute():
+        common = Path(root) / common
+    return common.resolve() / 'track-work' / 'receipts'
+
+
+def write_receipt(args):
+    # This mode is an implementation detail, not a preflight replacement.
+    values, labels, needs_triage = {}, [], False
+    while args:
+        name = args.pop(0)
+        if name == '--add-needs-triage':
+            needs_triage = True
+            continue
+        if name not in ('--repo-root', '--repo', '--title', '--body-file', '--label') or not args:
+            raise ValueError('invalid internal write arguments')
+        value = args.pop(0)
+        if name == '--label':
+            labels.append(value)
+        elif name in values:
+            raise ValueError('repeated internal argument')
+        else:
+            values[name] = value
+    root = Path(values['--repo-root']).resolve()
+    value = draft(values['--repo'], values['--title'],
+                  Path(values['--body-file']).read_bytes(), labels)
+    proposed_labels = value['labels'][:]
+    if needs_triage:
+        value['labels'] = sorted(set(proposed_labels + ['needs-triage']))
+    directory = receipt_dir(root)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    document = dict(schema_version=1, draft=value, proposed_labels=proposed_labels,
+                    inapplicability_fallback=needs_triage, validated_at=time.time())
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
+                                         prefix='.receipt-', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(document, stream, ensure_ascii=False, sort_keys=True)
+            stream.write('\n')
+        os.replace(temporary, directory / (key(value) + '.json'))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def verify(args, script):
+    root, max_age = Path.cwd(), 3600
+    while args and args[0] != '--':
+        name = args.pop(0)
+        if name not in ('--repo-root', '--max-age-seconds') or not args:
+            raise ValueError('expected --repo-root PATH, --max-age-seconds N, then -- gh ...')
+        value = args.pop(0)
+        if name == '--repo-root':
+            root = Path(value).resolve()
+        else:
+            max_age = int(value)
+            if max_age < 0:
+                raise ValueError('--max-age-seconds must be nonnegative')
+    if not args or args.pop(0) != '--':
+        raise ValueError('pass a tokenized invocation after --')
+    if len(args) < 3 or Path(args[0]).name != 'gh' or args[1] != 'issue' or args[2] not in ('create', 'edit'):
+        return 3
+    operation, args = args[2], args[3:]
+    if '--help' in args or '-h' in args:
+        return 3
+    values, labels, positional = {}, [], []
+    aliases = {'-R': '--repo', '-t': '--title', '-b': '--body', '-F': '--body-file', '-l': '--label'}
+    ignored_values = {'--assignee', '-a', '--milestone', '-m', '--project', '-p', '--type',
+                      '--recover', '--add-label', '--remove-label', '--add-assignee',
+                      '--remove-assignee', '--add-project', '--remove-project'}
+    while args:
+        token = args.pop(0)
+        name, separator, inline = token.partition('=')
+        name = aliases.get(name, name)
+        if name in ('--repo', '--title', '--body', '--body-file', '--label') or name in ignored_values:
+            if separator:
+                value = inline
+            elif args:
+                value = args.pop(0)
+            else:
+                raise ValueError('missing value for ' + name)
+            if name == '--label':
+                labels.extend(value.split(','))
+            elif name not in ignored_values:
+                if name in values:
+                    raise ValueError('repeated ' + name)
+                values[name] = value
+        elif token in ('--remove-milestone',):
+            continue
+        elif token.startswith('-'):
+            raise ValueError('unsupported or interactive gh option ' + token)
+        else:
+            positional.append(token)
+    if operation == 'edit' and not any(n in values for n in ('--title', '--body', '--body-file')):
+        return 3
+    if '--body' in values and '--body-file' in values:
+        raise ValueError('choose --body or --body-file')
+    if operation == 'create' and positional:
+        raise ValueError('unexpected create arguments')
+    if operation == 'edit' and not positional:
+        raise ValueError('edit needs an issue selector')
+    # URL selectors must not silently change the repository selected by argv.
+    for selector in positional:
+        if not re.fullmatch(r'[0-9]+', selector):
+            raise ValueError('use numeric edit selectors with --repo')
+    repo = canonical_repo(values.get('--repo') or os.environ.get('GH_REPO') or
+                          git(root, 'remote', 'get-url', 'origin'))
+    title = values.get('--title')
+    body = None
+    if '--body' in values:
+        body = values['--body'].encode('utf-8')
+    elif '--body-file' in values:
+        path = values['--body-file']
+        if path == '-':
+            raise ValueError('stdin body cannot be verified; use a regular body file')
+        body = Path(path).read_bytes()
+    expected = dict(repo=repo)
+    if title is not None:
+        expected['title'] = title
+    if body is not None:
+        expected['body_sha256'] = hashlib.sha256(body).hexdigest()
+    if operation == 'create':
+        if title is None or body is None:
+            raise ValueError('create needs explicit --title and --body or --body-file')
+        expected['labels'] = draft(repo, title, body, labels)['labels']
+    directory = receipt_dir(root)
+    candidates = ([directory / (key(expected) + '.json')] if operation == 'create'
+                  else directory.glob('*.json'))
+    now = time.time()
+    for path in candidates:
+        try:
+            document = json.loads(path.read_text(encoding='utf-8'))
+            value, stamp = document['draft'], document['validated_at']
+            valid = (document['schema_version'] == 1 and isinstance(value, dict)
+                     and set(value) == {'repo', 'title', 'body_sha256', 'labels'}
+                     and isinstance(value['repo'], str) and isinstance(value['title'], str)
+                     and isinstance(value['body_sha256'], str)
+                     and re.fullmatch(r'[0-9a-f]{64}', value['body_sha256'])
+                     and isinstance(value['labels'], list)
+                     and all(isinstance(label, str) for label in value['labels'])
+                     and value['labels'] == sorted(set(value['labels']))
+                     and path.name == key(value) + '.json'
+                     and type(stamp) in (int, float) and math.isfinite(stamp)
+                     and 0 <= now - stamp < max_age)
+            if valid and all(value.get(name) == wanted for name, wanted in expected.items()):
+                print('verify-issue-receipt: fresh matching receipt')
+                return 0
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    command = [str(Path(script).resolve().with_name('check-issue-metadata.sh')),
+               '--repo', repo, '--repo-root', str(root), '--owner-type', '<personal|organization>',
+               '--title', title if title is not None else '<current-title>',
+               '--body-file', values.get('--body-file', '<draft-file>')]
+    for label in sorted(set(label.strip() for label in labels if label.strip())):
+        command += ['--label', label]
+    raise Refused('no fresh matching receipt; run the full preflight with the same draft bytes '
+                  '(supply the target owner type, authorship, and required metadata):\n  '
+                  + shlex.join(command) + ' --agent-authored (or --human-authored)')
+
+
+try:
+    script, args = sys.argv[1], sys.argv[2:]
+    if args == ['--help']:
+        print('Usage: verify-issue-receipt.sh [--repo-root PATH] [--max-age-seconds N] -- gh issue create|edit ...\n'
+              'Default freshness: 3600 seconds (strictly younger). Receipts are reusable.\n'
+              'Exit 0 accepted; 1 refused (run preflight); 3 not covered; 2 usage/indeterminate.\n'
+              'Argv only: shell text is never parsed or executed. Numeric edit selectors only.\n'
+              'Use the exact --body-file bytes validated by check-issue-metadata.sh.')
+        sys.exit(0)
+    if args and args[0] == '--write':
+        write_receipt(args[1:])
+        sys.exit(0)
+    sys.exit(verify(args, script))
+except Refused as error:
+    print('verify-issue-receipt: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    print('verify-issue-receipt: indeterminate: ' + str(error), file=sys.stderr)
+    sys.exit(2)
+PY

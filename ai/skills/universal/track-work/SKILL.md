@@ -13,7 +13,7 @@ description: >-
   `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/verify-issue-receipt.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -600,7 +600,7 @@ body` still shows an unticked item (`- [ ]`, or the ordered `1. [ ]` form).
 
 An issue is a durable work contract, not a transcript of the session that found
 it. Draft the title, body, and metadata together; search for duplicates in the
-target repository (§3); then run the read-only pre-create checker below before
+target repository (§3); then run the pre-create checker below before
 `gh issue create`.
 
 ### Title contract
@@ -952,7 +952,43 @@ attestation. A missing or invalid manifest does not grant the agent exception.
 Authorship is explicit: pass exactly one of `--agent-authored` or
 `--human-authored`; omission never defaults to the more permissive human path.
 Exit 0 is verified, 1 is a contract violation, and 2 is usage or an
-indeterminate repository/vocabulary read. The checker performs no GitHub writes.
+indeterminate repository/vocabulary read. The checker performs no GitHub writes
+and writes only a local receipt on successful full draft validation.
+
+A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.
+
+The receipt lives at `<git-common-dir>/track-work/receipts/<key>.json` for
+`--repo-root` (the current checkout for the verifier when omitted), is reusable,
+and expires after 3600 seconds. Discovery, title-only, help and failing runs
+write none. Its key is SHA-256 of UTF-8 canonical JSON with sorted keys, no
+separator whitespace and literal Unicode: `{repo, title, body_sha256, labels}`.
+The repo is lowercased `owner/name`, host-qualified outside github.com;
+`body_sha256` hashes exact body bytes; labels are sorted, deduplicated and
+trimmed, including `--work-type-label`, plus `needs-triage` only when the
+validated agent inapplicability fallback requires it on creation. The receipt
+also records the proposed label set separately. Organization field/type proposals are
+validated but are not gh argv and are not in the key.
+
+Call the verifier with an already-tokenized argument vector (never shell text):
+
+```sh
+<skill-dir>/assets/verify-issue-receipt.sh --repo-root <target-checkout> \
+  --max-age-seconds 3600 -- gh issue create --repo <owner/repo> \
+  --title '<verified-title>' --body-file <same-draft-file> --label '<verified-labels>'
+```
+
+Repeat labels or use gh's comma-separated `--label a,b`; the verifier splits
+and trims these. Filing with `--body-file` must use the same bytes validated by
+preflight. Inline `--body` hashes the string's UTF-8 bytes as given, with no
+added newline. Explicit `--repo` is preferred; otherwise the verifier resolves
+`GH_REPO` or the selected checkout's origin. It performs no GitHub writes.
+For numeric `gh issue edit` selectors, a receipt matches the same repo and each
+new title/body value supplied; labels do not participate in edit matching.
+Unsupported or interactive argv and unresolved repositories return 2.
+Exit 0 accepts a fresh receipt; 1 refuses and names the full preflight command
+with required inputs; 3 means not covered (view/list and label-only edits);
+2 is usage or indeterminate and must never authorize a write. Receipts are a
+local preflight record, not a credential or a GitHub authorization grant.
 
 Preflight reserves the filing marker `needs-triage` for every creation recipe:
 incomplete human drafts and the inapplicability fallback need it at creation, and

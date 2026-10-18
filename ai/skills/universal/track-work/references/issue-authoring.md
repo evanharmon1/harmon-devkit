@@ -238,7 +238,8 @@ organization examples. The checker verifies `--owner-type` against the target
 repository owner rather than trusting the caller. Pass exactly one of `--agent-authored` or
 `--human-authored`; author identity has no permissive default.
 
-The checker is read-only. It exits 0 when verified, 1 for an authoring-contract
+The checker performs no GitHub writes and writes only a local receipt on
+successful full draft validation. It exits 0 when verified, 1 for an authoring-contract
 violation, and 2 for a usage error or indeterminate repository/vocabulary read.
 When `<target-checkout>/label-registry.json` exists, it is authoritative; an
 invalid or unreadable present manifest fails closed. When it is absent, the
@@ -330,3 +331,29 @@ Closing is a factual claim:
 Use `not planned` with a comment naming replacement work when an issue was
 superseded. Use `duplicate` with a comment naming the canonical issue. Never
 close as `completed` while an acceptance item remains unticked.
+
+### Local preflight receipts
+
+A full successful agent- or human-authored preflight records the canonical repo,
+exact title, SHA-256 of the validated body bytes, and sorted, deduplicated,
+trimmed create labels (including `--work-type-label`, plus `needs-triage` only
+when the validated agent inapplicability fallback requires it). The receipt
+also records proposed labels separately. The filename hashes canonical
+UTF-8 JSON with sorted keys, compact separators and literal Unicode. Records
+live under the selected checkout's common Git directory at
+`track-work/receipts/<key>.json`; linked worktrees share them. They are local
+records, never GitHub writes, and are not consumed on use. Discovery,
+title-only, help and failed preflights write none.
+
+`verify-issue-receipt.sh [--repo-root PATH] [--max-age-seconds N] -- gh issue
+create ...` checks tokenized argv without executing it. Its default freshness
+window is 3600 seconds, strictly younger than the limit. Use the same body file
+bytes as preflight; inline `--body` is hashed as UTF-8 without adding a newline.
+It splits comma-separated gh labels and trims each; all proposed labels must
+match for creation. A numeric `gh issue edit` changing title/body matches each
+supplied new field and repo, ignoring labels. Label-only edits and view/list
+return 3 (not covered). Exit 0 accepts, 1 refuses with the preflight command,
+and 2 reports usage/indeterminate (including unsupported or interactive flags).
+Never treat 2 as permission. Prefer explicit `--repo`; otherwise `GH_REPO` or
+origin of `--repo-root` (current checkout when omitted) selects the repository.
+The consuming posture-specific hook is a separate template asset.

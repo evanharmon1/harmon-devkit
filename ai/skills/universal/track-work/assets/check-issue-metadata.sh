@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # check-issue-metadata.sh — validate an issue draft and its proposed metadata
-# before `gh issue create`. This script is deliberately read-only: it reads the
-# target checkout's label registries and bounded live label listings when needed,
-# and never calls a GitHub write endpoint.
+# before `gh issue create`. It performs no GitHub writes; a successful full
+# draft validation writes only a local receipt under the common Git directory.
 set -euo pipefail
 
 FORBIDDEN_RE='^(foreman:|rigor:|tier:pinned$|tier:|strategy:|method:|claim:|agent:|priority:|effort:)'
@@ -555,6 +554,10 @@ for label in "${labels[@]+"${labels[@]}"}"; do
 done
 
 load_required_axis_contract
+# Validate a stable snapshot and receipt precisely those bytes, even if the
+# caller edits the original draft while the bounded metadata reads are running.
+cp -- "$body_file" "$tmp/receipt-body" || die "could not snapshot body draft"
+body_file="$tmp/receipt-body"
 live_read=0
 if [ -e "$manifest" ]; then
     # Retired members of active families are excluded from the vocabulary,
@@ -718,11 +721,13 @@ if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
     violation "filing marker 'needs-triage' is not provisioned in the target repository; provision it before creation"
 fi
 
+receipt_needs_triage=0
 if [ "$author_type" = agent ]; then
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
         none_status=0
         none_available "$axis" agent || none_status=$?
         if [ "$none_status" -eq 1 ]; then
+            receipt_needs_triage=1
             warn "registry has no agent-writable '$axis:none' member; --inapplicable $axis needs needs-triage on the created issue"
         else
             violation "--inapplicable $axis requires a manifest with no agent-writable '$axis:none' member; use the \`$axis:none\` label"
@@ -1309,4 +1314,14 @@ if [ "$violations" -ne 0 ]; then
     exit 1
 fi
 
-echo "check-issue-metadata: issue draft and proposed metadata verified"
+receipt_args=()
+if [ "$receipt_needs_triage" -eq 1 ]; then
+    receipt_args+=(--add-needs-triage)
+fi
+for label in "${labels[@]+"${labels[@]}"}"; do
+    receipt_args+=(--label "$label")
+done
+"$asset_dir/verify-issue-receipt.sh" --write --repo-root "$repo_root" \
+    --repo "${repo_host:-github.com}/$repo_slug" --title "$title" --body-file "$body_file" \
+    "${receipt_args[@]+"${receipt_args[@]}"}" || die "could not write local issue receipt"
+echo "check-issue-metadata: issue draft and proposed metadata verified; local receipt written"

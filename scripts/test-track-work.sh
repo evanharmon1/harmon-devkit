@@ -1592,6 +1592,25 @@ grep -Fq "warning: registry has no agent-writable 'layer:none' member" "$tmp/met
     fail "fallback warning must name missing layer:none: $(cat "$tmp/metadata.out")"
 grep -Fq 'needs-triage on the created issue' "$tmp/metadata.out" ||
     fail "fallback warning must name the filing marker"
+# SELF-1: the receipt must bind the labels required by the create recipe,
+# while preserving the proposed label set and the checker refusal below.
+receipt_verifier="$PWD/ai/skills/universal/track-work/assets/verify-issue-receipt.sh"
+fallback_create=(gh issue create --repo testowner/testrepo
+    --title '(tests): Record unavailable layer absence' --body-file "$valid_body"
+    --label feature --label area:fixture --label domain:fixture --label ai-generated
+    --label impact:medium --label risk:low --label complexity:s)
+"$receipt_verifier" --repo-root "$metadata_without_none" -- "${fallback_create[@]}" \
+    --label needs-triage >"$tmp/fallback-receipt.out" 2>&1 ||
+    fail "fallback receipt must authorize create with needs-triage: $(cat "$tmp/fallback-receipt.out")"
+_rc=0
+"$receipt_verifier" --repo-root "$metadata_without_none" -- "${fallback_create[@]}" \
+    >"$tmp/fallback-receipt.out" 2>&1 || _rc=$?
+[ "$_rc" = 1 ] || fail "fallback create without required marker must be refused"
+jq -se 'any(.[]; .inapplicability_fallback == true and
+    (.proposed_labels | index("needs-triage") == null) and
+    (.draft.labels | index("needs-triage") != null))' \
+    "$metadata_without_none"/.git/track-work/receipts/*.json >/dev/null ||
+    fail "fallback receipt must retain proposed labels separately"
 [ "$(run_metadata "${fallback_absence[@]}" --inapplicable layer --label needs-triage)" = 1 ] ||
     fail "fallback must not authorize needs-triage on an agent draft"
 [ "$(run_metadata "${fallback_absence[@]}" --label layer:none)" = 1 ] ||
@@ -3260,6 +3279,102 @@ for doc in ai/skills/universal/track-work/SKILL.md \
         fail "$doc must require the created issue number"
     grep -qi 'unable to decide.*metadata' <<<"$normalized_doc" ||
         fail "$doc must define metadata uncertainty"
+done
+
+# --- local issue preflight receipts ----------------------------------------
+receipt_verifier="$PWD/ai/skills/universal/track-work/assets/verify-issue-receipt.sh"
+receipt_dir="$metadata_repo/.git/track-work/receipts"
+run_receipt() {
+    _rc=0
+    GH_REPO="" GH_HOST="github.com" "$receipt_verifier" --repo-root "$metadata_repo" "$@" \
+        >"$tmp/receipt.out" 2>&1 || _rc=$?
+    echo "$_rc"
+}
+receipt_create=(gh issue create --repo testowner/testrepo --title '(tests): Receipt contract'
+    --body-file "$valid_body" --label 'feature,area:fixture,layer:none,domain:fixture'
+    --label ' ai-generated,impact:medium,risk:low,complexity:s,feature ')
+assert_receipt_refusal() {
+    [ "$(run_receipt "$@")" = 1 ] || fail "receipt must refuse: $(cat "$tmp/receipt.out")"
+    grep -qF 'check-issue-metadata.sh' "$tmp/receipt.out" || fail "refusal must name preflight"
+    grep -qF -- '--repo testowner/testrepo' "$tmp/receipt.out" || fail "refusal must bind repo"
+}
+echo "==> receipts: missing, failing and partial preflights cannot authorize filing"
+rm -rf "$receipt_dir"
+assert_receipt_refusal -- "${receipt_create[@]}"
+[ "$(run_personal 'Receipt contract' "$perishable_body")" = 1 ] || fail "invalid body must fail"
+[ ! -e "$receipt_dir" ] || fail "failed validation must not write a receipt"
+[ "$(run_metadata --title-only --title 'Receipt contract')" = 0 ] || fail "title-only must pass"
+[ "$(run_metadata --required-axes --repo testowner/testrepo --repo-root "$metadata_repo")" = 0 ] || fail "axis discovery must pass"
+"$metadata" --help >/dev/null
+[ ! -e "$receipt_dir" ] || fail "partial and help modes must not write receipts"
+
+echo "==> receipts: full agent validation writes the canonical exact-draft key"
+[ "$(run_personal 'Receipt contract' "$valid_body")" = 0 ] || fail "agent receipt preflight failed"
+receipt_file="$(
+    python3 - "$receipt_dir" "$valid_body" <<'PY_RECEIPT'
+import hashlib, json, pathlib, sys
+value = dict(repo='testowner/testrepo', title='(tests): Receipt contract',
+             body_sha256=hashlib.sha256(pathlib.Path(sys.argv[2]).read_bytes()).hexdigest(),
+             labels=sorted(['feature', 'area:fixture', 'layer:none', 'domain:fixture',
+                            'ai-generated', 'impact:medium', 'risk:low', 'complexity:s']))
+key = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                               separators=(',', ':')).encode()).hexdigest()
+p = pathlib.Path(sys.argv[1]) / (key + '.json')
+assert json.loads(p.read_text())['draft'] == value
+print(p)
+PY_RECEIPT
+)" || fail "receipt key must hash canonical draft"
+[ "$(run_receipt -- "${receipt_create[@]}")" = 0 ] || fail "matching comma-joined labels must pass"
+[ "$(run_receipt -- "${receipt_create[@]}")" = 0 ] || fail "receipt must remain reusable"
+assert_receipt_refusal -- "${receipt_create[@]}" --label human
+assert_receipt_refusal -- "${receipt_create[@]}" --label needs-triage
+cp "$valid_body" "$tmp/receipt-edited.md"
+printf '\nEdited bytes.\n' >>"$tmp/receipt-edited.md"
+assert_receipt_refusal -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
+    --body-file "$tmp/receipt-edited.md"
+[ "$(run_receipt --max-age-seconds 0 -- "${receipt_create[@]}")" = 1 ] || fail "zero age must expire"
+python3 - "$receipt_file" <<'PY_RECEIPT'
+import json, pathlib, sys, time
+p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text())
+d['validated_at'] = time.time() - 3601
+p.write_text(json.dumps(d))
+PY_RECEIPT
+assert_receipt_refusal -- "${receipt_create[@]}"
+[ "$(run_personal 'Receipt contract' "$valid_body")" = 0 ] || fail "refresh must pass"
+
+echo "==> receipts: edit matches only the supplied new fields and same repository"
+[ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Receipt contract')" = 0 ] || fail "title-only edit must match"
+[ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --body-file "$valid_body")" = 0 ] || fail "body-only edit must match"
+[ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Receipt contract' --body-file "$valid_body")" = 0 ] || fail "combined edit must match"
+assert_receipt_refusal -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Different title'
+assert_receipt_refusal -- gh issue edit 12 --repo testowner/testrepo --body-file "$tmp/receipt-edited.md"
+[ "$(run_receipt -- gh issue edit 12 --repo other/repo --body-file "$valid_body")" = 1 ] || fail "edit cannot borrow another repo receipt"
+for args in 'edit 12 --add-label human' 'view 12' 'list'; do
+    read -r -a uncovered_args <<<"$args"
+    [ "$(run_receipt -- gh issue "${uncovered_args[@]}")" = 3 ] || fail "uncovered operation must return 3: $args"
+done
+
+echo "==> receipts: full human validation, inline UTF-8 and origin resolution"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
+    --title 'Human receipt' --body-file "$valid_body" --human-authored)" = 0 ] || fail "human receipt must pass"
+[ "$(run_receipt -- gh issue create -R TESTOWNER/TESTREPO -t '(tests): Human receipt' -F "$valid_body")" = 0 ] || fail "human receipt should authorize exact draft"
+[ "$(run_receipt -- gh issue edit 12 -R testowner/testrepo -b "$(cat "$valid_body")")" = 1 ] || fail "removing trailing newline must change inline digest"
+inline_body="$(
+    cat "$valid_body"
+    printf x
+)"
+inline_body="${inline_body%x}"
+[ "$(run_receipt -- gh issue edit 12 -R testowner/testrepo -b "$inline_body")" = 0 ] || fail "inline bytes with original newline must match"
+git -C "$metadata_repo" remote add origin https://github.com/testowner/testrepo.git
+[ "$(run_receipt -- gh issue create --title '(tests): Human receipt' --body-file "$valid_body")" = 0 ] || fail "omitted repo must resolve origin"
+[ "$(run_receipt -- gh issue create --web)" = 2 ] || fail "interactive create cannot be authorized"
+[ "$(run_receipt -- gh issue edit 12 --title x --body-file -)" = 2 ] || fail "stdin is indeterminate"
+[ "$(run_receipt -- gh issue create --repo testowner/testrepo --title x --unknown value)" = 2 ] || fail "unknown argv must fail closed"
+for verifier_path in \
+    './ai/skills/universal/track-work/assets/verify-issue-receipt.sh:*' \
+    './.agents/skills/track-work/assets/verify-issue-receipt.sh:*' \
+    './.claude/skills/track-work/assets/verify-issue-receipt.sh:*'; do
+    grep -qF "Bash($verifier_path)" ai/skills/universal/track-work/SKILL.md || fail "missing verifier tool pin"
 done
 
 # --- tick-criteria.sh -------------------------------------------------------
