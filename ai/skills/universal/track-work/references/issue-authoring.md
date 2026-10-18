@@ -337,10 +337,11 @@ close as `completed` while an acceptance item remains unticked.
 A full successful agent- or human-authored preflight records the canonical repo,
 exact title, SHA-256 of the validated body bytes, and sorted, deduplicated,
 trimmed create labels (including `--work-type-label`, plus `needs-triage` only
-when the validated agent inapplicability fallback requires it). The receipt
+when the validated agent inapplicability fallback or an incomplete human draft requires it). The receipt
 also records proposed labels separately. The filename hashes canonical
 UTF-8 JSON with sorted keys, compact separators and literal Unicode. Records
-live under the selected checkout's common Git directory at
+live under the invoking checkout's common Git directory (cwd, regardless of the
+checker's `--repo-root` target) at
 `track-work/receipts/<key>.json`; linked worktrees share them. They are local
 records, never GitHub writes, and are not consumed on use. Discovery,
 title-only, help and failed preflights write none.
@@ -354,6 +355,9 @@ match for creation. A numeric `gh issue edit` changing title/body matches each
 supplied new field and repo, ignoring labels. Label-only edits and view/list
 return 3 (not covered). Exit 0 accepts, 1 refuses with the preflight command,
 and 2 reports usage/indeterminate (including unsupported or interactive flags).
-Never treat 2 as permission. Prefer explicit `--repo`; otherwise `GH_REPO` or
-origin of `--repo-root` (current checkout when omitted) selects the repository.
+Never treat 2 as permission. Explicit `--repo` or `GH_REPO` is required; omission
+is refused with exit 1, never resolved from origin. Global repo flags before or
+after `issue` and the create alias `new` are covered; unknown issue operations
+fail closed. The verifier reads cwd, or its own `--repo-root` when given. Only
+the full checker mints receipts internally; there is no writer CLI mode.
 The consuming posture-specific hook is a separate template asset.

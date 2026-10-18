@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Verify an already-tokenized gh invocation; never evaluate shell command text.
-# --write is internal to the full metadata checker, after validation succeeds.
 set -euo pipefail
 exec python3 - "$0" "$@" <<'PY'
 import hashlib
@@ -12,7 +11,6 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
 from urllib.parse import urlsplit
 
@@ -69,45 +67,6 @@ def receipt_dir(root):
     return common.resolve() / 'track-work' / 'receipts'
 
 
-def write_receipt(args):
-    # This mode is an implementation detail, not a preflight replacement.
-    values, labels, needs_triage = {}, [], False
-    while args:
-        name = args.pop(0)
-        if name == '--add-needs-triage':
-            needs_triage = True
-            continue
-        if name not in ('--repo-root', '--repo', '--title', '--body-file', '--label') or not args:
-            raise ValueError('invalid internal write arguments')
-        value = args.pop(0)
-        if name == '--label':
-            labels.append(value)
-        elif name in values:
-            raise ValueError('repeated internal argument')
-        else:
-            values[name] = value
-    root = Path(values['--repo-root']).resolve()
-    value = draft(values['--repo'], values['--title'],
-                  Path(values['--body-file']).read_bytes(), labels)
-    proposed_labels = value['labels'][:]
-    if needs_triage:
-        value['labels'] = sorted(set(proposed_labels + ['needs-triage']))
-    directory = receipt_dir(root)
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    document = dict(schema_version=1, draft=value, proposed_labels=proposed_labels,
-                    inapplicability_fallback=needs_triage, validated_at=time.time())
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
-                                         prefix='.receipt-', delete=False) as stream:
-            temporary = Path(stream.name)
-            json.dump(document, stream, ensure_ascii=False, sort_keys=True)
-            stream.write('\n')
-        os.replace(temporary, directory / (key(value) + '.json'))
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
 
 def verify(args, script):
     root, max_age = Path.cwd(), 3600
@@ -124,12 +83,39 @@ def verify(args, script):
                 raise ValueError('--max-age-seconds must be nonnegative')
     if not args or args.pop(0) != '--':
         raise ValueError('pass a tokenized invocation after --')
-    if len(args) < 3 or Path(args[0]).name != 'gh' or args[1] != 'issue' or args[2] not in ('create', 'edit'):
+    if not args or Path(args.pop(0)).name != 'gh':
         return 3
-    operation, args = args[2], args[3:]
-    if '--help' in args or '-h' in args:
+    # Consume global flags at either command level before classifying issue argv.
+    global_values = {}
+    def command():
+        while args:
+            token = args.pop(0)
+            name, separator, inline = token.partition('=')
+            if name in ('-R', '--repo'):
+                if not separator and not args:
+                    raise ValueError('missing value for ' + name)
+                value = inline if separator else args.pop(0)
+                if name in ('-R', '--repo'):
+                    if '--repo' in global_values:
+                        raise ValueError('repeated --repo')
+                    global_values['--repo'] = value
+            elif token in ('-h', '--help', '--version'):
+                return None
+            elif token.startswith('-'):
+                raise ValueError('unsupported gh global option ' + token)
+            else:
+                return token
+        return None
+    if command() != 'issue':
         return 3
-    values, labels, positional = {}, [], []
+    operation = command()
+    if operation is None or operation in ('view', 'list', 'status'):
+        return 3
+    if operation not in ('create', 'new', 'edit'):
+        raise ValueError('unclassified gh issue operation ' + operation)
+    if operation == 'new':
+        operation = 'create'
+    values, labels, positional = global_values, [], []
     aliases = {'-R': '--repo', '-t': '--title', '-b': '--body', '-F': '--body-file', '-l': '--label'}
     ignored_values = {'--assignee', '-a', '--milestone', '-m', '--project', '-p', '--type',
                       '--recover', '--add-label', '--remove-label', '--add-assignee',
@@ -151,6 +137,8 @@ def verify(args, script):
                 if name in values:
                     raise ValueError('repeated ' + name)
                 values[name] = value
+        elif token in ('-h', '--help'):
+            return 3
         elif token in ('--remove-milestone',):
             continue
         elif token.startswith('-'):
@@ -169,8 +157,10 @@ def verify(args, script):
     for selector in positional:
         if not re.fullmatch(r'[0-9]+', selector):
             raise ValueError('use numeric edit selectors with --repo')
-    repo = canonical_repo(values.get('--repo') or os.environ.get('GH_REPO') or
-                          git(root, 'remote', 'get-url', 'origin'))
+    selected_repo = values.get('--repo') or os.environ.get('GH_REPO')
+    if not selected_repo:
+        raise Refused('specify --repo (or GH_REPO) for issue writes')
+    repo = canonical_repo(selected_repo)
     title = values.get('--title')
     body = None
     if '--body' in values:
@@ -214,7 +204,7 @@ def verify(args, script):
         except (OSError, ValueError, KeyError, TypeError):
             continue
     command = [str(Path(script).resolve().with_name('check-issue-metadata.sh')),
-               '--repo', repo, '--repo-root', str(root), '--owner-type', '<personal|organization>',
+               '--repo', repo, '--repo-root', '<target checkout>', '--owner-type', '<personal|organization>',
                '--title', title if title is not None else '<current-title>',
                '--body-file', values.get('--body-file', '<draft-file>')]
     for label in sorted(set(label.strip() for label in labels if label.strip())):
@@ -232,9 +222,6 @@ try:
               'Exit 0 accepted; 1 refused (run preflight); 3 not covered; 2 usage/indeterminate.\n'
               'Argv only: shell text is never parsed or executed. Numeric edit selectors only.\n'
               'Use the exact --body-file bytes validated by check-issue-metadata.sh.')
-        sys.exit(0)
-    if args and args[0] == '--write':
-        write_receipt(args[1:])
         sys.exit(0)
     sys.exit(verify(args, script))
 except Refused as error:

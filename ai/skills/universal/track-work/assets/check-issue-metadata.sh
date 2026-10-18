@@ -1177,6 +1177,9 @@ for classification_axis in impact risk complexity; do
         elif [ "$author_type" = agent ] && [ "$classification_count" -ne 1 ]; then
             violation "agent-authored drafts require $classification_axis (personal label)"
         fi
+        if [ "$author_type" = human ] && [ "$classification_count" -eq 0 ]; then
+            receipt_needs_triage=1
+        fi
     else
         case "$classification_axis" in
         impact) classification_value="$impact" ;;
@@ -1200,6 +1203,8 @@ for classification_axis in impact risk complexity; do
             fi
         elif [ "$author_type" = agent ]; then
             violation "agent-authored drafts require --$classification_axis (organization issue field)"
+        else
+            receipt_needs_triage=1
         fi
     fi
 done
@@ -1314,14 +1319,48 @@ if [ "$violations" -ne 0 ]; then
     exit 1
 fi
 
-receipt_args=()
-if [ "$receipt_needs_triage" -eq 1 ]; then
-    receipt_args+=(--add-needs-triage)
+if [ "$author_type" = human ] && { [ -n "$undecided" ] ||
+    { [ "$owner_type" = personal ] && [ "$work_type_count" -eq 0 ]; } ||
+    { [ "$owner_type" = organization ] && [ -z "$issue_type" ]; }; }; then
+    receipt_needs_triage=1
 fi
-for label in "${labels[@]+"${labels[@]}"}"; do
-    receipt_args+=(--label "$label")
-done
-"$asset_dir/verify-issue-receipt.sh" --write --repo-root "$repo_root" \
-    --repo "${repo_host:-github.com}/$repo_slug" --title "$title" --body-file "$body_file" \
-    "${receipt_args[@]+"${receipt_args[@]}"}" || die "could not write local issue receipt"
+# Receipt minting is internal to this successful full-validation path.
+python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" \
+    "${labels[@]+"${labels[@]}"}" <<'PY_RECEIPT' || die "could not write local issue receipt"
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+repo, title, body_file, needs_triage, *labels = sys.argv[1:]
+host, owner, name = repo.lower().split('/')
+repo = owner + '/' + name if host == 'github.com' else repo.lower()
+proposed = sorted(set(label.strip() for label in labels if label.strip()))
+create_labels = sorted(set(proposed + (['needs-triage'] if needs_triage == '1' else [])))
+value = dict(repo=repo, title=title,
+             body_sha256=hashlib.sha256(Path(body_file).read_bytes()).hexdigest(),
+             labels=create_labels)
+key = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                               separators=(',', ':')).encode('utf-8')).hexdigest()
+common = Path(subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], text=True).strip())
+directory = common.resolve() / 'track-work' / 'receipts'
+directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+document = dict(schema_version=1, draft=value, proposed_labels=proposed,
+                inapplicability_fallback=needs_triage == '1', validated_at=time.time())
+temporary = None
+try:
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
+                                     prefix='.receipt-', delete=False) as stream:
+        temporary = Path(stream.name)
+        json.dump(document, stream, ensure_ascii=False, sort_keys=True)
+        stream.write('\n')
+    os.replace(temporary, directory / (key + '.json'))
+finally:
+    if temporary is not None:
+        temporary.unlink(missing_ok=True)
+PY_RECEIPT
 echo "check-issue-metadata: issue draft and proposed metadata verified; local receipt written"

@@ -13,7 +13,7 @@ description: >-
   `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/verify-issue-receipt.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/verify-issue-receipt.sh --:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/verify-issue-receipt.sh --:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/verify-issue-receipt.sh --:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -930,7 +930,7 @@ Run the combined gate immediately before creation. For a personal account:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh \
-  --repo <[host/]owner/repo> --repo-root <target-checkout> \
+  --repo <[host/]owner/repo> --repo-root <caller-checkout> \
   --owner-type personal --title '<title>' --body-file <draft-file> \
   --work-type-label <work-type> --label <area:value> --label layer:none \
   --label <domain:value> --label impact:<value> --label risk:<value> \
@@ -958,21 +958,22 @@ and writes only a local receipt on successful full draft validation.
 A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.
 
 The receipt lives at `<git-common-dir>/track-work/receipts/<key>.json` for
-`--repo-root` (the current checkout for the verifier when omitted), is reusable,
+the checkout the checker is invoked from (cwd), regardless of its `--repo-root`
+target. The verifier uses cwd, or its own `--repo-root` when supplied. It is reusable,
 and expires after 3600 seconds. Discovery, title-only, help and failing runs
 write none. Its key is SHA-256 of UTF-8 canonical JSON with sorted keys, no
 separator whitespace and literal Unicode: `{repo, title, body_sha256, labels}`.
 The repo is lowercased `owner/name`, host-qualified outside github.com;
 `body_sha256` hashes exact body bytes; labels are sorted, deduplicated and
 trimmed, including `--work-type-label`, plus `needs-triage` only when the
-validated agent inapplicability fallback requires it on creation. The receipt
+validated agent inapplicability fallback or an incomplete human draft requires it on creation. The receipt
 also records the proposed label set separately. Organization field/type proposals are
 validated but are not gh argv and are not in the key.
 
 Call the verifier with an already-tokenized argument vector (never shell text):
 
 ```sh
-<skill-dir>/assets/verify-issue-receipt.sh --repo-root <target-checkout> \
+<skill-dir>/assets/verify-issue-receipt.sh --repo-root <caller-checkout> \
   --max-age-seconds 3600 -- gh issue create --repo <owner/repo> \
   --title '<verified-title>' --body-file <same-draft-file> --label '<verified-labels>'
 ```
@@ -980,14 +981,16 @@ Call the verifier with an already-tokenized argument vector (never shell text):
 Repeat labels or use gh's comma-separated `--label a,b`; the verifier splits
 and trims these. Filing with `--body-file` must use the same bytes validated by
 preflight. Inline `--body` hashes the string's UTF-8 bytes as given, with no
-added newline. Explicit `--repo` is preferred; otherwise the verifier resolves
-`GH_REPO` or the selected checkout's origin. It performs no GitHub writes.
+added newline. Explicit `--repo` or `GH_REPO` is required; omission is refused
+with exit 1, never resolved from origin. It performs no GitHub writes.
 For numeric `gh issue edit` selectors, a receipt matches the same repo and each
 new title/body value supplied; labels do not participate in edit matching.
 Unsupported or interactive argv and unresolved repositories return 2.
 Exit 0 accepts a fresh receipt; 1 refuses and names the full preflight command
 with required inputs; 3 means not covered (view/list and label-only edits);
-2 is usage or indeterminate and must never authorize a write. Receipts are a
+2 is usage or indeterminate and must never authorize a write. Unknown issue
+operations fail closed. Global `-R`/`--repo` flags and the `new` alias are covered.
+Receipt minting is internal to the full checker; there is no writer CLI mode. Receipts are a
 local preflight record, not a credential or a GitHub authorization grant.
 
 Preflight reserves the filing marker `needs-triage` for every creation recipe:
