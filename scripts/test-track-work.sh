@@ -3417,6 +3417,20 @@ for args in 'edit 12 --add-label human' 'view 12' 'list'; do
     [ "$(run_receipt -- gh issue "${uncovered_args[@]}")" = 3 ] || fail "uncovered operation must return 3: $args"
 done
 
+echo "==> receipts: a human inapplicable axis requires needs-triage despite complete ratings"
+[ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
+    --title 'Human inapplicable receipt' --body-file "$valid_body" --human-authored \
+    --label feature --label area:fixture --label domain:fixture --inapplicable layer \
+    --label impact:medium --label risk:low --label complexity:s)" = 0 ] || fail "human inapplicable preflight must pass"
+grep -qF -- 'create must carry --label needs-triage' "$tmp/metadata.out" || fail "human inapplicable preflight must name needs-triage"
+human_inapplicable_create=(gh issue create --repo testowner/testrepo
+    --title '(tests): Human inapplicable receipt' --body-file "$valid_body"
+    --label feature --label area:fixture --label domain:fixture
+    --label impact:medium --label risk:low --label complexity:s)
+[ "$(run_receipt -- "${human_inapplicable_create[@]}" --label needs-triage)" = 0 ] || fail "human inapplicable create with needs-triage must pass"
+[ "$(run_receipt -- "${human_inapplicable_create[@]}")" = 1 ] || fail "human inapplicable create without needs-triage must be refused"
+grep -qF -- 'requires --label needs-triage' "$tmp/receipt.out" || fail "human inapplicable refusal must name needs-triage"
+
 echo "==> receipts: full human validation, inline UTF-8 and explicit repository"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
     --title 'Human receipt' --body-file "$valid_body" --human-authored)" = 0 ] || fail "human receipt must pass"

@@ -307,7 +307,7 @@ re-reads the issue and verifies its observed labels.
    number. The preflight still refuses this marker on agent drafts; marking
    partly-created issues is the filing rule. Human-authored drafts create with
    only what the human supplied; never invent missing values or ratings. Whoever files an issue
-   that is not fully classified adds `needs-triage`. Run the helper only for
+   that is not fully classified adds `needs-triage` (a declared-inapplicable axis counts). Run the helper only for
    supplied proposals, omitting missing rating flags; skip it when none were
    supplied. It owns the owner-type writes, derived Tier and marker.
    For the inapplicability fallback, omit the unavailable label and add

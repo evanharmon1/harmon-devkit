@@ -1032,7 +1032,7 @@ Choose the path matching the draft's authorship:
   reports `human-label-missing` when it detects human work. Collector titles
   require `human` + `umbrella` for every author. Never invent missing
   classification values or ratings. Whoever files an issue that
-  is not fully classified adds `needs-triage`, including when an agent files a
+  is not fully classified adds `needs-triage` (a declared-inapplicable axis counts), including when an agent files a
   human-authored draft. If the human supplied proposals for the helper, run it
   with only those supplied values; omit missing rating flags. If none were
   supplied, skip the helper. Keep `needs-triage` on incomplete drafts.

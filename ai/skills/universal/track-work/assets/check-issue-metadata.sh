@@ -1319,7 +1319,7 @@ if [ "$violations" -ne 0 ]; then
     exit 1
 fi
 
-if [ "$author_type" = human ] && { [ -n "$undecided" ] ||
+if [ "$author_type" = human ] && { [ -n "$undecided" ] || [ "${#inapplicable[@]}" -gt 0 ] ||
     { [ "$owner_type" = personal ] && [ "$work_type_count" -eq 0 ]; } ||
     { [ "$owner_type" = organization ] && [ -z "$issue_type" ]; }; }; then
     receipt_needs_triage=1
