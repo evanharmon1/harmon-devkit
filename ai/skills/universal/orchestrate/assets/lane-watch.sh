@@ -596,17 +596,52 @@ sentinel_from_report() {
     terminal_sentinel "$label" "$nonce" <"$report"
 }
 
-# Inspect only the currently visible pane for approval UI, never scrollback.
-# A prompt episode survives pane redraws and repeated text; only an observed
-# disappearance ends it. Persist first-seen and last-emitted times separately.
+# A live approval ends at the pane bottom in choices or a confirm/cancel
+# footer. Read its header from the same dialog, without limiting body height.
+# Output or a composer after those choices ends the visible prompt episode.
 approval_request() {
-    tail -n 8 | awk '
-      /^[[:space:]│›>]*(Requesting permission for:|Run this command[?]|Would you like to run the following command[?]|Do you want to (proceed|allow|make this edit to .*|create .*|run .*)|Allow .*([?]|once)|.* requires your approval[.:]?$)/ {
+    awk '
+      {
+        raw = $0
         line = $0
-        if (line ~ /Requesting permission for:[[:space:]]*$/ && getline > 0) line = line " " $0
-        print line
-        exit
-      }' | tr '\t\r' '  ' | cut -c 1-300
+        sub(/^([[:space:]]|│|›|>|❯)*/, "", line)
+        sub(/([[:space:]]|│)*$/, "", line)
+        if (line ~ /^(Requesting permission for:|Run this command[?]|Would you like to (run the following command|make the following edits|grant these permissions|send input to (the existing terminal|terminal .+))[?]|Do you want to (proceed|allow|make this edit to .*|create .*|run .*)|Allow .*([?]|once)|.* requires your approval[.:]?$)/) {
+          # agy puts the command between this preamble and Run this command?.
+          if (!(header ~ /Requesting permission for:/ && line == "Run this command?")) {
+            header = raw
+            preamble = (line ~ /^Requesting permission for:[[:space:]]*$/)
+            yes = no = footer = 0
+          }
+          next
+        }
+        if (!header) next
+        if (line ~ /^([[:space:]]|╭|╮|╰|╯|─|┌|┐|└|┘|━|┏|┓|┗|┛)*$/) next
+        if (line ~ /^([0-9]+[.)][[:space:]]*)?Yes([,[:space:]]|$)/) {
+          yes = 1
+          next
+        }
+        if (line ~ /^([0-9]+[.)][[:space:]]*)?No([,[:space:]]|$)/) {
+          no = 1
+          next
+        }
+        if (tolower(line) ~ /^(press )?enter to confirm or esc to cancel$/) {
+          footer = 1
+          next
+        }
+        # Anything below the option/footer block is a subsequent pane state.
+        # A composer also separates a stale header from any later dialog.
+        if (yes || no || footer || raw ~ /^[[:space:]]*(›|❯|>)/) {
+          header = ""
+          next
+        }
+        if (preamble) {
+          header = header " " raw
+          preamble = 0
+        }
+      }
+      END { if (header && (footer || (yes && no))) print header }
+    ' | tr '\t\r' '  ' | cut -c 1-300
 }
 
 observe_pane_progress() {
@@ -1363,26 +1398,34 @@ while true; do
                 pane_available=1
             fi
             prompt="$(approval_request <<<"$pane_visible")"
-            fallback=1
+            fallback=0
+            explain_available=0
             if [ "$agents_available" -eq 1 ] && explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
-                jq -e 'has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
-                if [ "$(jq -r .fallback_reason <<<"$explanation")" = null ]; then
-                    fallback=0
+                jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
+                explain_available=1
+                if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
+                    fallback=1
                 fi
             fi
             if [ "$agents_available" -eq 1 ]; then
-                agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
-                agent_state=${agent_state:-absent}
-                if [ "$fallback" -eq 1 ]; then
-                    agent_state=unknown
-                    [ -z "$prompt" ] || agent_state=blocked
-                    agent_state="$agent_state (fallback)"
-                fi
-                previous="$(state_get AGENT "$lane" || printf init)"
-                if [ "$previous" != "$agent_state" ]; then
-                    state_set AGENT "$lane" "$agent_state"
-                    persist_state
-                    echo "AGENT $lane: $previous -> $agent_state"
+                previous="$(state_get AGENT "$lane" || printf unknown)"
+                agent_state=$previous
+                # A failed explain conveys nothing: preserve the last state,
+                # and never turn a fallback prompt into raw idle/done.
+                if [ "$explain_available" -eq 1 ]; then
+                    agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
+                    agent_state=${agent_state:-absent}
+                    if [ "$fallback" -eq 1 ]; then
+                        agent_state=unknown
+                        [ -z "$prompt" ] || agent_state=blocked
+                        agent_state="$agent_state (fallback)"
+                    fi
+                    previous="$(state_get AGENT "$lane" || printf init)"
+                    if [ "$previous" != "$agent_state" ]; then
+                        state_set AGENT "$lane" "$agent_state"
+                        persist_state
+                        echo "AGENT $lane: $previous -> $agent_state"
+                    fi
                 fi
             fi
 
@@ -1396,7 +1439,7 @@ while true; do
             sentinel="$(sentinel_from_report "$report" "$lane_label" "$nonce")"
             pane_only=0
             if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] &&
-                [[ "$agent_state" =~ ^(idle|done|blocked)(\ \(fallback\))?$ ]]; then
+                [[ "$agent_state" =~ ^(idle|done|blocked)(\ \(fallback\))?$ || "$agent_state" = "unknown (fallback)" ]]; then
                 # Keep historical sentinel reads separate from visible approval UI.
                 pane_recent="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
                 sentinel="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_recent")"

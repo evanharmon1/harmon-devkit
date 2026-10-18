@@ -71,6 +71,10 @@ if [ -f "$WATCH_FIXTURES/events-mode" ]; then
         ;;
     'agent explain')
         [ ! -f "$WATCH_FIXTURES/events-fail-explain" ] || exit 92
+        if [ -f "$WATCH_FIXTURES/events-malformed-explain" ]; then
+            printf '%s\n' 'not json'
+            exit 0
+        fi
         if [ -f "$WATCH_FIXTURES/events-fallback" ]; then
             printf '%s\n' '{"fallback_reason":"default_known_agent_idle_fallback"}'
         else
@@ -2528,7 +2532,7 @@ echo 'lane-watch tests passed'
 # Each invocation is a restart against the same durable state and fake clock.
 touch "$fixture_dir/events-mode" "$fixture_dir/events-fallback"
 printf '%s\n' 1 >"$fixture_dir/events-revision"
-printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' >"$fixture_dir/events-pane"
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
 events_state="$test_tmp/events.state"
 events_report="$test_tmp/events-report.md"
 events_out="$test_tmp/events.out"
@@ -2565,7 +2569,7 @@ printf '%s\n' 'I am checking Run this command? in logs.' >"$fixture_dir/events-p
 events_poll
 assert_line "$events_out" 'AGENT events: blocked (fallback) -> unknown (fallback)'
 assert_count "$events_out" 2 '^PROMPT '
-printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' >"$fixture_dir/events-pane"
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
 events_poll
 assert_count "$events_out" 3 '^PROMPT '
 printf '%s\n' 2000000240 >"$clock_file"
@@ -2587,38 +2591,52 @@ events_poll
 assert_count "$events_out" 2 '^STALL '
 # Codex and Claude approval forms also work, without fallback tagging.
 rm "$fixture_dir/events-fallback"
-printf '%s\n' 'Would you like to run the following command?' 'echo codex' >"$fixture_dir/events-pane"
+printf '%s\n' 'Would you like to run the following command?' 'echo codex' '› 1. Yes, just this once (y)' '  2. No, and tell Codex what to do differently (esc)' '' '  Press enter to confirm or esc to cancel' >"$fixture_dir/events-pane"
 events_poll
 assert_line "$events_out" 'PROMPT events: Would you like to run the following command?'
 printf '%s\n' 'working' >"$fixture_dir/events-pane"
 events_poll
-printf '%s\n' 'Do you want to proceed?' >"$fixture_dir/events-pane"
+printf '%s\n' 'Do you want to proceed?' '❯ 1. Yes' '  2. No' >"$fixture_dir/events-pane"
 events_poll
 assert_line "$events_out" 'PROMPT events: Do you want to proceed?'
 # Claude edit, create and command approvals each start a visible episode.
 for approval in 'Do you want to make this edit to file.sh?' 'Do you want to create file.sh?' 'Do you want to run echo hello?'; do
     printf '%s\n' working >"$fixture_dir/events-pane"
     events_poll
-    printf '%s\n' "$approval" >"$fixture_dir/events-pane"
+    printf '%s\n' "$approval" '❯ 1. Yes' '  2. No, and tell Claude what to do differently (esc)' >"$fixture_dir/events-pane"
     events_poll
     assert_line "$events_out" "PROMPT events: $approval"
 done
-# A failed explain retains pane-derived blocked state, never raw idle.
+# A failed explain conveys no new state, including while approval stays live.
+touch "$fixture_dir/events-fallback"
+events_poll
+agent_count="$(grep -c '^AGENT ' "$events_out")"
 touch "$fixture_dir/events-fail-explain"
 events_poll
-assert_line "$events_out" 'AGENT events: idle -> blocked (fallback)'
 events_poll
+assert_count "$events_out" "$agent_count" '^AGENT '
 assert_count "$events_out" 0 '^AGENT events: blocked \(fallback\) -> idle$'
-rm "$fixture_dir/events-fail-explain"
-# An answered approval above the bottom window must neither block nor repeat.
+rm "$fixture_dir/events-fail-explain" "$fixture_dir/events-fallback"
+# Answered dialogs are not live, even if their headers and options remain.
+for following in '› Write tests for @filename' 'Tests passed'; do
+    printf '%s\n' 'Would you like to make the following edits?' \
+        '› 1. Yes, just this once (y)' \
+        '  2. No, and tell Codex what to do differently (esc)' \
+        '  Press enter to confirm or esc to cancel' "$following" >"$fixture_dir/events-pane"
+    prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+    events_poll
+    printf '%s\n' 2000000720 >"$clock_file"
+    events_poll
+    assert_count "$events_out" "$prompt_count" '^PROMPT '
+done
+assert_line "$events_out" 'AGENT events: blocked (fallback) -> idle'
+# A header without options or a footer is not an active approval dialog.
 printf '%s\n' 'Do you want to create old.sh?' >"$fixture_dir/events-pane"
-for row in {1..9}; do printf 'working %s\n' "$row" >>"$fixture_dir/events-pane"; done
 prompt_count="$(grep -c '^PROMPT ' "$events_out")"
 events_poll
-printf '%s\n' 2000000720 >"$clock_file"
-events_poll
 assert_count "$events_out" "$prompt_count" '^PROMPT '
-assert_line "$events_out" 'AGENT events: blocked (fallback) -> idle'
+# Keep enough following output for the independent usage-window regression.
+for row in {1..9}; do printf 'working %s\n' "$row" >>"$fixture_dir/events-pane"; done
 # Usage text above the last eight lines is historical output.
 sed '1s/.*/Usage limit reached/' "$fixture_dir/events-pane" >"$test_tmp/usage-pane"
 cp "$test_tmp/usage-pane" "$fixture_dir/events-pane"
@@ -2649,6 +2667,65 @@ for terminal in READY HANDOFF BLOCKED; do
     events_poll
 done
 assert_count "$events_out" 0 '^(SENTINEL|HANDOFF) events: .* \(pane only\)$'
+# Fallback idle lanes still surface each pane-only terminal, including HANDOFF.
+touch "$fixture_dir/events-fallback"
+for terminal in READY HANDOFF BLOCKED; do
+    events_state="$test_tmp/fallback-$terminal.state"
+    printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
+    events_poll
+    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
+done
+assert_line "$events_out" 'HANDOFF events: HANDOFF-events-a2 (pane only)'
+rm "$fixture_dir/events-fallback"
+# Transient failed/malformed explain reads never flap a normally working lane.
+events_state="$test_tmp/explain-working.state"
+printf '%s\n' working >"$fixture_dir/events-pane"
+events_poll
+agent_count="$(grep -c '^AGENT ' "$events_out")"
+for explain_failure in events-fail-explain events-malformed-explain; do
+    touch "$fixture_dir/$explain_failure"
+    events_poll
+    rm "$fixture_dir/$explain_failure"
+    events_poll
+    assert_count "$events_out" "$agent_count" '^AGENT '
+done
+# Codex 0.163.0 approvals share the confirmation footer; body height is unbounded
+# within the visible pane. Each poll starts with fresh state to verify emission.
+for dialog in run edit permissions terminal terminal-id tall-run; do
+    case "$dialog" in
+    run | tall-run) header='Would you like to run the following command?' ;;
+    edit) header='Would you like to make the following edits?' ;;
+    permissions) header='Would you like to grant these permissions?' ;;
+    terminal) header='Would you like to send input to the existing terminal?' ;;
+    terminal-id) header='Would you like to send input to terminal 123?' ;;
+    esac
+    events_state="$test_tmp/codex-$dialog.state"
+    printf '  %s\n\n  Reason: run the gate outside the sandbox\n\n' "$header" >"$fixture_dir/events-pane"
+    if [ "$dialog" = tall-run ]; then
+        for row in {1..25}; do printf '  $ command line %s\n' "$row" >>"$fixture_dir/events-pane"; done
+    fi
+    printf '%s\n' '' '› 1. Yes, just this once (y)' \
+        '  2. Yes, and do not ask again for this command in this session (a)' \
+        '  3. No, and tell Codex what to do differently (esc)' '' \
+        '  Press enter to confirm or esc to cancel' >"$test_tmp/codex-footer"
+    cat "$test_tmp/codex-footer" >>"$fixture_dir/events-pane"
+    prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+    events_poll
+    assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+    assert_line "$events_out" "PROMPT events:   $header"
+done
+# Claude Code boxed option blocks are live even without a separate footer.
+events_state="$test_tmp/claude-boxed.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+╭────────────────────────────────────────────────────────────────╮
+│ Do you want to make this edit to main.py?                       │
+│ ❯ 1. Yes                                                      │
+│   2. Yes, allow all edits during this session (shift+tab)        │
+│   3. No, and tell Claude what to do differently (esc)            │
+╰────────────────────────────────────────────────────────────────╯
+DIALOG
+events_poll
+assert_count "$events_out" 1 '^PROMPT events: │ Do you want to make this edit to main.py[?]'
 rm "$fixture_dir/events-mode"
 
 # Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.
