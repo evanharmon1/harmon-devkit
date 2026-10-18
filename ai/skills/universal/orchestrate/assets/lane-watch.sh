@@ -599,20 +599,33 @@ sentinel_from_report() {
 # Herdr-classified lanes use blocked state, never pane layout, for existence.
 # The pane is only a best-effort quote; a missing quote cannot hide a prompt.
 approval_excerpt() {
-    awk '/[?]/ {line = $0} END {if (line != "") print line}' |
-        tr '\t\r' '  ' | cut -c 1-300
+    tail -n 20 | awk '
+      /^[[:space:]│›>❯]*(Would you like to (run the following command|make the following edits|grant these permissions|send input to (the existing terminal|terminal .+))[?]|Do you want to (proceed|allow|approve network access|make this edit to|create|run)|.+ needs your approval[.])/ {line = $0}
+      END {print (line != "" ? line : "(approval prompt; text not captured)")}
+    ' | tr '\t\r' '  ' | cut -c 1-300
 }
 
 # agy/fallback lanes have no authoritative blocked classification. Retain
 # their pane-text detection, restricted to agy approval strings near the bottom.
 fallback_approval_request() {
     tail -n 8 | awk '
-      /^[[:space:]│›>❯]*(Requesting permission for:|Run this command[?]|Allow (access to this (file|URL)|calling this tool)[?])/ {
-        line = $0
-        if (line ~ /Requesting permission for:[[:space:]]*$/ && getline > 0) line = line " " $0
-        print line
-        exit
-      }' | tr '\t\r' '  ' | cut -c 1-300
+      /^[[:space:]│›>❯]*Requesting permission for:/ {
+        quote = $0
+        if (getline > 0) quote = quote " " $0
+        next
+      }
+      /^[[:space:]│›>❯]*(Run this command[?]|Allow (access to this (file|URL)|calling this tool)[?])/ {
+        if (quote == "") quote = $0
+        live = 1
+        next
+      }
+      live && $0 !~ /^[[:space:]]*$/ &&
+        $0 !~ /^[[:space:]]*(❯|›|>)?[[:space:]]*([0-9]+[.)][[:space:]]*)?(Yes|No)([[:space:],]|$)/ {
+        live = 0
+        quote = ""
+      }
+      END {if (live) print quote}
+    ' | tr '\t\r' '  ' | cut -c 1-300
 }
 
 observe_pane_progress() {

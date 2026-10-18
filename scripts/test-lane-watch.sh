@@ -2723,7 +2723,11 @@ for dialog in run edit permissions terminal terminal-id tall-run; do
     prompt_count="$(grep -c '^PROMPT ' "$events_out")"
     events_poll
     assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
-    assert_line "$events_out" "PROMPT events:   $header"
+    if [ "$dialog" = tall-run ]; then
+        assert_line "$events_out" 'PROMPT events: (approval prompt; text not captured)'
+    else
+        assert_line "$events_out" "PROMPT events:   $header"
+    fi
 done
 # Claude Code boxed option blocks are live even without a separate footer.
 events_state="$test_tmp/claude-boxed.state"
@@ -2844,6 +2848,57 @@ events_poll
 assert_line "$events_out" 'AGENT events: working -> absent'
 assert_count "$events_state" 1 '^AGENT[[:space:]]+events[[:space:]]+absent[[:space:]]'
 rm "$fixture_dir/events-absent" "$fixture_dir/events-fail-explain"
+# Answered agy dialogs cannot remain blocked or re-emit prompts.
+touch "$fixture_dir/events-fallback"
+for answered_row in Approved 'Command completed' '› Type your next request'; do
+    events_state="$test_tmp/answered-agy.state"
+    events_out="$test_tmp/answered-agy.out"
+    rm -f "$events_state"
+    : >"$events_out"
+    printf '%s\n' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' \
+        "$answered_row" >"$fixture_dir/events-pane"
+    events_poll
+    printf '%s\n' 2000001360 >"$clock_file"
+    events_poll
+    assert_count "$events_out" 0 '^PROMPT '
+    assert_count "$events_out" 0 '^AGENT .* -> blocked \(fallback\)$'
+done
+# The reported question followed by approval/completion output is answered too.
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' \
+    Approved 'Command completed' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 0 '^PROMPT '
+assert_count "$events_out" 0 '^AGENT .* -> blocked \(fallback\)$'
+rm "$fixture_dir/events-fallback"
+# Quotes prefer known bottom-of-pane headers, including Codex MCP approvals
+# without a question mark, rather than questions elsewhere in the transcript.
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_out="$test_tmp/excerpt.out"
+: >"$events_out"
+events_state="$test_tmp/mcp-excerpt.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+• Should I also delete the old release branch? I will wait for the gate first.
+
+• Calling github.create_pull_request
+
+  github needs your approval.
+
+  Tool: create_pull_request
+
+› 1. Approve this call (y)
+  2. Deny (esc)
+
+  Press enter to confirm or esc to cancel
+DIALOG
+events_poll
+assert_line "$events_out" 'PROMPT events:   github needs your approval.'
+assert_count "$events_out" 0 'Should I also delete'
+events_state="$test_tmp/old-question-excerpt.state"
+printf '%s\n' 'Would you like to run the following command?' >"$fixture_dir/events-pane"
+for row in {1..25}; do printf 'transcript output %s\n' "$row" >>"$fixture_dir/events-pane"; done
+events_poll
+assert_line "$events_out" 'PROMPT events: (approval prompt; text not captured)'
+assert_count "$events_out" 0 'Would you like to run'
 rm "$fixture_dir/events-mode"
 
 # Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.
