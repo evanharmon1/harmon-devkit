@@ -955,7 +955,14 @@ Exit 0 is verified, 1 is a contract violation, and 2 is usage or an
 indeterminate repository/vocabulary read. The checker performs no GitHub writes
 and writes only a local receipt on successful full draft validation.
 
+When local persistence is available:
 A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.
+
+Validation success still exits 0 if receipt persistence fails (for example, a
+non-git cwd or read-only `.git`). A stderr warning names the failure and explains
+that the guard will refuse the create until a writable checkout re-runs the
+preflight. When required, the checker says the create must carry
+`--label needs-triage`; include it in the create invocation.
 
 The receipt lives at `<git-common-dir>/track-work/receipts/<key>.json` for
 the checkout the checker is invoked from (cwd), regardless of its `--repo-root`

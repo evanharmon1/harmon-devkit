@@ -346,6 +346,12 @@ checker's `--repo-root` target) at
 records, never GitHub writes, and are not consumed on use. Discovery,
 title-only, help and failed preflights write none.
 
+Validation success still exits 0 if receipt persistence fails (for example, a
+non-git cwd or read-only `.git`). A stderr warning names the failure and explains
+that the guard will refuse the create until a writable checkout re-runs the
+preflight. When required, the checker says the create must carry
+`--label needs-triage`; include it in the create invocation.
+
 `verify-issue-receipt.sh [--repo-root PATH] [--max-age-seconds N] -- gh issue
 create ...` checks tokenized argv without executing it. Its default freshness
 window is 3600 seconds, strictly younger than the limit. Use the same body file

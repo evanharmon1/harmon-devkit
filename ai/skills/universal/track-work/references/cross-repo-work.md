@@ -106,10 +106,12 @@ repository owns <thing>.
 EOF
 ```
 
-Run the full, read-only pre-create gate from §5 against the **target checkout**:
+Run the full pre-create gate from §5 from the same checkout as the create:
 `<track-work-skill-dir>/assets/check-issue-metadata.sh` must receive
 `--repo <[host/]target-owner/target-repo>` and `--repo-root <target-checkout>`, so the
 target's owner type, manifest and provisioned vocabulary govern the draft.
+The local receipt lands in the git common directory of the checkout the checker
+is invoked from. Run both checker and create from the target checkout.
 
 Only after that gate exits 0, follow SKILL.md's
 [agent-authored or human-authored create path](../SKILL.md#create-and-classify-through-the-shared-helper).
@@ -127,7 +129,7 @@ gh issue comment <n> --repo <origin-owner/origin-repo> \
 ```
 
 The create and link-back are writes — get the user's explicit go-ahead before
-running them. The draft and checker are read-only preparation.
+running them. Drafting is preparation; the checker writes a local receipt and performs no GitHub writes.
 
 ## Provenance
 

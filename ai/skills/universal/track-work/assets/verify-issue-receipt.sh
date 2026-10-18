@@ -118,6 +118,7 @@ def verify(args, script):
     if operation == 'new':
         operation = 'create'
     values, labels, positional = global_values, [], []
+    field_flags = False
     aliases = {'-R': '--repo', '-t': '--title', '-b': '--body', '-F': '--body-file', '-l': '--label'}
     ignored_values = {'--assignee', '-a', '--milestone', '-m', '--project', '-p', '--type',
                       '--add-label', '--remove-label', '--add-assignee',
@@ -127,6 +128,7 @@ def verify(args, script):
         name, separator, inline = token.partition('=')
         name = aliases.get(name, name)
         if name in ('--repo', '--title', '--body', '--body-file', '--label') or name in ignored_values:
+            field_flags = field_flags or name != '--repo'
             if separator:
                 value = inline
             elif args:
@@ -142,12 +144,15 @@ def verify(args, script):
         elif token in ('-h', '--help'):
             return 3
         elif token in ('--remove-milestone',):
+            field_flags = True
             continue
         elif token.startswith('-'):
             raise ValueError('unsupported or interactive gh option ' + token)
         else:
             positional.append(token)
     if operation == 'edit' and not any(n in values for n in ('--title', '--body', '--body-file')):
+        if not field_flags:
+            raise ValueError('field-less edit opens the interactive field picker')
         return 3
     if '--body' in values and '--body-file' in values:
         raise ValueError('choose --body or --body-file')
@@ -182,7 +187,8 @@ def verify(args, script):
             raise ValueError('create needs explicit --title and --body or --body-file')
         expected['labels'] = draft(repo, title, body, labels)['labels']
     directory = receipt_dir(root)
-    candidates = ([directory / (key(expected) + '.json')] if operation == 'create'
+    triage_hint = dict(expected, labels=sorted(set(expected.get('labels', []) + ['needs-triage'])))
+    candidates = ([directory / (key(expected) + '.json'), directory / (key(triage_hint) + '.json')] if operation == 'create'
                   else directory.glob('*.json'))
     now = time.time()
     for path in candidates:
@@ -200,6 +206,9 @@ def verify(args, script):
                      and path.name == key(value) + '.json'
                      and type(stamp) in (int, float) and math.isfinite(stamp)
                      and 0 <= now - stamp < max_age)
+            if (valid and operation == 'create' and document.get('needs_triage_reason')
+                    and value == triage_hint and value != expected):
+                raise Refused('matching draft requires --label needs-triage on the create; add that label')
             if valid and all(value.get(name) == wanted for name, wanted in expected.items()):
                 print('verify-issue-receipt: fresh matching receipt')
                 return 0

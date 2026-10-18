@@ -1324,9 +1324,12 @@ if [ "$author_type" = human ] && { [ -n "$undecided" ] ||
     { [ "$owner_type" = organization ] && [ -z "$issue_type" ]; }; }; then
     receipt_needs_triage=1
 fi
+if [ "$receipt_needs_triage" -eq 1 ]; then
+    echo "check-issue-metadata: create must carry --label needs-triage" >&2
+fi
 # Receipt minting is internal to this successful full-validation path.
 python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" "$author_type" \
-    "${labels[@]+"${labels[@]}"}" <<'PY_RECEIPT' || die "could not write local issue receipt"
+    "${labels[@]+"${labels[@]}"}" <<'PY_RECEIPT'
 import hashlib
 import json
 import os
@@ -1346,23 +1349,32 @@ value = dict(repo=repo, title=title,
              labels=create_labels)
 key = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                separators=(',', ':')).encode('utf-8')).hexdigest()
-common = Path(subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], text=True).strip())
-directory = common.resolve() / 'track-work' / 'receipts'
-directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-document = dict(schema_version=1, draft=value, proposed_labels=proposed,
-                needs_triage_reason=(('incomplete-human-draft' if author_type == 'human'
-                                      else 'inapplicability-fallback') if needs_triage == '1' else None),
-                validated_at=time.time())
-temporary = None
 try:
-    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
-                                     prefix='.receipt-', delete=False) as stream:
-        temporary = Path(stream.name)
-        json.dump(document, stream, ensure_ascii=False, sort_keys=True)
-        stream.write('\n')
-    os.replace(temporary, directory / (key + '.json'))
-finally:
-    if temporary is not None:
-        temporary.unlink(missing_ok=True)
+    common = Path(subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], text=True, stderr=subprocess.PIPE).strip())
+    directory = common.resolve() / 'track-work' / 'receipts'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    document = dict(schema_version=1, draft=value, proposed_labels=proposed,
+                    needs_triage_reason=(('incomplete-human-draft' if author_type == 'human'
+                                          else 'inapplicability-fallback') if needs_triage == '1' else None),
+                    validated_at=time.time())
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
+                                         prefix='.receipt-', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(document, stream, ensure_ascii=False, sort_keys=True)
+            stream.write('\n')
+        os.replace(temporary, directory / (key + '.json'))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+except (OSError, subprocess.SubprocessError) as error:
+    reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+              else str(error))
+    print('check-issue-metadata: warning: no local receipt written: ' + reason
+          + '; the guard will refuse the create until a writable checkout re-runs the preflight',
+          file=sys.stderr)
+else:
+    print('check-issue-metadata: local receipt written')
 PY_RECEIPT
-echo "check-issue-metadata: issue draft and proposed metadata verified; local receipt written"
+echo "check-issue-metadata: issue draft and proposed metadata verified"

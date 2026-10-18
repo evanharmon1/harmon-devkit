@@ -3324,6 +3324,32 @@ assert_receipt_refusal -- "${receipt_create[@]}"
 isolated_metadata "$metadata" --help >/dev/null
 [ ! -e "$receipt_dir" ] || fail "partial and help modes must not write receipts"
 
+echo "==> receipts: persistence failures preserve a passing validation verdict"
+non_git_receipt_cwd="$tmp/non-git-receipt-cwd"
+readonly_receipt_cwd="$tmp/readonly-receipt-cwd"
+mkdir -p "$non_git_receipt_cwd" "$readonly_receipt_cwd"
+git -C "$readonly_receipt_cwd" init -q
+chmod a-w "$readonly_receipt_cwd/.git"
+for receipt_cwd in "$non_git_receipt_cwd" "$readonly_receipt_cwd"; do
+    (
+        isolated_metadata() (
+            cd "$receipt_cwd"
+            "$@"
+        )
+        [ "$(run_personal 'Persistence failure' "$valid_body")" = 0 ] || fail "persistence failure must preserve validation success"
+        grep -qF 'warning: no local receipt written:' "$tmp/metadata.out" || fail "missing persistence warning"
+        grep -qF 'the guard will refuse the create until a writable checkout re-runs the preflight' "$tmp/metadata.out" || fail "missing recovery advice"
+        if grep -qF Traceback "$tmp/metadata.out"; then fail "persistence failure must not print a traceback"; fi
+        if [ "$receipt_cwd" = "$non_git_receipt_cwd" ]; then
+            grep -qiF 'not a git repository' "$tmp/metadata.out" || fail "warning must explain non-git cwd"
+        else
+            grep -qF 'Permission denied' "$tmp/metadata.out" || fail "warning must explain read-only git directory"
+        fi
+    ) || fail "persistence failure regression"
+done
+chmod u+w "$readonly_receipt_cwd/.git"
+[ ! -e "$readonly_receipt_cwd/.git/track-work" ] || fail "read-only checkout gained receipts"
+
 echo "==> receipts: full agent validation writes the canonical exact-draft key"
 [ "$(run_personal 'Receipt contract' "$valid_body")" = 0 ] || fail "agent receipt preflight failed"
 receipt_file="$(
@@ -3371,6 +3397,8 @@ done
 for operation in list ls view status close reopen comment develop transfer pin unpin lock unlock delete; do
     [ "$(run_receipt -- gh issue "$operation" 12)" = 3 ] || fail "known issue operation must be uncovered: $operation"
 done
+[ "$(run_receipt -- gh issue edit 12)" = 2 ] || fail "field-less edit must be interactive"
+[ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo)" = 2 ] || fail "repo-only edit must be interactive"
 [ "$(run_receipt -- gh issue edit 12 --add-label feature)" = 3 ] || fail "label-only edit must be uncovered"
 [ "$(run_receipt -- gh issue create --help)" = 3 ] || fail "help flag must be uncovered"
 [ "$(run_receipt -- "${receipt_create[@]}" --recover fixture)" = 2 ] || fail "recovered create must be unclassifiable"
@@ -3392,10 +3420,12 @@ done
 echo "==> receipts: full human validation, inline UTF-8 and explicit repository"
 [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
     --title 'Human receipt' --body-file "$valid_body" --human-authored)" = 0 ] || fail "human receipt must pass"
+grep -qF -- 'create must carry --label needs-triage' "$tmp/metadata.out" || fail "human preflight must name required create label"
 jq -se 'any(.[]; .needs_triage_reason == "incomplete-human-draft")' \
     "$receipt_dir"/*.json >/dev/null || fail "human receipt must record incomplete draft reason"
 [ "$(run_receipt -- gh issue create -R TESTOWNER/TESTREPO -t '(tests): Human receipt' -F "$valid_body" --label needs-triage)" = 0 ] || fail "incomplete human receipt should authorize needs-triage create"
 [ "$(run_receipt -- gh issue create -R testowner/testrepo -t '(tests): Human receipt' -F "$valid_body")" = 1 ] || fail "incomplete human create needs needs-triage"
+grep -qF -- 'requires --label needs-triage' "$tmp/receipt.out" || fail "refusal must break the human draft loop by naming the label"
 [ "$(run_receipt -- gh issue edit 12 -R testowner/testrepo -b "$(cat "$valid_body")")" = 1 ] || fail "removing trailing newline must change inline digest"
 inline_body="$(
     cat "$valid_body"
