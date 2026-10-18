@@ -741,14 +741,15 @@ A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
 The watcher also emits these supervision events:
 
-- `PROMPT <lane>: <approval request>` reads each local pane on every poll.
-  A live dialog ends at the pane bottom in approval choices or a confirm/cancel
-  footer; its header may be above a tall command or edit body. Output or a
-  composer below the dialog ends the episode.
-  Inspect the request and approve or deny within your authority. A prompt is
-  keyed by its visible episode, so identical requests separated by a poll
-  without a prompt are distinct. While it remains visible, it repeats after
-  `--prompt-reemit-seconds` (default 180).
+- `PROMPT <lane>: <approval request>` uses Herdr state for classified harnesses
+  (parsed explain with null `fallback_reason`): an episode starts at `blocked`
+  and ends when the lane leaves `blocked`. Pane text only quotes the request;
+  unavailable text uses `(approval prompt; text not captured)`. For agy and
+  fallback lanes, pane-text detection uses agy's approval strings instead.
+  Inspect the request and approve or deny within your authority. Each episode
+  retains its first-seen time across redraws and restarts, repeats after
+  `--prompt-reemit-seconds` (default 180), and starts anew after a poll outside
+  the episode, even for identical text.
 - `STALL <lane>: no pane change for <N>m` fires once per unchanged-pane episode
   after `--stall-minutes` (default 10). Read the pane and act: investigate,
   re-brief, or escalate within authority. Pane content or Herdr revision/state
@@ -762,10 +763,11 @@ The watcher also emits these supervision events:
 When `herdr agent explain --json` identifies fallback detection, a visible
 approval prompt derives `blocked`; otherwise the watcher uses `unknown`.
 These agent events and approval requests carry `(fallback)`; fallback alone
-never proves `idle` or `done`. A failed or unparseable explain read carries no
-new state: retain the previous AGENT state and emit no AGENT transition for
-that poll. Cloud lanes have no pane, so receive heartbeat
-summaries alongside their GitHub events, with no `PROMPT` or `STALL` events.
+never proves `idle` or `done`. For a lane present in a successful agent list,
+a failed or unparseable explain read carries no new state: retain the previous
+AGENT state and emit no AGENT transition for that poll. A lane missing from a
+successful list is `absent` regardless of explain. Cloud lanes have no pane,
+so receive heartbeat summaries alongside their GitHub events, with no `PROMPT` or `STALL` events.
 Keep the state file across re-arms so prompt episodes and re-emission times,
 stall episodes, heartbeat timing, reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds

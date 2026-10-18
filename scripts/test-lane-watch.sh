@@ -65,6 +65,10 @@ if [ -f "$WATCH_FIXTURES/events-mode" ]; then
     case "${1:-} ${2:-}" in
     'agent list')
         [ ! -f "$WATCH_FIXTURES/events-fail-list" ] || exit 92
+        if [ -f "$WATCH_FIXTURES/events-absent" ]; then
+            printf '%s\n' '{"result":{"agents":[]}}'
+            exit 0
+        fi
         revision="$(cat "$WATCH_FIXTURES/events-revision")"
         printf '{"result":{"agents":[{"name":"events","agent_status":"%s","revision":%s,"state_change_seq":1}]}}\n' "$(cat "$WATCH_FIXTURES/events-status" 2>/dev/null || printf idle)" "$revision"
         exit 0
@@ -2506,7 +2510,7 @@ assert_count "$codex3_state" 1 \
     "^DEGRADE[[:space:]]+alpha:ACTIVITY[[:space:]]+$((codex3_now - 5))[[:space:]]+1[[:space:]]+1:[0-9]+\$"
 
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: (READY|HANDOFF|BLOCKED)-[A-Za-z0-9_-]+-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|OBSERVATION-DEGRADED [^:]+: .+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(PROMPT [^:]+: .+|AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: (READY|HANDOFF|BLOCKED)-[A-Za-z0-9_-]+-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|OBSERVATION-DEGRADED [^:]+: .+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
     "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \
@@ -2589,25 +2593,31 @@ events_poll
 printf '%s\n' 2000000480 >"$clock_file"
 events_poll
 assert_count "$events_out" 2 '^STALL '
-# Codex and Claude approval forms also work, without fallback tagging.
+# Classified Codex and Claude episodes follow state, without fallback tagging.
 rm "$fixture_dir/events-fallback"
+printf '%s\n' blocked >"$fixture_dir/events-status"
 printf '%s\n' 'Would you like to run the following command?' 'echo codex' '› 1. Yes, just this once (y)' '  2. No, and tell Codex what to do differently (esc)' '' '  Press enter to confirm or esc to cancel' >"$fixture_dir/events-pane"
 events_poll
 assert_line "$events_out" 'PROMPT events: Would you like to run the following command?'
+printf '%s\n' working >"$fixture_dir/events-status"
 printf '%s\n' 'working' >"$fixture_dir/events-pane"
 events_poll
+printf '%s\n' blocked >"$fixture_dir/events-status"
 printf '%s\n' 'Do you want to proceed?' '❯ 1. Yes' '  2. No' >"$fixture_dir/events-pane"
 events_poll
 assert_line "$events_out" 'PROMPT events: Do you want to proceed?'
 # Claude edit, create and command approvals each start a visible episode.
 for approval in 'Do you want to make this edit to file.sh?' 'Do you want to create file.sh?' 'Do you want to run echo hello?'; do
+    printf '%s\n' working >"$fixture_dir/events-status"
     printf '%s\n' working >"$fixture_dir/events-pane"
     events_poll
+    printf '%s\n' blocked >"$fixture_dir/events-status"
     printf '%s\n' "$approval" '❯ 1. Yes' '  2. No, and tell Claude what to do differently (esc)' >"$fixture_dir/events-pane"
     events_poll
     assert_line "$events_out" "PROMPT events: $approval"
 done
 # A failed explain conveys no new state, including while approval stays live.
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
 touch "$fixture_dir/events-fallback"
 events_poll
 agent_count="$(grep -c '^AGENT ' "$events_out")"
@@ -2617,7 +2627,8 @@ events_poll
 assert_count "$events_out" "$agent_count" '^AGENT '
 assert_count "$events_out" 0 '^AGENT events: blocked \(fallback\) -> idle$'
 rm "$fixture_dir/events-fail-explain" "$fixture_dir/events-fallback"
-# Answered dialogs are not live, even if their headers and options remain.
+# A working classified lane never prompts for an answered dialog.
+printf '%s\n' idle >"$fixture_dir/events-status"
 for following in '› Write tests for @filename' 'Tests passed'; do
     printf '%s\n' 'Would you like to make the following edits?' \
         '› 1. Yes, just this once (y)' \
@@ -2630,7 +2641,7 @@ for following in '› Write tests for @filename' 'Tests passed'; do
     assert_count "$events_out" "$prompt_count" '^PROMPT '
 done
 assert_line "$events_out" 'AGENT events: blocked (fallback) -> idle'
-# A header without options or a footer is not an active approval dialog.
+# Pane text alone never starts a classified prompt episode.
 printf '%s\n' 'Do you want to create old.sh?' >"$fixture_dir/events-pane"
 prompt_count="$(grep -c '^PROMPT ' "$events_out")"
 events_poll
@@ -2689,8 +2700,8 @@ for explain_failure in events-fail-explain events-malformed-explain; do
     events_poll
     assert_count "$events_out" "$agent_count" '^AGENT '
 done
-# Codex 0.163.0 approvals share the confirmation footer; body height is unbounded
-# within the visible pane. Each poll starts with fresh state to verify emission.
+# Classified approvals exist because herdr reports blocked, regardless of layout.
+printf '%s\n' blocked >"$fixture_dir/events-status"
 for dialog in run edit permissions terminal terminal-id tall-run; do
     case "$dialog" in
     run | tall-run) header='Would you like to run the following command?' ;;
@@ -2726,6 +2737,113 @@ cat >"$fixture_dir/events-pane" <<'DIALOG'
 DIALOG
 events_poll
 assert_count "$events_out" 1 '^PROMPT events: │ Do you want to make this edit to main.py[?]'
+# Actual hint rows and wrapped options are quotations, never prompt gates.
+events_state="$test_tmp/claude-bash.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+╭──────────────────────────────────────────────────────────────╮
+ Bash command
+
+   task verify
+   Run the definition-of-done gate
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for task commands in this project
+   3. No, and tell Claude what to do differently (esc)
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+DIALOG
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+# Leaving blocked ends the episode even with the same old dialog on screen.
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+events_state="$test_tmp/claude-edit.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+ Edit file
+ scripts/foo.sh
+
+ Do you want to make this edit to foo.sh?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No, and tell Claude what to do differently (esc)
+
+ Esc to cancel
+DIALOG
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+# Leaving blocked ends the episode even with the same old dialog on screen.
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+events_state="$test_tmp/codex-wrap.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+  Would you like to run the following command?
+
+  Reason: run the gate outside the sandbox
+
+  $ task verify
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `task
+     verify` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+DIALOG
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+# Leaving blocked ends the episode even with the same old dialog on screen.
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+# State-based episodes survive pane failure/redraws and re-emit on schedule.
+events_state="$test_tmp/classified-episode.state"
+printf '%s\n' 2000001000 >"$clock_file"
+printf '%s\n' 'no question captured' >"$fixture_dir/events-pane"
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_line "$events_out" 'PROMPT events: (approval prompt; text not captured)'
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001000[[:space:]]+2000001000'
+printf '%s\n' 'different pane text' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+touch "$fixture_dir/events-fail-visible" "$fixture_dir/events-fail-explain"
+printf '%s\n' 2000001180 >"$clock_file"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001000[[:space:]]+2000001180'
+rm "$fixture_dir/events-fail-explain"
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_state" 0 '^PROMPT[[:space:]]+events:a2[[:space:]]'
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 3))" '^PROMPT '
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001180[[:space:]]+2000001180'
+rm "$fixture_dir/events-fail-visible"
+# A successful list is authoritative about disappearance, even if explain fails.
+events_state="$test_tmp/disappeared.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+touch "$fixture_dir/events-absent" "$fixture_dir/events-fail-explain"
+events_poll
+assert_line "$events_out" 'AGENT events: working -> absent'
+assert_count "$events_state" 1 '^AGENT[[:space:]]+events[[:space:]]+absent[[:space:]]'
+rm "$fixture_dir/events-absent" "$fixture_dir/events-fail-explain"
 rm "$fixture_dir/events-mode"
 
 # Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.

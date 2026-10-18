@@ -596,57 +596,28 @@ sentinel_from_report() {
     terminal_sentinel "$label" "$nonce" <"$report"
 }
 
-# A live approval ends at the pane bottom in choices or a confirm/cancel
-# footer. Read its header from the same dialog, without limiting body height.
-# Output or a composer after those choices ends the visible prompt episode.
-approval_request() {
-    awk '
-      {
-        raw = $0
+# Herdr-classified lanes use blocked state, never pane layout, for existence.
+# The pane is only a best-effort quote; a missing quote cannot hide a prompt.
+approval_excerpt() {
+    awk '/[?]/ {line = $0} END {if (line != "") print line}' |
+        tr '\t\r' '  ' | cut -c 1-300
+}
+
+# agy/fallback lanes have no authoritative blocked classification. Retain
+# their pane-text detection, restricted to agy approval strings near the bottom.
+fallback_approval_request() {
+    tail -n 8 | awk '
+      /^[[:space:]│›>❯]*(Requesting permission for:|Run this command[?]|Allow (access to this (file|URL)|calling this tool)[?])/ {
         line = $0
-        sub(/^([[:space:]]|│|›|>|❯)*/, "", line)
-        sub(/([[:space:]]|│)*$/, "", line)
-        if (line ~ /^(Requesting permission for:|Run this command[?]|Would you like to (run the following command|make the following edits|grant these permissions|send input to (the existing terminal|terminal .+))[?]|Do you want to (proceed|allow|make this edit to .*|create .*|run .*)|Allow .*([?]|once)|.* requires your approval[.:]?$)/) {
-          # agy puts the command between this preamble and Run this command?.
-          if (!(header ~ /Requesting permission for:/ && line == "Run this command?")) {
-            header = raw
-            preamble = (line ~ /^Requesting permission for:[[:space:]]*$/)
-            yes = no = footer = 0
-          }
-          next
-        }
-        if (!header) next
-        if (line ~ /^([[:space:]]|╭|╮|╰|╯|─|┌|┐|└|┘|━|┏|┓|┗|┛)*$/) next
-        if (line ~ /^([0-9]+[.)][[:space:]]*)?Yes([,[:space:]]|$)/) {
-          yes = 1
-          next
-        }
-        if (line ~ /^([0-9]+[.)][[:space:]]*)?No([,[:space:]]|$)/) {
-          no = 1
-          next
-        }
-        if (tolower(line) ~ /^(press )?enter to confirm or esc to cancel$/) {
-          footer = 1
-          next
-        }
-        # Anything below the option/footer block is a subsequent pane state.
-        # A composer also separates a stale header from any later dialog.
-        if (yes || no || footer || raw ~ /^[[:space:]]*(›|❯|>)/) {
-          header = ""
-          next
-        }
-        if (preamble) {
-          header = header " " raw
-          preamble = 0
-        }
-      }
-      END { if (header && (footer || (yes && no))) print header }
-    ' | tr '\t\r' '  ' | cut -c 1-300
+        if (line ~ /Requesting permission for:[[:space:]]*$/ && getline > 0) line = line " " $0
+        print line
+        exit
+      }' | tr '\t\r' '  ' | cut -c 1-300
 }
 
 observe_pane_progress() {
-    local key=$1 pane=$2 metadata=$3 terminal=$4 prompt=$5 fallback=$6
-    local fingerprint previous changed stalled first emitted suffix
+    local key=$1 pane=$2 metadata=$3 terminal=$4
+    local fingerprint previous changed stalled
     fingerprint="$(printf '%s\n%s' "$pane" "$metadata" | cksum | awk '{print $1 ":" $2}')"
     previous="$(state_get PROGRESS "$key" || true)"
     changed="$(state_get PROGRESS "$key" extra || true)"
@@ -669,6 +640,10 @@ observe_pane_progress() {
         echo "STALL $lane: no pane change for $(((now - changed) / 60))m"
     fi
     state_set PROGRESS "$key" "$fingerprint" "$changed" "$stalled"
+}
+
+observe_prompt() {
+    local key=$1 prompt=$2 fallback=$3 first emitted suffix
     if [ -n "$prompt" ]; then
         first="$(state_get PROMPT "$key" || true)"
         emitted="$(state_get PROMPT "$key" extra || true)"
@@ -1397,29 +1372,38 @@ while true; do
             if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
                 pane_available=1
             fi
-            prompt="$(approval_request <<<"$pane_visible")"
+            prompt=
+            prompt_observed=0
             fallback=0
             explain_available=0
-            if [ "$agents_available" -eq 1 ] && explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
-                jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
-                explain_available=1
-                if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
-                    fallback=1
-                fi
-            fi
             if [ "$agents_available" -eq 1 ]; then
+                listed_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
                 previous="$(state_get AGENT "$lane" || printf unknown)"
                 agent_state=$previous
-                # A failed explain conveys nothing: preserve the last state,
-                # and never turn a fallback prompt into raw idle/done.
-                if [ "$explain_available" -eq 1 ]; then
-                    agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
-                    agent_state=${agent_state:-absent}
-                    if [ "$fallback" -eq 1 ]; then
+                if [ -z "$listed_state" ]; then
+                    # A successful list is authoritative about disappearance,
+                    # regardless of what explain would return for a missing lane.
+                    agent_state=absent
+                    prompt_observed=1
+                elif explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
+                    jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
+                    explain_available=1
+                    agent_state=$listed_state
+                    if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
+                        fallback=1
                         agent_state=unknown
-                        [ -z "$prompt" ] || agent_state=blocked
+                        if [ "$pane_available" -eq 1 ]; then
+                            prompt_observed=1
+                            prompt="$(fallback_approval_request <<<"$pane_visible")"
+                            [ -z "$prompt" ] || agent_state=blocked
+                        fi
                         agent_state="$agent_state (fallback)"
+                    else
+                        prompt_observed=1
                     fi
+                fi
+                # Failed explain on a listed lane conveys no new state.
+                if [ "$agent_state" = absent ] || [ "$explain_available" -eq 1 ]; then
                     previous="$(state_get AGENT "$lane" || printf init)"
                     if [ "$previous" != "$agent_state" ]; then
                         state_set AGENT "$lane" "$agent_state"
@@ -1427,6 +1411,17 @@ while true; do
                         echo "AGENT $lane: $previous -> $agent_state"
                     fi
                 fi
+            fi
+            # A retained classified blocked state still owns its episode when
+            # explain transiently fails; pane failure cannot stop re-emission.
+            if [ "$agents_available" -eq 1 ] && [ "$agent_state" = blocked ]; then
+                prompt_observed=1
+                prompt="$(approval_excerpt <<<"$pane_visible")"
+                prompt=${prompt:-'(approval prompt; text not captured)'}
+            fi
+            if [ "$prompt_observed" -eq 1 ]; then
+                now="$(date -u +%s)"
+                observe_prompt "$progress_key" "$prompt" "$fallback"
             fi
 
             if [ -n "$report_path" ]; then
@@ -1470,7 +1465,7 @@ while true; do
                 fi
                 pane_terminal="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_visible")"
                 now="$(date -u +%s)"
-                observe_pane_progress "$progress_key" "$pane_visible" "$metadata" "${sentinel:-$pane_terminal}" "$prompt" "$fallback"
+                observe_pane_progress "$progress_key" "$pane_visible" "$metadata" "${sentinel:-$pane_terminal}"
                 if tail -n 8 <<<"$pane_visible" | grep -F 'Usage limit reached' >/dev/null; then
                     if [ "$(state_get USAGE "$lane" || printf 0)" -eq 0 ]; then
                         state_set USAGE "$lane" 1
