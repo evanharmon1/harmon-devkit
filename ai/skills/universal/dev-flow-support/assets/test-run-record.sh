@@ -473,7 +473,7 @@ const readdir = fs.readdirSync
 fs.readdirSync = (source, ...args) => {
   const entries = readdir(source, ...args)
   if (source.endsWith('/orchestrator/run-partial')) {
-    return process.env.REVERSE_ARCHIVE_ORDER === '1' ? entries.reverse() : entries.sort()
+    return process.env.REVERSE_ARCHIVE_ORDER === '1' ? entries.sort().reverse() : entries.sort()
   }
   return entries
 }
@@ -507,7 +507,7 @@ pass "close resumes after an actual partial archive without overwriting attempts
 
 # Repeat the same run-partial fixture in a second temporary repository, with
 # readdirSync returning the attempt names in reverse order. Keeping the source
-# suffix identical exercises the original a2-keyed fault unchanged.
+# suffix identical exercises the second-rename counter fault with a2 first.
 (
     repo="$tmp/reversed-repo"
     git init -q -b main "$repo"
