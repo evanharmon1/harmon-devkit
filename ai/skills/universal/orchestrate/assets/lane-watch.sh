@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Watch orchestrated lanes and emit stable, one-line transition events:
 #   AGENT <lane>: <from> -> <to>
+#   PROMPT <lane>: <approval request>[ (fallback)]
+#   STALL <lane>: no pane change for <N>m
+#   HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...
 #   SENTINEL <lane>: <value>[ (pane only)]
 #   HANDOFF <lane>: <value>[ (pane only)]
 #   BRANCH <lane>: <branch> head=<sha8> | absent (cloud lanes)
@@ -97,6 +100,9 @@ Options:
   --post-promotion-seconds N      Review activity window (default: 900)
   --timeout-seconds N             Per herdr/gh call timeout (default: 30)
   --degrade-window-seconds N      Retry episode window before giving up (default: 600)
+  --prompt-reemit-seconds N       Repeat a still-visible prompt (default: 180)
+  --stall-minutes N               Unchanged local pane threshold (default: 10)
+  --heartbeat-minutes N           All-lane summary interval (default: 15)
   --iterations N                  Stop after N polls (tests; default: unlimited)
 EOF
 }
@@ -128,6 +134,9 @@ post_promotion_seconds=900
 timeout_seconds=30
 degrade_window_seconds=600
 iterations=0
+prompt_reemit_seconds=180
+stall_minutes=10
+heartbeat_minutes=15
 # Consecutive polls a malformed (non-numeric-id) ready_for_review row is
 # allowed to leave promotion_epoch() indeterminate before it falls back to
 # resolving from the valid rows alone -- see promotion_epoch(). A fixed
@@ -139,7 +148,7 @@ malformed_promo_poll_bound=3
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state-file | --registry | --workspace-root | --interval-seconds | --post-promotion-seconds | --timeout-seconds | --degrade-window-seconds | --iterations)
+    --state-file | --registry | --workspace-root | --interval-seconds | --post-promotion-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
         [ "$#" -ge 2 ] || {
             usage >&2
             exit 2
@@ -155,6 +164,9 @@ while [ "$#" -gt 0 ]; do
         --post-promotion-seconds) post_promotion_seconds=$2 ;;
         --timeout-seconds) timeout_seconds=$2 ;;
         --degrade-window-seconds) degrade_window_seconds=$2 ;;
+        --prompt-reemit-seconds) prompt_reemit_seconds=$2 ;;
+        --stall-minutes) stall_minutes=$2 ;;
+        --heartbeat-minutes) heartbeat_minutes=$2 ;;
         --iterations) iterations=$2 ;;
         esac
         shift 2
@@ -189,9 +201,9 @@ if [ -n "$state_file" ] && [ "$(basename "$state_file")" = monitor.json ]; then
     exit 2
 fi
 
-case "$interval_seconds:$post_promotion_seconds:$timeout_seconds:$degrade_window_seconds:$iterations" in
+case "$interval_seconds:$post_promotion_seconds:$timeout_seconds:$degrade_window_seconds:$iterations:$prompt_reemit_seconds:$stall_minutes:$heartbeat_minutes" in
 *[!0-9:]* | *::* | :* | *:)
-    echo "lane-watch: interval, window, degrade window, and iterations must be non-negative integers" >&2
+    echo "lane-watch: intervals, windows, thresholds, and iterations must be non-negative integers" >&2
     exit 2
     ;;
 esac
@@ -295,6 +307,7 @@ load_state() {
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
+        PROGRESS | PROMPT | HEARTBEAT) state_set "$kind" "$lane" "$value" "$extra" "$detail" ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
         MALPROMO) state_set MALPROMO "$lane" "$value" "$extra" "$detail" ;;
@@ -325,6 +338,7 @@ save_state() {
             SENTINEL-PANE | SENTINEL-REPORT)
                 printf '%s\t%s\t%s\t\n' "$kind" "${key%%:*}" "${key#*:}"
                 ;;
+            PROGRESS | PROMPT | HEARTBEAT) printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$key" "$value" "$extra" "$detail" ;;
             WINDOW) printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             DEGRADE) printf 'DEGRADE\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             MALPROMO) printf 'MALPROMO\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
@@ -582,14 +596,72 @@ sentinel_from_report() {
     terminal_sentinel "$label" "$nonce" <"$report"
 }
 
-sentinel_from_pane() {
-    local lane=$1 label=$2 nonce=$3 agent_state=$4 pane
-    case "$agent_state" in
-    idle | done | blocked) ;;
-    *) return 0 ;;
-    esac
-    pane="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
-    terminal_sentinel "$label" "$nonce" <<<"$pane"
+# Inspect only the currently visible pane for approval UI, never scrollback.
+# A prompt episode survives pane redraws and repeated text; only an observed
+# disappearance ends it. Persist first-seen and last-emitted times separately.
+approval_request() {
+    awk '
+      /^[[:space:]│›>]*(Requesting permission for:|Run this command[?]|Would you like to run the following command[?]|Do you want to (proceed|allow)|Allow .*([?]|once)|.* requires your approval[.:]?$)/ {
+        line = $0
+        if (line ~ /Requesting permission for:[[:space:]]*$/ && getline > 0) line = line " " $0
+        print line
+        exit
+      }' | tr '\t\r' '  ' | cut -c 1-300
+}
+
+observe_pane_progress() {
+    local key=$1 pane=$2 metadata=$3 terminal=$4 prompt=$5 fallback=$6
+    local fingerprint previous changed stalled first emitted suffix
+    fingerprint="$(printf '%s\n%s' "$pane" "$metadata" | cksum | awk '{print $1 ":" $2}')"
+    previous="$(state_get PROGRESS "$key" || true)"
+    changed="$(state_get PROGRESS "$key" extra || true)"
+    stalled="$(state_get PROGRESS "$key" detail || true)"
+    if [ "$previous" != "$fingerprint" ]; then
+        changed=$now
+        stalled=0
+    fi
+    # Terminal evidence suppresses stalls even if it appeared only in the
+    # report; resuming work starts a fresh stall episode.
+    if [ -n "$terminal" ]; then
+        stalled=2
+    elif [ "$stalled" = 2 ]; then
+        changed=$now
+        stalled=0
+    elif [ "$stalled" != 1 ] && [ $((now - changed)) -ge $((stall_minutes * 60)) ]; then
+        stalled=1
+        state_set PROGRESS "$key" "$fingerprint" "$changed" "$stalled"
+        persist_state
+        echo "STALL $lane: no pane change for $(((now - changed) / 60))m"
+    fi
+    state_set PROGRESS "$key" "$fingerprint" "$changed" "$stalled"
+    if [ -n "$prompt" ]; then
+        first="$(state_get PROMPT "$key" || true)"
+        emitted="$(state_get PROMPT "$key" extra || true)"
+        if [ -z "$first" ] || [ $((now - emitted)) -ge "$prompt_reemit_seconds" ]; then
+            first=${first:-$now}
+            state_set PROMPT "$key" "$first" "$now"
+            persist_state
+            suffix=
+            [ "$fallback" -eq 0 ] || suffix=' (fallback)'
+            echo "PROMPT $lane: $prompt$suffix"
+        fi
+    else
+        state_delete PROMPT "$key"
+    fi
+}
+
+emit_heartbeat() {
+    local last
+    last="$(state_get HEARTBEAT run || true)"
+    if [ -z "$last" ]; then
+        # Start the clock on first observation, rather than emitting a startup
+        # summary that duplicates the transition events already printed.
+        state_set HEARTBEAT run "$now"
+    elif [ $((now - last)) -ge $((heartbeat_minutes * 60)) ]; then
+        state_set HEARTBEAT run "$now"
+        persist_state
+        echo "HEARTBEAT $heartbeat_summary"
+    fi
 }
 
 activity_rows() {
@@ -1278,13 +1350,32 @@ while true; do
         agents_available=1
     fi
 
+    heartbeat_summary=
     for spec in "${specs[@]}"; do
         parse_spec "$spec"
+        progress_key="$lane:$nonce"
+        agent_state=cloud
         if [ "$extra" != cloud ]; then
             agent_state=unknown
+            pane_available=0
+            pane_visible=
+            if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
+                pane_available=1
+            fi
+            prompt="$(approval_request <<<"$pane_visible")"
+            fallback=0
+            if explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
+                jq -e '.fallback_reason | type == "string" and length > 0' >/dev/null 2>&1 <<<"$explanation"; then
+                fallback=1
+            fi
             if [ "$agents_available" -eq 1 ]; then
                 agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
                 agent_state=${agent_state:-absent}
+                if [ "$fallback" -eq 1 ]; then
+                    agent_state=unknown
+                    [ -z "$prompt" ] || agent_state=blocked
+                    agent_state="$agent_state (fallback)"
+                fi
                 previous="$(state_get AGENT "$lane" || printf init)"
                 if [ "$previous" != "$agent_state" ]; then
                     state_set AGENT "$lane" "$agent_state"
@@ -1303,7 +1394,9 @@ while true; do
             sentinel="$(sentinel_from_report "$report" "$lane_label" "$nonce")"
             pane_only=0
             if [ -z "$sentinel" ]; then
-                sentinel="$(sentinel_from_pane "$lane" "$lane_label" "$nonce" "$agent_state")"
+                # Keep historical sentinel reads separate from visible approval UI.
+                pane_recent="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
+                sentinel="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_recent")"
                 [ -z "$sentinel" ] || pane_only=1
             fi
             sentinel_key="$lane:$sentinel"
@@ -1324,7 +1417,14 @@ while true; do
                 esac
             fi
 
-            if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 8)"; then
+            if [ "$pane_available" -eq 1 ]; then
+                metadata=
+                if [ "$agents_available" -eq 1 ]; then
+                    metadata="$(jq -c --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | [.revision, .state_change_seq]' <<<"$agents" | tail -1)"
+                fi
+                pane_terminal="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_visible")"
+                now="$(date -u +%s)"
+                observe_pane_progress "$progress_key" "$pane_visible" "$metadata" "${sentinel:-$pane_terminal}" "$prompt" "$fallback"
                 if grep -Fq 'Usage limit reached' <<<"$pane_visible"; then
                     if [ "$(state_get USAGE "$lane" || printf 0)" -eq 0 ]; then
                         state_set USAGE "$lane" 1
@@ -1446,8 +1546,21 @@ while true; do
                     observation_failed "GitHub PR observation failed for lane $lane"
             fi
         fi
+        if [ "$extra" = cloud ]; then
+            cloud_progress="$(state_get BRANCH "$lane" || true)|$(state_get PR "$lane" || true)"
+            if [ "$(state_get PROGRESS "$progress_key" || true)" != "$cloud_progress" ]; then
+                state_set PROGRESS "$progress_key" "$cloud_progress" "$now" 0
+            fi
+        fi
+        changed="$(state_get PROGRESS "$progress_key" extra || true)"
+        age=unknown
+        [ -z "$changed" ] || age="$((now - changed))s"
+        pr_summary="$(state_get PR "$lane" || printf absent)"
+        heartbeat_summary="${heartbeat_summary:+$heartbeat_summary; }$lane: state=$agent_state age=$age pr=$pr_summary"
     done
 
+    now="$(date -u +%s)"
+    emit_heartbeat
     persist_state
     poll_count=$((poll_count + 1))
     if [ "$iterations" -gt 0 ] && [ "$poll_count" -ge "$iterations" ]; then

@@ -60,6 +60,24 @@ if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; the
     trap '' TERM
     sleep 5
 fi
+if [ -f "$WATCH_FIXTURES/events-mode" ]; then
+    case "${1:-} ${2:-}" in
+    'agent list')
+        revision="$(cat "$WATCH_FIXTURES/events-revision")"
+        printf '{"result":{"agents":[{"name":"events","agent_status":"idle","revision":%s,"state_change_seq":1}]}}\n' "$revision"
+        exit 0
+        ;;
+    'agent explain')
+        if [ -f "$WATCH_FIXTURES/events-fallback" ]; then
+            printf '%s\n' '{"fallback_reason":"default_known_agent_idle_fallback"}'
+        else
+            printf '%s\n' '{"fallback_reason":null}'
+        fi
+        exit 0
+        ;;
+    'agent read') cat "$WATCH_FIXTURES/events-pane"; exit 0 ;;
+    esac
+fi
 if [ "${1:-} ${2:-}" = "agent list" ]; then
     if [ -f "$WATCH_FIXTURES/malformed-list" ]; then
         printf '%s\n' '{"error":"temporarily unavailable"}'
@@ -2496,3 +2514,96 @@ if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: (READY|HANDOFF|BLOCKE
 fi
 
 echo 'lane-watch tests passed'
+
+# Approval episodes are keyed by visibility, not text or redraw revision.
+# Each invocation is a restart against the same durable state and fake clock.
+touch "$fixture_dir/events-mode" "$fixture_dir/events-fallback"
+printf '%s\n' 1 >"$fixture_dir/events-revision"
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' >"$fixture_dir/events-pane"
+events_state="$test_tmp/events.state"
+events_report="$test_tmp/events-report.md"
+events_out="$test_tmp/events.out"
+: >"$events_out"
+printf '%s\n' 2000000000 >"$clock_file"
+events_poll() {
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$events_state" \
+        --registry "$registry" --workspace-root "$workspace_root" \
+        --prompt-reemit-seconds 180 --stall-minutes 1 --heartbeat-minutes 1 \
+        2099-01-01T00:00:00Z \
+        "events:branch-events:a2:evanharmon1/harmon-devkit:$events_report" >>"$events_out"
+}
+events_poll
+events_poll
+assert_line "$events_out" 'AGENT events: init -> blocked (fallback)'
+assert_line "$events_out" 'PROMPT events: Requesting permission for: echo same (fallback)'
+assert_count "$events_out" 1 '^PROMPT '
+assert_count "$events_out" 0 '^AGENT .* -> (done|idle)'
+# Redraw metadata changes do not turn a waiting prompt into a new instance.
+printf '%s\n' 2 >"$fixture_dir/events-revision"
+events_poll
+assert_count "$events_out" 1 '^PROMPT '
+printf '%s\n' 2000000180 >"$clock_file"
+events_poll
+events_poll
+assert_count "$events_out" 2 '^PROMPT '
+assert_count "$events_out" 1 '^STALL '
+assert_count "$events_out" 1 '^HEARTBEAT '
+assert_line "$events_out" 'STALL events: no pane change for 3m'
+# A disappearance then identical reappearance starts another prompt episode,
+# even with the same timestamp. Restart dedup must not swallow that instance.
+printf '%s\n' 'I am checking Run this command? in logs.' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'AGENT events: blocked (fallback) -> unknown (fallback)'
+assert_count "$events_out" 2 '^PROMPT '
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 3 '^PROMPT '
+printf '%s\n' 2000000240 >"$clock_file"
+events_poll
+events_poll
+assert_count "$events_out" 2 '^STALL '
+assert_count "$events_out" 2 '^HEARTBEAT '
+# Both report and pane terminals suppress stalls. Use the real HANDOFF grammar.
+printf '%s\n' 'HANDOFF-events-a2' >"$events_report"
+printf '%s\n' 2000000360 >"$clock_file"
+events_poll
+assert_count "$events_out" 2 '^STALL '
+assert_line "$events_out" 'HANDOFF events: HANDOFF-events-a2'
+rm "$events_report"
+printf '%s\n' 'HANDOFF-events-a2' >"$fixture_dir/events-pane"
+events_poll
+printf '%s\n' 2000000480 >"$clock_file"
+events_poll
+assert_count "$events_out" 2 '^STALL '
+# Codex and Claude approval forms also work, without fallback tagging.
+rm "$fixture_dir/events-fallback"
+printf '%s\n' 'Would you like to run the following command?' 'echo codex' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'PROMPT events: Would you like to run the following command?'
+printf '%s\n' 'working' >"$fixture_dir/events-pane"
+events_poll
+printf '%s\n' 'Do you want to proceed?' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'PROMPT events: Do you want to proceed?'
+rm "$fixture_dir/events-mode"
+
+# Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.
+touch "$fixture_dir/cloud-only"
+cloud_heartbeat_state="$test_tmp/cloud-heartbeat.state"
+cloud_heartbeat_out="$test_tmp/cloud-heartbeat.out"
+: >"$cloud_heartbeat_out"
+for events_time in 2000000000 2000000060 2000000060; do
+    printf '%s\n' "$events_time" >"$clock_file"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$cloud_heartbeat_state" \
+        --registry "$registry" --heartbeat-minutes 1 --stall-minutes 0 \
+        2099-01-01T00:00:00Z \
+        cloud:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:cloud >>"$cloud_heartbeat_out"
+done
+assert_count "$cloud_heartbeat_out" 1 '^HEARTBEAT '
+assert_count "$cloud_heartbeat_out" 0 '^(PROMPT|STALL|AGENT) '
+grep -Eq '^HEARTBEAT cloud: state=cloud age=60s pr=' "$cloud_heartbeat_out" || fail 'cloud heartbeat lacks age and PR state'
+[ ! -f "$fixture_dir/cloud-herdr-calls" ] || fail 'cloud heartbeat read Herdr'
+rm "$fixture_dir/cloud-only"
+echo 'PASS: lane watcher prompt episodes, fallback, stalls and heartbeat'
