@@ -3952,7 +3952,7 @@ function writeScenario(name, db) {
   }
 
   // Integration cycle 7 (P2), confirmed and fixed: a present policy.json
-  // with a fully valid $(rounds) object but a missing/malformed rigor.level
+  // with a fully valid \$(rounds) object but a missing/malformed rigor.level
   // used to collapse to the same null as genuine absence, silently omitting
   // --rigor and letting the engine fall back to TODAY's default_rigor —
   // the cycle-6 drift check only compares NUMBERS, so it would wrongly
