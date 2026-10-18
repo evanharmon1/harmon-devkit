@@ -1394,7 +1394,7 @@ Effort ladder: `minimal` < `low` < `medium` < `high` < `xhigh` < `max`.
 | `claude-code-minimax` | Claude Code provider wrapper | `minimax` | — | `provider-wrapper` | — |
 | `claude-code-qwen` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` | — |
 | `claude-code-qwen-local` | Claude Code provider wrapper | `qwen` | — | `provider-wrapper` | — |
-| `codex-cli` | OpenAI Codex CLI | `gpt` | `codex-cli` — production, not dispatchable, no label | `runner-config` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `codex-cli` | OpenAI Codex CLI | `gpt` | `codex-cli` — production, not dispatchable, no label | `runner-config` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `copilot-cli` | GitHub Copilot CLI | any (multi-provider; default `mai`) | — | `harness-runtime` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `qwen-code` | Qwen Code CLI | `qwen` | — | `runner-config` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` | — |

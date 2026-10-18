@@ -395,7 +395,7 @@
       "provider_rewired": false,
       "roles": ["implementer", "challenger", "reviewer"],
       "can_restrict_writes": true,
-      "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+      "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]
     },
     {
       "slug": "copilot-cli",
