@@ -469,9 +469,21 @@ printf 'second\n' >"$partial_source/a2/dispatch.md"
 cat >"$tmp/fail-second-archive.mjs" <<'JS'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
+const readdir = fs.readdirSync
+fs.readdirSync = (source, ...args) => {
+  const entries = readdir(source, ...args)
+  if (source.endsWith('/orchestrator/run-partial')) {
+    return process.env.REVERSE_ARCHIVE_ORDER === '1' ? entries.reverse() : entries.sort()
+  }
+  return entries
+}
 const rename = fs.renameSync
+let archiveRenameCount = 0
 fs.renameSync = (source, target) => {
-  if (source.endsWith('/orchestrator/run-partial/a2')) throw new Error('injected second archive failure')
+  if (source.includes('/orchestrator/run-partial/')) {
+    archiveRenameCount += 1
+    if (archiveRenameCount === 2) throw new Error('injected second archive failure')
+  }
   return rename(source, target)
 }
 syncBuiltinESMExports()
@@ -492,6 +504,39 @@ cmp -s "$state/runs/run-partial/run.json" "$tmp/partial-closed.json" || fail "ar
     fail "retry lost or changed an archived attempt"
 (cd "$repo" && node "$writer" lock release --slate s-partial --session alice) >/dev/null
 pass "close resumes after an actual partial archive without overwriting attempts or rewriting the terminal record"
+
+# Repeat the same run-partial fixture in a second temporary repository, with
+# readdirSync returning the attempt names in reverse order. Keeping the source
+# suffix identical exercises the original a2-keyed fault unchanged.
+(
+    repo="$tmp/reversed-repo"
+    git init -q -b main "$repo"
+    git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    state="$repo/.git/dev-flow-v2"
+    new_run run-partial
+    write_plan s-partial 102:run-partial
+    partial_reversed_source="$state/slates/s-partial/orchestrator/run-partial"
+    partial_reversed_target="$state/runs/run-partial/orchestrator"
+    mkdir -p "$partial_reversed_source/a1" "$partial_reversed_source/a2"
+    printf 'first\n' >"$partial_reversed_source/a1/dispatch.md"
+    printf 'second\n' >"$partial_reversed_source/a2/dispatch.md"
+    partial_rc=0
+    (cd "$repo" && REVERSE_ARCHIVE_ORDER=1 node --import "$tmp/fail-second-archive.mjs" "$writer" close \
+        --slate s-partial --session alice --run-id run-partial --outcome abandoned \
+        --exit 'operator stopped' --at 2026-01-01T00:02:00Z) >"$tmp/partial-reversed.log" 2>&1 || partial_rc=$?
+    [ "$partial_rc" -ne 0 ] || fail "reversed injected partial archive unexpectedly succeeded"
+    grep -qF 'injected second archive failure' "$tmp/partial-reversed.log" || fail "reversed partial archive did not reach injected failure"
+    [ ! -e "$partial_reversed_source/a2" ] && [ -f "$partial_reversed_target/a2/dispatch.md" ] && [ -f "$partial_reversed_source/a1/dispatch.md" ] ||
+        fail "reversed fixture did not stop after exactly one attempt moved"
+    cp "$state/runs/run-partial/run.json" "$tmp/partial-reversed-closed.json"
+    (cd "$repo" && node "$writer" close --slate s-partial --session alice --run-id run-partial) >/dev/null
+    cmp -s "$state/runs/run-partial/run.json" "$tmp/partial-reversed-closed.json" || fail "reversed archive retry changed the terminal record"
+    [ ! -e "$partial_reversed_source" ] || fail "reversed retry left the partial source behind"
+    [ "$(cat "$partial_reversed_target/a1/dispatch.md")" = first ] && [ "$(cat "$partial_reversed_target/a2/dispatch.md")" = second ] ||
+        fail "reversed retry lost or changed an archived attempt"
+    (cd "$repo" && node "$writer" lock release --slate s-partial --session alice) >/dev/null
+    pass "close resumes after a reversed-order partial archive and preserves both attempts"
+)
 
 cp "$state/runs/run-b/run.json" "$tmp/run-b-closed.json"
 expect_refused "intervention after abandon" "run already ended with outcome abandoned" \
