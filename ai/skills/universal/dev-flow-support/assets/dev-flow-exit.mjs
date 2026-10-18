@@ -2276,7 +2276,7 @@ async function main() {
     await import("./devflow-policy.mjs");
   // The over-cap authorization predicate (harmon-devkit#1239), deferred for
   // the same reason as the two modules above.
-  const { authorizedCeiling } = await import("./lib/cap-authorizations.mjs");
+  const { authorizedCeiling, contiguousRounds } = await import("./lib/cap-authorizations.mjs");
 
   // --add-finder / --select-finder are repeatable and must be lifted out
   // before parseArgs, which is last-wins. See devflow-policy.mjs's own
@@ -2751,10 +2751,8 @@ async function main() {
     }
   }
   const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
-  for (let i = 0; i < presentRoundNumbers.length; i++) {
-    if (presentRoundNumbers[i] !== i + 1) {
-      return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
-    }
+  if (!contiguousRounds(presentRoundNumbers)) {
+    return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
   }
 
   // Every retained COMPLETE round needs its own adjudication document,

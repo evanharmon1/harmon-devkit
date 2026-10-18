@@ -960,6 +960,37 @@ done
 [ "$(node -e "process.stdout.write(String(require('${over_cap}/policy.json').rounds.review))")" = "1" ] ||
     fail "rendering an authorized over-cap round rewrote policy.json's resolved review cap"
 
+echo "==> authorization collection and trajectory validation agree across render projections"
+auth_duplicate="${test_tmp}/authorization-duplicate"
+cp -r "$over_cap" "$auth_duplicate"
+authorize_rounds "$auth_duplicate" 2 2
+run adjudication-record --record "$auth_duplicate"
+assert_rc 1
+assert_contains "$err" "duplicates cap_authorizations"
+auth_noncontiguous="${test_tmp}/authorization-noncontiguous"
+cp -r "$over_cap" "$auth_noncontiguous"
+# A projection with no pass enrichment must still reject a round-2-only history.
+rm -rf "$auth_noncontiguous/passes"
+rm "$auth_noncontiguous/adjudications/review-r1.json"
+jq '.settlements |= map(select(.finding_id | startswith("review-r1-") | not))' \
+    "$auth_noncontiguous/run.json" >"$auth_noncontiguous/run.next"
+mv "$auth_noncontiguous/run.next" "$auth_noncontiguous/run.json"
+run adjudication-record --record "$auth_noncontiguous"
+assert_rc 1
+assert_contains "$err" "review rounds are not contiguous from 1"
+for reason in finder_unavailable breadth_exhausted; do
+    auth_partial="${test_tmp}/authorized-${reason}"
+    cp -r "$partial_blocker" "$auth_partial"
+    authorize_rounds "$auth_partial" 2
+    jq '.rounds.review = 1' "$auth_partial/policy.json" >"$auth_partial/policy.next"
+    mv "$auth_partial/policy.next" "$auth_partial/policy.json"
+    jq --arg reason "$reason" '.reason = $reason' "$auth_partial/verdict.json" >"$auth_partial/verdict.next"
+    mv "$auth_partial/verdict.next" "$auth_partial/verdict.json"
+    run blocker-comment --record "$auth_partial" --head "$render_head"
+    assert_rc 0
+    assert_contains "$out" 'Spent: review 1/1 (authorized) · incomplete round 2'
+done
+
 echo "==> integration renderer uses charged cycles rather than adjudication rounds"
 integration_cap_record="${test_tmp}/integration-cap-authorized"
 cp -r "$record_dir" "$integration_cap_record"

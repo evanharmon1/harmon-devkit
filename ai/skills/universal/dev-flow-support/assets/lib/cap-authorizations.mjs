@@ -64,6 +64,28 @@ function isWellFormed(entry) {
   );
 }
 
+// Every reader and writer validates the whole collection, not just entries
+// that happen to authorize its requested stage. Missing is the legacy shape.
+function validateCapAuthorizations(run) {
+  if (run == null || !Object.hasOwn(run, "cap_authorizations")) return;
+  if (!Array.isArray(run.cap_authorizations)) throw new Error("cap_authorizations must be an array");
+  const seen = new Map();
+  for (const [index, entry] of run.cap_authorizations.entries()) {
+    if (!isWellFormed(entry)) throw new Error(`cap_authorizations[${index}] contains a malformed entry`);
+    const key = `${entry.stage}:${entry.round}`;
+    if (seen.has(key)) throw new Error(`cap_authorizations[${index}]: duplicates cap_authorizations[${seen.get(key)}] key (${entry.stage}, ${entry.round})`);
+    seen.set(key, index);
+  }
+}
+
+// Evidence rounds, independently of authorization entries, start at one and
+// have no holes. Multiple finder slots in one round count only once.
+function contiguousRounds(rounds) {
+  return [...new Set(rounds)].sort((a, b) => a - b).every((round, index) => round === index + 1);
+}
+
+export { validateCapAuthorizations, contiguousRounds };
+
 // The set of round numbers authorized for `stage` in a run record (run.json's
 // parsed object, or null/undefined when there is none).
 function authorizedRounds(run, stage) {
@@ -143,16 +165,7 @@ async function main(argv) {
     if (!args["--run-id"] || run.run_id !== args["--run-id"]) throw new Error("authorization record does not match --run-id");
     // Reserve must reject the whole collection that readiness would reject,
     // even when one valid entry alone would authorize the requested cycle.
-    if (Object.hasOwn(run, "cap_authorizations")) {
-      if (!Array.isArray(run.cap_authorizations)) throw new Error("cap_authorizations must be an array");
-      const seen = new Set();
-      for (const entry of run.cap_authorizations) {
-        if (!isWellFormed(entry)) throw new Error("cap_authorizations contains a malformed entry");
-        const key = `${entry.stage}:${entry.round}`;
-        if (seen.has(key)) throw new Error("cap_authorizations contains a duplicate (stage, round)");
-        seen.add(key);
-      }
-    }
+    validateCapAuthorizations(run);
   }
   const result = integrationCycleAccounting(JSON.parse(args["--cycle"]), {
     run, cap: args["--cap"] === undefined ? undefined : Number(args["--cap"]), next: args["--next"] ?? null,

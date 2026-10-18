@@ -307,6 +307,52 @@ assert.match(write('adjudicate', '--file', adjFile(`${RUN}-challenge-r1`, adjudi
 refused(slateArgs, ['receipt', '--pass', passFile('challenge-r1-again', envelope('challenger', 'challenge', 1, challengeFinder, [], { producer: { harness: 'codex-cli', model: 'again', tier: 'frontier' } }))], /immutable/)
 pass('adjudicate publishes once; ledger + verification-only + final exit converge the inline challenge stage (empty round) and persist verdict.json')
 
+// A separate solo run proves both sides of the cap-authorization contract.
+// Its policy is resolved with cap 1 before reservation; the writer never edits it.
+const authToml = join(tmp, 'cap-one.toml')
+writeFileSync(authToml, readFileSync(join(repo, '.devflow.toml'), 'utf8')
+  .replace(/(\[rounds\.standard\][^[]*?\nchallenge\s*=\s*)[0-9]+/, (_, prefix) => `${prefix}1`))
+const authProjection = join(tmp, 'cap-one.json')
+const authResolved = spawnSync('node', [join(support, 'devflow-policy.mjs'), 'resolve', '--policy', authToml,
+  '--registry', 'agent-registry.json', '--json'], { cwd: repo, env, encoding: 'utf8' })
+assert.ok([0, 3].includes(authResolved.status), authResolved.stderr)
+writeFileSync(authProjection, authResolved.stdout)
+assert.equal(read(authProjection).rounds.challenge, 1)
+sh('git', ['switch', '-q', '-c', '12-cap-auth', base])
+writeFileSync(join(repo, 'authorized.txt'), 'authorized test\n')
+const authHead = commitAll('feat: authorization fixture')
+const authInit = run('node', [runRecord, ...soloArgs({ runId: 'run-12-cap-auth', issue: 12, branch: '12-cap-auth' })
+  .map((arg) => arg === policyFile ? authProjection : arg)])
+assert.equal(authInit.status, 0, authInit.stderr)
+const authIdentity = JSON.parse(authInit.stdout)
+const authSlate = ['--slate', authIdentity.slate_id, '--session', SESSION, '--run-id', 'run-12-cap-auth']
+const authWrite = writer(authSlate)
+authWrite('transition', '--stage', 'claim')
+authWrite('transition', '--stage', 'implement', '--exit', 'claimed')
+authWrite('transition', '--stage', 'verify', '--exit', `committed ${authHead}`)
+authWrite('transition', '--stage', 'challenge', '--exit', 'verified')
+for (const round of [1, 2]) {
+  authWrite('receipt', '--pass', passFile(`authorized-r${round}`, envelope('challenger', 'challenge', round, challengeFinder, [],
+    { runId: 'run-12-cap-auth', reviewed: authHead })))
+  authWrite('adjudicate', '--file', adjFile(`authorized-r${round}`, adjudication('challenge', round, [],
+    { runId: 'run-12-cap-auth', reviewed: authHead })))
+}
+const unauthorized = exitFor(authSlate, authIdentity.record_directory, 'challenge', authHead, false, authToml)
+assert.equal(unauthorized.json.outcome, 'indeterminate')
+assert.match(unauthorized.json.reason, /exceeds.*cap/)
+const retainedPolicy = readFileSync(join(authIdentity.record_directory, 'policy.json'), 'utf8')
+authWrite('authorize-cap', '--stage', 'challenge', '--round', '2', '--actor', 'maintainer',
+  '--instruction', 'I authorize challenge round 2 after it ran.', '--at', now())
+const authorized = exitFor(authSlate, authIdentity.record_directory, 'challenge', authHead, false, authToml)
+assert.equal(authorized.status, 22, JSON.stringify(authorized.json) + authorized.stderr)
+assert.equal(authorized.json.outcome, 'capped')
+assert.equal(authorized.json.reason, 'clean')
+assert.equal(authorized.json.action, 'advance')
+assert.equal(authorized.json.authorized_ceiling, 2)
+assert.equal(readFileSync(join(authIdentity.record_directory, 'policy.json'), 'utf8'), retainedPolicy)
+pass('solo over-cap evidence is refused until authorize-cap records a maintainer instruction, including after the round; the resolved cap is unchanged')
+sh('git', ['switch', '-q', BRANCH])
+
 // ---------------------------------------------------------------------------
 // 3. Evidence: each adjudicated round is published through review's own
 //    post-evidence.sh against a fake GitHub, and registered in run.json.

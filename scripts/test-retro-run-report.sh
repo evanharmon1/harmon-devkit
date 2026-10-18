@@ -3325,5 +3325,19 @@ grep -q '| 13 | `local-unverified`' ai/skills/universal/retro/SKILL.md &&
 # ---------------------------------------------------------------------------
 
 echo ""
+echo "==> authorized ceilings appear beside the original caps in Markdown and JSON"
+d="$TMPROOT/authorized-ceiling"
+scaffold "$d" further-along "$POLICY_SECTION"
+node -e 'const fs=require("fs"), p=process.argv[1], d=JSON.parse(fs.readFileSync(p)); d.authorized_ceiling={challenge:4,review:5,integration:6}; fs.writeFileSync(p,JSON.stringify(d))' "$d/trajectory.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'cap 3 (disclosed, unverified); authorized ceiling 4' &&
+    contains "$OUT" 'cap 4 (disclosed, unverified); authorized ceiling 6' &&
+    ok "authorized ceilings accompany unchanged caps" || bad "authorization Markdown: $RC $ERR $OUT"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "challenge") | .cap == 3 and .authorized_ceiling == 4' <<<"$OUT" >/dev/null &&
+    ok "authorization ceiling is in the JSON stage projection" || bad "authorization JSON: $RC $ERR $OUT"
+
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

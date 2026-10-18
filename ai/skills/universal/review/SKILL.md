@@ -116,10 +116,11 @@ stage exits through its ordinary conditions.
 
 **Where the deletion round comes from depends on when the split is decided.**
 With cap headroom left it is an ordinary next round. Decided on the **final
-permitted round** there is none to spend: the exit computation rejects every
-round above the resolved cap, and no intervention makes one legal. There the
-stage ends `capped`, and confirming the removal is part of what the operator's
-escalation decides — never something the stage grants itself. That is what "a
+permitted round** there is none to spend without an explicit maintainer
+instruction. An intervention alone never authorizes an above-cap round: record
+the instruction with `run-record.mjs authorize-cap` as described below. Without
+it the stage ends `capped`, and confirming the removal is part of what the
+operator's escalation decides — never something the stage grants itself. That is what "a
 split changes no cap" means: it buys no round, it only changes what the
 escalation is about. Write it as
 `disposition: split` with a `reference` naming the filed issue — the
@@ -127,7 +128,7 @@ adjudication schema rejects a split that names none — and append the run-level
 half to `run.json.splits`. Then validate the pair here, before the stage
 stops: `dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --adjudication
 <each round document>`, treating a failure as a blocker. A split decided on
-the final permitted round ends the stage `capped`, which never reaches
+the final permitted round without a further maintainer authorization ends the stage `capped`, which never reaches
 integration, so this stage is the only place that check will run. Those records prove the split was decided and the
 issue filed, which is what they can decide; that the mechanism actually left
 the tree is the deletion round's own review, not a claim the record checks. A
@@ -485,9 +486,42 @@ branch-controlled, and corroborating it against the record is exactly the work
 that issue exists to do. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
-reason and attribution to `run.json.interventions` as `kind: other`; refuse the
-override when no round remains. Never override an exit downward or reinterpret
+reason and attribution to `run.json.interventions` as `kind: other`. Above the
+cap, require the explicit cap authorization below instead of treating an
+intervention as authority. Never override an exit downward or reinterpret
 the script's outcome.
+
+### Maintainer-authorized rounds above the cap
+
+The supervising orchestrator (or the session owning a solo run) records an
+attributable maintainer instruction through the shared writer, never by editing
+`run.json` by hand:
+
+```sh
+node "$support_dir/run-record.mjs" authorize-cap \
+  --slate <slate-id> --session <session-id> --run-id <run-id> \
+  --stage review --round <n> --actor <maintainer-identity> \
+  --instruction '<verbatim session instruction>' --at <instruction-UTC-time>
+```
+
+One call admits one named stage and round; repeat only for rounds the maintainer
+actually authorized. The command records the instruction, not proof of its
+speaker: the caller must have that attributable session instruction. An agent
+never authorizes itself. A maintainer may authorize a round before or after it
+runs; `at` is not compared with pass receipts. The collection rejects duplicates
+and malformed entries. Every intervening over-cap round needs its own entry,
+and a cap of 0 remains disabled. Keep the original resolved caps in `policy.json`.
+
+Continue numbering in the same run. In the stage ledger show
+`round n/cap (authorized) — maintainer authorized on <date>`, citing the session
+instruction verbatim, its actor and time. Disclose the same authorized overage
+on the PR body's budget line (harmon-devkit#683), alongside any rigor override;
+never hide it by resetting a counter or raising the denominator. The ordinary
+convergence rule, findings and deterministic gates still apply. Recompute the
+exit after recording the authorization. An older merge-base engine or schema
+under `--closure` can refuse this field or over-cap evidence; that is a
+compatibility blocker, never permission to substitute the branch engine or
+remove the authorization. Report it to the orchestrator.
 
 ### Stage exit rules and sequencing
 

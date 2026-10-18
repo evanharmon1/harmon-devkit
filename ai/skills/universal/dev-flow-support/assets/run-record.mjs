@@ -6,6 +6,7 @@
 // Usage:
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
 //                               [--remediation-head SHA --remediation-findings ID,ID,...]
+//   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other --note TEXT [--ruling FILE] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote      --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
@@ -63,6 +64,7 @@
 
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { validateCapAuthorizations } from './lib/cap-authorizations.mjs'
 import {
   existsSync,
   mkdirSync,
@@ -582,6 +584,17 @@ const MUTATORS = {
     // transition and its receipt land in the same candidate.
     record.receipts = [...(record.receipts ?? []), { kind: 'transition', stage, entered_at: args.at }]
     return `transition → ${stage}`
+  },
+  'authorize-cap'(record, args) {
+    guardTimestamp(record, args.at)
+    const entry = { stage: args.stage, round: Number(args.round), actor: args.actor, instruction: args.instruction, at: args.at }
+    record.cap_authorizations = [...(record.cap_authorizations ?? []), entry]
+    try {
+      validateCapAuthorizations(record)
+    } catch (error) {
+      throw new Refusal(error.message)
+    }
+    return `cap authorization (${entry.stage} round ${entry.round})`
   },
   intervention(record, args, context) {
     if (args.kind !== 'asked' && args.kind !== 'other') throw new UsageError('--kind must be asked or other')
@@ -1380,7 +1393,7 @@ const VALUE_FLAGS = new Set([
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
-  'actor-id', 'strategy-source', 'operator-pin',
+  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 
@@ -1472,7 +1485,7 @@ function main(argv) {
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
   if (Object.hasOwn(SIDE_EFFECTS, command ?? '')) return sideEffectWrite(command, parseFlags(rest))
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
-    throw new UsageError('run-record.mjs transition|intervention|bind-pr|promote|close|solo-init|receipt|adjudicate|ledger|lock … (see the header)')
+    throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|solo-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
   return recordWrite(command, parseScopeFlags(parseFlags(rest)))
 }

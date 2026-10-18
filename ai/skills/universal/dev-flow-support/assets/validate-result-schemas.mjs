@@ -146,6 +146,7 @@
 // violation (one per line) otherwise. A usage error (bad kind, missing
 // file, a paired flag given alone, or a --receipt-required flag missing)
 // exits 2.
+import { validateCapAuthorizations } from './lib/cap-authorizations.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -3140,17 +3141,10 @@ function checkSlotFailureKeys(document, errors) {
 // renderer's check (lib/cap-authorizations.mjs): this document carries no
 // policy to compare against.
 function checkCapAuthorizationKeys(document, errors) {
-  const firstIndexByKey = new Map()
-  for (const [index, entry] of (document.cap_authorizations ?? []).entries()) {
-    const key = JSON.stringify([entry.stage, entry.round])
-    const firstIndex = firstIndexByKey.get(key)
-    if (firstIndex !== undefined) {
-      errors.push(
-        `$run.cap_authorizations[${index}]: duplicates cap_authorizations[${firstIndex}] key (${entry.stage}, ${entry.round})`
-      )
-      continue
-    }
-    firstIndexByKey.set(key, index)
+  try {
+    validateCapAuthorizations(document)
+  } catch (error) {
+    errors.push(`$run.${error.message}`)
   }
 }
 
