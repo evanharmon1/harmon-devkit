@@ -64,11 +64,20 @@ new_run() {
     }' >"$state/runs/$run_id/run.json"
 }
 
+# Capture acquisition stdout; never recover tokens from status or the lock file.
+token_for() { cat "$tmp/token-$1" 2>/dev/null || true; }
+acquire() {
+    local slate="$1" session="$2"
+    shift 2
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$slate")" node "$writer" lock acquire --slate "$slate" --session "$session" "$@") >"$tmp/new-token"
+    if [ -s "$tmp/new-token" ]; then cp "$tmp/new-token" "$tmp/token-$slate"; fi
+}
+
 # rr SESSION ARGS... — run the writer as SESSION on slate "s1" from the fixture.
 rr() {
     local session="$1"
     shift
-    (cd "$repo" && node "$writer" "$@" --slate s1 --session "$session")
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s1)" node "$writer" "$@" --slate s1 --session "$session")
 }
 
 expect_refused() {
@@ -130,11 +139,33 @@ lock_scope() {
 }
 
 # -- runs are written only as lanes of the locked slate's plan ---------------
-expect_refused "write without a plan" "has no lock yet and no scope to record" \
+expect_refused "write without a plan" "lock acquire" \
     rr alice transition --run-id run-a --stage claim --exit kicked --at 2026-01-01T00:01:00Z
 pass "a run write for a slate with no plan is refused"
 
-(cd "$repo" && node "$writer" lock acquire --slate s1 --session alice --milestone 7 --issues 11,12) >/dev/null
+acquire s1 alice --milestone 7 --issues 11,12
+token="$(token_for s1)"
+[[ "$token" =~ ^[0-9a-f]{64}$ ]] || fail "acquire did not print one random token line"
+[ "$(jq -r '.owner_token' "$state/locks/s1.json")" = "$token" ] || fail "lock did not record the minted token"
+expect_refused "same-name wrong token" "owner token does not match" \
+    rr alice transition --owner-token wrong --run-id run-a --stage claim --exit k
+expect_refused "same-name missing token" "owner token does not match" \
+    env -u RUN_RECORD_OWNER_TOKEN bash -c "cd '$repo' && node '$writer' lock acquire --slate s1 --session alice"
+expect_refused "same-name release missing token" "owner token does not match" \
+    env -u RUN_RECORD_OWNER_TOKEN bash -c "cd '$repo' && node '$writer' lock release --slate s1 --session alice"
+status="$(cd "$repo" && node "$writer" lock status --slate s1)"
+[[ "$status" != *"$token"* ]] || fail "status logged the owner token"
+acquire s1 alice --milestone 7 --issues 11,12
+[ ! -s "$tmp/new-token" ] || fail "reacquisition printed the token twice"
+expect_refused "same-name write missing token" "owner token does not match" \
+    rr alice transition --owner-token '' --run-id run-a --stage claim --exit k
+expect_refused "same-name side-effect wrong token" "owner token does not match" \
+    rr alice receipt --owner-token wrong --run-id run-a --pass missing.json
+expect_refused "same-name release wrong token" "owner token does not match" \
+    bash -c "cd '$repo' && node '$writer' lock release --slate s1 --session alice --owner-token wrong"
+expect_refused "same-name overlapping slate" "issue(s) 11 are already locked" \
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate duplicate --session alice --issues 11"
+pass "a tokenized lock refuses a same-name non-owner, and prints its token only once"
 [ "$(lock_scope s1)" = "alice:7:11,12" ] || fail "lock does not record session, milestone and issue set"
 pass "before a plan exists, the lock records the given milestone and issue set"
 
@@ -145,7 +176,7 @@ expect_refused "plan outside the reservation" "names issue(s) 13, 14 outside the
 cmp -s "$run" "$tmp/run-a-unplanned.json" || fail "a write under an unreserved plan changed run.json"
 pass "a canonical plan naming issues outside the reserved scope refuses every write"
 
-(cd "$repo" && node "$writer" lock acquire --slate s1 --session alice --issues 11,12,13,14) >/dev/null
+acquire s1 alice --issues 11,12,13,14
 [ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "widening the reservation did not record the new issue set"
 pass "lock acquire --issues widens the reservation, keeping the recorded milestone"
 
@@ -157,7 +188,7 @@ cmp -s "$state/runs/run-z/run.json" "$tmp/run-z.json" || fail "a refused foreign
 pass "a write naming a run that is not a lane of the locked slate's plan is refused, record unchanged"
 
 expect_refused "reservation narrower than the plan" "names issue(s) 12, 13, 14 outside the reserved scope" \
-    bash -c "cd '$repo' && node '$writer' lock acquire --slate s1 --session alice --issues 11"
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s1 --session alice --owner-token \"$(token_for s1)\" --issues 11"
 [ "$(lock_scope s1)" = "alice:7:11,12,13,14" ] || fail "a refused narrowing changed the lock"
 pass "--issues that would leave plan issues unreserved are refused"
 
@@ -240,7 +271,7 @@ walk run-a
 write_plan s6 16:run-a
 cp "$run" "$tmp/run-a.json"
 expect_refused "run owned by another slate" "run run-a is owned by slate s1, not s6" \
-    bash -c "cd '$repo' && node '$writer' intervention --slate s6 --session alice --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z"
+    bash -c "cd '$repo' && node '$writer' intervention --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z"
 cmp -s "$run" "$tmp/run-a.json" || fail "a refused foreign-slate write changed run.json"
 [ ! -e "$state/locks/s6.json" ] || fail "a refused foreign-ownership write left slate s6 locked"
 pass "a second slate cannot write a run another slate owns, and the refusal takes no lock"
@@ -265,16 +296,16 @@ pass "an unrelated, even malformed, plan.json elsewhere does not block the owner
 
 write_plan s10 18:run-q
 new_run run-u
-expect_refused "refused bind on a fresh slate" "run run-u is not a lane in any revision of slate s10's plan" \
-    bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
+expect_refused "refused bind on a fresh slate" "lock acquire" \
+    bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
 [ ! -e "$state/locks/s10.json" ] || fail "a refused bind left the slate lock this invocation created"
 [ ! -e "$state/runs/run-u/owner-slate" ] || fail "a refused bind recorded an owner"
-(cd "$repo" && node "$writer" lock acquire --slate s10 --session carol) >/dev/null
+acquire s10 carol
 expect_refused "refused bind with a pre-existing lock" "run run-u is not a lane in any revision of slate s10's plan" \
-    bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
+    bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
 [ -e "$state/locks/s10.json" ] || fail "a refused bind released a lock it did not create"
-(cd "$repo" && node "$writer" lock release --slate s10 --session carol) >/dev/null
-pass "a refused bind releases only a slate lock this invocation created"
+(cd "$repo" && node "$writer" lock release --slate s10 --session carol --owner-token "$(token_for s10)") >/dev/null
+pass "writes require explicit acquisition and a refused bind preserves the held lock"
 
 [ -z "$(find "$state" -name '*.wlock*')" ] || fail "a mutex or its temp stamp file was left behind"
 pass "the write mutex leaves neither a lock nor a temp stamp behind"
@@ -282,7 +313,7 @@ pass "the write mutex leaves neither a lock nor a temp stamp behind"
 mkdir -p "$state/slates/s11"
 cp "$state/slates/s1/plan.json" "$state/slates/s11/plan.json"
 expect_refused "plan copied from another slate" 'records slate_id "s1", not s11' \
-    bash -c "cd '$repo' && node '$writer' lock acquire --slate s11 --session alice"
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s11 --session alice --owner-token \"$(token_for s11)\""
 [ ! -e "$state/locks/s11.json" ] || fail "a plan bound to another slate produced a lock"
 pass "a plan whose slate_id does not match its slate directory is refused before any lock"
 
@@ -294,7 +325,7 @@ mkdir -p "$state/runs/run-d/run.json.wlock"
 cpu_log="$tmp/wlock-cpu"
 TIMEFORMAT='%U %R'
 { time expect_refused "unreadable mutex stamp" "timed out waiting for" \
-    timeout 60 bash -c "cd '$repo' && node '$writer' intervention --slate s1 --session alice --run-id run-d --kind other --note x --at 2026-01-01T00:02:00Z"; } 2>"$cpu_log"
+    timeout 60 bash -c "cd '$repo' && node '$writer' intervention --slate s1 --session alice --owner-token \"$(token_for s1)\" --run-id run-d --kind other --note x --at 2026-01-01T00:02:00Z"; } 2>"$cpu_log"
 rmdir "$state/runs/run-d/run.json.wlock"
 unset TIMEFORMAT
 read -r cpu_user wall <"$cpu_log"
@@ -306,9 +337,9 @@ new_run run-t
 jq '.revisions[0].reason = "tampered"' "$state/slates/s8/plan.json" >"$tmp/s8.json"
 cp "$tmp/s8.json" "$state/slates/s8/plan.json"
 expect_refused "tampered plan on lock acquire" "failed \`plan\` validation" \
-    bash -c "cd '$repo' && node '$writer' lock acquire --slate s8 --session alice"
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s8 --session alice --owner-token \"$(token_for s8)\""
 expect_refused "tampered plan on a run write" "failed \`plan\` validation" \
-    bash -c "cd '$repo' && node '$writer' transition --slate s8 --session alice --run-id run-t --stage claim --exit k --at 2026-01-01T00:01:00Z"
+    bash -c "cd '$repo' && node '$writer' transition --slate s8 --session alice --owner-token \"$(token_for s8)\" --run-id run-t --stage claim --exit k --at 2026-01-01T00:01:00Z"
 [ ! -e "$state/locks/s8.json" ] || fail "a tampered plan produced a slate lock"
 [ ! -e "$state/runs/run-t/owner-slate" ] || fail "a tampered plan produced an owner record"
 pass "a plan whose digest chain is tampered is refused before any lock or ownership is recorded"
@@ -342,7 +373,7 @@ pass "a PR binding extends the chain and sets the projection; a repeat is a no-o
 
 # -- promotion ---------------------------------------------------------------
 new_run run-c
-(cd "$repo" && node "$writer" transition --slate s1 --session alice --run-id run-c --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
+(cd "$repo" && node "$writer" transition --slate s1 --session alice --owner-token "$(token_for s1)" --run-id run-c --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
 walk run-c defer
 head_sha="$(printf '%040d' 0 | tr 0 a)"
 expect_refused "promotion before last transition" "must not be before the last stage_transitions entry" \
@@ -381,7 +412,7 @@ awk '
 ' "$asset_dir/../../integrate/SKILL.md" >"$tmp/documented-promote.sh"
 [ -s "$tmp/documented-promote.sh" ] || fail "integrate promotion command is missing"
 (cd "$repo" && support_dir="$asset_dir" slate=s1 session=alice run_id=run-a \
-    head="$head_sha" gate_fingerprint=fp promoted_at=2026-01-01T00:10:00Z \
+    owner_token="$(token_for s1)" head="$head_sha" gate_fingerprint=fp promoted_at=2026-01-01T00:10:00Z \
     bash -eu "$tmp/documented-promote.sh") >/dev/null
 node "$asset_dir/validate-result-schemas.mjs" run "$run" --receipts "$run" --no-adjudications >/dev/null ||
     fail "the documented promotion command did not produce a strict-valid run"
@@ -405,15 +436,15 @@ pass "once promoted, even a backfill dated before the promotion is refused: an e
 expect_refused "same slate, other session" "locked by session alice" \
     rr bob intervention --run-id run-a --kind other --note x --at 2026-01-01T00:09:30Z
 expect_refused "same milestone, other slate" "milestone 7 is already locked by session alice" \
-    bash -c "cd '$repo' && node '$writer' lock acquire --slate s2 --session bob --milestone 7 --issues 99"
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s2 --session bob --owner-token \"$(token_for s2)\" --milestone 7 --issues 99"
 expect_refused "shared issue, other slate" "issue(s) 12, 13 are already locked by session alice" \
-    bash -c "cd '$repo' && node '$writer' lock acquire --slate s3 --session bob --issues 12,13"
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s3 --session bob --owner-token \"$(token_for s3)\" --issues 12,13"
 write_plan s5 12:run-x
 expect_refused "plans sharing an issue" "issue(s) 12 are already locked by session alice" \
-    bash -c "cd '$repo' && node '$writer' lock acquire --slate s5 --session bob"
-(cd "$repo" && node "$writer" lock acquire --slate s4 --session bob --milestone 8 --issues 15) >/dev/null
-expect_refused "release by non-holder" "only that session may release it" \
-    bash -c "cd '$repo' && node '$writer' lock release --slate s1 --session bob"
+    bash -c "cd '$repo' && node '$writer' lock acquire --slate s5 --session bob --owner-token \"$(token_for s5)\""
+acquire s4 bob --milestone 8 --issues 15
+expect_refused "release by non-holder" "locked by session alice" \
+    bash -c "cd '$repo' && node '$writer' lock release --slate s1 --session bob --owner-token \"$(token_for s1)\""
 pass "the slate lock refuses another session by slate id, milestone and issue set, whatever flags it passes"
 
 # -- run validated before writing ---------------------------------------------
@@ -461,6 +492,7 @@ pass "closing an open run records its outcome, refuses to overwrite an archive, 
 # move the remainder, and still refuse genuine destination conflicts above.
 new_run run-partial
 write_plan s-partial 101:run-partial
+acquire s-partial alice
 partial_source="$state/slates/s-partial/orchestrator/run-partial"
 partial_target="$state/runs/run-partial/orchestrator"
 mkdir -p "$partial_source/a1" "$partial_source/a2"
@@ -490,19 +522,19 @@ syncBuiltinESMExports()
 JS
 partial_rc=0
 (cd "$repo" && node --import "$tmp/fail-second-archive.mjs" "$writer" close \
-    --slate s-partial --session alice --run-id run-partial --outcome abandoned \
+    --slate s-partial --session alice --owner-token "$(token_for s-partial)" --run-id run-partial --outcome abandoned \
     --exit 'operator stopped' --at 2026-01-01T00:02:00Z) >"$tmp/partial.log" 2>&1 || partial_rc=$?
 [ "$partial_rc" -ne 0 ] || fail "injected partial archive unexpectedly succeeded"
 grep -qF 'injected second archive failure' "$tmp/partial.log" || fail "partial archive did not reach injected failure"
 [ ! -e "$partial_source/a1" ] && [ -f "$partial_target/a1/dispatch.md" ] && [ -f "$partial_source/a2/dispatch.md" ] ||
     fail "fixture did not stop after exactly one attempt moved"
 cp "$state/runs/run-partial/run.json" "$tmp/partial-closed.json"
-(cd "$repo" && node "$writer" close --slate s-partial --session alice --run-id run-partial) >/dev/null
+(cd "$repo" && node "$writer" close --slate s-partial --session alice --owner-token "$(token_for s-partial)" --run-id run-partial) >/dev/null
 cmp -s "$state/runs/run-partial/run.json" "$tmp/partial-closed.json" || fail "archive retry changed the terminal record"
 [ ! -e "$partial_source" ] || fail "retry left the partial source behind"
 [ "$(cat "$partial_target/a1/dispatch.md")" = first ] && [ "$(cat "$partial_target/a2/dispatch.md")" = second ] ||
     fail "retry lost or changed an archived attempt"
-(cd "$repo" && node "$writer" lock release --slate s-partial --session alice) >/dev/null
+(cd "$repo" && node "$writer" lock release --slate s-partial --session alice --owner-token "$(token_for s-partial)") >/dev/null
 pass "close resumes after an actual partial archive without overwriting attempts or rewriting the terminal record"
 
 # Repeat the same run-partial fixture in a second temporary repository, with
@@ -515,6 +547,8 @@ pass "close resumes after an actual partial archive without overwriting attempts
     state="$repo/.git/dev-flow-v2"
     new_run run-partial
     write_plan s-partial 102:run-partial
+    rm -f "$tmp/token-s-partial"
+    acquire s-partial alice
     partial_reversed_source="$state/slates/s-partial/orchestrator/run-partial"
     partial_reversed_target="$state/runs/run-partial/orchestrator"
     mkdir -p "$partial_reversed_source/a1" "$partial_reversed_source/a2"
@@ -522,19 +556,19 @@ pass "close resumes after an actual partial archive without overwriting attempts
     printf 'second\n' >"$partial_reversed_source/a2/dispatch.md"
     partial_rc=0
     (cd "$repo" && REVERSE_ARCHIVE_ORDER=1 node --import "$tmp/fail-second-archive.mjs" "$writer" close \
-        --slate s-partial --session alice --run-id run-partial --outcome abandoned \
+        --slate s-partial --session alice --owner-token "$(token_for s-partial)" --run-id run-partial --outcome abandoned \
         --exit 'operator stopped' --at 2026-01-01T00:02:00Z) >"$tmp/partial-reversed.log" 2>&1 || partial_rc=$?
     [ "$partial_rc" -ne 0 ] || fail "reversed injected partial archive unexpectedly succeeded"
     grep -qF 'injected second archive failure' "$tmp/partial-reversed.log" || fail "reversed partial archive did not reach injected failure"
     [ ! -e "$partial_reversed_source/a2" ] && [ -f "$partial_reversed_target/a2/dispatch.md" ] && [ -f "$partial_reversed_source/a1/dispatch.md" ] ||
         fail "reversed fixture did not stop after exactly one attempt moved"
     cp "$state/runs/run-partial/run.json" "$tmp/partial-reversed-closed.json"
-    (cd "$repo" && node "$writer" close --slate s-partial --session alice --run-id run-partial) >/dev/null
+    (cd "$repo" && node "$writer" close --slate s-partial --session alice --owner-token "$(token_for s-partial)" --run-id run-partial) >/dev/null
     cmp -s "$state/runs/run-partial/run.json" "$tmp/partial-reversed-closed.json" || fail "reversed archive retry changed the terminal record"
     [ ! -e "$partial_reversed_source" ] || fail "reversed retry left the partial source behind"
     [ "$(cat "$partial_reversed_target/a1/dispatch.md")" = first ] && [ "$(cat "$partial_reversed_target/a2/dispatch.md")" = second ] ||
         fail "reversed retry lost or changed an archived attempt"
-    (cd "$repo" && node "$writer" lock release --slate s-partial --session alice) >/dev/null
+    (cd "$repo" && node "$writer" lock release --slate s-partial --session alice --owner-token "$(token_for s-partial)") >/dev/null
     pass "close resumes after a reversed-order partial archive and preserves both attempts"
 )
 
@@ -548,18 +582,20 @@ pass "after a non-promotion close, every write is refused and the record is unch
 
 new_run run-e
 write_plan s12 19:run-e
-(cd "$repo" && node "$writer" transition --slate s12 --session alice --run-id run-e --stage claim --exit k --at 2026-01-01T00:05:00Z) >/dev/null
+acquire s12 alice
+(cd "$repo" && node "$writer" transition --slate s12 --session alice --owner-token "$(token_for s12)" --run-id run-e --stage claim --exit k --at 2026-01-01T00:05:00Z) >/dev/null
 cp "$state/runs/run-e/run.json" "$tmp/run-e.json"
 expect_refused "close before the active stage" "before the active stage claim began" \
-    bash -c "cd '$repo' && node '$writer' close --slate s12 --session alice --run-id run-e --outcome abandoned --exit x --at 2026-01-01T00:04:00Z"
+    bash -c "cd '$repo' && node '$writer' close --slate s12 --session alice --owner-token \"$(token_for s12)\" --run-id run-e --outcome abandoned --exit x --at 2026-01-01T00:04:00Z"
 cmp -s "$state/runs/run-e/run.json" "$tmp/run-e.json" || fail "a close dated before the active stage changed run.json"
-(cd "$repo" && node "$writer" lock release --slate s12 --session alice) >/dev/null
+(cd "$repo" && node "$writer" lock release --slate s12 --session alice --owner-token "$(token_for s12)") >/dev/null
 pass "a close dated before the active stage began is refused"
 
 # -- remediation push record (harmon-devkit#1386) ------------------------------
 new_run run-f
 write_plan s13 20:run-f
-rf() { (cd "$repo" && node "$writer" transition --slate s13 --session alice --run-id run-f "$@"); }
+acquire s13 alice
+rf() { (cd "$repo" && node "$writer" transition --slate s13 --session alice --owner-token "$(token_for s13)" --run-id run-f "$@"); }
 for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
     rf --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
 done
@@ -572,13 +608,13 @@ rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
 [ "$(jq -c '.stage_transitions[-1].remediation' "$state/runs/run-f/run.json")" = \
     "{\"head\":\"$fix_head\",\"findings\":[\"integration-r1-codex-cloud-1\",\"challenge-r1-codex-adversarial-2\"]}" ] ||
     fail "the integration re-entry did not record the remediation push"
-(cd "$repo" && node "$writer" lock release --slate s13 --session alice) >/dev/null
+(cd "$repo" && node "$writer" lock release --slate s13 --session alice --owner-token "$(token_for s13)") >/dev/null
 pass "a remediation push is recorded on the integration re-entry, and refused anywhere else"
 
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane
 new_run run-d
-(cd "$tmp/lane" && node "$writer" transition --slate s1 --session alice --run-id run-d --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
+(cd "$tmp/lane" && node "$writer" transition --slate s1 --session alice --owner-token "$(token_for s1)" --run-id run-d --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null
 [ "$(jq -r '.stage_transitions[-1].stage' "$state/runs/run-d/run.json")" = "claim" ] ||
     fail "a linked worktree did not write the common directory's record"
 pass "a linked worktree writes the common directory's record"
@@ -586,7 +622,7 @@ pass "a linked worktree writes the common directory's record"
 # -- release ---------------------------------------------------------------
 cp "$state/locks/s4.json" "$tmp/held-lock.json"
 force_rc=0
-(cd "$repo" && node "$writer" lock release --slate s4 --session alice --force) >"$tmp/no-reason.log" 2>&1 || force_rc=$?
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice --owner-token "$(token_for s4)" --force) >"$tmp/no-reason.log" 2>&1 || force_rc=$?
 [ "$force_rc" -eq 2 ] || fail "force release without a reason was not a usage error"
 cmp -s "$state/locks/s4.json" "$tmp/held-lock.json" || fail "missing reason changed the held lock"
 
@@ -594,24 +630,46 @@ cmp -s "$state/locks/s4.json" "$tmp/held-lock.json" || fail "missing reason chan
 mkdir -p "$state/locks/recoveries"
 printf 'blocked\n' >"$state/locks/recoveries/s4"
 force_rc=0
-(cd "$repo" && node "$writer" lock release --slate s4 --session alice --force --reason 'dead session') >"$tmp/audit-failure.log" 2>&1 || force_rc=$?
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice --owner-token "$(token_for s4)" --force --reason 'dead session') >"$tmp/audit-failure.log" 2>&1 || force_rc=$?
 [ "$force_rc" -ne 0 ] || fail "force release succeeded without its audit"
 cmp -s "$state/locks/s4.json" "$tmp/held-lock.json" || fail "audit failure released the lock"
 rm "$state/locks/recoveries/s4"
-(cd "$repo" && node "$writer" lock release --slate s4 --session alice --force --reason "dead session") >/dev/null
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice --owner-token "$(token_for s4)" --force --reason "dead session") >/dev/null
 [ ! -e "$state/locks/s4.json" ] || fail "force release left the lock"
 audits=("$state/locks/recoveries/s4/"*.json)
 [ "${#audits[@]}" -eq 1 ] && [ -f "${audits[0]}" ] || fail "force release did not leave exactly one audit"
 jq -e --slurpfile held "$tmp/held-lock.json" '
     .action == "force-release" and .session == "alice" and .reason == "dead session" and
-    .lock == $held[0] and (.at | test("Z$"))
+    .lock == ($held[0] | del(.owner_token)) and (.at | test("Z$"))
 ' "${audits[0]}" >/dev/null || fail "recovery audit lost attribution, reason, time or the old lock"
-(cd "$repo" && node "$writer" lock acquire --slate s4 --session alice --milestone 8 --issues 15) >/dev/null
+acquire s4 alice --milestone 8 --issues 15
 [ "$(lock_scope s4)" = "alice:8:15" ] || fail "new session could not acquire after explicit recovery"
-(cd "$repo" && node "$writer" lock release --slate s4 --session alice) >/dev/null
-(cd "$repo" && node "$writer" lock release --slate s1 --session alice) >/dev/null
+(cd "$repo" && node "$writer" lock release --slate s4 --session alice --owner-token "$(token_for s4)") >/dev/null
+(cd "$repo" && node "$writer" lock release --slate s1 --session alice --owner-token "$(token_for s1)") >/dev/null
 [ ! -e "$state/locks/s1.json" ] || fail "holder release left the lock"
 pass "explicit recovery requires a reason, retains an audit before release, and permits normal reacquisition"
+
+# Pre-change locks have no token: accept the holder, warn, ignore supplied tokens.
+acquire legacy alice --issues 222
+write_plan legacy 222:run-legacy
+new_run run-legacy
+legacy_token="$(token_for legacy)"
+jq 'del(.owner_token)' "$state/locks/legacy.json" >"$tmp/legacy.json"
+cp "$tmp/legacy.json" "$state/locks/legacy.json"
+(cd "$repo" && node "$writer" lock acquire --slate legacy --session alice --owner-token ignored) >"$tmp/legacy.out" 2>"$tmp/legacy.err"
+[ ! -s "$tmp/legacy.out" ] || fail "legacy acquisition printed a token"
+grep -qF 'lock release then lock acquire' "$tmp/legacy.err" || fail "legacy lock did not warn about upgrade"
+(cd "$repo" && node "$writer" transition --slate legacy --session alice --owner-token ignored --run-id run-legacy --stage claim --exit k --at 2026-01-01T00:01:00Z) >/dev/null 2>"$tmp/legacy-write.err"
+grep -qF 'legacy slate lock' "$tmp/legacy-write.err" || fail "legacy write did not warn"
+[ "$(jq -r '.stage_transitions[-1].stage' "$state/runs/run-legacy/run.json")" = claim ] || fail "legacy write refused its holder"
+(cd "$repo" && node "$writer" lock release --slate legacy --session alice --force --reason 'operator confirms upgrade') >/dev/null
+rm "$tmp/token-legacy"
+acquire legacy alice --issues 222
+[ "$(token_for legacy)" != "$legacy_token" ] || fail "recovery reused the old token"
+expect_refused "old token after recovery" "owner token does not match" \
+    bash -c "cd '$repo' && node '$writer' lock release --slate legacy --session alice --owner-token '$legacy_token'"
+(cd "$repo" && node "$writer" lock release --slate legacy --session alice --owner-token "$(token_for legacy)") >/dev/null
+pass "legacy locks accept a supplied token with a warning; explicit recovery mints a fresh token"
 
 no_candidates "suite"
 echo "test-run-record: all cases passed"

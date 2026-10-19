@@ -200,7 +200,7 @@ function baseMove(args) {
   if (!existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}: ${canonical}`)
   // Validated before the lock is taken, so a broken plan leaves no lock.
   validateFile('plan', canonical, `existing ${canonical}`)
-  acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
 
   return withMutex(canonical, () => {
     const document = readJson(canonical, 'plan')
@@ -237,7 +237,7 @@ function main(argv) {
   const args = parseScopeFlags(
     parseFlags(
       rest,
-      new Set(['slate', 'session', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']),
+      new Set(['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']),
       new Set(),
       new Set(['done']),
     ),

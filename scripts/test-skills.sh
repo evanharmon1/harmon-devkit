@@ -12076,6 +12076,12 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
     grep -qF 'A missing heartbeat means re-arm the watcher' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
+# #1500: lost-response acceptance binds every submitted promotion field.
+expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
+    grep -qF 'matches the submitted `promoted_at`' "$INTEGRATE_MD"
+expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
+    grep -qF 'must match; a different `promoted_at` leads to undo and confirmed draft.' "$INTEGRATE_MD"
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

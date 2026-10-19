@@ -80,12 +80,23 @@ directory unchanged, and a solo session records promotion with
 `run-record.mjs promote --slate solo-<run-id> --session <its session>
 --run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh
 fingerprint output>` — `<its session>` being the session name `/claim`
-recorded on its claim comment's `session:` line and `solo-init` persisted in
+recorded on its claim comment's `session:` line and `lock acquire` persisted in
 the slate lock, the same value on every write — or a non-promotion ending with
-`close --slate solo-<run-id> --session <its session> --run-id <run-id>
+`close --slate solo-<run-id> --session <its session> --owner-token "$owner_token" --run-id <run-id>
 --outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
-session>` (`/implement` § 6a step 6).
+session> --owner-token "$owner_token"` (`/implement` § 6a step 6).
+
+The owning session explicitly acquires its slate before any run-record or
+plan-revise write: capture `owner_token="$(node "$support_dir/run-record.mjs"
+lock acquire --slate <slate> --session <session> --issues <n,n,…>)"` once.
+For a resumed run, reuse the held token instead of acquiring again to recover
+it. Every subsequent write, including abbreviated examples below, passes
+`--owner-token "$owner_token"` or uses `RUN_RECORD_OWNER_TOKEN`. Never echo,
+trace or report the token. An unlocked slate refuses writes with `lock acquire`
+guidance; a token-less legacy lock continues to authorize by session with a
+release/re-acquire warning. Lost tokens require operator-confirmed
+`lock release --force --reason` followed by fresh acquisition.
 
 **One supervising writer per run.** The supervising orchestrator (or the
 owning solo session) performs run-record writes sequentially across `/review`
@@ -1785,7 +1796,7 @@ integration` loop, and the transition that re-enters integration after the
 push records it:
 
 ```sh
-node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --run-id <run> \
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token "$owner_token" --run-id <run> \
   --stage integration --exit <how implement ended> \
   --remediation-head <pushed SHA> --remediation-findings <finding id>,<finding id>
 ```
@@ -2589,7 +2600,7 @@ that loops indefinitely:
 
    ```sh
    node "$support_dir/run-record.mjs" promote \
-     --slate "$slate" --session "$session" --run-id "$run_id" \
+     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
      --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
    ```
 
@@ -2597,6 +2608,9 @@ that loops indefinitely:
    outcome-transition chain together, under the shared mutex, validating
    the candidate and canonical readback with `run --receipts` and the run's
    adjudications. On any writer error, re-read the canonical `run.json`.
+   The lost-response acceptance also requires that `promotion.promoted_at`
+   matches the submitted `promoted_at`. All three submitted promotion fields
+   must match; a different `promoted_at` leads to undo and confirmed draft.
    Accept a lost-response success only if its `promotion.head` exactly matches
    the confirmed head and its `promotion.gate_fingerprint` exactly matches
    the confirmed gate fingerprint. Otherwise run

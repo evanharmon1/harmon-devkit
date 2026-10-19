@@ -503,12 +503,24 @@ on with the inline procedure.
    scratch file, then:
 
    ```sh
-   node "$support_dir/run-record.mjs" solo-init --session <session> \
+   owner_token="$(node "$support_dir/run-record.mjs" lock acquire \
+     --slate solo-run-<issue>-<slug> --session <session> --issues <issue>)" || exit 1
+   node "$support_dir/run-record.mjs" solo-init --session <session> --owner-token "$owner_token" \
      --run-id run-<issue>-<slug> --issue <issue> --title <issue title> \
      --url <issue url> --branch <branch> --base <merge base> --policy <file> \
      --actor-id "$(gh api user --jq .id)" --strategy-source <strategy source> \
      [--operator-pin <pin>]...
    ```
+
+   Only explicit `lock acquire` creates a lock and prints its random owner token
+   once. Keep the captured token private; never echo it, enable shell tracing,
+   or include it in reports. Pass `--owner-token "$owner_token"` on every later
+   write below (including `receipt`, `adjudicate`, `ledger`, and `lock release`),
+   or set `RUN_RECORD_OWNER_TOKEN` in the owning process. Repeating acquisition
+   requires the token and prints nothing; it never recovers a lost token.
+   `solo-init` and every other write refuse an unlocked slate with `lock acquire`
+   guidance. A failed `solo-init` preserves the explicitly acquired reservation;
+   release it with the token when abandoning the attempt.
 
    `--session` is this session's name: the one `/claim` recorded on its claim
    comment's `session:` line (the identity `/wrap` and every claim check
@@ -521,9 +533,9 @@ on with the inline procedure.
 
    It prints the run identity (`run_id`, `slate_id`, `generation`,
    `active_state_path`, `record_directory`, `policy_projection`) — keep it;
-   every later write names `--slate <slate_id> --session <session> --run-id
-   <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan, slate lock
-   on the issue, owner binding), `policy.json`, a kickoff `run.json`, and the
+   every later write names `--slate <slate_id> --session <session> --owner-token "$owner_token" --run-id
+   <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan and owner binding,
+   under the already-acquired lock on the issue), `policy.json`, a kickoff `run.json`, and the
    branch's active pointer. Every refusable precondition is checked before the
    first write — a run id that is not `run-<issue>-…`, a run id whose run has
    already ended (reserve a fresh one), a grafted history, an unresolvable
@@ -623,7 +635,7 @@ on with the inline procedure.
    ended with `close --outcome capped|escalated|abandoned --exit "<why>"`
    (every adjudicated round's evidence marker must already be posted). After
    `promote` or `close`, release the slate lock: `run-record.mjs lock release
-   --slate <slate_id> --session <session>`. An ended run's active pointer is
+   --slate <slate_id> --session <session> --owner-token "$owner_token"`. An ended run's active pointer is
    the only one a later `solo-init` on the same branch may supersede.
 
 ## 7. Security gate

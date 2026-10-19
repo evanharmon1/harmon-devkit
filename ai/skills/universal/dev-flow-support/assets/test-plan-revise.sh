@@ -125,13 +125,14 @@ write_plan() {
       process.stdout.write(JSON.stringify(document, null, 2) + "\n")
     ' >"$dir/plan.json"
     node "$validator" plan "$dir/plan.json" >/dev/null || fail "fixture plan for $slate is invalid"
+    (cd "$repo" && node "$writer" lock acquire --slate "$slate" --session alice) >"$tmp/token-$slate"
 }
 
 # pr REPO SESSION SLATE ARGS... — run base-move from inside REPO.
 pr() {
     local repo="$1" session="$2" slate="$3"
     shift 3
-    (cd "$repo" && node "$reviser" base-move --slate "$slate" --session "$session" --reason "main moved" "$@")
+    (cd "$repo" && node "$reviser" base-move --slate "$slate" --session "$session" --owner-token "$(cat "$tmp/token-$slate")" --reason "main moved" "$@")
 }
 
 # -- disjoint base move ------------------------------------------------------
@@ -139,6 +140,12 @@ repo="$(new_repo disjoint)"
 write_plan "$repo" s1 '[]'
 plan="$repo/.git/dev-flow-v2/slates/s1/plan.json"
 new_base="$(commit_touching "$repo" a.txt unrelated.txt)"
+expect_refused "base-move wrong owner token" "owner token does not match" \
+    bash -c "cd '$repo' && node '$reviser' base-move --slate s1 --session alice --owner-token wrong --reason r --new-base '$new_base'"
+(cd "$repo" && node "$writer" lock release --slate s1 --session alice --owner-token "$(cat "$tmp/token-s1")") >/dev/null
+expect_refused "base-move without explicit acquire" "lock acquire" \
+    pr "$repo" alice s1 --new-base "$new_base" --at 2026-01-01T01:00:00Z
+(cd "$repo" && node "$writer" lock acquire --slate s1 --session alice) >"$tmp/token-s1"
 pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z >/dev/null
 node "$validator" plan "$plan" >/dev/null || fail "revised plan does not validate"
 current="$(jq -c '.revisions[-1]' "$plan")"
@@ -159,9 +166,9 @@ jq -n '{schema: 2, run_id: "run-1", initiated_by: "human", started_at: "2026-01-
   stage_transitions: [{stage: "kickoff", entered_at: "2026-01-01T00:00:00Z"}], interventions: [],
   outcome: null, pr: null, evidence_comments: [], evidence_registrations: [], pr_bindings: [],
   outcome_transitions: [], settlements: [], promotion: null, receipts: []}' >"$repo/.git/dev-flow-v2/runs/run-1/run.json"
-(cd "$repo" && node "$writer" transition --slate s1 --session alice --run-id run-1 --stage claim --exit k --at 2026-01-01T01:01:00Z) >/dev/null ||
+(cd "$repo" && node "$writer" transition --slate s1 --session alice --owner-token "$(cat "$tmp/token-s1")" --run-id run-1 --stage claim --exit k --at 2026-01-01T01:01:00Z) >/dev/null ||
     fail "a run dropped by --done could not be written under its own slate"
-(cd "$repo" && node "$writer" close --slate s1 --session alice --run-id run-1 --outcome abandoned --exit merged --at 2026-01-01T01:02:00Z) >/dev/null ||
+(cd "$repo" && node "$writer" close --slate s1 --session alice --owner-token "$(cat "$tmp/token-s1")" --run-id run-1 --outcome abandoned --exit merged --at 2026-01-01T01:02:00Z) >/dev/null ||
     fail "a run dropped by --done could not be closed under its own slate"
 [ "$(jq -r '.outcome' "$repo/.git/dev-flow-v2/runs/run-1/run.json")" = "abandoned" ] || fail "close outcome not recorded"
 pass "a run dropped from the current revision by --done is still written and closed under its own slate"
@@ -222,11 +229,11 @@ git -C "$repo11" add -A
 git -C "$repo11" commit -q -m sub
 moved="$(commit_touching "$repo11" c/two.txt)"
 expect_refused "diff.relative from a subdirectory" "lane c (#3) fence: c/two.txt" \
-    bash -c "cd '$repo11/sub' && node '$reviser' base-move --slate s11 --session alice --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
+    bash -c "cd '$repo11/sub' && node '$reviser' base-move --slate s11 --session alice --owner-token \"$(cat "$tmp/token-s11")\" --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
 pass "diff.relative=true and a subdirectory cwd do not hide moved paths"
 
 expect_refused "GIT_LITERAL_PATHSPECS" "lane c (#3) fence: c/two.txt" \
-    bash -c "cd '$repo11/sub' && GIT_LITERAL_PATHSPECS=1 node '$reviser' base-move --slate s11 --session alice --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
+    bash -c "cd '$repo11/sub' && GIT_LITERAL_PATHSPECS=1 node '$reviser' base-move --slate s11 --session alice --owner-token \"$(cat "$tmp/token-s11")\" --reason r --new-base '$moved' --at 2026-01-01T01:00:00Z"
 pass "GIT_LITERAL_PATHSPECS=1 does not hide moved paths"
 
 # -- overridden history ----------------------------------------------------------
@@ -310,7 +317,7 @@ moved="$(commit_touching "$repo5" unrelated.txt)"
 expect_refused "broken chain" "tampered" \
     pr "$repo5" alice s5 --new-base "$moved" --at 2026-01-01T01:00:00Z
 cmp -s "$plan5" "$tmp/broken.json" || fail "a broken chain was rewritten"
-[ ! -e "$repo5/.git/dev-flow-v2/locks/s5.json" ] || fail "a refused broken-chain plan left the slate locked"
+[ -e "$repo5/.git/dev-flow-v2/locks/s5.json" ] || fail "a refused broken-chain plan released the existing lock"
 pass "a plan whose revision chain is broken is refused"
 
 # -- non-descendant base -----------------------------------------------------------
@@ -327,11 +334,13 @@ pass "a new base that does not descend from the plan base is refused"
 # -- slate lock ----------------------------------------------------------------
 repo7="$(new_repo locked)"
 write_plan "$repo7" s7 '[]'
-(cd "$repo7" && node "$writer" lock acquire --slate other-slate --session bob --issues 2) >/dev/null
+(cd "$repo7" && node "$writer" lock release --slate s7 --session alice --owner-token "$(cat "$tmp/token-s7")") >/dev/null
+(cd "$repo7" && node "$writer" lock acquire --slate other-slate --session bob --issues 2) >"$tmp/token-other"
 moved="$(commit_touching "$repo7" unrelated.txt)"
 expect_refused "issue locked under another slate" "issue(s) 2 are already locked by session bob under slate other-slate" \
-    pr "$repo7" alice s7 --new-base "$moved" --at 2026-01-01T01:00:00Z
-(cd "$repo7" && node "$writer" lock release --slate other-slate --session bob) >/dev/null
+    bash -c "cd '$repo7' && node '$writer' lock acquire --slate s7 --session alice"
+(cd "$repo7" && node "$writer" lock release --slate other-slate --session bob --owner-token "$(cat "$tmp/token-other")") >/dev/null
+(cd "$repo7" && node "$writer" lock acquire --slate s7 --session alice) >"$tmp/token-s7"
 pr "$repo7" alice s7 --new-base "$moved" --at 2026-01-01T01:00:00Z >/dev/null
 [ "$(jq -r '.session' "$repo7/.git/dev-flow-v2/locks/s7.json")" = "alice" ] || fail "writer did not take the slate lock"
 [ "$(jq -c '.issues' "$repo7/.git/dev-flow-v2/locks/s7.json")" = "[1,2,3]" ] || fail "lock scope not derived from the plan"

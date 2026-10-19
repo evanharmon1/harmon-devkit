@@ -29,6 +29,17 @@ The skills sync is the only distribution channel for this runtime: a script one
 skill uses lives in that skill's own `assets/`, and a script several skills
 share lives here. Nothing is shipped through the harmon-init template.
 
+The owning session explicitly acquires its slate before any run-record or
+plan-revise write: capture `owner_token="$(node "$support_dir/run-record.mjs"
+lock acquire --slate <slate> --session <session> --issues <n,n,…>)"` once.
+For a resumed run, reuse the held token instead of acquiring again to recover
+it. Every subsequent write, including abbreviated examples below, passes
+`--owner-token "$owner_token"` or uses `RUN_RECORD_OWNER_TOKEN`. Never echo,
+trace or report the token. An unlocked slate refuses writes with `lock acquire`
+guidance; a token-less legacy lock continues to authorize by session with a
+release/re-acquire warning. Lost tokens require operator-confirmed
+`lock release --force --reason` followed by fresh acquisition.
+
 ## Assets
 
 | Asset | Used by | What it does |

@@ -331,6 +331,17 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
+The owning session explicitly acquires its slate before any run-record or
+plan-revise write: capture `owner_token="$(node "$support_dir/run-record.mjs"
+lock acquire --slate <slate> --session <session> --issues <n,n,…>)"` once.
+For a resumed run, reuse the held token instead of acquiring again to recover
+it. Every subsequent write, including abbreviated examples below, passes
+`--owner-token "$owner_token"` or uses `RUN_RECORD_OWNER_TOKEN`. Never echo,
+trace or report the token. An unlocked slate refuses writes with `lock acquire`
+guidance; a token-less legacy lock continues to authorize by session with a
+release/re-acquire warning. Lost tokens require operator-confirmed
+`lock release --force --reason` followed by fresh acquisition.
+
 The one supervising orchestrator (or owning solo session) performs run-record
 writes sequentially across `/review` and `/integrate`. Delegates return evidence
 and never write the run record. Keep this ownership rule even when a helper
@@ -499,7 +510,7 @@ attributable maintainer instruction through the shared writer, never by editing
 
 ```sh
 node "$support_dir/run-record.mjs" authorize-cap \
-  --slate <slate-id> --session <session-id> --run-id <run-id> \
+  --slate <slate-id> --session <session-id> --owner-token "$owner_token" --run-id <run-id> \
   --stage review --round <n> --actor <maintainer-identity> \
   --instruction '<verbatim session instruction>' --at <instruction-UTC-time>
 ```
