@@ -601,13 +601,15 @@ done
 
 # 4117906313: --per-page 1 over 60 runs pages past the old fixed 50-page
 # guard: every result under the 1000 cap is traversable, so it settles.
+# Load-robust: the 120s deadline (~150s effective with the 30s default call timeout) gives
+# wide headroom over this case's ~2s unloaded runtime for slow or memory-pressured hosts; the poll makes 123 stubbed gh calls.
 reset_fixtures
 for id in $(seq 301 360); do
     run_json "$id" completed success 1 >"$fix/run.$id.json"
     jq -c '{total_count: 60, workflow_runs: [.]}' "$fix/run.$id.json" \
         >"$fix/runs.$((id - 300)).json"
 done
-run_checks --timeout-seconds 5 --interval-seconds 1 --per-page 1
+run_checks --timeout-seconds 120 --interval-seconds 1 --per-page 1
 expect_rc 0 "a small --per-page traverses every page under the cap"
 expect_out "SETTLED success head=aaaaaaaa runs=60" "small --per-page"
 
