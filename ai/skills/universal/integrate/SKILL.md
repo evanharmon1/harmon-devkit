@@ -87,7 +87,7 @@ the slate lock, the same value on every write — or a non-promotion ending with
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
 session> --owner-token <token>` (`/implement` § 6a step 6).
 
-Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 **One supervising writer per run.** The supervising orchestrator (or the
 owning solo session) performs run-record writes sequentially across `/review`

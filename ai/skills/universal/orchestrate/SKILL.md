@@ -316,7 +316,7 @@ published before its reservation can overwrite another session's plan. Release i
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
 claim comment's `session:` line. Reuse it after a restart; it is not a PID or
 a liveness signal. A different session is refused even on the same host.
-Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 Recovery is an explicit operator decision, never an automatic timeout or a
 cross-host process probe. Inspect `lock status --slate <slate>`, have the

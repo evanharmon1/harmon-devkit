@@ -12083,7 +12083,7 @@ expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
     grep -qF 'must match; a different `promoted_at` leads to undo and confirmed draft.' "$INTEGRATE_MD"
 
 # #1500 round 2: one canonical contract replaces the four pasted caller copies.
-expect_ok "owner-token contract pins cross-tool persistence and recovery (#1500)" \
+expect_ok "owner-token contract pins session context and recovery (#1500)" \
     python3 - "$repo" <<'PYTOKEN'
 import sys
 from pathlib import Path
@@ -12093,21 +12093,21 @@ flat = " ".join(canonical.split())
 for required in (
     "without capturing its output. Read the single printed token line",
     "Pass it literally as `--owner-token <token>` on every later",
-    "own durable notes outside the repository",
-    "session scratch directory or the orchestrator's run notes",
-    "Never put it in a shared path keyed by session name",
+    "The token lives only in the session's own context.",
+    "Never put the token in a shared path keyed by session name",
     "never write it to repository files, logs, or PR or issue text",
     "collision guard between same-named sessions, not a credential",
     "`RUN_RECORD_OWNER_TOKEN` is usable within one process or script only",
     "an export does not survive separate tool calls",
-    "lost to a restart, `/clear` or compaction",
+    "A restart, `/clear` or compaction loses it",
     "operator-confirmed `lock release --force --reason`",
-    "the next acquire then mints a new token",
+    "then a fresh `lock acquire`",
 ):
     assert required in flat, required
 for name in ("implement", "review", "integrate", "orchestrate"):
     text = (root / name / "SKILL.md").read_text()
-    assert text.count("../dev-flow-support/SKILL.md#owner-token-caller-contract") == 1, name
+    assert text.count("Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`") == 1, name
+    assert "support directory resolved physically via `cd … && pwd -P`" in text, name
     assert "RUN_RECORD_OWNER_TOKEN" not in text, name
     assert "collision guard between same-named sessions" not in text, name
 PYTOKEN

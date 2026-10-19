@@ -37,17 +37,16 @@ without capturing its output. Read the single printed token line from that
 output. Pass it literally as `--owner-token <token>` on every later
 run-record.mjs or plan-revise.mjs write, including normal release.
 
-Keep the token in your own durable notes outside the repository, for example
-your session scratch directory or the orchestrator's run notes. Never put it
-in a shared path keyed by session name, and never write it to repository files,
-logs, or PR or issue text. The token is a collision guard between same-named
-sessions, not a credential. `RUN_RECORD_OWNER_TOKEN` is usable within one
-process or script only; an export does not survive separate tool calls.
+The token lives only in the session's own context.
+A restart, `/clear` or compaction loses it; recovery requires the
+operator-confirmed `lock release --force --reason`, then a fresh `lock acquire`.
 
-On resumption, read the token from your durable notes; re-acquisition requires
-the token and prints nothing. A token lost to a restart, `/clear` or compaction
-is recovered only by the operator-confirmed `lock release --force --reason`;
-the next acquire then mints a new token. Only the token's SHA-256 digest is
+Never put the token in a shared path keyed by session name, and never write it
+to repository files, logs, or PR or issue text. The token is a collision guard
+between same-named sessions, not a credential. `RUN_RECORD_OWNER_TOKEN` is usable
+within one process or script only; an export does not survive separate tool
+calls. Re-acquisition requires the token and prints nothing.
+Only the token's SHA-256 digest is
 stored in the lock, status and recovery audit. An unlocked slate refuses
 run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance;
 a token-less legacy lock continues to authorize by session with a

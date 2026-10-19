@@ -512,7 +512,7 @@ on with the inline procedure.
      [--operator-pin <pin>]...
    ```
 
-   Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
+   Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
    A failed `solo-init` preserves the explicitly acquired reservation;
    release it with the token when abandoning the attempt.

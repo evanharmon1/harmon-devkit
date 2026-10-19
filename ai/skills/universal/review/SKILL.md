@@ -331,7 +331,7 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
-Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 The one supervising orchestrator (or owning solo session) performs run-record
 writes sequentially across `/review` and `/integrate`. Delegates return evidence
