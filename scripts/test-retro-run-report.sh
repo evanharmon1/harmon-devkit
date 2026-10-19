@@ -3332,11 +3332,13 @@ node -e 'const fs=require("fs"), p=process.argv[1], d=JSON.parse(fs.readFileSync
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && contains "$OUT" 'cap 3 (disclosed, unverified); authorized ceiling 4' &&
+    contains "$OUT" 'cap 3 (disclosed, unverified); authorized ceiling 5' &&
     contains "$OUT" 'cap 4 (disclosed, unverified); authorized ceiling 6' &&
     ok "authorized ceilings accompany unchanged caps" || bad "authorization Markdown: $RC $ERR $OUT"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
 [ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "challenge") | .cap == 3 and .authorized_ceiling == 4' <<<"$OUT" >/dev/null &&
+    jq -e '.measurements.stages[] | select(.stage == "review") | .cap == 3 and .authorized_ceiling == 5' <<<"$OUT" >/dev/null &&
     ok "authorization ceiling is in the JSON stage projection" || bad "authorization JSON: $RC $ERR $OUT"
 
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"

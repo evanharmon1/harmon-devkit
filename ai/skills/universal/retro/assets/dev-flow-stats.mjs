@@ -2104,6 +2104,17 @@ function recordedRoundsPolicy(runDir) {
   return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
 }
 
+function assertAuthorizedCeilingProjection(run, stage, cap, projected) {
+  const ceiling = authorizedCeiling(run, stage, cap);
+  const expected = ceiling > cap ? ceiling : undefined;
+  if (projected !== expected) {
+    throw new EvidenceError(
+      `local-record trajectory for ${stage}: authorized ceiling projection disagrees — shared authorization resolves ${expected ?? "none"}, exit engine reported ${projected ?? "none"}`,
+    );
+  }
+  return expected;
+}
+
 // harmon-devkit#1001 item 11 / challenge round 5/7 (P2): a comment's
 // created_at alone answers "when was this comment first posted," not "is
 // this comment's CURRENT content visible as of a historical --as-of
@@ -2422,6 +2433,12 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const recordedRounds = recordedRoundsPolicy(engineSnapshotDir);
     const engineRoundsByStage = new Map();
     const authorizedCeilings = {};
+    if (recordedRounds) {
+      for (const stage of ["challenge", "review"]) {
+        const ceiling = authorizedCeiling(body, stage, recordedRounds[stage]);
+        if (ceiling > recordedRounds[stage]) authorizedCeilings[stage] = ceiling;
+      }
+    }
     // Integration's spend is not measured here, but its recorded permission
     // can be disclosed without inventing a cycle count.
     const integrationCap = recordedRounds?.integration;
@@ -2565,7 +2582,12 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           }
         }
         engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
-        if (verification.authorized_ceiling !== undefined) authorizedCeilings[stage] = verification.authorized_ceiling;
+        if (recordedRounds) {
+          const ceiling = assertAuthorizedCeilingProjection(body, stage, recordedRounds[stage], verification.authorized_ceiling);
+          if (ceiling !== undefined) authorizedCeilings[stage] = ceiling;
+        } else if (verification.authorized_ceiling !== undefined) {
+          authorizedCeilings[stage] = verification.authorized_ceiling;
+        }
         // validateReceipts (inside the spawned process) is not itself stage-
         // scoped — it validates every pass on disk regardless of --stage — so
         // two successful invocations report byte-identical diagnostics for
@@ -3707,6 +3729,7 @@ export {
   resolveCanonical,
   findRunRecord,
   EvidenceError,
+  assertAuthorizedCeilingProjection,
   RUN_STAGES,
   firstSeen,
   resolveRegistryTrustedActorIds,

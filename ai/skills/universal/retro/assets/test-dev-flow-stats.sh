@@ -3494,11 +3494,16 @@ function writeScenario(name, db) {
       }))),
       interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
       evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "challenge", destination: "issue", round: 1, sequence: 1 } }],
+      cap_authorizations: [{ stage: "review", round: 4, actor: "maintainer", instruction: "run review round 4", at: "2026-09-01T00:00:00Z" }],
       promotion: null,
     };
     const runDir = path.join("${tmp}", "local-records", runId);
     mkdirSync(runDir, { recursive: true });
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeFileSync(path.join(runDir, "policy.json"), JSON.stringify({
+      rigor: { level: "standard", source: "default_rigor" },
+      rounds: { challenge: 3, review: 3, integration: 4, remediation: 4, min_rounds: 1 },
+    }, null, 2));
     writeZeroFindingAdjudication(runDir, runId, "challenge", 1);
     writeCompletedZeroFindingPass(runDir, runId, "challenge", 1);
     writeScenario("challenge-still-active", { issues: [{ number: 221, pull_request: null }], comments: { "221": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
@@ -5921,8 +5926,28 @@ echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"
 run_id="$(meta challenge-still-active .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"challenge",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"challenge",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .authorized_ceiling.review == 4' >/dev/null ||
     fail "challenge-still-active: expected only challenge round 1, review not yet started: $out"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq 'authorized ceiling 4' <<<"$report_out" || fail "challenge-still-active: retro omitted the not-yet-started review ceiling: $report_out"
+report_json="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$report_json" | jq -e '.measurements.stages[] | select(.stage == "review") | .authorized_ceiling == 4 and .cap == null' >/dev/null ||
+    fail "challenge-still-active: retro JSON omitted the not-yet-started review ceiling: $report_json"
+
+echo "== cap authorization projection mismatch is evidence-indeterminate =="
+node --input-type=module - <<'NODE'
+import { assertAuthorizedCeilingProjection, EvidenceError } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs";
+const run = { cap_authorizations: [{ stage: "review", round: 4, actor: "maintainer", instruction: "run review round 4", at: "2026-09-01T00:00:00Z" }] };
+if (assertAuthorizedCeilingProjection(run, "review", 3, 4) !== 4) {
+  throw new Error("matching engine ceiling was not retained");
+}
+try {
+  assertAuthorizedCeilingProjection(run, "review", 3, 5);
+  throw new Error("mismatched engine ceiling was accepted");
+} catch (error) {
+  if (!(error instanceof EvidenceError) || !error.message.includes("authorized ceiling projection disagrees")) throw error;
+}
+NODE
 
 echo "== shepherd round 1: a comment physically posted on the PR but whose marker claims dest=issue fails closed =="
 export DFSTATS_DB="$tmp/scenarios/marker-dest-mismatch.json"
