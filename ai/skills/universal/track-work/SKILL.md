@@ -1020,8 +1020,11 @@ propose `needs-triage` instead of complete classification.
 
 ### Create and classify through the shared helper
 
-Creation needs the user's go-ahead under the surrounding workflow. The
-commands run from the target checkout so its manifest and policy govern.
+Creation needs the user's go-ahead under the surrounding workflow. The metadata
+checker (with `--repo-root <target checkout>`), `gh issue create --repo <target>`,
+the receipt verifier and the harmon-init#1735 hook run from the caller's checkout,
+where the receipt lives. The shared classification helper runs from the target
+checkout, because it reads that checkout's manifest and Tier policy.
 Choose the path matching the draft's authorship:
 
 - **Agent-authored:** create with the verified title, body, work type and
@@ -1062,9 +1065,9 @@ issue_url="$(gh issue create --repo <owner/repo> --title '<title>' \
   --label impact:<value> --label risk:<value> --label complexity:<value> \
   --label <each-verified-concern-label>)" || exit 1
 issue_number="${issue_url##*/}"
-if ! TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
+if ! (cd <target-checkout> && TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
   --repo <owner/repo> --issue "$issue_number" \
-  --impact <value> --risk <value> --complexity <value> --execute; then
+  --impact <value> --risk <value> --complexity <value> --execute); then
   gh issue edit "$issue_number" --repo <owner/repo> --add-label needs-triage ||
     printf 'Could not mark issue #%s needs-triage\n' "$issue_number" >&2
   printf 'Classification failed for issue #%s; report this blocker\n' "$issue_number" >&2

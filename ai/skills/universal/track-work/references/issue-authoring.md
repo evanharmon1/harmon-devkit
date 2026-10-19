@@ -318,11 +318,15 @@ re-reads the issue and verifies its observed labels.
      --search '<distinctive phrase>'
    ```
 
-3. Run `check-issue-metadata.sh` with the final title, body, and labels.
+3. Run `check-issue-metadata.sh` with the final title, body, and labels from the
+   caller's checkout, passing `--repo-root <target checkout>`; the receipt
+   verifier, `gh issue create --repo <target>` and harmon-init#1735 hook also run
+   from that caller checkout, where the receipt lives.
 4. Follow the authorship path in SKILL.md §5's create-and-classify recipe.
    Agent-authored drafts create with full verified classification and every
    label the preflight verified (including concerns), then
-   immediately pass all three verified ratings to `triage-apply.sh label
+   immediately pass all three verified ratings from the **target checkout**
+   (where the helper reads its manifest and Tier policy) to `triage-apply.sh label
    --repo <owner/repo> --issue <n> --impact <value> --risk <value>
    --complexity <value> --execute` with the workflow-authorized
    `TRIAGE_EXECUTE=1`. Require helper exit 0; if it fails after creation, add
