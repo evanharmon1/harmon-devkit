@@ -662,6 +662,25 @@ acquire s4 alice --milestone 8 --issues 15
 [ ! -e "$state/locks/s1.json" ] || fail "holder release left the lock"
 pass "explicit recovery requires a reason, retains an audit before release, and permits normal reacquisition"
 
+# Lost-token recovery must also work for a tokenized lock with the same session name.
+acquire lost-token alice --issues 223
+write_plan lost-token 223:run-lost-token
+new_run run-lost-token
+old_token="$(token_for lost-token)"
+expect_refused "same-name lost-token ordinary write" "owner token does not match" \
+    env -u RUN_RECORD_OWNER_TOKEN bash -c 'cd "$1" && node "$2" transition --slate lost-token --session alice --run-id run-lost-token --stage claim --exit k' _ "$repo" "$writer"
+(cd "$repo" && env -u RUN_RECORD_OWNER_TOKEN node "$writer" lock release \
+    --slate lost-token --session alice --force --reason 'operator confirms lost-token recovery') >/dev/null
+[ ! -e "$state/locks/lost-token.json" ] || fail "same-name lost-token force release left the lock"
+rm "$tmp/token-lost-token"
+acquire lost-token alice --issues 223
+[ -n "$(token_for lost-token)" ] && [ "$(token_for lost-token)" != "$old_token" ] ||
+    fail "same-name lost-token recovery did not mint a fresh token"
+expect_refused "old token after same-name lost-token recovery" "owner token does not match" \
+    env -u RUN_RECORD_OWNER_TOKEN bash -c 'cd "$1" && node "$2" transition --slate lost-token --session alice --owner-token "$3" --run-id run-lost-token --stage claim --exit k' _ "$repo" "$writer" "$old_token"
+(cd "$repo" && node "$writer" lock release --slate lost-token --session alice --owner-token "$(token_for lost-token)") >/dev/null
+pass "a same-named session without its token force-releases a tokenized lock and rejects the old token after recovery"
+
 # Pre-change locks have no token: accept the holder, warn, ignore supplied tokens.
 acquire legacy alice --issues 222
 write_plan legacy 222:run-legacy

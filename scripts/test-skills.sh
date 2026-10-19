@@ -3995,8 +3995,8 @@ sed -n '/   adjudications. On any writer error,/,/   This is the write side/p' \
 expect_ok "integration re-reads canonical promotion after any writer error" \
     sh -c 'grep -qF "re-read the canonical \`run.json\`" "$1" &&
         grep -qF "Accept a lost-response success only if its \`promotion.head\` exactly matches" "$1" &&
-        grep -qF "the confirmed head and its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
-        grep -qF "the confirmed gate fingerprint. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
+        grep -qF "the confirmed head, its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
+        grep -qF "matches the submitted \`promoted_at\`. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
     sh -c 'grep -qF "gh pr ready --undo <n> --repo" "$1" &&
         grep -qF "once, then bounded-fetch until" "$1" &&
@@ -12078,9 +12078,9 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
 
 # #1500: lost-response acceptance binds every submitted promotion field.
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
-    grep -qF 'matches the submitted `promoted_at`' "$INTEGRATE_MD"
+    grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"
 expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
-    grep -qF 'must match; a different `promoted_at` leads to undo and confirmed draft.' "$INTEGRATE_MD"
+    grep -qF 'matches the submitted `promoted_at`. Otherwise run' "$INTEGRATE_MD"
 
 # #1500 round 2: one canonical contract replaces the four pasted caller copies.
 expect_ok "owner-token contract pins session context and recovery (#1500)" \

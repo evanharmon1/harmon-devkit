@@ -31,6 +31,8 @@ share lives here. Nothing is shipped through the harmon-init template.
 
 ## Owner-token caller contract
 
+A same-named session holding another slate over the same issues or milestone is refused like any other session.
+
 Before any run-record.mjs or plan-revise.mjs write, run
 `node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
 without capturing its output. Read the single printed token line from that

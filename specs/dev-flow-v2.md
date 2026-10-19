@@ -889,8 +889,9 @@ the general splitting and PR-rollup obligations below remain caller-owned.
 **A solo session writes the same evidence** (harmon-devkit#1183, the #973
 decision). An interactive session with no orchestrator brief still runs its
 confidence stages inline through `task challenge` / `task review`; it reserves
-a real single-lane run with `run-record.mjs solo-init` (its own one-lane slate,
-lock, `policy.json`, kickoff `run.json` and active pointer), publishes each
+a real single-lane run by explicitly acquiring its lock with `run-record.mjs lock acquire`
+before `run-record.mjs solo-init` (its own one-lane slate,
+`policy.json`, kickoff `run.json` and active pointer), publishes each
 round's pass and adjudication with `run-record.mjs receipt` / `adjudicate`,
 materializes the exit engine's change ledger and head map from the branch's
 own commits with `run-record.mjs ledger` before the same verification-only

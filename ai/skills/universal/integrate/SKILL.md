@@ -2599,12 +2599,10 @@ that loops indefinitely:
    outcome-transition chain together, under the shared mutex, validating
    the candidate and canonical readback with `run --receipts` and the run's
    adjudications. On any writer error, re-read the canonical `run.json`.
-   The lost-response acceptance also requires that `promotion.promoted_at`
-   matches the submitted `promoted_at`. All three submitted promotion fields
-   must match; a different `promoted_at` leads to undo and confirmed draft.
    Accept a lost-response success only if its `promotion.head` exactly matches
-   the confirmed head and its `promotion.gate_fingerprint` exactly matches
-   the confirmed gate fingerprint. Otherwise run
+   the confirmed head, its `promotion.gate_fingerprint` exactly matches
+   the confirmed gate fingerprint, and its `promotion.promoted_at` exactly
+   matches the submitted `promoted_at`. Otherwise run
    `gh pr ready --undo <n> --repo "$repo"` once, then bounded-fetch until
    `isDraft == true` is confirmed and stop **blocked**, naming the writer
    error and the confirmed draft state. If the remote state cannot be
