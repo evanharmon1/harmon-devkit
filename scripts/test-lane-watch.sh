@@ -2255,7 +2255,8 @@ rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-all-bad" 
 assert_line "$mp_allbad_out" 'POST-PROMOTION-INDETERMINATE alpha: #77'
 assert_count "$mp_allbad_out" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$mp_allbad_state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
-assert_count "$mp_allbad_state" 0 'null'
+# Missing agent revision fields may be null in METADATA; promotion identities may not.
+assert_count "$mp_allbad_state" 0 '^(WINDOW|ARMED|MALPROMO).*null'
 
 # #1041 P2 follow-up: malformed-row detection does not depend on tie-break
 # ordering -- an older malformed row alongside a newer valid one is caught
@@ -2523,7 +2524,7 @@ events_poll() {
     PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
         bash "$watcher" --iterations 1 --state-file "$events_state" \
         --registry "$registry" --workspace-root "$workspace_root" \
-        --prompt-reemit-seconds 180 --stall-minutes 1 --heartbeat-minutes 1 \
+        --prompt-reemit-seconds 180 --stall-minutes 1 --heartbeat-minutes 1 "$@" \
         2099-01-01T00:00:00Z \
         "events:branch-events:a2:evanharmon1/harmon-devkit:$events_report" >>"$events_out"
 }
@@ -2701,7 +2702,7 @@ for dialog in run edit permissions terminal terminal-id tall-run; do
     events_poll
     assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
     if [ "$dialog" = tall-run ]; then
-        assert_line "$events_out" 'PROMPT events: (approval prompt; text not captured)'
+        assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
     else
         assert_line "$events_out" "PROMPT events:   $header"
     fi
@@ -2797,7 +2798,7 @@ printf '%s\n' 2000001000 >"$clock_file"
 printf '%s\n' 'no question captured' >"$fixture_dir/events-pane"
 prompt_count="$(grep -c '^PROMPT ' "$events_out")"
 events_poll
-assert_line "$events_out" 'PROMPT events: (approval prompt; text not captured)'
+assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
 assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001000[[:space:]]+2000001000'
 printf '%s\n' 'different pane text' >"$fixture_dir/events-pane"
 events_poll
@@ -2874,8 +2875,124 @@ events_state="$test_tmp/old-question-excerpt.state"
 printf '%s\n' 'Would you like to run the following command?' >"$fixture_dir/events-pane"
 for row in {1..25}; do printf 'transcript output %s\n' "$row" >>"$fixture_dir/events-pane"; done
 events_poll
-assert_line "$events_out" 'PROMPT events: (approval prompt; text not captured)'
+assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
 assert_count "$events_out" 0 'Would you like to run'
+# Integration 1: list availability must not alter an unchanged-pane episode.
+events_out="$test_tmp/list-failure-stall.out"
+: >"$events_out"
+events_state="$test_tmp/list-failure-stall.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 'unchanged work' >"$fixture_dir/events-pane"
+printf '%s\n' 2100000000 >"$clock_file"
+events_poll
+touch "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000030 >"$clock_file"
+events_poll
+printf '%s\n' 2100000060 >"$clock_file"
+events_poll
+assert_line "$events_out" 'STALL events: no pane change for 1m'
+rm "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000090 >"$clock_file"
+events_poll
+touch "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000120 >"$clock_file"
+events_poll
+rm "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000180 >"$clock_file"
+events_poll
+assert_count "$events_out" 1 '^STALL '
+assert_count "$events_state" 1 '^PROGRESS[[:space:]]+events:a2[[:space:]]+[^[:space:]]+[[:space:]]+2100000000[[:space:]]+1$'
+
+# Integration 2/3: missing pane reads preserve fallback state; failed explains
+# still permit reminders when a successful pane read confirms the approval.
+events_out="$test_tmp/fallback-read-failures.out"
+: >"$events_out"
+events_state="$test_tmp/fallback-read-failures.state"
+touch "$fixture_dir/events-fallback"
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' \
+    '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
+events_poll
+touch "$fixture_dir/events-fail-visible"
+events_poll
+rm "$fixture_dir/events-fail-visible"
+events_poll
+assert_count "$events_out" 1 '^AGENT '
+assert_count "$events_out" 0 '^AGENT .*blocked \(fallback\) -> unknown \(fallback\)$'
+touch "$fixture_dir/events-fail-explain"
+printf '%s\n' 2100000360 >"$clock_file"
+events_poll
+assert_count "$events_out" 2 '^PROMPT events: Requesting permission for: echo same \(fallback\)$'
+assert_count "$events_out" 1 '^AGENT '
+rm "$fixture_dir/events-fail-explain" "$fixture_dir/events-fallback"
+
+# Integration 4: blocked input is not necessarily an approval.
+events_out="$test_tmp/blocked-question.out"
+: >"$events_out"
+events_state="$test_tmp/blocked-question.state"
+printf '%s\n' blocked >"$fixture_dir/events-status"
+printf '%s\n' 'Which deployment target should I use?' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
+assert_count "$events_out" 0 'approval prompt'
+grep -qF 'Read the full pane with' "$repo_root/ai/skills/universal/orchestrate/SKILL.md" || fail 'prompt guidance omits full pane read'
+grep -qF 'A Herdr `blocked` state can be a question rather than an approval' "$repo_root/ai/skills/universal/orchestrate/SKILL.md" || fail 'prompt guidance treats all input as approval'
+
+# Integration 5: zero-padded thresholds are decimal (08 means eight minutes).
+events_out="$test_tmp/decimal-options.out"
+: >"$events_out"
+events_state="$test_tmp/decimal-options.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 'unchanged work' >"$fixture_dir/events-pane"
+printf '%s\n' 2100001000 >"$clock_file"
+events_poll --stall-minutes 08 --heartbeat-minutes 09 --prompt-reemit-seconds 08
+assert_count "$events_out" 0 '^STALL '
+printf '%s\n' 2100001480 >"$clock_file"
+events_poll --stall-minutes 08 --heartbeat-minutes 09 --prompt-reemit-seconds 08
+assert_line "$events_out" 'STALL events: no pane change for 8m'
+
+# Integration 6: each numeric supervision field rejects corrupt persisted data.
+for corrupt_field in progress-time progress-marker prompt-first prompt-last heartbeat; do
+    events_out="$test_tmp/corrupt-$corrupt_field.out"
+    : >"$events_out"
+    events_state="$test_tmp/corrupt-$corrupt_field.state"
+    case "$corrupt_field" in
+    progress-time) corrupt_row='PROGRESS\tevents:a2\tfingerprint\tbadtime\t0' ;;
+    progress-marker) corrupt_row='PROGRESS\tevents:a2\tfingerprint\t2100002000\tbadmarker' ;;
+    prompt-first) corrupt_row='PROMPT\tevents:a2\tbadfirst\t2100002000' ;;
+    prompt-last) corrupt_row='PROMPT\tevents:a2\t2100002000\tbadlast' ;;
+    heartbeat) corrupt_row='HEARTBEAT\trun\tbadtime' ;;
+    esac
+    printf '%b\n' "$corrupt_row" >"$events_state"
+    printf '%s\n' blocked >"$fixture_dir/events-status"
+    printf '%s\n' 2100002000 >"$clock_file"
+    events_poll 2>"$test_tmp/corrupt-$corrupt_field.err"
+    assert_count "$events_state" 0 'badtime|badmarker|badfirst|badlast'
+    assert_count "$test_tmp/corrupt-$corrupt_field.err" 0 'syntax error|unbound variable|value too great for base'
+    assert_count "$events_state" 1 '^PROGRESS[[:space:]]+events:a2[[:space:]]+[^[:space:]]+[[:space:]]+2100002000[[:space:]]+0$'
+    assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2100002000[[:space:]]+2100002000'
+    assert_count "$events_state" 1 '^HEARTBEAT[[:space:]]+run[[:space:]]+2100002000'
+done
+
+# Integration 7: deliver STALL even when persisting its dedup marker fails.
+events_out="$test_tmp/stall-before-persist.out"
+: >"$events_out"
+events_state="$persistfail_dir/stall-order.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 2100003000 >"$clock_file"
+events_poll
+touch "$fixture_dir/fail-mv"
+printf '%s\n' 2100003060 >"$clock_file"
+if events_poll 2>"$test_tmp/stall-before-persist.err"; then
+    fail 'STALL persistence fault unexpectedly succeeded'
+fi
+rm "$fixture_dir/fail-mv"
+assert_line "$events_out" 'STALL events: no pane change for 1m'
+assert_count "$test_tmp/stall-before-persist.err" 1 'could not persist state'
+assert_count "$events_state" 1 '^PROGRESS[[:space:]]+events:a2[[:space:]]+[^[:space:]]+[[:space:]]+2100003000[[:space:]]+0$'
+
+# Integration 8: zero thresholds are polling controls, not disable switches.
+bash "$watcher" --help >"$test_tmp/usage.txt"
+assert_line "$test_tmp/usage.txt" '  A value of 0 for the three options above means "every poll", not "disabled".'
 rm "$fixture_dir/events-mode"
 
 # Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.

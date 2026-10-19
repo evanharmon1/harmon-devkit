@@ -744,8 +744,13 @@ The watcher also emits these supervision events:
 - `PROMPT <lane>: <approval request>` uses Herdr state for classified harnesses
   (parsed explain with null `fallback_reason`): an episode starts at `blocked`
   and ends when the lane leaves `blocked`. Pane text only quotes the request;
-  unavailable text uses `(approval prompt; text not captured)`. For agy and
+  unavailable text uses `(input requested; text not captured)`. For agy and
   fallback lanes, pane-text detection uses agy's approval strings instead.
+  The quote is partial: Codex/Claude show only the dialog header; agy shows
+  the first command line, cut at 300 bytes. Read the full pane with
+  `herdr agent read` before approving; never approve from the event quote.
+  A Herdr `blocked` state can be a question rather than an approval: answer
+  or escalate questions. For approvals, read the full pane first, then:
   Inspect the request and approve or deny within your authority. Each episode
   retains its first-seen time across redraws and restarts, repeats after
   `--prompt-reemit-seconds` (default 180), and starts anew after a poll outside

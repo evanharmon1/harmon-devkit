@@ -103,6 +103,7 @@ Options:
   --prompt-reemit-seconds N       Repeat a still-visible prompt (default: 180)
   --stall-minutes N               Unchanged local pane threshold (default: 10)
   --heartbeat-minutes N           All-lane summary interval (default: 15)
+  A value of 0 for the three options above means "every poll", not "disabled".
   --iterations N                  Stop after N polls (tests; default: unlimited)
 EOF
 }
@@ -208,6 +209,11 @@ case "$interval_seconds:$post_promotion_seconds:$timeout_seconds:$degrade_window
     ;;
 esac
 
+# Numeric validation above permits leading zeroes; these thresholds are decimal.
+prompt_reemit_seconds=$((10#$prompt_reemit_seconds))
+stall_minutes=$((10#$stall_minutes))
+heartbeat_minutes=$((10#$heartbeat_minutes))
+
 timeout_bin="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
 [ -n "$timeout_bin" ] || {
     echo "lane-watch: GNU timeout (timeout or gtimeout) is required" >&2
@@ -303,11 +309,22 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | BRANCH | PR | USAGE | CLOSING | ARMED) state_set "$kind" "$lane" "$value" ;;
+        AGENT | BRANCH | PR | USAGE | CLOSING | ARMED | METADATA) state_set "$kind" "$lane" "$value" ;;
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
-        PROGRESS | PROMPT | HEARTBEAT) state_set "$kind" "$lane" "$value" "$extra" "$detail" ;;
+        PROGRESS)
+            [[ "$extra" =~ ^[0-9]+$ && "$detail" =~ ^[0-9]+$ ]] || continue
+            state_set "$kind" "$lane" "$value" "$((10#$extra))" "$((10#$detail))"
+            ;;
+        PROMPT)
+            [[ "$value" =~ ^[0-9]+$ && "$extra" =~ ^[0-9]+$ ]] || continue
+            state_set "$kind" "$lane" "$((10#$value))" "$((10#$extra))" "$detail"
+            ;;
+        HEARTBEAT)
+            [[ "$value" =~ ^[0-9]+$ ]] || continue
+            state_set "$kind" "$lane" "$((10#$value))" "$extra" "$detail"
+            ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
         MALPROMO) state_set MALPROMO "$lane" "$value" "$extra" "$detail" ;;
@@ -332,7 +349,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | BRANCH | PR | USAGE | CLOSING | ARMED)
+            AGENT | BRANCH | PR | USAGE | CLOSING | ARMED | METADATA)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL-PANE | SENTINEL-REPORT)
@@ -601,7 +618,7 @@ sentinel_from_report() {
 approval_excerpt() {
     tail -n 20 | awk '
       /^[[:space:]│›>❯]*(Would you like to (run the following command|make the following edits|grant these permissions|send input to (the existing terminal|terminal .+))[?]|Do you want to (proceed|allow|approve network access|make this edit to|create|run)|.+ needs your approval[.])/ {line = $0}
-      END {print (line != "" ? line : "(approval prompt; text not captured)")}
+      END {print (line != "" ? line : "(input requested; text not captured)")}
     ' | tr '\t\r' '  ' | cut -c 1-300
 }
 
@@ -648,9 +665,9 @@ observe_pane_progress() {
         stalled=0
     elif [ "$stalled" != 1 ] && [ $((now - changed)) -ge $((stall_minutes * 60)) ]; then
         stalled=1
+        echo "STALL $lane: no pane change for $(((now - changed) / 60))m"
         state_set PROGRESS "$key" "$fingerprint" "$changed" "$stalled"
         persist_state
-        echo "STALL $lane: no pane change for $(((now - changed) / 60))m"
     fi
     state_set PROGRESS "$key" "$fingerprint" "$changed" "$stalled"
 }
@@ -1404,13 +1421,18 @@ while true; do
                     agent_state=$listed_state
                     if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
                         fallback=1
-                        agent_state=unknown
+                        agent_state=$previous
                         if [ "$pane_available" -eq 1 ]; then
+                            agent_state=unknown
                             prompt_observed=1
                             prompt="$(fallback_approval_request <<<"$pane_visible")"
                             [ -z "$prompt" ] || agent_state=blocked
+                            agent_state="$agent_state (fallback)"
+                        else
+                            # Fallback state comes from the pane; a failed
+                            # capture conveys no new state either.
+                            explain_available=0
                         fi
-                        agent_state="$agent_state (fallback)"
                     else
                         prompt_observed=1
                     fi
@@ -1430,7 +1452,11 @@ while true; do
             if [ "$agents_available" -eq 1 ] && [ "$agent_state" = blocked ]; then
                 prompt_observed=1
                 prompt="$(approval_excerpt <<<"$pane_visible")"
-                prompt=${prompt:-'(approval prompt; text not captured)'}
+                prompt=${prompt:-'(input requested; text not captured)'}
+            elif [ "$agents_available" -eq 1 ] && [ "$agent_state" = 'blocked (fallback)' ] && [ "$pane_available" -eq 1 ]; then
+                fallback=1
+                prompt_observed=1
+                prompt="$(fallback_approval_request <<<"$pane_visible")"
             fi
             if [ "$prompt_observed" -eq 1 ]; then
                 now="$(date -u +%s)"
@@ -1472,9 +1498,10 @@ while true; do
             fi
 
             if [ "$pane_available" -eq 1 ]; then
-                metadata=
+                metadata="$(state_get METADATA "$progress_key" || true)"
                 if [ "$agents_available" -eq 1 ]; then
                     metadata="$(jq -c --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | [.revision, .state_change_seq]' <<<"$agents" | tail -1)"
+                    state_set METADATA "$progress_key" "$metadata"
                 fi
                 pane_terminal="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_visible")"
                 now="$(date -u +%s)"
