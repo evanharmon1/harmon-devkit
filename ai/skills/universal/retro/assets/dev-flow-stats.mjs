@@ -2840,6 +2840,12 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       slotFailures: localSlotFailures,
       slotFailuresUnavailable: false,
       futureAdjudicationFiles: [],
+      // Receipt validation has run in both engine calls. Integration has no
+      // authenticated finding marker, so retain these counts separately.
+      remediationCap: recordedRounds?.remediation ?? null,
+      retainedIntegrationFinderCounts: integrationFinderCounts(localPasses
+        .filter((entry) => receiptBackedNames.has(entry.name) && entry.content.role === "integrator")
+        .map((entry) => entry.content)),
       localRecordCurrentState: Boolean(asOf),
       trajectoryDiagnostics: diagnostics,
       authorizedCeilings,
@@ -3317,6 +3323,33 @@ function projectAdjudicationEntries(doc) {
   });
 }
 
+// Integrator envelopes predate payload.finder/slot: each finding id carries
+// its source finder, and one integrator pass can include several sources.
+function integrationFinderCounts(passes) {
+  const counts = {};
+  for (const pass of passes) {
+    const payload = pass.payload || {};
+    for (const finding of payload.findings || []) {
+      const finder = payload.finder || payload.slot || /^integration-r[1-9][0-9]*-([a-z0-9-]+)-[1-9][0-9]*$/.exec(finding.id)?.[1] || "unknown";
+      counts[finder] = (counts[finder] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+// Finder identity belongs to the pass, never to a deferred finding id.
+function findingsByStageFinder(rounds) {
+  const counts = {};
+  for (const round of rounds) {
+    const stage = counts[round.stage] ??= {};
+    for (const pass of round.payload.passes || []) {
+      const finder = pass.payload?.finder || pass.payload?.slot || "unknown";
+      stage[finder] = (stage[finder] || 0) + (pass.payload?.findings || []).length;
+    }
+  }
+  return counts;
+}
+
 function renderTrajectory(run) {
   // Chronological (by comment id — ascending id IS creation order on
   // GitHub, the same fact buildRunDirectory's own chronology already
@@ -3337,6 +3370,13 @@ function renderTrajectory(run) {
     pr: run.state.pr,
     promotion: run.state.promotion,
     stage_transitions: run.state.stage_transitions,
+    remediation_cap: run.remediationCap ?? null,
+    remediation_pushes: (run.state.stage_transitions || [])
+      .filter((entry) => entry.stage === "integration" && entry.remediation)
+      .map((entry) => ({ entered_at: entry.entered_at, ...entry.remediation })),
+    findings_by_stage_finder: findingsByStageFinder(rounds.filter((entry) => entry.stage !== "integration")),
+    retained_record_findings_by_stage_finder: run.retainedIntegrationFinderCounts === undefined
+      ? {} : { integration: run.retainedIntegrationFinderCounts },
     interventions: run.state.interventions,
     settlements: run.state.settlements,
     splits: run.state.splits,
@@ -3416,6 +3456,16 @@ function renderTrajectoryTable(trajectory) {
     for (const entry of projectAdjudicationEntries(r)) {
       lines.push(`    ${JSON.stringify(entry.finding_id)}: reviewer=${entry.reviewer_priority === null ? "not-applicable" : JSON.stringify(entry.reviewer_priority)} adjudicated=${JSON.stringify(entry.adjudicated_priority)} disposition=${JSON.stringify(entry.disposition)}${entry.override ? ` override: ${JSON.stringify(entry.override.reason)}` : ""}`);
     }
+  }
+  lines.push(`remediation pushes: ${trajectory.remediation_pushes.length} / ${trajectory.remediation_cap === null ? "no cap recorded" : `cap ${trajectory.remediation_cap} (retained policy)`}`);
+  lines.push("findings_by_stage_finder:");
+  for (const [stage, counts] of Object.entries(trajectory.findings_by_stage_finder)) {
+    lines.push(`  ${stage}:`);
+    for (const [finder, count] of Object.entries(counts)) lines.push(`    ${finder}: ${count}`);
+  }
+  lines.push("retained-record findings by finder (not verified by GitHub):");
+  for (const [stage, counts] of Object.entries(trajectory.retained_record_findings_by_stage_finder)) {
+    for (const [finder, count] of Object.entries(counts)) lines.push(`  ${stage}/${finder}: ${count}`);
   }
   lines.push("integration: not measured from local evidence");
   for (const [stage, ceiling] of Object.entries(trajectory.authorized_ceiling ?? {})) {

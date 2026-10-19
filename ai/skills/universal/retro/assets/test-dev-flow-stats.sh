@@ -4686,6 +4686,7 @@ echo "== the exit-engine trajectory does not synthesize integration rounds, and 
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null || fail "receipted integration finder counts missing: $out"
 echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
     fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
 out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
@@ -4849,7 +4850,7 @@ echo "== an integration-only run's unreceipted pass is still caught by the engin
 export DFSTATS_DB="$tmp/scenarios/integration-only-unreceipted.json"
 run_id="$(meta integration-only-unreceipted .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.unreceipted_pass_files == ["integration-r1"] and .rounds == []' >/dev/null ||
+echo "$out" | jq -e '.unreceipted_pass_files == ["integration-r1"] and .rounds == [] and .retained_record_findings_by_stage_finder == {integration:{}}' >/dev/null ||
     fail "integration-only unreceipted: expected the integrator pass to be reported unreceipted with no confidence rounds: $out"
 
 echo "== two authoritative issue bindings for one arbitrary run are indeterminate =="
@@ -5707,7 +5708,7 @@ import { renderTrajectory, renderTrajectoryTable } from './ai/skills/universal/r
 const round = (stage, n, commentId, findings, attributions) => ({
   stage, round: n, dest: 'issue', commentIds: [commentId],
   payload: {
-    passes: [{ payload: { findings } }],
+    passes: [{ payload: { findings, ...(n === 2 ? {slot: "secondary-finder"} : {finder: stage + "-finder"}) } }],
     ...(attributions === null ? {} : { findingAttributions: attributions })
   }
 });
@@ -5716,8 +5717,11 @@ const attribution = (id, provenance, status = 'verified') => ({
   id, provenance, provenance_status: status, fingerprint: 'new', fingerprint_status: 'verified'
 });
 const run = {
-  runId: 'run-779-two-stages', issueNumber: 779,
-  state: { initiated_by: 'human', stage_transitions: [], interventions: [], settlements: [] },
+  runId: 'run-779-two-stages', issueNumber: 779, remediationCap: 5,
+  state: { initiated_by: 'human', stage_transitions: [
+    {stage:'integration', entered_at:'2026-10-19T00:00:00Z'},
+    {stage:'integration', entered_at:'2026-10-19T00:01:00Z', remediation:{head:'a'.repeat(40), findings:['integration-r1-human-1']}}
+  ], interventions: [], settlements: [] },
   untrusted: [], forged: [],
   rounds: [
     round('challenge', 1, 1, [finding('c1', 'correctness'), finding('c2', 'correctness')],
@@ -5730,6 +5734,12 @@ const run = {
   ]
 };
 const t = renderTrajectory(run);
+assert.equal(t.remediation_pushes.length, 1);
+assert.equal(t.remediation_pushes[0].head, 'a'.repeat(40));
+assert.deepEqual(t.findings_by_stage_finder, {
+  challenge: {'challenge-finder':2,'secondary-finder':2},
+  review: {'review-finder':2,'secondary-finder':1}
+});
 assert.deepEqual(t.findings_by_stage_class_and_provenance, {
   challenge: { 'correctness/original': 3, 'design/round:1': 1 },
   review: { 'correctness/original': 1 }
@@ -5739,6 +5749,7 @@ assert.deepEqual(t.findings_by_class_and_provenance, {
 });
 assert.deepEqual(t.provenance_unavailable_rounds, [{stage:'review',round:2}, {stage:'review',round:3}]);
 const table = renderTrajectoryTable(t);
+assert.ok(table.includes('remediation pushes: 1 / cap 5 (retained policy)'));
 assert.ok(table.includes('findings_by_stage_class_and_provenance:\n  challenge:\n    correctness/original: 3\n    design/round:1: 1\n  review:\n    correctness/original: 1'));
 assert.ok(table.includes('findings by class/provenance:\n  correctness/original: 4'));
 assert.ok(!table.includes('security/round:1'));

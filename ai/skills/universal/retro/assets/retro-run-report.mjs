@@ -1093,6 +1093,10 @@ function measure(trajectory, policy) {
         ...(trajectory.authorized_ceiling?.[stage] === undefined ? {} : { authorized_ceiling: trajectory.authorized_ceiling[stage] }),
         ...(exemptCap === undefined ? {} : { exempt_cap: exemptCap }),
         integration_evidence: trajectory.integration_evidence || 'unavailable',
+        remediation_pushes: Array.isArray(trajectory.remediation_pushes)
+          ? trajectory.remediation_pushes.length
+          : transitions.filter((entry) => entry.stage === 'integration' && entry.remediation).length,
+        remediation_cap: policy.present ? policy.rounds.remediation : null,
         interventions: stageInterventions
       }
     }
@@ -1133,6 +1137,8 @@ function measure(trajectory, policy) {
   const classProvenance = classProvenanceRows(trajectory.findings_by_class_and_provenance)
   const stageCounts = trajectory.findings_by_stage_class_and_provenance
   for (const stage of stages) {
+    stage.findings_by_finder = trajectory.findings_by_stage_finder?.[stage.stage] ?? null
+    stage.retained_record_findings_by_finder = trajectory.retained_record_findings_by_stage_finder?.[stage.stage] ?? null
     stage.findings_by_class_and_provenance = stageCounts?.[stage.stage] === undefined
       ? null
       : classProvenanceRows(stageCounts[stage.stage])
@@ -1188,45 +1194,12 @@ function measure(trajectory, policy) {
 // Measurements the retro is asked for that today's evidence surface cannot
 // supply. Named here, with the issue that would close each, rather than
 // silently omitted — an absent section reads as "nothing to report".
-function unavailableMeasurements(measured) {
-  const gaps = []
-  // Only a gap when it actually remains one. Where exactly one stage found
-  // anything the breakdown IS rendered per stage, and declaring it missing
-  // anyway would manufacture a follow-up for a measurement the report just
-  // made — the skill carries every listed gap into improvements (cloud review
-  // round 1, confirmed P2).
-  if (measured.class_provenance_attribution.scope === 'run' &&
-      measured.stages.some((stage) => stage.findings > 0 && stage.findings_by_class_and_provenance === null)) {
-    gaps.push({
-      measurement: 'findings by class and provenance, keyed by stage',
-      reason:
-        "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, and more than one stage found something here, so no per-stage split is derivable",
-      issue: 'harmon-devkit#779'
-    })
-  }
-  gaps.push(
-    {
-      measurement: 'remediation rounds spent against the remediation cap',
-      reason:
-        'remediation is budgeted independently of integration, but it is not a stage in run.schema.json\'s stage enum and the run trajectory exposes no remediation count, so the remediation cap shown in the policy line above is disclosed and unmeasured — an integration run cannot be shown to have exhausted it',
-      issue: 'harmon-devkit#663 successors'
-    },
-    {
-      measurement: 'adjudicated-priority overrides per finding',
-      reason:
-        'the run trajectory reduces each round\'s adjudication documents to a count, dropping reviewer_priority, adjudicated_priority and override',
-      issue: 'harmon-devkit#753'
-    }
-  )
-  if (measured.settlements.every((entry) => entry.finder === null)) {
-    gaps.push({
-      measurement: 'findings by finder slug (agent-registry.json finders[].slug)',
-      reason:
-        "finder slugs reach this projection only through settled deferred findings' ids, and none of this run's settlements carries one",
-      issue: 'harmon-devkit#753'
-    })
-  }
-  return gaps
+function unavailableMeasurements() {
+  return [{
+    measurement: 'adjudicated-priority overrides per finding',
+    reason: 'the retro does not yet render the adjudication priorities and override reasons exposed by the trajectory',
+    issue: 'harmon-devkit#1382'
+  }]
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1285,8 @@ function renderMarkdown(report) {
           ? 'no cap recorded'
           : `cap ${stage.cap}${exemptSuffix} (disclosed, unverified)`
       const authorized = stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`
+      const remediationCap = stage.remediation_cap === null ? 'no cap recorded' : `cap ${stage.remediation_cap} (disclosed, unverified)`
+      l.push(`- Remediation pushes: ${stage.remediation_pushes} / ${remediationCap}`)
       l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}${authorized}) — integration passes carry no authenticated evidence marker today.`)
     } else if (stage.cap !== null || stage.rounds_spent > 0 || stage.authorized_ceiling !== undefined) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
@@ -1348,6 +1323,17 @@ function renderMarkdown(report) {
           : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)})`).join('; ')
       }`
     )
+    const finderCounts = stage.stage === 'integration' ? stage.retained_record_findings_by_finder : stage.findings_by_finder
+    if (['challenge', 'review', 'integration'].includes(stage.stage)) {
+      const source = stage.stage === 'integration'
+        ? 'retained-record evidence, not verified by GitHub'
+        : 'authenticated pass evidence'
+      l.push(`- Findings by finder (${source}):${finderCounts === null ? ' unavailable from this harvester' : ''}`)
+      if (finderCounts !== null) {
+        if (Object.keys(finderCounts).length === 0) l.push('  - No findings recorded.')
+        for (const [finder, count] of Object.entries(finderCounts)) l.push(`  - ${cell(finder)}: ${count}`)
+      }
+    }
     const attribution = report.measurements.class_provenance_attribution
     if (stage.findings > 0) {
       if (stage.findings_by_class_and_provenance !== null) {
@@ -1378,11 +1364,11 @@ function renderMarkdown(report) {
         l.push('  (this run\'s whole class/provenance aggregate, and this is its only stage with findings)')
       } else {
         l.push(
-          '- Findings by class and provenance: not derivable per stage — the trajectory aggregates them across every stage that found something (harmon-devkit#779). See the run-wide table below.'
+          '- Findings by class and provenance: not derivable per stage — unavailable from this harvester, which aggregates them across every stage that found something. See the run-wide table below.'
         )
       }
       l.push(
-        '- Adjudication overrides: not derivable — the trajectory reduces each round\'s adjudication to a boolean (harmon-devkit#753).'
+        '- Adjudication overrides: not derivable — the retro does not yet render the trajectory\'s adjudication priorities and override reasons (harmon-devkit#1382).'
       )
     }
     l.push('')
@@ -1435,7 +1421,7 @@ function renderMarkdown(report) {
   }
   l.push('')
   l.push(
-    '**Adjudication overrides are not covered here.** A finding whose adjudicated priority differs from the reviewer\'s is recorded in that round\'s adjudication document, and the run trajectory reduces each round\'s adjudication to a single boolean (harmon-devkit#753). An empty section above therefore means "no policy disclosure was published", never "the orchestrator overrode nothing".'
+    '**Adjudication overrides are not covered here.** A finding whose adjudicated priority differs from the reviewer\'s is recorded in that round\'s adjudication document, and its priorities and override reason are exposed by the trajectory but not yet rendered here (harmon-devkit#1382). An empty section above therefore means "no policy disclosure was published", never "the orchestrator overrode nothing".'
   )
   l.push('')
 
@@ -1972,7 +1958,7 @@ function run(argv) {
     trajectory: harvested.trajectory,
     policy,
     measurements,
-    unavailable: unavailableMeasurements(measurements)
+    unavailable: unavailableMeasurements()
   }
   console.log(args.json ? JSON.stringify(report, null, 2) : renderMarkdown(report))
   return 0

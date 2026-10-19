@@ -1244,7 +1244,7 @@ contains "$OUT" "Tampered comments (trusted author, structural anomaly, not forg
     ok "tampered comments are counted and labeled distinctly from forged (harmon-devkit#1001 item 7)" || bad "tampered comment count missing"
 contains "$OUT" "PR binding: bound to PR #$PR" &&
     ok "the report states the run's PR binding" || bad "PR binding not reported"
-contains "$OUT" "harmon-devkit#753" &&
+contains "$OUT" "harmon-devkit#1382" &&
     ok "the override-detail gap names its follow-up issue" || bad "override gap not named"
 contains "$OUT" "keyed by stage" &&
     bad "a gap was declared for a measurement this run actually rendered per stage" ||
@@ -1482,7 +1482,7 @@ node -e '
   const challenge = report.measurements.stages.find((s) => s.stage === "challenge")
   if (!challenge || challenge.rounds_spent !== 1 || challenge.cap !== 3) problems.push("stages.challenge")
   if (report.measurements.settlements[0].finder !== "codex-cli") problems.push("settlements.finder")
-  if (!report.unavailable.some((g) => g.issue.includes("753"))) problems.push("unavailable")
+  if (!report.unavailable.some((g) => g.issue.includes("1382"))) problems.push("unavailable")
   if (problems.length > 0) { console.error(problems.join(", ")); process.exit(1) }
 ' "$d/report.json" &&
     ok "the JSON form carries schema, unverified policy, binding, stages, settlements and gaps" ||
@@ -1503,18 +1503,19 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && ok "a fractional-seconds cutoff is still accepted" ||
     bad "a valid fractional-seconds cutoff was rejected: $ERR"
 
-echo "==> the remediation budget is named as unmeasurable, not silently skipped"
+echo "==> remediation re-entry records are counted against the disclosed cap"
 d="$TMPROOT/remediation"
 scaffold "$d" further-along "$POLICY_SECTION"
+node -e 'const fs=require("node:fs"), p=process.argv[1], t=JSON.parse(fs.readFileSync(p)); t.stage_transitions.push({stage:"integration",entered_at:"2026-08-25T00:00:00Z",remediation:{head:"a".repeat(40),findings:["integration-r1-codex-cloud-1"]}}); fs.writeFileSync(p,JSON.stringify(t))' "$d/trajectory.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 contains "$OUT" "remediation 4" &&
     ok "the disclosed remediation cap appears in the policy line" ||
     bad "the policy line dropped the remediation cap"
-contains "$OUT" "remediation rounds spent against the remediation cap" &&
-    ok "the report says the remediation budget is not measurable from this evidence" ||
-    bad "a cap is displayed with no section measuring it and no gap entry naming it"
+contains "$OUT" "Remediation pushes: 1 / cap 4 (disclosed, unverified)" &&
+    ok "one recorded remediation is reported against cap 4" ||
+    bad "recorded remediation count missing"
 
 echo "==> a marker after blank lines is not the comment's first line"
 d="$TMPROOT/blankline"
@@ -1636,9 +1637,9 @@ contains "$OUT" "- Adjudication overrides: not derivable" &&
 contains "$OUT" "belongs to stage" &&
     bad "a multi-stage run claimed single-stage attribution" ||
     ok "no single-stage claim is made when two stages found things"
-contains "$OUT" "keyed by stage" &&
-    ok "the per-stage gap IS declared when no split is derivable" ||
-    bad "a genuine per-stage gap went unreported"
+contains "$OUT" "unavailable from this harvester" &&
+    ok "the older harvester limitation is stated without a closed issue reference" ||
+    bad "the older harvester limitation went unreported"
 
 echo "==> two stages render their verified class/provenance counts separately"
 # Reuse the older-harvester fixture above, then add the new optional field.
@@ -3340,6 +3341,47 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "challenge") | .cap == 3 and .authorized_ceiling == 4' <<<"$OUT" >/dev/null &&
     jq -e '.measurements.stages[] | select(.stage == "review") | .cap == 3 and .authorized_ceiling == 5' <<<"$OUT" >/dev/null &&
     ok "authorization ceiling is in the JSON stage projection" || bad "authorization JSON: $RC $ERR $OUT"
+
+echo "==> finder grouping and closed gap references"
+d="$TMPROOT/finder-grouping"
+scaffold "$d" further-along "$POLICY_SECTION"
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs')
+const p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.findings_by_stage_finder = { challenge: { 'codex-adversarial': 3 }, review: { 'codex-verification': 2 } }
+t.retained_record_findings_by_stage_finder = { integration: { 'codex-cloud': 1, human: 2 } }
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const section = stage => text.split('### Stage `' + stage + '`')[1]?.split('\n### ')[0] || ''
+assert.match(section('challenge'), /Findings by finder \(authenticated pass evidence\):\n  - codex-adversarial: 3/)
+assert.match(section('review'), /codex-verification: 2/)
+assert.match(section('integration'), /Findings by finder \(retained-record evidence, not verified by GitHub\):\n  - codex-cloud: 1\n  - human: 2/)
+assert.match(section('integration'), /Rounds\/passes\/findings: not measured/)
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "finder counts per stage preserve integration evidence boundary" || bad "finder grouping exit $RC"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+REPORT_JSON="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), report = JSON.parse(process.env.REPORT_JSON)
+// Closed-issue fixture: keep entries out of the not-measurable issue map.
+const closed = new Set(['harmon-devkit#663', 'harmon-devkit#753', 'harmon-devkit#779'])
+const check = entries => {
+  for (const entry of entries) {
+    const references = entry.issue.match(/harmon-devkit#[0-9]+/g) || []
+    assert.ok(references.length > 0)
+    for (const reference of references) assert.ok(!closed.has(reference), reference)
+  }
+}
+check(report.unavailable)
+assert.throws(() => check([{ issue: 'harmon-devkit#663 successors' }]))
+assert.deepEqual(report.unavailable.map(g => g.issue), ['harmon-devkit#1382'])
+assert.deepEqual(report.measurements.stages.find(s => s.stage === 'review').findings_by_finder, { 'codex-verification': 2 })
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "not-measurable references exclude the closed-issue fixture" || bad "closed issue reference check exit $RC"
 
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

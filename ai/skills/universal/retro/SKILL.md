@@ -286,14 +286,22 @@ revision history lists that `run_id` in `lanes[]`.
    entry — rounds spent against the cap, findings and passes, rounds with no
    adjudication record, every entry and exit (a stage re-entered by a
    remediation loop keeps **one** section holding all of its rounds), the
-   interventions that landed while that stage was open, and — for a stage that
+   remediation pushes counted from integration re-entry `remediation` records
+   against the disclosed remediation cap, the interventions that landed while
+   that stage was open, and — for a stage that
    found something — its findings by class and provenance plus its
-   adjudication overrides. The trajectory supplies verified class/provenance
+   adjudication overrides. Findings are grouped by each pass's finder or slot
+   per stage, including findings that were never deferred. Integration's
+   receipt-backed grouping is labelled retained-record evidence, not verified
+   by GitHub; it does not authenticate integration rounds or outcomes. Older
+   integrator envelopes carry source finders in every finding id instead of a
+   pass-wide finder field. The trajectory supplies verified class/provenance
    counts keyed by stage; unavailable rounds are named, and unverified findings
    are excluded from those counts. Older harvesters
    expose only the run-wide aggregate, attributed to a stage only when that
-   stage is the sole one with findings. Adjudication overrides are not exposed
-   at all (harmon-devkit#753). Each affected stage section says which case it is in rather than leaving the line
+   stage is the sole one with findings. The retro does not yet render
+   adjudication priorities and override reasons (harmon-devkit#1382). Each
+   affected stage section says which case it is in rather than leaving the line
    out; treat a "not derivable" line as a real gap in the retro, not as
    "nothing to report".
 4. `### Findings by class and provenance` — `class` from the reviewer's own
@@ -301,8 +309,8 @@ revision history lists that `run_id` in `lanes[]`.
 5. `### Policy overrides the PR discloses (unverified)` — the cap, waiver,
    tier, and strategy disclosures the PR published, under the same caveat as
    the policy line. **Adjudication overrides — a finding whose adjudicated
-   priority differs from the reviewer's — are not in it**: the trajectory
-   reduces each round's adjudication to a boolean (harmon-devkit#753), so an
+   priority differs from the reviewer's — are not in it**: the retro has not yet
+   rendered the trajectory's adjudication details (harmon-devkit#1382), so an
    empty section means "nothing was disclosed", never "nothing was
    overridden". Say which you mean in the retro.
 6. `### Interventions` — every human touchpoint, with the stage it interrupted.
