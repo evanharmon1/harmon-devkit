@@ -50,7 +50,7 @@
   ],
   "features": {
     "ghcr.io/devcontainers/features/python:1": {
-      "version": "3.14"
+      "version": "3.15"
     },
     // No docker-in-docker, no 1Password, no Tailscale (see the header).
     // Keep until the Dockerfile's image pin ships /usr/local/bin/gh in its core tier; that pin-bump PR deletes this.
