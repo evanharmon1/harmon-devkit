@@ -5934,6 +5934,28 @@ report_json="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo
 echo "$report_json" | jq -e '.measurements.stages[] | select(.stage == "review") | .authorized_ceiling == 4 and .cap == null' >/dev/null ||
     fail "challenge-still-active: retro JSON omitted the not-yet-started review ceiling: $report_json"
 
+echo "== local stats rejects an exit-engine authorized-ceiling mismatch through the CLI =="
+run_file="$tmp/local-records/$run_id/run.json"
+cp "$run_file" "$run_file.saved"
+jq '.cap_authorizations += [{stage:"challenge",round:4,actor:"maintainer",instruction:"run challenge round 4",at:"2026-09-01T00:00:00Z"}]' \
+    "$run_file.saved" >"$run_file"
+cat >"$tmp/fake-exit-script-authorized-ceiling.mjs" <<'FAKE'
+console.log(JSON.stringify({
+  outcome: "continue",
+  rounds: [{ round: 1, status: "complete", findings: [], passes: [], blocked_passes: [], adjudication: null }],
+  diagnostics: [],
+  authorized_ceiling: 5,
+}));
+FAKE
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --exit-script "$tmp/fake-exit-script-authorized-ceiling.mjs" --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "authorized-ceiling entry point: expected exit 3, got rc=$rc: $out"
+grep -Fq 'dev-flow-stats: indeterminate' <<<"$out" && grep -Fq 'authorized ceiling projection disagrees' <<<"$out" ||
+    fail "authorized-ceiling entry point: expected evidence-indeterminate output naming the mismatch, got: $out"
+mv "$run_file.saved" "$run_file"
+
 echo "== cap authorization projection mismatch is evidence-indeterminate =="
 node --input-type=module - <<'NODE'
 import { assertAuthorizedCeilingProjection, EvidenceError } from "./ai/skills/universal/retro/assets/dev-flow-stats.mjs";

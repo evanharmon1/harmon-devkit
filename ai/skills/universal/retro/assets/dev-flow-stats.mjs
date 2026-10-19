@@ -2191,7 +2191,7 @@ function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, polic
   return { verification: parsed };
 }
 
-function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd()) {
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd(), exitScriptPath = DEFAULT_EXIT_SCRIPT) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
@@ -2486,7 +2486,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         // is safe here specifically — never for a stage that has real
         // rounds, which still uses its own genuine head below.
         let currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
-        let { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+        let { verification, error, code } = invokeExitScriptVerificationOnly(exitScriptPath, {
           runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
         });
         // Integration cycle 5 (P2), confirmed and fixed: the naive currentHead
@@ -2525,7 +2525,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
             }
             if (correctedHead && correctedHead !== currentHead) {
               currentHead = correctedHead;
-              ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+              ({ verification, error, code } = invokeExitScriptVerificationOnly(exitScriptPath, {
                 runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
               }));
             }
@@ -2855,7 +2855,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   }
 }
 
-function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd() }) {
+function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd(), exitScriptPath = DEFAULT_EXIT_SCRIPT }) {
   const issueComments = fetchIssueComments(repo, issueNumber);
   const cutoffEpoch = asOf ? Date.parse(asOf) : Infinity;
   const withinCutoff = (comment) => Date.parse(comment.created_at) <= cutoffEpoch;
@@ -2893,7 +2893,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
     } else {
       try {
         const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
-        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot);
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot, exitScriptPath);
         if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
       } catch (err) {
         if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
@@ -4059,6 +4059,19 @@ function cliRun(args) {
     console.error(`dev-flow-stats: --record-dir path does not exist: ${recordDirRequired.value}`);
     return 2;
   }
+  let exitScriptPath = DEFAULT_EXIT_SCRIPT;
+  if (recordDirRequired.value !== null) {
+    const exitScriptRequired = requiredArgValue("exit-script", args["exit-script"]);
+    if (!exitScriptRequired.ok) {
+      console.error(exitScriptRequired.error);
+      return 2;
+    }
+    exitScriptPath = exitScriptRequired.value || DEFAULT_EXIT_SCRIPT;
+    if (!existsSync(exitScriptPath)) {
+      console.error(`dev-flow-stats: exit script does not exist: ${exitScriptPath}`);
+      return 2;
+    }
+  }
   // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
   // path used to hardcode process.cwd() for the local-record trajectory's
   // repository root, ignoring this same flag the --replay path already
@@ -4072,7 +4085,7 @@ function cliRun(args) {
 
   let runs;
   try {
-    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot, exitScriptPath });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
