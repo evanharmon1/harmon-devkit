@@ -28,7 +28,10 @@ body is empty must first copy the full original title into the body.
 
 For a proposed retitle, `--title-only` is a title lint and writes no receipt.
 Before `gh issue edit --title`, run a full preflight over the proposed issue
-state: the new title, the current body saved to a file, and the current labels.
+state: the new title, the current body saved to a file, and the current authored
+classification labels. Exclude the checker's forbidden authoring-time families,
+`needs-triage`, and the implementer-record labels; these describe derived or
+runtime state rather than the proposed authored metadata.
 Use the issue's actual authorship; this example is human-authored (for an
 agent-authored issue, use `--agent-authored` and the agent metadata contract).
 
@@ -36,7 +39,10 @@ agent-authored issue, use `--agent-authored` and the agent metadata contract).
 gh issue view <n> --repo <owner/repo> --json title,body,labels > current-issue.json
 jq -rj '.body' current-issue.json > current-body.md
 label_args=()
-while IFS= read -r label; do label_args+=(--label "$label"); done < <(jq -r '.labels[].name' current-issue.json)
+while IFS= read -r label; do label_args+=(--label "$label"); done < <(jq -r '
+  .labels[].name
+  | select(test("^(foreman:|rigor:|tier:|strategy:|method:|claim:|agent:|priority:|effort:|model-family:|model:|model-version:|model-effort:|needs-triage$)"; "i") | not)
+' current-issue.json)
 <skill-dir>/assets/check-issue-metadata.sh \
   --repo <owner/repo> --repo-root <target-checkout> --owner-type <personal|organization> \
   --title '(delivery queue): Drop expired payloads' \

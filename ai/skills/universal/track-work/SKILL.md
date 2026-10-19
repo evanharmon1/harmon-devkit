@@ -633,7 +633,8 @@ For a proposed retitle, validate the title and guard against truncation:
 ```
 
 `--title-only` is a title lint and writes no receipt; before editing, run the full
-preflight over the proposed title, current body file and current labels, as in
+preflight over the proposed title, current body file and current authored
+classification labels (excluding derived and runtime labels), as in
 [the retitle recipe](references/issue-authoring.md).
 
 ### Body contract

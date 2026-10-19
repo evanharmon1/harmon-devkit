@@ -3511,6 +3511,40 @@ echo "==> receipts: a full retitle preflight authorizes the proposed title edit"
 [ "$(run_personal 'Refresh receipt contract' "$valid_body" --previous-title '(tests): Receipt contract')" = 0 ] || fail "full proposed-state retitle preflight must pass"
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Refresh receipt contract')" = 0 ] || fail "full retitle preflight must authorize title edit"
 
+echo "==> receipts: documented retitle filter admits a triaged issue"
+retitle_fixture="$tmp/triaged-retitle"
+mkdir -p "$retitle_fixture"
+python3 - ai/skills/universal/track-work/references/issue-authoring.md "$retitle_fixture" "$valid_body" <<'PY_RETITLE_FILTER'
+import json, pathlib, sys
+reference, root, body = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+text = reference.read_text()
+start = text.index('label_args=()')
+end = text.index('<skill-dir>/assets/check-issue-metadata.sh', start)
+(root / 'label-filter.sh').write_text(text[start:end])
+authored = ['feature', 'area:fixture', 'layer:none', 'domain:fixture',
+            'impact:medium', 'risk:low', 'complexity:s']
+runtime = ['tier:standard', 'needs-triage', 'claim:agent', 'model:example',
+           'model-family:example', 'model-version:example', 'model-effort:high',
+           'foreman:armed', 'rigor:strict', 'strategy:solo', 'method:legacy',
+           'agent:worker', 'priority:high', 'effort:large', 'Tier:STANDARD']
+(root / 'current-issue.json').write_text(json.dumps(dict(
+    title='(tests): Receipt contract', body=body.read_text(),
+    labels=[dict(name=label) for label in authored + runtime])))
+(root / 'expected-label-args').write_text(''.join('--label\n' + label + '\n' for label in authored))
+PY_RETITLE_FILTER
+(
+    cd "$retitle_fixture"
+    # shellcheck source=/dev/null
+    source "$retitle_fixture/label-filter.sh"
+    printf '%s\n' "${label_args[@]}" >"$retitle_fixture/actual-label-args"
+    cmp "$retitle_fixture/expected-label-args" "$retitle_fixture/actual-label-args" || fail "documented filter must retain authored labels and exclude runtime labels"
+    jq -rj '.body' current-issue.json >current-body.md
+    [ "$(run_metadata --repo testowner/testrepo --repo-root "$metadata_repo" --owner-type personal \
+        --title 'Refresh triaged receipt contract' --previous-title "$(jq -r '.title' current-issue.json)" \
+        --body-file "$retitle_fixture/current-body.md" --human-authored "${label_args[@]}")" = 0 ] || fail "documented triaged retitle preflight must pass: $(cat "$tmp/metadata.out")"
+    [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Refresh triaged receipt contract')" = 0 ] || fail "documented triaged retitle must admit the edit"
+) || fail "documented retitle filter regression"
+
 echo "==> receipts: edit matches only the supplied new fields and same repository"
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Receipt contract')" = 0 ] || fail "title-only edit must match"
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --body-file "$valid_body")" = 0 ] || fail "body-only edit must match"
