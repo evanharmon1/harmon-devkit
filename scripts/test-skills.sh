@@ -12091,6 +12091,7 @@ root = Path(sys.argv[1]) / "ai/skills/universal"
 canonical = (root / "dev-flow-support/SKILL.md").read_text()
 flat = " ".join(canonical.split())
 for required in (
+    "Take the one-time initial reservation once before the slate's first write",
     "without capturing its output. Read the single printed token line",
     "Pass it literally as `--owner-token <token>` on every later",
     "The token lives only in the session's own context.",

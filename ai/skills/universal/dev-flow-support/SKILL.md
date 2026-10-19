@@ -31,11 +31,13 @@ share lives here. Nothing is shipped through the harmon-init template.
 
 ## Owner-token caller contract
 
-Before any run-record.mjs or plan-revise.mjs write, run
+Take the one-time initial reservation once before the slate's first write by running
 `node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
 without capturing its output. Read the single printed token line from that
 output. Pass it literally as `--owner-token <token>` on every later
 run-record.mjs or plan-revise.mjs write, including normal release.
+Every later `lock acquire` (scope widening or re-acquisition) passes
+`--owner-token <token>`; a tokenless re-acquire of a tokenized lock is refused.
 
 The token lives only in the session's own context.
 A restart, `/clear` or compaction loses it; recovery requires the

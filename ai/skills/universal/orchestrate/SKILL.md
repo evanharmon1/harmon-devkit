@@ -225,7 +225,8 @@ Build and publish the plan in this order:
 ## Durable orchestrator state
 
 Everything you need in order to resume lives under the Git common directory,
-never in the session scratchpad. A scratchpad does not survive a session
+never in the session scratchpad, with one deliberate exception: the owner token
+lives only in session context, never under the Git common directory. A scratchpad does not survive a session
 restart, and one that was wiped mid-slate took every dispatch file, ruling
 and watcher script with it (harmon-devkit#1296). The scratchpad is for
 throwaway work only.
@@ -316,8 +317,10 @@ step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
 unlocked slate refuses every run-record.mjs and plan-revise.mjs write except explicit `lock acquire`, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
-claim comment's `session:` line. Reuse it after a restart; it is not a PID or
-a liveness signal. A different session is refused even on the same host.
+claim comment's `session:` line; it is not a PID or a liveness signal.
+A restart, `/clear` or compaction also loses the owner token; resume through
+the recovery procedure below: operator confirmation, force release, then a
+fresh `lock acquire`. A different session is refused even on the same host.
 Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 Recovery is an explicit operator decision, never an automatic timeout or a
