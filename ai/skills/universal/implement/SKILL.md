@@ -512,21 +512,9 @@ on with the inline procedure.
      [--operator-pin <pin>]...
    ```
 
-   Only explicit `lock acquire` creates a lock and prints its random owner token
-   once. Read the printed token line from the visible command output.
-   Run acquisition visibly, without command substitution, and read its single printed
-   token line. Pass that literal value as `--owner-token <token>` on every later
-   run-record.mjs and plan-revise.mjs write, including normal release. The token is
-   a collision guard between same-named sessions, not a credential; it may appear
-   in the agent's own transcript and working notes. Never write it to repository
-   files, logs, or PR or issue text. Scripts may export RUN_RECORD_OWNER_TOKEN
-   within one process. review/assets/post-evidence.sh is a separate write path:
-   it uses its own per-file mutex and takes no slate lock. Pass `--owner-token <token>` on every later
-   run-record.mjs and plan-revise.mjs write below (including `receipt`, `adjudicate`, `ledger`, and `lock release`),
-   or set `RUN_RECORD_OWNER_TOKEN` in the owning process. Repeating acquisition
-   requires the token and prints nothing; it never recovers a lost token.
-   `solo-init` and every other run-record.mjs or plan-revise.mjs write refuse an unlocked slate with `lock acquire`
-   guidance. A failed `solo-init` preserves the explicitly acquired reservation;
+   Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
+
+   A failed `solo-init` preserves the explicitly acquired reservation;
    release it with the token when abandoning the attempt.
 
    `--session` is this session's name: the one `/claim` recorded on its claim

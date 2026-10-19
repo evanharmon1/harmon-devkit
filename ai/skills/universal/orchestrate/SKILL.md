@@ -316,21 +316,7 @@ published before its reservation can overwrite another session's plan. Release i
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
 claim comment's `session:` line. Reuse it after a restart; it is not a PID or
 a liveness signal. A different session is refused even on the same host.
-New locks also require the unique owner token, even when the session name
-matches. Pass `--owner-token <token>` (or `RUN_RECORD_OWNER_TOKEN`) to
-every run-record.mjs and plan-revise.mjs write after acquisition and to normal release.
-Only `lock acquire` mints a token, prints it once, and records only its SHA-256 digest beside the
-session. Run acquisition visibly, without command substitution, and read its single printed
-token line. Pass that literal value as `--owner-token <token>` on every later
-run-record.mjs and plan-revise.mjs write, including normal release. The token is
-a collision guard between same-named sessions, not a credential; it may appear
-in the agent's own transcript and working notes. Never write it to repository
-files, logs, or PR or issue text. Scripts may export RUN_RECORD_OWNER_TOKEN
-within one process. review/assets/post-evidence.sh is a separate write path:
-it uses its own per-file mutex and takes no slate lock.
-Reacquiring with the token prints nothing. Token-less pre-existing locks still
-authorize their matching session, ignore any supplied token, and warn on stderr
-to release and re-acquire to upgrade. Status and recovery audits contain only the digest.
+Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
 
 Recovery is an explicit operator decision, never an automatic timeout or a
 cross-host process probe. Inspect `lock status --slate <slate>`, have the

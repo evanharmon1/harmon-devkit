@@ -331,22 +331,7 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
-The owning session explicitly acquires its slate before any run-record or
-plan-revise write: run `node "$support_dir/run-record.mjs"
-lock acquire --slate <slate> --session <session> --issues <n,n,…>` once.
-For a resumed run, reuse the held token instead of acquiring again to recover
-it (re-acquisition prints nothing).
-Run acquisition visibly, without command substitution, and read its single printed
-token line. Pass that literal value as `--owner-token <token>` on every later
-run-record.mjs and plan-revise.mjs write, including normal release. The token is
-a collision guard between same-named sessions, not a credential; it may appear
-in the agent's own transcript and working notes. Never write it to repository
-files, logs, or PR or issue text. Scripts may export RUN_RECORD_OWNER_TOKEN
-within one process. review/assets/post-evidence.sh is a separate write path:
-it uses its own per-file mutex and takes no slate lock. An unlocked slate refuses writes with `lock acquire`
-guidance; a token-less legacy lock continues to authorize by session with a
-release/re-acquire warning. Lost tokens require operator-confirmed
-`lock release --force --reason` followed by fresh acquisition.
+Follow the [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract).
 
 The one supervising orchestrator (or owning solo session) performs run-record
 writes sequentially across `/review` and `/integrate`. Delegates return evidence

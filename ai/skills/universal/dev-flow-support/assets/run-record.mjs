@@ -21,8 +21,8 @@
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock status  --slate ID
 //
-// Every write accepts --owner-token TOKEN or RUN_RECORD_OWNER_TOKEN; fresh lock acquire
-// prints the token once. Run acquire visibly, then pass the literal token on later calls.
+// Writes accept --owner-token TOKEN. For acquisition, persistence and recovery,
+// follow ../SKILL.md#owner-token-caller-contract.
 //
 // A run belongs to exactly one slate: its first helper write requires --run-id
 // to be a lane in some revision of this slate's plan and records the slate in
@@ -415,7 +415,7 @@ function assertLockOwner(held, session, ownerToken) {
     return
   }
   if (typeof ownerToken !== 'string' || createHash('sha256').update(ownerToken).digest('hex') !== held.owner_token_digest) {
-    throw new Refusal('slate lock owner token does not match; recover only with operator-confirmed lock release --force --reason, then lock acquire')
+    throw new Refusal('slate lock owner token does not match; pass the token from the original lock acquire output with --owner-token; only if the token is truly lost, recover with operator-confirmed lock release --force --reason, then lock acquire')
   }
 }
 

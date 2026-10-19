@@ -29,22 +29,32 @@ The skills sync is the only distribution channel for this runtime: a script one
 skill uses lives in that skill's own `assets/`, and a script several skills
 share lives here. Nothing is shipped through the harmon-init template.
 
-The owning session explicitly acquires its slate before any run-record or
-plan-revise write: run `node "$support_dir/run-record.mjs"
-lock acquire --slate <slate> --session <session> --issues <n,n,…>` once.
-For a resumed run, reuse the held token instead of acquiring again to recover
-it (re-acquisition prints nothing).
-Run acquisition visibly, without command substitution, and read its single printed
-token line. Pass that literal value as `--owner-token <token>` on every later
-run-record.mjs and plan-revise.mjs write, including normal release. The token is
-a collision guard between same-named sessions, not a credential; it may appear
-in the agent's own transcript and working notes. Never write it to repository
-files, logs, or PR or issue text. Scripts may export RUN_RECORD_OWNER_TOKEN
-within one process. review/assets/post-evidence.sh is a separate write path:
-it uses its own per-file mutex and takes no slate lock. An unlocked slate refuses writes with `lock acquire`
-guidance; a token-less legacy lock continues to authorize by session with a
-release/re-acquire warning. Lost tokens require operator-confirmed
-`lock release --force --reason` followed by fresh acquisition.
+## Owner-token caller contract
+
+Before any run-record.mjs or plan-revise.mjs write, run
+`node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
+without capturing its output. Read the single printed token line from that
+output. Pass it literally as `--owner-token <token>` on every later
+run-record.mjs or plan-revise.mjs write, including normal release.
+
+Keep the token in your own durable notes outside the repository, for example
+your session scratch directory or the orchestrator's run notes. Never put it
+in a shared path keyed by session name, and never write it to repository files,
+logs, or PR or issue text. The token is a collision guard between same-named
+sessions, not a credential. `RUN_RECORD_OWNER_TOKEN` is usable within one
+process or script only; an export does not survive separate tool calls.
+
+On resumption, read the token from your durable notes; re-acquisition requires
+the token and prints nothing. A token lost to a restart, `/clear` or compaction
+is recovered only by the operator-confirmed `lock release --force --reason`;
+the next acquire then mints a new token. Only the token's SHA-256 digest is
+stored in the lock, status and recovery audit. An unlocked slate refuses
+run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance;
+a token-less legacy lock continues to authorize by session with a
+release/re-acquire warning.
+
+`review/assets/post-evidence.sh` is a separate write path: it uses its own
+per-file mutex and takes no slate lock.
 
 ## Assets
 

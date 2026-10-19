@@ -157,6 +157,9 @@ jq '.owner_token_digest = "invalid"' "$tmp/valid-lock.json" >"$state/locks/s1.js
 expect_refused "malformed digest" "slate lock is malformed" \
     rr alice transition --owner-token "$token" --run-id run-a --stage claim --exit k
 cp "$tmp/valid-lock.json" "$state/locks/s1.json"
+expect_refused "wrong token explains reuse before recovery" \
+    "pass the token from the original lock acquire output with --owner-token; only if the token is truly lost" \
+    rr alice transition --owner-token wrong --run-id run-a --stage claim --exit k
 expect_refused "same-name wrong token" "owner token does not match" \
     rr alice transition --owner-token wrong --run-id run-a --stage claim --exit k
 expect_refused "same-name missing token" "owner token does not match" \

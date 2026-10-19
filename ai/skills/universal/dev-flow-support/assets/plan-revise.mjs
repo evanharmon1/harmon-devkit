@@ -7,8 +7,8 @@
 //   plan-revise.mjs base-move --slate ID --session ID --new-base SHA --reason TEXT
 //                             [--done N]... [--at TS] [--milestone N] [--issues N,N,...]
 //
-// Writes require --owner-token TOKEN or RUN_RECORD_OWNER_TOKEN from a prior
-// visible run-record.mjs lock acquire; pass its printed token literally.
+// Writes require --owner-token TOKEN; follow the shared caller contract at
+// ../SKILL.md#owner-token-caller-contract.
 //
 // Appends one revision for a default-branch move: `base_sha` becomes the new
 // base, every `--done` issue keeps its verified record as `verdict: "done"`
