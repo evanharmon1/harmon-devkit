@@ -106,15 +106,19 @@ repository owns <thing>.
 EOF
 ```
 
-Run the full, read-only pre-create gate from §5 against the **target checkout**:
-`<track-work-skill-dir>/assets/check-issue-metadata.sh` must receive
-`--repo <[host/]target-owner/target-repo>` and `--repo-root <target-checkout>`, so the
-target's owner type, manifest and provisioned vocabulary govern the draft.
+The checkout invariant is explicit: the metadata checker (`check-issue-metadata.sh`, with
+`--repo-root <target checkout>`), `gh issue create --repo <target>`, the receipt
+verifier, and the harmon-init#1735 hook all run from the **caller's checkout**.
+The receipt lives in that checkout's git common directory. The checker must
+also receive `--repo <[host/]target-owner/target-repo>`, so the target's owner
+type, manifest and provisioned vocabulary govern the draft. The shared
+classification helper (`triage-apply.sh label --repo <target> …`) runs from the
+**target checkout**, because it reads the classification manifest and Tier
+policy from its working directory.
 
-Only after that gate exits 0, follow SKILL.md's
-[agent-authored or human-authored create path](../SKILL.md#create-and-classify-through-the-shared-helper).
-Run its creation and any shared-helper application against the **target
-repository**, from the target checkout, under the same write authorization.
+Only after the full pre-create gate from §5 exits 0, follow SKILL.md's
+[agent-authored or human-authored create path](../SKILL.md#create-and-classify-through-the-shared-helper),
+using this checkout split under the same write authorization.
 Return the created issue number so the caller can re-read the target's stored
 metadata. If a write partially succeeds, return that existing issue number and
 blocker; never create a duplicate in either repository to retry it.
@@ -127,7 +131,7 @@ gh issue comment <n> --repo <origin-owner/origin-repo> \
 ```
 
 The create and link-back are writes — get the user's explicit go-ahead before
-running them. The draft and checker are read-only preparation.
+running them. Drafting is preparation; the checker writes a local receipt and performs no GitHub writes.
 
 ## Provenance
 
