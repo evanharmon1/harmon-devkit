@@ -2830,6 +2830,25 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const forged = [...allUntrustedMarkers.filter((observed) => observed.reason === "untrusted-actor"), ...legacyForged];
     const tampered = allUntrustedMarkers.filter((observed) => observed.reason !== "untrusted-actor");
 
+    // The exit engine does not validate integrator passes. Only completed,
+    // receipt-backed envelopes validated for this run contribute to this
+    // retained-record grouping; rejected integrators remain diagnostics.
+    const retainedIntegratorPasses = [];
+    for (const entry of localPasses) {
+      if (entry.content.role !== "integrator" || !receiptBackedNames.has(entry.name)) continue;
+      try {
+        runExitValidator(
+          ["integrator", entry.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
+          `integrator pass ${entry.name}`,
+        );
+        if (entry.content.status !== "completed") throw new EvidenceError("integrator pass is not completed");
+        retainedIntegratorPasses.push(entry.content);
+      } catch (error) {
+        if (!(error instanceof EvidenceError)) throw error;
+        diagnostics.push({ pass: entry.name, level: "reject", reason: error.message });
+      }
+    }
+
     return {
       status: "ok",
       runId,
@@ -2840,12 +2859,8 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       slotFailures: localSlotFailures,
       slotFailuresUnavailable: false,
       futureAdjudicationFiles: [],
-      // Receipt validation has run in both engine calls. Integration has no
-      // authenticated finding marker, so retain these counts separately.
       remediationCap: recordedRounds?.remediation ?? null,
-      retainedIntegrationFinderCounts: integrationFinderCounts(localPasses
-        .filter((entry) => receiptBackedNames.has(entry.name) && entry.content.role === "integrator")
-        .map((entry) => entry.content)),
+      retainedIntegrationFinderCounts: integrationFinderCounts(retainedIntegratorPasses),
       localRecordCurrentState: Boolean(asOf),
       trajectoryDiagnostics: diagnostics,
       authorizedCeilings,
@@ -3323,14 +3338,14 @@ function projectAdjudicationEntries(doc) {
   });
 }
 
-// Integrator envelopes predate payload.finder/slot: each finding id carries
+// Each integrator finding id carries
 // its source finder, and one integrator pass can include several sources.
 function integrationFinderCounts(passes) {
   const counts = {};
   for (const pass of passes) {
     const payload = pass.payload || {};
     for (const finding of payload.findings || []) {
-      const finder = payload.finder || payload.slot || /^integration-r[1-9][0-9]*-([a-z0-9-]+)-[1-9][0-9]*$/.exec(finding.id)?.[1] || "unknown";
+      const finder = /^integration-r[1-9][0-9]*-([a-z0-9-]+)-[1-9][0-9]*$/.exec(finding.id)?.[1] || "unknown";
       counts[finder] = (counts[finder] || 0) + 1;
     }
   }

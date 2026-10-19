@@ -293,9 +293,8 @@ revision history lists that `run_id` in `lanes[]`.
    adjudication overrides. Findings are grouped by each pass's finder or slot
    per stage, including findings that were never deferred. Integration's
    receipt-backed grouping is labelled retained-record evidence, not verified
-   by GitHub; it does not authenticate integration rounds or outcomes. Older
-   integrator envelopes carry source finders in every finding id instead of a
-   pass-wide finder field. The trajectory supplies verified class/provenance
+   by GitHub; it does not authenticate integration rounds or outcomes. The
+   trajectory supplies verified class/provenance
    counts keyed by stage; unavailable rounds are named, and unverified findings
    are excluded from those counts. Older harvesters
    expose only the run-wide aggregate, attributed to a stage only when that

@@ -1137,8 +1137,10 @@ function measure(trajectory, policy) {
   const classProvenance = classProvenanceRows(trajectory.findings_by_class_and_provenance)
   const stageCounts = trajectory.findings_by_stage_class_and_provenance
   for (const stage of stages) {
-    stage.findings_by_finder = trajectory.findings_by_stage_finder?.[stage.stage] ?? null
-    stage.retained_record_findings_by_finder = trajectory.retained_record_findings_by_stage_finder?.[stage.stage] ?? null
+    stage.findings_by_finder = Object.hasOwn(trajectory, 'findings_by_stage_finder')
+      ? trajectory.findings_by_stage_finder?.[stage.stage] ?? {} : null
+    stage.retained_record_findings_by_finder = Object.hasOwn(trajectory, 'retained_record_findings_by_stage_finder')
+      ? trajectory.retained_record_findings_by_stage_finder?.[stage.stage] ?? {} : null
     stage.findings_by_class_and_provenance = stageCounts?.[stage.stage] === undefined
       ? null
       : classProvenanceRows(stageCounts[stage.stage])
@@ -1784,7 +1786,7 @@ function run(argv) {
       ? `Run \`${runId}\` was supplied with --run and has NOT been verified against any marker — this tool cannot say whether it exists`
       : `Run \`${runId}\` IS recorded (${runIdFrom}) but cannot be read here`
     console.error(
-      `${TOOL}: no-stats-script — ${stats.missingReason}. ${standing}. Vendor the harvester (harmon-devkit#663) or rerun with --stats-script; do NOT report the session as having no run record — this exit says nothing either way.`
+      `${TOOL}: no-stats-script — ${stats.missingReason}. ${standing}. Vendor the harvester or rerun with --stats-script; do NOT report the session as having no run record — this exit says nothing either way.`
     )
     return 12
   }

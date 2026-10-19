@@ -3383,5 +3383,25 @@ assert.deepEqual(report.measurements.stages.find(s => s.stage === 'review').find
 NODE
 [ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "not-measurable references exclude the closed-issue fixture" || bad "closed issue reference check exit $RC"
 
+echo "==> current harvester with empty stage maps does not claim an older harvester =="
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.rounds = []
+t.findings_by_stage_finder = {}
+t.retained_record_findings_by_stage_finder = {}
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const section = stage => text.split('### Stage `' + stage + '`')[1]?.split('\n### ')[0] || ''
+for (const stage of ['challenge', 'review', 'integration']) {
+  assert.match(section(stage), /Findings by finder .*:\n  - No findings recorded\./)
+  assert.ok(!section(stage).includes('unavailable from this harvester'), stage)
+}
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "empty confidence rounds and absent retained integrators report no findings" || bad "empty finder stage labels"
+
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
