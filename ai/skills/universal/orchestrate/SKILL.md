@@ -307,10 +307,11 @@ later session. Files under `.git/` never show in `git status`.
 
 Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
-with the slate's milestone and issue set. While another session (or a same-named
-session holding another slate) holds the
-same slate, the same milestone, or any of the same issues — under any slate
-id — every run-record.mjs and plan-revise.mjs write is refused. Take it before publishing the plan (§ Planning
+with the slate's milestone and issue set. Every run-record.mjs and
+plan-revise.mjs write is refused while any lock other than this session's own
+covers the same slate, the same milestone, or any of the same issues; the
+owner-token caller contract below defines "own".
+Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
 unlocked slate refuses every run-record.mjs and plan-revise.mjs write except explicit `lock acquire`, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate

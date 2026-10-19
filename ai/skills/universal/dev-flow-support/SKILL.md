@@ -31,8 +31,6 @@ share lives here. Nothing is shipped through the harmon-init template.
 
 ## Owner-token caller contract
 
-A same-named session holding another slate over the same issues or milestone is refused like any other session.
-
 Before any run-record.mjs or plan-revise.mjs write, run
 `node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
 without capturing its output. Read the single printed token line from that
@@ -53,6 +51,8 @@ stored in the lock, status and recovery audit. An unlocked slate refuses
 run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance;
 a token-less legacy lock continues to authorize by session with a
 release/re-acquire warning.
+
+A lock held under another slate id over the same issues or milestone is refused whatever its session name.
 
 `review/assets/post-evidence.sh` is a separate write path: it uses its own
 per-file mutex and takes no slate lock.

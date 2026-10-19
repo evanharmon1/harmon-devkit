@@ -146,7 +146,7 @@ pass "a run write for a slate with no plan is refused"
 acquire s1 alice --milestone 7 --issues 11,12
 token="$(token_for s1)"
 [[ "$token" =~ ^[0-9a-f]{64}$ ]] || fail "acquire did not print one random token line"
-digest="$(printf '%s' "$token" | sha256sum | cut -d ' ' -f 1)"
+digest="$(printf '%s' "$token" | sha256_file /dev/stdin)"
 [ "$(jq -r '.owner_token_digest' "$state/locks/s1.json")" = "$digest" ] || fail "lock did not record the token digest"
 [[ "$(cat "$state/locks/s1.json")" != *"$token"* ]] || fail "lock contains the plaintext token"
 # A later, separate process receives the literal token, with no inherited shell state.
