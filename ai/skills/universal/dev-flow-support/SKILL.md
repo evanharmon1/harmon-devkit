@@ -30,12 +30,18 @@ skill uses lives in that skill's own `assets/`, and a script several skills
 share lives here. Nothing is shipped through the harmon-init template.
 
 The owning session explicitly acquires its slate before any run-record or
-plan-revise write: capture `owner_token="$(node "$support_dir/run-record.mjs"
-lock acquire --slate <slate> --session <session> --issues <n,n,…>)"` once.
+plan-revise write: run `node "$support_dir/run-record.mjs"
+lock acquire --slate <slate> --session <session> --issues <n,n,…>` once.
 For a resumed run, reuse the held token instead of acquiring again to recover
-it. Every subsequent write, including abbreviated examples below, passes
-`--owner-token "$owner_token"` or uses `RUN_RECORD_OWNER_TOKEN`. Never echo,
-trace or report the token. An unlocked slate refuses writes with `lock acquire`
+it (re-acquisition prints nothing).
+Run acquisition visibly, without command substitution, and read its single printed
+token line. Pass that literal value as `--owner-token <token>` on every later
+run-record.mjs and plan-revise.mjs write, including normal release. The token is
+a collision guard between same-named sessions, not a credential; it may appear
+in the agent's own transcript and working notes. Never write it to repository
+files, logs, or PR or issue text. Scripts may export RUN_RECORD_OWNER_TOKEN
+within one process. review/assets/post-evidence.sh is a separate write path:
+it uses its own per-file mutex and takes no slate lock. An unlocked slate refuses writes with `lock acquire`
 guidance; a token-less legacy lock continues to authorize by session with a
 release/re-acquire warning. Lost tokens require operator-confirmed
 `lock release --force --reason` followed by fresh acquisition.

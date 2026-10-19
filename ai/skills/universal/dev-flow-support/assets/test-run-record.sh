@@ -146,7 +146,17 @@ pass "a run write for a slate with no plan is refused"
 acquire s1 alice --milestone 7 --issues 11,12
 token="$(token_for s1)"
 [[ "$token" =~ ^[0-9a-f]{64}$ ]] || fail "acquire did not print one random token line"
-[ "$(jq -r '.owner_token' "$state/locks/s1.json")" = "$token" ] || fail "lock did not record the minted token"
+digest="$(printf '%s' "$token" | sha256sum | cut -d ' ' -f 1)"
+[ "$(jq -r '.owner_token_digest' "$state/locks/s1.json")" = "$digest" ] || fail "lock did not record the token digest"
+[[ "$(cat "$state/locks/s1.json")" != *"$token"* ]] || fail "lock contains the plaintext token"
+# A later, separate process receives the literal token, with no inherited shell state.
+env -u RUN_RECORD_OWNER_TOKEN bash -c 'cd "$1" && node "$2" lock acquire --slate s1 --session alice --owner-token "$3"' _ "$repo" "$writer" "$token" >"$tmp/later-acquire.out"
+[ ! -s "$tmp/later-acquire.out" ] || fail "later process unexpectedly minted another token"
+cp "$state/locks/s1.json" "$tmp/valid-lock.json"
+jq '.owner_token_digest = "invalid"' "$tmp/valid-lock.json" >"$state/locks/s1.json"
+expect_refused "malformed digest" "slate lock is malformed" \
+    rr alice transition --owner-token "$token" --run-id run-a --stage claim --exit k
+cp "$tmp/valid-lock.json" "$state/locks/s1.json"
 expect_refused "same-name wrong token" "owner token does not match" \
     rr alice transition --owner-token wrong --run-id run-a --stage claim --exit k
 expect_refused "same-name missing token" "owner token does not match" \
@@ -408,7 +418,7 @@ awk '
     /<!-- promotion-record-command -->/ { marker = 1; next }
     marker && /```sh/ { code = 1; next }
     code && /```/ { exit }
-    code { sub(/^   /, ""); print }
+    code { sub(/^   /, ""); gsub(/<token>/, "\"$owner_token\""); print }
 ' "$asset_dir/../../integrate/SKILL.md" >"$tmp/documented-promote.sh"
 [ -s "$tmp/documented-promote.sh" ] || fail "integrate promotion command is missing"
 (cd "$repo" && support_dir="$asset_dir" slate=s1 session=alice run_id=run-a \
@@ -640,7 +650,7 @@ audits=("$state/locks/recoveries/s4/"*.json)
 [ "${#audits[@]}" -eq 1 ] && [ -f "${audits[0]}" ] || fail "force release did not leave exactly one audit"
 jq -e --slurpfile held "$tmp/held-lock.json" '
     .action == "force-release" and .session == "alice" and .reason == "dead session" and
-    .lock == ($held[0] | del(.owner_token)) and (.at | test("Z$"))
+    .lock == $held[0] and (.at | test("Z$"))
 ' "${audits[0]}" >/dev/null || fail "recovery audit lost attribution, reason, time or the old lock"
 acquire s4 alice --milestone 8 --issues 15
 [ "$(lock_scope s4)" = "alice:8:15" ] || fail "new session could not acquire after explicit recovery"
@@ -654,7 +664,7 @@ acquire legacy alice --issues 222
 write_plan legacy 222:run-legacy
 new_run run-legacy
 legacy_token="$(token_for legacy)"
-jq 'del(.owner_token)' "$state/locks/legacy.json" >"$tmp/legacy.json"
+jq 'del(.owner_token_digest)' "$state/locks/legacy.json" >"$tmp/legacy.json"
 cp "$tmp/legacy.json" "$state/locks/legacy.json"
 (cd "$repo" && node "$writer" lock acquire --slate legacy --session alice --owner-token ignored) >"$tmp/legacy.out" 2>"$tmp/legacy.err"
 [ ! -s "$tmp/legacy.out" ] || fail "legacy acquisition printed a token"

@@ -3144,7 +3144,7 @@ the instruction verbatim, and when. An entry records a human instruction; an age
 one on its own judgement, including after the fact to make a recorded round
 fit; a maintainer may authorize a round before or after it runs.
 The orchestrator or solo session records that instruction through
-`run-record.mjs authorize-cap --slate <id> --session <id> --run-id <id>
+`run-record.mjs authorize-cap --slate <id> --session <id> --owner-token <token> --run-id <id>
 --stage <stage> --round <n> --actor <identity> --instruction '<verbatim>' --at <UTC>`.
 The writer uses the ordinary candidate, validate, rename and readback discipline;
 it does not authenticate the speaker, so the caller must retain the attributable

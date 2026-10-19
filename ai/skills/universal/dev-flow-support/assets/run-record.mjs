@@ -21,6 +21,9 @@
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock status  --slate ID
 //
+// Every write accepts --owner-token TOKEN or RUN_RECORD_OWNER_TOKEN; fresh lock acquire
+// prints the token once. Run acquire visibly, then pass the literal token on later calls.
+//
 // A run belongs to exactly one slate: its first helper write requires --run-id
 // to be a lane in some revision of this slate's plan and records the slate in
 // `runs/<run-id>/owner-slate`; every later write requires the same slate. Each
@@ -395,7 +398,7 @@ function normalizeScope({ milestone, issues }) {
 function readLock(file) {
   const lock = readJson(file, 'slate lock')
   if (typeof lock.session !== 'string' || !Array.isArray(lock.issues) ||
-      (Object.hasOwn(lock, 'owner_token') && !/^[0-9a-f]{32,}$/.test(lock.owner_token ?? ''))) {
+      (Object.hasOwn(lock, 'owner_token_digest') && !/^[0-9a-f]{64}$/.test(lock.owner_token_digest ?? ''))) {
     throw new Refusal(`slate lock is malformed: ${file}`)
   }
   return lock
@@ -407,11 +410,11 @@ function assertLockOwner(held, session, ownerToken) {
   if (held.session !== session) {
     throw new Refusal(`slate ${held.slate_id} is locked by session ${held.session}; refusing`)
   }
-  if (!Object.hasOwn(held, 'owner_token')) {
+  if (!Object.hasOwn(held, 'owner_token_digest')) {
     console.error('warning: legacy slate lock authorizes by session; use lock release then lock acquire to upgrade')
     return
   }
-  if (ownerToken !== held.owner_token) {
+  if (typeof ownerToken !== 'string' || createHash('sha256').update(ownerToken).digest('hex') !== held.owner_token_digest) {
     throw new Refusal('slate lock owner token does not match; recover only with operator-confirmed lock release --force --reason, then lock acquire')
   }
 }
@@ -473,16 +476,17 @@ export function acquireSlateLock({ root, slate, session, ownerToken = process.en
         )
       }
     }
+    const mintedToken = held === null ? randomBytes(32).toString('hex') : null
     const lock = { schema: 1, slate_id: slate, session, ...scope, acquired_at: held?.acquired_at ?? resolveAt(undefined),
-      ...(held === null ? { owner_token: randomBytes(32).toString('hex') }
-        : Object.hasOwn(held, 'owner_token') ? { owner_token: held.owner_token } : {}),
+      ...(held === null ? { owner_token_digest: createHash('sha256').update(mintedToken).digest('hex') }
+        : Object.hasOwn(held, 'owner_token_digest') ? { owner_token_digest: held.owner_token_digest } : {}),
     }
     const temporary = `${file}.tmp.${process.pid}`
     writeFileSync(temporary, `${JSON.stringify(lock, null, 2)}\n`)
     renameSync(temporary, file)
     // Only a fresh explicit acquisition may print the token. The transient
     // `created` flag never reaches the lock file or status output.
-    return held === null ? { ...lock, created: true } : lock
+    return held === null ? { ...lock, created: true, mintedToken } : lock
   })
 }
 
@@ -500,8 +504,7 @@ export function releaseSlateLock({ root, slate, session, ownerToken = process.en
       // Retain the observed owner and the operator's attribution BEFORE
       // removing the reservation. If audit publication fails, keep the lock.
       // This records intent: a crash before unlink may leave the lock held.
-      const { owner_token: _ownerToken, ...observed } = held
-      const audit = { action: 'force-release', at: resolveAt(undefined), session, reason, lock: observed }
+      const audit = { action: 'force-release', at: resolveAt(undefined), session, reason, lock: held }
       const auditPath = join(dir, 'recoveries', slate, `${randomBytes(16).toString('hex')}.json`)
       publishExclusive(auditPath, `${JSON.stringify(audit, null, 2)}\n`, 'lock recovery')
     }
@@ -1432,13 +1435,12 @@ function lockCommand(sub, args) {
   if (sub === 'status') {
     const { file } = lockPaths(root, slate)
     if (!existsSync(file)) return `slate ${slate} is unlocked`
-    const { owner_token: _ownerToken, ...status } = readLock(file)
-    return JSON.stringify(status)
+    return JSON.stringify(readLock(file))
   }
   const session = requireId('session', args.session)
   if (sub === 'acquire') {
     const lock = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues, create: true })
-    return lock.created === true ? lock.owner_token : null
+    return lock.created === true ? lock.mintedToken : null
   }
   if (sub === 'release') {
     const held = releaseSlateLock({ root, slate, session, ownerToken: args['owner-token'], force: args.force === true, reason: args.reason })

@@ -77,23 +77,29 @@ inline `task challenge` / `task review` stages in a real single-lane run
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
 directory unchanged, and a solo session records promotion with
-`run-record.mjs promote --slate solo-<run-id> --session <its session>
+`run-record.mjs promote --slate solo-<run-id> --session <its session> --owner-token <token>
 --run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh
 fingerprint output>` — `<its session>` being the session name `/claim`
 recorded on its claim comment's `session:` line and `lock acquire` persisted in
 the slate lock, the same value on every write — or a non-promotion ending with
-`close --slate solo-<run-id> --session <its session> --owner-token "$owner_token" --run-id <run-id>
+`close --slate solo-<run-id> --session <its session> --owner-token <token> --run-id <run-id>
 --outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
-session> --owner-token "$owner_token"` (`/implement` § 6a step 6).
+session> --owner-token <token>` (`/implement` § 6a step 6).
 
 The owning session explicitly acquires its slate before any run-record or
-plan-revise write: capture `owner_token="$(node "$support_dir/run-record.mjs"
-lock acquire --slate <slate> --session <session> --issues <n,n,…>)"` once.
+plan-revise write: run `node "$support_dir/run-record.mjs"
+lock acquire --slate <slate> --session <session> --issues <n,n,…>` once.
 For a resumed run, reuse the held token instead of acquiring again to recover
-it. Every subsequent write, including abbreviated examples below, passes
-`--owner-token "$owner_token"` or uses `RUN_RECORD_OWNER_TOKEN`. Never echo,
-trace or report the token. An unlocked slate refuses writes with `lock acquire`
+it (re-acquisition prints nothing).
+Run acquisition visibly, without command substitution, and read its single printed
+token line. Pass that literal value as `--owner-token <token>` on every later
+run-record.mjs and plan-revise.mjs write, including normal release. The token is
+a collision guard between same-named sessions, not a credential; it may appear
+in the agent's own transcript and working notes. Never write it to repository
+files, logs, or PR or issue text. Scripts may export RUN_RECORD_OWNER_TOKEN
+within one process. review/assets/post-evidence.sh is a separate write path:
+it uses its own per-file mutex and takes no slate lock. An unlocked slate refuses writes with `lock acquire`
 guidance; a token-less legacy lock continues to authorize by session with a
 release/re-acquire warning. Lost tokens require operator-confirmed
 `lock release --force --reason` followed by fresh acquisition.
@@ -1796,7 +1802,7 @@ integration` loop, and the transition that re-enters integration after the
 push records it:
 
 ```sh
-node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token "$owner_token" --run-id <run> \
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token <token> --run-id <run> \
   --stage integration --exit <how implement ended> \
   --remediation-head <pushed SHA> --remediation-findings <finding id>,<finding id>
 ```
@@ -2600,7 +2606,7 @@ that loops indefinitely:
 
    ```sh
    node "$support_dir/run-record.mjs" promote \
-     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
+     --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id" \
      --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
    ```
 
