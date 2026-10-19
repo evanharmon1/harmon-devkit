@@ -714,7 +714,8 @@ lane is planned, fenced and claimed like any other.
 Watching is the standing mode, not a one-shot step. Use the harness's
 session-lifetime persistent monitor primitive—never a background shell subject
 to an ordinary command timeout—to poll fresh lane-agent and PR state and emit
-only transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas). If it
+transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas), approval
+prompts, stalls, and periodic heartbeat summaries. If it
 exits before the overall run reaches a terminal outcome, re-arm it immediately;
 never interpret monitor termination as human cancellation. If no persistent
 primitive is available, block instead of silently falling back to occasional
@@ -738,7 +739,42 @@ only ASCII letters, digits, underscores and hyphens. Both report and pane
 observations match the whole final nonblank line `<kind>-<lane-label>-<nonce>`.
 A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
-Keep the state file across re-arms so reported
+The watcher also emits these supervision events:
+
+- `PROMPT <lane>: <approval request>` uses Herdr state for classified harnesses
+  (parsed explain with null `fallback_reason`): an episode starts at `blocked`
+  and ends when the lane leaves `blocked`. Pane text only quotes the request;
+  unavailable text uses `(input requested; text not captured)`. For agy and
+  fallback lanes, pane-text detection uses agy's approval strings instead.
+  The quote is partial: Codex/Claude show only the dialog header; agy shows
+  the first command line, cut at 300 bytes. Read the full pane with
+  `herdr agent read` before approving; never approve from the event quote.
+  A Herdr `blocked` state can be a question rather than an approval: answer
+  or escalate questions. For approvals, read the full pane first, then:
+  Inspect the request and approve or deny within your authority. Each episode
+  retains its first-seen time across redraws and restarts, repeats after
+  `--prompt-reemit-seconds` (default 180), and starts anew after a poll outside
+  the episode, even for identical text.
+- `STALL <lane>: no pane change for <N>m` fires once per unchanged-pane episode
+  after `--stall-minutes` (default 10). Read the pane and act: investigate,
+  re-brief, or escalate within authority. Pane content or Herdr revision/state
+  changes reset the timer; a terminal report or pane sentinel suppresses it.
+- `HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...` summarizes
+  every lane after `--heartbeat-minutes` (default 15), including cloud lanes.
+  Cloud age measures branch/PR changes; unavailable local progress has age
+  `unknown`. A missing heartbeat means re-arm the watcher and investigate its
+  exit, rather than assuming the lanes are healthy.
+
+When `herdr agent explain --json` identifies fallback detection, a visible
+approval prompt derives `blocked`; otherwise the watcher uses `unknown`.
+These agent events and approval requests carry `(fallback)`; fallback alone
+never proves `idle` or `done`. For a lane present in a successful agent list,
+a failed or unparseable explain read carries no new state: retain the previous
+AGENT state and emit no AGENT transition for that poll. A lane missing from a
+successful list is `absent` regardless of explain. Cloud lanes have no pane,
+so receive heartbeat summaries alongside their GitHub events, with no `PROMPT` or `STALL` events.
+Keep the state file across re-arms so prompt episodes and re-emission times,
+stall episodes, heartbeat timing, reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds
 every `herdr` and `gh` read, prefers each lane's explicit report-path sentinel,
 tags pane-only fallback results, and watches reviews plus top-level and inline
