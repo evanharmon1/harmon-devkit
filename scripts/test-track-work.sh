@@ -3313,6 +3313,7 @@ assert_receipt_refusal() {
     [ "$(run_receipt "$@")" = 1 ] || fail "receipt must refuse: $(cat "$tmp/receipt.out")"
     grep -qF 'check-issue-metadata.sh' "$tmp/receipt.out" || fail "refusal must name preflight"
     grep -qF -- '--repo testowner/testrepo' "$tmp/receipt.out" || fail "refusal must bind repo"
+    grep -qF -- "$receipt_dir" "$tmp/receipt.out" || fail "refusal must name searched receipt directory"
     assert_suggested_preflight "$@"
 }
 assert_suggested_preflight() {
@@ -3361,7 +3362,7 @@ non_git_receipt_cwd="$tmp/non-git-receipt-cwd"
 readonly_receipt_cwd="$tmp/readonly-receipt-cwd"
 mkdir -p "$non_git_receipt_cwd" "$readonly_receipt_cwd"
 git -C "$readonly_receipt_cwd" init -q
-chmod a-w "$readonly_receipt_cwd/.git"
+: >"$readonly_receipt_cwd/.git/track-work"
 for receipt_cwd in "$non_git_receipt_cwd" "$readonly_receipt_cwd"; do
     (
         isolated_metadata() (
@@ -3375,12 +3376,32 @@ for receipt_cwd in "$non_git_receipt_cwd" "$readonly_receipt_cwd"; do
         if [ "$receipt_cwd" = "$non_git_receipt_cwd" ]; then
             grep -qiF 'not a git repository' "$tmp/metadata.out" || fail "warning must explain non-git cwd"
         else
-            grep -qF 'Permission denied' "$tmp/metadata.out" || fail "warning must explain read-only git directory"
+            grep -qF 'Not a directory' "$tmp/metadata.out" || fail "warning must explain nondirectory receipt parent"
         fi
     ) || fail "persistence failure regression"
 done
-chmod u+w "$readonly_receipt_cwd/.git"
-[ ! -e "$readonly_receipt_cwd/.git/track-work" ] || fail "read-only checkout gained receipts"
+[ -f "$readonly_receipt_cwd/.git/track-work" ] || fail "blocked receipt parent must remain a regular file"
+
+echo "==> receipts: unavailable or unstartable Python preserves the preflight verdict"
+no_python_bin="$tmp/no-python-bin"
+mkdir -p "$no_python_bin"
+for receipt_tool in bash jq git dirname tr awk sort paste uniq comm mktemp cp cat rm grep sed wc cut head tail find readlink date basename realpath; do
+    receipt_tool_path="$(command -v "$receipt_tool")"
+    ln -s "$receipt_tool_path" "$no_python_bin/$receipt_tool"
+done
+[ ! -e "$no_python_bin/python3" ] || fail "missing-Python fixture must not provide Python"
+for receipt_python_mode in missing unstartable; do
+    if [ "$receipt_python_mode" = unstartable ]; then
+        printf '#!/bin/sh\nexit 126\n' >"$no_python_bin/python3"
+        chmod +x "$no_python_bin/python3"
+    fi
+    [ "$(PATH="$metadata_stub:$no_python_bin" run_personal 'Python unavailable' "$valid_body")" = 0 ] || fail "Python failure must preserve validation success: $(cat "$tmp/metadata.out")"
+    grep -qF 'no local receipt written:' "$tmp/metadata.out" || fail "Python failure must warn"
+    grep -qF 'receipt interpreter failed' "$tmp/metadata.out" || fail "Python failure must name interpreter failure"
+done
+[ "$(run_personal $'Receipt invalid UTF-8 \xff' "$valid_body")" = 0 ] || fail "receipt key encoding failure must preserve validation success"
+grep -qF 'no local receipt written:' "$tmp/metadata.out" || fail "receipt key encoding failure must warn"
+if grep -qF Traceback "$tmp/metadata.out"; then fail "receipt key encoding failure must not traceback"; fi
 
 echo "==> receipts: full agent validation writes the canonical exact-draft key"
 [ "$(run_personal 'Receipt contract' "$valid_body")" = 0 ] || fail "agent receipt preflight failed"
@@ -3438,6 +3459,58 @@ done
 [ "$(run_receipt -- gh issue unknown-write --title x)" = 2 ] || fail "unknown issue operation must fail closed"
 [ "$(run_receipt --write --repo-root "$metadata_repo")" = 2 ] || fail "receipt writer must not be a CLI mode"
 
+echo "==> receipts: CSV label values match gh's quoted and comma-joined forms"
+write_csv_receipt() {
+    python3 - "$receipt_file" "$@" <<'PY_CSV_RECEIPT'
+import hashlib, json, pathlib, sys, time
+source = pathlib.Path(sys.argv[1])
+document = json.loads(source.read_text())
+document['draft']['labels'] = sorted(sys.argv[2:])
+document['validated_at'] = time.time()
+key = hashlib.sha256(json.dumps(document['draft'], sort_keys=True, ensure_ascii=False,
+                               separators=(',', ':')).encode()).hexdigest()
+(source.parent / (key + '.json')).write_text(json.dumps(document))
+PY_CSV_RECEIPT
+}
+write_csv_receipt 'foo,bar'
+[ "$(run_receipt -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
+    --body-file "$valid_body" --label '"foo,bar"')" = 0 ] || fail "quoted CSV must name one comma-bearing label"
+[ "$(run_receipt -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
+    --body-file "$valid_body" --label 'foo,bar')" = 1 ] || fail "one comma-bearing label cannot authorize two labels"
+write_csv_receipt a b
+[ "$(run_receipt -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
+    --body-file "$valid_body" --label a,b)" = 0 ] || fail "ordinary CSV must name two labels"
+[ "$(run_receipt -- gh issue create --repo testowner/testrepo --title '(tests): Receipt contract' \
+    --body-file "$valid_body" --label '"unterminated')" = 2 ] || fail "malformed CSV must be indeterminate"
+grep -qF 'malformed label CSV' "$tmp/receipt.out" || fail "malformed CSV must explain the failure"
+
+echo "==> receipts: attached shorthand values match separated options"
+[ "$(run_receipt -- gh issue create -Rtestowner/testrepo '-t(tests): Receipt contract' \
+    "-F$valid_body" -lfeature,area:fixture,layer:none,domain:fixture,ai-generated,impact:medium,risk:low,complexity:s \
+    -aAlice -mMilestone -pProject)" = 0 ] || fail "attached shorthand create must match"
+[ "$(run_receipt -- gh -Rtestowner/testrepo issue create '-t(tests): Receipt contract' \
+    "-b$(
+        cat "$valid_body"
+        printf x
+    )" -la,b)" = 1 ] || fail "attached inline body must still bind exact bytes"
+[ "$(run_receipt -- gh issue create --repo=testowner/testrepo '--title=(tests): Receipt contract' \
+    "--body-file=$valid_body" --label=a,b)" = 0 ] || fail "long equals options must still match"
+
+echo "==> receipts: nonregular body files are refused without blocking"
+mkfifo "$tmp/receipt-body.fifo"
+for nonregular_body in "$tmp/receipt-body.fifo" /dev/stdin /dev/fd/0; do
+    nonregular_rc=0
+    timeout 5 "$receipt_verifier" --repo-root "$metadata_repo" -- gh issue create \
+        --repo testowner/testrepo --title '(tests): Nonregular body' --body-file "$nonregular_body" \
+        >"$tmp/receipt.out" 2>&1 || nonregular_rc=$?
+    [ "$nonregular_rc" = 2 ] || fail "nonregular body file must exit 2 without timeout: $nonregular_body ($nonregular_rc)"
+    grep -qF 'use a regular body file' "$tmp/receipt.out" || fail "nonregular body refusal must name regular files"
+done
+
+echo "==> receipts: a full retitle preflight authorizes the proposed title edit"
+[ "$(run_personal 'Refresh receipt contract' "$valid_body" --previous-title '(tests): Receipt contract')" = 0 ] || fail "full proposed-state retitle preflight must pass"
+[ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Refresh receipt contract')" = 0 ] || fail "full retitle preflight must authorize title edit"
+
 echo "==> receipts: edit matches only the supplied new fields and same repository"
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title '(tests): Receipt contract')" = 0 ] || fail "title-only edit must match"
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --body-file "$valid_body")" = 0 ] || fail "body-only edit must match"
@@ -3472,7 +3545,9 @@ import pathlib, shlex, subprocess, sys
 output, cwd, target, authorship, *extra = sys.argv[1:]
 line = next(line.strip() for line in pathlib.Path(output).read_text().splitlines()
             if line.startswith('  ') and 'check-issue-metadata.sh' in line)
-command = shlex.split(line.removesuffix(' --agent-authored (or --human-authored)'))
+suffix = ' --agent-authored (or --human-authored)'
+assert line.endswith(suffix)
+command = shlex.split(line[:-len(suffix)])
 command = [target if value == '<target checkout>' else
            'personal' if value == '<personal|organization>' else value for value in command]
 if authorship == '--agent-authored':
@@ -3528,9 +3603,9 @@ grep -qF -- 'specify --repo (or GH_REPO) for issue writes' "$tmp/receipt.out" ||
 [ "$(run_receipt -- gh issue edit 12 --repo testowner/testrepo --title x --body-file -)" = 2 ] || fail "stdin is indeterminate"
 [ "$(run_receipt -- gh issue create --repo testowner/testrepo --title x --unknown value)" = 2 ] || fail "unknown argv must fail closed"
 for verifier_path in \
-    './ai/skills/universal/track-work/assets/verify-issue-receipt.sh --:*' \
-    './.agents/skills/track-work/assets/verify-issue-receipt.sh --:*' \
-    './.claude/skills/track-work/assets/verify-issue-receipt.sh --:*'; do
+    './ai/skills/universal/track-work/assets/verify-issue-receipt.sh:*' \
+    './.agents/skills/track-work/assets/verify-issue-receipt.sh:*' \
+    './.claude/skills/track-work/assets/verify-issue-receipt.sh:*'; do
     grep -qF "Bash($verifier_path)" ai/skills/universal/track-work/SKILL.md || fail "missing verifier tool pin"
 done
 

@@ -26,13 +26,31 @@ Shorten an over-long title by rewriting and moving detail into the body, never
 by truncating or cutting characters off the end. A retitle of an issue whose
 body is empty must first copy the full original title into the body.
 
-For a proposed retitle, validate the title and guard against truncation:
+For a proposed retitle, `--title-only` is a title lint and writes no receipt.
+Before `gh issue edit --title`, run a full preflight over the proposed issue
+state: the new title, the current body saved to a file, and the current labels.
+Use the issue's actual authorship; this example is human-authored (for an
+agent-authored issue, use `--agent-authored` and the agent metadata contract).
 
 ```sh
-<skill-dir>/assets/check-issue-metadata.sh --title-only \
+gh issue view <n> --repo <owner/repo> --json title,body,labels > current-issue.json
+jq -rj '.body' current-issue.json > current-body.md
+label_args=()
+while IFS= read -r label; do label_args+=(--label "$label"); done < <(jq -r '.labels[].name' current-issue.json)
+<skill-dir>/assets/check-issue-metadata.sh \
+  --repo <owner/repo> --repo-root <target-checkout> --owner-type <personal|organization> \
   --title '(delivery queue): Drop expired payloads' \
-  --previous-title '(delivery queue): Reject stale dispatches when queue is full'
+  --previous-title "$(jq -r '.title' current-issue.json)" \
+  --body-file current-body.md --human-authored "${label_args[@]}"
+# Continue only after the full preflight and receipt verifier accept the edit.
+<skill-dir>/assets/verify-issue-receipt.sh -- \
+  gh issue edit <n> --repo <owner/repo> --title '(delivery queue): Drop expired payloads'
+gh issue edit <n> --repo <owner/repo> --title '(delivery queue): Drop expired payloads'
 ```
+
+For an organization target, also supply its current native Issue Type and any
+required current field proposals to the preflight. If the current state violates
+the authoring contract, correct that state before attempting the edit.
 
 ## Canonical body
 
@@ -366,4 +384,4 @@ is refused with exit 1, never resolved from origin. Global repo flags before or
 after `issue` and the create alias `new` are covered; unknown issue operations
 fail closed. The verifier reads cwd, or its own `--repo-root` when given. Only
 the full checker mints receipts internally; there is no writer CLI mode.
-The consuming posture-specific hook is a separate template asset.
+The consuming posture-specific hook is tracked in harmon-init#1735.

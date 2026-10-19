@@ -2,6 +2,7 @@
 # Verify an already-tokenized gh invocation; never evaluate shell command text.
 set -euo pipefail
 exec python3 - "$0" "$@" <<'PY'
+import csv
 import hashlib
 import json
 import math
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -43,7 +45,7 @@ def canonical_repo(value):
     host = (host or '').lower()
     if host == 'ssh.github.com':
         host = 'github.com'
-    path = path.removesuffix('.git').lower()
+    path = (path[:-4] if path.endswith('.git') else path).lower()
     if not re.fullmatch(r'[^/\s:]+/[^/\s:]+', path) or not re.fullmatch(r'[\w.-]+', host):
         raise ValueError('cannot resolve repository')
     return path if host == 'github.com' else host + '/' + path
@@ -68,6 +70,13 @@ def receipt_dir(root):
 
 
 
+def option(token, short_flags):
+    if len(token) > 2 and token[:2] in short_flags:
+        tail = token[2:]
+        return token[:2], True, tail[1:] if tail.startswith('=') else tail
+    return token.partition('=')
+
+
 def verify(args, script):
     root, max_age = Path.cwd(), 3600
     while args and args[0] != '--':
@@ -90,7 +99,7 @@ def verify(args, script):
     def command():
         while args:
             token = args.pop(0)
-            name, separator, inline = token.partition('=')
+            name, separator, inline = option(token, {'-R'})
             if name in ('-R', '--repo'):
                 if not separator and not args:
                     raise ValueError('missing value for ' + name)
@@ -125,7 +134,7 @@ def verify(args, script):
                       '--remove-assignee', '--add-project', '--remove-project'}
     while args:
         token = args.pop(0)
-        name, separator, inline = token.partition('=')
+        name, separator, inline = option(token, set(aliases) | {'-a', '-m', '-p'})
         name = aliases.get(name, name)
         if name in ('--repo', '--title', '--body', '--body-file', '--label') or name in ignored_values:
             field_flags = field_flags or name != '--repo'
@@ -136,7 +145,10 @@ def verify(args, script):
             else:
                 raise ValueError('missing value for ' + name)
             if name == '--label':
-                labels.extend(value.split(','))
+                try:
+                    labels.extend(next(csv.reader([value], strict=True)))
+                except csv.Error as error:
+                    raise ValueError('malformed label CSV: ' + str(error))
             elif name not in ignored_values:
                 if name in values:
                     raise ValueError('repeated ' + name)
@@ -176,6 +188,9 @@ def verify(args, script):
         path = values['--body-file']
         if path == '-':
             raise ValueError('stdin body cannot be verified; use a regular body file')
+        if (path == '/dev/stdin' or path.startswith('/dev/fd/')
+                or not stat.S_ISREG(os.stat(path).st_mode)):
+            raise ValueError('use a regular body file')
         body = Path(path).read_bytes()
     expected = dict(repo=repo)
     if title is not None:
@@ -225,7 +240,7 @@ def verify(args, script):
                      'pass --inapplicable <axis> instead), while a --human-authored preflight keeps it.'
                      if 'needs-triage' in proposed_labels else '')
     raise Refused('no fresh matching receipt; run the full preflight with the same draft bytes '
-                  '(supply the target owner type, authorship, and required metadata):\n  '
+                  '(searched ' + str(directory) + '; supply the target owner type, authorship, and required metadata):\n  '
                   + shlex.join(command) + ' --agent-authored (or --human-authored)' + marker_advice)
 
 

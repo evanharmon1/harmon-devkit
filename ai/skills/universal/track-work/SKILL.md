@@ -13,7 +13,7 @@ description: >-
   `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/verify-issue-receipt.sh --:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/verify-issue-receipt.sh --:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/verify-issue-receipt.sh --:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/verify-issue-receipt.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -632,6 +632,10 @@ For a proposed retitle, validate the title and guard against truncation:
   --previous-title '(cache): Reject stale entries when cache is cold'
 ```
 
+`--title-only` is a title lint and writes no receipt; before editing, run the full
+preflight over the proposed title, current body file and current labels, as in
+[the retitle recipe](references/issue-authoring.md).
+
 ### Body contract
 
 Use these level-two headings in this order. `Problem` and `Acceptance criteria`
@@ -956,6 +960,7 @@ indeterminate repository/vocabulary read. The checker performs no GitHub writes
 and writes only a local receipt on successful full draft validation.
 
 When local persistence is available:
+
 A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.
 
 Validation success still exits 0 if receipt persistence fails (for example, a

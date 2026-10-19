@@ -1328,8 +1328,8 @@ if [ "$receipt_needs_triage" -eq 1 ]; then
     echo "check-issue-metadata: create must carry --label needs-triage" >&2
 fi
 # Receipt minting is internal to this successful full-validation path.
-python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" "$author_type" \
-    "${labels[@]+"${labels[@]}"}" <<'PY_RECEIPT'
+if python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" "$author_type" \
+    "${labels[@]+"${labels[@]}"}" 2>"$tmp/receipt-error" <<'PY_RECEIPT'
 import hashlib
 import json
 import os
@@ -1339,17 +1339,17 @@ import sys
 import tempfile
 import time
 
-repo, title, body_file, needs_triage, author_type, *labels = sys.argv[1:]
-host, owner, name = repo.lower().split('/')
-repo = owner + '/' + name if host == 'github.com' else repo.lower()
-proposed = sorted(set(label.strip() for label in labels if label.strip()))
-create_labels = sorted(set(proposed + (['needs-triage'] if needs_triage == '1' else [])))
-value = dict(repo=repo, title=title,
-             body_sha256=hashlib.sha256(Path(body_file).read_bytes()).hexdigest(),
-             labels=create_labels)
-key = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                               separators=(',', ':')).encode('utf-8')).hexdigest()
 try:
+    repo, title, body_file, needs_triage, author_type, *labels = sys.argv[1:]
+    host, owner, name = repo.lower().split('/')
+    repo = owner + '/' + name if host == 'github.com' else repo.lower()
+    proposed = sorted(set(label.strip() for label in labels if label.strip()))
+    create_labels = sorted(set(proposed + (['needs-triage'] if needs_triage == '1' else [])))
+    value = dict(repo=repo, title=title,
+                 body_sha256=hashlib.sha256(Path(body_file).read_bytes()).hexdigest(),
+                 labels=create_labels)
+    key = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                   separators=(',', ':')).encode('utf-8')).hexdigest()
     common = Path(subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], text=True, stderr=subprocess.PIPE).strip())
     directory = common.resolve() / 'track-work' / 'receipts'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1368,7 +1368,7 @@ try:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-except (OSError, subprocess.SubprocessError) as error:
+except Exception as error:
     reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
               else str(error))
     print('check-issue-metadata: warning: no local receipt written: ' + reason
@@ -1377,4 +1377,10 @@ except (OSError, subprocess.SubprocessError) as error:
 else:
     print('check-issue-metadata: local receipt written')
 PY_RECEIPT
+then
+    cat "$tmp/receipt-error" >&2
+else
+    receipt_status=$?
+    warn "no local receipt written: receipt interpreter failed (exit $receipt_status): $(cat "$tmp/receipt-error"); the guard will refuse the create until a writable checkout re-runs the preflight"
+fi
 echo "check-issue-metadata: issue draft and proposed metadata verified"

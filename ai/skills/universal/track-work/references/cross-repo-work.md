@@ -106,17 +106,19 @@ repository owns <thing>.
 EOF
 ```
 
-Run the full pre-create gate from §5 from the same checkout as the create:
+Run the full pre-create gate from §5 from the **caller's checkout**:
 `<track-work-skill-dir>/assets/check-issue-metadata.sh` must receive
 `--repo <[host/]target-owner/target-repo>` and `--repo-root <target-checkout>`, so the
 target's owner type, manifest and provisioned vocabulary govern the draft.
 The local receipt lands in the git common directory of the checkout the checker
-is invoked from. Run both checker and create from the target checkout.
+is invoked from. Run the checker from the caller's checkout with
+`--repo-root <target checkout>`; run the verifier from that same caller checkout,
+so the receipt lands where the verifier and the harmon-init#1735 hook look.
 
 Only after that gate exits 0, follow SKILL.md's
 [agent-authored or human-authored create path](../SKILL.md#create-and-classify-through-the-shared-helper).
 Run its creation and any shared-helper application against the **target
-repository**, from the target checkout, under the same write authorization.
+repository**, from the caller's checkout, under the same write authorization.
 Return the created issue number so the caller can re-read the target's stored
 metadata. If a write partially succeeds, return that existing issue number and
 blocker; never create a duplicate in either repository to retry it.
