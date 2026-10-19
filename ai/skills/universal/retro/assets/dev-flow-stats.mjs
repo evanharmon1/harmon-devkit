@@ -2104,6 +2104,17 @@ function recordedRoundsPolicy(runDir) {
   return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
 }
 
+function assertAuthorizedCeilingProjection(run, stage, cap, projected) {
+  const ceiling = authorizedCeiling(run, stage, cap);
+  const expected = ceiling > cap ? ceiling : undefined;
+  if (projected !== expected) {
+    throw new EvidenceError(
+      `local-record trajectory for ${stage}: authorized ceiling projection disagrees — shared authorization resolves ${expected ?? "none"}, exit engine reported ${projected ?? "none"}`,
+    );
+  }
+  return expected;
+}
+
 // harmon-devkit#1001 item 11 / challenge round 5/7 (P2): a comment's
 // created_at alone answers "when was this comment first posted," not "is
 // this comment's CURRENT content visible as of a historical --as-of
@@ -2180,7 +2191,7 @@ function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, polic
   return { verification: parsed };
 }
 
-function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd()) {
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd(), exitScriptPath = DEFAULT_EXIT_SCRIPT) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
@@ -2422,6 +2433,12 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const recordedRounds = recordedRoundsPolicy(engineSnapshotDir);
     const engineRoundsByStage = new Map();
     const authorizedCeilings = {};
+    if (recordedRounds) {
+      for (const stage of ["challenge", "review"]) {
+        const ceiling = authorizedCeiling(body, stage, recordedRounds[stage]);
+        if (ceiling > recordedRounds[stage]) authorizedCeilings[stage] = ceiling;
+      }
+    }
     // Integration's spend is not measured here, but its recorded permission
     // can be disclosed without inventing a cycle count.
     const integrationCap = recordedRounds?.integration;
@@ -2469,7 +2486,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         // is safe here specifically — never for a stage that has real
         // rounds, which still uses its own genuine head below.
         let currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
-        let { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+        let { verification, error, code } = invokeExitScriptVerificationOnly(exitScriptPath, {
           runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
         });
         // Integration cycle 5 (P2), confirmed and fixed: the naive currentHead
@@ -2508,7 +2525,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
             }
             if (correctedHead && correctedHead !== currentHead) {
               currentHead = correctedHead;
-              ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+              ({ verification, error, code } = invokeExitScriptVerificationOnly(exitScriptPath, {
                 runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
               }));
             }
@@ -2565,7 +2582,12 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           }
         }
         engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
-        if (verification.authorized_ceiling !== undefined) authorizedCeilings[stage] = verification.authorized_ceiling;
+        if (recordedRounds) {
+          const ceiling = assertAuthorizedCeilingProjection(body, stage, recordedRounds[stage], verification.authorized_ceiling);
+          if (ceiling !== undefined) authorizedCeilings[stage] = ceiling;
+        } else if (verification.authorized_ceiling !== undefined) {
+          authorizedCeilings[stage] = verification.authorized_ceiling;
+        }
         // validateReceipts (inside the spawned process) is not itself stage-
         // scoped — it validates every pass on disk regardless of --stage — so
         // two successful invocations report byte-identical diagnostics for
@@ -2833,7 +2855,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   }
 }
 
-function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd() }) {
+function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd(), exitScriptPath = DEFAULT_EXIT_SCRIPT }) {
   const issueComments = fetchIssueComments(repo, issueNumber);
   const cutoffEpoch = asOf ? Date.parse(asOf) : Infinity;
   const withinCutoff = (comment) => Date.parse(comment.created_at) <= cutoffEpoch;
@@ -2871,7 +2893,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
     } else {
       try {
         const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
-        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot);
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot, exitScriptPath);
         if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
       } catch (err) {
         if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
@@ -3707,6 +3729,7 @@ export {
   resolveCanonical,
   findRunRecord,
   EvidenceError,
+  assertAuthorizedCeilingProjection,
   RUN_STAGES,
   firstSeen,
   resolveRegistryTrustedActorIds,
@@ -4036,6 +4059,19 @@ function cliRun(args) {
     console.error(`dev-flow-stats: --record-dir path does not exist: ${recordDirRequired.value}`);
     return 2;
   }
+  let exitScriptPath = DEFAULT_EXIT_SCRIPT;
+  if (recordDirRequired.value !== null) {
+    const exitScriptRequired = requiredArgValue("exit-script", args["exit-script"]);
+    if (!exitScriptRequired.ok) {
+      console.error(exitScriptRequired.error);
+      return 2;
+    }
+    exitScriptPath = exitScriptRequired.value || DEFAULT_EXIT_SCRIPT;
+    if (!existsSync(exitScriptPath)) {
+      console.error(`dev-flow-stats: exit script does not exist: ${exitScriptPath}`);
+      return 2;
+    }
+  }
   // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
   // path used to hardcode process.cwd() for the local-record trajectory's
   // repository root, ignoring this same flag the --replay path already
@@ -4049,7 +4085,7 @@ function cliRun(args) {
 
   let runs;
   try {
-    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot, exitScriptPath });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
