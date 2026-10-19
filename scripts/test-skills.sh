@@ -12068,6 +12068,17 @@ printf '%s\n' 'gh api endpoint --input payload.json # gh-api-write: approved pay
 expect_ok "API lint permits an explicitly annotated exceptional write (#1338)" \
     python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
 
+# New lane-watch supervision events retain their operator action contract.
+expect_ok "orchestrator documents approval prompt action" \
+    grep -qF 'Inspect the request and approve or deny within your authority.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator documents stall action" \
+    grep -qF 'Read the pane and act: investigate,' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator documents missing heartbeat recovery" \
+    grep -qF 'A missing heartbeat means re-arm the watcher' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

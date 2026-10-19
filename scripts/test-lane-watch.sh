@@ -60,6 +60,41 @@ if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; the
     trap '' TERM
     sleep 5
 fi
+if [ -f "$WATCH_FIXTURES/events-mode" ]; then
+    printf '%s\n' "$*" >>"$WATCH_FIXTURES/events-calls"
+    case "${1:-} ${2:-}" in
+    'agent list')
+        [ ! -f "$WATCH_FIXTURES/events-fail-list" ] || exit 92
+        if [ -f "$WATCH_FIXTURES/events-absent" ]; then
+            printf '%s\n' '{"result":{"agents":[]}}'
+            exit 0
+        fi
+        revision="$(cat "$WATCH_FIXTURES/events-revision")"
+        printf '{"result":{"agents":[{"name":"events","agent_status":"%s","revision":%s,"state_change_seq":1}]}}\n' "$(cat "$WATCH_FIXTURES/events-status" 2>/dev/null || printf idle)" "$revision"
+        exit 0
+        ;;
+    'agent explain')
+        [ ! -f "$WATCH_FIXTURES/events-fail-explain" ] || exit 92
+        if [ -f "$WATCH_FIXTURES/events-malformed-explain" ]; then
+            printf '%s\n' 'not json'
+            exit 0
+        fi
+        if [ -f "$WATCH_FIXTURES/events-fallback" ]; then
+            printf '%s\n' '{"fallback_reason":"default_known_agent_idle_fallback"}'
+        else
+            printf '%s\n' '{"fallback_reason":null}'
+        fi
+        exit 0
+        ;;
+    'agent read')
+        [ ! -f "$WATCH_FIXTURES/events-fail-visible" ] || [ "${5:-}" != visible ] || exit 92
+        cat "$WATCH_FIXTURES/events-pane"; exit 0 ;;
+    esac
+fi
+if [ "${1:-} ${2:-}" = "agent explain" ]; then
+    printf '%s\n' '{"fallback_reason":null}'
+    exit 0
+fi
 if [ "${1:-} ${2:-}" = "agent list" ]; then
     if [ -f "$WATCH_FIXTURES/malformed-list" ]; then
         printf '%s\n' '{"error":"temporarily unavailable"}'
@@ -565,7 +600,7 @@ for invalid_spec in \
     'alpha:branch-parity:parity1:evanharmon1/harmon-devkit:cloud:L-d1220'; do
     invalid_rc=0
     bash "$watcher" --iterations 1 --registry "$registry" --interval-seconds 0 \
-        2099-01-01T00:00:00Z "$invalid_spec" >"$parity_dir/invalid.out" 2>&1 || invalid_rc=$?
+        2099-01-01T00:00:00Z "$invalid_spec" >"$parity_dir/invalid.err" 2>&1 || invalid_rc=$?
     [ "$invalid_rc" -eq 2 ] || fail "invalid spec did not exit 2: $invalid_spec"
 done
 
@@ -2220,7 +2255,8 @@ rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-all-bad" 
 assert_line "$mp_allbad_out" 'POST-PROMOTION-INDETERMINATE alpha: #77'
 assert_count "$mp_allbad_out" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$mp_allbad_state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
-assert_count "$mp_allbad_state" 0 'null'
+# Missing agent revision fields may be null in METADATA; promotion identities may not.
+assert_count "$mp_allbad_state" 0 '^(WINDOW|ARMED|MALPROMO).*null'
 
 # #1041 P2 follow-up: malformed-row detection does not depend on tie-break
 # ordering -- an older malformed row alongside a newer valid one is caught
@@ -2474,25 +2510,540 @@ assert_count "$codex3_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+'
 assert_count "$codex3_state" 1 \
     "^DEGRADE[[:space:]]+alpha:ACTIVITY[[:space:]]+$((codex3_now - 5))[[:space:]]+1[[:space:]]+1:[0-9]+\$"
 
-# Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: (READY|HANDOFF|BLOCKED)-[A-Za-z0-9_-]+-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|OBSERVATION-DEGRADED [^:]+: .+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
-    "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
-    "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \
-    "$dormant_out1" "$dormant_out2" "$dormant_out3" \
-    "$samesecond_out1" "$samesecond_out2" \
-    "$rebind_out1" "$rebind_out2" "$mp_out" "$mp_allbad_out" "$mp_order_out" \
-    "$codex2_out" "$codex3_out" \
-    "$bounded_out1" "$bounded_out2" "$bounded_out3" \
-    "$ordering_out1" "$ordering_out2" \
-    "$reprom_out1" "$reprom_out2" "$reprom_out3" "$reprom_out4" "$reprom_out5" "$reprom_out6" \
-    "$s11_out" "$slow_out" \
-    "$sanitize_degrade_out" "$sanitize2_out" "$sanitize_malpromo_out" \
-    "$transient_out" "$restart_dedup_out" "$midepisode_out" "$multilane_out" \
-    "$degrade_empty_extra_out" "$malpromo_empty_extra_out" \
-    "$github_failure_out" "$activity_failure_out" "$malformed_activity_out" \
-    "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
-    fail 'watcher emitted a line outside the documented event grammar'
-fi
+# Approval episodes are keyed by visibility, not text or redraw revision.
+# Each invocation is a restart against the same durable state and fake clock.
+touch "$fixture_dir/events-mode" "$fixture_dir/events-fallback"
+printf '%s\n' 1 >"$fixture_dir/events-revision"
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
+events_state="$test_tmp/events.state"
+events_report="$test_tmp/events-report.md"
+events_out="$test_tmp/events.out"
+: >"$events_out"
+printf '%s\n' 2000000000 >"$clock_file"
+events_poll() {
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$events_state" \
+        --registry "$registry" --workspace-root "$workspace_root" \
+        --prompt-reemit-seconds 180 --stall-minutes 1 --heartbeat-minutes 1 "$@" \
+        2099-01-01T00:00:00Z \
+        "events:branch-events:a2:evanharmon1/harmon-devkit:$events_report" >>"$events_out"
+}
+events_poll
+events_poll
+assert_line "$events_out" 'AGENT events: init -> blocked (fallback)'
+assert_line "$events_out" 'PROMPT events: Requesting permission for: echo same (fallback)'
+assert_count "$events_out" 1 '^PROMPT '
+assert_count "$events_out" 0 '^AGENT .* -> (done|idle)'
+# Redraw metadata changes do not turn a waiting prompt into a new instance.
+printf '%s\n' 2 >"$fixture_dir/events-revision"
+events_poll
+assert_count "$events_out" 1 '^PROMPT '
+printf '%s\n' 2000000180 >"$clock_file"
+events_poll
+events_poll
+assert_count "$events_out" 2 '^PROMPT '
+assert_count "$events_out" 1 '^STALL '
+assert_count "$events_out" 1 '^HEARTBEAT '
+assert_line "$events_out" 'STALL events: no pane change for 3m'
+# A disappearance then identical reappearance starts another prompt episode,
+# even with the same timestamp. Restart dedup must not swallow that instance.
+printf '%s\n' 'I am checking Run this command? in logs.' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'AGENT events: blocked (fallback) -> unknown (fallback)'
+assert_count "$events_out" 2 '^PROMPT '
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 3 '^PROMPT '
+printf '%s\n' 2000000240 >"$clock_file"
+events_poll
+events_poll
+assert_count "$events_out" 2 '^STALL '
+assert_count "$events_out" 2 '^HEARTBEAT '
+# Both report and pane terminals suppress stalls. Use the real HANDOFF grammar.
+printf '%s\n' 'HANDOFF-events-a2' >"$events_report"
+printf '%s\n' 2000000360 >"$clock_file"
+events_poll
+assert_count "$events_out" 2 '^STALL '
+assert_line "$events_out" 'HANDOFF events: HANDOFF-events-a2'
+rm "$events_report"
+printf '%s\n' 'HANDOFF-events-a2' >"$fixture_dir/events-pane"
+events_poll
+printf '%s\n' 2000000480 >"$clock_file"
+events_poll
+assert_count "$events_out" 2 '^STALL '
+# Classified Codex and Claude episodes follow state, without fallback tagging.
+rm "$fixture_dir/events-fallback"
+printf '%s\n' blocked >"$fixture_dir/events-status"
+printf '%s\n' 'Would you like to run the following command?' 'echo codex' '› 1. Yes, just this once (y)' '  2. No, and tell Codex what to do differently (esc)' '' '  Press enter to confirm or esc to cancel' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'PROMPT events: Would you like to run the following command?'
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 'working' >"$fixture_dir/events-pane"
+events_poll
+printf '%s\n' blocked >"$fixture_dir/events-status"
+printf '%s\n' 'Do you want to proceed?' '❯ 1. Yes' '  2. No' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'PROMPT events: Do you want to proceed?'
+# Claude edit, create and command approvals each start a visible episode.
+for approval in 'Do you want to make this edit to file.sh?' 'Do you want to create file.sh?' 'Do you want to run echo hello?'; do
+    printf '%s\n' working >"$fixture_dir/events-status"
+    printf '%s\n' working >"$fixture_dir/events-pane"
+    events_poll
+    printf '%s\n' blocked >"$fixture_dir/events-status"
+    printf '%s\n' "$approval" '❯ 1. Yes' '  2. No, and tell Claude what to do differently (esc)' >"$fixture_dir/events-pane"
+    events_poll
+    assert_line "$events_out" "PROMPT events: $approval"
+done
+# A failed explain conveys no new state, including while approval stays live.
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
+touch "$fixture_dir/events-fallback"
+events_poll
+agent_count="$(grep -c '^AGENT ' "$events_out")"
+touch "$fixture_dir/events-fail-explain"
+events_poll
+events_poll
+assert_count "$events_out" "$agent_count" '^AGENT '
+assert_count "$events_out" 0 '^AGENT events: blocked \(fallback\) -> idle$'
+rm "$fixture_dir/events-fail-explain" "$fixture_dir/events-fallback"
+# A working classified lane never prompts for an answered dialog.
+printf '%s\n' idle >"$fixture_dir/events-status"
+for following in '› Write tests for @filename' 'Tests passed'; do
+    printf '%s\n' 'Would you like to make the following edits?' \
+        '› 1. Yes, just this once (y)' \
+        '  2. No, and tell Codex what to do differently (esc)' \
+        '  Press enter to confirm or esc to cancel' "$following" >"$fixture_dir/events-pane"
+    prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+    events_poll
+    printf '%s\n' 2000000720 >"$clock_file"
+    events_poll
+    assert_count "$events_out" "$prompt_count" '^PROMPT '
+done
+assert_line "$events_out" 'AGENT events: blocked (fallback) -> idle'
+# Pane text alone never starts a classified prompt episode.
+printf '%s\n' 'Do you want to create old.sh?' >"$fixture_dir/events-pane"
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$prompt_count" '^PROMPT '
+# Keep enough following output for the independent usage-window regression.
+for row in {1..9}; do printf 'working %s\n' "$row" >>"$fixture_dir/events-pane"; done
+# Usage text above the last eight lines is historical output.
+sed '1s/.*/Usage limit reached/' "$fixture_dir/events-pane" >"$test_tmp/usage-pane"
+cp "$test_tmp/usage-pane" "$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 0 '^USAGE-PAUSED events$'
+printf '%s\n' 'Usage limit reached' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 1 '^USAGE-PAUSED events$'
+# Failed visible reads report unknown age despite previously observed progress.
+touch "$fixture_dir/events-fail-visible"
+printf '%s\n' 2000000780 >"$clock_file"
+events_poll
+grep -Eq '^HEARTBEAT events: state=idle age=unknown pr=' "$events_out" || fail 'failed pane read retained heartbeat age'
+rm "$fixture_dir/events-fail-visible"
+# Failed list polls read only the visible pane: no explain/recent fan-out.
+touch "$fixture_dir/events-fail-list"
+: >"$fixture_dir/events-calls"
+events_poll
+assert_count "$fixture_dir/events-calls" 1 '^agent list$'
+assert_count "$fixture_dir/events-calls" 1 '^agent read events --source visible '
+assert_count "$fixture_dir/events-calls" 0 '^agent (explain|read events --source recent-unwrapped)'
+rm "$fixture_dir/events-fail-list"
+# Working panes cannot announce advisory sentinels or handoffs.
+printf '%s\n' working >"$fixture_dir/events-status"
+for terminal in READY HANDOFF BLOCKED; do
+    events_state="$test_tmp/working-$terminal.state"
+    printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
+    events_poll
+done
+assert_count "$events_out" 0 '^(SENTINEL|HANDOFF) events: .* \(pane only\)$'
+# Fallback idle lanes still surface each pane-only terminal, including HANDOFF.
+touch "$fixture_dir/events-fallback"
+for terminal in READY HANDOFF BLOCKED; do
+    events_state="$test_tmp/fallback-$terminal.state"
+    printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
+    events_poll
+    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
+done
+assert_line "$events_out" 'HANDOFF events: HANDOFF-events-a2 (pane only)'
+rm "$fixture_dir/events-fallback"
+# Transient failed/malformed explain reads never flap a normally working lane.
+events_state="$test_tmp/explain-working.state"
+printf '%s\n' working >"$fixture_dir/events-pane"
+events_poll
+agent_count="$(grep -c '^AGENT ' "$events_out")"
+for explain_failure in events-fail-explain events-malformed-explain; do
+    touch "$fixture_dir/$explain_failure"
+    events_poll
+    rm "$fixture_dir/$explain_failure"
+    events_poll
+    assert_count "$events_out" "$agent_count" '^AGENT '
+done
+# Classified approvals exist because herdr reports blocked, regardless of layout.
+printf '%s\n' blocked >"$fixture_dir/events-status"
+for dialog in run edit permissions terminal terminal-id tall-run; do
+    case "$dialog" in
+    run | tall-run) header='Would you like to run the following command?' ;;
+    edit) header='Would you like to make the following edits?' ;;
+    permissions) header='Would you like to grant these permissions?' ;;
+    terminal) header='Would you like to send input to the existing terminal?' ;;
+    terminal-id) header='Would you like to send input to terminal 123?' ;;
+    esac
+    events_state="$test_tmp/codex-$dialog.state"
+    printf '  %s\n\n  Reason: run the gate outside the sandbox\n\n' "$header" >"$fixture_dir/events-pane"
+    if [ "$dialog" = tall-run ]; then
+        for row in {1..25}; do printf '  $ command line %s\n' "$row" >>"$fixture_dir/events-pane"; done
+    fi
+    printf '%s\n' '' '› 1. Yes, just this once (y)' \
+        '  2. Yes, and do not ask again for this command in this session (a)' \
+        '  3. No, and tell Codex what to do differently (esc)' '' \
+        '  Press enter to confirm or esc to cancel' >"$test_tmp/codex-footer"
+    cat "$test_tmp/codex-footer" >>"$fixture_dir/events-pane"
+    prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+    events_poll
+    assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+    if [ "$dialog" = tall-run ]; then
+        assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
+    else
+        assert_line "$events_out" "PROMPT events:   $header"
+    fi
+done
+# Claude Code boxed option blocks are live even without a separate footer.
+events_state="$test_tmp/claude-boxed.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+╭────────────────────────────────────────────────────────────────╮
+│ Do you want to make this edit to main.py?                       │
+│ ❯ 1. Yes                                                      │
+│   2. Yes, allow all edits during this session (shift+tab)        │
+│   3. No, and tell Claude what to do differently (esc)            │
+╰────────────────────────────────────────────────────────────────╯
+DIALOG
+events_poll
+assert_count "$events_out" 1 '^PROMPT events: │ Do you want to make this edit to main.py[?]'
+# Actual hint rows and wrapped options are quotations, never prompt gates.
+events_state="$test_tmp/claude-bash.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+╭──────────────────────────────────────────────────────────────╮
+ Bash command
 
-echo 'lane-watch tests passed'
+   task verify
+   Run the definition-of-done gate
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for task commands in this project
+   3. No, and tell Claude what to do differently (esc)
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+DIALOG
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+# Leaving blocked ends the episode even with the same old dialog on screen.
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+events_state="$test_tmp/claude-edit.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+ Edit file
+ scripts/foo.sh
+
+ Do you want to make this edit to foo.sh?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No, and tell Claude what to do differently (esc)
+
+ Esc to cancel
+DIALOG
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+# Leaving blocked ends the episode even with the same old dialog on screen.
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+events_state="$test_tmp/codex-wrap.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+  Would you like to run the following command?
+
+  Reason: run the gate outside the sandbox
+
+  $ task verify
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `task
+     verify` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+DIALOG
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+# Leaving blocked ends the episode even with the same old dialog on screen.
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+# State-based episodes survive pane failure/redraws and re-emit on schedule.
+events_state="$test_tmp/classified-episode.state"
+printf '%s\n' 2000001000 >"$clock_file"
+printf '%s\n' 'no question captured' >"$fixture_dir/events-pane"
+prompt_count="$(grep -c '^PROMPT ' "$events_out")"
+events_poll
+assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001000[[:space:]]+2000001000'
+printf '%s\n' 'different pane text' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" "$((prompt_count + 1))" '^PROMPT '
+touch "$fixture_dir/events-fail-visible" "$fixture_dir/events-fail-explain"
+printf '%s\n' 2000001180 >"$clock_file"
+events_poll
+assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001000[[:space:]]+2000001180'
+rm "$fixture_dir/events-fail-explain"
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_state" 0 '^PROMPT[[:space:]]+events:a2[[:space:]]'
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_poll
+assert_count "$events_out" "$((prompt_count + 3))" '^PROMPT '
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001180[[:space:]]+2000001180'
+rm "$fixture_dir/events-fail-visible"
+# A successful list is authoritative about disappearance, even if explain fails.
+events_state="$test_tmp/disappeared.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+events_poll
+touch "$fixture_dir/events-absent" "$fixture_dir/events-fail-explain"
+events_poll
+assert_line "$events_out" 'AGENT events: working -> absent'
+assert_count "$events_state" 1 '^AGENT[[:space:]]+events[[:space:]]+absent[[:space:]]'
+rm "$fixture_dir/events-absent" "$fixture_dir/events-fail-explain"
+# Answered agy dialogs cannot remain blocked or re-emit prompts.
+touch "$fixture_dir/events-fallback"
+for answered_row in Approved 'Command completed' '› Type your next request'; do
+    events_state="$test_tmp/answered-agy.state"
+    events_out="$test_tmp/answered-agy.out"
+    rm -f "$events_state"
+    : >"$events_out"
+    printf '%s\n' 'Run this command?' '❯ 1. Yes, approve' '  2. No, deny' \
+        "$answered_row" >"$fixture_dir/events-pane"
+    events_poll
+    printf '%s\n' 2000001360 >"$clock_file"
+    events_poll
+    assert_count "$events_out" 0 '^PROMPT '
+    assert_count "$events_out" 0 '^AGENT .* -> blocked \(fallback\)$'
+done
+# The reported question followed by approval/completion output is answered too.
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' \
+    Approved 'Command completed' >"$fixture_dir/events-pane"
+events_poll
+assert_count "$events_out" 0 '^PROMPT '
+assert_count "$events_out" 0 '^AGENT .* -> blocked \(fallback\)$'
+rm "$fixture_dir/events-fallback"
+# Quotes prefer known bottom-of-pane headers, including Codex MCP approvals
+# without a question mark, rather than questions elsewhere in the transcript.
+printf '%s\n' blocked >"$fixture_dir/events-status"
+events_out="$test_tmp/excerpt.out"
+: >"$events_out"
+events_state="$test_tmp/mcp-excerpt.state"
+cat >"$fixture_dir/events-pane" <<'DIALOG'
+• Should I also delete the old release branch? I will wait for the gate first.
+
+• Calling github.create_pull_request
+
+  github needs your approval.
+
+  Tool: create_pull_request
+
+› 1. Approve this call (y)
+  2. Deny (esc)
+
+  Press enter to confirm or esc to cancel
+DIALOG
+events_poll
+assert_line "$events_out" 'PROMPT events:   github needs your approval.'
+assert_count "$events_out" 0 'Should I also delete'
+events_state="$test_tmp/old-question-excerpt.state"
+printf '%s\n' 'Would you like to run the following command?' >"$fixture_dir/events-pane"
+for row in {1..25}; do printf 'transcript output %s\n' "$row" >>"$fixture_dir/events-pane"; done
+events_poll
+assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
+assert_count "$events_out" 0 'Would you like to run'
+# Integration 1: list availability must not alter an unchanged-pane episode.
+events_out="$test_tmp/list-failure-stall.out"
+: >"$events_out"
+events_state="$test_tmp/list-failure-stall.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 'unchanged work' >"$fixture_dir/events-pane"
+printf '%s\n' 2100000000 >"$clock_file"
+events_poll
+touch "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000030 >"$clock_file"
+events_poll
+printf '%s\n' 2100000060 >"$clock_file"
+events_poll
+assert_line "$events_out" 'STALL events: no pane change for 1m'
+rm "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000090 >"$clock_file"
+events_poll
+touch "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000120 >"$clock_file"
+events_poll
+rm "$fixture_dir/events-fail-list"
+printf '%s\n' 2100000180 >"$clock_file"
+events_poll
+assert_count "$events_out" 1 '^STALL '
+assert_count "$events_state" 1 '^PROGRESS[[:space:]]+events:a2[[:space:]]+[^[:space:]]+[[:space:]]+2100000000[[:space:]]+1$'
+
+# Integration 2/3: missing pane reads preserve fallback state; failed explains
+# still permit reminders when a successful pane read confirms the approval.
+events_out="$test_tmp/fallback-read-failures.out"
+: >"$events_out"
+events_state="$test_tmp/fallback-read-failures.state"
+touch "$fixture_dir/events-fallback"
+printf '%s\n' 'Requesting permission for:' 'echo same' 'Run this command?' \
+    '❯ 1. Yes, approve' '  2. No, deny' >"$fixture_dir/events-pane"
+events_poll
+touch "$fixture_dir/events-fail-visible"
+events_poll
+rm "$fixture_dir/events-fail-visible"
+events_poll
+assert_count "$events_out" 1 '^AGENT '
+assert_count "$events_out" 0 '^AGENT .*blocked \(fallback\) -> unknown \(fallback\)$'
+touch "$fixture_dir/events-fail-explain"
+printf '%s\n' 2100000360 >"$clock_file"
+events_poll
+assert_count "$events_out" 2 '^PROMPT events: Requesting permission for: echo same \(fallback\)$'
+assert_count "$events_out" 1 '^AGENT '
+rm "$fixture_dir/events-fail-explain" "$fixture_dir/events-fallback"
+
+# Integration 4: blocked input is not necessarily an approval.
+events_out="$test_tmp/blocked-question.out"
+: >"$events_out"
+events_state="$test_tmp/blocked-question.state"
+printf '%s\n' blocked >"$fixture_dir/events-status"
+printf '%s\n' 'Which deployment target should I use?' >"$fixture_dir/events-pane"
+events_poll
+assert_line "$events_out" 'PROMPT events: (input requested; text not captured)'
+assert_count "$events_out" 0 'approval prompt'
+grep -qF 'Read the full pane with' "$repo_root/ai/skills/universal/orchestrate/SKILL.md" || fail 'prompt guidance omits full pane read'
+grep -qF 'A Herdr `blocked` state can be a question rather than an approval' "$repo_root/ai/skills/universal/orchestrate/SKILL.md" || fail 'prompt guidance treats all input as approval'
+
+# Integration 5: zero-padded thresholds are decimal (08 means eight minutes).
+events_out="$test_tmp/decimal-options.out"
+: >"$events_out"
+events_state="$test_tmp/decimal-options.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 'unchanged work' >"$fixture_dir/events-pane"
+printf '%s\n' 2100001000 >"$clock_file"
+events_poll --stall-minutes 08 --heartbeat-minutes 09 --prompt-reemit-seconds 08
+assert_count "$events_out" 0 '^STALL '
+printf '%s\n' 2100001480 >"$clock_file"
+events_poll --stall-minutes 08 --heartbeat-minutes 09 --prompt-reemit-seconds 08
+assert_line "$events_out" 'STALL events: no pane change for 8m'
+
+# Integration 6: each numeric supervision field rejects corrupt persisted data.
+for corrupt_field in progress-time progress-marker prompt-first prompt-last heartbeat; do
+    events_out="$test_tmp/corrupt-$corrupt_field.out"
+    : >"$events_out"
+    events_state="$test_tmp/corrupt-$corrupt_field.state"
+    case "$corrupt_field" in
+    progress-time) corrupt_row='PROGRESS\tevents:a2\tfingerprint\tbadtime\t0' ;;
+    progress-marker) corrupt_row='PROGRESS\tevents:a2\tfingerprint\t2100002000\tbadmarker' ;;
+    prompt-first) corrupt_row='PROMPT\tevents:a2\tbadfirst\t2100002000' ;;
+    prompt-last) corrupt_row='PROMPT\tevents:a2\t2100002000\tbadlast' ;;
+    heartbeat) corrupt_row='HEARTBEAT\trun\tbadtime' ;;
+    esac
+    printf '%b\n' "$corrupt_row" >"$events_state"
+    printf '%s\n' blocked >"$fixture_dir/events-status"
+    printf '%s\n' 2100002000 >"$clock_file"
+    events_poll 2>"$test_tmp/corrupt-$corrupt_field.err"
+    assert_count "$events_state" 0 'badtime|badmarker|badfirst|badlast'
+    assert_count "$test_tmp/corrupt-$corrupt_field.err" 0 'syntax error|unbound variable|value too great for base'
+    assert_count "$events_state" 1 '^PROGRESS[[:space:]]+events:a2[[:space:]]+[^[:space:]]+[[:space:]]+2100002000[[:space:]]+0$'
+    assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2100002000[[:space:]]+2100002000'
+    assert_count "$events_state" 1 '^HEARTBEAT[[:space:]]+run[[:space:]]+2100002000'
+done
+
+# Integration 7: deliver STALL even when persisting its dedup marker fails.
+events_out="$test_tmp/stall-before-persist.out"
+: >"$events_out"
+events_state="$persistfail_dir/stall-order.state"
+printf '%s\n' working >"$fixture_dir/events-status"
+printf '%s\n' 2100003000 >"$clock_file"
+events_poll
+touch "$fixture_dir/fail-mv"
+printf '%s\n' 2100003060 >"$clock_file"
+if events_poll 2>"$test_tmp/stall-before-persist.err"; then
+    fail 'STALL persistence fault unexpectedly succeeded'
+fi
+rm "$fixture_dir/fail-mv"
+assert_line "$events_out" 'STALL events: no pane change for 1m'
+assert_count "$test_tmp/stall-before-persist.err" 1 'could not persist state'
+assert_count "$events_state" 1 '^PROGRESS[[:space:]]+events:a2[[:space:]]+[^[:space:]]+[[:space:]]+2100003000[[:space:]]+0$'
+
+# Integration 8: zero thresholds are polling controls, not disable switches.
+bash "$watcher" --help >"$test_tmp/usage.txt"
+assert_line "$test_tmp/usage.txt" '  A value of 0 for the three options above means "every poll", not "disabled".'
+rm "$fixture_dir/events-mode"
+
+# Cloud heartbeat tracks branch/PR age without any Herdr reads or local events.
+touch "$fixture_dir/cloud-only"
+cloud_heartbeat_state="$test_tmp/cloud-heartbeat.state"
+cloud_heartbeat_out="$test_tmp/cloud-heartbeat.out"
+: >"$cloud_heartbeat_out"
+for events_time in 2000000000 2000000060 2000000060; do
+    printf '%s\n' "$events_time" >"$clock_file"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$cloud_heartbeat_state" \
+        --registry "$registry" --heartbeat-minutes 1 --stall-minutes 0 \
+        2099-01-01T00:00:00Z \
+        cloud:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:cloud >>"$cloud_heartbeat_out"
+done
+assert_count "$cloud_heartbeat_out" 1 '^HEARTBEAT '
+assert_count "$cloud_heartbeat_out" 0 '^(PROMPT|STALL|AGENT) '
+grep -Eq '^HEARTBEAT cloud: state=cloud age=60s pr=' "$cloud_heartbeat_out" || fail 'cloud heartbeat lacks age and PR state'
+[ ! -f "$fixture_dir/cloud-herdr-calls" ] || fail 'cloud heartbeat read Herdr'
+rm "$fixture_dir/cloud-only"
+echo 'PASS: lane watcher prompt episodes, fallback, stalls and heartbeat'
+
+# Every watcher event-output file uses .out, including parity, events.out,
+# answered-agy.out, the redeclared events_out (excerpt.out), and cloud heartbeat.
+# Invalid-input diagnostics are .err files and do not contain event streams.
+# Run this last so all event families and every output file are checked.
+lane_pattern='[A-Za-z0-9_-]+'
+state_pattern='(absent|unknown|working|idle|blocked|done)( \(fallback\))?'
+pr_pattern='#[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8,64}'
+heartbeat_lane_pattern="$lane_pattern: state=(cloud|$state_pattern) age=(unknown|[0-9]+s) pr=(absent|$pr_pattern)"
+event_patterns=(
+    "PROMPT $lane_pattern: .{1,300}( \(fallback\))?"
+    "AGENT $lane_pattern: (init|$state_pattern) -> $state_pattern"
+    "STALL $lane_pattern: no pane change for [0-9]+m"
+    "HEARTBEAT $heartbeat_lane_pattern(; $heartbeat_lane_pattern)*"
+    "SENTINEL $lane_pattern: (READY|HANDOFF|BLOCKED)-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
+    "HANDOFF $lane_pattern: HANDOFF-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
+    "BRANCH $lane_pattern: (absent|[^[:space:]]+ head=[0-9A-Fa-f]{8})"
+    "PR $lane_pattern: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8}"
+    "POST-PROMOTION-ACTIVITY $lane_pattern: [^[:space:]]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*"
+    "POST-PROMOTION-CLOSED $lane_pattern: #[0-9]+ since=[0-9]+:[0-9]*"
+    "POST-PROMOTION-INDETERMINATE $lane_pattern: #[0-9]+"
+    "OBSERVATION-DEGRADED $lane_pattern: .+"
+    "USAGE-PAUSED $lane_pattern"
+    "WALLCLOCK (run|$lane_pattern): .+"
+)
+event_grammar="^($(
+    IFS='|'
+    printf '%s' "${event_patterns[*]}"
+))$"
+grammar_status=0
+grep -Env "$event_grammar" "$test_tmp"/*.out "$parity_dir"/*.out || grammar_status=$?
+[ "$grammar_status" -eq 1 ] || fail 'watcher emitted a line outside the documented event grammar'
+echo 'PASS: every lane watcher event output matches the stable event grammar'
