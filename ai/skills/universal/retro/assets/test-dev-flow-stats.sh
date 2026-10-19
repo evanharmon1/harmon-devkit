@@ -4693,14 +4693,13 @@ out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r
 grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
     fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
 
-# Challenge r1: only current-run completed schema-valid integrators count.
+# Challenge r2: current-run schema-valid integrators count, including blocked.
 echo "== invalid retained integrator passes are excluded nonfatally with diagnostics =="
 integrator_file="$tmp/local-records/$run_id/passes/integration-r1.json"
 cp "$integrator_file" "$tmp/integration-r1-valid.json"
-for mutation in wrong-run blocked object-findings; do
+for mutation in wrong-run object-findings; do
     case "$mutation" in
     wrong-run) jq '.run.run_id = "run-999-other"' "$tmp/integration-r1-valid.json" >"$integrator_file" ;;
-    blocked) jq '.status = "blocked"' "$tmp/integration-r1-valid.json" >"$integrator_file" ;;
     object-findings) jq '.payload.findings = {"x":1}' "$tmp/integration-r1-valid.json" >"$integrator_file" ;;
     esac
     set +e
@@ -4713,6 +4712,11 @@ for mutation in wrong-run blocked object-findings; do
       any(.trajectory_diagnostics[]; .pass == "integration-r1" and .level == "reject")
     ' >/dev/null || fail "$mutation integrator counted or omitted diagnostic: $out"
 done
+echo "== a valid blocked integrator carrying findings is counted =="
+jq '.status = "blocked"' "$tmp/integration-r1-valid.json" >"$integrator_file"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null ||
+    fail "valid blocked integrator findings not counted: $out"
 cp "$tmp/integration-r1-valid.json" "$integrator_file"
 # End challenge-r1 integrator exclusion regressions.
 
@@ -5757,6 +5761,7 @@ const run = {
   ]
 };
 const t = renderTrajectory(run);
+assert.equal(t.retained_record_findings_by_stage_finder, null);
 assert.equal(t.remediation_pushes.length, 1);
 assert.equal(t.remediation_pushes[0].head, 'a'.repeat(40));
 assert.deepEqual(t.findings_by_stage_finder, {

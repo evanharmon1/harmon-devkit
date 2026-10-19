@@ -2830,7 +2830,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const forged = [...allUntrustedMarkers.filter((observed) => observed.reason === "untrusted-actor"), ...legacyForged];
     const tampered = allUntrustedMarkers.filter((observed) => observed.reason !== "untrusted-actor");
 
-    // The exit engine does not validate integrator passes. Only completed,
+    // The exit engine does not validate integrator passes. Only
     // receipt-backed envelopes validated for this run contribute to this
     // retained-record grouping; rejected integrators remain diagnostics.
     const retainedIntegratorPasses = [];
@@ -2841,7 +2841,6 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           ["integrator", entry.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
           `integrator pass ${entry.name}`,
         );
-        if (entry.content.status !== "completed") throw new EvidenceError("integrator pass is not completed");
         retainedIntegratorPasses.push(entry.content);
       } catch (error) {
         if (!(error instanceof EvidenceError)) throw error;
@@ -3391,7 +3390,7 @@ function renderTrajectory(run) {
       .map((entry) => ({ entered_at: entry.entered_at, ...entry.remediation })),
     findings_by_stage_finder: findingsByStageFinder(rounds.filter((entry) => entry.stage !== "integration")),
     retained_record_findings_by_stage_finder: run.retainedIntegrationFinderCounts === undefined
-      ? {} : { integration: run.retainedIntegrationFinderCounts },
+      ? null : { integration: run.retainedIntegrationFinderCounts },
     interventions: run.state.interventions,
     settlements: run.state.settlements,
     splits: run.state.splits,
@@ -3479,7 +3478,10 @@ function renderTrajectoryTable(trajectory) {
     for (const [finder, count] of Object.entries(counts)) lines.push(`    ${finder}: ${count}`);
   }
   lines.push("retained-record findings by finder (not verified by GitHub):");
-  for (const [stage, counts] of Object.entries(trajectory.retained_record_findings_by_stage_finder)) {
+  if (trajectory.retained_record_findings_by_stage_finder === null) {
+    lines.push("  not measured on this path: no retained run record was read");
+  }
+  for (const [stage, counts] of Object.entries(trajectory.retained_record_findings_by_stage_finder ?? {})) {
     for (const [finder, count] of Object.entries(counts)) lines.push(`  ${stage}/${finder}: ${count}`);
   }
   lines.push("integration: not measured from local evidence");

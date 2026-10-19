@@ -1138,9 +1138,11 @@ function measure(trajectory, policy) {
   const stageCounts = trajectory.findings_by_stage_class_and_provenance
   for (const stage of stages) {
     stage.findings_by_finder = Object.hasOwn(trajectory, 'findings_by_stage_finder')
-      ? trajectory.findings_by_stage_finder?.[stage.stage] ?? {} : null
+      ? trajectory.findings_by_stage_finder?.[stage.stage] ?? {} : undefined
     stage.retained_record_findings_by_finder = Object.hasOwn(trajectory, 'retained_record_findings_by_stage_finder')
-      ? trajectory.retained_record_findings_by_stage_finder?.[stage.stage] ?? {} : null
+      ? trajectory.retained_record_findings_by_stage_finder === null
+        ? null : trajectory.retained_record_findings_by_stage_finder?.[stage.stage] ?? {}
+      : undefined
     stage.findings_by_class_and_provenance = stageCounts?.[stage.stage] === undefined
       ? null
       : classProvenanceRows(stageCounts[stage.stage])
@@ -1330,8 +1332,10 @@ function renderMarkdown(report) {
       const source = stage.stage === 'integration'
         ? 'retained-record evidence, not verified by GitHub'
         : 'authenticated pass evidence'
-      l.push(`- Findings by finder (${source}):${finderCounts === null ? ' unavailable from this harvester' : ''}`)
-      if (finderCounts !== null) {
+      const absence = finderCounts === undefined ? ' unavailable from this harvester'
+        : finderCounts === null ? ' not measured on this path — no retained run record was read' : ''
+      l.push(`- Findings by finder (${source}):${absence}`)
+      if (finderCounts !== undefined && finderCounts !== null) {
         if (Object.keys(finderCounts).length === 0) l.push('  - No findings recorded.')
         for (const [finder, count] of Object.entries(finderCounts)) l.push(`  - ${cell(finder)}: ${count}`)
       }

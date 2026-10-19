@@ -3383,12 +3383,12 @@ assert.deepEqual(report.measurements.stages.find(s => s.stage === 'review').find
 NODE
 [ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "not-measurable references exclude the closed-issue fixture" || bad "closed issue reference check exit $RC"
 
-echo "==> current harvester with empty stage maps does not claim an older harvester =="
+echo "==> local-record measurement with empty maps reports no findings =="
 node - "$d/trajectory.json" <<'NODE'
 const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
 t.rounds = []
 t.findings_by_stage_finder = {}
-t.retained_record_findings_by_stage_finder = {}
+t.retained_record_findings_by_stage_finder = { integration: {} }
 fs.writeFileSync(p, JSON.stringify(t))
 NODE
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
@@ -3402,6 +3402,27 @@ for (const stage of ['challenge', 'review', 'integration']) {
 }
 NODE
 [ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "empty confidence rounds and absent retained integrators report no findings" || bad "empty finder stage labels"
+
+echo "==> comment-path integration counts are unmeasured, never an empty count =="
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.retained_record_findings_by_stage_finder = null
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const integration = text.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
+assert.match(integration, /Findings by finder .*: not measured on this path — no retained run record was read/)
+assert.ok(!integration.includes('No findings recorded'))
+assert.ok(!integration.includes('unavailable from this harvester'))
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "unmeasured comment-path counts retain their reason" || bad "unmeasured finder label"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "integration") | .retained_record_findings_by_finder == null' <<<"$OUT" >/dev/null &&
+    ok "JSON preserves the unmeasured null" || bad "unmeasured null lost"
 
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
