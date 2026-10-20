@@ -361,18 +361,18 @@ transactionally refreshing its claim:
 
 ```sh
 node assets/provision-lane.mjs --slate ID --session ID --owner-token TOKEN \
-  --lane ID --facts lane-facts.json --nonce ATTEMPT
+  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT
 ```
 
 For an added lane, widen the lock with `run-record.mjs lock acquire --issues`
 and the existing owner token, then publish the plan revision through #1410's
 plan writer, then run `provision-lane.mjs`. Provisioning never widens the
 reservation or writes a plan. A conflicting reservation, invalid plan or facts,
-unknown lane, existing run, or effective-fence overlap with another live lane
-refuses before durable state is written. Complete a serialized predecessor and
-publish its done verdict before provisioning a lane with an overlapping fence.
-Fence checks include expansions and unmaterialized globs; two glob patterns
-whose disjointness cannot be proved are refused for plan revision or judgment.
+unknown lane, existing run, or unrecorded effective-fence overlap with another
+live lane refuses before durable state is written. Plan-recorded `serialize`
+and `split` overlaps provision with their overlap text and merge dependency.
+Fence checks include expansions and unmaterialized globs; a possible overlap
+not covered by the recorded issue pair is refused for plan revision or judgment.
 
 The command composes `run-record.mjs lane-init`, the monitor's `activate` and
 `reserve-agent-run`, and the `brief` validator. It obtains its output directory
@@ -380,6 +380,11 @@ from `dev-flow-monitor.sh orchestrator-dir`, prints a JSON handoff including
 the brief and report paths, and never mints, stores or prints an owner token.
 Inspect durable state after an operational failure; an existing run is never
 overwritten or silently resumed by provisioning.
+
+`--policy` is the complete trusted `devflow-policy.mjs resolve --json` output
+for this lane, as supplied to `solo-init`. Its dispatch fields must agree with
+the last validated plan's lane profile. Both kickoff writers preserve the same
+full projection, including finder slots, producer-tier order and push gates.
 
 The facts file is a JSON object with only these per-lane dispatch facts:
 `worktree_path`, `harness`, `harness_text`, `effort`, `codex_model_id`,

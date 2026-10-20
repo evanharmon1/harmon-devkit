@@ -14,7 +14,7 @@
 //   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
 //                               --branch NAME --base SHA --policy FILE --actor-id N --strategy-source TEXT
 //                               [--operator-pin TEXT]... [--registry-revision SHA] [--at TS]
-//   run-record.mjs lane-init    --slate ID --session ID --lane ID [--at TS]
+//   run-record.mjs lane-init    --slate ID --session ID --lane ID --policy FILE [--at TS]
 //   run-record.mjs receipt      --slate ID --session ID --run-id ID --pass FILE
 //   run-record.mjs adjudicate   --slate ID --session ID --run-id ID --file FILE
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
@@ -750,16 +750,9 @@ export function laneInit(args) {
   const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
   const record = kickoffRecord(runId, at,
     `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
-  // A plan profile is the dispatch projection, not a second policy resolver.
-  const projection = {
-    source: 'validated-plan',
-    rigor: { level: profile.rigor, source: profile.rigor_source },
-    rounds: { ...profile.caps, integration_exempt: profile.caps.integration },
-    breadth: profile.breadth,
-    strategy: { name: profile.strategy },
-    roles: Object.fromEntries(Object.entries(profile.role_tiers).map(([role, tier]) => [role, { tier, source: 'validated-plan' }])),
-    disclosures: [], warnings: [],
-  }
+  const projection = lanePolicyProjection(plan, lane, args.policy)
+  const selection = finderSelection(projection)
+  if (selection.length > 0) record.finder_selection = selection
   // Validate the complete kickoff record before creating its durable directory.
   // This also rejects calendar-invalid timestamps resolveAt cannot detect.
   const temporary = mkdtempSync(join(tmpdir(), 'lane-init-'))
@@ -786,6 +779,31 @@ function kickoffRecord(runId, at, exit) {
     evidence_comments: [], evidence_registrations: [], pr_bindings: [],
     outcome_transitions: [], settlements: [], promotion: null,
   }
+}
+
+// Preserve the resolver's complete projection for both kickoff writers. Fields
+// such as stages, tier_order and gates govern later receipts and pushes.
+function kickoffPolicyProjection(policy, plannedPolicy) {
+  return { ...policy, rigor: { ...policy.rigor, source: policy.rigor.source ?? plannedPolicy.rigor_source } }
+}
+
+function finderSelection(policy) {
+  return (Array.isArray(policy.finder_selection) ? policy.finder_selection : [])
+    .map(({ stage, configured, requested, effective }) => ({ stage, configured, requested, effective }))
+}
+
+export function lanePolicyProjection(plan, lane, policyFile) {
+  if (typeof policyFile !== 'string' || !policyFile) throw new UsageError('--policy is required (resolved-policy JSON)')
+  const policy = readJson(policyFile, '--policy')
+  const profile = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const projected = planPolicy(policy, { strategySource: profile.strategy_source, operatorPins: profile.operator_pins })
+  // The plan may carry attributed prose ("explicit operator input ...") where
+  // the resolver records "operator". Compare execution values, not that prose.
+  projected.rigor_source = profile.rigor_source
+  if (canonicalJson(projected) !== canonicalJson(profile)) {
+    throw new Refusal('--policy does not match the lane profile in the last validated plan revision')
+  }
+  return kickoffPolicyProjection(policy, profile)
 }
 
 // ---------------------------------------------------------------------------
@@ -979,8 +997,7 @@ function soloInit(args) {
   refuseGrafts(repoRoot)
   const policy = readJson(args.policy, '--policy')
   const plannedPolicy = planPolicy(policy, { strategySource: args['strategy-source'], operatorPins: args['operator-pin'] ?? [] })
-  const selection = (Array.isArray(policy.finder_selection) ? policy.finder_selection : [])
-    .map(({ stage, configured, requested, effective }) => ({ stage, configured, requested, effective }))
+  const selection = finderSelection(policy)
   const slate = soloSlate(runId)
   const runDir = join(root, 'runs', runId)
 
@@ -1057,7 +1074,7 @@ function soloInit(args) {
 
     // policy.json is the projection itself; the one field the renderer needs
     // and a default resolution leaves unset is the rigor source it discloses.
-    const projection = { ...policy, rigor: { ...policy.rigor, source: policy.rigor.source ?? plannedPolicy.rigor_source } }
+    const projection = kickoffPolicyProjection(policy, plannedPolicy)
     const policyFile = join(runDir, 'policy.json')
     if (publishExclusive(policyFile, `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')) {
       undo.push(() => rmSync(policyFile, { force: true }))

@@ -47,7 +47,15 @@ export function assertDisjointFences(plan, lane) {
   for (const other of plan.lanes.filter((entry) => entry.lane !== lane.lane && live.has(entry.issue))) {
     for (const left of effectiveFence(lane)) for (const right of effectiveFence(other)) {
       if (mayOverlap(left.path, right.path)) {
-        throw new Refusal(`effective fence overlaps live lane ${other.lane}: ${left.path} / ${right.path}; complete the serialized predecessor or revise the plan before provisioning`)
+        const recorded = plan.overlaps.find((entry) =>
+          [entry.issue_a, entry.issue_b].includes(lane.issue) &&
+          [entry.issue_a, entry.issue_b].includes(other.issue) &&
+          ['serialize', 'split'].includes(entry.resolution) &&
+          entry.paths.some((path) =>
+            (left.path === right.path && path === left.path) ||
+            (!/[*?]/.test(left.path) && pathMatches(left.path, path)) ||
+            (!/[*?]/.test(right.path) && pathMatches(right.path, path))))
+        if (!recorded) throw new Refusal(`effective fence overlaps live lane ${other.lane}: ${left.path} / ${right.path}; no plan-recorded overlap covers this path`)
       }
     }
   }

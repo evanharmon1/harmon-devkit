@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Compose existing writers; never acquire a new slate lock or revise a plan.
 // Usage: provision-lane.mjs --slate ID --session ID --owner-token TOKEN
-//                         --lane ID --facts FILE --nonce NONCE [--at UTC]
+//                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC]
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  Refusal, UsageError, acquireSlateLock, assertRunOwner, currentPlan, laneInit,
+  Refusal, UsageError, acquireSlateLock, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
   parseFlags, readJson, requireId, resolveAt, runCli, stateRoot, validateFile, withMutex,
 } from '../../dev-flow-support/assets/run-record.mjs'
 import { assertDisjointFences, buildBriefValues, renderBrief, validateFacts } from './lane-brief-values.mjs'
@@ -55,6 +55,7 @@ function provision(args) {
     if (existsSync(runDir) && readdirSync(runDir).length) throw new Refusal(`${runDir} already contains state; inspect before provisioning`)
     assertRunOwner(root, slate, lane.run_id)
     assertDisjointFences(plan, lane)
+    lanePolicyProjection(plan, lane, args.policy)
     const facts = readJson(args.facts, 'lane facts')
     validateFacts(facts)
     const worktree = realpathSync(facts.worktree_path)
@@ -93,7 +94,7 @@ function provision(args) {
     }
     if (!existsSync(join(root, 'locks', `${slate}.json`))) throw new Refusal('slate must already be reserved with lock acquire')
     acquireSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
-    laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, at })
+    laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
       '--expected-generation', '0', '--registry-revision', revision, '--writer', 'feature-owner'])
     if (activated !== String(generation)) throw new Refusal('activation generation differs from the validated brief')
@@ -113,7 +114,7 @@ function provision(args) {
 }
 
 function main(argv) {
-  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'nonce', 'at'])
+  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at'])
   return provision(parseFlags(argv, flags, new Set()))
 }
 

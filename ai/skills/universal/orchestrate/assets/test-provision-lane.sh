@@ -22,9 +22,13 @@ const validator = join(support, 'validate-result-schemas.mjs')
 const command = join(assets, 'provision-lane.mjs')
 const { chainDigest } = await import(writer)
 const { buildBriefValues, renderBrief, assertDisjointFences } = await import(join(assets, 'lane-brief-values.mjs'))
+const { resolvePolicy } = await import(join(support, 'devflow-policy.mjs'))
+const { parseToml } = await import(join(support, 'lib/toml-lite.mjs'))
+const policySource = readFileSync(resolve(assets, '../../../../../.devflow.toml'), 'utf8')
+const resolvedPolicy = resolvePolicy(parseToml(policySource), { rigor: 'thorough', rigorSource: 'operator', tierOverrides: { implementer: 'frontier' } })
 const at = '2026-10-20T06:00:00Z'
 const policy = {
-  rigor: 'thorough', rigor_source: 'operator',
+  rigor: 'thorough', rigor_source: 'explicit operator input (fixture maintainer)',
   caps: { challenge: 4, review: 4, integration: 5, remediation: 5, min_rounds: 1, wall_clock_min: 60 },
   breadth: { max_agent_runs: 12, max_parallel_agents: 4 },
   strategy: 'plan', strategy_source: 'default_strategy',
@@ -82,6 +86,7 @@ function fixture() {
   }
   const planFile = join(root, 'slates/s/plan.json')
   const factsFile = join(repo, 'facts.json')
+  const policyFile = join(repo, 'resolved-policy.json')
   mkdirSync(join(root, 'slates/s'), { recursive: true })
   const revisions = []
   function publish() {
@@ -96,9 +101,19 @@ function fixture() {
   publish()
   lane.expansions.push({ path: 'tests/one', at, reason: 'regression test' })
   publish(); saveFacts()
-  const args = (name = 'l1') => ['--slate', 's', '--session', 'owner', '--owner-token', token, '--lane', name,
-    '--facts', factsFile, '--nonce', 'a1', '--at', at]
-  return { repo, root, token, lane, plan, facts, planFile, factsFile, publish, saveFacts, args }
+  const args = (name = 'l1') => {
+    const profile = plan.lane_profiles?.find((entry) => entry.lane === name)?.policy ?? plan.policy
+    const full = structuredClone(resolvedPolicy)
+    full.rigor = { ...full.rigor, level: profile.rigor, source: 'operator' }
+    full.rounds = { ...full.rounds, ...profile.caps }
+    full.breadth = { ...full.breadth, ...profile.breadth }
+    full.strategy.name = profile.strategy
+    for (const [role, tier] of Object.entries(profile.role_tiers)) full.roles[role].tier = tier
+    writeFileSync(policyFile, JSON.stringify(full))
+    return ['--slate', 's', '--session', 'owner', '--owner-token', token, '--lane', name,
+      '--facts', factsFile, '--policy', policyFile, '--nonce', 'a1', '--at', at]
+  }
+  return { repo, root, token, lane, plan, facts, planFile, factsFile, policyFile, publish, saveFacts, args }
 }
 function refusal(f, pattern, file = command, args = f.args()) {
   const before = snapshot(f.root)
@@ -111,6 +126,11 @@ function refusal(f, pattern, file = command, args = f.args()) {
 
 const f = fixture()
 refusal(f, /unknown lane/, command, f.args('missing'))
+const mismatched = f.args()
+const badPolicy = JSON.parse(readFileSync(f.policyFile))
+badPolicy.roles.challenger.tier = 'economy'
+writeFileSync(f.policyFile, JSON.stringify(badPolicy))
+refusal(f, /does not match the lane profile/, command, mismatched)
 f.facts.claim_handoff.branch = 'wrong-branch'; f.saveFacts()
 refusal(f, /rendered lane brief failed/)
 f.facts.claim_handoff.branch = f.lane.branch; f.saveFacts()
@@ -136,6 +156,27 @@ const budget = JSON.parse(readFileSync(join(first.record_directory, 'monitor.jso
 assert.equal(budget.max_agent_runs, 12)
 assert.equal(budget.reservations.length, 1)
 assert.equal(budget.reservations[0].event, 'dispatch-l1-a1')
+assert.deepEqual(JSON.parse(readFileSync(join(first.record_directory, 'policy.json'))), JSON.parse(readFileSync(f.policyFile)))
+for (const stage of ['claim', 'implement', 'verify', 'challenge']) {
+  node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
+const passFile = join(f.repo, 'challenge-pass.json')
+const pass = {
+  schema: 2, role: 'challenger', status: 'completed', head: f.plan.base_sha,
+  produced_at: at, producer: { harness: 'codex-cli', model: 'gpt-6-astra', tier: 'apex' },
+  run: { run_id: 'run-one', initiated_by: 'human' },
+  payload: { stage: 'challenge', round: 1, reviewed_head: f.plan.base_sha,
+    finder: 'codex-adversarial', slot: 'codex-adversarial', findings: [],
+    counts: { P0: 0, P1: 0, P2: 0, P3: 0 },
+    attack_scenarios: [{ id: 'as-1', description: 'fixture invariant check', outcome: 'held', finding_id: null }] },
+}
+const receiptArgs = ['receipt', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--run-id', 'run-one', '--pass', passFile]
+writeFileSync(passFile, JSON.stringify({ ...pass, producer: { harness: 'codex-cli', model: 'gpt-6-luna', tier: 'economy' } }))
+refusal(f, /producer tier "economy" is below/, writer, receiptArgs)
+writeFileSync(passFile, JSON.stringify(pass))
+assert.match(node(f.repo, writer, receiptArgs), /recorded pass receipt challenge-r1-codex-adversarial/)
+console.log('PASS: provisioned lane accepts its configured challenge receipt and enforces producer tier')
 refusal(f, /run.json already exists/)
 console.log('PASS: complete provisioning, lane profile, literal substitution, all required input refusals preserve state')
 
@@ -174,11 +215,12 @@ assert.ok(addedBrief.includes('lane `l1`'))
 assert.ok(!JSON.parse(addedBrief.match(/```json\n([^\n]+)\n```/)[1]).live_lane_overlaps.some((line) => line.includes('lane `l2`')))
 console.log('PASS: nonempty slate, widen → fixture plan revision → added-lane provision → intervention')
 
-function withOther(fence, expansion) {
+function withOther(fence, expansion, recorded = false) {
   const overlap = fixture()
-  overlap.plan.issues.push({ number: 2, title: 'other', url: 'u', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] })
+  overlap.plan.issues.push({ number: 2, title: 'other', url: 'u', verdict: 'valid', candidate_files: recorded ? ['src/one'] : ['src/two'], blocked_by: [] })
   overlap.plan.lanes.push({ ...second, fence, expansions: [] })
   overlap.plan.lane_profiles.push({ lane: 'l2', policy })
+  if (recorded) overlap.plan.overlaps.push({ issue_a: 1, issue_b: 2, paths: ['src/one'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } })
   overlap.plan.waves.push({ number: 2, issues: [2] }); overlap.publish()
   if (expansion) {
     overlap.plan.lanes[1].expansions.push({ path: expansion, at, reason: 'expansion overlaps l1' })
@@ -191,6 +233,12 @@ refusal(withOther(['src/two'], 'src/one'), /effective fence overlaps live lane l
 refusal(withOther(['src/**']), /effective fence overlaps live lane l2/)
 const overlap = withOther(['src/two'], 'tests/one')
 refusal(overlap, /effective fence overlaps live lane l2/)
+const recorded = withOther(['src/one'], undefined, true)
+node(recorded.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', recorded.token, '--issues', '1,2'])
+const sharedResult = JSON.parse(node(recorded.repo, command, recorded.args()))
+const sharedBrief = readFileSync(sharedResult.brief_path, 'utf8')
+assert.ok(sharedBrief.includes('lane `l2`') && sharedBrief.includes('resolution serialize; #1 merges before #2'))
+console.log('PASS: recorded serialize overlap provisions and carries its merge dependency')
 assert.throws(() => assertDisjointFences({ ...overlap.plan, lanes: [
   { ...overlap.lane, fence: ['src/a*'] }, { ...second, fence: ['src/*b'] },
 ] }, { ...overlap.lane, fence: ['src/a*'] }), /effective fence overlaps/)

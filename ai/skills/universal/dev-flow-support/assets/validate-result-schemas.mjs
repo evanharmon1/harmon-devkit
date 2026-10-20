@@ -304,7 +304,7 @@ function checkBriefFacts(instance, errors) {
   // Lane labels already live in the rendered title and canonical sentinels;
   // do not add a competing inferred identity to the envelope schema.
   const ownLanes = new Set()
-  const heading = instance.body.match(/^# Lane brief — (.+?) \([^\n]+\)\s*$/m)
+  const heading = instance.body.match(/^# Lane brief — (.+?)(?: \([^\n]+\))?$/m)
   if (heading) ownLanes.add(heading[1])
   const suffix = `-${instance.sentinels.attempt_nonce}`
   for (const field of ['ready', 'handoff', 'blocked']) {
@@ -312,12 +312,18 @@ function checkBriefFacts(instance, errors) {
     const prefix = `${field.toUpperCase()}-`
     if (sentinel.startsWith(prefix) && sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
   }
+  ownLanes.delete('')
+  if (ownLanes.size === 0) errors.push('$brief: cannot derive its own lane identity from the title or sentinels')
   const overlaps = Array.isArray(instance.live_lane_overlaps) ? instance.live_lane_overlaps : [instance.live_lane_overlaps]
-  for (const lane of ownLanes) {
-    const escaped = lane.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const named = new RegExp(`(?:^|[^\\p{L}\\p{N}_.-])${escaped}(?=$|[^\\p{L}\\p{N}_.-])`, 'u')
-    if (lane && overlaps.some((text) => named.test(text))) {
-      errors.push(`$brief.live_lane_overlaps: names its own lane ${JSON.stringify(lane)}`)
+  for (const text of overlaps.flatMap((entry) => entry.split(/\r?\n/))) {
+    const entry = text.trim().replace(/^- /, '')
+    // Only the entry's identity tuple names a lane. Branch path components
+    // and merge-dependency issue numbers later in the sentence are not labels.
+    const label = entry.match(/^lane `([^`]+)`/)
+    const identity = entry.match(/^lane `[^`]+` \(#([1-9][0-9]*), branch `([^`]+)`, wave [1-9][0-9]*\)/)
+    if ((label && ownLanes.has(label[1])) ||
+        (identity && (Number(identity[1]) === instance.issue.number || identity[2] === instance.branch))) {
+      errors.push('$brief.live_lane_overlaps: names its own lane by label, branch or issue')
     }
   }
   if (instance.branch !== instance.claim_handoff.branch) {
