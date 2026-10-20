@@ -303,6 +303,9 @@ revision history lists that `run_id` in `lanes[]`.
    affected stage section says which case it is in rather than leaving the line
    out; treat a "not derivable" line as a real gap in the retro, not as
    "nothing to report".
+   Finder lines "unavailable from this harvester" and "not measured on this path"
+   are real gaps for the retro to report; only "- No findings recorded." means
+   measured and empty.
 4. `### Findings by class and provenance` — `class` from the reviewer's own
    finding, `provenance` its `original` / `round:N` field.
 5. `### Policy overrides the PR discloses (unverified)` — the cap, waiver,

@@ -4693,6 +4693,29 @@ out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r
 grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
     fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
 
+echo "== retained-record remediation cap is distinct from the integration cap =="
+cap_fixture="$tmp/remediation-cap"
+mkdir -p "$cap_fixture/records" "$cap_fixture/repo"
+cp -R "$tmp/local-records/$run_id" "$cap_fixture/records/$run_id"
+cp agent-registry.json "$cap_fixture/repo/agent-registry.json"
+node - .devflow.toml "$cap_fixture/repo/.devflow.toml" "$cap_fixture/records/$run_id/policy.json" <<'NODE'
+const fs = require('node:fs'), assert = require('node:assert/strict')
+const [source, policyFile, retainedPolicy] = process.argv.slice(2)
+const policy = fs.readFileSync(source, 'utf8')
+const changed = policy.replace(/(\[rounds\.standard\][\s\S]*?remediation\s*=\s*)4/, (_, prefix) => prefix + '7')
+assert.notEqual(changed, policy)
+fs.writeFileSync(policyFile, changed)
+fs.writeFileSync(retainedPolicy, JSON.stringify({
+  rigor: { level: 'standard', source: 'fixture' },
+  rounds: { challenge: 3, review: 3, integration: 4, remediation: 7, min_rounds: 1 }
+}))
+NODE
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$cap_fixture/records" --repo-root "$cap_fixture/repo" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.remediation_cap == 7' >/dev/null || fail "retained remediation cap must be 7, not integration cap 4: $out"
+out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$cap_fixture/records" --repo-root "$cap_fixture/repo" --trusted-actor-id 9001)"
+grep -Fq 'remediation pushes: 0 / cap 7 (retained policy)' <<<"$out_table" || fail "retained remediation cap text missing: $out_table"
+# End review-r1 retained remediation cap regression.
+
 # Challenge r2: current-run schema-valid integrators count, including blocked.
 echo "== invalid retained integrator passes are excluded nonfatally with diagnostics =="
 integrator_file="$tmp/local-records/$run_id/passes/integration-r1.json"
