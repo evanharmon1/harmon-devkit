@@ -233,6 +233,8 @@ refusal(withOther(['src/two'], 'src/one'), /effective fence overlaps live lane l
 refusal(withOther(['src/**']), /effective fence overlaps live lane l2/)
 const overlap = withOther(['src/two'], 'tests/one')
 refusal(overlap, /effective fence overlaps live lane l2/)
+refusal(withOther(['src/one'], 'tests/one', true), /tests\/one \/ tests\/one; no plan-recorded overlap/)
+console.log('PASS: an overlap recording path A does not authorize shared path B, with no writes')
 const recorded = withOther(['src/one'], undefined, true)
 node(recorded.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', recorded.token, '--issues', '1,2'])
 const sharedResult = JSON.parse(node(recorded.repo, command, recorded.args()))

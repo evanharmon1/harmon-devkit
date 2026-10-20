@@ -73,8 +73,8 @@ done
 [ "$brief_invalid_count" -ge 6 ] || fail "brief corpus requires at least 6 invalid fixtures"
 echo "PASS: brief envelope corpus OK ($brief_valid_count valid, $brief_invalid_count invalid)"
 
-# Match the builder's identity position, not incidental branch components or
-# merge-dependency references. Exercise both wire shapes and missing identity.
+# Require the builder's canonical tuple before comparing identity. Incidental
+# branch components, dependency references and fenced examples are not labels.
 node --input-type=module - "$brief_fixture_dir/valid/minimal.md" "$test_tmp" "$validator" <<'NODE'
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -82,19 +82,34 @@ import { spawnSync } from 'node:child_process'
 const [file, dir, validator] = process.argv.slice(2)
 const template = readFileSync(file, 'utf8')
 const match = template.match(/```json\n([^\n]+)\n```/)
-function check(name, label, overlap, expected, reason, customize = () => {}) {
+function check(name, label, overlap, expected, reason, customize = () => {}, body = template) {
   const facts = JSON.parse(match[1])
   facts.sentinels = { ready: `READY-${label}-n`, handoff: `HANDOFF-${label}-n`, blocked: `BLOCKED-${label}-n`, attempt_nonce: 'n' }
   facts.live_lane_overlaps = overlap
   customize(facts)
   const path = `${dir}/${name}.md`
-  writeFileSync(path, template.replace(match[1], JSON.stringify(facts)))
+  writeFileSync(path, body.replace(match[1], JSON.stringify(facts)))
   const result = spawnSync(process.execPath, [validator, 'brief', path], { encoding: 'utf8' })
   assert.equal(result.status, expected, `${name}: ${result.stderr}`)
   if (reason) assert.ok(result.stderr.includes(reason), `${name}: ${result.stderr}`)
 }
-check('self-string', 'l1', 'lane `l1` shares x', 1, 'names its own lane')
-check('other-prefix', 'l1', ['lane `l10` shares x'], 0)
+const other = 'lane `l10` (#2, branch `other`, wave 1) has a disjoint effective fence.'
+const self = 'lane `l1` (#2, branch `other`, wave 1) has a disjoint effective fence.'
+check('self-string', 'l1', self, 1, 'names its own lane')
+check('canonical-other-prefix', 'l1', [other], 0)
+for (const [name, entry] of Object.entries({
+  capital: self.replace('lane ', 'Lane '),
+  nobackticks: self.replace('`l1`', 'l1'),
+  bold: self.replace('lane', '**lane**'),
+  star: `* ${self}`,
+  numbered: `1. ${self}`,
+  prose: `Parallel ${self}`,
+  bullet: `- ${self}`,
+})) check(`noncanonical-${name}`, 'l1', [entry], 1, 'non-canonical lane tuple')
+for (const fence of ['```', '~~~~', '````']) {
+  check(`fenced-heading-${fence.length}-${fence[0]}`, 'l1', [other], 0, undefined, undefined,
+    `${template}\n${fence}markdown\n# Lane brief — l10\n${fence}\n`)
+}
 check('branch-component', 'api', ['lane `other` (#2, branch `feature/api`, wave 1) has a disjoint effective fence.'], 0)
 check('merge-predecessor', '1542', ['lane `other` (#2, branch `feature/other`, wave 1) shares x; #1542 merges before #2.'], 0)
 check('own-branch-alias', 'l1', ['lane `alias` (#2, branch `b`, wave 1) has a disjoint effective fence.'], 1, 'names its own lane')
@@ -102,7 +117,7 @@ check('own-issue-alias', 'l1', ['lane `alias` (#1, branch `other`, wave 1) has a
 check('missing-identity', 'l1', [], 1, 'cannot derive its own lane identity', (facts) => {
   facts.sentinels = { ready: 'r-n', handoff: 'h-n', blocked: 'b-n', attempt_nonce: 'n' }
 })
-console.log('PASS: lane-identity positions, branch/issue aliases and missing identity')
+console.log('PASS: canonical lane tuples, identity outside code fences, aliases and missing identity')
 NODE
 
 # The deadline cross-check is contextual: it activates only when the rendered
