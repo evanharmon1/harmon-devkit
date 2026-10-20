@@ -396,7 +396,10 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   and the identical final nonblank line of `{{report-path}}`; a raw pane-history
   substring match is never completion evidence. Append exactly one of the
   following to `{{report-path}}` and print the same value as the final line of
-  the final message:
+  the final message. Terminal sentinels use the exact kind-first form
+  `READY|HANDOFF|BLOCKED-<lane-label>-<nonce>`, matching
+  `^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
+  only ASCII letters, digits, underscores and hyphens.
   - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR
     through the readiness gate. This sentinel is the orchestrator's own mark:
     a lane never promotes its own PR and never writes this sentinel.

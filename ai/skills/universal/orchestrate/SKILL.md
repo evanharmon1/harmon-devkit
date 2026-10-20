@@ -717,18 +717,30 @@ lane is planned, fenced and claimed like any other.
 
 ## Persistent supervision
 
-Watching is the standing mode, not a one-shot step. Use the harness's
-session-lifetime persistent monitor primitive—never a background shell subject
-to an ordinary command timeout—to poll fresh lane-agent and PR state and emit
-transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas), approval
-prompts, stalls, and periodic heartbeat summaries. If it
-exits before the overall run reaches a terminal outcome, re-arm it immediately;
-never interpret monitor termination as human cancellation. If no persistent
-primitive is available, block instead of silently falling back to occasional
-manual polling.
+Watching is the standing mode, not a one-shot step. Use only `assets/lane-watch.sh`
+under the harness streaming monitor
+(Claude Code: `Monitor`). Invoke it as that file. The monitor is the
+session-lifetime persistent monitor primitive that streams its output. Never
+inline its loop, write a substitute, or run it as an unobserved background
+shell job. The monitor polls fresh
+lane-agent and PR state and emits transitions (`idle`, `done`, `blocked`,
+`unknown`, and PR deltas), approval prompts, stalls, and periodic heartbeat
+summaries. On every monitor expiry or exit before the overall run reaches a
+terminal outcome, re-arm first, before any other tool call, with the same
+`--state-file`; never interpret monitor termination as human cancellation. If
+no persistent primitive is available, block instead of silently falling back
+to occasional manual polling.
 
-Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
-their command under a non-Bash shell, so always invoke the file as
+On every wakeup (a user message or monitor event), first compare the current
+time with each lane's last observed change; read and act on any lane silent
+past the stall threshold before other work. Keep exactly one watcher per slate.
+Before re-arming a replacement, stop the old watcher with the harness's
+monitor-stop only on a monitor this session started (Claude Code: `TaskStop` on
+that monitor's task), or rely on its expiry. A watcher this session did not
+start is the operator's to stop.
+
+Harness monitor primitives may run their command under a non-Bash shell, so
+always invoke the file as
 `bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state --registry
 <kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>...`;
 never paste its loop inline. The first spec token is the **herdr agent name**;
@@ -739,10 +751,11 @@ field may contain a colon. Four-field specs still default to
 `<checkout>/.worktrees/<agent>/.lane-report.md` with lane-label equal to agent;
 with `--workspace-root`, checkout is `<workspace-root>/<repo-name>`. A fifth
 field of `cloud` retains the GitHub-only spec and takes no report or label.
-The ready/handoff/blocked prefixes must be `READY-<lane-label>`,
-`HANDOFF-<lane-label>`, and `BLOCKED-<lane-label>`; labels and nonces contain
+Sentinels use the exact kind-first form
+`READY|HANDOFF|BLOCKED-<lane-label>-<nonce>`, matching
+`^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
 only ASCII letters, digits, underscores and hyphens. Both report and pane
-observations match the whole final nonblank line `<kind>-<lane-label>-<nonce>`.
+observations match that whole final nonblank line.
 A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
 The watcher also emits these supervision events:
