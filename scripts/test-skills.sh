@@ -262,6 +262,9 @@ expect_ok "orchestrator added-lane sequence widens the existing lock first" \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator provisioning has a behavioral Taskfile target" \
     grep -qF 'test:provision-lane' "$repo/Taskfile.yml"
+expect_ok "orchestrator live-overlap catalog pins the canonical tuple and empty form" \
+    grep -qF 'Each live-overlap entry uses the canonical tuple ``lane `<label>` (#<issue>, branch `<branch>`, wave <wave>)``; the envelope uses `[]` as its only no-overlap form.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
