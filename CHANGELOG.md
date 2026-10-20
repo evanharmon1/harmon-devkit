@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.59.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.2...v0.59.0) (2026-10-20)
+
+
+### Features
+
+* accept max effort for Codex CLI ([#1557](https://github.com/evanharmon1/harmon-devkit/issues/1557)) ([af32a00](https://github.com/evanharmon1/harmon-devkit/commit/af32a0057cb453d8a03eb28fed38a2b7e47f914c))
+* **track-work:** write a metadata receipt on a passing preflight and ship its verifier ([#1559](https://github.com/evanharmon1/harmon-devkit/issues/1559)) ([8585a6a](https://github.com/evanharmon1/harmon-devkit/commit/8585a6a8b2b996398f3658f1dcc2945662d2df3c))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** give the slate lock a unique owner token and match every promotion field ([#1567](https://github.com/evanharmon1/harmon-devkit/issues/1567)) ([b8b77dd](https://github.com/evanharmon1/harmon-devkit/commit/b8b77dd63504aa332b7a801af13079907fb9877d))
+* **dev-flow-support:** make test-run-record.sh's partial-archive fault independent of readdir order ([#1548](https://github.com/evanharmon1/harmon-devkit/issues/1548)) ([56d408b](https://github.com/evanharmon1/harmon-devkit/commit/56d408bb6807e2f49ca4ca198650690d2c6a1b50))
+* **orchestrate:** make lane-watch.sh report approval prompts, stalls and a heartbeat ([#1563](https://github.com/evanharmon1/harmon-devkit/issues/1563)) ([e2520a3](https://github.com/evanharmon1/harmon-devkit/commit/e2520a331630badd8f632c4426408d735d846f5e))
+* **orchestrate:** make test-settle-wait's paging case robust under host load ([#1561](https://github.com/evanharmon1/harmon-devkit/issues/1561)) ([10943e7](https://github.com/evanharmon1/harmon-devkit/commit/10943e7ed7f73a410f3b691aaee47946303fa19f))
+* **retro:** report a preauthorized cap ceiling for a stage that has not started ([#1566](https://github.com/evanharmon1/harmon-devkit/issues/1566)) ([03b2a35](https://github.com/evanharmon1/harmon-devkit/commit/03b2a3539bf008d8cf7ed54d95ddeaaa73dee0ca))
+* **test:** escape command substitution in fixture heredoc ([#1546](https://github.com/evanharmon1/harmon-devkit/issues/1546)) ([749c319](https://github.com/evanharmon1/harmon-devkit/commit/749c31905a6524199a7099de7079093c3bd8e14c))
+
 ## [0.58.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.1...v0.58.2) (2026-10-18)
 
 
