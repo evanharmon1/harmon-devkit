@@ -37,16 +37,21 @@ git -C "$test_repo" config user.name "Shepherd Test"
 git -C "$test_repo" config user.email "shepherd-test@example.invalid"
 fixture_asset_dir="$test_repo/ai/skills/universal/integrate/assets"
 fixture_support_dir="$test_repo/ai/skills/universal/dev-flow-support"
-mkdir -p "$fixture_asset_dir" "$fixture_support_dir"
-ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
-    "$fixture_support_dir/assets"
+fixture_support_assets="$fixture_support_dir/assets"
+mkdir -p "$fixture_asset_dir" "$fixture_support_assets"
 cp "$helper" "$fixture_asset_dir/check-codex-cloud-review.sh"
+cp "${repo_root}/ai/skills/universal/integrate/assets/asset-freshness.sh" \
+    "$fixture_asset_dir/asset-freshness.sh"
 cp "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" \
     "$fixture_asset_dir/gh-write-broker.sh"
 cp "${repo_root}/ai/skills/universal/integrate/assets/trusted-registry.sh" \
     "$fixture_asset_dir/trusted-registry.sh"
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib" \
+    "$fixture_support_assets/"
+printf '%s\n' '# freshness support fixture' >"$fixture_support_assets/fixture-support.sh"
 helper="$fixture_asset_dir/check-codex-cloud-review.sh"
-git -C "$test_repo" add ai/skills/universal/integrate/assets
+git -C "$test_repo" add ai/skills/universal/integrate/assets \
+    ai/skills/universal/dev-flow-support/assets
 git -C "$test_repo" commit -q -m "test: seed checker fixture assets"
 git -C "$test_repo" commit -q --allow-empty -m "previous head"
 git -C "$test_repo" commit -q --allow-empty -m "current head"
@@ -2180,7 +2185,21 @@ printf '%s\n' 2 >"${fixtures}/slow-sec"
 TIMEOUT_ARGS_LOG="$timeout_args_log" "$helper" release --state "$state" \
     --note 'slow post-window recovery' --now '2026-07-31T09:00:00Z' >/dev/null
 [ "$(jq -r .phase "$state")" = released ] || fail 'slow release failed'
-awk '$4 != "git" && $3 != 60 {exit 1} END {if (NR == 0) exit 1}' "$timeout_args_log" || fail 'release budget is not independent'
+# The shared freshness probe has its own bounded `bash -c` timeout, whose
+# multi-line script body is logged as multiple records. Only inspect `gh`
+# invocations here: every API read must retain its independent 60s budget.
+awk '
+    $4 == "gh" {
+        gh_calls++
+        if ($3 != 60) {
+            printf "unexpected GitHub timeout: %s\n", $0 > "/dev/stderr"
+            bad = 1
+        }
+    }
+    END {
+        if (gh_calls == 0 || bad) exit 1
+    }
+' "$timeout_args_log" || fail 'release budget is not independent'
 
 echo "==> release never removes an attached trigger, including corrupt reserved phase"
 new_cycle
@@ -2335,10 +2354,16 @@ for attach_now in '2026-07-31T08:14:30Z' '2026-07-31T09:00:00Z'; do
     attach_expected_budget=60
     [ "$attach_now" != '2026-07-31T08:14:30Z' ] || attach_expected_budget=30
     awk -v expected="$attach_expected_budget" '
-        $4 == "git" {next}
-        /baseRefOid/ {if ($3 != 60) exit 1; next}
-        $3 != expected {exit 1}
-        END {if (NR < 5) exit 1}
+        $4 != "gh" {next}
+        {
+            gh_calls++
+            if (/baseRefOid/) {
+                if ($3 != 60) bad = 1
+                next
+            }
+            if ($3 != expected) bad = 1
+        }
+        END {if (gh_calls != 6 || bad) exit 1}
     ' "$timeout_args_log" ||
         fail "attach did not receive its expected ${attach_expected_budget}s read budgets: $(cat "$timeout_args_log")"
 done
@@ -3359,6 +3384,21 @@ assert_reap '.kept' 1
 assert_reap '[.entries[] | .detail] | first' "PR state is unreadable"
 [ -f "${reap_root}/example/alpha/11.json" ] ||
     fail "unreadable PR state was deleted — it must be kept"
+
+echo "==> reap keeps an unreadable entry when the local PR base is unavailable"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' ffffffffffffffffffffffffffffffffffffffff >"${fixtures}/base-head"
+: >"${fixtures}/fail-pr-11"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] ||
+    fail "an unavailable base aborted reap with exit $reap_rc: $reap_out"
+assert_reap '.reaped' 0
+assert_reap '.kept' 1
+assert_reap '[.entries[] | .detail] | first' "PR state is unreadable"
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "reap deleted the entry it could not read"
 
 echo "==> an unrecognized PR state keeps its file"
 write_defaults
@@ -9187,30 +9227,52 @@ run(builder, { ...env, status: 'completed', blocker_json: 'null' })
 assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
 NODE
 
-echo "==> checker asset freshness refuses a stale fixture checkout"
+echo "==> checker freshness refuses a stale ancestor for integrate assets"
 freshness_checkout_head=$(git rev-parse HEAD)
-printf '\n# freshness fixture change\n' >>"$helper"
-git add ai/skills/universal/integrate/assets/check-codex-cloud-review.sh
-git commit -q -m "test: advance checker asset fixture"
-freshness_base_sha=$(git rev-parse HEAD)
-git checkout -q "$freshness_checkout_head"
 freshness_state="${test_tmp}/freshness-state.json"
-printf '%s\n' "$freshness_base_sha" >"${fixtures}/base-head"
+freshness_integrate_asset="$fixture_asset_dir/gh-write-broker.sh"
+printf '\n# freshness integrate-asset fixture\n' >>"$freshness_integrate_asset"
+git add ai/skills/universal/integrate/assets/gh-write-broker.sh
+git commit -q -m "test: advance an integrate asset fixture"
+freshness_integrate_base=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_integrate_base" >"${fixtures}/base-head"
 set +e
 freshness_out=$("$helper" reserve --state "$freshness_state" \
     --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
 freshness_rc=$?
 set -e
-[ "$freshness_rc" -eq 2 ] ||
-    fail "stale checker checkout should exit 2, got $freshness_rc: $freshness_out"
-[[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* ]] ||
-    fail "stale checker refusal did not name checkout HEAD: $freshness_out"
-[[ "$freshness_out" == *"PR base $freshness_base_sha"* ]] ||
-    fail "stale checker refusal did not name PR base: $freshness_out"
+[ "$freshness_rc" -eq 19 ] ||
+    fail "stale checker ancestor should exit 19, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
+    "$freshness_out" == *"PR base $freshness_integrate_base"* ]] ||
+    fail "stale checker refusal did not name both SHAs: $freshness_out"
 [ ! -e "$freshness_state" ] ||
     fail "stale checker checkout wrote a reservation before refusing"
 
-echo "==> checker asset freshness treats an unavailable base as indeterminate"
+echo "==> checker freshness covers the sibling dev-flow-support asset directory"
+printf '\n# freshness support-asset fixture\n' >>"$fixture_support_assets/fixture-support.sh"
+git add ai/skills/universal/dev-flow-support/assets/fixture-support.sh
+git commit -q -m "test: advance a dev-flow-support asset fixture"
+freshness_support_base=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 19 ] ||
+    fail "stale checker support-asset ancestor should exit 19, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
+    "$freshness_out" == *"PR base $freshness_support_base"* ]] ||
+    fail "stale checker support-asset refusal did not name both SHAs: $freshness_out"
+
+echo "==> checker freshness names the remedy for an unavailable base"
 missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
 printf '%s\n' "$missing_base_sha" >"${fixtures}/base-head"
 set +e
@@ -9222,12 +9284,38 @@ set -e
     fail "unavailable checker base should exit 2, got $freshness_rc: $freshness_out"
 [[ "$freshness_out" == *"asset freshness indeterminate"* &&
     "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
-    "$freshness_out" == *"PR base $missing_base_sha"* ]] ||
-    fail "unavailable checker base did not fail closed with both SHAs: $freshness_out"
+    "$freshness_out" == *"PR base $missing_base_sha"* &&
+    "$freshness_out" == *"fetch the PR's base commit from its base repository"* ]] ||
+    fail "unavailable checker base did not name the remedy and both SHAs: $freshness_out"
 
-echo "==> checker asset freshness accepts a current fixture checkout"
-git checkout -q "$freshness_base_sha"
-head_sha=$freshness_base_sha
+echo "==> checker accepts a diverged lane checkout when the base moved an asset"
+git checkout -q -b freshness-lane "$freshness_checkout_head"
+printf '\n# freshness diverged lane fixture\n' >>"$fixture_asset_dir/trusted-registry.sh"
+git add ai/skills/universal/integrate/assets/trusted-registry.sh
+git commit -q -m "test: advance diverged lane asset fixture"
+freshness_diverged_head=$(git rev-parse HEAD)
+if git merge-base --is-ancestor "$freshness_diverged_head" "$freshness_support_base"; then
+    fail "diverged fixture HEAD unexpectedly is an ancestor of the PR base"
+fi
+head_sha=$freshness_diverged_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+rm -f "$freshness_state" "${freshness_state}.lock"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "diverged checker checkout should be accepted, got $freshness_rc: $freshness_out"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_state" >/dev/null ||
+    fail "diverged checker checkout did not reserve successfully: $freshness_out"
+
+echo "==> checker freshness accepts a current fixture checkout"
+git checkout -q "$freshness_support_base"
+rm -f "$freshness_state" "${freshness_state}.lock"
+head_sha=$freshness_support_base
 write_defaults
 "$helper" reserve --state "$freshness_state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 >"${test_tmp}/freshness-reserve.json"

@@ -672,9 +672,10 @@ run_audit() {
 recheck_root="${test_tmp}/recheck-gate"
 recheck_dir="${recheck_root}/integrate/assets"
 mkdir -p "$recheck_dir" "${recheck_root}/dev-flow-support"
-ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
     "${recheck_root}/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
+cp "${assets}/asset-freshness.sh" "${recheck_dir}/asset-freshness.sh"
 cp "${assets}/trusted-registry.sh" "${recheck_dir}/trusted-registry.sh"
 chmod +x "${recheck_dir}/readiness-gate.sh"
 # Challenge round 3, finding `challenge-r3-codex-adversarial-13` (confirmed
@@ -5203,36 +5204,56 @@ grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
 echo "==> readiness asset freshness refuses a stale fixture checkout"
 fresh_repo="${test_tmp}/asset-freshness-gate"
 fresh_gate="${fresh_repo}/integrate/assets/readiness-gate.sh"
+fresh_support_assets="${fresh_repo}/dev-flow-support/assets"
 mkdir -p "${fresh_repo}/integrate/assets" "${fresh_repo}/dev-flow-support"
 cp "$gate" "$fresh_gate"
+cp "${assets}/asset-freshness.sh" "${fresh_repo}/integrate/assets/asset-freshness.sh"
 cp "${assets}/trusted-registry.sh" "${fresh_repo}/integrate/assets/trusted-registry.sh"
-ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
-    "${fresh_repo}/dev-flow-support/assets"
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+    "${fresh_repo}/dev-flow-support/"
 git init -q "$fresh_repo"
 git -C "$fresh_repo" config user.name "Readiness Freshness Test"
 git -C "$fresh_repo" config user.email "readiness-freshness@example.invalid"
-git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
+git -C "$fresh_repo" add integrate/assets dev-flow-support/assets
 git -C "$fresh_repo" commit -q -m "test: seed readiness gate fixture"
 fresh_checkout_head=$(git -C "$fresh_repo" rev-parse HEAD)
 printf '\n# freshness fixture change\n' >>"$fresh_gate"
 git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
 git -C "$fresh_repo" commit -q -m "test: advance readiness gate fixture"
-fresh_base_sha=$(git -C "$fresh_repo" rev-parse HEAD)
+fresh_integrate_base=$(git -C "$fresh_repo" rev-parse HEAD)
 git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
-printf '%s\n' "$fresh_base_sha" >"${fixtures}/asset-base"
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
 freshness_rc=$?
 set -e
-[ "$freshness_rc" -eq 1 ] ||
-    fail "stale readiness checkout should exit 1, got $freshness_rc: $freshness_out"
+[ "$freshness_rc" -eq 3 ] ||
+    fail "stale readiness ancestor should exit 3, got $freshness_rc: $freshness_out"
 freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
 freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')
 [ "$freshness_status" = fail ] && [ "$freshness_condition" = asset-checkout-stale ] ||
-    fail "stale readiness checkout did not report asset-checkout-stale: $freshness_out"
+    fail "stale readiness ancestor did not report asset-checkout-stale: $freshness_out"
 [[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
-    "$freshness_out" == *"PR base $fresh_base_sha"* ]] ||
+    "$freshness_out" == *"PR base $fresh_integrate_base"* ]] ||
     fail "stale readiness refusal did not name both SHAs: $freshness_out"
+
+echo "==> readiness freshness covers the sibling dev-flow-support asset directory"
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '\n# freshness support fixture change\n' >>"$fresh_support_assets/tier-inputs.mjs"
+git -C "$fresh_repo" add dev-flow-support/assets/tier-inputs.mjs
+git -C "$fresh_repo" commit -q -m "test: advance dev-flow-support fixture asset"
+fresh_support_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 3 ] ||
+    fail "stale readiness support ancestor should exit 3, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
+    "$freshness_out" == *"PR base $fresh_support_base"* ]] ||
+    fail "stale readiness support refusal did not name both SHAs: $freshness_out"
 
 echo "==> readiness asset freshness treats an unavailable base as indeterminate"
 missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
@@ -5249,21 +5270,50 @@ freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty
     [ "$freshness_condition" = asset-freshness-unknown ] ||
     fail "unavailable readiness base did not report asset-freshness-unknown: $freshness_out"
 [[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
-    "$freshness_out" == *"PR base $missing_base_sha"* ]] ||
-    fail "unavailable readiness base did not name both SHAs: $freshness_out"
+    "$freshness_out" == *"PR base $missing_base_sha"* &&
+    "$freshness_out" == *"fetch the PR's base commit from its base repository"* ]] ||
+    fail "unavailable readiness base did not name the remedy and both SHAs: $freshness_out"
 
-echo "==> readiness asset freshness accepts a current fixture checkout"
-git -C "$fresh_repo" checkout -q "$fresh_base_sha"
+echo "==> readiness accepts a diverged lane checkout when the base moved an asset"
+git -C "$fresh_repo" checkout -q -b freshness-lane "$fresh_checkout_head"
+printf '\n# freshness diverged lane fixture\n' >>"${fresh_repo}/integrate/assets/trusted-registry.sh"
+git -C "$fresh_repo" add integrate/assets/trusted-registry.sh
+git -C "$fresh_repo" commit -q -m "test: advance diverged readiness lane asset"
+fresh_diverged_head=$(git -C "$fresh_repo" rev-parse HEAD)
+if git -C "$fresh_repo" merge-base --is-ancestor "$fresh_diverged_head" "$fresh_support_base"; then
+    fail "diverged readiness fixture HEAD unexpectedly is an ancestor of the PR base"
+fi
 write_defaults
 rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" \
     "${fixtures}/pr-view-third.json"
-jq --arg base "$fresh_base_sha" '.baseRefOid = $base' \
+jq --arg base "$fresh_support_base" '.baseRefOid = $base' \
     "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
 mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
-jq --arg base "$fresh_base_sha" '.base_commit.sha = $base' \
+jq --arg base "$fresh_support_base" '.base_commit.sha = $base' \
     "${fixtures}/compare.json" >"${fixtures}/compare.next"
 mv "${fixtures}/compare.next" "${fixtures}/compare.json"
-printf '%s\n' "$fresh_base_sha" >"${fixtures}/asset-base"
+printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "diverged readiness checkout should be accepted, got $freshness_rc: $freshness_out"
+[ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = level ] ||
+    fail "diverged readiness checkout did not continue through the gate: $freshness_out"
+
+echo "==> readiness asset freshness accepts a current fixture checkout"
+git -C "$fresh_repo" checkout -q "$fresh_support_base"
+write_defaults
+rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" \
+    "${fixtures}/pr-view-third.json"
+jq --arg base "$fresh_support_base" '.baseRefOid = $base' \
+    "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+jq --arg base "$fresh_support_base" '.base_commit.sha = $base' \
+    "${fixtures}/compare.json" >"${fixtures}/compare.next"
+mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
 set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
 freshness_rc=$?

@@ -11910,20 +11910,44 @@ for doc in "$ORCH_MD" "$LANE_BRIEF_MD"; do
 done
 
 # harmon-devkit#1528: integration assets run from the lane worktree or a
-# checkout whose local history includes the PR-base asset changes.
+# checkout whose freshness is checked against the PR base.
 ASSET_FRESHNESS_SENTENCE='Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.'
 for doc in "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/agents/integrator.md"; do
     doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
     expect_ok "$doc_label: binds vendored integrate assets to the PR base (#1528)" \
         grep -qF "$ASSET_FRESHNESS_SENTENCE" "$doc"
 done
-for asset in "$repo/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" \
-    "$repo/ai/skills/universal/integrate/assets/readiness-gate.sh"; do
-    expect_ok "$(basename "$asset"): has an asset-freshness preflight (#1528)" \
-        grep -qF 'asset_freshness_check' "$asset"
-    expect_ok "$(basename "$asset"): bounds the local asset-history read (#1528)" \
-        grep -qF 'log --max-count=1 --format=%H' "$asset"
+expect_ok "orchestrate: freshness rule is in PR-open confirmation, outside lane briefs (#1528)" \
+    awk -v rule="$ASSET_FRESHNESS_SENTENCE" '
+        $0 == "## PR-open confirmation" { section=1; next }
+        /^## / && section { exit 1 }
+        section && index($0, rule) { found=1 }
+        END { exit !found }
+    ' "$ORCH_MD"
+CHECKER_ASSET="$repo/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+GATE_ASSET="$repo/ai/skills/universal/integrate/assets/readiness-gate.sh"
+FRESHNESS_ASSET="$repo/ai/skills/universal/integrate/assets/asset-freshness.sh"
+expect_ok "checker: sources the shared freshness helper (#1528)" \
+    grep -qF '. "$SCRIPT_DIR/asset-freshness.sh"' "$CHECKER_ASSET"
+expect_ok "readiness gate: sources the shared freshness helper (#1528)" \
+    grep -qF '. "$script_dir/asset-freshness.sh"' "$GATE_ASSET"
+for asset in "$CHECKER_ASSET" "$GATE_ASSET"; do
+    expect_ok "$(basename "$asset"): delegates freshness to the shared helper (#1528)" \
+        grep -qF 'check_vendored_asset_freshness' "$asset"
+    freshness_wrapper=$(sed -n '/^asset_freshness_check() {/,/^}/p' "$asset")
+    if [[ "$freshness_wrapper" == *'merge-base --is-ancestor'* ||
+        "$freshness_wrapper" == *'log --max-count=1 --format=%H'* ]]; then
+        bad "$(basename "$asset"): duplicates the shared asset-history check (#1528)"
+    else
+        ok "$(basename "$asset"): does not duplicate the shared asset-history check (#1528)"
+    fi
 done
+expect_ok "shared freshness helper: limits refusal to an ancestor checkout (#1528)" \
+    grep -qF 'merge-base --is-ancestor' "$FRESHNESS_ASSET"
+expect_ok "shared freshness helper: checks both vendored asset directories (#1528)" \
+    grep -qF '"$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
+expect_ok "shared freshness helper: uses one bounded history query (#1528)" \
+    grep -qF 'log --max-count=1 --format=%H' "$FRESHNESS_ASSET"
 
 # harmon-devkit#1338: session-facing REST reads must work in the agent posture.
 # This is a documented text pattern, NOT a shell/Markdown parser: inspect raw

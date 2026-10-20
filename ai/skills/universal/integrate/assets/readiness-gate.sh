@@ -44,6 +44,9 @@
 #   2  indeterminate — a fetch failed, data is malformed, GitHub has not
 #      populated an answer yet, or the arguments are unusable. Unknown never
 #      passes: 2 is "re-poll or reconcile", never "promote".
+#   3  stale checkout — the checkout HEAD is an ancestor of the PR base and
+#      the base contains a newer vendored integrate/dev-flow-support asset.
+#      Run from a current checkout; no readiness verdict was produced.
 #
 # `check` emits one JSON line naming the decisive condition. This list is the
 # contract a caller reads to know which conditions it must handle, so it is
@@ -303,6 +306,9 @@ elif command -v gtimeout >/dev/null 2>&1; then
 else
     printf 'readiness-gate: no GNU timeout (coreutils; gtimeout on macOS) — network calls are unbounded\n' >&2
 fi
+
+# shellcheck source=asset-freshness.sh
+. "$script_dir/asset-freshness.sh"
 
 command_name="${1:-}"
 [ -n "$command_name" ] || usage
@@ -688,40 +694,20 @@ run_gh() {
     fi
 }
 
-# Refuse to run a gate whose own asset file is missing from the current PR
-# base. This is deliberately a local, bounded history read: fetching here could
-# move a caller's checkout, and consulting main would not prove what the PR is
-# based on. The PR API supplies only the base SHA; git must already have that
-# commit locally.
 asset_freshness_check() {
-    local checkout_root checkout_head base_sha asset_dir asset_path missing_asset_commit
-
-    checkout_root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null) ||
-        indeterminate asset-freshness-unknown "cannot locate the checkout containing $script_dir"
-    checkout_head=$(git -C "$checkout_root" rev-parse --verify HEAD 2>/dev/null) ||
-        indeterminate asset-freshness-unknown "cannot resolve checkout HEAD in $checkout_root"
-    base_sha=$(run_gh pr view "$pr" --repo "$repo" \
-        --json baseRefOid --jq .baseRefOid 2>/dev/null) ||
-        indeterminate asset-freshness-unknown "cannot read PR base SHA for $repo#$pr (checkout HEAD $checkout_head)"
-    valid_sha "$base_sha" ||
-        indeterminate asset-freshness-unknown "PR base SHA for $repo#$pr is malformed (checkout HEAD $checkout_head)"
-
-    asset_dir=${script_dir#"$checkout_root"/}
-    [ "$asset_dir" != "$script_dir" ] && [ -n "$asset_dir" ] ||
-        indeterminate asset-freshness-unknown "gate path is outside its Git checkout ($script_dir)"
-    asset_path="$asset_dir/readiness-gate.sh"
-
-    if [ -n "$timeout_bin" ]; then
-        if ! missing_asset_commit=$("$timeout_bin" -k 1 10 git -C "$checkout_root" \
-            log --max-count=1 --format=%H "$checkout_head..$base_sha" -- "$asset_path" 2>&1); then
-            indeterminate asset-freshness-unknown "cannot inspect local PR base $base_sha for $asset_path (checkout HEAD $checkout_head); no fetch was attempted: $missing_asset_commit"
-        fi
-    elif ! missing_asset_commit=$(git -C "$checkout_root" \
-        log --max-count=1 --format=%H "$checkout_head..$base_sha" -- "$asset_path" 2>&1); then
-        indeterminate asset-freshness-unknown "cannot inspect local PR base $base_sha for $asset_path (checkout HEAD $checkout_head); no fetch was attempted: $missing_asset_commit"
+    local freshness_status=0
+    if check_vendored_asset_freshness "$pr" "$repo" "$script_dir" "$timeout_bin"; then
+        return 0
+    else
+        freshness_status=$?
     fi
-    [ -z "$missing_asset_commit" ] ||
-        fail_condition asset-checkout-stale "checkout HEAD $checkout_head lacks PR base $base_sha's asset change $missing_asset_commit to $asset_path; run from the lane worktree or update this checkout"
+    case "$freshness_status" in
+    19)
+        emit fail asset-checkout-stale "$asset_freshness_detail"
+        exit 3
+        ;;
+    *) indeterminate asset-freshness-unknown "$asset_freshness_detail" ;;
+    esac
 }
 
 # ---- Fingerprint components (ported from SKILL.md §6's promo_fp recipe) ----

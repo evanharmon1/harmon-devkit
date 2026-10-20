@@ -48,9 +48,14 @@ A missing sibling package is a blocker, not a fallback: vendor the `universal`
 category as a unit rather than resolving a runtime path some other way.
 
 Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
-The checker and readiness gate compare their own asset path with the PR's local
-base history and refuse a stale checkout; an unavailable local base is
-indeterminate, and these checks never fetch commits.
+The checker and readiness gate share one bounded local history check over the
+vendored `integrate/assets/` and `dev-flow-support/assets/` directories. They
+refuse only when checkout `HEAD` is an ancestor of the PR base and that range
+contains an asset change; a diverged or newer checkout is accepted. A definite
+stale refusal exits 19 from `check-codex-cloud-review.sh` and 3 from
+`readiness-gate.sh`; exit 2 remains indeterminate. If the PR base commit is
+unavailable locally, fetch that commit from the PR's base repository before
+running the checker or gate. Neither script fetches automatically.
 
 **Arguments:** $ARGUMENTS
 
@@ -2308,8 +2313,8 @@ round. Two consequences follow rather than needing their own procedure:
   as any head move does. **The last permitted cycle is therefore reserved for
   the reconciled head**: before dispatching it, run
   `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
-  (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
-  behind, reconcile first (update-branch, or the fallback) and spend that
+  (read-only; 0 level, 1 behind, 2 could not establish, 3 stale checkout) and,
+  if it reports behind, reconcile first (update-branch, or the fallback) and spend that
   cycle on the merged head. Use the
   subcommand rather than a compare call of your own: ref encoding and the
   fail-closed handling of an unreadable comparison live there and are tested
