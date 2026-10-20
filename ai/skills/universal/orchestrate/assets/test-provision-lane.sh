@@ -22,10 +22,16 @@ const validator = join(support, 'validate-result-schemas.mjs')
 const command = join(assets, 'provision-lane.mjs')
 const { chainDigest } = await import(writer)
 const { buildBriefValues, renderBrief, assertDisjointFences } = await import(join(assets, 'lane-brief-values.mjs'))
-const { resolvePolicy } = await import(join(support, 'devflow-policy.mjs'))
+const { resolvePolicy, validateResolvedPolicy } = await import(join(support, 'devflow-policy.mjs'))
 const { parseToml } = await import(join(support, 'lib/toml-lite.mjs'))
 const policySource = readFileSync(resolve(assets, '../../../../../.devflow.toml'), 'utf8')
 const resolvedPolicy = resolvePolicy(parseToml(policySource), { rigor: 'thorough', rigorSource: 'operator', tierOverrides: { implementer: 'frontier' } })
+for (const ceiling of [{ max_tokens: 100 }, { max_usd: 1 }]) {
+  const configured = parseToml(policySource)
+  configured.rigor.thorough.spend = 'fixture'
+  configured.spend = { fixture: ceiling }
+  assert.doesNotThrow(() => validateResolvedPolicy(resolvePolicy(configured, { rigor: 'thorough' })))
+}
 const at = '2026-10-20T06:00:00Z'
 const policy = {
   rigor: 'thorough', rigor_source: 'explicit operator input (fixture maintainer)',
@@ -126,6 +132,22 @@ function refusal(f, pattern, file = command, args = f.args()) {
 
 const f = fixture()
 refusal(f, /unknown lane/, command, f.args('missing'))
+for (const mutate of [
+  (full) => { delete full.tier_order },
+  (full) => { full.tier_order.reverse() },
+  (full) => { delete full.stages },
+  (full) => { delete full.gates },
+]) {
+  const invalidArgs = f.args()
+  const full = JSON.parse(readFileSync(f.policyFile))
+  mutate(full)
+  writeFileSync(f.policyFile, JSON.stringify(full))
+  const initArgs = ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--lane', 'l1', '--policy', f.policyFile, '--at', at]
+  refusal(f, /not a complete resolved policy projection/, writer, initArgs)
+  refusal(f, /not a complete resolved policy projection/, command, invalidArgs)
+}
+console.log('PASS: missing/reordered tier order and incomplete stages/gates are refused by lane-init and provisioning with no writes')
 const mismatched = f.args()
 const badPolicy = JSON.parse(readFileSync(f.policyFile))
 badPolicy.roles.challenger.tier = 'economy'
@@ -248,11 +270,31 @@ refusal(overlap, /effective fence overlaps live lane l2/)
 refusal(withOther(['src/one'], 'tests/one', true), /tests\/one \/ tests\/one; no plan-recorded overlap/)
 console.log('PASS: an overlap recording path A does not authorize shared path B, with no writes')
 const recorded = withOther(['src/one'], undefined, true)
+recorded.facts.fence_notes = { 'src/one': { l1: 'Section One', l2: 'Section Two' } }; recorded.saveFacts()
 node(recorded.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', recorded.token, '--issues', '1,2'])
 const sharedResult = JSON.parse(node(recorded.repo, command, recorded.args()))
 const sharedBrief = readFileSync(sharedResult.brief_path, 'utf8')
 assert.ok(sharedBrief.includes('lane `l2`') && sharedBrief.includes('resolution serialize; #1 merges before #2'))
 console.log('PASS: recorded serialize overlap provisions and carries its merge dependency')
+assert.ok(sharedBrief.includes('src/one` (l1: Section One; l2: Section Two)'))
+const split = withOther(['src/one'], undefined, true)
+split.plan.overlaps[0].resolution = 'split'; split.publish()
+node(split.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', split.token, '--issues', '1,2'])
+refusal(split, /missing section notes for shared path src\/one/)
+split.facts.fence_notes = { 'src/one': { l1: 'Lane one owns the First section' } }; split.saveFacts()
+refusal(split, /missing section notes for shared path src\/one/)
+split.facts.fence_notes['src/one'].l2 = 'Lane two owns the Second section'; split.saveFacts()
+const splitFirst = JSON.parse(node(split.repo, command, split.args()))
+git(split.repo, 'switch', '-q', '-c', 'lane-two')
+split.facts.claim_handoff.branch = 'lane-two'; split.saveFacts()
+const splitSecond = JSON.parse(node(split.repo, command, split.args('l2')))
+for (const result of [splitFirst, splitSecond]) {
+  const rendered = readFileSync(result.brief_path, 'utf8')
+  assert.ok(rendered.includes('src/one` (') && rendered.includes('resolution split'))
+  assert.ok(rendered.includes('l1: Lane one owns the First section'))
+  assert.ok(rendered.includes('l2: Lane two owns the Second section'))
+}
+console.log('PASS: split overlap without both section notes refuses without writes; both briefs carry both shared-path boundaries')
 assert.throws(() => assertDisjointFences({ ...overlap.plan, lanes: [
   { ...overlap.lane, fence: ['src/a*'] }, { ...second, fence: ['src/*b'] },
 ] }, { ...overlap.lane, fence: ['src/a*'] }), /effective fence overlaps/)
@@ -264,6 +306,14 @@ doc.revisions[0].digest = '0'.repeat(64)
 writeFileSync(invalid.planFile, JSON.stringify(doc))
 refusal(invalid, /failed.*validation/)
 console.log('PASS: invalid plan chain preserves prior durable state')
+
+const nested = fixture()
+const subdir = join(nested.repo, 'nested')
+mkdirSync(subdir)
+const nestedResult = JSON.parse(node(subdir, command, nested.args()))
+assert.equal(nestedResult.record_directory, join(nested.root, 'runs/run-one'))
+node(nested.repo, validator, ['brief', nestedResult.brief_path])
+console.log('PASS: invoking provisioning from a subdirectory finds the root registry and publishes a valid brief')
 
 const { values } = buildBriefValues({ plan: added.plan, lane: second, facts: added.facts, nonce: 'a2', at,
   generation: 1, active: result.active_state_path, runDir: '/nonexistent/provision-fixture', defaultBranch: 'main' })

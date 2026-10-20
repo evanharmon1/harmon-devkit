@@ -74,7 +74,7 @@ function provision(args) {
         git(['rev-parse', `${defaultRef}^{commit}`]) !== plan.base_sha) {
       throw new Refusal('target tracking head differs from the plan base, or lane names the default branch; recompute the plan first')
     }
-    const revision = git(['log', '-1', '--format=%H', plan.base_sha, '--', 'agent-registry.json'])
+    const revision = git(['log', '-1', '--format=%H', plan.base_sha, '--', ':(top)agent-registry.json'])
     if (!/^[0-9a-f]{40}$/.test(revision)) throw new Refusal('plan base has no governing registry revision')
     const active = monitor(['active-path', '--branch', lane.branch])
     if (existsSync(active)) throw new Refusal(`branch ${lane.branch} already has an active pointer; inspect before provisioning`)

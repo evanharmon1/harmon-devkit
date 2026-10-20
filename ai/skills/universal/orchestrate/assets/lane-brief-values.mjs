@@ -11,13 +11,24 @@ const FACT_TEXT = ['worktree_path', 'harness', 'harness_text', 'effort', 'codex_
 
 export function validateFacts(facts) {
   if (!facts || typeof facts !== 'object' || Array.isArray(facts)) throw new Refusal('facts must be an object')
-  const allowed = new Set([...FACT_TEXT, 'claim_handoff'])
+  const allowed = new Set([...FACT_TEXT, 'claim_handoff', 'fence_notes'])
   for (const key of Object.keys(facts)) if (!allowed.has(key)) throw new Refusal(`unknown facts field ${key}`)
   for (const key of FACT_TEXT) {
     if (typeof facts[key] !== 'string' || !facts[key].trim()) throw new Refusal(`facts.${key} must be nonempty text`)
   }
   if (!['light', 'standard', 'heavy'].includes(facts.repo_tier)) throw new Refusal('facts.repo_tier must be light, standard or heavy')
   if (!['implementation', 'proposal-only'].includes(facts.unit_kind)) throw new Refusal('invalid facts.unit_kind')
+  if (facts.fence_notes !== undefined) {
+    if (!facts.fence_notes || typeof facts.fence_notes !== 'object' || Array.isArray(facts.fence_notes)) {
+      throw new Refusal('facts.fence_notes must map shared paths to per-lane section notes')
+    }
+    for (const [path, notes] of Object.entries(facts.fence_notes)) {
+      if (!path.trim() || !notes || typeof notes !== 'object' || Array.isArray(notes) ||
+          Object.values(notes).some((note) => typeof note !== 'string' || !note.trim() || /[\r\n]/.test(note))) {
+        throw new Refusal('facts.fence_notes must contain nonempty single-line per-lane section notes')
+      }
+    }
+  }
 }
 
 export function effectiveFence(lane) {
@@ -72,12 +83,21 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
     const overlap = plan.overlaps.find((entry) => [entry.issue_a, entry.issue_b].includes(lane.issue) &&
       [entry.issue_a, entry.issue_b].includes(other.issue))
     const detail = overlap
-      ? `shares ${overlap.paths.map((p) => `\`${p}\``).join(', ')} — resolution ${overlap.resolution}; #${overlap.merge_dependency.before} merges before #${overlap.merge_dependency.after}`
+      ? `shares ${overlap.paths.map((path) => {
+        const notes = facts.fence_notes?.[path]
+        if (![lane.lane, other.lane].every((name) => typeof notes?.[name] === 'string' && notes[name].trim())) {
+          throw new Refusal(`missing section notes for shared path ${path}: facts.fence_notes must name ${lane.lane} and ${other.lane}`)
+        }
+        return `\`${path}\` (${lane.lane}: ${notes[lane.lane]}; ${other.lane}: ${notes[other.lane]})`
+      }).join(', ')} — resolution ${overlap.resolution}; #${overlap.merge_dependency.before} merges before #${overlap.merge_dependency.after}`
       : 'has a disjoint effective fence'
     return `lane \`${other.lane}\` (#${other.issue}, branch \`${other.branch}\`, wave ${other.wave}) ${detail}.`
   })
   const report = `${runDir}/lane-report-${nonce}.md`
-  const fence = effectiveFence(lane)
+  const fence = effectiveFence(lane).map((entry) => {
+    const note = facts.fence_notes?.[entry.path]?.[lane.lane]
+    return note ? { ...entry, note: [entry.note, note].filter(Boolean).join(' — ') } : entry
+  })
   const deadline = new Date(Date.parse(at) + profile.caps.wall_clock_min * 60000).toISOString().replace(/\.000Z$/, 'Z')
   const projection = `rigor ${profile.rigor} (${profile.rigor_source}); caps ${JSON.stringify(profile.caps)}; breadth ${JSON.stringify(profile.breadth)}; tiers ${JSON.stringify(profile.role_tiers)}; strategy ${profile.strategy} (${profile.strategy_source}); projection file ${runDir}/policy.json`
   const sentinels = Object.fromEntries(['ready', 'handoff', 'blocked'].map((name) => [name, `${name.toUpperCase()}-${lane.lane}`]))

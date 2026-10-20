@@ -371,6 +371,7 @@ reservation or writes a plan. A conflicting reservation, invalid plan or facts,
 unknown lane, existing run, or unrecorded effective-fence overlap with another
 live lane refuses before durable state is written. Plan-recorded `serialize`
 and `split` overlaps provision with their overlap text and merge dependency.
+For each shared path, the facts file must supply `fence_notes[path][lane]` section boundaries for both live lanes; both notes appear beside that path in the brief, and missing notes refuse provisioning before any write.
 Fence checks include expansions and unmaterialized globs; a possible overlap
 not covered by the recorded issue pair is refused for plan revision or judgment.
 

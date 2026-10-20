@@ -86,6 +86,7 @@ import {
 import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { validateResolvedPolicy } from './devflow-policy.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -795,6 +796,11 @@ function finderSelection(policy) {
 export function lanePolicyProjection(plan, lane, policyFile) {
   if (typeof policyFile !== 'string' || !policyFile) throw new UsageError('--policy is required (resolved-policy JSON)')
   const policy = readJson(policyFile, '--policy')
+  try {
+    validateResolvedPolicy(policy)
+  } catch (error) {
+    throw new Refusal(`--policy is not a complete resolved policy projection: ${error.message}`)
+  }
   const profile = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
   const projected = planPolicy(policy, { strategySource: profile.strategy_source, operatorPins: profile.operator_pins })
   // The plan may carry attributed prose ("explicit operator input ...") where
