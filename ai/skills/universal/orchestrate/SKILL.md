@@ -461,7 +461,7 @@ table before their intended sections.
 | `{{record-directory}}` | Active run record directory |
 | `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
 | `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
-| `{{live-lane-overlaps}}` | Each live-overlap entry uses the canonical tuple ``lane `<label>` (#<issue>, branch `<branch>`, wave <wave>)``; the envelope uses `[]` as its only no-overlap form. Labels and branches are nonempty and contain no backticks or line breaks; issue and wave are positive decimal integers without leading zeros. A tuple may be followed by one space and nonempty single-line detail. Supply one entry as a string or entries as an array. |
+| `{{live-lane-overlaps}}` | Body rendering is `None.` when there are no live overlaps, otherwise canonical entries prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`. |
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |

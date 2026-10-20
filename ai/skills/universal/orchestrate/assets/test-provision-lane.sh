@@ -180,6 +180,18 @@ console.log('PASS: provisioned lane accepts its configured challenge receipt and
 refusal(f, /run.json already exists/)
 console.log('PASS: complete provisioning, lane profile, literal substitution, all required input refusals preserve state')
 
+const unwidened = fixture()
+node(unwidened.repo, command, unwidened.args())
+unwidened.plan.issues.push({ number: 2, title: 'unreserved lane', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] })
+unwidened.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['src/two'], expansions: [] })
+unwidened.plan.lane_profiles.push({ lane: 'l2', policy })
+unwidened.plan.waves.push({ number: 2, issues: [2] })
+unwidened.publish()
+git(unwidened.repo, 'switch', '-q', '-c', 'lane-two')
+unwidened.facts.claim_handoff.branch = 'lane-two'; unwidened.saveFacts()
+refusal(unwidened, /outside the reserved scope/, command, unwidened.args('l2'))
+console.log('PASS: unreserved added lane is refused with byte-unchanged durable record tree')
+
 // Reservation widening precedes publishing the added-lane revision (#1410).
 node(f.repo, writer, ['lock', 'acquire', '--slate', 'other', '--session', 'other', '--issues', '2'])
 const widen = ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2']
