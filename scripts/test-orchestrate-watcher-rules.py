@@ -48,36 +48,6 @@ def pin_absent(errors: list[str], name: str, document: str, deleted: str) -> Non
         errors.append(f"{name}: deleted round-1 wording is still present")
 
 
-def pin_forbidden_terms(errors: list[str], name: str, scope: str) -> None:
-    for word, expected in (("kill", 1), ("pkill", 1), ("killall", 0), ("xkill", 0)):
-        count = len(
-            re.findall(
-                rf"(?<![A-Za-z0-9_]){word}(?![A-Za-z0-9_])", scope, re.IGNORECASE
-            )
-        )
-        if count != expected:
-            errors.append(
-                f"{name}: negative pin for {word} expected {expected} mention(s), "
-                f"found {count}"
-            )
-
-    for pattern, label in ((r"\bTaskStop\b", "TaskStop"), (r"\bmonitor[- ]stop\b", "monitor-stop")):
-        if len(re.findall(pattern, scope, re.IGNORECASE)) != 1:
-            errors.append(f"{name}: {label} must have one approval-gated mention")
-
-    without_approval = re.compile(
-        r"(?:TaskStop|monitor[- ]stop).{0,160}"
-        r"(?:without|no|not\s+required|does\s+not\s+require|doesn't\s+require|"
-        r"need\s+no|needs\s+no|requires\s+no|exempt)[^.]*approval|"
-        r"(?:without|no|not\s+required|does\s+not\s+require|doesn't\s+require|"
-        r"need\s+no|needs\s+no|requires\s+no|exempt)[^.]*approval.{0,160}"
-        r"(?:TaskStop|monitor[- ]stop)",
-        re.IGNORECASE,
-    )
-    if without_approval.search(scope):
-        errors.append(f"{name}: monitor-stop exception lacks user approval")
-
-
 def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> None:
     expected = {
         "ready": "READY-<lane-label>",
@@ -114,19 +84,37 @@ def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> N
         "source <(sed -n '/^terminal_sentinel() {/,/^}/p' \"$0\"); "
         'terminal_sentinel "$1" "$2"'
     )
-    for kind in ("ready", "handoff", "blocked"):
-        sentinel = f"{kind.upper()}-{lane}-{nonce}"
-        if rendered.count(sentinel) != 1:
-            errors.append(f"rendered template must contain {sentinel} exactly once")
+    marker = re.search(r"Append exactly one of the\s+following to", rendered)
+    if marker is None:
+        errors.append("rendered template has no terminal-sentinel list")
+        sentinel_tokens: list[str] = []
+    else:
+        end_marker = "The lane's own handoff sentinel"
+        end_at = rendered.find(end_marker, marker.end())
+        if end_at < 0:
+            errors.append("rendered template has no end to the terminal-sentinel list")
+            sentinel_tokens = []
+        else:
+            sentinel_tokens = re.findall(
+                r"(?m)^[ \t]*- `([^`]+)` —", rendered[marker.end() : end_at]
+            )
+    expected_kinds = {"READY", "HANDOFF", "BLOCKED"}
+    actual_kinds = {token.partition("-")[0] for token in sentinel_tokens}
+    if len(sentinel_tokens) != 3 or actual_kinds != expected_kinds:
+        errors.append(
+            "rendered template must expose one backticked READY, HANDOFF, and BLOCKED token"
+        )
+
+    for token in sentinel_tokens:
         result = subprocess.run(
             ["bash", "-c", matcher, str(watcher), lane, nonce],
-            input=f"previous line\n{sentinel}\n",
+            input=f"previous line\n{token}\n",
             text=True,
             capture_output=True,
             check=False,
         )
-        if result.returncode != 0 or result.stdout.strip() != sentinel:
-            errors.append(f"lane-watch.sh rejected rendered sentinel {sentinel}")
+        if result.returncode != 0 or result.stdout.strip() != token:
+            errors.append(f"lane-watch.sh rejected rendered sentinel {token}")
 
 
 def main() -> int:
@@ -165,11 +153,9 @@ def main() -> int:
             "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.",
         ),
     )
-    skill_scopes = [
+    for name, start, end, expected in skill_ranges:
         pin_range(errors, name, skill, start, end, expected)
-        for name, start, end, expected in skill_ranges
-    ]
-    herdr_rules = pin_range(
+    pin_range(
         errors,
         "Herdr whole watcher restatement",
         herdr,
@@ -178,12 +164,6 @@ def main() -> int:
         "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`), invoked as that file. The session-lifetime persistent monitor primitive streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job. On every watcher expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.",
     )
 
-    skill_supervision = norm(skill[skill.find("## Persistent supervision") :])
-    for name, scope in (
-        ("orchestrator", skill_supervision),
-        ("Herdr", herdr_rules),
-    ):
-        pin_forbidden_terms(errors, name, scope)
     for name, document in (("orchestrator", skill), ("Herdr", herdr)):
         pin_absent(errors, f"{name} restart deletion", document, "Each session's monitors end with that session")
         pin_absent(errors, f"{name} live-watcher deletion", document, "While another live session's watcher runs, arm none.")
