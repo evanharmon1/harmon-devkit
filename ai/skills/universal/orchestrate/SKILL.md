@@ -461,7 +461,7 @@ table before their intended sections.
 | `{{record-directory}}` | Active run record directory |
 | `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
 | `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
-| `{{live-lane-overlaps}}` | Body rendering is `None.` when there are no live overlaps, otherwise canonical entries prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`. |
+| `{{live-lane-overlaps}}` | Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`. |
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
