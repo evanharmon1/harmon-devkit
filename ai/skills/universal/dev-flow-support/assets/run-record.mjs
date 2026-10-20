@@ -21,11 +21,14 @@
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock status  --slate ID
 //
+// Writes accept --owner-token TOKEN. For acquisition, persistence and recovery,
+// follow ../SKILL.md#owner-token-caller-contract.
+//
 // A run belongs to exactly one slate: its first helper write requires --run-id
 // to be a lane in some revision of this slate's plan and records the slate in
 // `runs/<run-id>/owner-slate`; every later write requires the same slate. Each
-// write takes the slate lock (acquiring it on first use, its scope always
-// derived from the current plan). Then, under a short-lived per-file mutex,
+// write requires an explicitly acquired slate lock and its owner token
+// (or the matching session for a legacy token-less lock). Under a per-file mutex,
 // it builds the complete candidate beside run.json, validates it with
 // `validate-result-schemas.mjs run --receipts <candidate>` plus every
 // `adjudications/*.json` in the run directory (or `--no-adjudications` when
@@ -394,10 +397,26 @@ function normalizeScope({ milestone, issues }) {
 
 function readLock(file) {
   const lock = readJson(file, 'slate lock')
-  if (typeof lock.session !== 'string' || !Array.isArray(lock.issues)) {
+  if (typeof lock.session !== 'string' || !Array.isArray(lock.issues) ||
+      (Object.hasOwn(lock, 'owner_token_digest') && !/^[0-9a-f]{64}$/.test(lock.owner_token_digest ?? ''))) {
     throw new Refusal(`slate lock is malformed: ${file}`)
   }
   return lock
+}
+
+// A session is a display name; only the token proves ownership of a new lock.
+// Token-less locks predate this contract and remain usable until released.
+function assertLockOwner(held, session, ownerToken) {
+  if (held.session !== session) {
+    throw new Refusal(`slate ${held.slate_id} is locked by session ${held.session}; refusing`)
+  }
+  if (!Object.hasOwn(held, 'owner_token_digest')) {
+    console.error('warning: legacy slate lock authorizes by session; use lock release then lock acquire to upgrade')
+    return
+  }
+  if (typeof ownerToken !== 'string' || createHash('sha256').update(ownerToken).digest('hex') !== held.owner_token_digest) {
+    throw new Refusal('slate lock owner token does not match; pass the token from the original lock acquire output with --owner-token; only if the token is truly lost, recover with operator-confirmed lock release --force --reason, then lock acquire')
+  }
 }
 
 // acquireSlateLock — the lock's issue set is the plan's whenever a plan
@@ -406,7 +425,7 @@ function readLock(file) {
 // recorded from --milestone (the plan schema carries none) and never changes
 // once recorded. Every acquisition that records a new or changed scope is
 // checked against every other session's lock.
-export function acquireSlateLock({ root, slate, session, milestone, issues }) {
+export function acquireSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
   const { dir, file, registry } = lockPaths(root, slate)
   mkdirSync(dir, { recursive: true })
   const plan = currentPlan(root, slate)
@@ -414,9 +433,10 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
   const outside = (reserved) => (planned ?? []).filter((n) => !reserved.includes(n))
   return withMutex(registry, () => {
     const held = existsSync(file) ? readLock(file) : null
-    if (held !== null && held.session !== session) {
-      throw new Refusal(`slate ${slate} is locked by session ${held.session} (since ${held.acquired_at}); refusing`)
+    if (held === null && !create) {
+      throw new Refusal(`slate ${slate} is unlocked; run lock acquire with --slate, --session and --issues first`)
     }
+    if (held !== null) assertLockOwner(held, session, ownerToken)
     if (held !== null && milestone !== undefined && held.milestone !== null && held.milestone !== milestone) {
       throw new Refusal(`slate ${slate} is locked for milestone ${held.milestone}, not ${milestone}`)
     }
@@ -444,7 +464,6 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.json') || name === `${slate}.json`) continue
       const other = readLock(join(dir, name))
-      if (other.session === session) continue
       if (scope.milestone !== null && other.milestone === scope.milestone) {
         throw new Refusal(
           `milestone ${scope.milestone} is already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
@@ -457,17 +476,21 @@ export function acquireSlateLock({ root, slate, session, milestone, issues }) {
         )
       }
     }
-    const lock = { schema: 1, slate_id: slate, session, ...scope, acquired_at: held?.acquired_at ?? resolveAt(undefined) }
+    const mintedToken = held === null ? randomBytes(32).toString('hex') : null
+    const lock = { schema: 1, slate_id: slate, session, ...scope, acquired_at: held?.acquired_at ?? resolveAt(undefined),
+      ...(held === null ? { owner_token_digest: createHash('sha256').update(mintedToken).digest('hex') }
+        : Object.hasOwn(held, 'owner_token_digest') ? { owner_token_digest: held.owner_token_digest } : {}),
+    }
     const temporary = `${file}.tmp.${process.pid}`
     writeFileSync(temporary, `${JSON.stringify(lock, null, 2)}\n`)
     renameSync(temporary, file)
-    // `created` (never written to disk) tells a caller this invocation made the
-    // lock, so it can release exactly that lock if its own write is refused.
-    return held === null ? { ...lock, created: true } : lock
+    // Only a fresh explicit acquisition may print the token. The transient
+    // `created` flag never reaches the lock file or status output.
+    return held === null ? { ...lock, created: true, mintedToken } : lock
   })
 }
 
-export function releaseSlateLock({ root, slate, session, force, reason }) {
+export function releaseSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, force, reason }) {
   if (force && (typeof reason !== 'string' || reason.trim() === '')) {
     throw new UsageError('--force requires --reason')
   }
@@ -476,9 +499,7 @@ export function releaseSlateLock({ root, slate, session, force, reason }) {
   return withMutex(registry, () => {
     if (!existsSync(file)) return null
     const held = readLock(file)
-    if (held.session !== session && !force) {
-      throw new Refusal(`slate ${slate} is locked by session ${held.session}; only that session may release it (or --force --reason)`)
-    }
+    if (!force) assertLockOwner(held, session, ownerToken)
     if (force) {
       // Retain the observed owner and the operator's attribution BEFORE
       // removing the reservation. If audit publication fails, keep the lock.
@@ -680,36 +701,21 @@ function recordWrite(command, args) {
   const runId = requireId('run-id', args['run-id'])
   args.at = resolveAt(args.at)
   assertRunOwner(root, slate, runId)
-  const lock = acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
-  try {
-    bindRunToSlate(root, slate, runId)
-  } catch (error) {
-    // A refused bind (another slate won the run, or the run is not this
-    // slate's) must not leave behind a lock this invocation created.
-    if (lock.created === true) releaseSlateLock({ root, slate, session })
-    throw error
-  }
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
+  bindRunToSlate(root, slate, runId)
   const canonical = join(root, 'runs', runId, 'run.json')
-  let summary
-  try {
-    summary = withMutex(canonical, () => {
-      const record = readJson(canonical, 'run record')
-      if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
-      if (!Array.isArray(record.stage_transitions) || record.stage_transitions.length === 0) {
-        throw new Refusal(`${canonical} has no stage_transitions`)
-      }
-      validateFile('run', canonical, `existing ${canonical}`)
-      const result = MUTATORS[command](record, args, { common })
-      if (result === null) return null
-      writeValidated('run', canonical, record)
-      return result
-    })
-  } catch (error) {
-    // A refused write never leaves behind a lock this invocation took, so an
-    // ended run's released lock stays released.
-    if (lock.created === true) releaseSlateLock({ root, slate, session })
-    throw error
-  }
+  const summary = withMutex(canonical, () => {
+    const record = readJson(canonical, 'run record')
+    if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+    if (!Array.isArray(record.stage_transitions) || record.stage_transitions.length === 0) {
+      throw new Refusal(`${canonical} has no stage_transitions`)
+    }
+    validateFile('run', canonical, `existing ${canonical}`)
+    const result = MUTATORS[command](record, args, { common })
+    if (result === null) return null
+    writeValidated('run', canonical, record)
+    return result
+  })
   if (command === 'close') {
     const moved = archiveOrchestratorFiles(root, slate, runId)
     const closed = summary === null ? 'run already closed' : `recorded ${summary}`
@@ -947,8 +953,7 @@ function soloInit(args) {
   // nothing this call created behind (a re-arm adopts what already existed).
   const undo = []
   try {
-    const lock = acquireSlateLock({ root, slate, session, issues: [issue] })
-    if (lock.created === true) undo.push(() => releaseSlateLock({ root, slate, session }))
+    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], issues: [issue] })
     const planFile = join(root, 'slates', slate, 'plan.json')
     mkdirSync(dirname(planFile), { recursive: true })
     withMutex(planFile, () => {
@@ -1355,32 +1360,19 @@ function sideEffectWrite(command, args) {
   const runId = requireId('run-id', args['run-id'])
   refuseGrafts()
   assertRunOwner(root, slate, runId)
-  const lock = acquireSlateLock({ root, slate, session })
-  try {
-    bindRunToSlate(root, slate, runId)
-  } catch (error) {
-    if (lock.created === true) releaseSlateLock({ root, slate, session })
-    throw error
-  }
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+  bindRunToSlate(root, slate, runId)
   const runDir = join(root, 'runs', runId)
   const canonical = join(runDir, 'run.json')
-  let summary
-  try {
-    summary = withMutex(canonical, () => {
-      const record = readJson(canonical, 'run record')
-      if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
-      validateFile('run', canonical, `existing ${canonical}`)
-      const result = SIDE_EFFECTS[command](record, args, { runDir, canonical })
-      if (result === null) return null
-      if (result.write) writeValidated('run', canonical, record)
-      return result.summary
-    })
-  } catch (error) {
-    // A refused write never leaves behind a lock this call took (an ended
-    // run's released lock stays released).
-    if (lock.created === true) releaseSlateLock({ root, slate, session })
-    throw error
-  }
+  const summary = withMutex(canonical, () => {
+    const record = readJson(canonical, 'run record')
+    if (record.run_id !== runId) throw new Refusal(`${canonical} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
+    validateFile('run', canonical, `existing ${canonical}`)
+    const result = SIDE_EFFECTS[command](record, args, { runDir, canonical })
+    if (result === null) return null
+    if (result.write) writeValidated('run', canonical, record)
+    return result.summary
+  })
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
@@ -1389,7 +1381,7 @@ function sideEffectWrite(command, args) {
 // ---------------------------------------------------------------------------
 
 const VALUE_FLAGS = new Set([
-  'slate', 'session', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
+  'slate', 'session', 'owner-token', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
@@ -1442,15 +1434,16 @@ function lockCommand(sub, args) {
   const slate = requireId('slate', args.slate)
   if (sub === 'status') {
     const { file } = lockPaths(root, slate)
-    return existsSync(file) ? JSON.stringify(readLock(file)) : `slate ${slate} is unlocked`
+    if (!existsSync(file)) return `slate ${slate} is unlocked`
+    return JSON.stringify(readLock(file))
   }
   const session = requireId('session', args.session)
   if (sub === 'acquire') {
-    const lock = acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
-    return `slate ${slate} locked by session ${lock.session}`
+    const lock = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues, create: true })
+    return lock.created === true ? lock.mintedToken : null
   }
   if (sub === 'release') {
-    const held = releaseSlateLock({ root, slate, session, force: args.force === true, reason: args.reason })
+    const held = releaseSlateLock({ root, slate, session, ownerToken: args['owner-token'], force: args.force === true, reason: args.reason })
     if (held === null) return `slate ${slate} was not locked`
     return args.force === true && held.session !== session
       ? `slate ${slate} lock held by session ${held.session} force-released: ${args.reason}`

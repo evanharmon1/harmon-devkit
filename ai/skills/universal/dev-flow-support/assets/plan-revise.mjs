@@ -7,6 +7,9 @@
 //   plan-revise.mjs base-move --slate ID --session ID --new-base SHA --reason TEXT
 //                             [--done N]... [--at TS] [--milestone N] [--issues N,N,...]
 //
+// Writes require --owner-token TOKEN; follow the shared caller contract at
+// ../SKILL.md#owner-token-caller-contract.
+//
 // Appends one revision for a default-branch move: `base_sha` becomes the new
 // base, every `--done` issue keeps its verified record as `verdict: "done"`
 // (orchestrate § Planning step 2: never erase a verdict) and leaves every
@@ -200,7 +203,7 @@ function baseMove(args) {
   if (!existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}: ${canonical}`)
   // Validated before the lock is taken, so a broken plan leaves no lock.
   validateFile('plan', canonical, `existing ${canonical}`)
-  acquireSlateLock({ root, slate, session, milestone: args.milestone, issues: args.issues })
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
 
   return withMutex(canonical, () => {
     const document = readJson(canonical, 'plan')
@@ -237,7 +240,7 @@ function main(argv) {
   const args = parseScopeFlags(
     parseFlags(
       rest,
-      new Set(['slate', 'session', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']),
+      new Set(['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']),
       new Set(),
       new Set(['done']),
     ),

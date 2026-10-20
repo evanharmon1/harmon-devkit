@@ -87,9 +87,18 @@ const common = sh('git', ['rev-parse', '--path-format=absolute', '--git-common-d
 const state = join(common, 'dev-flow-v2')
 const runsDir = join(state, 'runs')
 const SESSION = 'solo-session'
+const tokens = new Map()
+const acquire = (runId, issue, session = SESSION) => {
+  const slate = `solo-${runId}`
+  const token = sh('node', [runRecord, 'lock', 'acquire', '--slate', slate, '--session', session, '--issues', String(issue)])
+  assert.match(token, /^[0-9a-f]{64}$/)
+  tokens.set(slate, token)
+}
+const releaseFixtureLock = (slate) => sh('node', [runRecord, 'lock', 'release', '--slate', slate, '--session', SESSION, ...ownerArgs(slate)])
+const ownerArgs = (slate) => ['--owner-token', tokens.get(slate) ?? 'missing']
 const PIN = 'implementer: fixture pin (operator)'
 
-const soloArgs = ({ runId, issue, branch, session = SESSION, actor = ACTOR }) => ['solo-init', '--session', session,
+const soloArgs = ({ runId, issue, branch, session = SESSION, actor = ACTOR }) => ['solo-init', ...ownerArgs(`solo-${runId}`), '--session', session,
   '--run-id', runId, '--issue', String(issue), '--title', 'A change', '--url', `https://github.com/example/repo/issues/${issue}`,
   '--branch', branch, '--base', base, '--policy', policyFile, '--actor-id', String(actor),
   '--strategy-source', 'default_strategy', '--operator-pin', PIN]
@@ -121,6 +130,12 @@ assert.equal(existsSync(state), false)
 pass('solo-init refuses a non-canonical id, an unreadable policy, an untrusted actor or an unresolvable default branch before writing anything')
 
 r = run('node', [runRecord, ...initArgs])
+assert.equal(r.status, 1, r.stderr)
+assert.match(r.stderr, /lock acquire/)
+acquire(RUN, 1)
+// initArgs was constructed before acquisition; refresh its token explicitly.
+initArgs[2] = tokens.get(`solo-${RUN}`)
+r = run('node', [runRecord, ...initArgs])
 assert.equal(r.status, 0, r.stderr)
 const identity = JSON.parse(r.stdout)
 const record = identity.record_directory
@@ -143,7 +158,7 @@ const plannedPolicy = read(planFile).revisions[0].plan.policy
 assert.equal(plannedPolicy.strategy_source, 'default_strategy')
 assert.deepEqual(plannedPolicy.operator_pins, [PIN])
 assert.equal(read(join(state, 'locks', `solo-${RUN}.json`)).session, SESSION)
-pass('solo-init writes a schema-valid kickoff run.json, policy.json, single-lane plan (operator strategy source and pins), slate lock and active pointer')
+pass('solo-init uses the explicitly acquired tokenized lock and writes a schema-valid kickoff run.json, policy.json, single-lane plan and active pointer')
 
 const before = readFileSync(runJson, 'utf8')
 r = run('node', [runRecord, ...initArgs])
@@ -162,7 +177,7 @@ r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-other', issue: 1, branch
 assert.equal(r.status, 1)
 assert.match(r.stderr, /already has live active run run-1-solo/)
 assert.ok(nothingWritten('run-1-other'))
-r = run('node', [runRecord, ...soloArgs({ runId: 'run-1-elsewhere', issue: 1, branch: '1-elsewhere', session: 'another-session' })])
+r = run('node', [runRecord, 'lock', 'acquire', '--slate', 'solo-run-1-elsewhere', '--session', 'another-session', '--issues', '1'])
 assert.equal(r.status, 1)
 assert.match(r.stderr, /issue\(s\) 1 are already locked by session solo-session/)
 assert.ok(nothingWritten('run-1-elsewhere'))
@@ -172,12 +187,14 @@ if (process.getuid?.() !== 0) {
   // A failure after the writes began (here: activation, against an
   // unwritable pointer directory) undoes everything this call created.
   chmodSync(join(state, 'active'), 0o555)
+  acquire('run-5-rollback', 5)
   r = run('node', [runRecord, ...soloArgs({ runId: 'run-5-rollback', issue: 5, branch: '5-rollback' })])
   chmodSync(join(state, 'active'), 0o755)
   assert.equal(r.status, 1, r.stderr)
   assert.match(r.stderr, /activation refused/)
+  releaseFixtureLock('solo-run-5-rollback')
   assert.ok(nothingWritten('run-5-rollback'), readdirSync(state).join(','))
-  pass('solo-init rolls back its lock, plan, owner binding, policy.json, run.json and branch binding when activation fails')
+  pass('solo-init rolls back its own files on activation failure; the pre-acquired lock is explicitly released')
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +210,7 @@ const refused = (slateArgs, args, pattern) => {
   assert.equal(out.status, 1, `${args.join(' ')} was not refused: ${out.stdout}${out.stderr}`)
   assert.match(out.stderr, pattern)
 }
-const slateArgs = ['--slate', identity.slate_id, '--session', SESSION, '--run-id', RUN]
+const slateArgs = ['--slate', identity.slate_id, '--session', SESSION, ...ownerArgs(identity.slate_id), '--run-id', RUN]
 const write = writer(slateArgs)
 write('transition', '--stage', 'claim')
 write('transition', '--stage', 'implement', '--exit', 'claimed by this session')
@@ -321,11 +338,12 @@ assert.equal(read(authProjection).rounds.challenge, 1)
 sh('git', ['switch', '-q', '-c', '12-cap-auth', base])
 writeFileSync(join(repo, 'authorized.txt'), 'authorized test\n')
 const authHead = commitAll('feat: authorization fixture')
+acquire('run-12-cap-auth', 12)
 const authInit = run('node', [runRecord, ...soloArgs({ runId: 'run-12-cap-auth', issue: 12, branch: '12-cap-auth' })
   .map((arg) => arg === policyFile ? authProjection : arg)])
 assert.equal(authInit.status, 0, authInit.stderr)
 const authIdentity = JSON.parse(authInit.stdout)
-const authSlate = ['--slate', authIdentity.slate_id, '--session', SESSION, '--run-id', 'run-12-cap-auth']
+const authSlate = ['--slate', authIdentity.slate_id, '--session', SESSION, ...ownerArgs(authIdentity.slate_id), '--run-id', 'run-12-cap-auth']
 const authWrite = writer(authSlate)
 authWrite('transition', '--stage', 'claim')
 authWrite('transition', '--stage', 'implement', '--exit', 'claimed')
@@ -558,14 +576,14 @@ withMutex(runJson, () => {
 `)
 sh('node', [settle, pathToFileURL(runRecord).href, runJson, reviewFinding.id, now()])
 write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint')
-const releaseLock = (slateId) => sh('node', [runRecord, 'lock', 'release', '--slate', slateId, '--session', SESSION])
+const releaseLock = releaseFixtureLock
 assert.match(releaseLock(identity.slate_id), /released/)
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
 const finalRecord = readFileSync(runJson, 'utf8')
 refused([], [...initArgs], /run run-1-solo has ended \(outcome ready-for-review\); reserve a fresh run id/)
 assert.equal(readFileSync(runJson, 'utf8'), finalRecord)
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
-refused(slateArgs, ['transition', '--stage', 'implement', '--exit', 'late'], /run already ended/)
+refused(slateArgs, ['transition', '--stage', 'implement', '--exit', 'late'], /lock acquire/)
 assert.equal(read(runJson).outcome, 'ready-for-review')
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
 pass('a promoted solo run releases its slate lock, refuses every later write, and is never re-armed by solo-init')
@@ -579,10 +597,11 @@ const DBRANCH = '3-diverge'
 sh('git', ['switch', '-q', '-c', DBRANCH, base])
 writeFileSync(join(repo, 'a b.txt'), 'one\ntwo\nthree\n')
 const d1 = commitAll('feat: a')
+acquire(DRUN, 3)
 r = run('node', [runRecord, ...soloArgs({ runId: DRUN, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)
 const dIdentity = JSON.parse(r.stdout)
-const dSlate = ['--slate', dIdentity.slate_id, '--session', SESSION, '--run-id', DRUN]
+const dSlate = ['--slate', dIdentity.slate_id, '--session', SESSION, ...ownerArgs(dIdentity.slate_id), '--run-id', DRUN]
 const dWrite = writer(dSlate)
 dWrite('transition', '--stage', 'claim')
 dWrite('transition', '--stage', 'implement', '--exit', 'claimed')
@@ -625,9 +644,10 @@ releaseLock(dIdentity.slate_id)
 assert.equal(read(join(dIdentity.record_directory, 'run.json')).outcome, 'escalated')
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 const closedLedger = readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8')
-refused(dSlate, ['ledger', '--stage', 'challenge'], /run already ended with outcome escalated/)
+refused(dSlate, ['ledger', '--stage', 'challenge'], /lock acquire/)
 assert.equal(readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8'), closedLedger)
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
+acquire(`${DRUN}-r2`, 3)
 r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)
 assert.equal(JSON.parse(r.stdout).generation, 2)
@@ -650,6 +670,7 @@ assert.deepEqual([slotA, slotB], [challengeFinder, 'copilot-adversarial'])
 sh('git', ['switch', '-q', '-c', SBRANCH, base])
 writeFileSync(join(repo, 'slots.txt'), 'first\n')
 const s1 = commitAll('feat: slots')
+acquire(SRUN, 8)
 r = run('node', [runRecord, ...soloArgs({ runId: SRUN, issue: 8, branch: SBRANCH }).map((a) => (a === policyFile ? twoSlotPolicy : a))])
 assert.equal(r.status, 0, r.stderr)
 const sIdentity = JSON.parse(r.stdout)
@@ -658,7 +679,7 @@ assert.deepEqual(read(join(sRecord, 'run.json')).finder_selection,
   [{ stage: 'challenge', configured: [slotA], requested: [slotB], effective: [slotA, slotB] }])
 pass('solo-init persists the resolved --add-finder selection as run.json finder_selection, where the exit engine restores it')
 
-const sSlate = ['--slate', sIdentity.slate_id, '--session', SESSION, '--run-id', SRUN]
+const sSlate = ['--slate', sIdentity.slate_id, '--session', SESSION, ...ownerArgs(sIdentity.slate_id), '--run-id', SRUN]
 const sWrite = writer(sSlate)
 sWrite('transition', '--stage', 'claim')
 sWrite('transition', '--stage', 'implement', '--exit', 'claimed')
@@ -717,10 +738,11 @@ const singleStage = ({ disabled, enabled, issue }) => {
   sh('git', ['switch', '-q', '-c', branch, base])
   writeFileSync(join(repo, `${enabled}.txt`), `${enabled} only\n`)
   const tip = commitAll(`feat: ${enabled} only`)
+  acquire(runId, issue)
   r = run('node', [runRecord, ...soloArgs({ runId, issue, branch }).map((a) => (a === policyFile ? projectionFile : a))])
   assert.equal(r.status, 0, r.stderr)
   const ident = JSON.parse(r.stdout)
-  const slate = ['--slate', ident.slate_id, '--session', SESSION, '--run-id', runId]
+  const slate = ['--slate', ident.slate_id, '--session', SESSION, ...ownerArgs(ident.slate_id), '--run-id', runId]
   const w = writer(slate)
   w('transition', '--stage', 'claim')
   w('transition', '--stage', 'implement', '--exit', 'claimed')

@@ -29,6 +29,36 @@ The skills sync is the only distribution channel for this runtime: a script one
 skill uses lives in that skill's own `assets/`, and a script several skills
 share lives here. Nothing is shipped through the harmon-init template.
 
+## Owner-token caller contract
+
+Take the one-time initial reservation once before the slate's first write by running
+`node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
+without capturing its output. Read the single printed token line from that
+output. Pass it literally as `--owner-token <token>` on every later
+run-record.mjs or plan-revise.mjs write, including normal release.
+Every later `lock acquire` (scope widening or re-acquisition) passes
+`--owner-token <token>`; a tokenless re-acquire of a tokenized lock is refused.
+
+The token lives only in the session's own context.
+A restart, `/clear` or compaction loses it; recovery requires the
+operator-confirmed `lock release --force --reason`, then a fresh `lock acquire`.
+
+Never put the token in a shared path keyed by session name, and never write it
+to repository files, logs, or PR or issue text. The token is a collision guard
+between same-named sessions, not a credential. `RUN_RECORD_OWNER_TOKEN` is usable
+within one process or script only; an export does not survive separate tool
+calls. Re-acquisition requires the token and prints nothing.
+Only the token's SHA-256 digest is
+stored in the lock, status and recovery audit. An unlocked slate refuses
+run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance;
+a token-less legacy lock continues to authorize by session with a
+release/re-acquire warning.
+
+A lock held under another slate id over the same issues or milestone is refused whatever its session name.
+
+`review/assets/post-evidence.sh` is a separate write path: it uses its own
+per-file mutex and takes no slate lock.
+
 ## Assets
 
 | Asset | Used by | What it does |
