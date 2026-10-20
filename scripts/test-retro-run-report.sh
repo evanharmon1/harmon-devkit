@@ -1645,6 +1645,9 @@ const assert = require('node:assert/strict')
 const lines = process.env.REPORT_TEXT.split('\n').filter(line => line.startsWith('- Findings by finder'))
 assert.ok(lines.includes('- Findings by finder (authenticated pass evidence): unavailable from this harvester') &&
   lines.every(line => !line.includes('not measured')))
+const integration = process.env.REPORT_TEXT.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
+assert.ok(integration.includes('- Findings by finder (retained-record evidence, not verified by GitHub): unavailable from this harvester') &&
+  !integration.includes('No findings recorded.'))
 NODE
 [ "$?" -eq 0 ] && ok "older-harvester finder text is unavailable, never not measured" || bad "older-harvester finder text"
 
