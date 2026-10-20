@@ -187,8 +187,8 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set:
-   `dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
+   slate lock with its explicit issue set, reading its one-time stdout token from visible output:
+   `node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
    --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
    milestone-backed slate (the milestone exists only in the lock). A second
    orchestrator naming the same work is refused here, before it can publish a
@@ -198,7 +198,7 @@ Build and publish the plan in this order:
    a graph/projection mismatch, an ownership error, or a cap violation. Both
    writers refuse while the canonical plan names an issue outside the
    reservation, so a later revision that adds issues widens the reservation
-   with `lock acquire --issues` first.
+   with `lock acquire --issues --owner-token <token>` first.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -225,7 +225,8 @@ Build and publish the plan in this order:
 ## Durable orchestrator state
 
 Everything you need in order to resume lives under the Git common directory,
-never in the session scratchpad. A scratchpad does not survive a session
+never in the session scratchpad, with one deliberate exception: the owner token
+lives only in session context, never under the Git common directory. A scratchpad does not survive a session
 restart, and one that was wiped mid-slate took every dispatch file, ruling
 and watcher script with it (harmon-devkit#1296). The scratchpad is for
 throwaway work only.
@@ -278,7 +279,7 @@ must first use `run-record.mjs`'s shared mutex and validated writer; its lock
 does not protect a caller that bypasses it.
 
 For a maintainer-authorized round above the resolved cap, use
-`run-record.mjs authorize-cap --slate <id> --session <id> --run-id <id>
+`run-record.mjs authorize-cap --slate <id> --session <id> --owner-token <token> --run-id <id>
 --stage <challenge|review|integration> --round <n> --actor <maintainer-identity>
 --instruction '<verbatim session instruction>' --at <instruction-UTC-time>`.
 An agent never authorizes itself: the writer records the maintainer's instruction,
@@ -307,23 +308,28 @@ later session. Files under `.git/` never show in `git status`.
 
 Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
-with the slate's milestone and issue set. While another session holds the
-same slate, the same milestone, or any of the same issues — under any slate
-id — every write is refused. Take it before publishing the plan (§ Planning
+with the slate's milestone and issue set. Every run-record.mjs and
+plan-revise.mjs write is refused while any lock other than this session's own
+covers the same slate, the same milestone, or any of the same issues; the
+owner-token caller contract below defines "own".
+Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
-implicit lock taken at a first write records no milestone, and a plan
+unlocked slate refuses every run-record.mjs and plan-revise.mjs write except explicit `lock acquire`, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
-claim comment's `session:` line. Reuse it after a restart; it is not a PID or
-a liveness signal. A different session is refused even on the same host.
+claim comment's `session:` line; it is not a PID or a liveness signal.
+A restart, `/clear` or compaction also loses the owner token; resume through
+the recovery procedure below: operator confirmation, force release, then a
+fresh `lock acquire`. A different session is refused even on the same host.
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 Recovery is an explicit operator decision, never an automatic timeout or a
 cross-host process probe. Inspect `lock status --slate <slate>`, have the
 operator confirm that the previous session and its writers have stopped, then
 run `lock release --slate <slate> --session <recovering-session> --force
 --reason "<operator attribution and why the old session is abandoned>"` once.
-The helper records that request, its session, reason, timestamp and complete
-previous lock in `locks/recoveries/<slate>/<id>.json` before removing the lock;
+The helper records that request, its session, reason, timestamp and
+previous lock metadata (including only the owner-token digest) in `locks/recoveries/<slate>/<id>.json` before removing the lock;
 failure to record it leaves the lock held. Re-read status after any failure:
 the audit records intent, so a crash may leave the lock still held. Acquire
 normally as the recovering session only after release; ordinary scope

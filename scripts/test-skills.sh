@@ -3998,8 +3998,8 @@ sed -n '/   adjudications. On any writer error,/,/   This is the write side/p' \
 expect_ok "integration re-reads canonical promotion after any writer error" \
     sh -c 'grep -qF "re-read the canonical \`run.json\`" "$1" &&
         grep -qF "Accept a lost-response success only if its \`promotion.head\` exactly matches" "$1" &&
-        grep -qF "the confirmed head and its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
-        grep -qF "the confirmed gate fingerprint. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
+        grep -qF "the confirmed head, its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
+        grep -qF "matches the submitted \`promoted_at\`. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
     sh -c 'grep -qF "gh pr ready --undo <n> --repo" "$1" &&
         grep -qF "once, then bounded-fetch until" "$1" &&
@@ -12078,6 +12078,43 @@ expect_ok "orchestrator documents stall action" \
 expect_ok "orchestrator documents missing heartbeat recovery" \
     grep -qF 'A missing heartbeat means re-arm the watcher' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
+# #1500: lost-response acceptance binds every submitted promotion field.
+expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
+    grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"
+expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
+    grep -qF 'matches the submitted `promoted_at`. Otherwise run' "$INTEGRATE_MD"
+
+# #1500 round 2: one canonical contract replaces the four pasted caller copies.
+expect_ok "owner-token contract pins session context and recovery (#1500)" \
+    python3 - "$repo" <<'PYTOKEN'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]) / "ai/skills/universal"
+canonical = (root / "dev-flow-support/SKILL.md").read_text()
+flat = " ".join(canonical.split())
+for required in (
+    "Take the one-time initial reservation once before the slate's first write",
+    "without capturing its output. Read the single printed token line",
+    "Pass it literally as `--owner-token <token>` on every later",
+    "The token lives only in the session's own context.",
+    "Never put the token in a shared path keyed by session name",
+    "never write it to repository files, logs, or PR or issue text",
+    "collision guard between same-named sessions, not a credential",
+    "`RUN_RECORD_OWNER_TOKEN` is usable within one process or script only",
+    "an export does not survive separate tool calls",
+    "A restart, `/clear` or compaction loses it",
+    "operator-confirmed `lock release --force --reason`",
+    "then a fresh `lock acquire`",
+):
+    assert required in flat, required
+for name in ("implement", "review", "integrate", "orchestrate"):
+    text = (root / name / "SKILL.md").read_text()
+    assert text.count("Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`") == 1, name
+    assert "support directory resolved physically via `cd … && pwd -P`" in text, name
+    assert "RUN_RECORD_OWNER_TOKEN" not in text, name
+    assert "collision guard between same-named sessions" not in text, name
+PYTOKEN
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

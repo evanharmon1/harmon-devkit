@@ -473,13 +473,15 @@ trusted evidence marker (harmon-devkit#1183). The procedure is `/implement`
 for d in .agents/skills/dev-flow-support/assets .claude/skills/dev-flow-support/assets; do
   [ -d "$d" ] && { support="$(cd "$d" && pwd -P)"; break; }
 done
-node "$support/run-record.mjs" solo-init --session <session> \
+node "$support/run-record.mjs" lock acquire --slate solo-run-<issue>-<slug> --session <session> --issues <issue>
+# Read the printed token; pass it literally in this and later tool calls.
+node "$support/run-record.mjs" solo-init --session <session> --owner-token <token> \
   --run-id run-<issue>-<slug> --issue <issue> --title <title> --url <issue url> \
   --branch <branch> --base <merge base> --policy <resolved policy json> \
   --actor-id "$(gh api user --jq .id)" --strategy-source <strategy source>
-node "$support/run-record.mjs" receipt    --slate solo-<run-id> --session <session> --run-id <run-id> --pass <envelope>
-node "$support/run-record.mjs" ledger     --slate solo-<run-id> --session <session> --run-id <run-id> --stage <stage>
-node "$support/run-record.mjs" adjudicate --slate solo-<run-id> --session <session> --run-id <run-id> --file <adjudication>
+node "$support/run-record.mjs" receipt    --slate solo-<run-id> --session <session> --owner-token <token> --run-id <run-id> --pass <envelope>
+node "$support/run-record.mjs" ledger     --slate solo-<run-id> --session <session> --owner-token <token> --run-id <run-id> --stage <stage>
+node "$support/run-record.mjs" adjudicate --slate solo-<run-id> --session <session> --owner-token <token> --run-id <run-id> --file <adjudication>
 ```
 
 `<session>` is the session name `/claim` recorded on its claim comment.

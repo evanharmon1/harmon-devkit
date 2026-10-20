@@ -939,12 +939,13 @@ build_solo_record() {
         node "${repo_root}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" resolve \
             --policy .devflow.toml --registry agent-registry.json --json >policy.json || rc=$?
         [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit 1
-        node "$writer" solo-init --session "$session" --run-id "$run" --issue 380 --title "A change" \
+        owner_token="$(node "$writer" lock acquire --slate "$slate" --session "$session" --issues 380)" || exit 1
+        node "$writer" solo-init --owner-token "$owner_token" --session "$session" --run-id "$run" --issue 380 --title "A change" \
             --url https://github.com/example/repo/issues/380 --branch feature-branch \
             --base "$(git rev-parse main)" --policy policy.json \
             --actor-id "$(jq -r '.trusted_orchestrator_actor_ids[0]' agent-registry.json)" \
             --strategy-source default_strategy >/dev/null || exit 1
-        w() { node "$writer" "$1" --slate "$slate" --session "$session" --run-id "$run" "${@:2}" >/dev/null || exit 1; }
+        w() { node "$writer" "$1" --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run" "${@:2}" >/dev/null || exit 1; }
         w transition --stage claim
         w transition --stage implement --exit claimed
         w transition --stage verify --exit "committed $head_sha"

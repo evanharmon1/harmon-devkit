@@ -331,6 +331,8 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
+
 The one supervising orchestrator (or owning solo session) performs run-record
 writes sequentially across `/review` and `/integrate`. Delegates return evidence
 and never write the run record. Keep this ownership rule even when a helper
@@ -499,7 +501,7 @@ attributable maintainer instruction through the shared writer, never by editing
 
 ```sh
 node "$support_dir/run-record.mjs" authorize-cap \
-  --slate <slate-id> --session <session-id> --run-id <run-id> \
+  --slate <slate-id> --session <session-id> --owner-token <token> --run-id <run-id> \
   --stage review --round <n> --actor <maintainer-identity> \
   --instruction '<verbatim session instruction>' --at <instruction-UTC-time>
 ```

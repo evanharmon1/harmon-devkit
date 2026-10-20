@@ -77,15 +77,17 @@ inline `task challenge` / `task review` stages in a real single-lane run
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
 directory unchanged, and a solo session records promotion with
-`run-record.mjs promote --slate solo-<run-id> --session <its session>
+`run-record.mjs promote --slate solo-<run-id> --session <its session> --owner-token <token>
 --run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh
 fingerprint output>` — `<its session>` being the session name `/claim`
-recorded on its claim comment's `session:` line and `solo-init` persisted in
+recorded on its claim comment's `session:` line and `lock acquire` persisted in
 the slate lock, the same value on every write — or a non-promotion ending with
-`close --slate solo-<run-id> --session <its session> --run-id <run-id>
+`close --slate solo-<run-id> --session <its session> --owner-token <token> --run-id <run-id>
 --outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
-session>` (`/implement` § 6a step 6).
+session> --owner-token <token>` (`/implement` § 6a step 6).
+
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 **One supervising writer per run.** The supervising orchestrator (or the
 owning solo session) performs run-record writes sequentially across `/review`
@@ -1785,7 +1787,7 @@ integration` loop, and the transition that re-enters integration after the
 push records it:
 
 ```sh
-node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --run-id <run> \
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token <token> --run-id <run> \
   --stage integration --exit <how implement ended> \
   --remediation-head <pushed SHA> --remediation-findings <finding id>,<finding id>
 ```
@@ -2589,7 +2591,7 @@ that loops indefinitely:
 
    ```sh
    node "$support_dir/run-record.mjs" promote \
-     --slate "$slate" --session "$session" --run-id "$run_id" \
+     --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id" \
      --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
    ```
 
@@ -2598,8 +2600,9 @@ that loops indefinitely:
    the candidate and canonical readback with `run --receipts` and the run's
    adjudications. On any writer error, re-read the canonical `run.json`.
    Accept a lost-response success only if its `promotion.head` exactly matches
-   the confirmed head and its `promotion.gate_fingerprint` exactly matches
-   the confirmed gate fingerprint. Otherwise run
+   the confirmed head, its `promotion.gate_fingerprint` exactly matches
+   the confirmed gate fingerprint, and its `promotion.promoted_at` exactly
+   matches the submitted `promoted_at`. Otherwise run
    `gh pr ready --undo <n> --repo "$repo"` once, then bounded-fetch until
    `isDraft == true` is confirmed and stop **blocked**, naming the writer
    error and the confirmed draft state. If the remote state cannot be
