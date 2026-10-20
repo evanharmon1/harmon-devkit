@@ -12080,57 +12080,87 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
 # #1518: lane-watch operation and terminal sentinels follow one contract.
+SKILL_WATCHER="$repo/ai/skills/universal/orchestrate/SKILL.md"
+HERDR_WATCHER="$repo/docs/guides/herdr.md"
+BRIEF_WATCHER="$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
+WATCHER_SCRIPT="$repo/ai/skills/universal/orchestrate/assets/lane-watch.sh"
+assert_absent() {
+    local pattern="$1" path="$2" status
+    if grep -Eiq "$pattern" "$path"; then
+        return 1
+    else
+        status=$?
+    fi
+    [ "$status" -eq 1 ]
+}
+
 expect_ok "orchestrator uses only the shipped watcher under a streaming monitor (#1518)" \
-    grep -qF 'Use only `assets/lane-watch.sh`' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator places the watcher under a streaming monitor (#1518)" \
-    grep -qF 'under the harness streaming monitor' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator invokes the watcher as a file (#1518)" \
-    grep -qF 'Invoke it as that file.' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator names the persistent monitor as a streaming primitive (#1518)" \
-    grep -qF 'session-lifetime persistent monitor primitive that streams its output.' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator forbids inline and substitute watcher loops (#1518)" \
-    grep -qF 'inline its loop, write a substitute,' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator forbids unobserved background watchers (#1518)" \
-    grep -qF 'or run it as an unobserved background' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator re-arms first with the same state file (#1518)" \
-    grep -qF 're-arm first, before any other tool call, with the same' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator names the same state-file option for re-arms (#1518)" \
-    grep -qF '`--state-file`' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator checks lane staleness first on every wakeup (#1518)" \
-    grep -qF 'On every wakeup (a user message or monitor event), first compare the current' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator acts on stale lanes before other work (#1518)" \
-    grep -qF 'read and act on any lane silent' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator keeps one watcher per slate and limits monitor stop to its own monitor (#1518)" \
-    grep -qF 'Keep exactly one watcher per slate.' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator stops only a monitor this session started (#1518)" \
-    grep -qF 'only on a monitor this session started' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator names the Claude Code monitor-stop primitive (#1518)" \
-    grep -qF 'Claude Code: `TaskStop` on' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator limits TaskStop to the monitor task (#1518)" \
-    grep -qF "monitor's task" \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "orchestrator sentinel grammar is kind-first and includes the nonce (#1518)" \
-    grep -qF 'READY|HANDOFF|BLOCKED-<lane-label>-<nonce>' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-expect_ok "lane brief uses the same kind-first sentinel grammar (#1518)" \
-    grep -qF 'READY|HANDOFF|BLOCKED-<lane-label>-<nonce>' \
-    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
+    grep -qF 'Use only `assets/lane-watch.sh` under the harness streaming monitor.' \
+    "$SKILL_WATCHER"
+expect_ok "orchestrator invokes the shipped watcher as a file (#1518)" \
+    grep -qF 'Invoke it as that file.' "$SKILL_WATCHER"
+expect_ok "orchestrator forbids inline, substitute, and unobserved background watchers (#1518)" \
+    grep -qF 'Never inline its loop, write a substitute, or run it as an unobserved background shell job.' \
+    "$SKILL_WATCHER"
+expect_ok "Herdr uses only the shipped watcher under a streaming monitor (#1518)" \
+    grep -qF '`assets/lane-watch.sh` under the harness streaming monitor.' \
+    "$HERDR_WATCHER"
+expect_ok "Herdr forbids inline, substitute, and unobserved background watchers (#1518)" \
+    grep -qF 'write a substitute, or run it as an unobserved background shell job.' \
+    "$HERDR_WATCHER"
+expect_ok "orchestrator re-arms first with its same state-file option (#1518)" \
+    grep -qF 're-arm first, before any other tool call, with the same `--state-file`;' \
+    "$SKILL_WATCHER"
+expect_ok "orchestrator checks staleness immediately after an expiry re-arm (#1518)" \
+    grep -qF 'then check lane staleness before other work.' "$SKILL_WATCHER"
+expect_ok "Herdr re-arms before checking expiry wakeup staleness (#1518)" \
+    grep -qF 're-arm first, before any other tool call, with the same' "$HERDR_WATCHER"
+expect_ok "Herdr uses the canonical slate watcher-state path (#1518)" \
+    grep -qF '<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state' \
+    "$HERDR_WATCHER"
+expect_ok "orchestrator checks stale lanes before other wakeup work (#1518)" \
+    grep -qF 'past the stall threshold before other work.' "$SKILL_WATCHER"
+expect_ok "Herdr checks stale lanes before other wakeup work (#1518)" \
+    grep -qF 'before other work.' "$HERDR_WATCHER"
+expect_ok "orchestrator keeps one watcher per slate (#1518)" \
+    grep -qF 'Keep exactly one watcher per slate.' "$SKILL_WATCHER"
+expect_ok "Herdr keeps one watcher per slate (#1518)" \
+    grep -qF 'Keep exactly one watcher per slate.' "$HERDR_WATCHER"
+expect_ok "orchestrator rearms after restart on the same state file (#1518)" \
+    grep -qF 'after a restart or lock recovery, the new session arms its own watcher on the same state file.' \
+    "$SKILL_WATCHER"
+expect_ok "a live watcher in another session prevents another arm (#1518)" \
+    grep -qF "While another live session's watcher runs, arm none." "$SKILL_WATCHER"
+expect_ok "Herdr preserves watcher ownership across restart and lock recovery (#1518)" \
+    grep -qF 'after restart or lock recovery, the new' "$HERDR_WATCHER"
+expect_ok "orchestrator requires approval for early monitor stop (#1518)" \
+    grep -qF "requires the user's explicit approval." "$SKILL_WATCHER"
+expect_ok "Herdr requires approval for early monitor stop (#1518)" \
+    grep -qF "requires the user's explicit" "$HERDR_WATCHER"
+expect_ok "orchestrator documents the TaskStop monitor task (#1518)" \
+    grep -qF 'Claude Code: `TaskStop` on that monitor' "$SKILL_WATCHER"
+expect_ok "orchestrator does not invoke kill or pkill (#1518)" \
+    assert_absent '(^|[^[:alnum:]_])(pkill|kill)[[:space:]]+' "$SKILL_WATCHER"
+expect_ok "Herdr does not invoke kill or pkill (#1518)" \
+    assert_absent '(^|[^[:alnum:]_])(pkill|kill)[[:space:]]+' "$HERDR_WATCHER"
+expect_ok "orchestrator does not prescribe a new watcher state file (#1518)" \
+    assert_absent 're-arm.*(new|fresh|different)[[:space:]-]+state[- ]file' "$SKILL_WATCHER"
+expect_ok "Herdr does not prescribe a new watcher state file (#1518)" \
+    assert_absent 're-arm.*(new|fresh|different)[[:space:]-]+state[- ]file' "$HERDR_WATCHER"
+expect_ok "orchestrator does not prescribe a background watcher job (#1518)" \
+    assert_absent 'run_in_background' "$SKILL_WATCHER"
+expect_ok "Herdr does not prescribe a background watcher job (#1518)" \
+    assert_absent 'run_in_background' "$HERDR_WATCHER"
+expect_ok "orchestrator pins the shared parenthesized sentinel grammar (#1518)" \
+    grep -qF '(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>' "$SKILL_WATCHER"
+expect_ok "orchestrator pins the catalog sentinel example (#1518)" \
+    grep -qF 'the READY form of `(READY\|HANDOFF\|BLOCKED)-<lane-label>-<nonce>`' \
+    "$SKILL_WATCHER"
+expect_ok "lane brief uses the same parenthesized sentinel grammar (#1518)" \
+    grep -qF '(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>' "$BRIEF_WATCHER"
 expect_ok "lane watcher accepts the same kind-first sentinel grammar (#1518)" \
     grep -qF 'Sentinels are READY|HANDOFF|BLOCKED-<lane-label>-<nonce>, whole final lines.' \
-    "$repo/ai/skills/universal/orchestrate/assets/lane-watch.sh"
+    "$WATCHER_SCRIPT"
 
 # #1500: lost-response acceptance binds every submitted promotion field.
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \

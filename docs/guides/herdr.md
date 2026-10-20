@@ -330,24 +330,31 @@ neither commit nor push without a per-command escalation on every git write.
    state with `agent get` and exits 0 only for `idle` or `done` — `blocked`,
    `unknown`, or an unreadable state exits 5, and expiry is herdr's own
    non-zero exit — never followed by `; echo` or `|| true` (`--until <state>`
-   is for a state-specific wait). For multi-lane Dev Loop runs, invoke the
+   is for a state-specific wait). For multi-lane Dev Loop runs, use only the
    orchestrate skill's
-   `assets/lane-watch.sh` as a Bash script under the harness's streaming,
-   session-lifetime monitor; never paste its loop inline or run it as an
-   unobserved background shell job. If the monitor expires or exits before the
-   run is terminal, re-arm first, before any other tool call, with the same
-   `--state-file`. On every wakeup, compare the current time with each lane's
-   last observed change first; read and act on any lane silent past the stall
-   threshold before other work. Keep exactly one watcher per slate: before re-arming a
-   replacement, use the harness monitor-stop only on a monitor this session
-   started (Claude Code: TaskStop on that monitor's task), or rely on its
-   expiry; a watcher started outside this session is the operator's to stop.
+   `assets/lane-watch.sh` under the harness streaming monitor.
+   (Claude Code: `Monitor`), invoked as that file. The session-lifetime
+   persistent monitor primitive streams its output. Never inline its loop,
+   write a substitute, or run it as an unobserved background shell job.
+   On every watcher expiry or exit notification before a terminal outcome,
+   re-arm first, before any other tool call, with the same
+   `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work.
+   On every other wakeup, first compare the current time with each lane's last
+   observed change; read and act on any lane silent past the stall threshold
+   before other work. Keep exactly one watcher per slate. Each session's
+   monitors end with that session; after restart or lock recovery, the new
+   session arms its own watcher on the same state file. While another live
+   session's watcher runs, arm none. Replace a watcher by letting its monitor
+   expire (within 30 minutes) and re-arming. Early harness monitor-stop (Claude
+   Code: `TaskStop` on that monitor's task) requires the user's explicit
+   approval. Never use `kill` or `pkill`.
    The state file deduplicates report-first sentinels across re-arms, and the
    watcher continues watching review activity briefly after promotion. `PROMPT`
    means inspect and approve or deny the request; `STALL` means read the pane
    and act.
-   Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat requires
-   re-arming under the same rules. Prompt/stall episodes and heartbeat timing
+   Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means
+   re-arm the watcher and investigate its exit, rather than assuming the lanes
+   are healthy. Prompt/stall episodes and heartbeat timing
    persist across re-arms. Fallback detection derives `blocked` from a visible
    approval prompt and otherwise `unknown`, with a `(fallback)` tag. Cloud
    lanes receive heartbeat summaries and GitHub events without pane-derived
