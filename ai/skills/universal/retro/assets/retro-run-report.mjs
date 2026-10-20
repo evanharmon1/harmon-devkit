@@ -1388,7 +1388,7 @@ function renderMarkdown(report) {
     l.push('Partial verified projection only: rounds named unavailable above are excluded rather than counted from raw producer assertions.')
     l.push('')
   } else if (report.measurements.findings_by_class_and_provenance.length === 0) {
-    l.push('No findings recorded for this run.')
+    l.push('No challenge or review findings were recorded for this run; integration findings, where retained, are listed in the integration section.')
   } else if (report.measurements.class_provenance_attribution.scope === 'stage') {
     l.push(
       `Every finding in this run belongs to stage \`${safe(report.measurements.class_provenance_attribution.stage)}\`, so the table below is also that stage's — see its section above.`

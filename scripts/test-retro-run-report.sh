@@ -1640,6 +1640,13 @@ contains "$OUT" "belongs to stage" &&
 contains "$OUT" "unavailable from this harvester" &&
     ok "the older harvester limitation is stated without a closed issue reference" ||
     bad "the older harvester limitation went unreported"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict')
+const lines = process.env.REPORT_TEXT.split('\n').filter(line => line.startsWith('- Findings by finder'))
+assert.ok(lines.includes('- Findings by finder (authenticated pass evidence): unavailable from this harvester') &&
+  lines.every(line => !line.includes('not measured')))
+NODE
+[ "$?" -eq 0 ] && ok "older-harvester finder text is unavailable, never not measured" || bad "older-harvester finder text"
 
 echo "==> two stages render their verified class/provenance counts separately"
 # Reuse the older-harvester fixture above, then add the new optional field.
@@ -3423,6 +3430,26 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
 [ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "integration") | .retained_record_findings_by_finder == null' <<<"$OUT" >/dev/null &&
     ok "JSON preserves the unmeasured null" || bad "unmeasured null lost"
+
+echo "==> integration-only findings do not become a run-wide no-findings claim =="
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.rounds = []
+t.findings_by_class_and_provenance = {}
+t.findings_by_stage_finder = {}
+t.retained_record_findings_by_stage_finder = { integration: { 'codex-cloud': 2 } }
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const integration = text.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
+assert.match(integration, /  - codex-cloud: 2/)
+assert.ok(text.split('\n').includes('No challenge or review findings were recorded for this run; integration findings, where retained, are listed in the integration section.'))
+assert.ok(!text.includes('No findings recorded for this run.'))
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "the run-level line scopes its claim to challenge and review" || bad "integration-only finding summary"
 
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
