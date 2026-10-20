@@ -208,6 +208,12 @@ def main() -> int:
 
     pin_once(errors, "Herdr heartbeat recovery", herdr, "Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means re-arm the watcher and investigate its exit, rather than assuming the lanes are healthy.")
     pin_once(errors, "orchestrator heartbeat recovery", skill, "A missing heartbeat means re-arm the watcher and investigate its exit, rather than assuming the lanes are healthy.")
+    pin_once(
+        errors,
+        "shared watcher-state declaration",
+        skill,
+        "- **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.",
+    )
     pin_watcher_state_homes(errors, root)
     if "operator confirm that the previous session, its writers, and its lane watcher have stopped" not in norm(skill):
         errors.append("slate-lock recovery: lane watcher stop confirmation is missing")
