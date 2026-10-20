@@ -466,6 +466,7 @@ integration to the supervising orchestrator. When the maintainer overrides that 
 tells a lane to drive its own integration, follow `integrate/SKILL.md` §2's rule for any session driving integration
 (`check-codex-cloud-review.sh` and `readiness-gate.sh` wherever the vendored checker and gate apply,
 never a hand-rolled poll or hand-evaluated table).
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
 
 Render `assets/lane-brief.md` for every local end-to-end, PR-owning implementation lane
 instead of hand-authoring a brief. Council proposal and synthesis implementers,

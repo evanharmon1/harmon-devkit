@@ -35,6 +35,19 @@ mkdir -p "$bin_dir" "$fixtures"
 git init -q "$test_repo"
 git -C "$test_repo" config user.name "Shepherd Test"
 git -C "$test_repo" config user.email "shepherd-test@example.invalid"
+fixture_asset_dir="$test_repo/ai/skills/universal/integrate/assets"
+fixture_support_dir="$test_repo/ai/skills/universal/dev-flow-support"
+mkdir -p "$fixture_asset_dir" "$fixture_support_dir"
+ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+    "$fixture_support_dir/assets"
+cp "$helper" "$fixture_asset_dir/check-codex-cloud-review.sh"
+cp "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" \
+    "$fixture_asset_dir/gh-write-broker.sh"
+cp "${repo_root}/ai/skills/universal/integrate/assets/trusted-registry.sh" \
+    "$fixture_asset_dir/trusted-registry.sh"
+helper="$fixture_asset_dir/check-codex-cloud-review.sh"
+git -C "$test_repo" add ai/skills/universal/integrate/assets
+git -C "$test_repo" commit -q -m "test: seed checker fixture assets"
 git -C "$test_repo" commit -q --allow-empty -m "previous head"
 git -C "$test_repo" commit -q --allow-empty -m "current head"
 cd "$test_repo"
@@ -91,6 +104,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # it did before reaping existed. `reap` needs per-PR control, so a
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
+    if [[ "$*" == *baseRefOid* ]]; then
+        cat "$GH_FIXTURES/base-head"
+        exit 0
+    fi
     [ ! -f "$GH_FIXTURES/fail-pr-$pr_number" ] || exit 94
     # review-r1 finding -6, site :1946: the SECOND PR head fetch is
     # unreachable by `fail-pr-<n>`, which trips the first one and exits before
@@ -112,10 +129,6 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
-    fi
-    if [[ "$*" == *baseRefOid* ]]; then
-        cat "$GH_FIXTURES/base-head"
-        exit 0
     fi
     # harmon-devkit#1189: `head-stale-calls` holds a call count. Up to and
     # including it the PR reports `head-stale` — GitHub still lagging a push —
@@ -2167,7 +2180,7 @@ printf '%s\n' 2 >"${fixtures}/slow-sec"
 TIMEOUT_ARGS_LOG="$timeout_args_log" "$helper" release --state "$state" \
     --note 'slow post-window recovery' --now '2026-07-31T09:00:00Z' >/dev/null
 [ "$(jq -r .phase "$state")" = released ] || fail 'slow release failed'
-awk '$3 != 60 {exit 1} END {if (NR == 0) exit 1}' "$timeout_args_log" || fail 'release budget is not independent'
+awk '$4 != "git" && $3 != 60 {exit 1} END {if (NR == 0) exit 1}' "$timeout_args_log" || fail 'release budget is not independent'
 
 echo "==> release never removes an attached trigger, including corrupt reserved phase"
 new_cycle
@@ -2321,7 +2334,12 @@ for attach_now in '2026-07-31T08:14:30Z' '2026-07-31T09:00:00Z'; do
         --trigger-id "$trigger_id" --now "$attach_now" >/dev/null
     attach_expected_budget=60
     [ "$attach_now" != '2026-07-31T08:14:30Z' ] || attach_expected_budget=30
-    awk -v expected="$attach_expected_budget" '$3 != expected {exit 1} END {if (NR < 5) exit 1}' "$timeout_args_log" ||
+    awk -v expected="$attach_expected_budget" '
+        $4 == "git" {next}
+        /baseRefOid/ {if ($3 != 60) exit 1; next}
+        $3 != expected {exit 1}
+        END {if (NR < 5) exit 1}
+    ' "$timeout_args_log" ||
         fail "attach did not receive its expected ${attach_expected_budget}s read budgets: $(cat "$timeout_args_log")"
 done
 
@@ -9168,6 +9186,54 @@ for (const timeline_json of ['[]', 'unreadable', JSON.stringify([[{ ...event, ac
 run(builder, { ...env, status: 'completed', blocker_json: 'null' })
 assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
 NODE
+
+echo "==> checker asset freshness refuses a stale fixture checkout"
+freshness_checkout_head=$(git rev-parse HEAD)
+printf '\n# freshness fixture change\n' >>"$helper"
+git add ai/skills/universal/integrate/assets/check-codex-cloud-review.sh
+git commit -q -m "test: advance checker asset fixture"
+freshness_base_sha=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+freshness_state="${test_tmp}/freshness-state.json"
+printf '%s\n' "$freshness_base_sha" >"${fixtures}/base-head"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "stale checker checkout should exit 2, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* ]] ||
+    fail "stale checker refusal did not name checkout HEAD: $freshness_out"
+[[ "$freshness_out" == *"PR base $freshness_base_sha"* ]] ||
+    fail "stale checker refusal did not name PR base: $freshness_out"
+[ ! -e "$freshness_state" ] ||
+    fail "stale checker checkout wrote a reservation before refusing"
+
+echo "==> checker asset freshness treats an unavailable base as indeterminate"
+missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
+printf '%s\n' "$missing_base_sha" >"${fixtures}/base-head"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "unavailable checker base should exit 2, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"asset freshness indeterminate"* &&
+    "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
+    "$freshness_out" == *"PR base $missing_base_sha"* ]] ||
+    fail "unavailable checker base did not fail closed with both SHAs: $freshness_out"
+
+echo "==> checker asset freshness accepts a current fixture checkout"
+git checkout -q "$freshness_base_sha"
+head_sha=$freshness_base_sha
+write_defaults
+"$helper" reserve --state "$freshness_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >"${test_tmp}/freshness-reserve.json"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "${test_tmp}/freshness-reserve.json" >/dev/null ||
+    fail "current checker checkout did not reserve successfully"
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

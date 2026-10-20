@@ -54,7 +54,7 @@
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing, checks-pending                          (fail)
 #   changes-requested, merge-state-dirty                    (fail)
-#   behind-base, base-retargeted                            (fail)
+#   behind-base, base-retargeted, asset-checkout-stale       (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled, closing-linkage-missing,
@@ -69,7 +69,8 @@
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
-#   behind-base-unknown, merge-state-stale,
+#   behind-base-unknown, asset-freshness-unknown,
+#   merge-state-stale,
 #   integration-exit-indeterminate, integration-record-unbound,
 #   checker-fast-path-unavailable, usage                     (indeterminate)
 #
@@ -687,6 +688,42 @@ run_gh() {
     fi
 }
 
+# Refuse to run a gate whose own asset file is missing from the current PR
+# base. This is deliberately a local, bounded history read: fetching here could
+# move a caller's checkout, and consulting main would not prove what the PR is
+# based on. The PR API supplies only the base SHA; git must already have that
+# commit locally.
+asset_freshness_check() {
+    local checkout_root checkout_head base_sha asset_dir asset_path missing_asset_commit
+
+    checkout_root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null) ||
+        indeterminate asset-freshness-unknown "cannot locate the checkout containing $script_dir"
+    checkout_head=$(git -C "$checkout_root" rev-parse --verify HEAD 2>/dev/null) ||
+        indeterminate asset-freshness-unknown "cannot resolve checkout HEAD in $checkout_root"
+    base_sha=$(run_gh pr view "$pr" --repo "$repo" \
+        --json baseRefOid --jq .baseRefOid 2>/dev/null) ||
+        indeterminate asset-freshness-unknown "cannot read PR base SHA for $repo#$pr (checkout HEAD $checkout_head)"
+    valid_sha "$base_sha" ||
+        indeterminate asset-freshness-unknown "PR base SHA for $repo#$pr is malformed (checkout HEAD $checkout_head)"
+
+    asset_dir=${script_dir#"$checkout_root"/}
+    [ "$asset_dir" != "$script_dir" ] && [ -n "$asset_dir" ] ||
+        indeterminate asset-freshness-unknown "gate path is outside its Git checkout ($script_dir)"
+    asset_path="$asset_dir/readiness-gate.sh"
+
+    if [ -n "$timeout_bin" ]; then
+        if ! missing_asset_commit=$("$timeout_bin" -k 1 10 git -C "$checkout_root" \
+            log --max-count=1 --format=%H "$checkout_head..$base_sha" -- "$asset_path" 2>&1); then
+            indeterminate asset-freshness-unknown "cannot inspect local PR base $base_sha for $asset_path (checkout HEAD $checkout_head); no fetch was attempted: $missing_asset_commit"
+        fi
+    elif ! missing_asset_commit=$(git -C "$checkout_root" \
+        log --max-count=1 --format=%H "$checkout_head..$base_sha" -- "$asset_path" 2>&1); then
+        indeterminate asset-freshness-unknown "cannot inspect local PR base $base_sha for $asset_path (checkout HEAD $checkout_head); no fetch was attempted: $missing_asset_commit"
+    fi
+    [ -z "$missing_asset_commit" ] ||
+        fail_condition asset-checkout-stale "checkout HEAD $checkout_head lacks PR base $base_sha's asset change $missing_asset_commit to $asset_path; run from the lane worktree or update this checkout"
+}
+
 # ---- Fingerprint components (ported from SKILL.md §6's promo_fp recipe) ----
 #
 # Every component is captured and exit-checked before anything is hashed: a
@@ -863,6 +900,8 @@ recheck_codex_freshness() {
 # are tested, which is exactly the hand-rolling this skill forbids everywhere
 # else. Same code path as the gate, same exit vocabulary: 0 level, 1 behind,
 # 2 could not establish. It writes nothing and judges nothing else.
+asset_freshness_check
+
 if [ "$command_name" = behind ]; then
     behind_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
         indeterminate fetch-failed "cannot fetch the PR state"

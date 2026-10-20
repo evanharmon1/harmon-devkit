@@ -69,6 +69,16 @@ cat >"${bin_dir}/gh" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
+if [ "${1:-}" = pr ] && [ "${2:-}" = view ] &&
+    [[ "$*" = *"--json baseRefOid --jq .baseRefOid"* ]]; then
+    if [ -f "$GH_FIXTURES/asset-base" ]; then
+        cat "$GH_FIXTURES/asset-base"
+    else
+        jq -r '.baseRefOid' "$GH_FIXTURES/pr-view.json"
+    fi
+    exit 0
+fi
+
 # Broker fixtures use the same gh log, with explicit read and post responses.
 if [ -f "$GH_FIXTURES/broker-mode" ]; then
     if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
@@ -246,6 +256,8 @@ export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
 
 head_sha="1111111111111111111111111111111111111111"
+asset_base_sha=$(git -C "$repo_root" rev-parse HEAD)
+printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
 # A second, distinct full SHA for the fixtures that need one head to disagree
 # with another (harmon-devkit#685's promotion-head binding).
 stale_head_sha="2222222222222222222222222222222222222222"
@@ -719,6 +731,17 @@ exit "${RECHECK_FAKE_EXIT:-0}"
 STUB
 chmod +x "${recheck_dir}/check-codex-cloud-review.sh"
 recheck_gate="${recheck_dir}/readiness-gate.sh"
+git init -q "$recheck_root"
+recheck_objects=$(git -C "$repo_root" rev-parse --git-path objects)
+case "$recheck_objects" in
+/*) ;;
+*) recheck_objects="$repo_root/$recheck_objects" ;;
+esac
+recheck_objects=$(cd "$recheck_objects" && pwd -P)
+mkdir -p "${recheck_root}/.git/objects/info"
+printf '%s\n' "$recheck_objects" >"${recheck_root}/.git/objects/info/alternates"
+git -C "$recheck_root" update-ref refs/heads/asset-base "$asset_base_sha"
+git -C "$recheck_root" symbolic-ref HEAD refs/heads/asset-base
 
 # recheck_codex_freshness checks repo/pr/head against the gate's own before
 # ever invoking the checker, so these three fields are the only ones that
@@ -5176,5 +5199,80 @@ run_gate_recheck_clean --integrator-result "$(gated_round 4 3)" --integration-ca
 assert_gate 2 indeterminate integration-exit-indeterminate
 grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
     fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
+
+echo "==> readiness asset freshness refuses a stale fixture checkout"
+fresh_repo="${test_tmp}/asset-freshness-gate"
+fresh_gate="${fresh_repo}/integrate/assets/readiness-gate.sh"
+mkdir -p "${fresh_repo}/integrate/assets" "${fresh_repo}/dev-flow-support"
+cp "$gate" "$fresh_gate"
+cp "${assets}/trusted-registry.sh" "${fresh_repo}/integrate/assets/trusted-registry.sh"
+ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+    "${fresh_repo}/dev-flow-support/assets"
+git init -q "$fresh_repo"
+git -C "$fresh_repo" config user.name "Readiness Freshness Test"
+git -C "$fresh_repo" config user.email "readiness-freshness@example.invalid"
+git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
+git -C "$fresh_repo" commit -q -m "test: seed readiness gate fixture"
+fresh_checkout_head=$(git -C "$fresh_repo" rev-parse HEAD)
+printf '\n# freshness fixture change\n' >>"$fresh_gate"
+git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
+git -C "$fresh_repo" commit -q -m "test: advance readiness gate fixture"
+fresh_base_sha=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '%s\n' "$fresh_base_sha" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 1 ] ||
+    fail "stale readiness checkout should exit 1, got $freshness_rc: $freshness_out"
+freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
+freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')
+[ "$freshness_status" = fail ] && [ "$freshness_condition" = asset-checkout-stale ] ||
+    fail "stale readiness checkout did not report asset-checkout-stale: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
+    "$freshness_out" == *"PR base $fresh_base_sha"* ]] ||
+    fail "stale readiness refusal did not name both SHAs: $freshness_out"
+
+echo "==> readiness asset freshness treats an unavailable base as indeterminate"
+missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
+printf '%s\n' "$missing_base_sha" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "unavailable readiness base should exit 2, got $freshness_rc: $freshness_out"
+freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
+freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')
+[ "$freshness_status" = indeterminate ] &&
+    [ "$freshness_condition" = asset-freshness-unknown ] ||
+    fail "unavailable readiness base did not report asset-freshness-unknown: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
+    "$freshness_out" == *"PR base $missing_base_sha"* ]] ||
+    fail "unavailable readiness base did not name both SHAs: $freshness_out"
+
+echo "==> readiness asset freshness accepts a current fixture checkout"
+git -C "$fresh_repo" checkout -q "$fresh_base_sha"
+write_defaults
+rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" \
+    "${fixtures}/pr-view-third.json"
+jq --arg base "$fresh_base_sha" '.baseRefOid = $base' \
+    "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+jq --arg base "$fresh_base_sha" '.base_commit.sha = $base' \
+    "${fixtures}/compare.json" >"${fixtures}/compare.next"
+mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+printf '%s\n' "$fresh_base_sha" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "current readiness checkout should be accepted, got $freshness_rc: $freshness_out"
+freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
+[ "$freshness_status" = level ] ||
+    fail "current readiness checkout did not continue through the gate: $freshness_out"
+printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
 
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

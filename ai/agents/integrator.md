@@ -136,6 +136,11 @@ derive every action from this brief and your own reads.
 
 ## 2. Resolve paths
 
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
+The checker and readiness gate compare their own asset path with the PR's local
+base history and refuse a stale checkout; an unavailable local base is
+indeterminate, and these checks never fetch commits.
+
 Locate this skill's asset directory (the directory this file's dispatcher
 resolves it from, conventionally `ai/skills/universal/integrate/assets/`) and
 resolve, relative to it:

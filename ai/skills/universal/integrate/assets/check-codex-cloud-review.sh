@@ -423,7 +423,7 @@ valid_slug() {
     grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' <<<"$1"
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=gh-write-broker.sh
 . "$SCRIPT_DIR/gh-write-broker.sh"
 
@@ -905,6 +905,38 @@ write_state() {
         rm -f "$temporary"
         die "cannot write $destination"
     fi
+}
+
+# Refuse to run a checker whose own asset file is missing from the current PR
+# base. This is deliberately a local, bounded history read: fetching here could
+# move a caller's checkout, and consulting main would not prove what the PR is
+# based on. The PR API supplies only the base SHA; git must already have that
+# commit locally.
+asset_freshness_check() {
+    local target_pr=$1 target_repo=$2
+    local checkout_root checkout_head base_sha asset_dir asset_path missing_asset_commit
+
+    checkout_root=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) ||
+        die "asset freshness indeterminate: cannot locate the checkout containing $SCRIPT_DIR"
+    checkout_head=$(git -C "$checkout_root" rev-parse --verify HEAD 2>/dev/null) ||
+        die "asset freshness indeterminate: cannot resolve checkout HEAD in $checkout_root"
+    base_sha=$(run_gh pr view "$target_pr" --repo "$target_repo" \
+        --json baseRefOid --jq .baseRefOid 2>/dev/null) ||
+        die "asset freshness indeterminate: cannot read PR base SHA for $target_repo#$target_pr (checkout HEAD $checkout_head)"
+    valid_sha "$base_sha" ||
+        die "asset freshness indeterminate: PR base SHA for $target_repo#$target_pr is malformed (checkout HEAD $checkout_head)"
+
+    asset_dir=${SCRIPT_DIR#"$checkout_root"/}
+    [ "$asset_dir" != "$SCRIPT_DIR" ] && [ -n "$asset_dir" ] ||
+        die "asset freshness indeterminate: checker path is outside its Git checkout ($SCRIPT_DIR)"
+    asset_path="$asset_dir/check-codex-cloud-review.sh"
+
+    if ! missing_asset_commit=$("$timeout_bin" -k 1 10 git -C "$checkout_root" \
+        log --max-count=1 --format=%H "$checkout_head..$base_sha" -- "$asset_path" 2>&1); then
+        die "asset freshness indeterminate: cannot inspect local PR base $base_sha for $asset_path (checkout HEAD $checkout_head); no fetch was attempted: $missing_asset_commit"
+    fi
+    [ -z "$missing_asset_commit" ] ||
+        die "asset freshness refused: checkout HEAD $checkout_head lacks PR base $base_sha's asset change $missing_asset_commit to $asset_path; run from the lane worktree or update this checkout"
 }
 
 # Every field `settle` writes is validated here, not just the pair that
@@ -2365,6 +2397,7 @@ reserve)
         die "--remediation must be a non-negative integer"
     [ -z "$review_trigger" ] || valid_review_trigger "$review_trigger" ||
         die "--review-trigger must be one of after-ci, with-push, after-ci-first"
+    asset_freshness_check "$pr" "$repo"
     # harmon-devkit#1189: right after a push GitHub routinely reports the
     # previous head for a few seconds, so a reservation taken immediately
     # refused a benign race — and a caller that masked that refusal posted the
@@ -3037,6 +3070,7 @@ release)
         die "cannot compute the release scan boundary"
     # Use the broker's classifier, with no author filter: a trigger posted by
     # another actor is also evidence that the reservation cannot be released.
+    asset_freshness_check "$state_pr" "$state_repo"
     # shellcheck source=gh-write-broker.sh
     . "$SCRIPT_DIR/gh-write-broker.sh"
     release_comments=$(run_gh api --paginate --slurp \
@@ -3069,6 +3103,7 @@ attach)
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
+    asset_freshness_check "$(jq -r '.pr' "$state_file")" "$(jq -r '.repo' "$state_file")"
     # harmon-devkit#223: every `run_gh` call below (the head re-check and the
     # trigger-comment fetch) is budgeted off `$timeout_min` via the
     # `state_reserved` arithmetic in `run_gh` itself — it is not just the
@@ -3527,6 +3562,7 @@ carry)
     carry_previous_attests=$(jq -r '.carry.attests_head // empty' "$state_file")
     carry_generation=$(jq -r '.carry.generation // 0' "$state_file")
 
+    asset_freshness_check "$state_pr" "$state_repo"
     provider_status=0
     live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
     if [ "$provider_status" -eq 3 ]; then
@@ -3666,6 +3702,7 @@ ci-split)
     state_head=$(jq -r '.head' "$state_file")
     [ "$(jq -r '.run_id // empty' "$state_file")" = "$run_id" ] ||
         die "this cycle state does not belong to run $run_id"
+    asset_freshness_check "$state_pr" "$state_repo"
     recorded_split=$(jq -c '{charged:.charged_cycles, exempt:.exempt_cycles}' "$state_file")
     settle_ci_charge
     valid_uint_or_zero "${ci_split_charged:-}" && valid_uint_or_zero "${ci_split_exempt:-}" ||
@@ -3786,6 +3823,8 @@ reap)
                 "state vanished before it could be examined"
             continue
         }
+
+        asset_freshness_check "$state_pr" "$state_repo"
 
         # Query FIRST, unlocked. The lock below is the same one
         # `reserve`/`attach`/`check` take, and `acquire_state_lock` is a bare
@@ -3981,6 +4020,7 @@ check)
     # the window closes.
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
+    asset_freshness_check "$state_pr" "$state_repo"
     persist_adopted_timeout
 
     provider_status=0
@@ -5926,6 +5966,7 @@ settle)
 
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
+    asset_freshness_check "$state_pr" "$state_repo"
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
     settle_state_requested=$(jq -r '.requested_at // empty' "$state_file")

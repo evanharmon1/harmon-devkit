@@ -11909,6 +11909,22 @@ for doc in "$ORCH_MD" "$LANE_BRIEF_MD"; do
         grep -qF "follow \`integrate/SKILL.md\` §2's rule" "$doc"
 done
 
+# harmon-devkit#1528: integration assets run from the lane worktree or a
+# checkout whose local history includes the PR-base asset changes.
+ASSET_FRESHNESS_SENTENCE='Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.'
+for doc in "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/agents/integrator.md"; do
+    doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
+    expect_ok "$doc_label: binds vendored integrate assets to the PR base (#1528)" \
+        grep -qF "$ASSET_FRESHNESS_SENTENCE" "$doc"
+done
+for asset in "$repo/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" \
+    "$repo/ai/skills/universal/integrate/assets/readiness-gate.sh"; do
+    expect_ok "$(basename "$asset"): has an asset-freshness preflight (#1528)" \
+        grep -qF 'asset_freshness_check' "$asset"
+    expect_ok "$(basename "$asset"): bounds the local asset-history read (#1528)" \
+        grep -qF 'log --max-count=1 --format=%H' "$asset"
+done
+
 # harmon-devkit#1338: session-facing REST reads must work in the agent posture.
 # This is a documented text pattern, NOT a shell/Markdown parser: inspect raw
 # API commands naming an endpoint or option, joining backslash continuations.

@@ -47,6 +47,11 @@ tree and in a consumer's flattened `.claude/skills/` one:
 A missing sibling package is a blocker, not a fallback: vendor the `universal`
 category as a unit rather than resolving a runtime path some other way.
 
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
+The checker and readiness gate compare their own asset path with the PR's local
+base history and refuse a stale checkout; an unavailable local base is
+indeterminate, and these checks never fetch commits.
+
 **Arguments:** $ARGUMENTS
 
 **Version 2 only.** This skill and its readiness gate
