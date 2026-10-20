@@ -301,6 +301,25 @@ function loadBrief(file) {
 }
 
 function checkBriefFacts(instance, errors) {
+  // Lane labels already live in the rendered title and canonical sentinels;
+  // do not add a competing inferred identity to the envelope schema.
+  const ownLanes = new Set()
+  const heading = instance.body.match(/^# Lane brief — (.+?) \([^\n]+\)\s*$/m)
+  if (heading) ownLanes.add(heading[1])
+  const suffix = `-${instance.sentinels.attempt_nonce}`
+  for (const field of ['ready', 'handoff', 'blocked']) {
+    const sentinel = instance.sentinels[field]
+    const prefix = `${field.toUpperCase()}-`
+    if (sentinel.startsWith(prefix) && sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
+  }
+  const overlaps = Array.isArray(instance.live_lane_overlaps) ? instance.live_lane_overlaps : [instance.live_lane_overlaps]
+  for (const lane of ownLanes) {
+    const escaped = lane.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const named = new RegExp(`(?:^|[^\\p{L}\\p{N}_.-])${escaped}(?=$|[^\\p{L}\\p{N}_.-])`, 'u')
+    if (lane && overlaps.some((text) => named.test(text))) {
+      errors.push(`$brief.live_lane_overlaps: names its own lane ${JSON.stringify(lane)}`)
+    }
+  }
   if (instance.branch !== instance.claim_handoff.branch) {
     errors.push(
       `$brief.branch: ${JSON.stringify(instance.branch)} does not match claim_handoff.branch ${JSON.stringify(instance.claim_handoff.branch)}`

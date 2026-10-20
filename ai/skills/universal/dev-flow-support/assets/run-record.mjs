@@ -14,6 +14,7 @@
 //   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
 //                               --branch NAME --base SHA --policy FILE --actor-id N --strategy-source TEXT
 //                               [--operator-pin TEXT]... [--registry-revision SHA] [--at TS]
+//   run-record.mjs lane-init    --slate ID --session ID --lane ID [--at TS]
 //   run-record.mjs receipt      --slate ID --session ID --run-id ID --pass FILE
 //   run-record.mjs adjudicate   --slate ID --session ID --run-id ID --file FILE
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
@@ -71,6 +72,7 @@ import { validateCapAuthorizations } from './lib/cap-authorizations.mjs'
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -81,7 +83,7 @@ import {
   writeFileSync,
   linkSync,
 } from 'node:fs'
-import { hostname } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -722,6 +724,68 @@ function recordWrite(command, args) {
     return `${closed}; archived ${moved.length} orchestrator attempt(s) into runs/${runId}/orchestrator/`
   }
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
+}
+
+// Initialize a planned lane without inventing a slate or changing its scope.
+// The provisioning composer validates its other inputs before calling this
+// writer; direct callers receive the same run/ownership/lock protections.
+export function laneInit(args) {
+  const { root } = stateRoot()
+  const slate = requireId('slate', args.slate)
+  const session = requireId('session', args.session)
+  const laneName = requireId('lane', args.lane)
+  const at = resolveAt(args.at)
+  const plan = currentPlan(root, slate)
+  const lane = plan?.lanes.find((entry) => entry.lane === laneName)
+  if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
+  const runId = requireId('run-id', lane.run_id)
+  const runDir = join(root, 'runs', runId)
+  const canonical = join(runDir, 'run.json')
+  if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
+  if (existsSync(runDir) && readdirSync(runDir).length > 0) {
+    throw new Refusal(`${runDir} already contains state; inspect before initializing`)
+  }
+  assertRunOwner(root, slate, runId)
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+  const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
+  const record = kickoffRecord(runId, at,
+    `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
+  // A plan profile is the dispatch projection, not a second policy resolver.
+  const projection = {
+    source: 'validated-plan',
+    rigor: { level: profile.rigor, source: profile.rigor_source },
+    rounds: { ...profile.caps, integration_exempt: profile.caps.integration },
+    breadth: profile.breadth,
+    strategy: { name: profile.strategy },
+    roles: Object.fromEntries(Object.entries(profile.role_tiers).map(([role, tier]) => [role, { tier, source: 'validated-plan' }])),
+    disclosures: [], warnings: [],
+  }
+  // Validate the complete kickoff record before creating its durable directory.
+  // This also rejects calendar-invalid timestamps resolveAt cannot detect.
+  const temporary = mkdtempSync(join(tmpdir(), 'lane-init-'))
+  try {
+    writeValidated('run', join(temporary, 'run.json'), record)
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
+  mkdirSync(runDir, { recursive: true })
+  return withMutex(canonical, () => {
+    if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
+    writeValidated('run', canonical, record)
+    bindRunToSlate(root, slate, runId)
+    publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
+    return JSON.stringify({ run_id: runId, record_directory: runDir })
+  })
+}
+
+function kickoffRecord(runId, at, exit) {
+  return {
+    schema: 2, run_id: runId, initiated_by: 'human', started_at: at,
+    stage_transitions: [{ stage: 'kickoff', entered_at: at, exit }],
+    receipts: [], interventions: [], outcome: null, pr: null,
+    evidence_comments: [], evidence_registrations: [], pr_bindings: [],
+    outcome_transitions: [], settlements: [], promotion: null,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1385,7 +1449,7 @@ const VALUE_FLAGS = new Set([
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
-  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction',
+  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 
@@ -1476,6 +1540,7 @@ function main(argv) {
     return lockCommand(sub, parseScopeFlags(parseFlags(flags)))
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
+  if (command === 'lane-init') return laneInit(parseFlags(rest))
   if (Object.hasOwn(SIDE_EFFECTS, command ?? '')) return sideEffectWrite(command, parseFlags(rest))
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
     throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|solo-init|receipt|adjudicate|ledger|lock … (see the header)')

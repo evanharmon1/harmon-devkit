@@ -46,6 +46,7 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the result
 brief_fixture_dir="$fixtures_dir/brief.envelope"
 brief_valid_count=0
 brief_invalid_count=0
+[ -f "$brief_fixture_dir/invalid/live-overlap-self.md" ] || fail "missing own-lane overlap regression fixture"
 for f in "$brief_fixture_dir"/valid/*.md; do
     [ -f "$f" ] || continue
     brief_valid_count=$((brief_valid_count + 1))
@@ -71,6 +72,26 @@ done
 [ "$brief_valid_count" -ge 3 ] || fail "brief corpus requires at least 3 valid fixtures"
 [ "$brief_invalid_count" -ge 6 ] || fail "brief corpus requires at least 6 invalid fixtures"
 echo "PASS: brief envelope corpus OK ($brief_valid_count valid, $brief_invalid_count invalid)"
+
+# Both wire shapes are supported; canonical sentinels identify the lane even
+# when a caller's body omits the standard title. Prefix lookalikes remain valid.
+node --input-type=module - "$brief_fixture_dir/valid/minimal.md" "$test_tmp" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+const [file, dir] = process.argv.slice(2)
+const template = readFileSync(file, 'utf8')
+const match = template.match(/```json\n([^\n]+)\n```/)
+const facts = JSON.parse(match[1])
+facts.sentinels = { ready: 'READY-l1-n', handoff: 'HANDOFF-l1-n', blocked: 'BLOCKED-l1-n', attempt_nonce: 'n' }
+for (const [name, text] of [['self', 'lane l1 shares x'], ['other', 'lane `l10` shares x']]) {
+  facts.live_lane_overlaps = text
+  writeFileSync(`${dir}/${name}.md`, template.replace(match[1], JSON.stringify(facts)))
+}
+NODE
+if out="$(node "$validator" brief "$test_tmp/self.md" 2>&1)"; then
+    fail "string-shaped self-overlap without a title was accepted"
+fi
+[[ "$out" = *'names its own lane'* ]] || fail "wrong self-overlap refusal: $out"
+node "$validator" brief "$test_tmp/other.md" >/dev/null || fail "another lane with a shared prefix was rejected"
 
 # The deadline cross-check is contextual: it activates only when the rendered
 # record_directory exists. Materialize that context without making a fixture
