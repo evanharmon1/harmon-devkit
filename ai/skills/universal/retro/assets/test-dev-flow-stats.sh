@@ -4741,6 +4741,33 @@ out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run
 echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null ||
     fail "valid blocked integrator findings not counted: $out"
 cp "$tmp/integration-r1-valid.json" "$integrator_file"
+echo "== prototype-named integration finders remain numeric =="
+jq '.payload.findings[0].id = "integration-r1-constructor-1"' "$tmp/integration-r1-valid.json" >"$integrator_file"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.retained_record_findings_by_stage_finder.integration.constructor == 1 and .findings_by_stage_finder_source == "retained-pass-files"' >/dev/null ||
+    fail "prototype-named integration finder or retained source lost: $out"
+cp "$tmp/integration-r1-valid.json" "$integrator_file"
+
+echo "== duplicate valid integrators for one round are all excluded nonfatally =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/pre-duplicate-run.json"
+cp "$integrator_file" "$tmp/local-records/$run_id/passes/integration-r1-copy.json"
+jq '.receipts += [{kind:"pass",file:"integration-r1-copy"}]' "$tmp/pre-duplicate-run.json" >"$tmp/local-records/$run_id/run.json"
+set +e
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "duplicate integrators must be nonfatal: $rc: $out"
+echo "$out" | jq -e '
+  .retained_record_findings_by_stage_finder == {integration:{}} and
+  ([.trajectory_diagnostics[] | select(.level == "reject" and
+    (.reason | contains("duplicate integrator passes for integration round 1")) and
+    .passes == ["integration-r1", "integration-r1-copy"])] | length) == 1
+' >/dev/null || fail "duplicate integrators counted or diagnostic missing: $out"
+rm "$tmp/local-records/$run_id/passes/integration-r1-copy.json"
+cp "$tmp/pre-duplicate-run.json" "$tmp/local-records/$run_id/run.json"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null ||
+    fail "single integrator no longer counted: $out"
 # End challenge-r1 integrator exclusion regressions.
 
 echo "== a completed integration adjudication does not block harvesting real review evidence (harmon-devkit#1001 challenge round 5/7, fixed round 6/7) =="
@@ -5783,6 +5810,16 @@ const run = {
     round('review', 3, 5, [finding('r3', 'design')], null)
   ]
 };
+const prototypeCounts = renderTrajectory({
+  ...run,
+  rounds: ['challenge', 'review'].map(stage => ({
+    ...round(stage, 1, 1, [finding('prototype', 'correctness')], null),
+    payload: { passes: [{ payload: { finder: 'constructor', findings: [finding('prototype', 'correctness')] } }] }
+  }))
+});
+assert.deepEqual(prototypeCounts.findings_by_stage_finder, {
+  challenge: {constructor: 1}, review: {constructor: 1}
+});
 const t = renderTrajectory(run);
 assert.equal(t.retained_record_findings_by_stage_finder, null);
 assert.equal(t.remediation_pushes.length, 1);

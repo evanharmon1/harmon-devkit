@@ -291,7 +291,9 @@ revision history lists that `run_id` in `lanes[]`.
    that stage was open, and — for a stage that
    found something — its findings by class and provenance plus its
    adjudication overrides. Findings are grouped by each pass's finder or slot
-   per stage, including findings that were never deferred. Integration's
+   per stage, including findings that were never deferred. Counts from retained
+   pass files cover rounds with authenticated evidence, but their pass contents
+   are not verified by GitHub; posted-projection counts name that source. Integration's
    receipt-backed grouping is labelled retained-record evidence, not verified
    by GitHub; it does not authenticate integration rounds or outcomes. The
    trajectory supplies verified class/provenance

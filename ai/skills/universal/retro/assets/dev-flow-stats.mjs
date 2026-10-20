@@ -2833,7 +2833,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // The exit engine does not validate integrator passes. Only
     // receipt-backed envelopes validated for this run contribute to this
     // retained-record grouping; rejected integrators remain diagnostics.
-    const retainedIntegratorPasses = [];
+    const integratorsByRound = new Map();
     for (const entry of localPasses) {
       if (entry.content.role !== "integrator" || !receiptBackedNames.has(entry.name)) continue;
       try {
@@ -2841,10 +2841,26 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           ["integrator", entry.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
           `integrator pass ${entry.name}`,
         );
-        retainedIntegratorPasses.push(entry.content);
+        const round = entry.content.payload.integration_round;
+        const entries = integratorsByRound.get(round) ?? [];
+        entries.push(entry);
+        integratorsByRound.set(round, entries);
       } catch (error) {
         if (!(error instanceof EvidenceError)) throw error;
         diagnostics.push({ pass: entry.name, level: "reject", reason: error.message });
+      }
+    }
+
+    const retainedIntegratorPasses = [];
+    for (const [round, entries] of integratorsByRound) {
+      if (entries.length === 1) {
+        retainedIntegratorPasses.push(entries[0].content);
+      } else {
+        const files = entries.map((entry) => entry.name).sort();
+        diagnostics.push({
+          level: "reject", passes: files,
+          reason: `duplicate integrator passes for integration round ${round}: ${files.join(", ")}`,
+        });
       }
     }
 
@@ -2852,6 +2868,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       status: "ok",
       runId,
       issueNumber,
+      finderCountsSource: "retained-pass-files",
       record: { body },
       state,
       rounds,
@@ -3345,7 +3362,7 @@ function integrationFinderCounts(passes) {
     const payload = pass.payload || {};
     for (const finding of payload.findings || []) {
       const finder = /^integration-r[1-9][0-9]*-([a-z0-9-]+)-[1-9][0-9]*$/.exec(finding.id)?.[1] || "unknown";
-      counts[finder] = (counts[finder] || 0) + 1;
+      counts[finder] = (Object.hasOwn(counts, finder) ? counts[finder] : 0) + 1;
     }
   }
   return counts;
@@ -3358,7 +3375,7 @@ function findingsByStageFinder(rounds) {
     const stage = counts[round.stage] ??= {};
     for (const pass of round.payload.passes || []) {
       const finder = pass.payload?.finder || pass.payload?.slot || "unknown";
-      stage[finder] = (stage[finder] || 0) + (pass.payload?.findings || []).length;
+      stage[finder] = (Object.hasOwn(stage, finder) ? stage[finder] : 0) + (pass.payload?.findings || []).length;
     }
   }
   return counts;
@@ -3388,6 +3405,7 @@ function renderTrajectory(run) {
     remediation_pushes: (run.state.stage_transitions || [])
       .filter((entry) => entry.stage === "integration" && entry.remediation)
       .map((entry) => ({ entered_at: entry.entered_at, ...entry.remediation })),
+    findings_by_stage_finder_source: run.finderCountsSource ?? "authenticated-posted-projection",
     findings_by_stage_finder: findingsByStageFinder(rounds.filter((entry) => entry.stage !== "integration")),
     retained_record_findings_by_stage_finder: run.retainedIntegrationFinderCounts === undefined
       ? null : { integration: run.retainedIntegrationFinderCounts },

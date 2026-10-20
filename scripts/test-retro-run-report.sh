@@ -1643,7 +1643,7 @@ contains "$OUT" "unavailable from this harvester" &&
 REPORT_TEXT="$OUT" node <<'NODE'
 const assert = require('node:assert/strict')
 const lines = process.env.REPORT_TEXT.split('\n').filter(line => line.startsWith('- Findings by finder'))
-assert.ok(lines.includes('- Findings by finder (authenticated pass evidence): unavailable from this harvester') &&
+assert.ok(lines.includes('- Findings by finder (source unavailable from this harvester): unavailable from this harvester') &&
   lines.every(line => !line.includes('not measured')))
 const integration = process.env.REPORT_TEXT.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
 assert.ok(integration.includes('- Findings by finder (retained-record evidence, not verified by GitHub): unavailable from this harvester') &&
@@ -3415,16 +3415,19 @@ node - "$d/trajectory.json" <<'NODE'
 const fs = require('node:fs')
 const p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
 t.findings_by_stage_finder = { challenge: { 'codex-adversarial': 3 }, review: { 'codex-verification': 2 } }
+t.findings_by_stage_finder_source = 'retained-pass-files'
 t.retained_record_findings_by_stage_finder = { integration: { 'codex-cloud': 1, human: 2 } }
 fs.writeFileSync(p, JSON.stringify(t))
 NODE
+mkdir -p "$d/records"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --record-dir "$d/records"
 REPORT_TEXT="$OUT" node <<'NODE'
 const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
 const section = stage => text.split('### Stage `' + stage + '`')[1]?.split('\n### ')[0] || ''
-assert.match(section('challenge'), /Findings by finder \(authenticated pass evidence\):\n  - codex-adversarial: 3/)
+assert.match(section('challenge'), /Findings by finder \(retained pass files for rounds with authenticated evidence; pass contents not verified by GitHub\):\n  - codex-adversarial: 3/)
 assert.match(section('review'), /codex-verification: 2/)
+assert.ok(!text.includes('authenticated pass evidence'))
 assert.match(section('integration'), /Findings by finder \(retained-record evidence, not verified by GitHub\):\n  - codex-cloud: 1\n  - human: 2/)
 assert.match(section('integration'), /Rounds\/passes\/findings: not measured/)
 NODE
@@ -3446,6 +3449,7 @@ check(report.unavailable)
 assert.throws(() => check([{ issue: 'harmon-devkit#663 successors' }]))
 assert.deepEqual(report.unavailable.map(g => g.issue), ['harmon-devkit#1382'])
 assert.deepEqual(report.measurements.stages.find(s => s.stage === 'review').findings_by_finder, { 'codex-verification': 2 })
+assert.equal(report.measurements.stages.find(s => s.stage === 'review').findings_by_finder_source, 'retained-pass-files')
 NODE
 [ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "not-measurable references exclude the closed-issue fixture" || bad "closed issue reference check exit $RC"
 
