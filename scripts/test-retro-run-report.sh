@@ -1244,7 +1244,7 @@ contains "$OUT" "Tampered comments (trusted author, structural anomaly, not forg
     ok "tampered comments are counted and labeled distinctly from forged (harmon-devkit#1001 item 7)" || bad "tampered comment count missing"
 contains "$OUT" "PR binding: bound to PR #$PR" &&
     ok "the report states the run's PR binding" || bad "PR binding not reported"
-contains "$OUT" "harmon-devkit#753" &&
+contains "$OUT" "harmon-devkit#1382" &&
     ok "the override-detail gap names its follow-up issue" || bad "override gap not named"
 contains "$OUT" "keyed by stage" &&
     bad "a gap was declared for a measurement this run actually rendered per stage" ||
@@ -1482,7 +1482,7 @@ node -e '
   const challenge = report.measurements.stages.find((s) => s.stage === "challenge")
   if (!challenge || challenge.rounds_spent !== 1 || challenge.cap !== 3) problems.push("stages.challenge")
   if (report.measurements.settlements[0].finder !== "codex-cli") problems.push("settlements.finder")
-  if (!report.unavailable.some((g) => g.issue.includes("753"))) problems.push("unavailable")
+  if (!report.unavailable.some((g) => g.issue.includes("1382"))) problems.push("unavailable")
   if (problems.length > 0) { console.error(problems.join(", ")); process.exit(1) }
 ' "$d/report.json" &&
     ok "the JSON form carries schema, unverified policy, binding, stages, settlements and gaps" ||
@@ -1503,18 +1503,19 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && ok "a fractional-seconds cutoff is still accepted" ||
     bad "a valid fractional-seconds cutoff was rejected: $ERR"
 
-echo "==> the remediation budget is named as unmeasurable, not silently skipped"
+echo "==> remediation re-entry records are counted against the disclosed cap"
 d="$TMPROOT/remediation"
 scaffold "$d" further-along "$POLICY_SECTION"
+node -e 'const fs=require("node:fs"), p=process.argv[1], t=JSON.parse(fs.readFileSync(p)); t.stage_transitions.push({stage:"integration",entered_at:"2026-08-25T00:00:00Z",remediation:{head:"a".repeat(40),findings:["integration-r1-codex-cloud-1"]}}); fs.writeFileSync(p,JSON.stringify(t))' "$d/trajectory.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 contains "$OUT" "remediation 4" &&
     ok "the disclosed remediation cap appears in the policy line" ||
     bad "the policy line dropped the remediation cap"
-contains "$OUT" "remediation rounds spent against the remediation cap" &&
-    ok "the report says the remediation budget is not measurable from this evidence" ||
-    bad "a cap is displayed with no section measuring it and no gap entry naming it"
+contains "$OUT" "Remediation pushes: 1 / cap 4 (disclosed, unverified)" &&
+    ok "one recorded remediation is reported against cap 4" ||
+    bad "recorded remediation count missing"
 
 echo "==> a marker after blank lines is not the comment's first line"
 d="$TMPROOT/blankline"
@@ -1636,9 +1637,19 @@ contains "$OUT" "- Adjudication overrides: not derivable" &&
 contains "$OUT" "belongs to stage" &&
     bad "a multi-stage run claimed single-stage attribution" ||
     ok "no single-stage claim is made when two stages found things"
-contains "$OUT" "keyed by stage" &&
-    ok "the per-stage gap IS declared when no split is derivable" ||
-    bad "a genuine per-stage gap went unreported"
+contains "$OUT" "unavailable from this harvester" &&
+    ok "the older harvester limitation is stated without a closed issue reference" ||
+    bad "the older harvester limitation went unreported"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict')
+const lines = process.env.REPORT_TEXT.split('\n').filter(line => line.startsWith('- Findings by finder'))
+assert.ok(lines.includes('- Findings by finder (source unavailable from this harvester): unavailable from this harvester') &&
+  lines.every(line => !line.includes('not measured')))
+const integration = process.env.REPORT_TEXT.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
+assert.ok(integration.includes('- Findings by finder (retained-record evidence, not verified by GitHub): unavailable from this harvester') &&
+  !integration.includes('No findings recorded.'))
+NODE
+[ "$?" -eq 0 ] && ok "older-harvester finder text is unavailable, never not measured" || bad "older-harvester finder text"
 
 echo "==> two stages render their verified class/provenance counts separately"
 # Reuse the older-harvester fixture above, then add the new optional field.
@@ -2330,6 +2341,62 @@ OUT="$(PATH="$d/bin:$PATH" GH_ISSUES_JSON="$d/issues.json" GH_PR_JSON="$d/pr.jso
 [ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .run_id == "classification-1444-d6001"' >/dev/null &&
     ok "retro-run-report.mjs exits 0 on a valid fixture run with the real harvester under the gh 2.98 stub" ||
     bad "retro-run-report.mjs failed under the gh 2.98 stub: rc=$RC, err=$(cat "$d/report.err"), out=$OUT"
+
+echo "==> retained remediation pushes reach the report through the real loader"
+d="$TMPROOT/retained-remediation"
+make_permissive_gh "$d"
+# This retained run binds to the fixture PR; its issue-detail lookup must agree.
+node - "$d/bin/gh" <<'NODE_STUB'
+const fs = require('node:fs'), file = process.argv[2]
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"pull_request":null', '"pull_request":{}'))
+NODE_STUB
+write_file "$d/body" "$POLICY_SECTION"
+printf '[[{"number":%s,"pull_request":null}]]\n' "$ISSUE" >"$d/issues.json"
+evidence_marker_file "$d/i1" run-retained-remediation integration issue 1
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+set_comments "$d/comments" "$PR"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+node --input-type=module - "$REAL_STATS" "$d" "$ACTOR" <<'NODE'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+const [asset, dir, actor] = process.argv.slice(2)
+const { entryDigest, GENESIS, payloadDigest } = await import(asset)
+const chain = entries => {
+  let prev = GENESIS
+  return entries.map((entry, seq) => {
+    const { remediation, ...content } = entry
+    const digest = entryDigest(content, prev)
+    const result = { ...entry, seq, digest, prev_digest: prev }
+    prev = digest
+    return result
+  })
+}
+const run_id = 'run-retained-remediation', at = '2026-09-01T00:00:00Z'
+const marker = { run_id, stage: 'integration', round: 1, sequence: 1, destination: 'issue' }
+const comment = JSON.parse(readFileSync(`${dir}/comments/664.json`))[0][0]
+const evidence = { id: String(comment.id), author_actor_id: Number(actor), login: comment.user.login,
+  digest: payloadDigest(comment.body), marker }
+const stages = ['kickoff', 'claim', 'implement', 'verify', 'review', 'security', 'integration', 'implement', 'integration']
+const run = { schema: 2, run_id, initiated_by: 'human', started_at: at,
+  stage_transitions: chain(stages.map((stage, index) => ({ stage, entered_at: at,
+    ...(index < stages.length - 1 ? { exit: 'fixture transition' } : {}),
+    ...(index === stages.length - 1 ? { remediation: { head: 'a'.repeat(40), findings: ['integration-r1-codex-cloud-1'] } } : {}) }))),
+  receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }],
+  interventions: [], settlements: [], outcome: null, pr: { number: 634, url: "https://github.com/o/r/pull/634" }, promotion: null,
+  evidence_comments: [evidence], evidence_registrations: chain([{ id: evidence.id,
+    author_actor_id: evidence.author_actor_id, login: evidence.login, payload_digest: evidence.digest,
+    marker, registered_at: at }]), pr_bindings: chain([{ number: 634, url: "https://github.com/o/r/pull/634", bound_at: at }]), outcome_transitions: [] }
+mkdirSync(`${dir}/records/${run_id}`, { recursive: true })
+writeFileSync(`${dir}/records/${run_id}/run.json`, JSON.stringify(run))
+const envelope = JSON.parse(readFileSync('ai/schemas/fixtures/result.integrator.schema/valid/verdict-findings.json'))
+envelope.run.run_id = run_id
+mkdirSync(`${dir}/records/${run_id}/passes`)
+writeFileSync(`${dir}/records/${run_id}/passes/integration-r1.json`, JSON.stringify(envelope))
+NODE
+GH_ISSUES_JSON="$d/issues.json" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-retained-remediation --record-dir "$d/records"
+[ "$RC" -eq 0 ] && contains "$OUT" 'Remediation pushes: 1 / cap 4 (disclosed, unverified)' &&
+    ok "real retained-record remediation count reaches the current-harvester report" ||
+    bad "retained remediation count missing: $RC $ERR $OUT"
 
 echo "==> the real harvester rejects the trust-file entries this asset now rejects"
 d="$TMPROOT/trustagree"
@@ -3340,6 +3407,112 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "challenge") | .cap == 3 and .authorized_ceiling == 4' <<<"$OUT" >/dev/null &&
     jq -e '.measurements.stages[] | select(.stage == "review") | .cap == 3 and .authorized_ceiling == 5' <<<"$OUT" >/dev/null &&
     ok "authorization ceiling is in the JSON stage projection" || bad "authorization JSON: $RC $ERR $OUT"
+
+echo "==> finder grouping and closed gap references"
+d="$TMPROOT/finder-grouping"
+scaffold "$d" further-along "$POLICY_SECTION"
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs')
+const p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.findings_by_stage_finder = { challenge: { 'codex-adversarial': 3 }, review: { 'codex-verification': 2 } }
+t.findings_by_stage_finder_source = 'retained-pass-files'
+t.retained_record_findings_by_stage_finder = { integration: { 'codex-cloud': 1, human: 2 } }
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+mkdir -p "$d/records"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --record-dir "$d/records"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const section = stage => text.split('### Stage `' + stage + '`')[1]?.split('\n### ')[0] || ''
+assert.match(section('challenge'), /Findings by finder \(retained pass files for rounds with authenticated evidence; pass contents not verified by GitHub\):\n  - codex-adversarial: 3/)
+assert.match(section('review'), /codex-verification: 2/)
+assert.ok(!text.includes('authenticated pass evidence'))
+assert.match(section('integration'), /Findings by finder \(retained-record evidence, not verified by GitHub\):\n  - codex-cloud: 1\n  - human: 2/)
+assert.match(section('integration'), /Rounds\/passes\/findings: not measured/)
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "finder counts per stage preserve integration evidence boundary" || bad "finder grouping exit $RC"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+REPORT_JSON="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), report = JSON.parse(process.env.REPORT_JSON)
+// Closed-issue fixture: keep entries out of the not-measurable issue map.
+const closed = new Set(['harmon-devkit#663', 'harmon-devkit#753', 'harmon-devkit#779'])
+const check = entries => {
+  for (const entry of entries) {
+    const references = entry.issue.match(/harmon-devkit#[0-9]+/g) || []
+    assert.ok(references.length > 0)
+    for (const reference of references) assert.ok(!closed.has(reference), reference)
+  }
+}
+check(report.unavailable)
+assert.throws(() => check([{ issue: 'harmon-devkit#663 successors' }]))
+assert.deepEqual(report.unavailable.map(g => g.issue), ['harmon-devkit#1382'])
+assert.deepEqual(report.measurements.stages.find(s => s.stage === 'review').findings_by_finder, { 'codex-verification': 2 })
+assert.equal(report.measurements.stages.find(s => s.stage === 'review').findings_by_finder_source, 'retained-pass-files')
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "not-measurable references exclude the closed-issue fixture" || bad "closed issue reference check exit $RC"
+
+echo "==> local-record measurement with empty maps reports no findings =="
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.rounds = []
+t.findings_by_stage_finder = {}
+t.retained_record_findings_by_stage_finder = { integration: {} }
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const section = stage => text.split('### Stage `' + stage + '`')[1]?.split('\n### ')[0] || ''
+for (const stage of ['challenge', 'review', 'integration']) {
+  assert.match(section(stage), /Findings by finder .*:\n  - No findings recorded\./)
+  assert.ok(!section(stage).includes('unavailable from this harvester'), stage)
+}
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "empty confidence rounds and absent retained integrators report no findings" || bad "empty finder stage labels"
+
+echo "==> comment-path integration counts are unmeasured, never an empty count =="
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.retained_record_findings_by_stage_finder = null
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const integration = text.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
+assert.match(integration, /Findings by finder .*: not measured on this path — no retained run record was read/)
+assert.ok(!integration.includes('No findings recorded'))
+assert.ok(!integration.includes('unavailable from this harvester'))
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "unmeasured comment-path counts retain their reason" || bad "unmeasured finder label"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && jq -e '.measurements.stages[] | select(.stage == "integration") | .retained_record_findings_by_finder == null' <<<"$OUT" >/dev/null &&
+    ok "JSON preserves the unmeasured null" || bad "unmeasured null lost"
+
+echo "==> integration-only findings do not become a run-wide no-findings claim =="
+node - "$d/trajectory.json" <<'NODE'
+const fs = require('node:fs'), p = process.argv[2], t = JSON.parse(fs.readFileSync(p))
+t.rounds = []
+t.findings_by_class_and_provenance = {}
+t.findings_by_stage_finder = {}
+t.retained_record_findings_by_stage_finder = { integration: { 'codex-cloud': 2 } }
+fs.writeFileSync(p, JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+REPORT_TEXT="$OUT" node <<'NODE'
+const assert = require('node:assert/strict'), text = process.env.REPORT_TEXT
+const integration = text.split('### Stage `integration`')[1]?.split('\n### ')[0] || ''
+assert.match(integration, /  - codex-cloud: 2/)
+assert.ok(text.split('\n').includes('No challenge or review findings were recorded for this run; integration findings, where retained, are listed in the integration section.'))
+assert.ok(!text.includes('No findings recorded for this run.'))
+NODE
+[ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "the run-level line scopes its claim to challenge and review" || bad "integration-only finding summary"
 
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
