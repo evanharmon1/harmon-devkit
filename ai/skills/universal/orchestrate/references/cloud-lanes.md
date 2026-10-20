@@ -107,7 +107,7 @@ Do not use local agent-settle waits or pane sentinels for it.
 Watch the known branch from the plan through GitHub:
 
 ```sh
-bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state \
+bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state \
   --registry <kickoff-registry-snapshot> <deadline> \
   '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud'
 ```

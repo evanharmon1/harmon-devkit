@@ -239,7 +239,7 @@ throwaway work only.
   keyed by run id and attempt nonce the way lane reports are.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
-- **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`.
+- **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.
 
 Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:
@@ -737,7 +737,7 @@ On every other wakeup (a user message or monitor event), first compare the curre
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
 Keep exactly one watcher per slate.
-Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.
+Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as

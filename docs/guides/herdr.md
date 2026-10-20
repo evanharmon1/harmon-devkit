@@ -345,7 +345,7 @@ neither commit nor push without a per-command escalation on every git write.
    by letting its monitor expire on the harness's own schedule (Claude Code:
    within 30 minutes) and re-arming. Early harness monitor-stop (Claude
    Code: `TaskStop` on that monitor's task) requires the user's explicit
-   approval. Never use `kill` or `pkill`.
+   approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
    The state file deduplicates report-first sentinels across re-arms, and the
    watcher continues watching review activity briefly after promotion. `PROMPT`
    means inspect and approve or deny the request; `STALL` means read the pane

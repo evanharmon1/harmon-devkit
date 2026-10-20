@@ -48,6 +48,28 @@ def pin_absent(errors: list[str], name: str, document: str, deleted: str) -> Non
         errors.append(f"{name}: deleted round-1 wording is still present")
 
 
+def pin_watcher_state_homes(errors: list[str], root: Path) -> None:
+    documents = [
+        root / "ai/skills/universal/orchestrate/SKILL.md",
+        *sorted((root / "ai/skills/universal/orchestrate/references").glob("*.md")),
+        root / "ai/skills/universal/orchestrate/assets/lane-brief.md",
+        root / "docs/guides/herdr.md",
+    ]
+    watcher_state = re.compile(r"lane-watch\.state")
+    per_slate_home = re.compile(
+        r"<git-common-dir>/dev-flow-v2/slates/<slate(?:-id)?>/lane-watch\.state"
+    )
+    for document in documents:
+        content = norm(document.read_text())
+        valid_ends = {match.end() for match in per_slate_home.finditer(content)}
+        for mention in watcher_state.finditer(content):
+            if mention.end() not in valid_ends:
+                relative = document.relative_to(root)
+                errors.append(
+                    f"{relative}: lane-watch.state must name the per-slate watcher home"
+                )
+
+
 def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> None:
     expected = {
         "ready": "READY-<lane-label>",
@@ -165,8 +187,8 @@ def main() -> int:
         (
             "orchestrator one-watcher and stop approval",
             "Keep exactly one watcher per slate.",
-            "Never use `kill` or `pkill`.",
-            "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.",
+            "Never use `kill`, `pkill`, `killall`, or `xkill`.",
+            "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.",
         ),
     )
     for name, start, end, expected in skill_ranges:
@@ -176,8 +198,8 @@ def main() -> int:
         "Herdr whole watcher restatement",
         herdr,
         "For multi-lane Dev Loop runs, use only the orchestrate skill's",
-        "Never use `kill` or `pkill`.",
-        "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`), invoked as that file. The session-lifetime persistent monitor primitive streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job. On every watcher expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.",
+        "Never use `kill`, `pkill`, `killall`, or `xkill`.",
+        "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`), invoked as that file. The session-lifetime persistent monitor primitive streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job. On every watcher expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.",
     )
 
     for name, document in (("orchestrator", skill), ("Herdr", herdr)):
@@ -186,7 +208,7 @@ def main() -> int:
 
     pin_once(errors, "Herdr heartbeat recovery", herdr, "Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means re-arm the watcher and investigate its exit, rather than assuming the lanes are healthy.")
     pin_once(errors, "orchestrator heartbeat recovery", skill, "A missing heartbeat means re-arm the watcher and investigate its exit, rather than assuming the lanes are healthy.")
-    pin_once(errors, "shared watcher-state path", skill, "- **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`.")
+    pin_watcher_state_homes(errors, root)
     if "operator confirm that the previous session, its writers, and its lane watcher have stopped" not in norm(skill):
         errors.append("slate-lock recovery: lane watcher stop confirmation is missing")
 
