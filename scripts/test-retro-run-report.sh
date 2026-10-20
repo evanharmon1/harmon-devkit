@@ -2342,6 +2342,62 @@ OUT="$(PATH="$d/bin:$PATH" GH_ISSUES_JSON="$d/issues.json" GH_PR_JSON="$d/pr.jso
     ok "retro-run-report.mjs exits 0 on a valid fixture run with the real harvester under the gh 2.98 stub" ||
     bad "retro-run-report.mjs failed under the gh 2.98 stub: rc=$RC, err=$(cat "$d/report.err"), out=$OUT"
 
+echo "==> retained remediation pushes reach the report through the real loader"
+d="$TMPROOT/retained-remediation"
+make_permissive_gh "$d"
+# This retained run binds to the fixture PR; its issue-detail lookup must agree.
+node - "$d/bin/gh" <<'NODE_STUB'
+const fs = require('node:fs'), file = process.argv[2]
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"pull_request":null', '"pull_request":{}'))
+NODE_STUB
+write_file "$d/body" "$POLICY_SECTION"
+printf '[[{"number":%s,"pull_request":null}]]\n' "$ISSUE" >"$d/issues.json"
+evidence_marker_file "$d/i1" run-retained-remediation integration issue 1
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+set_comments "$d/comments" "$PR"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+node --input-type=module - "$REAL_STATS" "$d" "$ACTOR" <<'NODE'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+const [asset, dir, actor] = process.argv.slice(2)
+const { entryDigest, GENESIS, payloadDigest } = await import(asset)
+const chain = entries => {
+  let prev = GENESIS
+  return entries.map((entry, seq) => {
+    const { remediation, ...content } = entry
+    const digest = entryDigest(content, prev)
+    const result = { ...entry, seq, digest, prev_digest: prev }
+    prev = digest
+    return result
+  })
+}
+const run_id = 'run-retained-remediation', at = '2026-09-01T00:00:00Z'
+const marker = { run_id, stage: 'integration', round: 1, sequence: 1, destination: 'issue' }
+const comment = JSON.parse(readFileSync(`${dir}/comments/664.json`))[0][0]
+const evidence = { id: String(comment.id), author_actor_id: Number(actor), login: comment.user.login,
+  digest: payloadDigest(comment.body), marker }
+const stages = ['kickoff', 'claim', 'implement', 'verify', 'review', 'security', 'integration', 'implement', 'integration']
+const run = { schema: 2, run_id, initiated_by: 'human', started_at: at,
+  stage_transitions: chain(stages.map((stage, index) => ({ stage, entered_at: at,
+    ...(index < stages.length - 1 ? { exit: 'fixture transition' } : {}),
+    ...(index === stages.length - 1 ? { remediation: { head: 'a'.repeat(40), findings: ['integration-r1-codex-cloud-1'] } } : {}) }))),
+  receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }],
+  interventions: [], settlements: [], outcome: null, pr: { number: 634, url: "https://github.com/o/r/pull/634" }, promotion: null,
+  evidence_comments: [evidence], evidence_registrations: chain([{ id: evidence.id,
+    author_actor_id: evidence.author_actor_id, login: evidence.login, payload_digest: evidence.digest,
+    marker, registered_at: at }]), pr_bindings: chain([{ number: 634, url: "https://github.com/o/r/pull/634", bound_at: at }]), outcome_transitions: [] }
+mkdirSync(`${dir}/records/${run_id}`, { recursive: true })
+writeFileSync(`${dir}/records/${run_id}/run.json`, JSON.stringify(run))
+const envelope = JSON.parse(readFileSync('ai/schemas/fixtures/result.integrator.schema/valid/verdict-findings.json'))
+envelope.run.run_id = run_id
+mkdirSync(`${dir}/records/${run_id}/passes`)
+writeFileSync(`${dir}/records/${run_id}/passes/integration-r1.json`, JSON.stringify(envelope))
+NODE
+GH_ISSUES_JSON="$d/issues.json" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-retained-remediation --record-dir "$d/records"
+[ "$RC" -eq 0 ] && contains "$OUT" 'Remediation pushes: 1 / cap 4 (disclosed, unverified)' &&
+    ok "real retained-record remediation count reaches the current-harvester report" ||
+    bad "retained remediation count missing: $RC $ERR $OUT"
+
 echo "==> the real harvester rejects the trust-file entries this asset now rejects"
 d="$TMPROOT/trustagree"
 make_permissive_gh "$d"
