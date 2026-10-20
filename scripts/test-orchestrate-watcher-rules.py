@@ -69,6 +69,22 @@ def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> N
         "The sentinel placeholder values are kind/lane prefixes; the lane-brief "
         "template appends `-{{attempt-nonce}}` to form the complete sentinel.",
     )
+    pin_once(
+        errors,
+        "orchestrator sentinel form",
+        skill,
+        "Sentinels use the exact kind-first form `(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, "
+        "matching `^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces "
+        "contain only ASCII letters, digits, underscores and hyphens.",
+    )
+    pin_once(
+        errors,
+        "lane-brief sentinel form",
+        template,
+        "Terminal sentinels use the exact kind-first form `(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, "
+        "matching `^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces "
+        "contain only ASCII letters, digits, underscores and hyphens.",
+    )
     lane, nonce = "L-fixture", "a1b2c3"
     rendered = template
     for kind, value in catalog.items():

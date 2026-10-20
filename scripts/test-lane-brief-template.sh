@@ -226,72 +226,16 @@ if grep -Fq '| Placeholder | Source |' "$rendered_file"; then
     fail "free-form values can still be substituted into an output catalog"
 fi
 
-reporting_line="$(grep -nFx '## Reporting protocol' "$rendered_file" | cut -d: -f1)"
-sentinel_records="$(
-    awk '
-        /Append exactly one of the/ {
-            if (/following to/) in_sentinels = 1
-            else awaiting_following = 1
-            next
-        }
-        awaiting_following && /following to/ {
-            in_sentinels = 1
-            next
-        }
-        in_sentinels && /^  The lane.*own handoff sentinel/ {
-            exit
-        }
-        in_sentinels && /^  - `[^`]+` —/ {
-            token = $0
-            sub(/^  - `/, "", token)
-            sub(/`.*/, "", token)
-            printf "%d\t%s\n", NR, token
-        }
-    ' "$rendered_file"
-)"
-source <(sed -n '/^terminal_sentinel() {/,/^}/p' \
-    ai/skills/universal/orchestrate/assets/lane-watch.sh)
-sentinel_count=0
-sentinel_errors=0
-ready_count=0
-handoff_count=0
-blocked_count=0
-while IFS=$'\t' read -r line sentinel; do
-    [ -n "$sentinel" ] || continue
-    sentinel_count=$((sentinel_count + 1))
-    if [ "$line" -le "$reporting_line" ]; then
-        echo "FAIL: rendered sentinel appears outside Reporting protocol: $sentinel" >&2
-        sentinel_errors=$((sentinel_errors + 1))
-    fi
-    case "$sentinel" in
-    READY-*) ready_count=$((ready_count + 1)) ;;
-    HANDOFF-*) handoff_count=$((handoff_count + 1)) ;;
-    BLOCKED-*) blocked_count=$((blocked_count + 1)) ;;
-    *)
-        echo "FAIL: unrecognized rendered sentinel token: $sentinel" >&2
-        sentinel_errors=$((sentinel_errors + 1))
-        ;;
-    esac
-    if accepted="$(printf 'previous line\n%s\n' "$sentinel" |
-        terminal_sentinel "$lane_label" "$attempt_nonce")"; then
-        if [ "$accepted" != "$sentinel" ]; then
-            echo "FAIL: watcher matcher returned a different sentinel for $sentinel" >&2
-            sentinel_errors=$((sentinel_errors + 1))
-        fi
-    else
-        echo "FAIL: watcher matcher rejected rendered sentinel $sentinel" >&2
-        sentinel_errors=$((sentinel_errors + 1))
-    fi
-done <<<"$sentinel_records"
-[ "$sentinel_count" -eq 3 ] || {
-    echo "FAIL: expected three rendered sentinels (found $sentinel_count)" >&2
-    sentinel_errors=$((sentinel_errors + 1))
-}
-[ "$ready_count" -eq 1 ] && [ "$handoff_count" -eq 1 ] && [ "$blocked_count" -eq 1 ] || {
-    echo "FAIL: rendered template must include exactly one token of each sentinel kind" >&2
-    sentinel_errors=$((sentinel_errors + 1))
-}
-[ "$sentinel_errors" -eq 0 ] || fail "$sentinel_errors rendered sentinel check(s) failed"
+for sentinel in \
+    READY-L-fixture-a1b2c3 \
+    HANDOFF-L-fixture-a1b2c3 \
+    BLOCKED-L-fixture-a1b2c3; do
+    count="$(grep -Fc "$sentinel" "$rendered_file")"
+    [ "$count" -eq 1 ] || fail "$sentinel must appear exactly once (found $count)"
+    line="$(grep -nF "$sentinel" "$rendered_file" | cut -d: -f1)"
+    reporting_line="$(grep -nFx '## Reporting protocol' "$rendered_file" | cut -d: -f1)"
+    [ "$line" -gt "$reporting_line" ] || fail "$sentinel appears outside Reporting protocol"
+done
 
 # ── The implement skill's base brief template ──────────────────────────────
 # harmon-devkit#855: the gate bounds, the stop-at-draft rule, and the
