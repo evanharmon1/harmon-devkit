@@ -440,10 +440,12 @@ table before their intended sections.
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
-| `{{ready-sentinel}}` | `READY-<lane-label>-<nonce>`, the READY form of `(READY\|HANDOFF\|BLOCKED)-<lane-label>-<nonce>`, using the brief lane label and attempt nonce |
-| `{{handoff-sentinel}}` | `HANDOFF-<lane-label>-<nonce>`, the HANDOFF form of `(READY\|HANDOFF\|BLOCKED)-<lane-label>-<nonce>`, using the brief lane label and attempt nonce |
-| `{{blocked-sentinel}}` | `BLOCKED-<lane-label>-<nonce>`, the BLOCKED form of `(READY\|HANDOFF\|BLOCKED)-<lane-label>-<nonce>`, using the brief lane label and attempt nonce |
+| `{{ready-sentinel}}` | `READY-<lane-label>` |
+| `{{handoff-sentinel}}` | `HANDOFF-<lane-label>` |
+| `{{blocked-sentinel}}` | `BLOCKED-<lane-label>` |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+
+The sentinel placeholder values are kind/lane prefixes; the lane-brief template appends `-{{attempt-nonce}}` to form the complete sentinel.
 
 Every local PR-owning lane brief MUST carry the active run identity so the lane worker can
 route confidence stages through `/review` and publish a draft with v2 evidence;
@@ -719,8 +721,8 @@ lane is planned, fenced and claimed like any other.
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step.
-Use only `assets/lane-watch.sh` under the harness streaming monitor.
-(Claude Code: `Monitor`). Invoke it as that file. The monitor is the
+Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`).
+Invoke it as that file. The monitor is the
 session-lifetime persistent monitor primitive that streams its output.
 Never inline its loop, write a substitute, or run it as an unobserved background shell job.
 The monitor polls fresh
@@ -734,8 +736,8 @@ to occasional manual polling.
 On every other wakeup (a user message or monitor event), first compare the current
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
-Keep exactly one watcher per slate. Each session's monitors end with that session; after a restart or lock recovery, the new session arms its own watcher on the same state file. While another live session's watcher runs, arm none.
-Replace a watcher by letting its monitor expire (within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.
+Keep exactly one watcher per slate.
+Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill` or `pkill`.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as

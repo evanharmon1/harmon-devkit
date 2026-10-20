@@ -332,8 +332,8 @@ neither commit nor push without a per-command escalation on every git write.
    non-zero exit — never followed by `; echo` or `|| true` (`--until <state>`
    is for a state-specific wait). For multi-lane Dev Loop runs, use only the
    orchestrate skill's
-   `assets/lane-watch.sh` under the harness streaming monitor.
-   (Claude Code: `Monitor`), invoked as that file. The session-lifetime
+   `assets/lane-watch.sh` under the harness streaming monitor (Claude Code:
+   `Monitor`), invoked as that file. The session-lifetime
    persistent monitor primitive streams its output. Never inline its loop,
    write a substitute, or run it as an unobserved background shell job.
    On every watcher expiry or exit notification before a terminal outcome,
@@ -341,11 +341,9 @@ neither commit nor push without a per-command escalation on every git write.
    `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work.
    On every other wakeup, first compare the current time with each lane's last
    observed change; read and act on any lane silent past the stall threshold
-   before other work. Keep exactly one watcher per slate. Each session's
-   monitors end with that session; after restart or lock recovery, the new
-   session arms its own watcher on the same state file. While another live
-   session's watcher runs, arm none. Replace a watcher by letting its monitor
-   expire (within 30 minutes) and re-arming. Early harness monitor-stop (Claude
+   before other work. Keep exactly one watcher per slate. Replace a watcher
+   by letting its monitor expire on the harness's own schedule (Claude Code:
+   within 30 minutes) and re-arming. Early harness monitor-stop (Claude
    Code: `TaskStop` on that monitor's task) requires the user's explicit
    approval. Never use `kill` or `pkill`.
    The state file deduplicates report-first sentinels across re-arms, and the
