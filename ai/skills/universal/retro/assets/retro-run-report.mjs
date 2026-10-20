@@ -1059,6 +1059,9 @@ function measure(trajectory, policy) {
   for (const transition of transitions) push(transition.stage)
   for (const round of rounds) push(round.stage)
   if (policy.present) for (const stage of ['challenge', 'review', 'integration']) push(stage)
+  for (const stage of ['challenge', 'review', 'integration']) {
+    if (trajectory.authorized_ceiling?.[stage] !== undefined) push(stage)
+  }
 
   const stages = order.map((stage) => {
     const own = rounds.filter((round) => round.stage === stage)
@@ -1310,7 +1313,7 @@ function renderMarkdown(report) {
           : `cap ${stage.cap}${exemptSuffix} (disclosed, unverified)`
       const authorized = stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`
       l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}${authorized}) — integration passes carry no authenticated evidence marker today.`)
-    } else if (stage.cap !== null || stage.rounds_spent > 0) {
+    } else if (stage.cap !== null || stage.rounds_spent > 0 || stage.authorized_ceiling !== undefined) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}${stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)

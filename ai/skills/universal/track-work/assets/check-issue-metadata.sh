@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # check-issue-metadata.sh — validate an issue draft and its proposed metadata
-# before `gh issue create`. This script is deliberately read-only: it reads the
-# target checkout's label registries and bounded live label listings when needed,
-# and never calls a GitHub write endpoint.
+# before `gh issue create`. It performs no GitHub writes; a successful full
+# draft validation writes only a local receipt under the common Git directory.
 set -euo pipefail
 
 FORBIDDEN_RE='^(foreman:|rigor:|tier:pinned$|tier:|strategy:|method:|claim:|agent:|priority:|effort:)'
@@ -555,6 +554,10 @@ for label in "${labels[@]+"${labels[@]}"}"; do
 done
 
 load_required_axis_contract
+# Validate a stable snapshot and receipt precisely those bytes, even if the
+# caller edits the original draft while the bounded metadata reads are running.
+cp -- "$body_file" "$tmp/receipt-body" || die "could not snapshot body draft"
+body_file="$tmp/receipt-body"
 live_read=0
 if [ -e "$manifest" ]; then
     # Retired members of active families are excluded from the vocabulary,
@@ -718,11 +721,13 @@ if ! printf '%s\n' "$live" | awk 'tolower($0) == "needs-triage" { found=1 }
     violation "filing marker 'needs-triage' is not provisioned in the target repository; provision it before creation"
 fi
 
+receipt_needs_triage=0
 if [ "$author_type" = agent ]; then
     for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do
         none_status=0
         none_available "$axis" agent || none_status=$?
         if [ "$none_status" -eq 1 ]; then
+            receipt_needs_triage=1
             warn "registry has no agent-writable '$axis:none' member; --inapplicable $axis needs needs-triage on the created issue"
         else
             violation "--inapplicable $axis requires a manifest with no agent-writable '$axis:none' member; use the \`$axis:none\` label"
@@ -1172,6 +1177,9 @@ for classification_axis in impact risk complexity; do
         elif [ "$author_type" = agent ] && [ "$classification_count" -ne 1 ]; then
             violation "agent-authored drafts require $classification_axis (personal label)"
         fi
+        if [ "$author_type" = human ] && [ "$classification_count" -eq 0 ]; then
+            receipt_needs_triage=1
+        fi
     else
         case "$classification_axis" in
         impact) classification_value="$impact" ;;
@@ -1195,6 +1203,8 @@ for classification_axis in impact risk complexity; do
             fi
         elif [ "$author_type" = agent ]; then
             violation "agent-authored drafts require --$classification_axis (organization issue field)"
+        else
+            receipt_needs_triage=1
         fi
     fi
 done
@@ -1309,4 +1319,68 @@ if [ "$violations" -ne 0 ]; then
     exit 1
 fi
 
+if [ "$author_type" = human ] && { [ -n "$undecided" ] || [ "${#inapplicable[@]}" -gt 0 ] ||
+    { [ "$owner_type" = personal ] && [ "$work_type_count" -eq 0 ]; } ||
+    { [ "$owner_type" = organization ] && [ -z "$issue_type" ]; }; }; then
+    receipt_needs_triage=1
+fi
+if [ "$receipt_needs_triage" -eq 1 ]; then
+    echo "check-issue-metadata: create must carry --label needs-triage" >&2
+fi
+# Receipt minting is internal to this successful full-validation path.
+if python3 - "${repo_host:-github.com}/$repo_slug" "$title" "$body_file" "$receipt_needs_triage" "$author_type" \
+    "${labels[@]+"${labels[@]}"}" 2>"$tmp/receipt-error" <<'PY_RECEIPT'
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+try:
+    repo, title, body_file, needs_triage, author_type, *labels = sys.argv[1:]
+    host, owner, name = repo.lower().split('/')
+    repo = owner + '/' + name if host == 'github.com' else repo.lower()
+    proposed = sorted(set(label.strip() for label in labels if label.strip()))
+    create_labels = sorted(set(proposed + (['needs-triage'] if needs_triage == '1' else [])))
+    value = dict(repo=repo, title=title,
+                 body_sha256=hashlib.sha256(Path(body_file).read_bytes()).hexdigest(),
+                 labels=create_labels)
+    key = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                   separators=(',', ':')).encode('utf-8')).hexdigest()
+    common = Path(subprocess.check_output(['git', 'rev-parse', '--git-common-dir'], text=True, stderr=subprocess.PIPE).strip())
+    directory = common.resolve() / 'track-work' / 'receipts'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    document = dict(schema_version=1, draft=value, proposed_labels=proposed,
+                    needs_triage_reason=(('incomplete-human-draft' if author_type == 'human'
+                                          else 'inapplicability-fallback') if needs_triage == '1' else None),
+                    validated_at=time.time())
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
+                                         prefix='.receipt-', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(document, stream, ensure_ascii=False, sort_keys=True)
+            stream.write('\n')
+        os.replace(temporary, directory / (key + '.json'))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+except Exception as error:
+    reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+              else str(error))
+    print('check-issue-metadata: warning: no local receipt written: ' + reason
+          + '; the guard will refuse the create until a writable checkout re-runs the preflight',
+          file=sys.stderr)
+else:
+    print('check-issue-metadata: local receipt written')
+PY_RECEIPT
+then
+    cat "$tmp/receipt-error" >&2
+else
+    receipt_status=$?
+    warn "no local receipt written: receipt interpreter failed (exit $receipt_status): $(cat "$tmp/receipt-error"); the guard will refuse the create until a writable checkout re-runs the preflight"
+fi
 echo "check-issue-metadata: issue draft and proposed metadata verified"

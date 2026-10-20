@@ -38,7 +38,8 @@ Ship one portable issue-authoring contract in `track-work` that:
 
 - Automatically infer issue semantics from prose.
 - Apply labels, create issues, choose milestones, assign people, or mutate a
-  project board; the checker is read-only and pre-create.
+  project board; the checker performs no GitHub writes and writes only a local receipt
+  on successful full pre-create validation.
 - Replace GitHub issue forms or the triage skill.
 - Write `claim:*`, `suggest:*`, `foreman:*`, `rigor:*`, `tier:*`,
   `tier:<role>:*`, `strategy:*`, or the retired-but-reserved `method:*`
@@ -229,7 +230,7 @@ Ship one portable issue-authoring contract in `track-work` that:
    GitHub and freshly fetched `main`.
 2. Add failing metadata-checker tests and structural guidance assertions to
    `scripts/test-track-work.sh`.
-3. Implement the read-only checker and make the focused test target green.
+3. Implement the checker (no GitHub writes; only a local receipt on success) and make the focused test target green.
 4. Rewrite §5 and `references/issue-authoring.md` around the canonical contract,
    checker invocation, delegation brief, and owner-type distinction.
 5. Run the focused tests and `task check`; fix before broad verification.
