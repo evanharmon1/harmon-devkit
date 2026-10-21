@@ -536,15 +536,21 @@ registry_revision="$(git -C "$repo" rev-parse HEAD)"
 jq -n --arg run run-capped --arg branch fixture-run-capped --arg registry "$registry_revision" \
     '{version: 1, run_id: $run, branch: $branch, generation: 1, registry_revision: $registry}' \
     >"$terminal_pointer"
-prune_dry_run="$(cd "$repo" && node "$writer" prune --dry-run)"
+prune_dry_run="$(cd "$tmp" && node "$writer" prune --dry-run --repo-root repo)"
 grep -qF "would remove ${terminal_pointer##*/} (run run-capped" <<<"$prune_dry_run" ||
     fail "run-record prune --dry-run did not report a terminal pointer: $prune_dry_run"
 [ -e "$terminal_pointer" ] || fail "run-record prune --dry-run removed a pointer"
-prune_output="$(cd "$repo" && node "$writer" prune)"
+prune_output="$(cd "$tmp" && node "$writer" prune --repo-root repo)"
 grep -qF "removed ${terminal_pointer##*/} (run run-capped" <<<"$prune_output" ||
     fail "run-record prune did not report its terminal removal: $prune_output"
 [ ! -e "$terminal_pointer" ] || fail "run-record prune left the terminal pointer"
-pass "run-record exposes the per-pointer-locked prune command and its dry-run"
+for open_run in run-z run-u run-t; do
+    open_pointer="$(pointer_for_run "$open_run")"
+    [ -e "$open_pointer" ] || fail "run-record prune removed open-run pointer for $open_run"
+    grep -qF "prune: skipped ${open_pointer##*/}: run record is invalid or still open" <<<"$prune_output" ||
+        fail "run-record prune did not report open-run pointer $open_run as skipped: $prune_output"
+done
+pass "run-record prune resolves relative roots and removes only terminal pointers"
 
 # A cleanup error cannot refuse a validated terminal outcome. close can be
 # retried after the binding is restored and removes the still-live pointer.

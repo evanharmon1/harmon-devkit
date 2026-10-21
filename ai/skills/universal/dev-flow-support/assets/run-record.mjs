@@ -935,7 +935,7 @@ function retireActivePointer(runId) {
 
 function pruneActivePointers(args) {
   try {
-    const repoRoot = args['repo-root'] ?? git(['rev-parse', '--show-toplevel'])
+    const repoRoot = resolve(args['repo-root'] ?? git(['rev-parse', '--show-toplevel']))
     const command = [monitorPath(), 'prune']
     if (args['dry-run'] === true) command.push('--dry-run')
     command.push('--repo-root', repoRoot)
