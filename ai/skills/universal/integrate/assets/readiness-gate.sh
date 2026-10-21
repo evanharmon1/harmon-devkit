@@ -42,11 +42,9 @@
 #   0  pass — every condition held; fingerprint and cycle_evidence are on stdout
 #   1  fail — a readiness condition is definitively not met
 #   2  indeterminate — a fetch failed, data is malformed, GitHub has not
-#      populated an answer yet, or the arguments are unusable. Unknown never
-#      passes: 2 is "re-poll or reconcile", never "promote".
-#   3  stale checkout — the checkout HEAD is an ancestor of the PR base and
-#      the base contains a newer vendored integrate/dev-flow-support asset.
-#      Run from a current checkout; no readiness verdict was produced.
+#      populated an answer yet, the arguments are unusable, or the checkout is
+#      stale. Unknown never passes: 2 is "re-poll or reconcile", never
+#      "promote".
 #
 # `check` emits one JSON line naming the decisive condition. This list is the
 # contract a caller reads to know which conditions it must handle, so it is
@@ -57,14 +55,13 @@
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing, checks-pending                          (fail)
 #   changes-requested, merge-state-dirty                    (fail)
-#   behind-base, base-retargeted, asset-checkout-stale       (fail)
+#   behind-base, base-retargeted                              (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled, closing-linkage-missing,
 #   content-moved                                            (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
-#   codex-quota-exhausted, finder-quota-exhausted,          (fail)
-#   codex-asset-checkout-stale, finder-asset-checkout-stale   (fail)
+#   codex-quota-exhausted, finder-quota-exhausted             (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
 #   evidence-marker-missing, remediation-capped,            (fail)
@@ -74,6 +71,7 @@
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
 #   behind-base-unknown, asset-freshness-unknown,
+#   codex-asset-freshness-unknown, finder-asset-freshness-unknown,
 #   merge-state-stale,
 #   integration-exit-indeterminate, integration-record-unbound,
 #   checker-fast-path-unavailable, usage                     (indeterminate)
@@ -614,7 +612,7 @@ exit_condition() {
         indeterminate "${ec_prefix}-transient-read" "$ec_subject exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
         ;;
     19)
-        fail_condition "${ec_prefix}-asset-checkout-stale" "$ec_subject exited 19: its vendored asset checkout is stale — update this checkout to the PR base or newer (fetch and fast-forward), or use the lane worktree where the recipe allows it, then rerun the pass"
+        indeterminate "${ec_prefix}-asset-freshness-unknown" "$ec_subject exited 19: its result came from a stale asset checkout and cannot establish anything about the PR — update this checkout to the PR base or newer (fetch and fast-forward), then rerun the pass"
         ;;
     2)
         # Review round 3, finding `review-r3-codex-verification-4` (confirmed
@@ -699,35 +697,10 @@ run_gh() {
 }
 
 asset_freshness_check() {
-    local freshness_status=0
     if check_vendored_asset_freshness "$pr" "$repo" "$script_dir" "$timeout_bin"; then
         return 0
-    else
-        freshness_status=$?
     fi
-    case "$freshness_status" in
-    19)
-        case "$command_name" in
-        audit)
-            indeterminate asset-freshness-unknown "$asset_freshness_detail; audit cannot judge an existing promotion from a stale checkout, so report the blocker and never undo on this result"
-            ;;
-        check | fingerprint)
-            freshness_pr="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft)" ||
-                indeterminate fetch-failed "cannot establish whether the PR is already promoted before interpreting stale asset checkout: $asset_freshness_detail"
-            freshness_state="$(jq -er '.state | select(type == "string")' <<<"$freshness_pr")" ||
-                indeterminate malformed-data "PR payload carries no state while checking stale asset checkout"
-            freshness_draft="$(jq -er '.isDraft | select(type == "boolean")' <<<"$freshness_pr")" ||
-                indeterminate malformed-data "PR payload carries no draft state while checking stale asset checkout"
-            if [ "$freshness_state" = OPEN ] && [ "$freshness_draft" = false ]; then
-                indeterminate asset-freshness-unknown "$asset_freshness_detail; stale checkout status is indeterminate for a promoted PR, so report the blocker and never undo on this result"
-            fi
-            ;;
-        esac
-        emit fail asset-checkout-stale "$asset_freshness_detail"
-        exit 3
-        ;;
-    *) indeterminate asset-freshness-unknown "$asset_freshness_detail" ;;
-    esac
+    indeterminate asset-freshness-unknown "$asset_freshness_detail"
 }
 
 # ---- Fingerprint components (ported from SKILL.md §6's promo_fp recipe) ----

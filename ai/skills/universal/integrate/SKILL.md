@@ -54,11 +54,10 @@ checkout is stale only when its `HEAD` is an ancestor of the PR base and those
 bytes differ; a change followed by a revert is current, and a diverged or newer
 checkout is accepted. The check ignores `refs/replace`; a shallow checkout or
 an existing `info/grafts` file makes ancestry indeterminate. A definite stale
-refusal exits 19 from `check-codex-cloud-review.sh` and 3 from
-`readiness-gate.sh`. In `audit`, and in `check` or `fingerprint` for a promoted
-PR, stale checkout status is indeterminate (exit 2), never a reason to undo an
-existing handoff. If the PR base commit is unavailable locally, fetch that
-commit from the PR's base repository before running the checker or gate.
+refusal exits 19 from `check-codex-cloud-review.sh`; the gate maps it to
+indeterminate (exit 2) on every command, so a stale checkout is never a fail
+or evidence about the PR. If the PR base commit is unavailable locally, fetch
+that commit from the PR's base repository before running the checker or gate.
 Neither script fetches automatically.
 
 **Arguments:** $ARGUMENTS
@@ -2320,7 +2319,8 @@ round. Two consequences follow rather than needing their own procedure:
   as any head move does. **The last permitted cycle is therefore reserved for
   the reconciled head**: before dispatching it, run
   `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
-  (read-only; 0 level, 1 behind, 2 could not establish, 3 stale checkout) and,
+  (read-only; 0 level, 1 behind, 2 could not establish, including a stale
+  checkout) and,
   if it reports behind, reconcile first (update-branch, or the fallback) and spend that
   cycle on the merged head. Use the
   subcommand rather than a compare call of your own: ref encoding and the

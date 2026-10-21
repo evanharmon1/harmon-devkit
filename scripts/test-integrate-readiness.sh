@@ -4189,6 +4189,32 @@ unset RECHECK_FAKE_EXIT
 gate="$saved_gate"
 assert_gate 1 fail codex-not-clean
 
+echo "==> challenge-r3-codex-adversarial-1: a promoted audit with recorded Codex exit 19 is indeterminate"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+stale_codex_result="$(write_integrator_result audit-codex-asset-stale "$(codex_cycle_json 19)")"
+run_audit --integrator-result "$stale_codex_result" --integration-cap 1
+assert_gate 2 indeterminate codex-asset-freshness-unknown
+[[ "$gate_out" != *'"status":"fail"'* ]] ||
+    fail "a stale recorded Codex result must never fail a promoted audit: $gate_out"
+
+echo "==> challenge-r3-codex-adversarial-1: a promoted audit with recorded finder exit 19 is indeterminate"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+stale_finder_result="$(write_finder_cycle_result audit-finder-asset-stale 19)"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=0
+run_audit --codex-recheck "$recheck_state" \
+    --integrator-result "$stale_finder_result" --integration-cap 1
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 2 indeterminate finder-asset-freshness-unknown
+[[ "$gate_out" != *'"status":"fail"'* ]] ||
+    fail "a stale recorded finder result must never fail a promoted audit: $gate_out"
+
 echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
 write_defaults
 write_promoted_record "$head_sha"
@@ -5201,7 +5227,7 @@ assert_gate 2 indeterminate integration-exit-indeterminate
 grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
     fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
 
-echo "==> readiness asset freshness refuses a stale fixture checkout"
+echo "==> readiness asset freshness is indeterminate on a stale fixture checkout"
 fresh_repo="${test_tmp}/asset-freshness-gate"
 fresh_gate="${fresh_repo}/integrate/assets/readiness-gate.sh"
 fresh_support_assets="${fresh_repo}/dev-flow-support/assets"
@@ -5227,12 +5253,12 @@ set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
 freshness_rc=$?
 set -e
-[ "$freshness_rc" -eq 3 ] ||
-    fail "stale readiness ancestor should exit 3, got $freshness_rc: $freshness_out"
+[ "$freshness_rc" -eq 2 ] ||
+    fail "stale readiness ancestor should exit 2, got $freshness_rc: $freshness_out"
 freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
 freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')
-[ "$freshness_status" = fail ] && [ "$freshness_condition" = asset-checkout-stale ] ||
-    fail "stale readiness ancestor did not report asset-checkout-stale: $freshness_out"
+[ "$freshness_status" = indeterminate ] && [ "$freshness_condition" = asset-freshness-unknown ] ||
+    fail "stale readiness ancestor did not report asset-freshness-unknown: $freshness_out"
 [[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
     "$freshness_out" == *"PR base $fresh_integrate_base"* ]] ||
     fail "stale readiness refusal did not name both SHAs: $freshness_out"
@@ -5257,6 +5283,7 @@ set -e
     fail "stale audit checkout must be indeterminate and must not report fail: $freshness_out"
 
 echo "==> check and fingerprint keep a promoted stale checkout indeterminate"
+rm -f "${fixtures}/pr-view-count"
 set +e
 freshness_out=$("$fresh_gate" check --repo example/repo --pr 493 --head "$head_sha" \
     --record "$record_dir" \
@@ -5268,6 +5295,9 @@ set -e
     [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
     [[ "$freshness_out" != *'"status":"fail"'* ]] ||
     fail "check on a promoted stale checkout must be indeterminate: $freshness_out"
+[ ! -e "${fixtures}/pr-view-count" ] ||
+    fail "check must not make a per-command PR read after stale preflight"
+rm -f "${fixtures}/pr-view-count"
 set +e
 freshness_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
 freshness_rc=$?
@@ -5276,6 +5306,8 @@ set -e
     [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
     [[ "$freshness_out" != *'"status":"fail"'* ]] ||
     fail "fingerprint on a promoted stale checkout must be indeterminate: $freshness_out"
+[ ! -e "${fixtures}/pr-view-count" ] ||
+    fail "fingerprint must not make a per-command PR read after stale preflight"
 write_defaults
 
 echo "==> readiness freshness covers the sibling dev-flow-support asset directory"
@@ -5290,8 +5322,11 @@ set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
 freshness_rc=$?
 set -e
-[ "$freshness_rc" -eq 3 ] ||
-    fail "stale readiness support ancestor should exit 3, got $freshness_rc: $freshness_out"
+[ "$freshness_rc" -eq 2 ] ||
+    fail "stale readiness support ancestor should exit 2, got $freshness_rc: $freshness_out"
+[ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')" = asset-freshness-unknown ] ||
+    fail "stale readiness support ancestor did not report asset-freshness-unknown: $freshness_out"
 [[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
     "$freshness_out" == *"PR base $fresh_support_base"* ]] ||
     fail "stale readiness support refusal did not name both SHAs: $freshness_out"
