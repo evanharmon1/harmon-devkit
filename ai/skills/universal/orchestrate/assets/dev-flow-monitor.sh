@@ -404,11 +404,13 @@ run_branch_binding() {
 }
 
 monitor_state_reason=""
-monitor_state_reserved_events=""
+monitor_state_reserved_count=0
+monitor_state_reserved_events_json='[]'
 validate_monitor_state() {
     local monitor="$1"
     monitor_state_reason=""
-    monitor_state_reserved_events=""
+    monitor_state_reserved_count=0
+    monitor_state_reserved_events_json='[]'
     [ -e "$monitor" ] || return 1
     if [ ! -f "$monitor" ] || [ -L "$monitor" ]; then
         monitor_state_reason="monitor state is not a regular file"
@@ -431,7 +433,10 @@ validate_monitor_state() {
         monitor_state_reason="monitor state is invalid"
         return 2
     fi
-    monitor_state_reserved_events="$(jq -r '[.actions[] | select(.state == "reserved") | .event] | join(", ")' "$monitor")"
+    monitor_state_reserved_count="$(jq '[.actions[] | select(.state == "reserved")] | length' "$monitor")"
+    monitor_state_reserved_events_json="$(jq -c '[.actions[] | select(.state == "reserved") |
+        if (.event? | type) == "string" and (.event | length) > 0 then .event else "<missing event>" end
+    ]' "$monitor")"
     return 0
 }
 
@@ -455,7 +460,11 @@ validate_run_record() {
         (.outcome == null or .outcome == "ready-for-review" or .outcome == "capped" or
          .outcome == "escalated" or .outcome == "abandoned")
     ' "$run_record" >/dev/null 2>&1; then
-        run_record_reason="run record is invalid or still open"
+        if [ "$mode" = "activation" ]; then
+            run_record_reason="run record is invalid"
+        else
+            run_record_reason="run record is invalid or still open"
+        fi
         return 1
     fi
     run_record_outcome="$(jq -r '.outcome // empty' "$run_record")"
@@ -471,7 +480,8 @@ pointer_eligibility_run=""
 pointer_eligibility_generation=""
 pointer_eligibility_branch=""
 pointer_eligibility_outcome=""
-pointer_eligibility_reserved_events=""
+pointer_eligibility_reserved_count=0
+pointer_eligibility_reserved_events_json='[]'
 pointer_eligibility_monitor=""
 pointer_eligibility() {
     local pointer="$1" name="$2" expected_run="${3:-}" mode="${4:-terminal}"
@@ -481,7 +491,8 @@ pointer_eligibility() {
     pointer_eligibility_generation=""
     pointer_eligibility_branch=""
     pointer_eligibility_outcome=""
-    pointer_eligibility_reserved_events=""
+    pointer_eligibility_reserved_count=0
+    pointer_eligibility_reserved_events_json='[]'
     pointer_eligibility_monitor=""
     if [ ! -f "$pointer" ] || [ -L "$pointer" ]; then
         pointer_eligibility_reason="not a regular pointer file"
@@ -529,8 +540,9 @@ pointer_eligibility() {
     monitor="$(state_path)"
     pointer_eligibility_monitor="$monitor"
     if validate_monitor_state "$monitor"; then
-        pointer_eligibility_reserved_events="$monitor_state_reserved_events"
-        if [ -n "$monitor_state_reserved_events" ] &&
+        pointer_eligibility_reserved_count="$monitor_state_reserved_count"
+        pointer_eligibility_reserved_events_json="$monitor_state_reserved_events_json"
+        if [ "$monitor_state_reserved_count" -gt 0 ] &&
             { [ "$mode" = "terminal" ] ||
                 { [ "$mode" = "activation" ] && [ -n "$run_record_outcome" ]; }; }; then
             pointer_eligibility_reason="monitor.json has an unreconciled reserved action"
@@ -618,7 +630,7 @@ activation_guard_locked() {
     if ! pointer_eligibility "$pointer" "${pointer##*/}" "" activation; then
         if [ "$pointer_eligibility_reason" = "monitor.json has an unreconciled reserved action" ]; then
             monitor="$pointer_eligibility_monitor"
-            die "activation refused: ended run $pointer_eligibility_run on branch $pointer_eligibility_branch has unreconciled reserved event(s) [$pointer_eligibility_reserved_events]; reconcile landed event(s); if a listed event is observed absent, cancel --state $monitor --run-id $pointer_eligibility_run --event <event-id> --observed <observation.json> --reason <text>; then retire --run-id $pointer_eligibility_run or prune its pointer before activating"
+            die "activation refused: ended run $pointer_eligibility_run on branch $pointer_eligibility_branch has $pointer_eligibility_reserved_count unreconciled reserved action(s) with event(s) $pointer_eligibility_reserved_events_json; reconcile landed event(s); if a listed event is observed absent, cancel --state $monitor --run-id $pointer_eligibility_run --event <event-id> --observed <observation.json> --reason <text>; then retire --run-id $pointer_eligibility_run or prune its pointer before activating"
         fi
         die "activation refused: $pointer_eligibility_reason"
     fi
@@ -650,16 +662,13 @@ retire_active_pointer() {
     binding_branch="$(run_branch_binding)"
     branch="$binding_branch"
     pointer="$(active_path)"
+    mkdir -p "$(dirname "$pointer")" || die "could not create active pointer directory: $(dirname "$pointer")"
+    acquire_lock "$pointer"
     if [ ! -e "$pointer" ] && [ ! -L "$pointer" ]; then
         printf 'retire: nothing of this run to retire (run %s; active pointer is absent)\n' "$run_id"
         return 0
     fi
     [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
-    acquire_lock "$pointer"
-    if [ ! -e "$pointer" ] && [ ! -L "$pointer" ]; then
-        printf 'retire: nothing of this run to retire (run %s; pointer disappeared before locking)\n' "$run_id"
-        return 0
-    fi
     if pointer_eligibility "$pointer" "${pointer##*/}" "$run_id" terminal; then
         :
     else

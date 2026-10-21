@@ -340,6 +340,22 @@ ended_output="$("$MONITOR" activate --active-state "$ended_pointer" --run-id "$e
 [ ! -e "$(dirname "$ended_record")/branch.json" ] || fail "ended target activation wrote a branch binding before refusal"
 [ ! -e "$ended_pointer" ] || fail "ended target activation wrote an active pointer before refusal"
 pass "activation refuses ended target runs before writing their branch binding"
+invalid_target=run-activate-invalid
+invalid_record="$(dirname "$("$MONITOR" state-path --run-id "$invalid_target" --repo-root "$FIXTURE_REPO")")/run.json"
+mkdir -p "$(dirname "$invalid_record")"
+jq -n --arg run "$invalid_target" '{schema: 1, run_id: $run, outcome: null}' >"$invalid_record"
+invalid_pointer="$("$MONITOR" active-path --branch invalid-target-branch --repo-root "$FIXTURE_REPO")"
+invalid_rc=0
+invalid_output="$("$MONITOR" activate --active-state "$invalid_pointer" --run-id "$invalid_target" \
+    --branch invalid-target-branch --expected-predecessor absent --expected-generation 0 \
+    --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || invalid_rc=$?
+[ "$invalid_rc" -eq 2 ] || fail "activation accepted an invalid target run.json: $invalid_output"
+grep -qF 'activation refused: run record is invalid' <<<"$invalid_output" ||
+    fail "invalid target run refusal was inaccurate: $invalid_output"
+! grep -qF 'still open' <<<"$invalid_output" || fail "invalid target run refusal incorrectly described it as open"
+[ ! -e "$(dirname "$invalid_record")/branch.json" ] || fail "invalid target activation wrote a branch binding before refusal"
+[ ! -e "$invalid_pointer" ] || fail "invalid target activation wrote an active pointer before refusal"
+pass "activation describes an invalid target run record accurately"
 pass "retirement deletes only a validated terminal pointer; fresh activation starts at generation 1 and stale activation explains a safe retry"
 
 echo "--- Activation compares predecessor identity across a generation restart ---"
@@ -477,6 +493,37 @@ generation="$(activate_run "$FIXTURE_REPO" run-retire-next-reserved reserved-bra
 [ "$generation" = 1 ] || fail "activation did not succeed at generation 1 after reconciliation and retirement: $generation"
 pass "an absent ended reservation can be cancelled durably, then retired before a fresh activation"
 
+activate_run "$FIXTURE_REPO" run-retire-eventless eventless-branch "$FIXTURE_REV" >/dev/null
+eventless_pointer="$("$MONITOR" active-path --branch eventless-branch --repo-root "$FIXTURE_REPO")"
+eventless_state="$("$MONITOR" state-path --run-id run-retire-eventless --repo-root "$FIXTURE_REPO")"
+eventless_record="$(dirname "$eventless_state")/run.json"
+jq -n '{schema: 2, run_id: "run-retire-eventless", outcome: "capped"}' >"$eventless_record"
+jq -n '{version: 1, cursor: null, actions: [
+    {action: "push", state: "reserved"},
+    {event: "", action: "comment", state: "reserved"}
+]}' >"$eventless_state"
+eventless_retire_rc=0
+eventless_retire_output="$("$MONITOR" retire --run-id run-retire-eventless --repo-root "$FIXTURE_REPO" 2>&1)" ||
+    eventless_retire_rc=$?
+[ "$eventless_retire_rc" -eq 2 ] || fail "retire ignored a reserved action with no event name: $eventless_retire_output"
+grep -qF 'unreconciled reserved action' <<<"$eventless_retire_output" ||
+    fail "eventless reservation did not defer retirement: $eventless_retire_output"
+eventless_activate_rc=0
+eventless_activate_output="$("$MONITOR" activate --active-state "$eventless_pointer" --run-id run-eventless-next \
+    --branch eventless-branch --expected-predecessor run-retire-eventless --expected-generation 1 \
+    --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" ||
+    eventless_activate_rc=$?
+[ "$eventless_activate_rc" -eq 2 ] || fail "activation ignored eventless reserved actions: $eventless_activate_output"
+grep -qF '2 unreconciled reserved action(s)' <<<"$eventless_activate_output" ||
+    fail "activation did not count eventless reservations: $eventless_activate_output"
+grep -qF '["<missing event>","<missing event>"]' <<<"$eventless_activate_output" ||
+    fail "activation did not identify missing reservation events: $eventless_activate_output"
+eventless_prune_output="$("$MONITOR" prune --dry-run --repo-root "$FIXTURE_REPO")"
+grep -qF "prune: skipped ${eventless_pointer##*/}: monitor.json has an unreconciled reserved action" \
+    <<<"$eventless_prune_output" || fail "prune ignored eventless reserved actions: $eventless_prune_output"
+[ -f "$eventless_pointer" ] || fail "eventless reservations did not preserve the active pointer"
+pass "missing and empty reservation event names still block activation, retirement, and pruning"
+
 activate_run "$FIXTURE_REPO" run-cancel-live live-cancel-branch "$FIXTURE_REV" >/dev/null
 live_cancel_pointer="$("$MONITOR" active-path --branch live-cancel-branch --repo-root "$FIXTURE_REPO")"
 live_cancel_state="$("$MONITOR" state-path --run-id run-cancel-live --repo-root "$FIXTURE_REPO")"
@@ -497,27 +544,61 @@ jq -e '.actions[0].state == "reserved"' "$live_cancel_state" >/dev/null ||
     fail "refused cancellation changed the live reservation"
 pass "cancel refuses a live run without changing its reservation"
 
-activate_run "$FIXTURE_REPO" run-retire-held held-branch "$FIXTURE_REV" >/dev/null
-held_pointer="$("$MONITOR" active-path --branch held-branch --repo-root "$FIXTURE_REPO")"
-held_record="$(dirname "$("$MONITOR" state-path --run-id run-retire-held --repo-root "$FIXTURE_REPO")")/run.json"
-mkdir -p "$(dirname "$held_record")"
-jq -n '{schema: 2, run_id: "run-retire-held", outcome: "abandoned"}' >"$held_record"
-held_lock="${held_pointer}.lock"
+activate_run "$FIXTURE_REPO" run-retire-serial serial-branch "$FIXTURE_REV" >/dev/null
+serial_pointer="$("$MONITOR" active-path --branch serial-branch --repo-root "$FIXTURE_REPO")"
+serial_record="$(dirname "$("$MONITOR" state-path --run-id run-retire-serial --repo-root "$FIXTURE_REPO")")/run.json"
+serial_snapshot="$tmp/serial-pointer.json"
+cp "$serial_pointer" "$serial_snapshot"
+jq -n '{schema: 2, run_id: "run-retire-serial", outcome: "abandoned"}' >"$serial_record"
+rm -- "$serial_pointer"
+serial_lock="${serial_pointer}.lock"
 owner_start="$(LC_ALL=C TZ=UTC ps -o lstart= -p "$$" 2>/dev/null | sed 's/^ *//;s/ *$//')"
 [ -n "$owner_start" ] || fail "could not read the test lock owner's process start"
-printf '%s|%s|%s|test-owner|%s\n' "$$" "$(hostname)" "$(id -u)" "$owner_start" >"$held_lock"
-"$MONITOR" retire --run-id run-retire-held --repo-root "$FIXTURE_REPO" >"$tmp/retire-held.log" 2>&1 &
+printf '%s|%s|%s|test-owner|%s\n' "$$" "$(hostname)" "$(id -u)" "$owner_start" >"$serial_lock"
+real_ln="$(command -v ln)"
+mkdir -p "$tmp/lock-bin"
+cat >"$tmp/lock-bin/ln" <<'LOCK_HELPER'
+#!/usr/bin/env bash
+if [ ! -e "$LOCK_SIGNALLED" ]; then
+    : >"$LOCK_SIGNALLED"
+    printf 'lock-attempt\n' >"$LOCK_EVENTS"
+fi
+exec "$REAL_LN" "$@"
+LOCK_HELPER
+chmod +x "$tmp/lock-bin/ln"
+lock_events="$tmp/retire-lock-events"
+lock_signalled="$tmp/retire-lock-signalled"
+mkfifo "$lock_events"
+(
+    export LOCK_EVENTS="$lock_events"
+    export LOCK_SIGNALLED="$lock_signalled"
+    export REAL_LN="$real_ln"
+    export PATH="$tmp/lock-bin:$PATH"
+    if "$MONITOR" retire --run-id run-retire-serial --repo-root "$FIXTURE_REPO" \
+        >"$tmp/retire-serial.log" 2>&1; then
+        retire_status=0
+    else
+        retire_status=$?
+    fi
+    if [ ! -e "$lock_signalled" ]; then
+        printf 'retire-exit:%s\n' "$retire_status" >"$lock_events"
+    fi
+    exit "$retire_status"
+) &
 retire_pid=$!
-sleep 0.2
-held_before_release=0
-[ -f "$held_pointer" ] && held_before_release=1
-rm -f "$held_lock"
+lock_event=""
+IFS= read -r lock_event <"$lock_events" || fail "retire produced no lock synchronization event"
+[ "$lock_event" = "lock-attempt" ] ||
+    fail "retire returned before locking the absent pointer: $lock_event; $(cat "$tmp/retire-serial.log")"
+[ ! -e "$serial_pointer" ] || fail "serial fixture published the pointer before lock release"
+cp "$serial_snapshot" "$serial_pointer.tmp"
+mv "$serial_pointer.tmp" "$serial_pointer"
+rm -f "$serial_lock"
 retire_rc=0
 wait "$retire_pid" || retire_rc=$?
-[ "$held_before_release" -eq 1 ] || fail "retire did not wait for the held pointer lock"
-[ "$retire_rc" -eq 0 ] || fail "retire did not complete after lock release: $(cat "$tmp/retire-held.log")"
-[ ! -e "$held_pointer" ] || fail "retire left the pointer after the lock was released"
-pass "retire waits for the existing pointer lock before deleting"
+[ "$retire_rc" -eq 0 ] || fail "retire did not complete after lock release: $(cat "$tmp/retire-serial.log")"
+[ ! -e "$serial_pointer" ] || fail "retire left the pointer published by the in-flight activation"
+pass "retire locks before checking absence and removes a pointer published while activation held the lock"
 
 # ── Prune only validated terminal pointers ---------------------------------
 echo ""
