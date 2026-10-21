@@ -310,6 +310,12 @@ For example, pass the reserved owner's token as specified there:
 assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
   --session <owner-session> --owner-token <token> --run-id <run-id> \
   --pass <role-envelope.json> \
+  --head <captured-sha> --policy <governing-policy.toml>
+# Exit 23: stdout reports action=adjudicate and projection_path=<record>/verdict.json.
+# The orchestrator reads that projection and writes its adjudication file.
+assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
+  --session <owner-session> --owner-token <token> --run-id <run-id> \
+  --pass <role-envelope.json> \
   --head <captured-sha> --policy <governing-policy.toml> \
   --adjudication <orchestrator-adjudication.json>
 ```
@@ -318,7 +324,9 @@ The command validates its input envelope, existing run, and supplied
 adjudication before the first write. It then chains the shared writer's
 `receipt` → `ledger --stage` → verification-only exit. Only `action: adjudicate`
 authorizes publishing the supplied adjudication, followed by the computed
-exit in `verdict.json`; verification is retained in
+exit in `verdict.json`. Every valid verification-only projection is atomically
+persisted as `verdict.json` before its action is handled, including dispatch,
+escalation, and a later final-exit failure; it is also retained in
 `verification.<stage>.json`. For a round awaiting adjudication, a dispatch or escalation stops the
 sequence and prints its reason without writing an adjudication. A replay of
 an already adjudicated round skips that write and recomputes its exit. For partial rounds, omit
@@ -328,7 +336,10 @@ the recorder is in a pipeline (callers must retain `pipefail`). Rerun with the
 same bytes to resume: the shared writer receipts and adjudicates idempotently,
 and immutable published evidence is never replaced. Exit status is the exit
 engine's status (0, 20, 21, 22); usage, validation, and indeterminate failures
-exit 2. `--owner-token` is also accepted; authority is forwarded to every writer
+exit 2. Awaiting an orchestrator adjudication exits **23**, with a JSON object
+on stdout containing `action: adjudicate` and `projection_path` naming the
+retained `verdict.json`; callers handle 23 as the two-phase handoff, not as a
+validator failure. `--owner-token` is also accepted; authority is forwarded to every writer
 in its environment and is never persisted or printed.
 
 Use the already resolved governing policy and recorded rigor (`--rigor` may
@@ -352,7 +363,11 @@ commit (blob identity and mode, with added/deleted paths included). It refuses
 and names differing paths; a repository without the default branch's finder
 is refused cleanly. It runs the head's own script only after this identity
 proof, so the script's directory change targets the captured head and its
-libraries are the default branch's bytes. It preserves the finder's exit
+libraries are the default branch's bytes. After hooks and immediately before
+execution, it also compares the physical file set and each file's unfiltered
+`git hash-object` blob id with the fetched default branch. It refuses extra,
+missing, or changed files, symlinks, and any skip-worktree or assume-unchanged
+index flags under these paths. It preserves the finder's exit
 status; it never parses or wraps its text into a pass envelope.
 
 **Sanctioned worktree exception:** this vendored command cannot depend on a
@@ -360,7 +375,9 @@ consumer's `task worktree:new`. It allocates a unique `review-<shortsha>-…`
 checkout under `<repo>/.worktrees/` with `git worktree add --detach`, lets hooks
 run normally, verifies the exact detached head and cleanliness after hooks
 (including ignored files), and removes its own checkout with `git worktree
-remove` after the pass or a refusal. Existing paths are never adopted. Hook
+remove` after the pass or a refusal. INT, TERM, and HUP also run this cleanup and
+return the conventional signal status (130, 143, and 129 respectively).
+Existing paths are never adopted. Hook
 failure, dirt, unavailable commits, or failed cleanup is a refusal; this is
 the bounded exception to `docs/conventions.md`'s worktree provisioning rule,
 not permission for an agent to provision feature branches by hand.

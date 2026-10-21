@@ -121,6 +121,7 @@ try {
   };
   const verified = compute(true);
   persist(`verification.${stage}.json`, verified.r.stdout);
+  persist('verdict.json', verified.r.stdout);
   // A replay of an already adjudicated round needs no new authorization to
   // write adjudication: skip that write and finish its computed-exit read.
   const replay = existsSync(join(adjudicationsDir, `${stage}-r${round}.json`))
@@ -130,13 +131,17 @@ try {
     process.exitCode = verified.r.status;
   } else {
     if (!replay) {
-      if (!adjudicationPath) fail('verification authorizes adjudication; supply the orchestrator adjudication file to resume');
-      writer('adjudicate', '--file', adjudicationPath);
+      if (!adjudicationPath) {
+        process.stdout.write(`${JSON.stringify({ action: 'adjudicate', projection_path: join(directory, 'verdict.json') })}\n`);
+        process.exitCode = 23;
+      } else writer('adjudicate', '--file', adjudicationPath);
     }
-    const verdict = compute(false);
-    persist('verdict.json', verdict.r.stdout);
-    process.stdout.write(verdict.r.stdout);
-    process.exitCode = verdict.r.status;
+    if (replay || adjudicationPath) {
+      const verdict = compute(false);
+      persist('verdict.json', verdict.r.stdout);
+      process.stdout.write(verdict.r.stdout);
+      process.exitCode = verdict.r.status;
+    }
   }
 } catch (error) {
   process.stderr.write(`record-pass: ${error.message}\n`);
