@@ -32,7 +32,12 @@
         }
       }
     },
-    "live_lane_overlaps": { "type": ["string", "array"], "minLength": 1, "items": { "type": "string", "minLength": 1 } },
+    "live_lane_overlaps": {
+      "description": "Each live-overlap entry uses the canonical tuple ``lane `<label>` (#<issue>, branch `<branch>`, wave <wave>)``; the envelope uses `[]` as its only no-overlap form. Labels and branches are nonempty and contain no backticks or line breaks; issue and wave are positive decimal integers without leading zeros. A tuple may be followed by one space and nonempty single-line detail. Supply one entry as a string or entries as an array.",
+      "type": ["string", "array"],
+      "minLength": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
     "rigor": { "type": "string", "minLength": 1 },
     "rigor_source": { "type": "string", "minLength": 1 },
     "caps": {

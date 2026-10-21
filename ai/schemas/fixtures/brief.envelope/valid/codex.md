@@ -15,7 +15,7 @@
   "report_path": "/tmp/schema-report.md",
   "harness": "Codex CLI",
   "fence": [{"path": "ai/schemas/**"}, {"path": "scripts/validate-result-schemas.mjs", "note": "brief kind only"}],
-  "live_lane_overlaps": ["#941 implement paragraph; branch-update before gate"],
+  "live_lane_overlaps": ["lane `implement` (#941, branch `941-implement`, wave 1) shares the implement paragraph; #941 merges before #939."],
   "rigor": "deep",
   "rigor_source": "explicit operator input",
   "caps": {"challenge": 5, "review": 5, "integration": 6, "remediation": 6, "min_rounds": 1, "wall_clock_min": 480},
