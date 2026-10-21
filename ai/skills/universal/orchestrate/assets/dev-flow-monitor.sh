@@ -18,7 +18,8 @@ Usage:
   dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID --nonce NONCE \
     [--repo-root DIR]
   dev-flow-monitor.sh activate --active-state FILE --run-id ID --branch BRANCH \
-    --expected-generation N --registry-revision SHA --writer feature-owner \
+    --expected-predecessor absent|RUN_ID --expected-generation N \
+    --registry-revision SHA --writer feature-owner \
     [--repo-root DIR]
   dev-flow-monitor.sh reserve-agent-run --state FILE --event ID \
     --max-agent-runs N --writer feature-owner --active-state FILE --run-id ID \
@@ -40,8 +41,9 @@ working directory (dispatch files, rulings, watcher state):
 <git-common-dir>/dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<nonce>.
 
 The state file is durable monitor state.  A reservation is written before an
-external action.  The observed file must be JSON with status landed, absent, or
-indeterminate; landed also requires matching event, action, and expected_head.
+external action. Every landed, absent, or indeterminate observation names the
+event, action, and head and must match the reservation's event, action, and
+expected_head. Landed observations also prove the external postcondition.
 Assembly reservations require a JSON plan naming integrated_lanes and
 discarded_lanes; a landed observation must reproduce both lists exactly.
 Comment reservations authenticate the actor against the governing registry
@@ -247,6 +249,7 @@ active_state=""
 branch=""
 generation=""
 expected_generation=""
+expected_predecessor=""
 assembly_plan=""
 max_agent_runs=""
 slate_id=""
@@ -348,6 +351,10 @@ while [ "$#" -gt 0 ]; do
         expected_generation="${2:-}"
         shift 2
         ;;
+    --expected-predecessor)
+        expected_predecessor="${2:-}"
+        shift 2
+        ;;
     --assembly-plan)
         assembly_plan="${2:-}"
         shift 2
@@ -396,24 +403,86 @@ run_branch_binding() {
     jq -r '.branch' "$binding"
 }
 
-monitor_has_unreconciled_reservation() {
-    local monitor="${1:-}"
-    [ -n "$monitor" ] || monitor="$(state_path)"
+monitor_state_reason=""
+monitor_state_reserved_events=""
+validate_monitor_state() {
+    local monitor="$1"
+    monitor_state_reason=""
+    monitor_state_reserved_events=""
     [ -e "$monitor" ] || return 1
-    [ -f "$monitor" ] && [ ! -L "$monitor" ] || die "monitor state is not a regular file: $monitor"
-    jq -e '
+    if [ ! -f "$monitor" ] || [ -L "$monitor" ]; then
+        monitor_state_reason="monitor state is not a regular file"
+        return 2
+    fi
+    if ! jq -e '
         .version == 1 and (.actions | type == "array") and
-        all(.actions[]; .state == "reserved" or .state == "adopted" or
-            (.state == "cancelled" and
-             (.cancellation.reason | type == "string" and length > 0)))
-    ' "$monitor" >/dev/null 2>&1 || die "monitor state is invalid: $monitor"
-    jq -e '[.actions[] | select(.state == "reserved")] | length > 0' "$monitor" >/dev/null 2>&1
+        all(.actions[];
+            type == "object" and
+            (.state == "reserved" or .state == "adopted" or
+             (.state == "cancelled" and
+              (.cancellation.reason | type == "string" and length > 0) and
+              ((.cancellation.observation // null) == null or
+               (.cancellation.observation.status == "absent" and
+                .cancellation.observation.event == .event and
+                .cancellation.observation.action == .action and
+                .cancellation.observation.head == .expected_head))))
+        )
+    ' "$monitor" >/dev/null 2>&1; then
+        monitor_state_reason="monitor state is invalid"
+        return 2
+    fi
+    monitor_state_reserved_events="$(jq -r '[.actions[] | select(.state == "reserved") | .event] | join(", ")' "$monitor")"
+    return 0
 }
 
+run_record_reason=""
+run_record_outcome=""
+validate_run_record() {
+    local candidate_run="$1" run_record="$2" mode="$3"
+    run_record_reason=""
+    run_record_outcome=""
+    if [ ! -e "$run_record" ]; then
+        [ "$mode" = "activation" ] && return 0
+        run_record_reason="run record is missing or not a regular file"
+        return 1
+    fi
+    if [ ! -f "$run_record" ] || [ -L "$run_record" ]; then
+        run_record_reason="run record is missing or not a regular file"
+        return 1
+    fi
+    if ! jq -e --arg run "$candidate_run" '
+        .schema == 2 and .run_id == $run and
+        (.outcome == null or .outcome == "ready-for-review" or .outcome == "capped" or
+         .outcome == "escalated" or .outcome == "abandoned")
+    ' "$run_record" >/dev/null 2>&1; then
+        run_record_reason="run record is invalid or still open"
+        return 1
+    fi
+    run_record_outcome="$(jq -r '.outcome // empty' "$run_record")"
+    if { [ "$mode" = "terminal" ] || [ "$mode" = "cancel" ]; } && [ -z "$run_record_outcome" ]; then
+        run_record_reason="run record is invalid or still open"
+        return 1
+    fi
+    return 0
+}
+
+pointer_eligibility_reason=""
+pointer_eligibility_run=""
+pointer_eligibility_generation=""
+pointer_eligibility_branch=""
+pointer_eligibility_outcome=""
+pointer_eligibility_reserved_events=""
+pointer_eligibility_monitor=""
 pointer_eligibility() {
-    local pointer="$1" name="$2" expected_run="${3:-}" pointer_json candidate_run candidate_branch
-    local generation binding run_record monitor hash_name
+    local pointer="$1" name="$2" expected_run="${3:-}" mode="${4:-terminal}"
+    local pointer_json candidate_run candidate_branch binding run_record monitor hash_name status
     pointer_eligibility_reason=""
+    pointer_eligibility_run=""
+    pointer_eligibility_generation=""
+    pointer_eligibility_branch=""
+    pointer_eligibility_outcome=""
+    pointer_eligibility_reserved_events=""
+    pointer_eligibility_monitor=""
     if [ ! -f "$pointer" ] || [ -L "$pointer" ]; then
         pointer_eligibility_reason="not a regular pointer file"
         return 1
@@ -431,14 +500,12 @@ pointer_eligibility() {
     pointer_json="$(cat "$pointer")"
     candidate_run="$(jq -r '.run_id' <<<"$pointer_json")"
     candidate_branch="$(jq -r '.branch' <<<"$pointer_json")"
-    generation="$(jq -r '.generation' <<<"$pointer_json")"
+    pointer_eligibility_generation="$(jq -r '.generation' <<<"$pointer_json")"
+    pointer_eligibility_run="$candidate_run"
+    pointer_eligibility_branch="$candidate_branch"
     hash_name="$(printf '%s' "$candidate_branch" | sha256_stream).json"
     if [ "$name" != "$hash_name" ]; then
         pointer_eligibility_reason="pointer branch does not match its active-path filename"
-        return 1
-    fi
-    if [ -n "$expected_run" ] && [ "$candidate_run" != "$expected_run" ]; then
-        pointer_eligibility_reason="active pointer names run $candidate_run (generation $generation), not requested run $expected_run"
         return 1
     fi
     local run_id="$candidate_run"
@@ -449,37 +516,48 @@ pointer_eligibility() {
         pointer_eligibility_reason="missing or branch-mismatched run binding"
         return 1
     fi
+    if [ -n "$expected_run" ] && [ "$candidate_run" != "$expected_run" ]; then
+        pointer_eligibility_reason="active pointer names run $candidate_run (generation $pointer_eligibility_generation), not requested run $expected_run"
+        return 3
+    fi
     run_record="$(dirname "$binding")/run.json"
-    if [ ! -f "$run_record" ] || [ -L "$run_record" ]; then
-        pointer_eligibility_reason="run record is missing or not a regular file"
+    if ! validate_run_record "$candidate_run" "$run_record" "$mode"; then
+        pointer_eligibility_reason="$run_record_reason"
         return 1
     fi
-    if ! jq -e --arg run "$candidate_run" '
-        .schema == 2 and .run_id == $run and
-        (.outcome == "ready-for-review" or .outcome == "capped" or
-         .outcome == "escalated" or .outcome == "abandoned")
-    ' "$run_record" >/dev/null 2>&1; then
-        pointer_eligibility_reason="run record is invalid or still open"
-        return 1
-    fi
+    pointer_eligibility_outcome="$run_record_outcome"
     monitor="$(state_path)"
-    if [ -e "$monitor" ]; then
-        if [ ! -f "$monitor" ] || [ -L "$monitor" ] || ! jq -e '
-            .version == 1 and (.actions | type == "array") and
-            all(.actions[]; .state == "reserved" or .state == "adopted" or
-                (.state == "cancelled" and
-                 (.cancellation.reason | type == "string" and length > 0)))
-        ' "$monitor" >/dev/null 2>&1; then
-            pointer_eligibility_reason="monitor state is invalid"
+    pointer_eligibility_monitor="$monitor"
+    if validate_monitor_state "$monitor"; then
+        pointer_eligibility_reserved_events="$monitor_state_reserved_events"
+        if [ -n "$monitor_state_reserved_events" ] &&
+            { [ "$mode" = "terminal" ] ||
+                { [ "$mode" = "activation" ] && [ -n "$run_record_outcome" ]; }; }; then
+            pointer_eligibility_reason="monitor.json has an unreconciled reserved action"
             return 1
         fi
-        if jq -e '[.actions[] | select(.state == "reserved")] | length > 0' \
-            "$monitor" >/dev/null 2>&1; then
-            pointer_eligibility_reason="monitor.json has an unreconciled reserved action"
+    else
+        status=$?
+        if [ "$status" -ne 1 ]; then
+            pointer_eligibility_reason="$monitor_state_reason"
             return 1
         fi
     fi
     return 0
+}
+
+validate_observation_binding() {
+    local reservation_json="$1" observation_file="$2" expected_status="$3"
+    local expected_event expected_action expected_head_value
+    expected_event="$(jq -r '.event' <<<"$reservation_json")"
+    expected_action="$(jq -r '.action' <<<"$reservation_json")"
+    expected_head_value="$(jq -r '.expected_head' <<<"$reservation_json")"
+    jq -e --arg status "$expected_status" --arg event "$expected_event" \
+        --arg action "$expected_action" --arg head "$expected_head_value" '
+        type == "object" and .status == $status and .event == $event and
+        .action == $action and .head == $head
+    ' "$observation_file" >/dev/null 2>&1 ||
+        die "observation is not bound to reservation event, action, and expected head"
 }
 
 validate_comment_observation() {
@@ -536,38 +614,15 @@ validate_comment_observation() {
 }
 
 activation_guard_locked() {
-    local pointer="$1" target_run="$2" pointer_run pointer_branch common_dir run_record monitor outcome events
-    [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
-    jq -e '
-        .version == 1 and
-        (.run_id | type == "string" and test("^[A-Za-z0-9._-]+$") and . != "." and . != "..") and
-        (.branch | type == "string" and length > 0) and
-        (.generation | type == "number" and . > 0 and floor == .) and
-        (.registry_revision | type == "string" and test("^[0-9a-f]{40}$"))
-    ' "$pointer" >/dev/null 2>&1 || die "active pointer is invalid: $pointer"
-    pointer_run="$(jq -r '.run_id' "$pointer")"
-    pointer_branch="$(jq -r '.branch' "$pointer")"
-    [ "$pointer_branch" = "$branch" ] || die "active pointer branch does not match activation branch $branch"
-    [ "$pointer_run" != "$target_run" ] || return 0
-
-    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
-        die "could not resolve git common directory"
-    run_record="$common_dir/dev-flow-v2/runs/$pointer_run/run.json"
-    [ -e "$run_record" ] || return 0
-    [ -f "$run_record" ] && [ ! -L "$run_record" ] || die "active run record is not a regular file: $run_record"
-    jq -e --arg run "$pointer_run" '
-        .schema == 2 and .run_id == $run and
-        (.outcome == null or .outcome == "ready-for-review" or .outcome == "capped" or
-         .outcome == "escalated" or .outcome == "abandoned")
-    ' "$run_record" >/dev/null 2>&1 || die "active run record is invalid; cannot safely check activation for run $pointer_run"
-    outcome="$(jq -r '.outcome // empty' "$run_record")"
-    [ -n "$outcome" ] || return 0
-
-    monitor="$common_dir/dev-flow-v2/runs/$pointer_run/monitor.json"
-    if monitor_has_unreconciled_reservation "$monitor"; then
-        events="$(jq -r '[.actions[] | select(.state == "reserved") | .event] | join(", ")' "$monitor")"
-        die "activation refused: ended run $pointer_run on branch $branch has unreconciled reserved event(s) [$events]; reconcile landed event(s); if a listed event is observed absent, cancel --state $monitor --run-id $pointer_run --event <event-id> --observed <observation.json> --reason <text>; then retire --run-id $pointer_run or prune its pointer before activating"
+    local pointer="$1" target_run="$2" monitor
+    if ! pointer_eligibility "$pointer" "${pointer##*/}" "" activation; then
+        if [ "$pointer_eligibility_reason" = "monitor.json has an unreconciled reserved action" ]; then
+            monitor="$pointer_eligibility_monitor"
+            die "activation refused: ended run $pointer_eligibility_run on branch $pointer_eligibility_branch has unreconciled reserved event(s) [$pointer_eligibility_reserved_events]; reconcile landed event(s); if a listed event is observed absent, cancel --state $monitor --run-id $pointer_eligibility_run --event <event-id> --observed <observation.json> --reason <text>; then retire --run-id $pointer_eligibility_run or prune its pointer before activating"
+        fi
+        die "activation refused: $pointer_eligibility_reason"
     fi
+    [ "$pointer_eligibility_run" != "$target_run" ] || return 0
 }
 
 check_activation() {
@@ -575,32 +630,45 @@ check_activation() {
     [ -n "$branch" ] || die "branch is required"
     local pointer
     pointer="$(active_path)"
-    if [ -e "$pointer" ]; then
-        [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
-        acquire_lock "$pointer"
-        if [ -e "$pointer" ]; then
-            activation_guard_locked "$pointer" "$run_id"
-        fi
+    if [ ! -e "$pointer" ] && [ ! -L "$pointer" ]; then
+        jq -n '{run_id: null, generation: 0}'
+        return 0
     fi
-    printf 'activation preflight passed for branch %s\n' "$branch"
+    acquire_lock "$pointer"
+    if [ -e "$pointer" ] || [ -L "$pointer" ]; then
+        activation_guard_locked "$pointer" "$run_id"
+        jq -n --arg run "$pointer_eligibility_run" \
+            --argjson generation "$pointer_eligibility_generation" \
+            '{run_id: $run, generation: $generation}'
+    else
+        jq -n '{run_id: null, generation: 0}'
+    fi
 }
 
 retire_active_pointer() {
-    local binding_branch pointer
+    local binding_branch pointer status
     binding_branch="$(run_branch_binding)"
     branch="$binding_branch"
     pointer="$(active_path)"
-    [ -e "$pointer" ] || {
-        printf 'retire: active pointer for %s is already absent\n' "$run_id"
+    if [ ! -e "$pointer" ] && [ ! -L "$pointer" ]; then
+        printf 'retire: nothing of this run to retire (run %s; active pointer is absent)\n' "$run_id"
         return 0
-    }
+    fi
     [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
     acquire_lock "$pointer"
-    [ -e "$pointer" ] || {
-        printf 'retire: active pointer for %s disappeared before the lock was acquired\n' "$run_id"
+    if [ ! -e "$pointer" ] && [ ! -L "$pointer" ]; then
+        printf 'retire: nothing of this run to retire (run %s; pointer disappeared before locking)\n' "$run_id"
         return 0
-    }
-    if ! pointer_eligibility "$pointer" "${pointer##*/}" "$run_id"; then
+    fi
+    if pointer_eligibility "$pointer" "${pointer##*/}" "$run_id" terminal; then
+        :
+    else
+        status=$?
+        if [ "$status" -eq 3 ]; then
+            printf 'retire: nothing of this run to retire (run %s; pointer belongs to run %s, generation %s)\n' \
+                "$run_id" "$pointer_eligibility_run" "$pointer_eligibility_generation"
+            return 0
+        fi
         if [ "$pointer_eligibility_reason" = "monitor.json has an unreconciled reserved action" ]; then
             die "retire: deferred run $run_id; $pointer_eligibility_reason"
         fi
@@ -612,8 +680,8 @@ retire_active_pointer() {
 }
 
 cancel_reserved_action() {
-    local binding_branch pointer common_dir run_record reservation reservation_state
-    local expected_action status previous_pending tmp
+    local binding_branch pointer reservation reservation_state
+    local expected_action expected_head_value status previous_pending tmp
     validate_run_id
     [ -n "$state" ] && [ -n "$event" ] && [ -n "$observed" ] && [ -n "$reason" ] || usage
     [[ "$reason" =~ [^[:space:]] ]] || die "cancellation reason must contain non-whitespace text"
@@ -628,35 +696,20 @@ cancel_reserved_action() {
     acquire_lock "$pointer"
     [ -f "$pointer" ] && [ ! -L "$pointer" ] ||
         die "cancel refused: active pointer for run $run_id disappeared before the lock was acquired"
-    jq -e --arg run "$run_id" --arg branch "$branch" '
-        .version == 1 and .run_id == $run and .branch == $branch and
-        (.generation | type == "number" and . > 0 and floor == .) and
-        (.registry_revision | type == "string" and test("^[0-9a-f]{40}$"))
-    ' "$pointer" >/dev/null 2>&1 ||
-        die "cancel refused: active pointer does not match run $run_id's branch binding"
-    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
-        die "could not resolve git common directory"
-    run_record="$common_dir/dev-flow-v2/runs/$run_id/run.json"
-    [ -f "$run_record" ] && [ ! -L "$run_record" ] ||
-        die "cancel refused: run $run_id is live or has no valid terminal run.json"
-    jq -e --arg run "$run_id" '
-        .schema == 2 and .run_id == $run and
-        (.outcome == "ready-for-review" or .outcome == "capped" or
-         .outcome == "escalated" or .outcome == "abandoned")
-    ' "$run_record" >/dev/null 2>&1 ||
-        die "cancel refused: run $run_id is live or its run.json is not a valid terminal record"
+    if ! pointer_eligibility "$pointer" "${pointer##*/}" "$run_id" cancel; then
+        if [ "$pointer_eligibility_reason" = "run record is invalid or still open" ]; then
+            die "cancel refused: run $run_id is live or its run.json is not a valid terminal record"
+        fi
+        [ -n "$pointer_eligibility_reason" ] || pointer_eligibility_reason="active pointer does not match run binding"
+        die "cancel refused: $pointer_eligibility_reason"
+    fi
     [ -f "$state" ] && [ ! -L "$state" ] || die "monitor state is not a regular file: $state"
-    jq -e '
-        .version == 1 and (.actions | type == "array") and
-        all(.actions[]; .state == "reserved" or .state == "adopted" or
-            (.state == "cancelled" and
-             (.cancellation.reason | type == "string" and length > 0)))
-    ' "$state" >/dev/null 2>&1 || die "invalid monitor state: $state"
     jq -e --arg event "$event" '[.actions[] | select(.event == $event)] | length == 1' \
         "$state" >/dev/null || die "unknown or duplicate reservation $event"
     reservation="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
     reservation_state="$(jq -r '.state' <<<"$reservation")"
     expected_action="$(jq -r '.action' <<<"$reservation")"
+    expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
     case "$reservation_state" in
     reserved) ;;
     adopted) die "cancel refused: event $event is already landed; use reconcile" ;;
@@ -664,6 +717,9 @@ cancel_reserved_action() {
     *) die "cancel refused: event $event has an invalid state" ;;
     esac
     status="$(jq -r '.status // empty' "$observed" 2>/dev/null || true)"
+    case "$status" in
+    landed | absent | indeterminate) validate_observation_binding "$reservation" "$observed" "$status" ;;
+    esac
     [ "$status" = "absent" ] || {
         if [ "$status" = "landed" ]; then
             die "cancel refused: event $event was observed landed; use reconcile"
@@ -680,9 +736,10 @@ cancel_reserved_action() {
     ' "$state")"
     [ "$previous_pending" -eq 0 ] || die "cannot cancel $event out of reservation order"
     tmp="${state}.tmp.$$"
-    jq --arg event "$event" --arg reason "$reason" '
+    jq --arg event "$event" --arg reason "$reason" --slurpfile observation "$observed" '
         .actions |= map(if .event == $event then
-            .state = "cancelled" | .cancellation = {reason: $reason}
+            .state = "cancelled" |
+            .cancellation = {reason: $reason, observation: $observation[0]}
         else . end)
     ' "$state" >"$tmp"
     mv "$tmp" "$state"
@@ -814,19 +871,8 @@ resolve_governing_registry_revision() {
     printf '%s\n' "$gov_rev"
 }
 
-if [ "$command_name" = "activate" ]; then
-    validate_run_id
-    [ -n "$branch" ] && [ -n "$active_state" ] && [ "$writer" = "feature-owner" ] || usage
-    [[ "$expected_generation" =~ ^(0|[1-9][0-9]*)$ ]] || die "expected generation must be a non-negative integer"
-    [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
-        die "activation requires a full kickoff-pinned registry revision"
-    git -C "$repo_root" show "${registry_revision}:agent-registry.json" >/dev/null 2>&1 ||
-        die "could not read agent-registry.json at the kickoff-pinned revision"
-    [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
-    # A run ID names one canonical monitor ledger in the git common dir. Bind
-    # that identity to its branch with an atomic hard link before taking the
-    # branch pointer lock, so two branch-specific active locks can never race
-    # writes into the same run ledger.
+bind_run_branch() {
+    local run_binding_file
     run_binding_file="$(dirname "$(state_path)")/branch.json"
     mkdir -p "$(dirname "$run_binding_file")"
     run_binding_claim="${run_binding_file}.claim.$$.$RANDOM"
@@ -840,6 +886,26 @@ if [ "$command_name" = "activate" ]; then
     fi
     rm -f "$run_binding_claim"
     run_binding_claim=""
+}
+
+if [ "$command_name" = "activate" ]; then
+    validate_run_id
+    [ -n "$branch" ] && [ -n "$active_state" ] && [ "$writer" = "feature-owner" ] &&
+        [ -n "$expected_predecessor" ] || usage
+    [[ "$expected_generation" =~ ^(0|[1-9][0-9]*)$ ]] || die "expected generation must be a non-negative integer"
+    if [ "$expected_predecessor" = "absent" ]; then
+        [ "$expected_generation" -eq 0 ] || die "an absent predecessor requires expected generation 0"
+    else
+        [[ "$expected_predecessor" =~ ^[A-Za-z0-9._-]+$ ]] &&
+            [ "$expected_predecessor" != "." ] && [ "$expected_predecessor" != ".." ] ||
+            die "expected predecessor must be absent or a safe run id"
+        [ "$expected_generation" -gt 0 ] || die "a run predecessor requires a positive expected generation"
+    fi
+    [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
+        die "activation requires a full kickoff-pinned registry revision"
+    git -C "$repo_root" show "${registry_revision}:agent-registry.json" >/dev/null 2>&1 ||
+        die "could not read agent-registry.json at the kickoff-pinned revision"
+    [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
     mkdir -p "$(dirname "$active_state")"
     acquire_lock "$active_state"
     if [ -e "$active_state" ]; then
@@ -850,23 +916,28 @@ if [ "$command_name" = "activate" ]; then
             .version == 1 and .run_id == $run and .branch == $branch and
             .generation == $next and .registry_revision == $registry
         ' "$active_state" >/dev/null; then
+            pointer_eligibility "$active_state" "${active_state##*/}" "$run_id" activation ||
+                die "activation refused: $pointer_eligibility_reason"
             printf '%s\n' "$((expected_generation + 1))"
             exit 0
         fi
         activation_guard_locked "$active_state" "$run_id"
-        current_generation="$(jq -r '.generation // empty' "$active_state")"
+        current_run="$pointer_eligibility_run"
+        current_generation="$pointer_eligibility_generation"
         [[ "$current_generation" =~ ^[1-9][0-9]*$ ]] || die "active run state is invalid"
-        active_pointer_was_absent=false
-    else
-        current_generation=0
-        active_pointer_was_absent=true
-    fi
-    if [ "$current_generation" -ne "$expected_generation" ]; then
-        if [ "$active_pointer_was_absent" = true ] && [ "$expected_generation" -gt 0 ]; then
-            die "active pointer was concurrently retired; retry activation (expected generation $expected_generation, found 0)"
+        if [ "$expected_predecessor" = "absent" ] ||
+            [ "$current_run" != "$expected_predecessor" ] ||
+            [ "$current_generation" -ne "$expected_generation" ]; then
+            die "active pointer predecessor changed (expected $expected_predecessor generation $expected_generation, found $current_run generation $current_generation)"
         fi
-        die "active run generation changed (expected $expected_generation, found $current_generation)"
+    else
+        if [ "$expected_predecessor" != "absent" ]; then
+            die "active pointer was concurrently retired; retry activation (expected predecessor $expected_predecessor generation $expected_generation, found absent)"
+        fi
     fi
+    # Bind the target run only after its predecessor compare succeeds, so a
+    # stale activation cannot leave branch state behind when its CAS is refused.
+    bind_run_branch
     next_generation=$((expected_generation + 1))
     active_tmp="${active_state}.tmp.$$"
     jq -n --arg run "$run_id" --arg branch "$branch" --arg registry "$registry_revision" \
@@ -1075,9 +1146,15 @@ PY
     ;;
 reconcile)
     [ -n "$observed" ] && [ -f "$observed" ] || usage
-    jq -e '.version == 1 and (.actions | type == "array")' "$state" >/dev/null || die "invalid state"
+    validate_monitor_state "$state" || die "${monitor_state_reason:-monitor state is missing}: $state"
     reservation="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
     [ -n "$reservation" ] || die "unknown reservation $event"
+    status="$(jq -r '.status // empty' "$observed")"
+    expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
+    comment_id=""
+    case "$status" in
+    landed | absent | indeterminate) validate_observation_binding "$reservation" "$observed" "$status" ;;
+    esac
     reservation_state="$(jq -r '.state' <<<"$reservation")"
     expected_action="$(jq -r '.action' <<<"$reservation")"
     case "$reservation_state" in
@@ -1096,9 +1173,6 @@ reconcile)
     reserved) ;;
     *) die "reservation $event is not actionable" ;;
     esac
-    status="$(jq -r '.status // empty' "$observed")"
-    expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
-    comment_id=""
     if [ "$expected_action" = "comment" ] && { [ "$status" = "landed" ] || [ "$status" = "absent" ]; }; then
         validate_comment_observation "$reservation" "$observed" "$status"
     fi
@@ -1125,9 +1199,6 @@ reconcile)
     fi
     case "$status" in
     landed)
-        jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '
-                    .event == $event and .action == $action and .head == $head
-                ' "$observed" >/dev/null || die "landed postcondition does not match reservation"
         if [ "$expected_action" = "comment" ]; then
             [ -n "$comment_id" ] || die "comment postcondition is not authenticated"
         elif [ "$expected_action" = "assembly" ]; then

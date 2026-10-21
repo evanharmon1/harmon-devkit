@@ -11865,7 +11865,7 @@ expect_ok "orchestrate: names the canonical active-pointer directory (#1544)" \
 expect_ok "orchestrate: retires the matching pointer after terminal readback (#1544)" \
     grep -qF "matching run's pointer after the validated terminal record is written and" "$ORCH_MD"
 expect_ok "orchestrate: reserves activation until the named event is reconciled (#1544)" \
-    grep -qF 'blocks a new activation on that branch; reconcile the named event, then' "$ORCH_MD"
+    grep -qF "Every observation must match the reservation's event, action and expected head." "$ORCH_MD"
 expect_ok "orchestrate: documents prune's dry-run and terminal-only behavior (#1544)" \
     grep -qF 'run-record.mjs prune --dry-run' "$ORCH_MD"
 expect_ok "dev-flow-support: run-record documents retirement and prune (#1544)" \

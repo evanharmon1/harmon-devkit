@@ -70,7 +70,7 @@ new_run() {
     active_state="$("$monitor" active-path --branch "$branch" --repo-root "$repo")"
     registry_revision="$(git -C "$repo" rev-parse HEAD)"
     "$monitor" activate --active-state "$active_state" --run-id "$run_id" --branch "$branch" \
-        --expected-generation 0 --registry-revision "$registry_revision" \
+        --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
         --writer feature-owner --repo-root "$repo" >/dev/null
 }
 
@@ -533,7 +533,8 @@ pass "close retires active pointers for capped and escalated outcomes"
 terminal_pointer="$(pointer_for_run run-capped)"
 registry_revision="$(git -C "$repo" rev-parse HEAD)"
 "$monitor" activate --active-state "$terminal_pointer" --run-id run-capped --branch fixture-run-capped \
-    --expected-generation 0 --registry-revision "$registry_revision" --writer feature-owner --repo-root "$repo" >/dev/null
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
+    --writer feature-owner --repo-root "$repo" >/dev/null
 prune_dry_run="$(cd "$repo" && node "$writer" prune --dry-run)"
 grep -qF "would remove ${terminal_pointer##*/} (run run-capped" <<<"$prune_dry_run" ||
     fail "run-record prune --dry-run did not report a terminal pointer: $prune_dry_run"
@@ -799,7 +800,8 @@ deferred_branch=333-l
 deferred_revision="$(git -C "$repo" rev-parse HEAD)"
 deferred_pointer="$("$monitor" active-path --branch "$deferred_branch" --repo-root "$repo")"
 "$monitor" activate --active-state "$deferred_pointer" --run-id "$deferred_run" --branch "$deferred_branch" \
-    --expected-generation 0 --registry-revision "$deferred_revision" --writer feature-owner --repo-root "$repo" >/dev/null
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$deferred_revision" \
+    --writer feature-owner --repo-root "$repo" >/dev/null
 deferred_state="$("$monitor" state-path --run-id "$deferred_run" --repo-root "$repo")"
 deferred_head="$(git -C "$repo" rev-parse HEAD)"
 "$monitor" reserve --state "$deferred_state" --event evt-lane-init --action push \

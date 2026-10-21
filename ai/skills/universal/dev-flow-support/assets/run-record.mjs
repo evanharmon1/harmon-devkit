@@ -86,6 +86,7 @@ import {
   rmdirSync,
   rmSync,
   unlinkSync,
+  writeSync,
   writeFileSync,
   linkSync,
 } from 'node:fs'
@@ -886,13 +887,21 @@ function monitorPath() {
 function checkActivationAllowed(repoRoot, branch, runId) {
   const monitor = monitorPath()
   try {
-    return execFileSync('bash', [monitor, 'check-activation', '--branch', branch, '--run-id', runId,
+    const snapshot = JSON.parse(execFileSync('bash', [monitor, 'check-activation', '--branch', branch, '--run-id', runId,
       '--repo-root', repoRoot], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim()
+    }).trim())
+    if (!snapshot || !Number.isSafeInteger(snapshot.generation) || snapshot.generation < 0 ||
+        (snapshot.run_id !== null && !/^[A-Za-z0-9._-]+$/.test(snapshot.run_id)) ||
+        (snapshot.run_id === null && snapshot.generation !== 0) ||
+        (snapshot.run_id !== null && snapshot.generation < 1)) {
+      throw new Refusal('activation preflight returned an invalid predecessor snapshot')
+    }
+    return snapshot
   } catch (error) {
+    if (error instanceof Refusal) throw error
     const details = [error.stderr, error.stdout]
       .map((value) => (Buffer.isBuffer(value) ? value.toString('utf8') : `${value ?? ''}`))
       .filter(Boolean)
@@ -1091,9 +1100,9 @@ function soloInit(args) {
   if (!trustedAt(repoRoot, revision).includes(actor)) {
     throw new Refusal(`actor ${actor} is not in agent-registry.json's trusted_orchestrator_actor_ids at ${revision}; its evidence markers would not authenticate, so no solo run is reserved`)
   }
-  checkActivationAllowed(repoRoot, branch, runId)
+  const activationPredecessor = checkActivationAllowed(repoRoot, branch, runId)
   const active = activePointerPath(root, branch)
-  const current = existsSync(active) ? readJson(active, 'active run pointer') : null
+  const current = activationPredecessor.run_id === null ? null : activationPredecessor
   if (current !== null && current.run_id !== runId) {
     const other = join(root, 'runs', current.run_id, 'run.json')
     const ended = existsSync(other) && readJson(other, 'active run record').outcome !== null
@@ -1203,7 +1212,8 @@ function soloInit(args) {
       try {
         generation = Number(
           execFileSync('bash', [monitorPath(), 'activate', '--active-state', active, '--run-id', runId, '--branch', branch,
-            '--expected-generation', String(generation), '--registry-revision', revision, '--writer', 'feature-owner',
+            '--expected-predecessor', current?.run_id ?? 'absent', '--expected-generation', String(generation),
+            '--registry-revision', revision, '--writer', 'feature-owner',
             '--repo-root', repoRoot], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(),
         )
       } catch (error) {
@@ -1614,15 +1624,17 @@ function lockCommand(sub, args) {
 export function runCli(main) {
   try {
     const message = main(process.argv.slice(2))
-    if (message) console.log(message)
+    if (message) writeSync(process.stdout.fd, `${message}\n`)
   } catch (error) {
     if (error instanceof UsageError) {
-      console.error(`usage: ${error.message}`)
-      process.exit(2)
+      writeSync(process.stderr.fd, `usage: ${error.message}\n`)
+      process.exitCode = 2
+      return
     }
     if (error instanceof Refusal) {
-      console.error(`refused: ${error.message}`)
-      process.exit(1)
+      writeSync(process.stderr.fd, `refused: ${error.message}\n`)
+      process.exitCode = 1
+      return
     }
     throw error
   }

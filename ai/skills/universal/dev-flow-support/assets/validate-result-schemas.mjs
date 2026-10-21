@@ -3689,9 +3689,8 @@ function main() {
 
 function report(errors, okMessage) {
   if (errors.length > 0) {
-    for (const error of errors) fs.writeSync(2, `FAIL: ${error}\n`)
-    process.exitCode = 1
-    return
+    for (const error of errors) console.error(`FAIL: ${error}`)
+    process.exit(1)
   }
   console.log(okMessage)
 }

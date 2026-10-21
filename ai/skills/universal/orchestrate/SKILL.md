@@ -244,8 +244,10 @@ throwaway work only.
   SHA-256-named pointer per branch. `promote` and `close` retire only the
   matching run's pointer after the validated terminal record is written and
   read back. A reserved monitor event on an ended run defers retirement and
-  blocks a new activation on that branch. Reconcile landed events. If a
-  reserved action is observed absent, record that observation and cancel it with
+  blocks a new activation on that branch.
+  Every observation must match the reservation's event, action and expected head.
+  Reconcile landed events. If a reserved action is observed absent, record that
+  observation and cancel it with
   `assets/dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
   --event <event-id> --observed <observation.json> --reason "<why>"`; landed
   actions still go through reconcile. Then retire the run or prune its pointer

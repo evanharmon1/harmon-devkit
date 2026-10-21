@@ -125,8 +125,10 @@ function refusal(f, pattern, file = command, args = f.args()) {
   const before = snapshot(f.root)
   const result = spawnSync(process.execPath, [file, ...args], { cwd: f.repo, encoding: 'utf8' })
   assert.equal(result.status, 1, `expected refusal, got ${result.status}: ${result.stderr}`)
-  assert.match(result.stderr, pattern)
+  assert.match(result.stderr, pattern,
+    `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)})`)
   assert.deepEqual(snapshot(f.root), before, 'refusal changed durable record tree')
+  assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
 }
 
@@ -222,7 +224,8 @@ const deferredHead = git(deferredProvision.repo, 'rev-parse', 'HEAD')
 const activeState = execFileSync('bash', [monitor, 'active-path', '--branch', deferredBranch,
   '--repo-root', deferredProvision.repo], { encoding: 'utf8' }).trim()
 execFileSync('bash', [monitor, 'activate', '--active-state', activeState,
-  '--run-id', deferredRun, '--branch', deferredBranch, '--expected-generation', '0',
+  '--run-id', deferredRun, '--branch', deferredBranch, '--expected-predecessor', 'absent',
+  '--expected-generation', '0',
   '--registry-revision', deferredHead, '--writer', 'feature-owner', '--repo-root', deferredProvision.repo],
 { stdio: 'ignore' })
 const monitorState = execFileSync('bash', [monitor, 'state-path', '--run-id', deferredRun,

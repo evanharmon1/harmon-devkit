@@ -69,7 +69,7 @@ activate_run() {
     local active_state
     active_state="$("$MONITOR" active-path --branch "$branch" --repo-root "$repo")"
     "$MONITOR" activate --active-state "$active_state" --run-id "$run_id" \
-        --branch "$branch" --expected-generation 0 \
+        --branch "$branch" --expected-predecessor absent --expected-generation 0 \
         --registry-revision "$rev" --writer feature-owner --repo-root "$repo"
 }
 
@@ -297,26 +297,58 @@ grep -qF 'retired run run-retire active pointer' <<<"$output" || fail "matching 
 race_output=""
 race_rc=0
 race_output="$("$MONITOR" activate --active-state "$retire_pointer" --run-id run-retire-race \
-    --branch retire-branch --expected-generation 1 --registry-revision "$FIXTURE_REV" \
+    --branch retire-branch --expected-predecessor run-retire --expected-generation 1 \
+    --registry-revision "$FIXTURE_REV" \
     --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || race_rc=$?
 [ "$race_rc" -eq 2 ] || fail "stale activation after pointer retirement was not refused: $race_output"
 grep -qF 'concurrently retired; retry activation' <<<"$race_output" ||
     fail "stale activation did not explain the safe retry: $race_output"
+output="$("$MONITOR" retire --run-id run-retire --repo-root "$FIXTURE_REPO")"
+grep -qF 'nothing of this run to retire' <<<"$output" ||
+    fail "retiring a run with an absent pointer did not report a successful no-op: $output"
 generation="$(activate_run "$FIXTURE_REPO" run-retire-next retire-branch "$FIXTURE_REV")"
 [ "$generation" = 1 ] || fail "a new run on the retired branch did not restart at generation 1: $generation"
 pass "retirement deletes only a validated terminal pointer; fresh activation starts at generation 1 and stale activation explains a safe retry"
 
+echo "--- Activation compares predecessor identity across a generation restart ---"
+aba_branch="aba-branch"
+activate_run "$FIXTURE_REPO" run-aba-a "$aba_branch" "$FIXTURE_REV" >/dev/null
+aba_pointer="$("$MONITOR" active-path --branch "$aba_branch" --repo-root "$FIXTURE_REPO")"
+aba_old_record="$(dirname "$("$MONITOR" state-path --run-id run-aba-a --repo-root "$FIXTURE_REPO")")/run.json"
+jq -n '{schema: 2, run_id: "run-aba-a", outcome: "abandoned"}' >"$aba_old_record"
+"$MONITOR" retire --run-id run-aba-a --repo-root "$FIXTURE_REPO" >/dev/null
+[ "$(activate_run "$FIXTURE_REPO" run-aba-b "$aba_branch" "$FIXTURE_REV")" = 1 ] ||
+    fail "replacement run did not restart at generation 1"
+aba_live_record="$(dirname "$("$MONITOR" state-path --run-id run-aba-b --repo-root "$FIXTURE_REPO")")/run.json"
+jq -n '{schema: 2, run_id: "run-aba-b", outcome: null}' >"$aba_live_record"
+aba_rc=0
+aba_output="$("$MONITOR" activate --active-state "$aba_pointer" --run-id run-aba-c --branch "$aba_branch" \
+    --expected-predecessor run-aba-a --expected-generation 1 --registry-revision "$FIXTURE_REV" \
+    --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || aba_rc=$?
+[ "$aba_rc" -eq 2 ] || fail "stale activation replaced a new generation-1 run: $aba_output"
+grep -qF 'predecessor changed' <<<"$aba_output" || fail "ABA refusal did not name the predecessor mismatch: $aba_output"
+jq -e '.run_id == "run-aba-b" and .generation == 1' "$aba_pointer" >/dev/null ||
+    fail "stale activation changed the replacement pointer"
+aba_state="$("$MONITOR" state-path --run-id run-aba-b --repo-root "$FIXTURE_REPO")"
+"$MONITOR" reserve --state "$aba_state" --event still-live --action push --expected-head "$FIXTURE_REV" \
+    --writer feature-owner --active-state "$aba_pointer" --run-id run-aba-b --branch "$aba_branch" \
+    --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null || fail "replacement run became unusable after stale activation"
+aba_stale_state="$("$MONITOR" state-path --run-id run-aba-c --repo-root "$FIXTURE_REPO")"
+[ ! -e "$(dirname "$aba_stale_state")/branch.json" ] || fail "refused stale activation left a branch binding behind"
+pass "stale generation-1 activation is refused without replacing or damaging the live predecessor"
+
 activate_run "$FIXTURE_REPO" run-retire-old replace-branch "$FIXTURE_REV" >/dev/null
 replace_pointer="$("$MONITOR" active-path --branch replace-branch --repo-root "$FIXTURE_REPO")"
 "$MONITOR" activate --active-state "$replace_pointer" --run-id run-retire-new \
-    --branch replace-branch --expected-generation 1 --registry-revision "$FIXTURE_REV" \
+    --branch replace-branch --expected-predecessor run-retire-old --expected-generation 1 \
+    --registry-revision "$FIXTURE_REV" \
     --writer feature-owner --repo-root "$FIXTURE_REPO" >/dev/null
 retire_rc=0
 output="$("$MONITOR" retire --run-id run-retire-old --repo-root "$FIXTURE_REPO" 2>&1)" || retire_rc=$?
-[ "$retire_rc" -eq 2 ] || fail "retire did not refuse the replacement run: $output"
-grep -qF 'not requested run run-retire-old' <<<"$output" || fail "retire did not name the replacement mismatch: $output"
+[ "$retire_rc" -eq 0 ] || fail "retire did not treat a superseded pointer as a no-op: $output"
+grep -qF 'nothing of this run to retire' <<<"$output" || fail "retire did not report that nothing remains for the old run: $output"
 [ "$(jq -r '.run_id' "$replace_pointer")" = run-retire-new ] || fail "retire deleted a pointer owned by a different run"
-pass "retire refuses to remove a pointer owned by a different run"
+pass "retire treats a pointer owned by a newer run as a successful no-op"
 
 activate_run "$FIXTURE_REPO" run-retire-open open-retire-branch "$FIXTURE_REV" >/dev/null
 open_retire_pointer="$("$MONITOR" active-path --branch open-retire-branch --repo-root "$FIXTURE_REPO")"
@@ -356,7 +388,8 @@ grep -qF 'monitor.json has an unreconciled reserved action' <<<"$output" ||
 [ -f "$reserved_pointer" ] || fail "retire deleted a pointer with an unreconciled reservation"
 activation_rc=0
 activation_output="$("$MONITOR" activate --active-state "$reserved_pointer" --run-id run-retire-next-reserved \
-    --branch reserved-branch --expected-generation 1 --registry-revision "$FIXTURE_REV" \
+    --branch reserved-branch --expected-predecessor run-retire-reserved --expected-generation 1 \
+    --registry-revision "$FIXTURE_REV" \
     --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || activation_rc=$?
 [ "$activation_rc" -eq 2 ] || fail "activation was not refused while the ended run had a reserved action: $activation_output"
 grep -qF 'run-retire-reserved' <<<"$activation_output" || fail "activation refusal omitted the ended run id: $activation_output"
@@ -367,14 +400,30 @@ grep -qF 'retire' <<<"$activation_output" || fail "activation refusal omitted th
 grep -qF 'prune' <<<"$activation_output" || fail "activation refusal omitted the prune remedy: $activation_output"
 [ "$(jq -r '.run_id' "$reserved_pointer")" = run-retire-reserved ] || fail "refused activation replaced the old active pointer"
 observed="$tmp/reserved-observed.json"
-jq -n '{status: "landed", event: "evt", action: "push", head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+jq -n --arg event evt --arg head "$reserved_head" \
+    '{status: "landed", event: $event, action: "push", head: $head}' \
     >"$tmp/reserved-landed.json"
 cancel_rc=0
 cancel_output="$("$MONITOR" cancel --state "$reserved_state" --run-id run-retire-reserved --event evt \
     --observed "$tmp/reserved-landed.json" --reason 'operator checked the action' --repo-root "$FIXTURE_REPO" 2>&1)" || cancel_rc=$?
 [ "$cancel_rc" -eq 2 ] || fail "cancel accepted an action observed landed: $cancel_output"
 grep -qF 'observed landed; use reconcile' <<<"$cancel_output" || fail "landed cancellation refusal was unclear: $cancel_output"
-jq -n '{status: "absent"}' >"$observed"
+jq -n --arg event evt --arg head "$reserved_head" \
+    '{status: "absent", event: $event, action: "push", head: $head}' >"$observed"
+jq -n '{status: "absent"}' >"$tmp/unbound-absent.json"
+unbound_rc=0
+unbound_output="$("$MONITOR" cancel --state "$reserved_state" --run-id run-retire-reserved --event evt \
+    --observed "$tmp/unbound-absent.json" --reason 'unbound observation' --repo-root "$FIXTURE_REPO" 2>&1)" || unbound_rc=$?
+[ "$unbound_rc" -eq 2 ] || fail "cancel accepted an unbound absent observation: $unbound_output"
+grep -qF 'not bound to reservation event, action, and expected head' <<<"$unbound_output" ||
+    fail "cancel did not report the unbound observation: $unbound_output"
+jq -e '.actions[0].state == "reserved"' "$reserved_state" >/dev/null ||
+    fail "refused unbound cancellation changed the reservation"
+unbound_rc=0
+unbound_output="$("$MONITOR" reconcile --state "$reserved_state" --event evt --observed "$tmp/unbound-absent.json" \
+    --active-state "$reserved_pointer" --run-id run-retire-reserved --branch reserved-branch \
+    --generation 1 --repo-root "$FIXTURE_REPO" 2>&1)" || unbound_rc=$?
+[ "$unbound_rc" -eq 2 ] || fail "reconcile accepted an unbound absent observation: $unbound_output"
 retry_output="$("$MONITOR" reconcile --state "$reserved_state" --event evt --observed "$observed" \
     --active-state "$reserved_pointer" --run-id run-retire-reserved --branch reserved-branch \
     --generation 1 --repo-root "$FIXTURE_REPO")"
@@ -383,8 +432,12 @@ grep -qF 'retry evt' <<<"$retry_output" ||
 cancel_output="$("$MONITOR" cancel --state "$reserved_state" --run-id run-retire-reserved --event evt \
     --observed "$observed" --reason 'push was never sent after operator inspection' --repo-root "$FIXTURE_REPO")"
 grep -qF 'cancelled reservation evt' <<<"$cancel_output" || fail "cancel did not record the absent action: $cancel_output"
-jq -e '.actions[0].state == "cancelled" and
-    .actions[0].cancellation.reason == "push was never sent after operator inspection"' \
+jq -e --arg head "$reserved_head" '.actions[0].state == "cancelled" and
+    .actions[0].cancellation.reason == "push was never sent after operator inspection" and
+    .actions[0].cancellation.observation.status == "absent" and
+    .actions[0].cancellation.observation.event == "evt" and
+    .actions[0].cancellation.observation.action == "push" and
+    .actions[0].cancellation.observation.head == $head' \
     "$reserved_state" >/dev/null || fail "cancel did not persist its reason"
 "$MONITOR" retire --run-id run-retire-reserved --repo-root "$FIXTURE_REPO" >/dev/null
 [ ! -e "$reserved_pointer" ] || fail "retirement did not resume after reservation reconciliation"
@@ -401,7 +454,8 @@ live_cancel_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
     --run-id run-cancel-live --branch live-cancel-branch --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null
 live_cancel_record="$(dirname "$live_cancel_state")/run.json"
 jq -n '{schema: 2, run_id: "run-cancel-live", outcome: null}' >"$live_cancel_record"
-jq -n '{status: "absent"}' >"$tmp/live-cancel-observed.json"
+jq -n --arg event evt-live-cancel --arg head "$live_cancel_head" \
+    '{status: "absent", event: $event, action: "push", head: $head}' >"$tmp/live-cancel-observed.json"
 cancel_rc=0
 cancel_output="$("$MONITOR" cancel --state "$live_cancel_state" --run-id run-cancel-live --event evt-live-cancel \
     --observed "$tmp/live-cancel-observed.json" --reason 'fixture cancellation attempt' --repo-root "$FIXTURE_REPO" 2>&1)" || cancel_rc=$?
@@ -476,7 +530,8 @@ cancelled_prune_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
     --expected-head "$cancelled_prune_head" --writer feature-owner --active-state "$cancelled_prune_pointer" \
     --run-id run-prune-cancelled --branch cancelled-prune-branch --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null
 write_run_outcome run-prune-cancelled '"escalated"'
-jq -n '{status: "absent"}' >"$tmp/cancelled-prune-observed.json"
+jq -n --arg event evt-cancelled-prune --arg head "$cancelled_prune_head" \
+    '{status: "absent", event: $event, action: "push", head: $head}' >"$tmp/cancelled-prune-observed.json"
 "$MONITOR" cancel --state "$cancelled_prune_state" --run-id run-prune-cancelled --event evt-cancelled-prune \
     --observed "$tmp/cancelled-prune-observed.json" --reason 'test action was never sent' --repo-root "$FIXTURE_REPO" >/dev/null
 invalid_pointer="$("$MONITOR" active-path --branch invalid-prune-branch --repo-root "$FIXTURE_REPO")"
