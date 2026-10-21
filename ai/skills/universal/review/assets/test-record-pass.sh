@@ -7,9 +7,9 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 node --input-type=module - "$asset_dir" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync, renameSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync, renameSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { execFileSync, spawnSync, spawn } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 const [assets, tmp] = process.argv.slice(2);
 const source = join(assets, '../../../../..');
@@ -118,7 +118,9 @@ assert.match(r.stderr,/fixture validator failed/);
 assert.ok(existsSync(join(dir,'passes',`challenge-r1-${policy.stages.challenge.finders[0]}.json`)));
 assert.ok(existsSync(join(dir,'heads.json')));
 assert.equal(existsSync(join(dir,'adjudications/challenge-r1.json')),false);
-assert.equal(existsSync(join(dir,'verdict.json')),false);
+assert.equal(read(join(dir,'verdict.json')).outcome,'indeterminate');
+assert.equal(read(join(dir,'verdict.json')).stage,'challenge');
+assert.equal(read(join(dir,'verdict.json')).round,1);
 console.log('PASS: validator failure inside a pipeline stops every later recording step');
 // Removing only the injected failure permits a resume from the real receipt.
 const { unlinkSync } = await import('node:fs');
@@ -147,6 +149,14 @@ put(passFile,envelope('review',[finding])); put(adjFile,adjudication('review',[f
 // Verification dispatch/escalate must never consume the supplied adjudication.
 const engine = join(support,'exit-fixture.mjs');
 const engineCount = join(tmp,'exit-count');
+writeFileSync(engine, "console.log(JSON.stringify({stage:'review',round:1,outcome:'indeterminate',action:'escalate',reason:'fixture indeterminate'}));process.exitCode=2;\n");
+r = invoke([...argv,'--exit-engine',engine]);
+assert.equal(r.status,2,r.stderr);
+assert.equal(read(join(dir,'verdict.json')).outcome,'indeterminate');
+assert.equal(read(join(dir,'verdict.json')).stage,'review');
+assert.equal(read(join(dir,'verdict.json')).round,1);
+assert.equal(existsSync(join(dir,'adjudications/review-r1.json')),false);
+console.log('PASS: indeterminate verification replaces the previous stage verdict before exiting');
 for (const [action,status] of [['dispatch',0],['escalate',22]]) {
   writeFileSync(engine, `import {appendFileSync} from 'node:fs';
 if(!process.argv.includes('--verification-only')) process.exit(99);
@@ -198,9 +208,6 @@ cd "$(dirname "$0")/.."
 [ "$(git rev-parse HEAD)" = "$EXPECTED_REVIEW_HEAD" ]
 [ -z "$(git status --porcelain)" ]
 [ "$(git symbolic-ref -q HEAD || true)" = "" ]
-if [ -n \"\${FINDER_READY:-}\" ]; then
-  exec node -e 'require(\"node:fs\").writeFileSync(process.env.FINDER_READY,String(process.pid));setInterval(()=>{},100)'
-fi
 printf 'DEFAULT-FINDER:%s:%s\\n' "$(git rev-parse HEAD)" "$1"
 exit "\${FINDER_FIXTURE_STATUS:-0}"
 `);
@@ -219,22 +226,17 @@ const noCheckout = () => {
   if(existsSync(join(consumer,'.worktrees'))) assert.deepEqual(readdirSync(join(consumer,'.worktrees')),[]);
 };
 r = check(); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,new RegExp(`DEFAULT-FINDER:${reviewHead}:review`)); noCheckout();
-for (const [signal, status, target] of [['SIGINT',130,'wrapper'],['SIGTERM',143,'wrapper'],['SIGHUP',129,'wrapper'],['SIGTERM',143,'finder']]) {
-  const ready = join(tmp, `signal-${signal}-${target}`);
-  const child = spawn('bash',[checkoutTool,'--repo-root',consumer,'--head',reviewHead,'--','review'],
-    {cwd:repo,env:{...env,EXPECTED_REVIEW_HEAD:reviewHead,FINDER_READY:ready},stdio:'ignore'});
-  const ended = new Promise((resolve,reject) => { child.once('error',reject); child.once('exit',(code,signal)=>resolve({code,signal})); });
-  const deadline = Date.now()+15000;
-  while(!existsSync(ready) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,20));
-  assert.ok(existsSync(ready),'scratch finder did not become ready');
-  // Explicit remediation authorization: only this test's scratch children.
-  if(target === 'finder') process.kill(Number(readFileSync(ready,'utf8')),signal);
-  else child.kill(signal);
-  const result = await ended;
-  assert.equal(result.code,status,`${signal} ${target}: ${JSON.stringify(result)}`);
-  noCheckout();
-}
-console.log('PASS: INT/TERM/HUP and signalled fixture finder remove the checkout and registration');
+const destination = join(consumer,'.worktrees',`review-${reviewHead}`);
+cg('-c','core.hooksPath=/dev/null','worktree','add','--detach',destination,reviewHead);
+const checkoutGit = sh('git',['rev-parse','--absolute-git-dir'],destination);
+writeFileSync(join(checkoutGit,'review-checkout-owner'),`prepare-review-checkout:${consumer}:${reviewHead}\n`);
+writeFileSync(join(destination,'stale.txt'),'interrupted finder dirt');
+r = check(); assert.equal(r.status,0,r.stderr); noCheckout();
+mkdirSync(destination); writeFileSync(join(destination,'unowned.txt'),'retain me');
+r = check(); assert.equal(r.status,2); assert.match(r.stderr,/unowned/);
+assert.equal(readFileSync(join(destination,'unowned.txt'),'utf8'),'retain me');
+rmSync(destination,{recursive:true}); noCheckout();
+console.log('PASS: owned stale checkout is reaped and recreated; unmarked path is retained and refused');
 r = check(reviewHead,{FINDER_FIXTURE_STATUS:'9'}); assert.equal(r.status,9,r.stderr); noCheckout();
 r = check('f'.repeat(40)); assert.notEqual(r.status,0); noCheckout();
 writeFileSync(join(consumer,'scripts/codex-review.sh'),'echo HEAD-FINDER\n'); cg('add','.'); cg('commit','-qm','changed finder');
@@ -242,41 +244,37 @@ r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.s
 cg('restore','--source',defaultHead,'scripts/codex-review.sh');
 writeFileSync(join(consumer,'scripts/lib/helper.sh'),'# head library\n'); cg('add','.'); cg('commit','-qm','changed library');
 r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/lib\/helper.sh/); noCheckout();
-const hook = join(consumer,'.git/hooks/post-checkout');
-writeFileSync(hook,'#!/bin/sh\necho dirt > hook-created.txt\n'); chmodSync(hook,0o755);
-r = check(); assert.notEqual(r.status,0); assert.match(r.stderr,/dirty/); noCheckout();
-writeFileSync(hook,'#!/bin/sh\nexit 7\n');
-r = check(); assert.notEqual(r.status,0); noCheckout();
-// Challenge reproductions: a normal hook hides library edits with index flags.
-for (const flag of ['--skip-worktree','--assume-unchanged']) {
-  writeFileSync(hook,`#!/bin/sh\nprintf '# tampered\\n' > scripts/lib/helper.sh\ngit update-index ${flag} scripts/lib/helper.sh\n`);
-  r = check(); assert.notEqual(r.status,0); assert.match(r.stderr,/skip-worktree or assume-unchanged/); noCheckout();
-}
-unlinkSync(hook);
-// A head-relative hook is also untrusted even when the committed finder matches.
+// A head-relative hook must never execute, even with matching finder blobs.
 cg('restore','--source',defaultHead,'scripts/lib/helper.sh');
+const sentinel = join(tmp,'hook-sentinel');
 mkdirSync(join(consumer,'.githooks'));
-writeFileSync(join(consumer,'.githooks/post-checkout'),"#!/bin/sh\nprintf '# head hook\\n' > scripts/lib/helper.sh\ngit update-index --assume-unchanged scripts/lib/helper.sh\n");
+writeFileSync(join(consumer,'.githooks/post-checkout'),`#!/bin/sh\ntouch '${sentinel}'\n`);
 chmodSync(join(consumer,'.githooks/post-checkout'),0o755);
 cg('add','.'); cg('commit','-qm','head-relative hook');
 cg('config','core.hooksPath','.githooks');
-r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/skip-worktree or assume-unchanged/); noCheckout();
+r = check(cg('rev-parse','HEAD')); assert.equal(r.status,0,r.stderr);
+assert.equal(existsSync(sentinel),false); noCheckout();
 cg('config','--unset','core.hooksPath');
-// Hide dirt from git status without index flags; the physical hash must fail.
-writeFileSync(hook,"#!/bin/sh\nprintf '# hidden bytes\\n' > scripts/lib/helper.sh\n"); chmodSync(hook,0o755);
+// Simulate materialization corruption while status hides dirt: the physical
+// proof must still reject changed, extra, missing, and index-hidden files.
 const shim = join(tmp,'git-shim'); mkdirSync(shim);
 const realGit = sh('bash',['-c','command -v git']);
-writeFileSync(join(shim,'git'),`#!/bin/sh\nif [ "$1" = status ]; then exit 0; fi\nexec '${realGit}' "$@"\n`); chmodSync(join(shim,'git'),0o755);
-r = check(reviewHead,{PATH:`${shim}:${env.PATH}`}); assert.notEqual(r.status,0); assert.match(r.stderr,/finder bytes differ/); noCheckout();
-for (const mutation of ["printf '# extra\\n' > scripts/lib/extra.sh",'rm scripts/lib/helper.sh']) {
-  writeFileSync(hook,`#!/bin/sh\n${mutation}\n`);
-  r = check(reviewHead,{PATH:`${shim}:${env.PATH}`}); assert.notEqual(r.status,0); assert.match(r.stderr,/finder bytes differ/); noCheckout();
+for (const [mutation,diagnostic] of [
+  ["printf '# hidden bytes\\n' > scripts/lib/helper.sh", /finder bytes differ/],
+  ["printf '# extra\\n' > scripts/lib/extra.sh", /finder bytes differ/],
+  ['rm scripts/lib/helper.sh', /finder bytes differ/],
+  ['git update-index --skip-worktree scripts/lib/helper.sh', /skip-worktree or assume-unchanged/],
+  ['git update-index --assume-unchanged scripts/lib/helper.sh', /skip-worktree or assume-unchanged/],
+]) {
+  writeFileSync(join(shim,'git'),`#!/bin/sh\nif [ "$1" = status ]; then exit 0; fi\nif [ "$3" = worktree ] && [ "$4" = add ]; then\n  '${realGit}' "$@" || exit $?\n  cd "$6" || exit 1\n  ${mutation}\n  exit $?\nfi\nexec '${realGit}' "$@"\n`);
+  chmodSync(join(shim,'git'),0o755);
+  r = check(reviewHead,{PATH:`${shim}:${env.PATH}`});
+  assert.equal(r.status,2,r.stderr); assert.match(r.stderr,diagnostic); noCheckout();
 }
-unlinkSync(hook);
 // Fresh origin changes invalidate a once-identical head despite stale local main.
 writeFileSync(join(remote,'scripts/lib/helper.sh'),'# new trusted library\n'); rg('add','.'); rg('commit','-qm','updated trusted finder');
 r = check(); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/lib\/helper.sh/); noCheckout();
 rg('rm','scripts/codex-review.sh'); rg('commit','-qm','remove finder');
 r = check(); assert.notEqual(r.status,0); assert.match(r.stderr,/ships no scripts\/codex-review.sh/); noCheckout();
-console.log('PASS: detached exact-head default-identical finder execution, fresh-origin identity, missing head/finder, library changes, dirty/failing hooks, finder status, and cleanup');
+console.log('PASS: detached exact-head default-identical finder execution, fresh-origin identity, missing head/finder, library changes, disabled hooks, physical bytes, finder status, and cleanup');
 JS

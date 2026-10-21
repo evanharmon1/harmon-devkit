@@ -2,23 +2,13 @@
 # Sanctioned detached-worktree lifecycle for a vendored local finder pass.
 set -euo pipefail
 exec node --input-type=module - "$@" <<'JS'
-import { existsSync, realpathSync, mkdirSync, mkdtempSync, rmdirSync, readdirSync, lstatSync } from 'node:fs';
+import { existsSync, realpathSync, mkdirSync, readFileSync, writeFileSync, rmdirSync, readdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
-import { constants } from 'node:os';
-import { spawnSync, spawn } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
 const usage = 'usage: prepare-review-checkout.sh --repo-root DIR --head SHA -- <challenge|review> [finder arguments ...]';
 const fail = (message) => { throw new Error(message); };
-let checkout, root, finderProcess, interrupted, added = false;
-const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-const onSignal = (signal) => {
-  interrupted ??= signal;
-  if (finderProcess) finderProcess.kill(signal);
-  // Cleanup must not depend on a shell or finder promptly handling its signal.
-  const cleaned = cleanup();
-  process.exit(cleaned ? 128 + constants.signals[signal] : 2);
-};
-for (const signal of signals) process.on(signal, onSignal);
+let checkout, root, added = false;
 const execute = (argv, cwd = root) => spawnSync('git', argv, { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
 const git = (...argv) => {
   const r = execute(argv);
@@ -28,7 +18,7 @@ const git = (...argv) => {
 const cleanup = () => {
   if (checkout) {
     // Force applies only to the newly allocated scratch tree, including dirt
-    // created by hooks or the finder; never adopt or delete an existing tree.
+    // created by the finder; existing paths require the ownership proof below.
     const r = added ? execute(['worktree', 'remove', '--force', checkout]) : { status: 1 };
     if (r.status !== 0 && existsSync(checkout)) {
       try { rmdirSync(checkout); }
@@ -76,11 +66,29 @@ try {
   const parent = join(root, '.worktrees');
   mkdirSync(parent, { recursive: true });
   if (realpathSync(parent) !== parent) fail('.worktrees must not be a symlink');
-  checkout = mkdtempSync(join(parent, `review-${head.slice(0, 12)}-`));
-  // Mark ownership before add: a post-checkout hook can fail after Git has
-  // registered the worktree. Cleanup still removes only our unique path.
+  const destination = join(parent, `review-${head}`);
+  const markerName = 'review-checkout-owner';
+  const ownership = `prepare-review-checkout:${root}:${head}\n`;
+  // The marker belongs to this checkout's private Git metadata, keeping the
+  // working tree clean without shared exclusions or finder environment changes.
+  const marker = (path) => {
+    const r = execute(['rev-parse', '--absolute-git-dir'], path);
+    if (r.status !== 0) fail('cannot locate checkout ownership marker');
+    return join(r.stdout.trim(), markerName);
+  };
+  if (existsSync(destination)) {
+    if (lstatSync(destination).isSymbolicLink() || realpathSync(destination) !== destination) fail('refusing unowned review checkout');
+    const top = execute(['rev-parse', '--show-toplevel'], destination);
+    if (top.status !== 0 || top.stdout.trim() !== destination) fail('refusing unowned review checkout');
+    const owner = marker(destination);
+    if (!existsSync(owner) || !lstatSync(owner).isFile() || lstatSync(owner).isSymbolicLink() || readFileSync(owner, 'utf8') !== ownership) fail('refusing unowned review checkout');
+    git('worktree', 'remove', '--force', destination);
+    git('worktree', 'prune');
+  }
+  checkout = destination;
   added = true;
-  git('worktree', 'add', '--detach', checkout, head);
+  git('-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '--detach', checkout, head);
+  writeFileSync(marker(checkout), ownership, { flag: 'wx' });
   const exactHead = () => {
     const detached = execute(['symbolic-ref', '-q', 'HEAD'], checkout);
     if (detached.status !== 1) fail('review checkout is not detached');
@@ -93,8 +101,8 @@ try {
     if (r.status !== 0 || r.stdout !== '') fail('review checkout is dirty (including ignored files)');
   };
   clean();
-  // Status can hide skip-worktree/assume-unchanged paths, and hooks run after
-  // the object-tree proof. Verify the physical file set and unfiltered bytes.
+  // Status can hide skip-worktree/assume-unchanged paths. After
+  // the object-tree proof, Verify the physical file set and unfiltered bytes.
   const flags = execute(['ls-files', '-v', '-z', '--', finder, 'scripts/lib/'], checkout);
   if (flags.status !== 0) fail('could not read finder index flags');
   for (const entry of flags.stdout.split('\0').filter(Boolean)) {
@@ -120,24 +128,15 @@ try {
   const changed = [...new Set([...trusted.keys(), ...files.keys()])]
     .filter((path) => trusted.get(path)?.split(' ')[2] !== files.get(path));
   if (changed.length) fail(`finder bytes differ from default branch: ${changed.join(', ')}`);
-  if (interrupted) fail(`interrupted by ${interrupted}`);
-  const r = await new Promise((resolve, reject) => {
-    finderProcess = spawn('bash', [join(checkout, finder), ...finderArgs], { cwd: checkout, stdio: 'inherit' });
-    finderProcess.once('error', reject);
-    finderProcess.once('exit', (status, signal) => resolve({ status, signal }));
-  });
-  finderProcess = undefined;
-  if (r.signal) interrupted ??= r.signal;
+  const r = spawnSync('bash', [join(checkout, finder), ...finderArgs], { cwd: checkout, stdio: 'inherit' });
   exactHead();
   clean();
-  if (r.status === null && !interrupted) fail('finder did not complete');
-  process.exitCode = r.status ?? 128 + constants.signals[interrupted];
+  if (r.status === null) fail('finder did not complete');
+  process.exitCode = r.status;
 } catch (error) {
   process.stderr.write(`prepare-review-checkout: ${error.message}\n`);
   process.exitCode = 2;
 } finally {
-  if (interrupted) process.exitCode = 128 + constants.signals[interrupted];
-  for (const signal of signals) process.removeListener(signal, onSignal);
   if (!cleanup()) process.exitCode = 2;
 }
 JS

@@ -327,7 +327,9 @@ authorizes publishing the supplied adjudication, followed by the computed
 exit in `verdict.json`. Every valid verification-only projection is atomically
 persisted as `verdict.json` before its action is handled, including dispatch,
 escalation, and a later final-exit failure; it is also retained in
-`verification.<stage>.json`. For a round awaiting adjudication, a dispatch or escalation stops the
+`verification.<stage>.json`. Failed verification (including exit 2 and reject
+diagnostics) atomically replaces `verdict.json` with a stage- and round-bound
+indeterminate verdict before exiting. For a round awaiting adjudication, a dispatch or escalation stops the
 sequence and prints its reason without writing an adjudication. A replay of
 an already adjudicated round skips that write and recomputes its exit. For partial rounds, omit
 `--adjudication`; when verification requests it, rerun with the owning
@@ -363,7 +365,7 @@ commit (blob identity and mode, with added/deleted paths included). It refuses
 and names differing paths; a repository without the default branch's finder
 is refused cleanly. It runs the head's own script only after this identity
 proof, so the script's directory change targets the captured head and its
-libraries are the default branch's bytes. After hooks and immediately before
+libraries are the default branch's bytes. After checkout and immediately before
 execution, it also compares the physical file set and each file's unfiltered
 `git hash-object` blob id with the fetched default branch. It refuses extra,
 missing, or changed files, symlinks, and any skip-worktree or assume-unchanged
@@ -371,16 +373,19 @@ index flags under these paths. It preserves the finder's exit
 status; it never parses or wraps its text into a pass envelope.
 
 **Sanctioned worktree exception:** this vendored command cannot depend on a
-consumer's `task worktree:new`. It allocates a unique `review-<shortsha>-…`
-checkout under `<repo>/.worktrees/` with `git worktree add --detach`, lets hooks
-run normally, verifies the exact detached head and cleanliness after hooks
-(including ignored files), and removes its own checkout with `git worktree
-remove` after the pass or a refusal. INT, TERM, and HUP also run this cleanup and
-return the conventional signal status (130, 143, and 129 respectively).
-Existing paths are never adopted. Hook
-failure, dirt, unavailable commits, or failed cleanup is a refusal; this is
-the bounded exception to `docs/conventions.md`'s worktree provisioning rule,
-not permission for an agent to provision feature branches by hand.
+consumer's `task worktree:new`. It uses the deterministic
+`<repo>/.worktrees/review-<sha>` path. Creation uses
+`git -c core.hooksPath=/dev/null worktree add --detach`: hooks are disabled
+for this command only. It writes an ownership marker in the checkout's private
+Git metadata, verifies the exact detached head and cleanliness (including
+ignored files), and removes its checkout after a completed pass or refusal.
+On the next invocation for that SHA, a leftover checkout with the matching
+ownership marker is removed with `git worktree remove --force`, then
+`git worktree prune`, and recreated. An unmarked path is refused.
+An interrupted run may leave the checkout until the next run for that SHA.
+Unavailable commits, dirt, or failed cleanup is a refusal; this is the bounded
+exception to `docs/conventions.md`'s worktree provisioning rule, not permission
+for an agent to provision feature branches by hand.
 
 ## Verify, adjudicate, publish, exit
 

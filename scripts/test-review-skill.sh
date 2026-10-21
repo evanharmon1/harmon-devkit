@@ -89,11 +89,11 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
 echo "==> review names the local recorder and sanctioned checkout lifecycle"
 for text in 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
     'Only `action: adjudicate`' 'A failed validator stops every later step' \
-    '**Sanctioned worktree exception:**' 'lets hooks' 'scripts/lib/' \
+    '**Sanctioned worktree exception:**' 'hooks are disabled' 'scripts/lib/' \
     '--owner-token <token>' 'Integrator passes are outside' \
     'Awaiting an orchestrator adjudication exits **23**' \
     'Every valid verification-only projection is atomically' \
-    'skip-worktree or assume-unchanged' 'INT, TERM, and HUP'; do
+    'skip-worktree or assume-unchanged' 'An interrupted run may leave the checkout'; do
     grep -Fq -- "$text" "$skill" || fail "review local-pass contract is missing: $text"
 done
 

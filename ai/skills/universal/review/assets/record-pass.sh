@@ -119,7 +119,12 @@ try {
     try { writeFileSync(temporary, bytes, { flag: 'wx' }); renameSync(temporary, path); }
     finally { rmSync(temporary, { force: true }); }
   };
-  const verified = compute(true);
+  let verified;
+  try { verified = compute(true); }
+  catch (error) {
+    persist('verdict.json', `${JSON.stringify({ stage, round, reviewed_head: head, outcome: 'indeterminate', action: 'escalate', reason: error.message })}\n`);
+    throw error;
+  }
   persist(`verification.${stage}.json`, verified.r.stdout);
   persist('verdict.json', verified.r.stdout);
   // A replay of an already adjudicated round needs no new authorization to
