@@ -103,9 +103,12 @@ try {
   const writer = (command, ...a) => execute(process.execPath, [join(support, 'run-record.mjs'), command, '--slate', o.slate, '--session', o.session, '--run-id', record.run_id, ...a], [0], { ...process.env, RUN_RECORD_OWNER_TOKEN: token });
   writer('receipt', '--pass', envelopePath);
   const configuredSlots = read(join(directory, 'policy.json')).stages[stage].finders;
-  const receipts = read(runPath).receipts ?? [];
+  const currentRecord = read(runPath);
+  const receipts = currentRecord.receipts ?? [];
   const missingSlots = configuredSlots.filter((configured) => !receipts.some((receipt) =>
-    receipt.kind === 'pass' && receipt.file === `${stage}-r${round}-${configured}`));
+    receipt.kind === 'pass' && receipt.file === `${stage}-r${round}-${configured}`)
+    && !(currentRecord.slot_failures ?? []).some((failure) =>
+      failure.stage === stage && failure.round === round && failure.slot === configured));
   if (missingSlots.length) {
     process.stdout.write(`awaiting slots: ${missingSlots.join(', ')}\n`);
     process.exitCode = 24;

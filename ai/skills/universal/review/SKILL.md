@@ -323,7 +323,9 @@ assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
 The command validates its input envelope, existing run, and supplied
 adjudication before the first write. It then chains the shared writer's
 `receipt` → wait for every configured stage/round slot in the run's
-`policy.json` → `ledger --stage` → verification-only exit. An incomplete round
+`policy.json` to settle through either a pass receipt or a `slot_failures`
+record for that same stage and round → `ledger --stage` → verification-only
+exit. An incomplete round
 exits **24** immediately after the receipt, prints `awaiting slots: <missing slots>`
 on stdout, and leaves `verdict.json` untouched. Record the remaining passes
 before requesting verification. Only `action: adjudicate`

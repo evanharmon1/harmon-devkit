@@ -17,7 +17,7 @@ const copied = join(tmp, 'skills');
 cpSync(join(assets, '../../dev-flow-support'), join(copied, 'dev-flow-support'), { recursive: true });
 cpSync(join(assets, '../../orchestrate'), join(copied, 'orchestrate'), { recursive: true });
 mkdirSync(join(copied, 'review/assets'), { recursive: true });
-cpSync(join(assets, 'record-pass.sh'), join(copied, 'review/assets/record-pass.sh'));
+cpSync(process.env.REVIEW_RECORDER_TEST_TOOL ?? join(assets, 'record-pass.sh'), join(copied, 'review/assets/record-pass.sh'));
 const support = join(copied, 'dev-flow-support/assets');
 const recorder = join(copied, 'review/assets/record-pass.sh');
 const writer = join(support, 'run-record.mjs');
@@ -104,27 +104,55 @@ refused('invalid policy',()=>invoke(argv.map(a=>a===join(repo,'.devflow.toml')?b
 console.log('PASS: input refusals leave the entire run directory byte-identical');
 // A partial round retains its receipt without replacing the prior verdict.
 const priorRun = join(tmp,'prior-run'); cpSync(dir,priorRun,{recursive:true});
-const multiPolicy = read(join(dir,'policy.json'));
 const secondSlot = 'copilot-adversarial';
-multiPolicy.stages.challenge.finders.push(secondSlot);
-put(join(dir,'policy.json'),multiPolicy);
+const addFinder = ['--add-finder',`challenge:${secondSlot}`];
+const multiResolution = run(process.execPath,[join(support,'devflow-policy.mjs'),'resolve','--policy','.devflow.toml','--registry','agent-registry.json','--json',...addFinder]);
+assert.ok([0,3].includes(multiResolution.status),multiResolution.stderr);
+const multiPolicy = JSON.parse(multiResolution.stdout);
+assert.deepEqual(multiPolicy.stages.challenge.finders,[policy.stages.challenge.finders[0],secondSlot]);
+writeFileSync(join(dir,'policy.json'),multiResolution.stdout);
+const multiRecord = read(join(dir,'run.json'));
+multiRecord.finder_selection = multiPolicy.finder_selection;
+put(join(dir,'run.json'),multiRecord);
+const multiRun = join(tmp,'multi-run'); cpSync(dir,multiRun,{recursive:true});
+const multiArgs = [...argv.filter((a,i)=>a !== '--adjudication' && argv[i-1] !== '--adjudication'),...addFinder];
 const priorVerdict = '{"stage":"prior","reason":"retain byte for byte"}\n';
 writeFileSync(join(dir,'verdict.json'),priorVerdict);
-const awaiting = invoke(argv.filter((a,i)=>a !== '--adjudication' && argv[i-1] !== '--adjudication'));
+const awaiting = invoke(multiArgs);
 assert.equal(awaiting.status,24,awaiting.stdout+awaiting.stderr);
 assert.equal(awaiting.stdout,`awaiting slots: ${secondSlot}\n`);
 assert.equal(readFileSync(join(dir,'verdict.json'),'utf8'),priorVerdict);
 assert.equal(existsSync(join(dir,'heads.json')),false);
-const multiEngine = join(support,'multi-exit.mjs');
-writeFileSync(multiEngine,"console.log(JSON.stringify({stage:'challenge',action:'adjudicate',reason:'fixture complete'}));\n");
 const secondPass = envelope('challenge'); secondPass.payload.finder = secondSlot; secondPass.payload.slot = secondSlot;
 put(passFile,secondPass);
-const complete = invoke([...argv.filter((a,i)=>a !== '--adjudication' && argv[i-1] !== '--adjudication'),'--exit-engine',multiEngine]);
+const complete = invoke(multiArgs);
 assert.equal(complete.status,23,complete.stdout+complete.stderr);
 assert.equal(read(join(dir,'verdict.json')).action,'adjudicate');
+// Close round 1 through the real writer before beginning round 2.
+const adjudicatedMulti = invoke([...multiArgs,'--adjudication',adjFile]);
+assert.equal(adjudicatedMulti.status,20,adjudicatedMulti.stdout+adjudicatedMulti.stderr);
+// Earlier-round receipts cannot settle the missing second slot in round 2.
+const nextPass = envelope('challenge'); nextPass.payload.round = 2;
+put(passFile,nextPass);
+const beforeNext = readFileSync(join(dir,'verdict.json'));
+const nextAwaiting = invoke(multiArgs);
+assert.equal(nextAwaiting.status,24,nextAwaiting.stdout+nextAwaiting.stderr);
+assert.equal(nextAwaiting.stdout,`awaiting slots: ${secondSlot}\n`);
+assert.deepEqual(readFileSync(join(dir,'verdict.json')),beforeNext);
+// An explicitly exhausted slot settles completeness and reaches the real
+// engine's terminal escalation rather than waiting forever for a receipt.
+rmSync(dir,{recursive:true}); cpSync(multiRun,dir,{recursive:true});
+const failedRecord = read(join(dir,'run.json'));
+failedRecord.slot_failures = [{stage:'challenge',round:1,slot:secondSlot,reason:'finder_unavailable',head}];
+put(join(dir,'run.json'),failedRecord);
+put(passFile,envelope('challenge'));
+const unavailable = invoke(multiArgs);
+assert.equal(unavailable.status,22,unavailable.stdout+unavailable.stderr);
+assert.equal(read(join(dir,'verdict.json')).action,'escalate');
+assert.equal(read(join(dir,'verdict.json')).reason,'finder_unavailable');
 rmSync(dir,{recursive:true}); cpSync(priorRun,dir,{recursive:true});
 put(passFile,envelope('challenge'));
-console.log('PASS: first of two finder receipts awaits slots without touching verdict; second proceeds');
+console.log('PASS: real two-finder engine, round-bound receipts, and unavailable-slot escalation');
 // Swap the validator in the vendored fixture. The production command has no
 // validator-disable switch. Fail only after ledger creation, proving that a
 // later validation failure stops adjudication, including in an outer pipeline.
