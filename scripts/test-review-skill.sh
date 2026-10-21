@@ -93,7 +93,7 @@ for text in 'Use `assets/record-pass.sh` to record a local role envelope and `as
     '--owner-token <token>' 'Integrator passes are outside' \
     'Awaiting an orchestrator adjudication exits **23**' \
     'Every valid verification-only projection is atomically' \
-    'skip-worktree or assume-unchanged' 'An interrupted run may leave the checkout'; do
+    'skip-worktree or assume-unchanged' 'An interrupted run may leave its checkout'; do
     grep -Fq -- "$text" "$skill" || fail "review local-pass contract is missing: $text"
 done
 

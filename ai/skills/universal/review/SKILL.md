@@ -373,19 +373,19 @@ index flags under these paths. It preserves the finder's exit
 status; it never parses or wraps its text into a pass envelope.
 
 **Sanctioned worktree exception:** this vendored command cannot depend on a
-consumer's `task worktree:new`. It uses the deterministic
-`<repo>/.worktrees/review-<sha>` path. Creation uses
-`git -c core.hooksPath=/dev/null worktree add --detach`: hooks are disabled
-for this command only. It writes an ownership marker in the checkout's private
-Git metadata, verifies the exact detached head and cleanliness (including
-ignored files), and removes its checkout after a completed pass or refusal.
-On the next invocation for that SHA, a leftover checkout with the matching
-ownership marker is removed with `git worktree remove --force`, then
-`git worktree prune`, and recreated. An unmarked path is refused.
-An interrupted run may leave the checkout until the next run for that SHA.
-Unavailable commits, dirt, or failed cleanup is a refusal; this is the bounded
-exception to `docs/conventions.md`'s worktree provisioning rule, not permission
-for an agent to provision feature branches by hand.
+consumer's `task worktree:new`. It allocates a unique per-run checkout under
+`<repo>/.worktrees/` with `git worktree add --detach`. For the entire run,
+hooks are disabled through exported `GIT_CONFIG_COUNT=1`,
+`GIT_CONFIG_KEY_0=core.hooksPath`, and `GIT_CONFIG_VALUE_0=/dev/null`, inherited
+by every Git process the tool, finder, and its children start. It retains the
+on-disk byte proof and verifies the exact detached head and cleanliness
+(including ignored files). Cleanup removes only this run's checkout, and only
+after its worktree add succeeded; a failed add authorizes no removal.
+An interrupted run may leave its checkout; clean it up manually with
+`git worktree remove <path>`. Unavailable commits, dirt, or failed cleanup is a
+refusal. This is the bounded exception to `docs/conventions.md`'s worktree
+provisioning rule, not permission for an agent to provision feature branches
+by hand.
 
 ## Verify, adjudicate, publish, exit
 

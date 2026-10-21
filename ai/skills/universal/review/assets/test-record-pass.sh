@@ -7,7 +7,7 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 node --input-type=module - "$asset_dir" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync, renameSync, chmodSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync, renameSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -208,6 +208,11 @@ cd "$(dirname "$0")/.."
 [ "$(git rev-parse HEAD)" = "$EXPECTED_REVIEW_HEAD" ]
 [ -z "$(git status --porcelain)" ]
 [ "$(git symbolic-ref -q HEAD || true)" = "" ]
+if [ -n "\${FINDER_NESTED_CHECKOUT:-}" ]; then
+  git worktree add --detach "$FINDER_NESTED_CHECKOUT" HEAD
+  git -C "$FINDER_NESTED_CHECKOUT" status --porcelain
+  git worktree remove "$FINDER_NESTED_CHECKOUT"
+fi
 printf 'DEFAULT-FINDER:%s:%s\\n' "$(git rev-parse HEAD)" "$1"
 exit "\${FINDER_FIXTURE_STATUS:-0}"
 `);
@@ -226,17 +231,6 @@ const noCheckout = () => {
   if(existsSync(join(consumer,'.worktrees'))) assert.deepEqual(readdirSync(join(consumer,'.worktrees')),[]);
 };
 r = check(); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,new RegExp(`DEFAULT-FINDER:${reviewHead}:review`)); noCheckout();
-const destination = join(consumer,'.worktrees',`review-${reviewHead}`);
-cg('-c','core.hooksPath=/dev/null','worktree','add','--detach',destination,reviewHead);
-const checkoutGit = sh('git',['rev-parse','--absolute-git-dir'],destination);
-writeFileSync(join(checkoutGit,'review-checkout-owner'),`prepare-review-checkout:${consumer}:${reviewHead}\n`);
-writeFileSync(join(destination,'stale.txt'),'interrupted finder dirt');
-r = check(); assert.equal(r.status,0,r.stderr); noCheckout();
-mkdirSync(destination); writeFileSync(join(destination,'unowned.txt'),'retain me');
-r = check(); assert.equal(r.status,2); assert.match(r.stderr,/unowned/);
-assert.equal(readFileSync(join(destination,'unowned.txt'),'utf8'),'retain me');
-rmSync(destination,{recursive:true}); noCheckout();
-console.log('PASS: owned stale checkout is reaped and recreated; unmarked path is retained and refused');
 r = check(reviewHead,{FINDER_FIXTURE_STATUS:'9'}); assert.equal(r.status,9,r.stderr); noCheckout();
 r = check('f'.repeat(40)); assert.notEqual(r.status,0); noCheckout();
 writeFileSync(join(consumer,'scripts/codex-review.sh'),'echo HEAD-FINDER\n'); cg('add','.'); cg('commit','-qm','changed finder');
@@ -244,17 +238,22 @@ r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.s
 cg('restore','--source',defaultHead,'scripts/codex-review.sh');
 writeFileSync(join(consumer,'scripts/lib/helper.sh'),'# head library\n'); cg('add','.'); cg('commit','-qm','changed library');
 r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/lib\/helper.sh/); noCheckout();
-// A head-relative hook must never execute, even with matching finder blobs.
+// Relative hooks must remain disabled in tool status, finder status, and
+// the finder's nested worktree add (including its post-checkout hook).
 cg('restore','--source',defaultHead,'scripts/lib/helper.sh');
 const sentinel = join(tmp,'hook-sentinel');
 mkdirSync(join(consumer,'.githooks'));
-writeFileSync(join(consumer,'.githooks/post-checkout'),`#!/bin/sh\ntouch '${sentinel}'\n`);
-chmodSync(join(consumer,'.githooks/post-checkout'),0o755);
-cg('add','.'); cg('commit','-qm','head-relative hook');
+for (const hook of ['post-checkout','post-index-change']) {
+  writeFileSync(join(consumer,'.githooks',hook),`#!/bin/sh\necho "$0" >> '${sentinel}'\n`);
+  chmodSync(join(consumer,'.githooks',hook),0o755);
+}
+cg('add','.'); cg('commit','-qm','head-relative hooks');
 cg('config','core.hooksPath','.githooks');
-r = check(cg('rev-parse','HEAD')); assert.equal(r.status,0,r.stderr);
+r = check(cg('rev-parse','HEAD'),{FINDER_NESTED_CHECKOUT:join(tmp,'nested-checkout')});
+assert.equal(r.status,0,r.stderr);
 assert.equal(existsSync(sentinel),false); noCheckout();
 cg('config','--unset','core.hooksPath');
+console.log('PASS: hooks stay disabled for tool status, finder status, and nested worktree creation');
 // Simulate materialization corruption while status hides dirt: the physical
 // proof must still reject changed, extra, missing, and index-hidden files.
 const shim = join(tmp,'git-shim'); mkdirSync(shim);
@@ -266,7 +265,7 @@ for (const [mutation,diagnostic] of [
   ['git update-index --skip-worktree scripts/lib/helper.sh', /skip-worktree or assume-unchanged/],
   ['git update-index --assume-unchanged scripts/lib/helper.sh', /skip-worktree or assume-unchanged/],
 ]) {
-  writeFileSync(join(shim,'git'),`#!/bin/sh\nif [ "$1" = status ]; then exit 0; fi\nif [ "$3" = worktree ] && [ "$4" = add ]; then\n  '${realGit}' "$@" || exit $?\n  cd "$6" || exit 1\n  ${mutation}\n  exit $?\nfi\nexec '${realGit}' "$@"\n`);
+  writeFileSync(join(shim,'git'),`#!/bin/sh\nif [ "$1" = status ]; then exit 0; fi\nif [ "$1" = worktree ] && [ "$2" = add ]; then\n  '${realGit}' "$@" || exit $?\n  cd "$4" || exit 1\n  ${mutation}\n  exit $?\nfi\nexec '${realGit}' "$@"\n`);
   chmodSync(join(shim,'git'),0o755);
   r = check(reviewHead,{PATH:`${shim}:${env.PATH}`});
   assert.equal(r.status,2,r.stderr); assert.match(r.stderr,diagnostic); noCheckout();
