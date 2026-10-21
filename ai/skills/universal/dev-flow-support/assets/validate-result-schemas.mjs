@@ -301,6 +301,44 @@ function loadBrief(file) {
 }
 
 function checkBriefFacts(instance, errors) {
+  // Lane labels already live in the rendered title and canonical sentinels;
+  // do not add a competing inferred identity to the envelope schema.
+  const ownLanes = new Set()
+  const prose = []
+  let fence = null
+  for (const line of instance.body.split(/\r?\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null
+    } else if (marker && (marker[1][0] !== '`' || !marker[2].includes('`'))) {
+      fence = marker[1]
+    } else {
+      prose.push(line)
+    }
+  }
+  const heading = prose.join('\n').match(/^# Lane brief — (.+?)(?: \([^\n]+\))?$/m)
+  if (heading) ownLanes.add(heading[1])
+  const suffix = `-${instance.sentinels.attempt_nonce}`
+  for (const field of ['ready', 'handoff', 'blocked']) {
+    const sentinel = instance.sentinels[field]
+    const prefix = `${field.toUpperCase()}-`
+    if (sentinel.startsWith(prefix) && sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
+  }
+  ownLanes.delete('')
+  if (ownLanes.size === 0) errors.push('$brief: cannot derive its own lane identity from the title or sentinels')
+  const overlaps = Array.isArray(instance.live_lane_overlaps) ? instance.live_lane_overlaps : [instance.live_lane_overlaps]
+  for (const entry of overlaps) {
+    // Every entry must first parse as the builder's canonical lane tuple.
+    // Free-form prose cannot bypass the identity comparison.
+    const identity = /^lane `([^`\r\n]+)` \(#([1-9][0-9]*), branch `([^`\r\n]+)`, wave [1-9][0-9]*\)(?: [^\r\n]+)?$/.exec(entry)
+    if (!identity) {
+      errors.push('$brief.live_lane_overlaps: non-canonical lane tuple')
+      continue
+    }
+    if (ownLanes.has(identity[1]) || Number(identity[2]) === instance.issue.number || identity[3] === instance.branch) {
+      errors.push('$brief.live_lane_overlaps: names its own lane by label, branch or issue')
+    }
+  }
   if (instance.branch !== instance.claim_handoff.branch) {
     errors.push(
       `$brief.branch: ${JSON.stringify(instance.branch)} does not match claim_handoff.branch ${JSON.stringify(instance.claim_handoff.branch)}`

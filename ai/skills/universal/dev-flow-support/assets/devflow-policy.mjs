@@ -57,6 +57,7 @@
 import { lstatSync, readFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { parseToml, TomlError } from "./lib/toml-lite.mjs";
 
@@ -1981,6 +1982,70 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  */
 export function resolvePolicy(doc, opts = {}) {
   return applyTierInputs(resolveGoverningPolicy(doc, opts), opts);
+}
+
+// Validate a retained projection through the same resolver as its source.
+// Reconstruct only the selected tables; provenance/disclosure metadata is
+// retained by the caller, never interpreted as execution configuration here.
+export function validateResolvedPolicy(policy) {
+  for (const key of ["rigor", "rounds", "breadth", "spend", "gates", "convergence", "tier_order", "roles", "stages", "strategy"]) {
+    if (!policy || !Object.hasOwn(policy, key) || policy[key] === null) {
+      throw new PolicyError(`resolved policy is missing ${key}`);
+    }
+  }
+  const { rigor, rounds, breadth, spend, convergence, strategy } = policy;
+  const profile = { rounds: rounds.policy, breadth: breadth.policy, tier_escalation: rigor.tier_escalation };
+  if (spend.policy !== null) profile.spend = spend.policy;
+  const doc = {
+    rigor_order: CANONICAL_RIGOR_ORDER,
+    default_rigor: rigor.level,
+    rigor: { [rigor.level]: profile },
+    rounds: { [rounds.policy]: rounds },
+    breadth: { [breadth.policy]: breadth },
+    spend: { [spend.policy]: Object.fromEntries(Object.entries(spend).filter(([, value]) => value !== null)) },
+    gates: policy.gates,
+    tier_order: policy.tier_order,
+    role: policy.roles,
+    stage: Object.fromEntries(Object.entries(policy.stages).map(([name, table]) => {
+      const copy = { ...table };
+      if (copy.pool === null) delete copy.pool;
+      return [name, copy];
+    })),
+    convergence: Object.fromEntries(["converged", "diverging"].map((name) =>
+      [name, { [convergence[name]?.kind]: convergence[name]?.list }])),
+    default_strategy: strategy.name,
+    strategy: { [strategy.name]: strategy },
+    ...(policy.tier_matrix == null ? {} : { tier: { matrix: policy.tier_matrix } }),
+  };
+  const checked = resolveV2(doc);
+  // Defaults in authored TOML must not silently repair an incomplete resolved
+  // document: the retained execution fields must already be the full output.
+  const fields = {
+    rounds: ["policy", ...ROUND_KEYS, "integration_exempt"],
+    breadth: ["policy", ...BREADTH_KEYS],
+    spend: ["policy", "max_tokens", "max_usd", "status"],
+  };
+  for (const [key, names] of Object.entries(fields)) for (const name of names) {
+    if (!isDeepStrictEqual(policy[key][name], checked[key][name])) {
+      throw new PolicyError(`resolved policy ${key}.${name} is incomplete or noncanonical`);
+    }
+  }
+  for (const key of ["stages", "strategy"]) {
+    if (!isDeepStrictEqual(policy[key], checked[key])) {
+      throw new PolicyError(`resolved policy ${key} is incomplete or noncanonical`);
+    }
+  }
+  for (const key of [...GATE_KEYS, "docs_only_paths"]) {
+    if (!isDeepStrictEqual(policy.gates[key], checked.gates[key])) {
+      throw new PolicyError(`resolved policy gates.${key} is incomplete or noncanonical`);
+    }
+  }
+  for (const role of ROLES) for (const key of ["tier", "families", "harnesses"]) {
+    if (!isDeepStrictEqual(policy.roles[role]?.[key], checked.roles[role][key])) {
+      throw new PolicyError(`resolved policy roles.${role}.${key} is incomplete or noncanonical`);
+    }
+  }
+  return policy;
 }
 
 function resolveGoverningPolicy(doc, opts) {
