@@ -57,10 +57,11 @@ an existing `info/grafts` file makes ancestry indeterminate. A definite stale
 refusal exits 19 from `check-codex-cloud-review.sh`; the readiness gate maps
 it to indeterminate (exit 2) on every verdict-bearing command, so a stale
 checkout is never a fail or evidence about the PR. `fingerprint` carries no
-verdict and skips freshness checking; its content digest is the same from a
-stale or current checkout. If the PR base commit is unavailable locally, fetch
-that commit from the PR's base repository before running the checker or gate.
-Neither script fetches automatically.
+verdict and skips freshness checking. Compare its output only with a
+fingerprint produced by the same checkout's gate bytes; a stale checkout may
+carry different fingerprint code. If the PR base commit is unavailable
+locally, fetch that commit from the PR's base repository before running the
+checker or gate. Neither script fetches automatically.
 
 **Arguments:** $ARGUMENTS
 
@@ -1468,9 +1469,14 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     inventing a poller of your own. The agent absorbs the single
     reserve-retry attempt (exit `12`) internally within one dispatch, so you
     should never see `12` at this level.
-  - `codex_cycle.exit_code: 19` (stale local asset checkout) — stop as an
-    indeterminate checkout blocker and re-run from an up-to-date checkout.
-    This is not the remediation-cap stop below.
+  - A checker exit `19` — whether recorded as `codex_cycle.exit_code: 19` or
+    reported with `codex_cycle: null` because a stale `reserve` (including a
+    `carry` that falls through to `reserve`) posted no trigger — is an
+    indeterminate stale-checkout blocker. With `codex_cycle: null`, the
+    integrator posts no trigger; when a cycle exists, it retains exit 19 and
+    posts no further trigger. The orchestrator, never the integrator, updates
+    the asset checkout and re-dispatches. This is never the remediation-cap
+    stop below.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
     never-integrate-a-closed-PR rule), `15` (the reviewer's code-review

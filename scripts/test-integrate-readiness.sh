@@ -5321,6 +5321,7 @@ set -e
 [ "$stale_fingerprint_rc" -eq 0 ] &&
     [ "$(tail -n 1 <<<"$stale_fingerprint_out" | jq -r '.status // empty')" = fingerprint ] ||
     fail "fingerprint on a stale checkout should succeed: $stale_fingerprint_out"
+# This fixture changes only by the comment at L5246; equal output is not general for stale gate bytes.
 [ "$stale_fingerprint_out" = "$fresh_fingerprint_out" ] ||
     fail "stale fingerprint differs from the current-checkout identity: fresh=$fresh_fingerprint_out stale=$stale_fingerprint_out"
 write_defaults

@@ -872,6 +872,12 @@ recheck_codex_freshness() {
         indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
 }
 
+# Fingerprinting only recomputes PR-content identity; it carries no verdict.
+# A stale checkout must not invalidate a post-promotion content comparison.
+if [ "$command_name" != fingerprint ]; then
+    asset_freshness_check
+fi
+
 # `behind` is the read-only preflight the reserved-cycle rule needs. Before
 # dispatching the last permitted review cycle an integrator must know whether
 # the head is behind — and telling it to work that out itself would mean
@@ -879,12 +885,6 @@ recheck_codex_freshness() {
 # are tested, which is exactly the hand-rolling this skill forbids everywhere
 # else. Same code path as the gate, same exit vocabulary: 0 level, 1 behind,
 # 2 could not establish. It writes nothing and judges nothing else.
-# Fingerprinting only recomputes PR-content identity; it carries no verdict.
-# A stale checkout must not invalidate a post-promotion content comparison.
-if [ "$command_name" != fingerprint ]; then
-    asset_freshness_check
-fi
-
 if [ "$command_name" = behind ]; then
     behind_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
         indeterminate fetch-failed "cannot fetch the PR state"

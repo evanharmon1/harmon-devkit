@@ -141,9 +141,9 @@ The checker and readiness gate compare the relevant asset bytes between their
 checkout and the PR base. A checkout is stale only when its HEAD is an ancestor
 of that base and the bytes differ; shallow checkouts and checkouts with
 `info/grafts` are indeterminate. An unavailable local base is indeterminate,
-and these checks never fetch commits. On a stale refusal, update this checkout
-to the PR base or newer (fetch and fast-forward), or use the lane worktree where
-the recipe allows it.
+and these checks never fetch commits. On a stale refusal, stop and report the
+blocker; only the orchestrator updates the checkout and re-dispatches you. The
+integrator never fetches, fast-forwards, or switches worktrees to recover.
 
 Locate this skill's asset directory (the directory this file's dispatcher
 resolves it from, conventionally `ai/skills/universal/integrate/assets/`) and
@@ -557,6 +557,12 @@ carry_out="$("$helper" carry --state "$state" --head "<head>" \
 - **exit 14** — the PR is merged or closed. The stage is over: reserve,
   trigger, and poll nothing, and report `codex_cycle.exit_code: 14`, exactly as
   a `check` that returned 14.
+- **exit 19** — stale checkout, not a carry miss. Stop this pass, post no
+  trigger, and report the blocked envelope shape from §7: `status: "blocked"`,
+  `payload.codex_cycle: null`, and `payload.verdict: "escalate"`. The §9
+  blocker names checker exit 19, the checkout HEAD, and the PR base. Stop; the
+  orchestrator updates the checkout and re-dispatches. The integrator never
+  fetches, fast-forwards, or switches worktrees to recover.
 - **any other exit** — treat as 17 and continue. `carry` is an optimization
   over a cycle you were going to run anyway, so a broken one costs a cycle
   rather than a verdict.
@@ -611,8 +617,8 @@ Three cases, mutually exclusive:
       reserve_exit=0
       "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   fi
-  # A second 18 is a blocker; any other non-zero is a refusal. Either way:
-  # post no trigger, codex_cycle null, report it (below).
+  # A second 18 or exit 19 is a blocker; any other non-zero is a refusal. Either
+  # way: post no trigger, report codex_cycle null, and name the blocker below.
   [ "$reserve_exit" -eq 0 ] || exit "$reserve_exit"
   pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
   # Any mismatch: post no trigger, report codex_cycle null.
@@ -681,9 +687,12 @@ Three cases, mutually exclusive:
   re-run the same `reserve` once; if it exits 18 again, post no trigger,
   report `codex_cycle: null`, and report the lag as a blocker (§5). **Exit 19**
   means the checkout is stale because its HEAD is an ancestor of the PR base
-  and the base contains newer vendored assets; stop and re-run from an up-to-
-  date checkout. For `reserve`, no reservation was made and no trigger may be
-  posted. **Exit 2**
+  and the base contains newer vendored assets. Stop this pass, post no trigger,
+  and report the blocked envelope shape from §7: `status: "blocked"`,
+  `payload.codex_cycle: null`, and `payload.verdict: "escalate"`. The §9
+  blocker names checker exit 19, the checkout HEAD, and the PR base. Stop; the
+  orchestrator updates the checkout and re-dispatches. The integrator never
+  fetches, fast-forwards, or switches worktrees to recover. **Exit 2**
   naming a changed head means the PR moved past the brief's head — rewritten
   or superseded: post no trigger, report `codex_cycle: null` with the
   mismatch as a finding (§5), and stop this section. **Never re-capture the
@@ -735,11 +744,12 @@ and only moves off it when *this* call actually fails.
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
 PR no longer open, 15 quota exhausted, 16 transient read, 19 stale asset
 checkout, 2 indeterminate. On **19 (stale asset checkout)**, stop driving the
-cycle and report a blocked result with `verdict: "escalate"`, naming this
-remedy: update this checkout to the PR base or newer (fetch and fast-forward),
-or use the lane worktree where the recipe allows it. Do not trigger another
-review until the checkout is current. Keep the checker's detail in the report,
-not in `codex_cycle`.
+cycle and report a blocked result with `verdict: "escalate"`; retain exit 19
+in `codex_cycle`. The §9 blocker names checker exit 19, the checkout HEAD,
+and the PR base. Stop; the orchestrator updates the checkout and
+re-dispatches. Do not trigger another review. The integrator never fetches,
+fast-forwards, or switches worktrees to recover. Keep the checker's detail in
+the report, not in `codex_cycle`.
 On **12 (retry)**, repeat the
 two-call reserve/read → literal broker trigger (including attach) procedure
 above, including step 1's assignments, then `check`, once more with `--attempt 2` against the **same** state
