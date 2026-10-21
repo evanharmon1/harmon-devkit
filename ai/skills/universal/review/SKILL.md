@@ -296,6 +296,75 @@ and the receipt are yours, not the runner's. A finder failure is retried by
 its configured fallback and the substitution is recorded; exhausted coverage
 is a blocker, never a smaller round disguised as complete.
 
+## Record a local pass and prepare its checkout
+
+Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.
+
+The **owning orchestrator**, never the lane, calls the recorder with the role's
+validated envelope file; it never decodes CLI prose or invents challenger
+`attack_scenarios`. Integrator passes are outside this command's scope.
+Resolve the support directory physically, following its owner-token contract.
+For example, pass the reserved owner's token as specified there:
+
+```sh
+assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
+  --session <owner-session> --owner-token <token> --run-id <run-id> \
+  --pass <role-envelope.json> \
+  --head <captured-sha> --policy <governing-policy.toml> \
+  --adjudication <orchestrator-adjudication.json>
+```
+
+The command validates its input envelope, existing run, and supplied
+adjudication before the first write. It then chains the shared writer's
+`receipt` → `ledger --stage` → verification-only exit. Only `action: adjudicate`
+authorizes publishing the supplied adjudication, followed by the computed
+exit in `verdict.json`; verification is retained in
+`verification.<stage>.json`. For a round awaiting adjudication, a dispatch or escalation stops the
+sequence and prints its reason without writing an adjudication. A replay of
+an already adjudicated round skips that write and recomputes its exit. For partial rounds, omit
+`--adjudication`; when verification requests it, rerun with the owning
+orchestrator's file. A failed validator stops every later step, including when
+the recorder is in a pipeline (callers must retain `pipefail`). Rerun with the
+same bytes to resume: the shared writer receipts and adjudicates idempotently,
+and immutable published evidence is never replaced. Exit status is the exit
+engine's status (0, 20, 21, 22); usage, validation, and indeterminate failures
+exit 2. `--owner-token` is also accepted; authority is forwarded to every writer
+in its environment and is never persisted or printed.
+
+Use the already resolved governing policy and recorded rigor (`--rigor` may
+make it explicit). Under the merge-base rule, `--exit-engine` must name the
+trusted materialized merge-base `dev-flow-exit.mjs`, with its sibling closure;
+pass `--merge-base-policy <file>` or `--merge-base-policy-absent` as appropriate.
+Carry the same repeatable `--add-finder` / `--select-finder` flags used at
+resolution. The recorder does not establish a policy trust boundary for its
+caller. Public round evidence remains a separate, orchestrator-owned
+`assets/post-evidence.sh` publication after the computed exit.
+
+```sh
+assets/prepare-review-checkout.sh --repo-root <repo> --head <exact-sha> -- \
+  challenge --base <captured-base>
+```
+
+The companion requires the SHA locally, freshly discovers and fetches origin's
+default branch into `refs/remotes/origin/HEAD`, and compares the head's
+`scripts/codex-review.sh` plus every entry under `scripts/lib/` to that fetched
+commit (blob identity and mode, with added/deleted paths included). It refuses
+and names differing paths; a repository without the default branch's finder
+is refused cleanly. It runs the head's own script only after this identity
+proof, so the script's directory change targets the captured head and its
+libraries are the default branch's bytes. It preserves the finder's exit
+status; it never parses or wraps its text into a pass envelope.
+
+**Sanctioned worktree exception:** this vendored command cannot depend on a
+consumer's `task worktree:new`. It allocates a unique `review-<shortsha>-…`
+checkout under `<repo>/.worktrees/` with `git worktree add --detach`, lets hooks
+run normally, verifies the exact detached head and cleanliness after hooks
+(including ignored files), and removes its own checkout with `git worktree
+remove` after the pass or a refusal. Existing paths are never adopted. Hook
+failure, dirt, unavailable commits, or failed cleanup is a refusal; this is
+the bounded exception to `docs/conventions.md`'s worktree provisioning rule,
+not permission for an agent to provision feature branches by hand.
+
 ## Verify, adjudicate, publish, exit
 
 Before adjudication, run `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage

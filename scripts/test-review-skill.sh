@@ -86,6 +86,14 @@ done
 grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 
+echo "==> review names the local recorder and sanctioned checkout lifecycle"
+for text in 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
+    'Only `action: adjudicate`' 'A failed validator stops every later step' \
+    '**Sanctioned worktree exception:**' 'lets hooks' 'scripts/lib/' \
+    '--owner-token <token>' 'Integrator passes are outside'; do
+    grep -Fq -- "$text" "$skill" || fail "review local-pass contract is missing: $text"
+done
+
 echo "==> review stage advance writes and validates schema-shaped transitions"
 for text in 'Before replacing `run.json`, write the complete candidate beside it' \
     'dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>' \
