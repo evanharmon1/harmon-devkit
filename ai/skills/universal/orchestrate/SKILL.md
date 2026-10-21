@@ -572,6 +572,8 @@ because old pane output must not satisfy a later attempt.
 
 ## PR-open confirmation
 
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
+
 Before promoting a lane's PR, confirm the lane produced v2 evidence
 appropriate to its topology and resolved policy for the lane's active
 run ID. Each enabled confidence stage (resolved cap ≥ 1) must have its

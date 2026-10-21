@@ -4,7 +4,7 @@
 # This helper never writes to GitHub. The caller owns the explicit
 # `@codex review` comment between `reserve` and `attach`.
 #
-# Exit codes from `check`:
+# Exit codes from `check` and the shared freshness preflight:
 #   0  clean
 #   10 findings
 #   11 pending
@@ -33,6 +33,11 @@
 #      is required: reserve and trigger exactly as before. A normal negative
 #      answer, never an error, and every fail-closed path in `carry` lands
 #      here with its reason rather than on 2.
+#   19 stale checkout — the checkout HEAD is an ancestor of the PR base and
+#      the base contains a newer vendored integrate/dev-flow-support asset.
+#      Run from a current checkout. For `reserve`, no reservation was made
+#      and no trigger may be posted. Other subcommands refuse before reading
+#      command-specific evidence or changing persisted state.
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #
@@ -42,6 +47,8 @@
 # is different: `reserve`, which that contract does call, can now return it
 # where a lag used to be exit 2, which is safe for any caller that treats a
 # non-zero `reserve` as "post no trigger" (every documented recipe does).
+# 19 is the shared freshness preflight's definite stale-ancestor refusal;
+# indeterminate freshness remains exit 2, and no state or trigger is written.
 #
 # `reserve` adds one code of its own (harmon-devkit#1189):
 #   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
@@ -215,7 +222,9 @@ so an unstaged edit cannot influence it.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 15 quota exhausted, 16 transient read,
-2 indeterminate. Exit 15 is terminal for the HEAD, not just the cycle: no
+19 stale asset checkout, 2 indeterminate. Exit 19 is a blocker from the
+shared freshness check: update the checkout to the PR base or newer (fetch
+and fast-forward) before driving the cycle. Exit 15 is terminal for the HEAD, not just the cycle: no
 same-head reservation is accepted afterwards, so recovery is a new commit or
 an operator removing the state file (see #1115). Exit 14 means GitHub answered and
 the PR is MERGED or CLOSED: terminal for the whole shepherd stage — stop,
@@ -423,7 +432,9 @@ valid_slug() {
     grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' <<<"$1"
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=asset-freshness.sh
+. "$SCRIPT_DIR/asset-freshness.sh"
 # shellcheck source=gh-write-broker.sh
 . "$SCRIPT_DIR/gh-write-broker.sh"
 
@@ -905,6 +916,22 @@ write_state() {
         rm -f "$temporary"
         die "cannot write $destination"
     fi
+}
+
+asset_freshness_check() {
+    local freshness_status=0
+    if check_vendored_asset_freshness "$1" "$2" "$SCRIPT_DIR" "$timeout_bin"; then
+        return 0
+    else
+        freshness_status=$?
+    fi
+    case "$freshness_status" in
+    19)
+        printf 'codex-cloud-review: %s\n' "$asset_freshness_detail" >&2
+        exit 19
+        ;;
+    *) die "$asset_freshness_detail" ;;
+    esac
 }
 
 # Every field `settle` writes is validated here, not just the pair that
@@ -2365,6 +2392,7 @@ reserve)
         die "--remediation must be a non-negative integer"
     [ -z "$review_trigger" ] || valid_review_trigger "$review_trigger" ||
         die "--review-trigger must be one of after-ci, with-push, after-ci-first"
+    asset_freshness_check "$pr" "$repo"
     # harmon-devkit#1189: right after a push GitHub routinely reports the
     # previous head for a few seconds, so a reservation taken immediately
     # refused a benign race — and a caller that masked that refusal posted the
@@ -3037,6 +3065,7 @@ release)
         die "cannot compute the release scan boundary"
     # Use the broker's classifier, with no author filter: a trigger posted by
     # another actor is also evidence that the reservation cannot be released.
+    asset_freshness_check "$state_pr" "$state_repo"
     # shellcheck source=gh-write-broker.sh
     . "$SCRIPT_DIR/gh-write-broker.sh"
     release_comments=$(run_gh api --paginate --slurp \
@@ -3069,6 +3098,7 @@ attach)
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
+    asset_freshness_check "$(jq -r '.pr' "$state_file")" "$(jq -r '.repo' "$state_file")"
     # harmon-devkit#223: every `run_gh` call below (the head re-check and the
     # trigger-comment fetch) is budgeted off `$timeout_min` via the
     # `state_reserved` arithmetic in `run_gh` itself — it is not just the
@@ -3527,6 +3557,7 @@ carry)
     carry_previous_attests=$(jq -r '.carry.attests_head // empty' "$state_file")
     carry_generation=$(jq -r '.carry.generation // 0' "$state_file")
 
+    asset_freshness_check "$state_pr" "$state_repo"
     provider_status=0
     live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
     if [ "$provider_status" -eq 3 ]; then
@@ -3666,6 +3697,7 @@ ci-split)
     state_head=$(jq -r '.head' "$state_file")
     [ "$(jq -r '.run_id // empty' "$state_file")" = "$run_id" ] ||
         die "this cycle state does not belong to run $run_id"
+    asset_freshness_check "$state_pr" "$state_repo"
     recorded_split=$(jq -c '{charged:.charged_cycles, exempt:.exempt_cycles}' "$state_file")
     settle_ci_charge
     valid_uint_or_zero "${ci_split_charged:-}" && valid_uint_or_zero "${ci_split_exempt:-}" ||
@@ -3981,6 +4013,7 @@ check)
     # the window closes.
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
+    asset_freshness_check "$state_pr" "$state_repo"
     persist_adopted_timeout
 
     provider_status=0
@@ -5926,6 +5959,7 @@ settle)
 
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
+    asset_freshness_check "$state_pr" "$state_repo"
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
     settle_state_requested=$(jq -r '.requested_at // empty' "$state_file")

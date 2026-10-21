@@ -35,6 +35,24 @@ mkdir -p "$bin_dir" "$fixtures"
 git init -q "$test_repo"
 git -C "$test_repo" config user.name "Shepherd Test"
 git -C "$test_repo" config user.email "shepherd-test@example.invalid"
+fixture_asset_dir="$test_repo/ai/skills/universal/integrate/assets"
+fixture_support_dir="$test_repo/ai/skills/universal/dev-flow-support"
+fixture_support_assets="$fixture_support_dir/assets"
+mkdir -p "$fixture_asset_dir" "$fixture_support_assets"
+cp "$helper" "$fixture_asset_dir/check-codex-cloud-review.sh"
+cp "${repo_root}/ai/skills/universal/integrate/assets/asset-freshness.sh" \
+    "$fixture_asset_dir/asset-freshness.sh"
+cp "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" \
+    "$fixture_asset_dir/gh-write-broker.sh"
+cp "${repo_root}/ai/skills/universal/integrate/assets/trusted-registry.sh" \
+    "$fixture_asset_dir/trusted-registry.sh"
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib" \
+    "$fixture_support_assets/"
+printf '%s\n' '# freshness support fixture' >"$fixture_support_assets/fixture-support.sh"
+helper="$fixture_asset_dir/check-codex-cloud-review.sh"
+git -C "$test_repo" add ai/skills/universal/integrate/assets \
+    ai/skills/universal/dev-flow-support/assets
+git -C "$test_repo" commit -q -m "test: seed checker fixture assets"
 git -C "$test_repo" commit -q --allow-empty -m "previous head"
 git -C "$test_repo" commit -q --allow-empty -m "current head"
 cd "$test_repo"
@@ -91,6 +109,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # it did before reaping existed. `reap` needs per-PR control, so a
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
+    if [[ "$*" == *baseRefOid* ]]; then
+        cat "$GH_FIXTURES/base-head"
+        exit 0
+    fi
     [ ! -f "$GH_FIXTURES/fail-pr-$pr_number" ] || exit 94
     # review-r1 finding -6, site :1946: the SECOND PR head fetch is
     # unreachable by `fail-pr-<n>`, which trips the first one and exits before
@@ -112,10 +134,6 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
-    fi
-    if [[ "$*" == *baseRefOid* ]]; then
-        cat "$GH_FIXTURES/base-head"
-        exit 0
     fi
     # harmon-devkit#1189: `head-stale-calls` holds a call count. Up to and
     # including it the PR reports `head-stale` — GitHub still lagging a push —
@@ -2167,7 +2185,21 @@ printf '%s\n' 2 >"${fixtures}/slow-sec"
 TIMEOUT_ARGS_LOG="$timeout_args_log" "$helper" release --state "$state" \
     --note 'slow post-window recovery' --now '2026-07-31T09:00:00Z' >/dev/null
 [ "$(jq -r .phase "$state")" = released ] || fail 'slow release failed'
-awk '$3 != 60 {exit 1} END {if (NR == 0) exit 1}' "$timeout_args_log" || fail 'release budget is not independent'
+# The shared freshness probe has its own bounded `bash -c` timeout, whose
+# multi-line script body is logged as multiple records. Only inspect `gh`
+# invocations here: every API read must retain its independent 60s budget.
+awk '
+    $4 == "gh" {
+        gh_calls++
+        if ($3 != 60) {
+            printf "unexpected GitHub timeout: %s\n", $0 > "/dev/stderr"
+            bad = 1
+        }
+    }
+    END {
+        if (gh_calls == 0 || bad) exit 1
+    }
+' "$timeout_args_log" || fail 'release budget is not independent'
 
 echo "==> release never removes an attached trigger, including corrupt reserved phase"
 new_cycle
@@ -2321,7 +2353,18 @@ for attach_now in '2026-07-31T08:14:30Z' '2026-07-31T09:00:00Z'; do
         --trigger-id "$trigger_id" --now "$attach_now" >/dev/null
     attach_expected_budget=60
     [ "$attach_now" != '2026-07-31T08:14:30Z' ] || attach_expected_budget=30
-    awk -v expected="$attach_expected_budget" '$3 != expected {exit 1} END {if (NR < 5) exit 1}' "$timeout_args_log" ||
+    awk -v expected="$attach_expected_budget" '
+        $4 != "gh" {next}
+        {
+            gh_calls++
+            if (/baseRefOid/) {
+                if ($3 != 60) bad = 1
+                next
+            }
+            if ($3 != expected) bad = 1
+        }
+        END {if (gh_calls != 6 || bad) exit 1}
+    ' "$timeout_args_log" ||
         fail "attach did not receive its expected ${attach_expected_budget}s read budgets: $(cat "$timeout_args_log")"
 done
 
@@ -3341,6 +3384,21 @@ assert_reap '.kept' 1
 assert_reap '[.entries[] | .detail] | first' "PR state is unreadable"
 [ -f "${reap_root}/example/alpha/11.json" ] ||
     fail "unreadable PR state was deleted — it must be kept"
+
+echo "==> reap keeps an unreadable entry when the local PR base is unavailable"
+write_defaults
+rm -rf "$reap_root"
+seed_state example/alpha 11
+printf '%s\n' ffffffffffffffffffffffffffffffffffffffff >"${fixtures}/base-head"
+: >"${fixtures}/fail-pr-11"
+run_reap "$reap_root"
+[ "$reap_rc" -eq 0 ] ||
+    fail "an unavailable base aborted reap with exit $reap_rc: $reap_out"
+assert_reap '.reaped' 0
+assert_reap '.kept' 1
+assert_reap '[.entries[] | .detail] | first' "PR state is unreadable"
+[ -f "${reap_root}/example/alpha/11.json" ] ||
+    fail "reap deleted the entry it could not read"
 
 echo "==> an unrecognized PR state keeps its file"
 write_defaults
@@ -9168,6 +9226,239 @@ for (const timeline_json of ['[]', 'unreadable', JSON.stringify([[{ ...event, ac
 run(builder, { ...env, status: 'completed', blocker_json: 'null' })
 assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
 NODE
+
+echo "==> checker freshness refuses a stale ancestor for integrate assets"
+freshness_checkout_head=$(git rev-parse HEAD)
+freshness_state="${test_tmp}/freshness-state.json"
+freshness_integrate_asset="$fixture_asset_dir/gh-write-broker.sh"
+printf '\n# freshness integrate-asset fixture\n' >>"$freshness_integrate_asset"
+git add ai/skills/universal/integrate/assets/gh-write-broker.sh
+git commit -q -m "test: advance an integrate asset fixture"
+freshness_integrate_base=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_integrate_base" >"${fixtures}/base-head"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 19 ] ||
+    fail "stale checker ancestor should exit 19, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
+    "$freshness_out" == *"PR base $freshness_integrate_base"* ]] ||
+    fail "stale checker refusal did not name both SHAs: $freshness_out"
+[[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
+    fail "stale checker refusal did not name the workable update remedy: $freshness_out"
+[ ! -e "$freshness_state" ] ||
+    fail "stale checker checkout wrote a reservation before refusing"
+
+echo "==> checker freshness covers the sibling dev-flow-support asset directory"
+printf '\n# freshness support-asset fixture\n' >>"$fixture_support_assets/fixture-support.sh"
+git add ai/skills/universal/dev-flow-support/assets/fixture-support.sh
+git commit -q -m "test: advance a dev-flow-support asset fixture"
+freshness_support_base=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 19 ] ||
+    fail "stale checker support-asset ancestor should exit 19, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
+    "$freshness_out" == *"PR base $freshness_support_base"* ]] ||
+    fail "stale checker support-asset refusal did not name both SHAs: $freshness_out"
+
+echo "==> checker freshness accepts asset bytes changed and then reverted"
+git checkout -q -b freshness-revert "$freshness_checkout_head"
+printf '\n# temporary asset change\n' >>"$fixture_asset_dir/gh-write-broker.sh"
+git add ai/skills/universal/integrate/assets/gh-write-broker.sh
+git commit -q -m "test: change asset before revert fixture"
+git checkout -q "$freshness_checkout_head" -- ai/skills/universal/integrate/assets/gh-write-broker.sh
+git commit -q -m "test: restore asset bytes fixture"
+freshness_reverted_base=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_reverted_base" >"${fixtures}/base-head"
+rm -f "$freshness_state" "${freshness_state}.lock"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "change-then-revert asset bytes should be current, got $freshness_rc: $freshness_out"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_state" >/dev/null ||
+    fail "change-then-revert checkout did not reserve successfully: $freshness_out"
+
+echo "==> checker freshness ignores refs/replace when proving staleness"
+git replace --graft "$freshness_integrate_base"
+if git merge-base --is-ancestor "$freshness_checkout_head" "$freshness_integrate_base"; then
+    fail "replacement-ref fixture did not hide the real ancestor relationship"
+fi
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_integrate_base" >"${fixtures}/base-head"
+rm -f "$freshness_state" "${freshness_state}.lock"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 19 ] ||
+    fail "replacement ref must not make a stale checkout pass, got $freshness_rc: $freshness_out"
+git replace -d "$freshness_integrate_base" >/dev/null
+
+echo "==> checker freshness treats info/grafts as indeterminate"
+printf '%s %s\n' "$freshness_checkout_head" "$freshness_integrate_base" >.git/info/grafts
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+rm -f .git/info/grafts
+[ "$freshness_rc" -eq 2 ] && [[ "$freshness_out" == *"info/grafts"* ]] ||
+    fail "grafted checkout should be indeterminate, got $freshness_rc: $freshness_out"
+
+echo "==> checker freshness treats a shallow stale checkout as indeterminate"
+freshness_shallow_source_branch=freshness-shallow-source
+freshness_shallow_repo="${test_tmp}/freshness-shallow"
+git branch "$freshness_shallow_source_branch" "$freshness_support_base"
+git clone -q --depth 1 --branch "$freshness_shallow_source_branch" \
+    "file://${test_repo}" "$freshness_shallow_repo"
+git -C "$freshness_shallow_repo" fetch -q --depth 1 origin "$freshness_checkout_head"
+git -C "$freshness_shallow_repo" checkout -q "$freshness_checkout_head"
+[ "$(git -C "$freshness_shallow_repo" rev-parse --is-shallow-repository)" = true ] ||
+    fail "shallow fixture is not reported as shallow"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+freshness_shallow_helper="${freshness_shallow_repo}/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+freshness_shallow_state="${test_tmp}/freshness-shallow-state.json"
+set +e
+freshness_out=$("$freshness_shallow_helper" reserve --state "$freshness_shallow_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] && [[ "$freshness_out" == *"shallow"* ]] ||
+    fail "shallow stale checkout should be indeterminate, got $freshness_rc: $freshness_out"
+[ ! -e "$freshness_shallow_state" ] ||
+    fail "shallow stale checkout wrote a reservation before refusing"
+
+echo "==> checker freshness names the remedy for an unavailable base"
+missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
+printf '%s\n' "$missing_base_sha" >"${fixtures}/base-head"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "unavailable checker base should exit 2, got $freshness_rc: $freshness_out"
+[[ "$freshness_out" == *"asset freshness indeterminate"* &&
+    "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
+    "$freshness_out" == *"PR base $missing_base_sha"* &&
+    "$freshness_out" == *"fetching the PR base from its base repository if it is unavailable locally"* ]] ||
+    fail "unavailable checker base did not name the remedy and both SHAs: $freshness_out"
+
+echo "==> checker accepts a diverged lane checkout when the base moved an asset"
+git checkout -q -b freshness-lane "$freshness_checkout_head"
+printf '\n# freshness diverged lane fixture\n' >>"$fixture_asset_dir/trusted-registry.sh"
+git add ai/skills/universal/integrate/assets/trusted-registry.sh
+git commit -q -m "test: advance diverged lane asset fixture"
+freshness_diverged_head=$(git rev-parse HEAD)
+if git merge-base --is-ancestor "$freshness_diverged_head" "$freshness_support_base"; then
+    fail "diverged fixture HEAD unexpectedly is an ancestor of the PR base"
+fi
+head_sha=$freshness_diverged_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+rm -f "$freshness_state" "${freshness_state}.lock"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "diverged checker checkout should be accepted, got $freshness_rc: $freshness_out"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_state" >/dev/null ||
+    fail "diverged checker checkout did not reserve successfully: $freshness_out"
+
+echo "==> checker freshness accepts a current fixture checkout"
+git checkout -q "$freshness_support_base"
+rm -f "$freshness_state" "${freshness_state}.lock"
+head_sha=$freshness_support_base
+write_defaults
+GIT_TRACE=1 "$helper" reserve --state "$freshness_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >"${test_tmp}/freshness-reserve.json" 2>&1
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
+    fail "current checker checkout did not reserve successfully"
+
+echo "==> stale checker check and carry refuse without changing state"
+saved_state=$state
+state="${test_tmp}/freshness-clean-cycle.json"
+git checkout -q "$freshness_support_base"
+head_sha=$freshness_support_base
+write_defaults
+jq --arg base "$freshness_support_base" '.base.sha = $base' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.next"
+mv "${fixtures}/pr.next" "${fixtures}/pr.json"
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[{id:9001,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+git checkout -q -b freshness-carry-target "$freshness_support_base"
+printf '%s\n' 'freshness carry target' >freshness-target.txt
+git add freshness-target.txt
+git commit -q -m "test: create a later head for stale carry"
+freshness_carry_head=$(git rev-parse HEAD)
+head_sha=$freshness_carry_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+jq --arg base "$freshness_support_base" '.base.sha = $base' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.next"
+mv "${fixtures}/pr.next" "${fixtures}/pr.json"
+git checkout -q "$freshness_checkout_head"
+
+check_state="${test_tmp}/freshness-check-stale.json"
+carry_state="${test_tmp}/freshness-carry-stale.json"
+cp "$state" "$check_state"
+cp "$state" "$carry_state"
+cp "$check_state" "${check_state}.before"
+cp "$carry_state" "${carry_state}.before"
+set +e
+stale_check_out=$("$helper" check --state "$check_state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" 2>&1)
+stale_check_rc=$?
+stale_carry_out=$("$helper" carry --state "$carry_state" \
+    --head "$freshness_carry_head" 2>&1)
+stale_carry_rc=$?
+set -e
+[ "$stale_check_rc" -eq 19 ] && [ "$stale_carry_rc" -eq 19 ] ||
+    fail "stale check/carry should both exit 19 (check=$stale_check_rc: $stale_check_out; carry=$stale_carry_rc: $stale_carry_out)"
+cmp -s "$check_state" "${check_state}.before" ||
+    fail "stale check changed its state file"
+cmp -s "$carry_state" "${carry_state}.before" ||
+    fail "stale carry changed its state file"
+state=$saved_state
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
