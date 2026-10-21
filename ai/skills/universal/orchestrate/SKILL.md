@@ -787,6 +787,7 @@ time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
 Keep exactly one watcher per slate.
 Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as

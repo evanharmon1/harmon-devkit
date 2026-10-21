@@ -190,6 +190,12 @@ def main() -> int:
             "Never use `kill`, `pkill`, `killall`, or `xkill`.",
             "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.",
         ),
+        (
+            "orchestrator watcher deadline",
+            "Pass the watcher the latest `{{deadline}}`",
+            "its spec leaves the watcher at the next re-arm.",
+            "Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.",
+        ),
     )
     for name, start, end, expected in skill_ranges:
         pin_range(errors, name, skill, start, end, expected)
