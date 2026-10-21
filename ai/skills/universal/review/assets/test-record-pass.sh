@@ -139,6 +139,24 @@ const nextAwaiting = invoke(multiArgs);
 assert.equal(nextAwaiting.status,24,nextAwaiting.stdout+nextAwaiting.stderr);
 assert.equal(nextAwaiting.stdout,`awaiting slots: ${secondSlot}\n`);
 assert.deepEqual(readFileSync(join(dir,'verdict.json')),beforeNext);
+// Failures from another round or stage cannot settle the current slot.
+for (const [failureStage,failureRound] of [['challenge',2],['review',1]]) {
+  rmSync(dir,{recursive:true}); cpSync(multiRun,dir,{recursive:true});
+  if (failureStage === 'review') {
+    // A failure may name only a stage this run has actually visited.
+    for (const stage of ['review','implement','verify','challenge']) write('transition','--stage',stage,'--exit','fixture loop');
+  }
+  const unrelated = read(join(dir,'run.json'));
+  unrelated.slot_failures = [{stage:failureStage,round:failureRound,slot:secondSlot,reason:'finder_unavailable',head}];
+  put(join(dir,'run.json'),unrelated);
+  writeFileSync(join(dir,'verdict.json'),priorVerdict);
+  put(passFile,envelope('challenge'));
+  const pending = invoke(multiArgs);
+  assert.equal(pending.status,24,`${failureStage}/r${failureRound}: ${pending.stdout}${pending.stderr}`);
+  assert.equal(pending.stdout,`awaiting slots: ${secondSlot}\n`);
+  assert.equal(readFileSync(join(dir,'verdict.json'),'utf8'),priorVerdict);
+}
+console.log('PASS: unrelated round/stage slot failures do not settle the current slot');
 // An explicitly exhausted slot settles completeness and reaches the real
 // engine's terminal escalation rather than waiting forever for a receipt.
 rmSync(dir,{recursive:true}); cpSync(multiRun,dir,{recursive:true});
