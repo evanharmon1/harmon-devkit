@@ -226,4 +226,26 @@ case "$help" in
 *) fail "settle-wait.sh --help does not separate agent-mode and checks-mode exits" ;;
 esac
 
+# ── #1519: agy posture per profile, disclosed in the existing brief text ──
+# Scope these pins to Lane launch and waits, so matching prose elsewhere
+# cannot mask a missing launch-posture subsection.
+agy_posture="$test_tmp/agy-posture.md"
+sed -n '/^### Antigravity (agy) lane permission posture$/,/^### Cloud lanes$/p' "$skill" >"$agy_posture"
+contains "$agy_posture" "disclose the chosen posture in the lane brief's verified-facts/rulings text"
+contains "$agy_posture" '**Bot:** when `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`'
+contains "$agy_posture" 'bot-autonomy wrapper at `~/.local/bin/agy` injects `--dangerously-skip-permissions` for headless lane runs'
+contains "$agy_posture" "Bare interactive \`agy\` uses the bot's \`always-proceed\` settings"
+contains "$agy_posture" 'Not every bot launch carries the flag'
+contains "$agy_posture" 'A launcher that resolves `agy` another way must pass `--dangerously-skip-permissions` itself for headless lane runs'
+contains "$agy_posture" "**Dev:** use the template's \`.devcontainer/config/antigravity-settings-dev.json\`"
+contains "$agy_posture" "With \`HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled\`, the dev profile's post-create"
+contains "$agy_posture" 'step runs `apply-antigravity-settings.sh` to apply that file **user-global** at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer'
+contains "$agy_posture" "This posture holds only in a devcontainer built with the template's dev settings; a pre-existing container needs a rebuild before agy lanes run"
+contains "$agy_posture" "**Host:** use the user's own agy settings; the template's dev-profile settings are not applied to the host"
+contains "$agy_posture" '**Agent:** agy is refused by `.devcontainer/config/agent/harnesses.json`; do not launch an agy lane in that profile'
+contains "$agy_posture" "The maintainer's 2026-10-18 ruling keeps the existing template dev settings: this changes no lane-scoped allowlist"
+contains "$agy_posture" 'Refer to the template-owned settings file rather than copying its contents here'
+contains "$agy_posture" 'changes no live behaviour'
+contains "$agy_posture" 'The agy launch argv and lane workspace directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290)'
+
 echo "lane launch and waits: ok"

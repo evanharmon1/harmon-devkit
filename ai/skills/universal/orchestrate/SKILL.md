@@ -756,6 +756,36 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+### Antigravity (agy) lane permission posture
+
+Choose the agy permission posture from the actual devcontainer profile or host,
+and disclose the chosen posture in the lane brief's verified-facts/rulings text:
+
+- **Bot:** when `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the template's
+  bot-autonomy wrapper at `~/.local/bin/agy` injects
+  `--dangerously-skip-permissions` for headless lane runs. Bare interactive
+  `agy` uses the bot's `always-proceed` settings; the wrapper passes it and
+  supported informational subcommands through without injecting the flag.
+  Not every bot launch carries the flag. A launcher that resolves `agy`
+  another way must pass `--dangerously-skip-permissions` itself for headless
+  lane runs.
+- **Dev:** use the template's `.devcontainer/config/antigravity-settings-dev.json`.
+  With `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the dev profile's post-create
+  step runs `apply-antigravity-settings.sh` to apply that file **user-global**
+  at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer.
+  This posture holds only in a devcontainer built with the template's dev
+  settings; a pre-existing container needs a rebuild before agy lanes run.
+- **Host:** use the user's own agy settings; the template's dev-profile
+  settings are not applied to the host.
+- **Agent:** agy is refused by `.devcontainer/config/agent/harnesses.json`;
+  do not launch an agy lane in that profile.
+
+The maintainer's 2026-10-18 ruling keeps the existing template dev settings:
+this changes no lane-scoped allowlist. Refer to the template-owned settings
+file rather than copying its contents here. This section documents the posture
+and changes no live behaviour. The agy launch argv and lane workspace
+directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290).
+
 ### Cloud lanes
 
 Cloud lanes are used only on the operator’s explicit request.
