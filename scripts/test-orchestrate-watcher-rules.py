@@ -193,8 +193,8 @@ def main() -> int:
         (
             "orchestrator watcher deadline",
             "Pass the watcher the latest `{{deadline}}`",
-            "its spec leaves the watcher at the next re-arm.",
-            "Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.",
+            "then re-arm only for lanes with a later deadline.",
+            "Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm. A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.",
         ),
     )
     for name, start, end, expected in skill_ranges:
