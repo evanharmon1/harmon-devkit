@@ -375,9 +375,12 @@ status; it never parses or wraps its text into a pass envelope.
 **Sanctioned worktree exception:** this vendored command cannot depend on a
 consumer's `task worktree:new`. It allocates a unique per-run checkout under
 `<repo>/.worktrees/` with `git worktree add --detach`. For the entire run,
-hooks are disabled through exported `GIT_CONFIG_COUNT=1`,
-`GIT_CONFIG_KEY_0=core.hooksPath`, and `GIT_CONFIG_VALUE_0=/dev/null`, inherited
-by every Git process the tool, finder, and its children start. It retains the
+hooks are disabled by appending `core.hooksPath=/dev/null` and
+`core.fsmonitor=false` to the caller's existing `GIT_CONFIG_COUNT` entries.
+The exported entries are inherited by every Git process the tool, finder, and
+its children start. The run unsets `GIT_CONFIG_PARAMETERS` so it cannot override
+these settings, and exports `GIT_NO_REPLACE_OBJECTS=1` so all Git children read
+real objects rather than replacement refs. It retains the
 on-disk byte proof and verifies the exact detached head and cleanliness
 (including ignored files). Cleanup removes only this run's checkout, and only
 after its worktree add succeeded; a failed add authorizes no removal.

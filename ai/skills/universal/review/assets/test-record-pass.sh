@@ -235,6 +235,17 @@ r = check(reviewHead,{FINDER_FIXTURE_STATUS:'9'}); assert.equal(r.status,9,r.std
 r = check('f'.repeat(40)); assert.notEqual(r.status,0); noCheckout();
 writeFileSync(join(consumer,'scripts/codex-review.sh'),'echo HEAD-FINDER\n'); cg('add','.'); cg('commit','-qm','changed finder');
 r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/codex-review.sh/); assert.doesNotMatch(r.stdout,/HEAD-FINDER/); noCheckout();
+const changedFinderHead = cg('rev-parse','HEAD');
+cg('replace',defaultHead,changedFinderHead);
+r = check(changedFinderHead); assert.equal(r.status,2); assert.match(r.stderr,/finder differs/);
+assert.doesNotMatch(r.stdout,/HEAD-FINDER/); noCheckout();
+cg('replace','-d',defaultHead);
+// Preserve caller-provided transport aliases when appending safety settings.
+cg('remote','set-url','origin','fixture-alias:origin');
+r = check(reviewHead,{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:`url.${remote}.insteadOf`,GIT_CONFIG_VALUE_0:'fixture-alias:origin'});
+assert.equal(r.status,0,r.stderr); noCheckout();
+cg('remote','set-url','origin',remote);
+console.log('PASS: replacement refs cannot alter the proof and caller transport config survives');
 cg('restore','--source',defaultHead,'scripts/codex-review.sh');
 writeFileSync(join(consumer,'scripts/lib/helper.sh'),'# head library\n'); cg('add','.'); cg('commit','-qm','changed library');
 r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/lib\/helper.sh/); noCheckout();
@@ -247,12 +258,20 @@ for (const hook of ['post-checkout','post-index-change']) {
   writeFileSync(join(consumer,'.githooks',hook),`#!/bin/sh\necho "$0" >> '${sentinel}'\n`);
   chmodSync(join(consumer,'.githooks',hook),0o755);
 }
+mkdirSync(join(consumer,'tools'));
+writeFileSync(join(consumer,'tools/fsmon'),`#!/bin/sh\necho fsmonitor >> '${sentinel}'\nexit 1\n`);
+chmodSync(join(consumer,'tools/fsmon'),0o755);
 cg('add','.'); cg('commit','-qm','head-relative hooks');
 cg('config','core.hooksPath','.githooks');
-r = check(cg('rev-parse','HEAD'),{FINDER_NESTED_CHECKOUT:join(tmp,'nested-checkout')});
+cg('config','core.fsmonitor','tools/fsmon');
+r = check(cg('rev-parse','HEAD'),{
+  FINDER_NESTED_CHECKOUT:join(tmp,'nested-checkout'),
+  GIT_CONFIG_PARAMETERS: "'core.hooksPath'='.githooks' 'core.fsmonitor'='tools/fsmon'",
+});
 assert.equal(r.status,0,r.stderr);
 assert.equal(existsSync(sentinel),false); noCheckout();
 cg('config','--unset','core.hooksPath');
+cg('config','--unset','core.fsmonitor');
 console.log('PASS: hooks stay disabled for tool status, finder status, and nested worktree creation');
 // Simulate materialization corruption while status hides dirt: the physical
 // proof must still reject changed, extra, missing, and index-hidden files.

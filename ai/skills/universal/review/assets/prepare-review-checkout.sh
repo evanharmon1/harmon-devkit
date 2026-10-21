@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # Sanctioned detached-worktree lifecycle for a vendored local finder pass.
 set -euo pipefail
-# Invariant for this tool, the finder, and every Git child they start.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=core.hooksPath
-export GIT_CONFIG_VALUE_0=/dev/null
+# These invariants are inherited by the finder and every Git child.
+export GIT_NO_REPLACE_OBJECTS=1
+unset GIT_CONFIG_PARAMETERS
 exec node --input-type=module - "$@" <<'JS'
 import { realpathSync, mkdirSync, mkdtempSync, readdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+// Preserve caller entries (for example transport rewrites), then override
+// executable Git integrations for the entire tool/finder process tree.
+const configCount = Number(process.env.GIT_CONFIG_COUNT ?? '0');
+if (!Number.isSafeInteger(configCount) || configCount < 0) throw new Error('invalid GIT_CONFIG_COUNT');
+for (const [offset, [key, value]] of [['core.hooksPath', '/dev/null'], ['core.fsmonitor', 'false']].entries()) {
+  process.env[`GIT_CONFIG_KEY_${configCount + offset}`] = key;
+  process.env[`GIT_CONFIG_VALUE_${configCount + offset}`] = value;
+}
+process.env.GIT_CONFIG_COUNT = String(configCount + 2);
 const args = process.argv.slice(2);
 const usage = 'usage: prepare-review-checkout.sh --repo-root DIR --head SHA -- <challenge|review> [finder arguments ...]';
 const fail = (message) => { throw new Error(message); };
