@@ -908,6 +908,13 @@ if [ "$command_name" = "activate" ]; then
     [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
     mkdir -p "$(dirname "$active_state")"
     acquire_lock "$active_state"
+    target_run_record="$(dirname "$(state_path)")/run.json"
+    if [ -e "$target_run_record" ]; then
+        validate_run_record "$run_id" "$target_run_record" activation ||
+            die "activation refused: $run_record_reason"
+        [ -z "$run_record_outcome" ] ||
+            die "activation refused: target run $run_id has already ended (outcome $run_record_outcome)"
+    fi
     if [ -e "$active_state" ]; then
         # Re-arm after a crash that landed the activation: adopt the exact
         # already-active generation instead of superseding it a second time.

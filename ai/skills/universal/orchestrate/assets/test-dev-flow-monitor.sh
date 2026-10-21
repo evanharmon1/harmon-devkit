@@ -306,8 +306,40 @@ grep -qF 'concurrently retired; retry activation' <<<"$race_output" ||
 output="$("$MONITOR" retire --run-id run-retire --repo-root "$FIXTURE_REPO")"
 grep -qF 'nothing of this run to retire' <<<"$output" ||
     fail "retiring a run with an absent pointer did not report a successful no-op: $output"
+replay_rc=0
+replay_output="$("$MONITOR" activate --active-state "$retire_pointer" --run-id run-retire \
+    --branch retire-branch --expected-predecessor absent --expected-generation 0 \
+    --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || replay_rc=$?
+[ "$replay_rc" -eq 2 ] || fail "activation replayed an ended run after retirement: $replay_output"
+grep -qF 'target run run-retire has already ended' <<<"$replay_output" ||
+    fail "ended-run activation refusal was unclear: $replay_output"
+[ ! -e "$retire_pointer" ] || fail "refused ended-run replay recreated the active pointer"
+pass "activation refuses replay of the original request after its ended run was retired"
 generation="$(activate_run "$FIXTURE_REPO" run-retire-next retire-branch "$FIXTURE_REV")"
 [ "$generation" = 1 ] || fail "a new run on the retired branch did not restart at generation 1: $generation"
+next_retire_record="$(dirname "$("$MONITOR" state-path --run-id run-retire-next --repo-root "$FIXTURE_REPO")")/run.json"
+jq -n '{schema: 2, run_id: "run-retire-next", outcome: "capped"}' >"$next_retire_record"
+"$MONITOR" retire --run-id run-retire-next --repo-root "$FIXTURE_REPO" >/dev/null
+replay_rc=0
+replay_output="$("$MONITOR" activate --active-state "$retire_pointer" --run-id run-retire \
+    --branch retire-branch --expected-predecessor absent --expected-generation 0 \
+    --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || replay_rc=$?
+[ "$replay_rc" -eq 2 ] || fail "activation replayed an ended run after an intervening run ended and retired: $replay_output"
+[ ! -e "$retire_pointer" ] || fail "intervening-run replay recreated the active pointer"
+pass "activation refuses an ended run's original request after an intervening run also ended and retired"
+ended_target=run-activate-ended
+ended_record="$(dirname "$("$MONITOR" state-path --run-id "$ended_target" --repo-root "$FIXTURE_REPO")")/run.json"
+mkdir -p "$(dirname "$ended_record")"
+jq -n --arg run "$ended_target" '{schema: 2, run_id: $run, outcome: "abandoned"}' >"$ended_record"
+ended_pointer="$("$MONITOR" active-path --branch ended-target-branch --repo-root "$FIXTURE_REPO")"
+ended_rc=0
+ended_output="$("$MONITOR" activate --active-state "$ended_pointer" --run-id "$ended_target" \
+    --branch ended-target-branch --expected-predecessor absent --expected-generation 0 \
+    --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || ended_rc=$?
+[ "$ended_rc" -eq 2 ] || fail "activation accepted an already-ended unbound target: $ended_output"
+[ ! -e "$(dirname "$ended_record")/branch.json" ] || fail "ended target activation wrote a branch binding before refusal"
+[ ! -e "$ended_pointer" ] || fail "ended target activation wrote an active pointer before refusal"
+pass "activation refuses ended target runs before writing their branch binding"
 pass "retirement deletes only a validated terminal pointer; fresh activation starts at generation 1 and stale activation explains a safe retry"
 
 echo "--- Activation compares predecessor identity across a generation restart ---"

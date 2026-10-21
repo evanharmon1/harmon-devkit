@@ -86,7 +86,6 @@ import {
   rmdirSync,
   rmSync,
   unlinkSync,
-  writeSync,
   writeFileSync,
   linkSync,
 } from 'node:fs'
@@ -1624,17 +1623,15 @@ function lockCommand(sub, args) {
 export function runCli(main) {
   try {
     const message = main(process.argv.slice(2))
-    if (message) writeSync(process.stdout.fd, `${message}\n`)
+    if (message) console.log(message)
   } catch (error) {
     if (error instanceof UsageError) {
-      writeSync(process.stderr.fd, `usage: ${error.message}\n`)
-      process.exitCode = 2
-      return
+      console.error(`usage: ${error.message}`)
+      process.exit(2)
     }
     if (error instanceof Refusal) {
-      writeSync(process.stderr.fd, `refused: ${error.message}\n`)
-      process.exitCode = 1
-      return
+      console.error(`refused: ${error.message}`)
+      process.exit(1)
     }
     throw error
   }

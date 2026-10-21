@@ -11864,7 +11864,9 @@ expect_ok "orchestrate: names the canonical active-pointer directory (#1544)" \
     grep -qF '<git-common-dir>/dev-flow-v2/active/' "$ORCH_MD"
 expect_ok "orchestrate: retires the matching pointer after terminal readback (#1544)" \
     grep -qF "matching run's pointer after the validated terminal record is written and" "$ORCH_MD"
-expect_ok "orchestrate: reserves activation until the named event is reconciled (#1544)" \
+expect_ok "orchestrate: blocks activation while an ended run has a reserved event (#1544)" \
+    grep -qF 'blocks a new activation on that branch.' "$ORCH_MD"
+expect_ok "orchestrate: binds monitor observations to event, action and head (#1544)" \
     grep -qF "Every observation must match the reservation's event, action and expected head." "$ORCH_MD"
 expect_ok "orchestrate: documents prune's dry-run and terminal-only behavior (#1544)" \
     grep -qF 'run-record.mjs prune --dry-run' "$ORCH_MD"

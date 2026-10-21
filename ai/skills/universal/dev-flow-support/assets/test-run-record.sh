@@ -532,9 +532,10 @@ pass "close retires active pointers for capped and escalated outcomes"
 
 terminal_pointer="$(pointer_for_run run-capped)"
 registry_revision="$(git -C "$repo" rev-parse HEAD)"
-"$monitor" activate --active-state "$terminal_pointer" --run-id run-capped --branch fixture-run-capped \
-    --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
-    --writer feature-owner --repo-root "$repo" >/dev/null
+# Model a stale terminal pointer left behind when retirement could not remove it.
+jq -n --arg run run-capped --arg branch fixture-run-capped --arg registry "$registry_revision" \
+    '{version: 1, run_id: $run, branch: $branch, generation: 1, registry_revision: $registry}' \
+    >"$terminal_pointer"
 prune_dry_run="$(cd "$repo" && node "$writer" prune --dry-run)"
 grep -qF "would remove ${terminal_pointer##*/} (run run-capped" <<<"$prune_dry_run" ||
     fail "run-record prune --dry-run did not report a terminal pointer: $prune_dry_run"

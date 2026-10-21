@@ -909,8 +909,10 @@ appending to a worktree's `.git` path (which is a file in linked worktrees).
 `assets/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
-with `active-path`, and activate a new run by compare-and-swap from the prior
-generation while passing the kickoff-pinned registry revision; the resulting
+with `active-path`, and activate a new run by compare-and-swap using
+`--expected-predecessor <run-id|absent>` and `--expected-generation <n>`: pass
+the observed predecessor identity and generation, or `absent` and `0` when no
+pointer exists. Also pass the kickoff-pinned registry revision; the resulting
 active pointer is the run's immutable registry binding. Activation also binds
 each run ID to exactly one branch before any branch-specific pointer can write
 its canonical monitor ledger. Every `reserve` and
