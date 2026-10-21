@@ -3685,6 +3685,7 @@ function main() {
   const skipped = skippedContextFlags(kind, role, options)
   const skippedPart = skipped.length > 0 ? `, context skipped: ${skipped.join(', ')}` : ''
   report(errors, `${kind} result OK (role=${instance.role ?? 'n/a'}, status=${instance.status ?? 'n/a'}${skippedPart})`)
+  return
 }
 
 function report(errors, okMessage) {

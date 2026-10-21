@@ -10,6 +10,7 @@ usage() {
 Usage:
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
+  dev-flow-monitor.sh check-activation --branch BRANCH --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh retire --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh prune [--dry-run] [--repo-root DIR]
   dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID --nonce NONCE \
@@ -387,8 +388,8 @@ run_branch_binding() {
 }
 
 monitor_has_unreconciled_reservation() {
-    local monitor
-    monitor="$(state_path)"
+    local monitor="${1:-}"
+    [ -n "$monitor" ] || monitor="$(state_path)"
     [ -e "$monitor" ] || return 1
     [ -f "$monitor" ] && [ ! -L "$monitor" ] || die "monitor state is not a regular file: $monitor"
     jq -e '
@@ -396,6 +397,56 @@ monitor_has_unreconciled_reservation() {
         all(.actions[]; .state == "reserved" or .state == "adopted")
     ' "$monitor" >/dev/null 2>&1 || die "monitor state is invalid: $monitor"
     jq -e '[.actions[] | select(.state == "reserved")] | length > 0' "$monitor" >/dev/null 2>&1
+}
+
+activation_guard_locked() {
+    local pointer="$1" target_run="$2" pointer_run pointer_branch common_dir run_record monitor outcome events
+    [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
+    jq -e '
+        .version == 1 and
+        (.run_id | type == "string" and test("^[A-Za-z0-9._-]+$") and . != "." and . != "..") and
+        (.branch | type == "string" and length > 0) and
+        (.generation | type == "number" and . > 0 and floor == .) and
+        (.registry_revision | type == "string" and test("^[0-9a-f]{40}$"))
+    ' "$pointer" >/dev/null 2>&1 || die "active pointer is invalid: $pointer"
+    pointer_run="$(jq -r '.run_id' "$pointer")"
+    pointer_branch="$(jq -r '.branch' "$pointer")"
+    [ "$pointer_branch" = "$branch" ] || die "active pointer branch does not match activation branch $branch"
+    [ "$pointer_run" != "$target_run" ] || return 0
+
+    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+        die "could not resolve git common directory"
+    run_record="$common_dir/dev-flow-v2/runs/$pointer_run/run.json"
+    [ -e "$run_record" ] || return 0
+    [ -f "$run_record" ] && [ ! -L "$run_record" ] || die "active run record is not a regular file: $run_record"
+    jq -e --arg run "$pointer_run" '
+        .schema == 2 and .run_id == $run and
+        (.outcome == null or .outcome == "ready-for-review" or .outcome == "capped" or
+         .outcome == "escalated" or .outcome == "abandoned")
+    ' "$run_record" >/dev/null 2>&1 || die "active run record is invalid; cannot safely check activation for run $pointer_run"
+    outcome="$(jq -r '.outcome // empty' "$run_record")"
+    [ -n "$outcome" ] || return 0
+
+    monitor="$common_dir/dev-flow-v2/runs/$pointer_run/monitor.json"
+    if monitor_has_unreconciled_reservation "$monitor"; then
+        events="$(jq -r '[.actions[] | select(.state == "reserved") | .event] | join(", ")' "$monitor")"
+        die "activation refused: ended run $pointer_run on branch $branch has unreconciled reserved event(s) [$events]; reconcile the listed event(s), then retire --run-id $pointer_run or prune its pointer before activating"
+    fi
+}
+
+check_activation() {
+    validate_run_id
+    [ -n "$branch" ] || die "branch is required"
+    local pointer
+    pointer="$(active_path)"
+    if [ -e "$pointer" ]; then
+        [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
+        acquire_lock "$pointer"
+        if [ -e "$pointer" ]; then
+            activation_guard_locked "$pointer" "$run_id"
+        fi
+    fi
+    printf 'activation preflight passed for branch %s\n' "$branch"
 }
 
 retire_active_pointer() {
@@ -582,6 +633,11 @@ if [ "$command_name" = "retire" ]; then
     exit 0
 fi
 
+if [ "$command_name" = "check-activation" ]; then
+    check_activation
+    exit 0
+fi
+
 if [ "$command_name" = "prune" ]; then
     prune_active_pointers
     exit 0
@@ -638,6 +694,7 @@ if [ "$command_name" = "activate" ]; then
             printf '%s\n' "$((expected_generation + 1))"
             exit 0
         fi
+        activation_guard_locked "$active_state" "$run_id"
         current_generation="$(jq -r '.generation // empty' "$active_state")"
         [[ "$current_generation" =~ ^[1-9][0-9]*$ ]] || die "active run state is invalid"
     else

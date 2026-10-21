@@ -308,15 +308,38 @@ pass "retire leaves a newer run's pointer untouched"
 activate_run "$FIXTURE_REPO" run-retire-reserved reserved-branch "$FIXTURE_REV" >/dev/null
 reserved_pointer="$("$MONITOR" active-path --branch reserved-branch --repo-root "$FIXTURE_REPO")"
 reserved_state="$("$MONITOR" state-path --run-id run-retire-reserved --repo-root "$FIXTURE_REPO")"
-jq -n '{version: 1, cursor: null, actions: [{event: "evt", action: "push", state: "reserved"}]}' >"$reserved_state"
+reserved_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+"$MONITOR" reserve --state "$reserved_state" --event evt --action push \
+    --expected-head "$reserved_head" --writer feature-owner \
+    --active-state "$reserved_pointer" --run-id run-retire-reserved \
+    --branch reserved-branch --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null
+reserved_record="$(dirname "$reserved_state")/run.json"
+jq -n --arg run run-retire-reserved '{schema: 2, run_id: $run, outcome: "abandoned"}' >"$reserved_record"
 output="$("$MONITOR" retire --run-id run-retire-reserved --repo-root "$FIXTURE_REPO")"
 grep -qF 'deferred run run-retire-reserved' <<<"$output" || fail "unreconciled reservation did not defer retirement: $output"
 [ -f "$reserved_pointer" ] || fail "retire deleted a pointer with an unreconciled reservation"
-jq '.actions[0].state = "adopted"' "$reserved_state" >"$reserved_state.tmp"
-mv "$reserved_state.tmp" "$reserved_state"
+activation_rc=0
+activation_output="$("$MONITOR" activate --active-state "$reserved_pointer" --run-id run-retire-next-reserved \
+    --branch reserved-branch --expected-generation 1 --registry-revision "$FIXTURE_REV" \
+    --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || activation_rc=$?
+[ "$activation_rc" -eq 2 ] || fail "activation was not refused while the ended run had a reserved action: $activation_output"
+grep -qF 'run-retire-reserved' <<<"$activation_output" || fail "activation refusal omitted the ended run id: $activation_output"
+grep -qF 'evt' <<<"$activation_output" || fail "activation refusal omitted the reservation event id: $activation_output"
+grep -qF 'reconcile' <<<"$activation_output" || fail "activation refusal omitted the reconciliation remedy: $activation_output"
+grep -qF 'retire' <<<"$activation_output" || fail "activation refusal omitted the retirement remedy: $activation_output"
+grep -qF 'prune' <<<"$activation_output" || fail "activation refusal omitted the prune remedy: $activation_output"
+[ "$(jq -r '.run_id' "$reserved_pointer")" = run-retire-reserved ] || fail "refused activation replaced the old active pointer"
+observed="$tmp/reserved-observed.json"
+jq -n --arg event evt --arg head "$reserved_head" \
+    '{status: "landed", event: $event, action: "push", head: $head}' >"$observed"
+"$MONITOR" reconcile --state "$reserved_state" --event evt --observed "$observed" \
+    --active-state "$reserved_pointer" --run-id run-retire-reserved --branch reserved-branch \
+    --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null
 "$MONITOR" retire --run-id run-retire-reserved --repo-root "$FIXTURE_REPO" >/dev/null
 [ ! -e "$reserved_pointer" ] || fail "retirement did not resume after reservation reconciliation"
-pass "an unreconciled reservation defers retirement until reconciliation"
+generation="$(activate_run "$FIXTURE_REPO" run-retire-next-reserved reserved-branch "$FIXTURE_REV")"
+[ "$generation" = 1 ] || fail "activation did not succeed at generation 1 after reconciliation and retirement: $generation"
+pass "a deferred terminal retirement blocks new activation until the action is reconciled and the pointer retired"
 
 activate_run "$FIXTURE_REPO" run-retire-held held-branch "$FIXTURE_REV" >/dev/null
 held_pointer="$("$MONITOR" active-path --branch held-branch --repo-root "$FIXTURE_REPO")"

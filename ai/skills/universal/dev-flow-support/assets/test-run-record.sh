@@ -15,6 +15,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY G
 
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 writer="$asset_dir/run-record.mjs"
+validator="$asset_dir/validate-result-schemas.mjs"
 monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
 
 fail() {
@@ -105,6 +106,18 @@ no_candidates() {
         fail "$1: a candidate file was left behind"
     fi
 }
+
+invalid_run="$tmp/invalid-run.json"
+jq -n '{}' >"$invalid_run"
+validator_output=""
+validator_rc=0
+validator_output="$(node "$validator" run "$invalid_run" 2>&1)" || validator_rc=$?
+[ "$validator_rc" -eq 1 ] || fail "invalid run did not fail validation: exit=$validator_rc output=$validator_output"
+grep -qF 'FAIL:' <<<"$validator_output" || fail "invalid run did not report a validation failure: $validator_output"
+if grep -qF 'run record OK' <<<"$validator_output"; then
+    fail "validator printed success after a failed report: $validator_output"
+fi
+pass "a failed validator report returns before printing success"
 
 run="$state/runs/run-a/run.json"
 new_run run-a
@@ -794,6 +807,36 @@ full.strategy.name = profile.strategy
 for (const [role, tier] of Object.entries(profile.role_tiers)) full.roles[role].tier = tier
 console.log(JSON.stringify(full))
 NODE
+deferred_run=run-deferred-lane
+deferred_branch=333-l
+deferred_revision="$(git -C "$repo" rev-parse HEAD)"
+deferred_pointer="$("$monitor" active-path --branch "$deferred_branch" --repo-root "$repo")"
+"$monitor" activate --active-state "$deferred_pointer" --run-id "$deferred_run" --branch "$deferred_branch" \
+    --expected-generation 0 --registry-revision "$deferred_revision" --writer feature-owner --repo-root "$repo" >/dev/null
+deferred_state="$("$monitor" state-path --run-id "$deferred_run" --repo-root "$repo")"
+deferred_head="$(git -C "$repo" rev-parse HEAD)"
+"$monitor" reserve --state "$deferred_state" --event evt-lane-init --action push \
+    --expected-head "$deferred_head" --writer feature-owner --active-state "$deferred_pointer" \
+    --run-id "$deferred_run" --branch "$deferred_branch" --generation 1 --repo-root "$repo" >/dev/null
+jq -n --arg run "$deferred_run" '{schema: 2, run_id: $run, outcome: "abandoned"}' \
+    >"$(dirname "$deferred_state")/run.json"
+lane_init_output=""
+lane_init_rc=0
+lane_init_output="$(cd "$repo" && node "$writer" lane-init --slate planned-lane --session alice \
+    --owner-token "$(token_for planned-lane)" --lane l333 --policy "$tmp/lane-policy.json" \
+    --at 2026-01-01T00:00:00Z 2>&1)" || lane_init_rc=$?
+[ "$lane_init_rc" -eq 1 ] || fail "lane-init did not refuse a deferred terminal pointer: exit=$lane_init_rc output=$lane_init_output"
+for needle in "$deferred_run" evt-lane-init reconcile retire prune; do
+    grep -qF "$needle" <<<"$lane_init_output" || fail "lane-init refusal omitted '$needle': $lane_init_output"
+done
+[ ! -e "$state/runs/run-planned-lane/run.json" ] || fail "refused lane-init wrote its run record"
+deferred_observed="$tmp/lane-init-observed.json"
+jq -n --arg event evt-lane-init --arg head "$deferred_head" \
+    '{status: "landed", event: $event, action: "push", head: $head}' >"$deferred_observed"
+"$monitor" reconcile --state "$deferred_state" --event evt-lane-init --observed "$deferred_observed" \
+    --active-state "$deferred_pointer" --run-id "$deferred_run" --branch "$deferred_branch" \
+    --generation 1 --repo-root "$repo" >/dev/null
+"$monitor" retire --run-id "$deferred_run" --repo-root "$repo" >/dev/null
 (cd "$repo" && node "$writer" lane-init --slate planned-lane --session alice \
     --owner-token "$(token_for planned-lane)" --lane l333 --policy "$tmp/lane-policy.json" --at 2026-01-01T00:00:00Z) >/dev/null
 planned_record="$state/runs/run-planned-lane/run.json"

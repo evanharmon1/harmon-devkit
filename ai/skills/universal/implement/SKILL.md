@@ -637,6 +637,9 @@ on with the inline procedure.
    `close` or use `run-record.mjs prune --dry-run` to inspect terminal pointers
    before pruning. A fresh run on a branch whose old pointer was retired starts
    at generation 1.
+   New activation is refused while an ended run on that branch still has an
+   unreconciled reserved event; reconcile the named event, then retire the old
+   pointer or prune it before retrying activation.
 
 ## 7. Security gate
 

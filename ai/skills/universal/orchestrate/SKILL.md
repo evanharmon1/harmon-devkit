@@ -240,6 +240,17 @@ throwaway work only.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
 - **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.
+- **Branch active pointers:** `<git-common-dir>/dev-flow-v2/active/`, one
+  SHA-256-named pointer per branch. `promote` and `close` retire only the
+  matching run's pointer after the validated terminal record is written and
+  read back. A reserved monitor event on an ended run defers retirement and
+  blocks a new activation on that branch; reconcile the named event, then
+  retire the run or prune its pointer before retrying.
+  `run-record.mjs prune --dry-run` reports
+  which pointers are safe to remove; `prune` removes only valid pointers for
+  terminal runs and reports open, malformed, mismatched, missing, reserved, or
+  leftover entries it skips. A fresh run after retirement starts at generation
+  1.
 
 Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:

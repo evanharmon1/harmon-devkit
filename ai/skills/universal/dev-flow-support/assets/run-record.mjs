@@ -748,6 +748,8 @@ export function laneInit(args) {
   const lane = plan?.lanes.find((entry) => entry.lane === laneName)
   if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
   const runId = requireId('run-id', lane.run_id)
+  const repoRoot = git(['rev-parse', '--show-toplevel'])
+  checkActivationAllowed(repoRoot, lane.branch, runId)
   const runDir = join(root, 'runs', runId)
   const canonical = join(runDir, 'run.json')
   if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
@@ -879,6 +881,25 @@ function monitorPath() {
     throw new Refusal(`${monitor} is missing; vendor the universal skill category as a unit`)
   }
   return monitor
+}
+
+function checkActivationAllowed(repoRoot, branch, runId) {
+  const monitor = monitorPath()
+  try {
+    return execFileSync('bash', [monitor, 'check-activation', '--branch', branch, '--run-id', runId,
+      '--repo-root', repoRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch (error) {
+    const details = [error.stderr, error.stdout]
+      .map((value) => (Buffer.isBuffer(value) ? value.toString('utf8') : `${value ?? ''}`))
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+    throw new Refusal(`activation refused: ${details || `exit ${error.status ?? 'unknown'}`}`)
+  }
 }
 
 function activePointerPath(root, branch) {
@@ -1070,6 +1091,7 @@ function soloInit(args) {
   if (!trustedAt(repoRoot, revision).includes(actor)) {
     throw new Refusal(`actor ${actor} is not in agent-registry.json's trusted_orchestrator_actor_ids at ${revision}; its evidence markers would not authenticate, so no solo run is reserved`)
   }
+  checkActivationAllowed(repoRoot, branch, runId)
   const active = activePointerPath(root, branch)
   const current = existsSync(active) ? readJson(active, 'active run pointer') : null
   if (current !== null && current.run_id !== runId) {
