@@ -102,50 +102,59 @@ try {
   // adjudication publication, including replay, belong to the shared writer.
   const writer = (command, ...a) => execute(process.execPath, [join(support, 'run-record.mjs'), command, '--slate', o.slate, '--session', o.session, '--run-id', record.run_id, ...a], [0], { ...process.env, RUN_RECORD_OWNER_TOKEN: token });
   writer('receipt', '--pass', envelopePath);
-  writer('ledger', '--stage', stage);
-  const exitArgs = ['--run', directory, '--stage', stage, '--policy', resolve(root, o.policy), '--rigor', rigor, '--current-head', head, '--repo-root', root, '--history', join(directory, `history.${stage}.json`), '--heads', join(directory, 'heads.json'), '--json', ...extra];
-  if (o['merge-base-policy']) exitArgs.push('--merge-base-policy', resolve(root, o['merge-base-policy']));
-  if (o['merge-base-policy-absent']) exitArgs.push('--merge-base-policy-absent');
-  const compute = (verification) => {
-    const r = execute(process.execPath, [engine, ...exitArgs, ...(verification ? ['--verification-only'] : [])], [0, 20, 21, 22]);
-    const projection = JSON.parse(r.stdout);
-    if (projection.stage !== stage || typeof projection.reason !== 'string' || !['adjudicate', 'dispatch', 'escalate', 'advance', 'fix-delete-restructure-or-split'].includes(projection.action)) fail('invalid exit projection');
-    const rejected = (projection.diagnostics ?? []).filter((d) => d.level === 'reject');
-    if (rejected.length) fail(`exit verification rejected retained evidence: ${rejected.map((d) => d.reason).join('; ')}`);
-    return { r, projection };
-  };
-  const persist = (name, bytes) => {
-    const path = join(directory, name), temporary = `${path}.tmp.${process.pid}`;
-    try { writeFileSync(temporary, bytes, { flag: 'wx' }); renameSync(temporary, path); }
-    finally { rmSync(temporary, { force: true }); }
-  };
-  let verified;
-  try { verified = compute(true); }
-  catch (error) {
-    persist('verdict.json', `${JSON.stringify({ stage, round, reviewed_head: head, outcome: 'indeterminate', action: 'escalate', reason: error.message })}\n`);
-    throw error;
-  }
-  persist(`verification.${stage}.json`, verified.r.stdout);
-  persist('verdict.json', verified.r.stdout);
-  // A replay of an already adjudicated round needs no new authorization to
-  // write adjudication: skip that write and finish its computed-exit read.
-  const replay = existsSync(join(adjudicationsDir, `${stage}-r${round}.json`))
-    && verified.projection.rounds?.some((r) => r.round === round && r.has_adjudication && r.reviewed_head === head);
-  if (verified.projection.action !== 'adjudicate' && !replay) {
-    process.stdout.write(verified.r.stdout);
-    process.exitCode = verified.r.status;
+  const configuredSlots = read(join(directory, 'policy.json')).stages[stage].finders;
+  const receipts = read(runPath).receipts ?? [];
+  const missingSlots = configuredSlots.filter((configured) => !receipts.some((receipt) =>
+    receipt.kind === 'pass' && receipt.file === `${stage}-r${round}-${configured}`));
+  if (missingSlots.length) {
+    process.stdout.write(`awaiting slots: ${missingSlots.join(', ')}\n`);
+    process.exitCode = 24;
   } else {
-    if (!replay) {
-      if (!adjudicationPath) {
-        process.stdout.write(`${JSON.stringify({ action: 'adjudicate', projection_path: join(directory, 'verdict.json') })}\n`);
-        process.exitCode = 23;
-      } else writer('adjudicate', '--file', adjudicationPath);
+    writer('ledger', '--stage', stage);
+    const exitArgs = ['--run', directory, '--stage', stage, '--policy', resolve(root, o.policy), '--rigor', rigor, '--current-head', head, '--repo-root', root, '--history', join(directory, `history.${stage}.json`), '--heads', join(directory, 'heads.json'), '--json', ...extra];
+    if (o['merge-base-policy']) exitArgs.push('--merge-base-policy', resolve(root, o['merge-base-policy']));
+    if (o['merge-base-policy-absent']) exitArgs.push('--merge-base-policy-absent');
+    const compute = (verification) => {
+      const r = execute(process.execPath, [engine, ...exitArgs, ...(verification ? ['--verification-only'] : [])], [0, 20, 21, 22]);
+      const projection = JSON.parse(r.stdout);
+      if (projection.stage !== stage || typeof projection.reason !== 'string' || !['adjudicate', 'dispatch', 'escalate', 'advance', 'fix-delete-restructure-or-split'].includes(projection.action)) fail('invalid exit projection');
+      const rejected = (projection.diagnostics ?? []).filter((d) => d.level === 'reject');
+      if (rejected.length) fail(`exit verification rejected retained evidence: ${rejected.map((d) => d.reason).join('; ')}`);
+      return { r, projection };
+    };
+    const persist = (name, bytes) => {
+      const path = join(directory, name), temporary = `${path}.tmp.${process.pid}`;
+      try { writeFileSync(temporary, bytes, { flag: 'wx' }); renameSync(temporary, path); }
+      finally { rmSync(temporary, { force: true }); }
+    };
+    let verified;
+    try { verified = compute(true); }
+    catch (error) {
+      persist('verdict.json', `${JSON.stringify({ stage, round, reviewed_head: head, outcome: 'indeterminate', action: 'escalate', reason: error.message })}\n`);
+      throw error;
     }
-    if (replay || adjudicationPath) {
-      const verdict = compute(false);
-      persist('verdict.json', verdict.r.stdout);
-      process.stdout.write(verdict.r.stdout);
-      process.exitCode = verdict.r.status;
+    persist(`verification.${stage}.json`, verified.r.stdout);
+    persist('verdict.json', verified.r.stdout);
+    // A replay of an already adjudicated round needs no new authorization to
+    // write adjudication: skip that write and finish its computed-exit read.
+    const replay = existsSync(join(adjudicationsDir, `${stage}-r${round}.json`))
+      && verified.projection.rounds?.some((r) => r.round === round && r.has_adjudication && r.reviewed_head === head);
+    if (verified.projection.action !== 'adjudicate' && !replay) {
+      process.stdout.write(verified.r.stdout);
+      process.exitCode = verified.r.status;
+    } else {
+      if (!replay) {
+        if (!adjudicationPath) {
+          process.stdout.write(`${JSON.stringify({ action: 'adjudicate', projection_path: join(directory, 'verdict.json') })}\n`);
+          process.exitCode = 23;
+        } else writer('adjudicate', '--file', adjudicationPath);
+      }
+      if (replay || adjudicationPath) {
+        const verdict = compute(false);
+        persist('verdict.json', verdict.r.stdout);
+        process.stdout.write(verdict.r.stdout);
+        process.exitCode = verdict.r.status;
+      }
     }
   }
 } catch (error) {

@@ -322,7 +322,11 @@ assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
 
 The command validates its input envelope, existing run, and supplied
 adjudication before the first write. It then chains the shared writer's
-`receipt` → `ledger --stage` → verification-only exit. Only `action: adjudicate`
+`receipt` → wait for every configured stage/round slot in the run's
+`policy.json` → `ledger --stage` → verification-only exit. An incomplete round
+exits **24** immediately after the receipt, prints `awaiting slots: <missing slots>`
+on stdout, and leaves `verdict.json` untouched. Record the remaining passes
+before requesting verification. Only `action: adjudicate`
 authorizes publishing the supplied adjudication, followed by the computed
 exit in `verdict.json`. Every valid verification-only projection is atomically
 persisted as `verdict.json` before its action is handled, including dispatch,
@@ -341,7 +345,16 @@ engine's status (0, 20, 21, 22); usage, validation, and indeterminate failures
 exit 2. Awaiting an orchestrator adjudication exits **23**, with a JSON object
 on stdout containing `action: adjudicate` and `projection_path` naming the
 retained `verdict.json`; callers handle 23 as the two-phase handoff, not as a
-validator failure. `--owner-token` is also accepted; authority is forwarded to every writer
+validator failure.
+
+| Recorder exit | Meaning |
+|---|---|
+| 0, 20, 21, 22 | Computed exit engine status |
+| 2 | Usage, validation, or indeterminate failure |
+| 23 | Awaiting orchestrator adjudication |
+| 24 | Receipt retained; awaiting configured finder slots |
+
+`--owner-token` is also accepted; authority is forwarded to every writer
 in its environment and is never persisted or printed.
 
 Use the already resolved governing policy and recorded rigor (`--rigor` may

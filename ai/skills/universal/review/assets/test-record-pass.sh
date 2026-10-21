@@ -7,7 +7,7 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 node --input-type=module - "$asset_dir" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync, renameSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync, renameSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -102,6 +102,29 @@ const badPolicy = join(tmp,'bad.toml');
 writeFileSync(badPolicy,'this is not TOML');
 refused('invalid policy',()=>invoke(argv.map(a=>a===join(repo,'.devflow.toml')?badPolicy:a)));
 console.log('PASS: input refusals leave the entire run directory byte-identical');
+// A partial round retains its receipt without replacing the prior verdict.
+const priorRun = join(tmp,'prior-run'); cpSync(dir,priorRun,{recursive:true});
+const multiPolicy = read(join(dir,'policy.json'));
+const secondSlot = 'copilot-adversarial';
+multiPolicy.stages.challenge.finders.push(secondSlot);
+put(join(dir,'policy.json'),multiPolicy);
+const priorVerdict = '{"stage":"prior","reason":"retain byte for byte"}\n';
+writeFileSync(join(dir,'verdict.json'),priorVerdict);
+const awaiting = invoke(argv.filter((a,i)=>a !== '--adjudication' && argv[i-1] !== '--adjudication'));
+assert.equal(awaiting.status,24,awaiting.stdout+awaiting.stderr);
+assert.equal(awaiting.stdout,`awaiting slots: ${secondSlot}\n`);
+assert.equal(readFileSync(join(dir,'verdict.json'),'utf8'),priorVerdict);
+assert.equal(existsSync(join(dir,'heads.json')),false);
+const multiEngine = join(support,'multi-exit.mjs');
+writeFileSync(multiEngine,"console.log(JSON.stringify({stage:'challenge',action:'adjudicate',reason:'fixture complete'}));\n");
+const secondPass = envelope('challenge'); secondPass.payload.finder = secondSlot; secondPass.payload.slot = secondSlot;
+put(passFile,secondPass);
+const complete = invoke([...argv.filter((a,i)=>a !== '--adjudication' && argv[i-1] !== '--adjudication'),'--exit-engine',multiEngine]);
+assert.equal(complete.status,23,complete.stdout+complete.stderr);
+assert.equal(read(join(dir,'verdict.json')).action,'adjudicate');
+rmSync(dir,{recursive:true}); cpSync(priorRun,dir,{recursive:true});
+put(passFile,envelope('challenge'));
+console.log('PASS: first of two finder receipts awaits slots without touching verdict; second proceeds');
 // Swap the validator in the vendored fixture. The production command has no
 // validator-disable switch. Fail only after ledger creation, proving that a
 // later validation failure stops adjudication, including in an outer pipeline.
@@ -206,13 +229,14 @@ writeFileSync(join(remote,'scripts/codex-review.sh'),`#!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$(git rev-parse HEAD)" = "$EXPECTED_REVIEW_HEAD" ]
-[ -z "$(git status --porcelain)" ]
+git status --porcelain >/dev/null
 [ "$(git symbolic-ref -q HEAD || true)" = "" ]
 if [ -n "\${FINDER_NESTED_CHECKOUT:-}" ]; then
   git worktree add --detach "$FINDER_NESTED_CHECKOUT" HEAD
   git -C "$FINDER_NESTED_CHECKOUT" status --porcelain
   git worktree remove "$FINDER_NESTED_CHECKOUT"
 fi
+if [ -n "\${FINDER_DIRT:-}" ]; then echo dirty > finder-dirt.txt; fi
 printf 'DEFAULT-FINDER:%s:%s\\n' "$(git rev-parse HEAD)" "$1"
 exit "\${FINDER_FIXTURE_STATUS:-0}"
 `);
@@ -224,7 +248,7 @@ const cg = (...a) => sh('git',a,consumer);
 cg('config','user.name','Test'); cg('config','user.email','test@example.invalid'); cg('config','commit.gpgsign','false'); cg('switch','-qc','feature');
 writeFileSync(join(consumer,'feature.txt'),'head change\n'); cg('add','.'); cg('commit','-qm','feature');
 const reviewHead = cg('rev-parse','HEAD');
-const checkoutTool = join(assets,'prepare-review-checkout.sh');
+const checkoutTool = process.env.REVIEW_CHECKOUT_TEST_TOOL ?? join(assets,'prepare-review-checkout.sh');
 const check = (h=reviewHead, extra={}) => run('bash',[checkoutTool,'--repo-root',consumer,'--head',h,'--','review'],{EXPECTED_REVIEW_HEAD:h,...extra});
 const noCheckout = () => {
   assert.equal(cg('worktree','list','--porcelain').split('\n').filter(l=>l.startsWith('worktree ')).length,1);
@@ -277,6 +301,16 @@ console.log('PASS: hooks stay disabled for tool status, finder status, and neste
 // proof must still reject changed, extra, missing, and index-hidden files.
 const shim = join(tmp,'git-shim'); mkdirSync(shim);
 const realGit = sh('bash',['-c','command -v git']);
+// Real git status must reject dirt before and after finder execution.
+writeFileSync(join(shim,'git'),`#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = add ]; then\n  '${realGit}' "$@" || exit $?\n  echo dirty > "$4/before-finder-dirt.txt"\n  exit 0\nfi\nexec '${realGit}' "$@"\n`);
+chmodSync(join(shim,'git'),0o755);
+r = check(reviewHead,{PATH:`${shim}:${env.PATH}`});
+assert.equal(r.status,2,r.stderr); assert.match(r.stderr,/review checkout is dirty/);
+assert.doesNotMatch(r.stdout,/DEFAULT-FINDER/); noCheckout();
+r = check(reviewHead,{FINDER_DIRT:'1'});
+assert.equal(r.status,2,r.stderr); assert.match(r.stderr,/review checkout is dirty/);
+assert.match(r.stdout,/DEFAULT-FINDER/); noCheckout();
+console.log('PASS: real status refuses dirty checkout before and after finder execution');
 for (const [mutation,diagnostic] of [
   ["printf '# hidden bytes\\n' > scripts/lib/helper.sh", /finder bytes differ/],
   ["printf '# extra\\n' > scripts/lib/extra.sh", /finder bytes differ/],
