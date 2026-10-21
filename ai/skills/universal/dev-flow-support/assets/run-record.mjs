@@ -11,6 +11,7 @@
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote      --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
+//   run-record.mjs prune        [--dry-run] [--repo-root DIR]
 //   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
 //                               --branch NAME --base SHA --policy FILE --actor-id N --strategy-source TEXT
 //                               [--operator-pin TEXT]... [--registry-revision SHA] [--at TS]
@@ -49,6 +50,11 @@
 // non-promotion terminal outcome (if the run is still open) and then moves
 // the run's orchestrator files from
 // `slates/<slate>/orchestrator/<run-id>/` into `runs/<run-id>/orchestrator/`.
+// After the validated terminal write and readback, `promote` and `close` ask
+// dev-flow-monitor.sh to retire only this run's active pointer. A cleanup
+// failure is reported without undoing or refusing the terminal outcome.
+// `prune` is the recovery path for terminal pointers left behind by a failed
+// retirement; it takes per-pointer monitor locks and can run as `--dry-run`.
 //
 // `--remediation-head`/`--remediation-findings` record an integration
 // remediation push on the transition that re-enters integration after it
@@ -719,11 +725,13 @@ function recordWrite(command, args) {
     writeValidated('run', canonical, record)
     return result
   })
+  const retirement = command === 'promote' || command === 'close' ? retireActivePointer(runId) : null
   if (command === 'close') {
     const moved = archiveOrchestratorFiles(root, slate, runId)
     const closed = summary === null ? 'run already closed' : `recorded ${summary}`
-    return `${closed}; archived ${moved.length} orchestrator attempt(s) into runs/${runId}/orchestrator/`
+    return `${closed}; ${retirement}; archived ${moved.length} orchestrator attempt(s) into runs/${runId}/orchestrator/`
   }
+  if (command === 'promote') return `recorded ${summary}; ${retirement}`
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
@@ -833,7 +841,9 @@ export function lanePolicyProjection(plan, lane, policyFile) {
 //              the session's actor in its trusted set, the branch's pointer
 //              naming no live run) is resolved before the first write, and a
 //              step that still fails afterwards undoes everything this call
-//              created. It supersedes only a pointer whose run has ended.
+//              created. It supersedes only a pointer whose run has ended. A
+//              terminal run's pointer is retired; a new run on the same branch
+//              therefore starts at generation 1 again.
 //   receipt    admits one challenger/reviewer pass (see admitPass), puts it at
 //              passes/<stage>-r<round>-<slot>.json (no-clobber), and appends
 //              its {kind:"pass"} receipt.
@@ -873,6 +883,46 @@ function monitorPath() {
 
 function activePointerPath(root, branch) {
   return join(root, 'active', `${createHash('sha256').update(branch, 'utf8').digest('hex')}.json`)
+}
+
+function retireActivePointer(runId) {
+  try {
+    const repoRoot = git(['rev-parse', '--show-toplevel'])
+    return execFileSync('bash', [monitorPath(), 'retire', '--run-id', runId, '--repo-root', repoRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch (error) {
+    const details = [error.stderr, error.stdout]
+      .map((value) => (Buffer.isBuffer(value) ? value.toString('utf8') : `${value ?? ''}`))
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+    console.error(`warning: active pointer retirement for ${runId} did not complete${details ? `:\n${details}` : ` (exit ${error.status ?? 'unknown'})`}`)
+    return 'active pointer retirement reported incomplete'
+  }
+}
+
+function pruneActivePointers(args) {
+  try {
+    const repoRoot = args['repo-root'] ?? git(['rev-parse', '--show-toplevel'])
+    const command = [monitorPath(), 'prune']
+    if (args['dry-run'] === true) command.push('--dry-run')
+    command.push('--repo-root', repoRoot)
+    return execFileSync('bash', command, {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch (error) {
+    const details = [error.stderr, error.stdout]
+      .map((value) => (Buffer.isBuffer(value) ? value.toString('utf8') : `${value ?? ''}`))
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+    throw new Refusal(`active pointer prune failed${details ? `:\n${details}` : ` (exit ${error.status ?? 'unknown'})`}`)
+  }
 }
 
 // publishExclusive — write `content` to `target` only if it does not exist,
@@ -1558,6 +1608,9 @@ export function runCli(main) {
 
 function main(argv) {
   const [command, ...rest] = argv
+  if (command === 'prune') {
+    return pruneActivePointers(parseFlags(rest, new Set(['repo-root']), new Set(['dry-run'])))
+  }
   if (command === 'lock') {
     const [sub, ...flags] = rest
     return lockCommand(sub, parseScopeFlags(parseFlags(flags)))
@@ -1566,7 +1619,7 @@ function main(argv) {
   if (command === 'lane-init') return laneInit(parseFlags(rest))
   if (Object.hasOwn(SIDE_EFFECTS, command ?? '')) return sideEffectWrite(command, parseFlags(rest))
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
-    throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|solo-init|receipt|adjudicate|ledger|lock … (see the header)')
+    throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|prune [--dry-run] [--repo-root DIR]|solo-init|lane-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
   return recordWrite(command, parseScopeFlags(parseFlags(rest)))
 }

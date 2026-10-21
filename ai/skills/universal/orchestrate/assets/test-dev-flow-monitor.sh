@@ -282,5 +282,122 @@ output="$(try_comment_reservation "$FIXTURE_REPO" "run-rearm" "test-branch" "123
 grep -q 'not trusted' <<<"$output" || fail "re-arm trusted a removed actor"
 pass "unlocked re-arm refuses duplicate events and rechecks the governing allowlist"
 
+# ── Active-pointer retirement ----------------------------------------------
+echo ""
+echo "--- Active-pointer retirement is run-bound and reservation-aware ---"
+setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+activate_run "$FIXTURE_REPO" "run-retire" "retire-branch" "$FIXTURE_REV" >/dev/null
+retire_pointer="$("$MONITOR" active-path --branch retire-branch --repo-root "$FIXTURE_REPO")"
+output="$("$MONITOR" retire --run-id run-retire --repo-root "$FIXTURE_REPO")"
+grep -qF 'retired run run-retire active pointer' <<<"$output" || fail "matching run pointer was not retired: $output"
+[ ! -e "$retire_pointer" ] || fail "retire left the matching pointer behind"
+generation="$(activate_run "$FIXTURE_REPO" run-retire-next retire-branch "$FIXTURE_REV")"
+[ "$generation" = 1 ] || fail "a new run on the retired branch did not restart at generation 1: $generation"
+pass "retirement deletes only the bound run's pointer and a fresh run starts at generation 1"
+
+activate_run "$FIXTURE_REPO" run-retire-old replace-branch "$FIXTURE_REV" >/dev/null
+replace_pointer="$("$MONITOR" active-path --branch replace-branch --repo-root "$FIXTURE_REPO")"
+"$MONITOR" activate --active-state "$replace_pointer" --run-id run-retire-new \
+    --branch replace-branch --expected-generation 1 --registry-revision "$FIXTURE_REV" \
+    --writer feature-owner --repo-root "$FIXTURE_REPO" >/dev/null
+output="$("$MONITOR" retire --run-id run-retire-old --repo-root "$FIXTURE_REPO")"
+grep -qF 'left active pointer' <<<"$output" || fail "retire did not report the replacement run: $output"
+[ "$(jq -r '.run_id' "$replace_pointer")" = run-retire-new ] || fail "retire deleted a pointer owned by a different run"
+pass "retire leaves a newer run's pointer untouched"
+
+activate_run "$FIXTURE_REPO" run-retire-reserved reserved-branch "$FIXTURE_REV" >/dev/null
+reserved_pointer="$("$MONITOR" active-path --branch reserved-branch --repo-root "$FIXTURE_REPO")"
+reserved_state="$("$MONITOR" state-path --run-id run-retire-reserved --repo-root "$FIXTURE_REPO")"
+jq -n '{version: 1, cursor: null, actions: [{event: "evt", action: "push", state: "reserved"}]}' >"$reserved_state"
+output="$("$MONITOR" retire --run-id run-retire-reserved --repo-root "$FIXTURE_REPO")"
+grep -qF 'deferred run run-retire-reserved' <<<"$output" || fail "unreconciled reservation did not defer retirement: $output"
+[ -f "$reserved_pointer" ] || fail "retire deleted a pointer with an unreconciled reservation"
+jq '.actions[0].state = "adopted"' "$reserved_state" >"$reserved_state.tmp"
+mv "$reserved_state.tmp" "$reserved_state"
+"$MONITOR" retire --run-id run-retire-reserved --repo-root "$FIXTURE_REPO" >/dev/null
+[ ! -e "$reserved_pointer" ] || fail "retirement did not resume after reservation reconciliation"
+pass "an unreconciled reservation defers retirement until reconciliation"
+
+activate_run "$FIXTURE_REPO" run-retire-held held-branch "$FIXTURE_REV" >/dev/null
+held_pointer="$("$MONITOR" active-path --branch held-branch --repo-root "$FIXTURE_REPO")"
+held_lock="${held_pointer}.lock"
+owner_start="$(LC_ALL=C TZ=UTC ps -o lstart= -p "$$" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+[ -n "$owner_start" ] || fail "could not read the test lock owner's process start"
+printf '%s|%s|%s|test-owner|%s\n' "$$" "$(hostname)" "$(id -u)" "$owner_start" >"$held_lock"
+"$MONITOR" retire --run-id run-retire-held --repo-root "$FIXTURE_REPO" >"$tmp/retire-held.log" 2>&1 &
+retire_pid=$!
+sleep 0.2
+held_before_release=0
+[ -f "$held_pointer" ] && held_before_release=1
+rm -f "$held_lock"
+retire_rc=0
+wait "$retire_pid" || retire_rc=$?
+[ "$held_before_release" -eq 1 ] || fail "retire did not wait for the held pointer lock"
+[ "$retire_rc" -eq 0 ] || fail "retire did not complete after lock release: $(cat "$tmp/retire-held.log")"
+[ ! -e "$held_pointer" ] || fail "retire left the pointer after the lock was released"
+pass "retire waits for the existing pointer lock before deleting"
+
+# ── Prune only validated terminal pointers ---------------------------------
+echo ""
+echo "--- Prune reports terminal removals and preserves every skip case ---"
+setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+write_run_outcome() {
+    local run_id="$1" outcome="$2" run_file
+    run_file="$(dirname "$("$MONITOR" state-path --run-id "$run_id" --repo-root "$FIXTURE_REPO")")/run.json"
+    mkdir -p "$(dirname "$run_file")"
+    jq -n --arg run "$run_id" --argjson outcome "$outcome" \
+        '{schema: 2, run_id: $run, outcome: $outcome}' >"$run_file"
+}
+activate_run "$FIXTURE_REPO" run-prune-terminal terminal-branch "$FIXTURE_REV" >/dev/null
+terminal_pointer="$("$MONITOR" active-path --branch terminal-branch --repo-root "$FIXTURE_REPO")"
+write_run_outcome run-prune-terminal '"ready-for-review"'
+activate_run "$FIXTURE_REPO" run-prune-open open-branch "$FIXTURE_REV" >/dev/null
+open_pointer="$("$MONITOR" active-path --branch open-branch --repo-root "$FIXTURE_REPO")"
+write_run_outcome run-prune-open null
+activate_run "$FIXTURE_REPO" run-prune-version version-branch "$FIXTURE_REV" >/dev/null
+version_pointer="$("$MONITOR" active-path --branch version-branch --repo-root "$FIXTURE_REPO")"
+write_run_outcome run-prune-version '"capped"'
+jq '.version = 2' "$version_pointer" >"$version_pointer.tmp"
+mv "$version_pointer.tmp" "$version_pointer"
+activate_run "$FIXTURE_REPO" run-prune-mismatch mismatch-branch "$FIXTURE_REV" >/dev/null
+mismatch_pointer="$("$MONITOR" active-path --branch mismatch-branch --repo-root "$FIXTURE_REPO")"
+write_run_outcome run-prune-mismatch '"abandoned"'
+binding="$(dirname "$("$MONITOR" state-path --run-id run-prune-mismatch --repo-root "$FIXTURE_REPO")")/branch.json"
+jq '.branch = "other-branch"' "$binding" >"$binding.tmp"
+mv "$binding.tmp" "$binding"
+activate_run "$FIXTURE_REPO" run-prune-missing missing-branch "$FIXTURE_REV" >/dev/null
+missing_pointer="$("$MONITOR" active-path --branch missing-branch --repo-root "$FIXTURE_REPO")"
+activate_run "$FIXTURE_REPO" run-prune-reserved reserved-prune-branch "$FIXTURE_REV" >/dev/null
+reserved_prune_pointer="$("$MONITOR" active-path --branch reserved-prune-branch --repo-root "$FIXTURE_REPO")"
+write_run_outcome run-prune-reserved '"escalated"'
+reserved_prune_state="$("$MONITOR" state-path --run-id run-prune-reserved --repo-root "$FIXTURE_REPO")"
+jq -n '{version: 1, cursor: null, actions: [{event: "evt", action: "push", state: "reserved"}]}' >"$reserved_prune_state"
+invalid_pointer="$("$MONITOR" active-path --branch invalid-prune-branch --repo-root "$FIXTURE_REPO")"
+printf '{invalid json\n' >"$invalid_pointer"
+active_dir="$(dirname "$terminal_pointer")"
+printf 'leftover\n' >"$active_dir/orphan.json.lock"
+printf 'leftover\n' >"$active_dir/orphan.tmp.1"
+printf 'leftover\n' >"$active_dir/orphan.claim.1"
+
+output="$("$MONITOR" prune --dry-run --repo-root "$FIXTURE_REPO")"
+grep -qF "would remove ${terminal_pointer##*/} (run run-prune-terminal" <<<"$output" || fail "dry-run omitted the terminal pointer: $output"
+grep -qF 'run record is invalid or still open' <<<"$output" || fail "prune did not report the open run: $output"
+grep -qF 'unsupported version' <<<"$output" || fail "prune did not report the unsupported pointer version: $output"
+grep -qF 'branch-mismatched run binding' <<<"$output" || fail "prune did not report the branch-mismatched binding: $output"
+grep -qF 'run record is missing' <<<"$output" || fail "prune did not report the missing run record: $output"
+grep -qF 'unreconciled reserved action' <<<"$output" || fail "prune did not report the unreconciled reservation: $output"
+grep -qF 'leftover lock, temporary, claim' <<<"$output" || fail "prune did not report leftover files: $output"
+[ -e "$terminal_pointer" ] || fail "--dry-run removed a terminal pointer"
+
+output="$("$MONITOR" prune --repo-root "$FIXTURE_REPO")"
+grep -qF "removed ${terminal_pointer##*/} (run run-prune-terminal" <<<"$output" || fail "prune did not report its removal: $output"
+[ ! -e "$terminal_pointer" ] || fail "prune left a terminal pointer behind"
+[ -e "$open_pointer" ] && [ -e "$version_pointer" ] && [ -e "$mismatch_pointer" ] &&
+    [ -e "$missing_pointer" ] && [ -e "$reserved_prune_pointer" ] && [ -e "$invalid_pointer" ] ||
+    fail "prune removed a pointer that should have been skipped"
+[ -e "$active_dir/orphan.json.lock" ] && [ -e "$active_dir/orphan.tmp.1" ] && [ -e "$active_dir/orphan.claim.1" ] ||
+    fail "prune removed a leftover lock/temp/claim entry"
+pass "prune dry-run is read-only; actual pruning removes the terminal run and reports all skip classes"
+
 echo ""
 echo "=== All dev-flow-monitor trust contract tests passed ==="

@@ -576,6 +576,7 @@ withMutex(runJson, () => {
 `)
 sh('node', [settle, pathToFileURL(runRecord).href, runJson, reviewFinding.id, now()])
 write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint')
+assert.equal(existsSync(identity.active_state_path), false)
 const releaseLock = releaseFixtureLock
 assert.match(releaseLock(identity.slate_id), /released/)
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
@@ -642,6 +643,7 @@ pass("the writer's ledger verifies a round-2 repeat-of finding on round 1's own 
 dWrite('close', '--outcome', 'escalated', '--exit', 'diverging: repeat_after_fix after challenge round 2/' + policy.rounds.challenge)
 releaseLock(dIdentity.slate_id)
 assert.equal(read(join(dIdentity.record_directory, 'run.json')).outcome, 'escalated')
+assert.equal(existsSync(dIdentity.active_state_path), false)
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 const closedLedger = readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8')
 refused(dSlate, ['ledger', '--stage', 'challenge'], /lock acquire/)
@@ -650,8 +652,8 @@ assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 acquire(`${DRUN}-r2`, 3)
 r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)
-assert.equal(JSON.parse(r.stdout).generation, 2)
-pass('a solo run stopped at a blocker is closed and its lock released; ledger then refuses without rewriting it or re-taking the lock; a fresh solo run supersedes the ended one on the same branch')
+assert.equal(JSON.parse(r.stdout).generation, 1)
+pass('promote and close retire solo pointers; a fresh run on the same branch starts again at generation 1')
 
 // A two-slot challenge stage, the second slot added per run with
 // --add-finder: the reservation persists that selection in run.json, a round

@@ -10,6 +10,8 @@ usage() {
 Usage:
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
+  dev-flow-monitor.sh retire --run-id ID [--repo-root DIR]
+  dev-flow-monitor.sh prune [--dry-run] [--repo-root DIR]
   dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID --nonce NONCE \
     [--repo-root DIR]
   dev-flow-monitor.sh activate --active-state FILE --run-id ID --branch BRANCH \
@@ -138,6 +140,7 @@ try_break_stale_lock() {
 }
 
 acquire_lock() {
+    local lock_wait_limit="${2:-600}"
     candidate_lock_file="${1}.lock"
     candidate_owner="$(lock_owner_stamp)"
     lock_claim_file="${candidate_lock_file}.claim.$$.$RANDOM"
@@ -200,8 +203,14 @@ acquire_lock() {
             dead_observations=0
         fi
         lock_attempts=$((lock_attempts + 1))
-        [ "$lock_attempts" -lt 600 ] ||
+        if [ "$lock_attempts" -ge "$lock_wait_limit" ]; then
+            rm -f "$lock_claim_file"
+            lock_claim_file=""
+            if [ "$lock_wait_limit" -lt 600 ]; then
+                return 1
+            fi
             die "monitor state remains locked; inspect $candidate_lock_file before retrying"
+        fi
         sleep 0.1
     done
     held_lock_file="$candidate_lock_file"
@@ -237,6 +246,7 @@ max_agent_runs=""
 slate_id=""
 nonce=""
 comment_lock_fd=""
+dry_run=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -316,6 +326,10 @@ while [ "$#" -gt 0 ]; do
         comment_lock_fd="${2:-}"
         shift 2
         ;;
+    --dry-run)
+        dry_run=true
+        shift
+        ;;
     --generation)
         generation="${2:-}"
         shift 2
@@ -361,6 +375,183 @@ active_path() {
     printf '%s/dev-flow-v2/active/%s.json\n' "$common_dir" "$branch_key"
 }
 
+run_branch_binding() {
+    local binding
+    binding="$(dirname "$(state_path)")/branch.json"
+    [ -f "$binding" ] && [ ! -L "$binding" ] || die "run branch binding is missing or not a regular file: $binding"
+    jq -e --arg run "$run_id" '
+        .version == 1 and .run_id == $run and
+        (.branch | type == "string" and length > 0)
+    ' "$binding" >/dev/null 2>&1 || die "run branch binding is invalid for $run_id: $binding"
+    jq -r '.branch' "$binding"
+}
+
+monitor_has_unreconciled_reservation() {
+    local monitor
+    monitor="$(state_path)"
+    [ -e "$monitor" ] || return 1
+    [ -f "$monitor" ] && [ ! -L "$monitor" ] || die "monitor state is not a regular file: $monitor"
+    jq -e '
+        .version == 1 and (.actions | type == "array") and
+        all(.actions[]; .state == "reserved" or .state == "adopted")
+    ' "$monitor" >/dev/null 2>&1 || die "monitor state is invalid: $monitor"
+    jq -e '[.actions[] | select(.state == "reserved")] | length > 0' "$monitor" >/dev/null 2>&1
+}
+
+retire_active_pointer() {
+    local binding_branch pointer pointer_run pointer_generation
+    binding_branch="$(run_branch_binding)"
+    branch="$binding_branch"
+    pointer="$(active_path)"
+    [ -e "$pointer" ] || {
+        printf 'retire: active pointer for %s is already absent\n' "$run_id"
+        return 0
+    }
+    [ -f "$pointer" ] && [ ! -L "$pointer" ] || die "active pointer is not a regular file: $pointer"
+    acquire_lock "$pointer"
+    [ -e "$pointer" ] || {
+        printf 'retire: active pointer for %s disappeared before the lock was acquired\n' "$run_id"
+        return 0
+    }
+    jq -e '
+        .version == 1 and (.run_id | type == "string" and length > 0) and
+        (.branch | type == "string" and length > 0) and
+        (.generation | type == "number" and . > 0 and floor == .) and
+        (.registry_revision | type == "string" and test("^[0-9a-f]{40}$"))
+    ' "$pointer" >/dev/null 2>&1 || die "active pointer is invalid: $pointer"
+    pointer_run="$(jq -r '.run_id' "$pointer")"
+    pointer_generation="$(jq -r '.generation' "$pointer")"
+    [ "$(jq -r '.branch' "$pointer")" = "$binding_branch" ] || die "active pointer branch does not match run $run_id's branch binding"
+    if [ "$pointer_run" != "$run_id" ]; then
+        printf 'retire: left active pointer for %s untouched; it now names run %s (generation %s)\n' \
+            "$binding_branch" "$pointer_run" "$pointer_generation"
+        return 0
+    fi
+    if monitor_has_unreconciled_reservation; then
+        printf 'retire: deferred run %s; monitor.json has an unreconciled reserved action\n' "$run_id"
+        return 0
+    fi
+    rm -- "$pointer" || die "could not remove active pointer: $pointer"
+    [ ! -e "$pointer" ] || die "active pointer remains after retirement: $pointer"
+    printf 'retired run %s active pointer (generation %s)\n' "$run_id" "$pointer_generation"
+}
+
+skip_prune_entry() {
+    printf 'prune: skipped %s: %s\n' "$1" "$2"
+    skipped_count=$((skipped_count + 1))
+    [ -z "$held_lock_file" ] || release_lock
+}
+
+prune_pointer() {
+    local pointer="$1" name="$2" pointer_json candidate_run candidate_branch generation binding run_record monitor hash_name
+    if [ ! -f "$pointer" ] || [ -L "$pointer" ]; then
+        skip_prune_entry "$name" "not a regular pointer file"
+        return 0
+    fi
+    if [ -L "${pointer}.lock" ] || { [ -e "${pointer}.lock" ] && [ ! -f "${pointer}.lock" ]; }; then
+        skip_prune_entry "$name" "pointer lock is not a regular file"
+        return 0
+    fi
+    if ! acquire_lock "$pointer" 1; then
+        skip_prune_entry "$name" "pointer lock is busy"
+        return 0
+    fi
+    if [ ! -f "$pointer" ] || [ -L "$pointer" ]; then
+        skip_prune_entry "$name" "pointer changed while acquiring its lock"
+        return 0
+    fi
+    if ! jq -e '
+        .version == 1 and
+        (.run_id | type == "string" and test("^[A-Za-z0-9._-]+$") and . != "." and . != "..") and
+        (.branch | type == "string" and length > 0) and
+        (.generation | type == "number" and . > 0 and floor == .) and
+        (.registry_revision | type == "string" and test("^[0-9a-f]{40}$"))
+    ' "$pointer" >/dev/null 2>&1; then
+        skip_prune_entry "$name" "invalid pointer or unsupported version"
+        return 0
+    fi
+    pointer_json="$(cat "$pointer")"
+    candidate_run="$(jq -r '.run_id' <<<"$pointer_json")"
+    candidate_branch="$(jq -r '.branch' <<<"$pointer_json")"
+    generation="$(jq -r '.generation' <<<"$pointer_json")"
+    hash_name="$(printf '%s' "$candidate_branch" | sha256_stream).json"
+    [ "$name" = "$hash_name" ] || {
+        skip_prune_entry "$name" "pointer branch does not match its active-path filename"
+        return 0
+    }
+    run_id="$candidate_run"
+    binding="$(dirname "$(state_path)")/branch.json"
+    if [ ! -f "$binding" ] || [ -L "$binding" ] || ! jq -e --arg run "$candidate_run" --arg branch "$candidate_branch" '
+        .version == 1 and .run_id == $run and .branch == $branch
+    ' "$binding" >/dev/null 2>&1; then
+        skip_prune_entry "$name" "missing or branch-mismatched run binding"
+        return 0
+    fi
+    run_record="$(dirname "$binding")/run.json"
+    if [ ! -f "$run_record" ] || [ -L "$run_record" ]; then
+        skip_prune_entry "$name" "run record is missing or not a regular file"
+        return 0
+    fi
+    if ! jq -e --arg run "$candidate_run" '
+        .schema == 2 and .run_id == $run and
+        (.outcome == "ready-for-review" or .outcome == "capped" or
+         .outcome == "escalated" or .outcome == "abandoned")
+    ' "$run_record" >/dev/null 2>&1; then
+        skip_prune_entry "$name" "run record is invalid or still open"
+        return 0
+    fi
+    monitor="$(state_path)"
+    if [ -e "$monitor" ]; then
+        if [ ! -f "$monitor" ] || [ -L "$monitor" ] || ! jq -e '
+            .version == 1 and (.actions | type == "array") and
+            all(.actions[]; .state == "reserved" or .state == "adopted")
+        ' "$monitor" >/dev/null 2>&1; then
+            skip_prune_entry "$name" "monitor state is invalid"
+            return 0
+        fi
+        if jq -e '[.actions[] | select(.state == "reserved")] | length > 0' "$monitor" >/dev/null 2>&1; then
+            skip_prune_entry "$name" "monitor.json has an unreconciled reserved action"
+            return 0
+        fi
+    fi
+    if [ "$dry_run" = true ]; then
+        printf 'prune: would remove %s (run %s, generation %s)\n' "$name" "$candidate_run" "$generation"
+        would_remove_count=$((would_remove_count + 1))
+    else
+        rm -- "$pointer" || die "could not remove active pointer: $pointer"
+        [ ! -e "$pointer" ] || die "active pointer remains after prune: $pointer"
+        printf 'prune: removed %s (run %s, generation %s)\n' "$name" "$candidate_run" "$generation"
+        removed_count=$((removed_count + 1))
+    fi
+    release_lock
+}
+
+prune_active_pointers() {
+    local common_dir active_dir entry name
+    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+        die "could not resolve git common directory"
+    active_dir="$common_dir/dev-flow-v2/active"
+    removed_count=0
+    would_remove_count=0
+    skipped_count=0
+    if [ ! -d "$active_dir" ]; then
+        printf 'prune: active directory is absent; no pointers to inspect\n'
+        return 0
+    fi
+    shopt -s nullglob dotglob
+    local entries=("$active_dir"/*)
+    for entry in "${entries[@]}"; do
+        name="${entry##*/}"
+        if [[ "$name" == *.json ]]; then
+            prune_pointer "$entry" "$name"
+        else
+            skip_prune_entry "$name" "leftover lock, temporary, claim, or other non-pointer entry"
+        fi
+    done
+    printf 'prune: complete; removed=%s would_remove=%s skipped=%s\n' \
+        "$removed_count" "$would_remove_count" "$skipped_count"
+}
+
 orchestrator_dir() {
     local common_dir value
     validate_run_id
@@ -381,6 +572,18 @@ fi
 if [ "$command_name" = "active-path" ]; then
     [ -n "$branch" ] || die "branch is required"
     active_path
+    exit 0
+fi
+
+if [ "$command_name" = "retire" ]; then
+    validate_run_id
+    [ -n "$run_id" ] && [ "$dry_run" = false ] || usage
+    retire_active_pointer
+    exit 0
+fi
+
+if [ "$command_name" = "prune" ]; then
+    prune_active_pointers
     exit 0
 fi
 

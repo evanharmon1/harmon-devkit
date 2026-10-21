@@ -630,8 +630,13 @@ on with the inline procedure.
    ended with `close --outcome capped|escalated|abandoned --exit "<why>"`
    (every adjudicated round's evidence marker must already be posted). After
    `promote` or `close`, release the slate lock: `run-record.mjs lock release
-   --slate <slate_id> --session <session> --owner-token <token>`. An ended run's active pointer is
-   the only one a later `solo-init` on the same branch may supersede.
+   --slate <slate_id> --session <session> --owner-token <token>`. The writer
+   retires the matching active pointer after the validated terminal write and
+   readback; a cleanup failure is reported without undoing the outcome. If
+   retirement is deferred, reconcile the outstanding reservation and retry
+   `close` or use `run-record.mjs prune --dry-run` to inspect terminal pointers
+   before pruning. A fresh run on a branch whose old pointer was retired starts
+   at generation 1.
 
 ## 7. Security gate
 
