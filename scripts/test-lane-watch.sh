@@ -2026,7 +2026,7 @@ assert_line "$canonical_monitor_err" \
 cmp -s "$canonical_monitor" "$test_tmp/monitor.before.json" ||
     fail 'watcher modified the canonical run monitor'
 assert_count "$repo_root/ai/skills/universal/orchestrate/SKILL.md" 1 \
-    'state-file <run-dir>/lane-watch.state'
+    'state-file <git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state --registry'
 assert_count "$repo_root/ai/skills/universal/orchestrate/SKILL.md" 0 \
     'state-file <run-state>'
 

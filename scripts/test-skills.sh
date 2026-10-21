@@ -12092,6 +12092,10 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
     grep -qF 'A missing heartbeat means re-arm the watcher' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
+# #1518: lane-watch operation and terminal sentinels follow one contract.
+expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)" \
+    python3 "$repo/scripts/test-orchestrate-watcher-rules.py" "$repo"
+
 # #1500: lost-response acceptance binds every submitted promotion field.
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
     grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"

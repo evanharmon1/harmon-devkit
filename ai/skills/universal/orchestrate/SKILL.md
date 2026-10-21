@@ -234,12 +234,12 @@ throwaway work only.
 - **Run records:** `<git-common-dir>/dev-flow-v2/runs/<run-id>/run.json`,
   beside `monitor.json`.
 - **Slate plan:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json`.
-- **Your own working files** — dispatch files, rendered briefs, ruling files,
-  watcher state:
+- **Your own working files** — dispatch files, rendered briefs, ruling files:
   `<git-common-dir>/dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/`,
   keyed by run id and attempt nonce the way lane reports are.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
+- **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.
 
 Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:
@@ -327,7 +327,8 @@ Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the
 
 Recovery is an explicit operator decision, never an automatic timeout or a
 cross-host process probe. Inspect `lock status --slate <slate>`, have the
-operator confirm that the previous session and its writers have stopped, then
+operator confirm that the previous session, its writers, and its lane watcher
+have stopped, then
 run `lock release --slate <slate> --session <recovering-session> --force
 --reason "<operator attribution and why the old session is abandoned>"` once.
 The helper records that request, its session, reason, timestamp and
@@ -487,10 +488,12 @@ table before their intended sections.
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
-| `{{ready-sentinel}}` | `READY-<lane-name>` using the brief lane label |
-| `{{handoff-sentinel}}` | `HANDOFF-<lane-name>` using the brief lane label |
-| `{{blocked-sentinel}}` | `BLOCKED-<lane-name>` using the brief lane label |
+| `{{ready-sentinel}}` | `READY-<lane-label>` |
+| `{{handoff-sentinel}}` | `HANDOFF-<lane-label>` |
+| `{{blocked-sentinel}}` | `BLOCKED-<lane-label>` |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+
+The sentinel placeholder values are kind/lane prefixes; the lane-brief template appends `-{{attempt-nonce}}` to form the complete sentinel.
 
 Every local PR-owning lane brief MUST carry the active run identity so the lane worker can
 route confidence stages through `/review` and publish a draft with v2 evidence;
@@ -766,19 +769,30 @@ lane is planned, fenced and claimed like any other.
 
 ## Persistent supervision
 
-Watching is the standing mode, not a one-shot step. Use the harness's
-session-lifetime persistent monitor primitive—never a background shell subject
-to an ordinary command timeout—to poll fresh lane-agent and PR state and emit
-transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas), approval
-prompts, stalls, and periodic heartbeat summaries. If it
-exits before the overall run reaches a terminal outcome, re-arm it immediately;
-never interpret monitor termination as human cancellation. If no persistent
-primitive is available, block instead of silently falling back to occasional
-manual polling.
+Watching is the standing mode, not a one-shot step.
+Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`).
+Invoke it as that file. The monitor is the
+session-lifetime persistent monitor primitive that streams its output.
+Never inline its loop, write a substitute, or run it as an unobserved background shell job.
+The monitor polls fresh
+lane-agent and PR state and emits transitions (`idle`, `done`, `blocked`,
+`unknown`, and PR deltas), approval prompts, stalls, and periodic heartbeat
+summaries. On every monitor expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `--state-file`;
+then check lane staleness before other work. Never interpret monitor termination as human cancellation. If
+no persistent primitive is available, block instead of silently falling back
+to occasional manual polling.
 
-Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
-their command under a non-Bash shell, so always invoke the file as
-`bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state --registry
+On every other wakeup (a user message or monitor event), first compare the current
+time with each lane's last observed change; read and act on any lane silent
+past the stall threshold before other work.
+Keep exactly one watcher per slate.
+Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
+A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.
+
+Harness monitor primitives may run their command under a non-Bash shell, so
+always invoke the file as
+`bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state --registry
 <kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>...`;
 never paste its loop inline. The first spec token is the **herdr agent name**;
 herdr requires lowercase names (for example `lane-d1220`), while the brief's
@@ -788,10 +802,11 @@ field may contain a colon. Four-field specs still default to
 `<checkout>/.worktrees/<agent>/.lane-report.md` with lane-label equal to agent;
 with `--workspace-root`, checkout is `<workspace-root>/<repo-name>`. A fifth
 field of `cloud` retains the GitHub-only spec and takes no report or label.
-The ready/handoff/blocked prefixes must be `READY-<lane-label>`,
-`HANDOFF-<lane-label>`, and `BLOCKED-<lane-label>`; labels and nonces contain
+Sentinels use the exact kind-first form
+`(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, matching
+`^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
 only ASCII letters, digits, underscores and hyphens. Both report and pane
-observations match the whole final nonblank line `<kind>-<lane-label>-<nonce>`.
+observations match that whole final nonblank line.
 A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
 The watcher also emits these supervision events:
@@ -840,13 +855,13 @@ window's own deadline passes, the watcher emits
 the window — the event means only that the promotion epoch could not be
 confirmed in time; that path also clears the lane's tracked `PR` state as it
 tears the window down, so the very next observation — the watcher's own next
-poll, or a fresh process restarted against the same `--state-file` — sees
+poll, or a fresh process restarted against the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` — sees
 the still-promoted PR as newly observed and re-arms a fresh window on its
 own, which is what makes restarting with the same state file a genuine
 retry rather than a no-op. Keep the registry argument
 bound to the immutable kickoff snapshot across every re-arm. It only reports
 events; the orchestrator remains responsible for every action. The watcher-owned
-`lane-watch.state` is separate from the run's canonical `monitor.json`; never
+`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` is separate from the run's canonical `monitor.json`; never
 pass that JSON monitor state to `--state-file`.
 
 The watcher's own restart durability does not, by itself, make the
