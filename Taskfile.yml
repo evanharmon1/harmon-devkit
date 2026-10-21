@@ -386,6 +386,7 @@ tasks:
       - test:plan-revise
       - test:devflow-conformance
       - test:dev-flow-monitor
+      - test:provision-lane
       - test:post-evidence
       - test:render-dev-flow
       - test:retro-run-report
@@ -452,6 +453,11 @@ tasks:
     desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
     cmds:
       - ./ai/skills/universal/orchestrate/assets/test-dev-flow-monitor.sh
+
+  test:provision-lane:
+    desc: Provision planned lanes through real writers in fixture repositories
+    cmds:
+      - ./ai/skills/universal/orchestrate/assets/test-provision-lane.sh
 
   test:post-evidence:
     desc: Offline reserve-first round-evidence publication and registration tests

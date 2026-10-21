@@ -253,6 +253,19 @@ expect_ok "orchestrator planning refuses a second plan writer" \
 expect_ok "orchestrator planning publishes expansions as complete revisions" \
     grep -qF 'accepted expansion is a recomputation reason' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+# Lane provisioning (#1542): keep these pins separate from other live lanes.
+expect_ok "orchestrator Lane briefs names the provisioning command" \
+    grep -qF 'Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator added-lane sequence widens the existing lock first" \
+    grep -qF 'For an added lane, widen the lock with `run-record.mjs lock acquire --issues`' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator provisioning has a behavioral Taskfile target" \
+    grep -qF 'test:provision-lane' "$repo/Taskfile.yml"
+expect_ok "orchestrator live-overlap catalog pins body rendering and points to the envelope grammar" \
+    grep -qF 'Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"

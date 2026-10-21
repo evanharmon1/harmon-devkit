@@ -703,5 +703,44 @@ expect_refused "old token after recovery" "owner token does not match" \
 (cd "$repo" && node "$writer" lock release --slate legacy --session alice --owner-token "$(token_for legacy)") >/dev/null
 pass "legacy locks accept a supplied token with a warning; explicit recovery mints a fresh token"
 
+# Planned-lane initialization uses the same receipt-aware writer as later
+# interventions; it must never adopt or overwrite an existing record.
+acquire planned-lane alice --issues 333
+write_plan planned-lane 333:run-planned-lane
+node --input-type=module - "$asset_dir" "$state/slates/planned-lane/plan.json" >"$tmp/lane-policy.json" <<'NODE'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+const [assets, planFile] = process.argv.slice(2)
+process.argv[1] = assets
+const { resolvePolicy } = await import(`${assets}/devflow-policy.mjs`)
+const { parseToml } = await import(`${assets}/lib/toml-lite.mjs`)
+const full = resolvePolicy(parseToml(readFileSync(resolve(assets, '../../../../../.devflow.toml'), 'utf8')))
+const profile = JSON.parse(readFileSync(planFile)).revisions.at(-1).plan.policy
+full.rigor = { ...full.rigor, level: profile.rigor, source: profile.rigor_source }
+full.rounds = { ...full.rounds, ...profile.caps, integration_exempt: profile.caps.integration }
+full.breadth = { ...full.breadth, ...profile.breadth }
+full.strategy.name = profile.strategy
+for (const [role, tier] of Object.entries(profile.role_tiers)) full.roles[role].tier = tier
+console.log(JSON.stringify(full))
+NODE
+(cd "$repo" && node "$writer" lane-init --slate planned-lane --session alice \
+    --owner-token "$(token_for planned-lane)" --lane l333 --policy "$tmp/lane-policy.json" --at 2026-01-01T00:00:00Z) >/dev/null
+planned_record="$state/runs/run-planned-lane/run.json"
+jq -e '.schema == 2 and .receipts == [] and .stage_transitions[0].stage == "kickoff"' \
+    "$planned_record" >/dev/null || fail "lane-init omitted receipt-complete kickoff state"
+[ "$(cat "$state/runs/run-planned-lane/owner-slate")" = planned-lane ] || fail "lane-init omitted slate binding"
+(cd "$repo" && node "$writer" intervention --slate planned-lane --session alice \
+    --owner-token "$(token_for planned-lane)" --run-id run-planned-lane --kind asked \
+    --note 'planned-lane initialized' --at 2026-01-01T00:01:00Z) >/dev/null
+prior_record="$(sha256_file "$planned_record")"
+expect_refused "existing planned run" "already exists" \
+    bash -c 'cd "$1" && node "$2" lane-init --slate planned-lane --session alice --owner-token "$3" --lane l333' \
+    _ "$repo" "$writer" "$(token_for planned-lane)"
+[ "$(sha256_file "$planned_record")" = "$prior_record" ] || fail "lane-init replaced an existing run"
+expect_refused "unknown planned lane" "unknown lane" \
+    bash -c 'cd "$1" && node "$2" lane-init --slate planned-lane --session alice --owner-token "$3" --lane missing' \
+    _ "$repo" "$writer" "$(token_for planned-lane)"
+pass "lane-init creates a receipt-complete owned run, accepts an intervention, and never overwrites"
+
 no_candidates "suite"
 echo "test-run-record: all cases passed"

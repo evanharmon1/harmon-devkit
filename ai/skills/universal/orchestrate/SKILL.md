@@ -245,6 +245,8 @@ Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:
 
 - `transition`, which also appends the matching transition receipt;
+- `lane-init`, which creates a receipt-complete kickoff record and its dispatch
+  policy projection for a lane in the last validated plan revision;
 - `intervention`;
 - `authorize-cap` for one attributable maintainer instruction, shared with solo runs;
 - `bind-pr`;
@@ -354,6 +356,52 @@ Lane briefs consume the validated plan's last revision assignments, fences,
 overlap choices, and merge dependencies rather than reconstructing them from
 session prose.
 
+Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.
+Run it from the target clone after preparing the lane branch/worktree and
+transactionally refreshing its claim:
+
+```sh
+node assets/provision-lane.mjs --slate ID --session ID --owner-token TOKEN \
+  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT
+```
+
+For an added lane, widen the lock with `run-record.mjs lock acquire --issues`
+and the existing owner token, then publish the plan revision through #1410's
+plan writer, then run `provision-lane.mjs`. Provisioning never widens the
+reservation or writes a plan. A conflicting reservation, invalid plan or facts,
+unknown lane, existing run, or unrecorded effective-fence overlap with another
+live lane refuses before durable state is written. Plan-recorded `serialize`
+and `split` overlaps provision with their overlap text and merge dependency.
+For each shared path, the facts file must supply `fence_notes[path][lane]` section boundaries for both live lanes; both notes appear beside that path in the brief, and missing notes refuse provisioning before any write.
+Fence checks include expansions and unmaterialized globs; a possible overlap
+not covered by the recorded issue pair is refused for plan revision or judgment.
+
+The command composes `run-record.mjs lane-init`, the monitor's `activate` and
+`reserve-agent-run`, and the `brief` validator. It obtains its output directory
+from `dev-flow-monitor.sh orchestrator-dir`, prints a JSON handoff including
+the brief and report paths, and never mints, stores or prints an owner token.
+Inspect durable state after an operational failure; an existing run is never
+overwritten or silently resumed by provisioning.
+
+`--policy` is the complete trusted `devflow-policy.mjs resolve --json` output
+for this lane, as supplied to `solo-init`. Its dispatch fields must agree with
+the last validated plan's lane profile. Both kickoff writers preserve the same
+full projection, including finder slots, producer-tier order and push gates.
+
+The facts file is a JSON object with only these per-lane dispatch facts:
+`worktree_path`, `harness`, `harness_text`, `effort`, `codex_model_id`,
+`codex_launch_flags`, `scratch_dir`, `repo_tier`, `gate_bounds_override`,
+`gate_commands`, `git_sandbox_note`, `known_environmental_failure`, `unit_kind`,
+`pr_title`, `verified_facts_and_rulings` (nonempty strings), and the authenticated
+`claim_handoff` object described in the catalog below. Use `n/a` for inapplicable
+Codex facts. No plan-owned value may be overridden in facts. The builder uses
+the last revision's lane profile (or its slate profile when lane profiles are
+absent), fence plus expansions, and other live lanes; overlap text is never
+copied from a previous brief. The prepared worktree must belong to this clone,
+name the lane branch, and still be at the plan's base, which must equal the
+locally fetched target tracking head. Fetch and recheck target freshness under
+§ Planning before invoking the command.
+
 ### File-scope fences
 
 A file-scope fence is the closed list of paths and globs a lane may write. Derive
@@ -415,7 +463,7 @@ table before their intended sections.
 | `{{record-directory}}` | Active run record directory |
 | `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
 | `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
-| `{{live-lane-overlaps}}` | Orchestrator's complete live-lane overlap map |
+| `{{live-lane-overlaps}}` | Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`. |
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
@@ -509,10 +557,11 @@ named by the rendered brief. Provision the lane branch/worktree, then
 transactionally refresh the existing claim so its record names that exact branch.
 Authenticate the refreshed claim into the handoff snapshot without transferring
 its ownership.
-As a render-time completeness check, scan the entire rendered file and refuse
-dispatch if any unreplaced `{{name}}` token remains. This is the renderer's
-check, not content validation of the opaque body; the `brief` validator checks
-double-brace tokens only inside the envelope block.
+As a render-time completeness check, compare the unrendered template's
+placeholder set with the source catalog and the complete values set before
+substitution. Substitute every value in one pass; do not rescan inserted values
+for tokens, since a fact or issue title may legitimately contain one. The
+`brief` validator checks double-brace tokens only inside the envelope block.
 For local PR-owning lanes, validate the rendered brief before dispatch and refuse dispatch on any failure:
 `node dev-flow-support/assets/validate-result-schemas.mjs brief "$brief_path"`.
 Place the per-attempt report under the common Git directory, or install and
