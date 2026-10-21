@@ -627,6 +627,9 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/exit-code-15-with-pending.json',
   'result.integrator.schema/invalid/exit-code-15-with-accepted.json',
   'result.integrator.schema/invalid/exit-code-16-with-escalate.json',
+  // Exit 19 has the same verdict pairing as exit 13, but that conditional
+  // relationship is enforced by the semantic validator, not JSON Schema.
+  'result.integrator.schema/invalid/exit-code-19-with-pending.json',
   // harmon-devkit#1050 integration cycle 1, finding 4064588966: the same
   // pairing aggregated over codex_cycle AND every finder_cycles[] entry, by
   // precedence escalate > findings > pending > clean. A schema cannot express

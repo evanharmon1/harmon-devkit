@@ -137,9 +137,13 @@ derive every action from this brief and your own reads.
 ## 2. Resolve paths
 
 Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
-The checker and readiness gate compare their own asset path with the PR's local
-base history and refuse a stale checkout; an unavailable local base is
-indeterminate, and these checks never fetch commits.
+The checker and readiness gate compare the relevant asset bytes between their
+checkout and the PR base. A checkout is stale only when its HEAD is an ancestor
+of that base and the bytes differ; shallow checkouts and checkouts with
+`info/grafts` are indeterminate. An unavailable local base is indeterminate,
+and these checks never fetch commits. On a stale refusal, update this checkout
+to the PR base or newer (fetch and fast-forward), or use the lane worktree where
+the recipe allows it.
 
 Locate this skill's asset directory (the directory this file's dispatcher
 resolves it from, conventionally `ai/skills/universal/integrate/assets/`) and
@@ -725,8 +729,14 @@ Resetting to `0` first means every invocation starts from a known baseline
 and only moves off it when *this* call actually fails.
 
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
-PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
-**12 (retry)**, repeat the
+PR no longer open, 15 quota exhausted, 16 transient read, 19 stale asset
+checkout, 2 indeterminate. On **19 (stale asset checkout)**, stop driving the
+cycle and report a blocked result with `verdict: "escalate"`, naming this
+remedy: update this checkout to the PR base or newer (fetch and fast-forward),
+or use the lane worktree where the recipe allows it. Do not trigger another
+review until the checkout is current. Keep the checker's detail in the report,
+not in `codex_cycle`.
+On **12 (retry)**, repeat the
 two-call reserve/read → literal broker trigger (including attach) procedure
 above, including step 1's assignments, then `check`, once more with `--attempt 2` against the **same** state
 and head — this is the one bounded retry your brief expects; do not retry a

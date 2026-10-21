@@ -64,6 +64,7 @@
 #   content-moved                                            (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
 #   codex-quota-exhausted, finder-quota-exhausted,          (fail)
+#   codex-asset-checkout-stale, finder-asset-checkout-stale   (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
 #   evidence-marker-missing, remediation-capped,            (fail)
@@ -612,6 +613,9 @@ exit_condition() {
         # the reason named, and the caller repeats the READ.
         indeterminate "${ec_prefix}-transient-read" "$ec_subject exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
         ;;
+    19)
+        fail_condition "${ec_prefix}-asset-checkout-stale" "$ec_subject exited 19: its vendored asset checkout is stale — update this checkout to the PR base or newer (fetch and fast-forward), or use the lane worktree where the recipe allows it, then rerun the pass"
+        ;;
     2)
         # Review round 3, finding `review-r3-codex-verification-4` (confirmed
         # P3): 2 was the LAST documented code still falling to the catch-all,
@@ -703,6 +707,22 @@ asset_freshness_check() {
     fi
     case "$freshness_status" in
     19)
+        case "$command_name" in
+        audit)
+            indeterminate asset-freshness-unknown "$asset_freshness_detail; audit cannot judge an existing promotion from a stale checkout, so report the blocker and never undo on this result"
+            ;;
+        check | fingerprint)
+            freshness_pr="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft)" ||
+                indeterminate fetch-failed "cannot establish whether the PR is already promoted before interpreting stale asset checkout: $asset_freshness_detail"
+            freshness_state="$(jq -er '.state | select(type == "string")' <<<"$freshness_pr")" ||
+                indeterminate malformed-data "PR payload carries no state while checking stale asset checkout"
+            freshness_draft="$(jq -er '.isDraft | select(type == "boolean")' <<<"$freshness_pr")" ||
+                indeterminate malformed-data "PR payload carries no draft state while checking stale asset checkout"
+            if [ "$freshness_state" = OPEN ] && [ "$freshness_draft" = false ]; then
+                indeterminate asset-freshness-unknown "$asset_freshness_detail; stale checkout status is indeterminate for a promoted PR, so report the blocker and never undo on this result"
+            fi
+            ;;
+        esac
         emit fail asset-checkout-stale "$asset_freshness_detail"
         exit 3
         ;;

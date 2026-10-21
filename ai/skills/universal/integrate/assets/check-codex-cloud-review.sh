@@ -220,7 +220,9 @@ so an unstaged edit cannot influence it.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 15 quota exhausted, 16 transient read,
-2 indeterminate. Exit 15 is terminal for the HEAD, not just the cycle: no
+19 stale asset checkout, 2 indeterminate. Exit 19 is a blocker from the
+shared freshness check: update the checkout to the PR base or newer (fetch
+and fast-forward) before driving the cycle. Exit 15 is terminal for the HEAD, not just the cycle: no
 same-head reservation is accepted afterwards, so recovery is a new commit or
 an operator removing the state file (see #1115). Exit 14 means GitHub answered and
 the PR is MERGED or CLOSED: terminal for the whole shepherd stage — stop,

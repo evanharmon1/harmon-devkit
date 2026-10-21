@@ -9249,6 +9249,8 @@ set -e
 [[ "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
     "$freshness_out" == *"PR base $freshness_integrate_base"* ]] ||
     fail "stale checker refusal did not name both SHAs: $freshness_out"
+[[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
+    fail "stale checker refusal did not name the workable update remedy: $freshness_out"
 [ ! -e "$freshness_state" ] ||
     fail "stale checker checkout wrote a reservation before refusing"
 
@@ -9272,6 +9274,84 @@ set -e
     "$freshness_out" == *"PR base $freshness_support_base"* ]] ||
     fail "stale checker support-asset refusal did not name both SHAs: $freshness_out"
 
+echo "==> checker freshness accepts asset bytes changed and then reverted"
+git checkout -q -b freshness-revert "$freshness_checkout_head"
+printf '\n# temporary asset change\n' >>"$fixture_asset_dir/gh-write-broker.sh"
+git add ai/skills/universal/integrate/assets/gh-write-broker.sh
+git commit -q -m "test: change asset before revert fixture"
+git checkout -q "$freshness_checkout_head" -- ai/skills/universal/integrate/assets/gh-write-broker.sh
+git commit -q -m "test: restore asset bytes fixture"
+freshness_reverted_base=$(git rev-parse HEAD)
+git checkout -q "$freshness_checkout_head"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_reverted_base" >"${fixtures}/base-head"
+rm -f "$freshness_state" "${freshness_state}.lock"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "change-then-revert asset bytes should be current, got $freshness_rc: $freshness_out"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_state" >/dev/null ||
+    fail "change-then-revert checkout did not reserve successfully: $freshness_out"
+
+echo "==> checker freshness ignores refs/replace when proving staleness"
+git replace --graft "$freshness_integrate_base"
+if git merge-base --is-ancestor "$freshness_checkout_head" "$freshness_integrate_base"; then
+    fail "replacement-ref fixture did not hide the real ancestor relationship"
+fi
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_integrate_base" >"${fixtures}/base-head"
+rm -f "$freshness_state" "${freshness_state}.lock"
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 19 ] ||
+    fail "replacement ref must not make a stale checkout pass, got $freshness_rc: $freshness_out"
+git replace -d "$freshness_integrate_base" >/dev/null
+
+echo "==> checker freshness treats info/grafts as indeterminate"
+printf '%s %s\n' "$freshness_checkout_head" "$freshness_integrate_base" >.git/info/grafts
+set +e
+freshness_out=$("$helper" reserve --state "$freshness_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+rm -f .git/info/grafts
+[ "$freshness_rc" -eq 2 ] && [[ "$freshness_out" == *"info/grafts"* ]] ||
+    fail "grafted checkout should be indeterminate, got $freshness_rc: $freshness_out"
+
+echo "==> checker freshness treats a shallow stale checkout as indeterminate"
+freshness_shallow_source_branch=freshness-shallow-source
+freshness_shallow_repo="${test_tmp}/freshness-shallow"
+git branch "$freshness_shallow_source_branch" "$freshness_support_base"
+git clone -q --depth 1 --branch "$freshness_shallow_source_branch" \
+    "file://${test_repo}" "$freshness_shallow_repo"
+git -C "$freshness_shallow_repo" fetch -q --depth 1 origin "$freshness_checkout_head"
+git -C "$freshness_shallow_repo" checkout -q "$freshness_checkout_head"
+[ "$(git -C "$freshness_shallow_repo" rev-parse --is-shallow-repository)" = true ] ||
+    fail "shallow fixture is not reported as shallow"
+head_sha=$freshness_checkout_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+freshness_shallow_helper="${freshness_shallow_repo}/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+freshness_shallow_state="${test_tmp}/freshness-shallow-state.json"
+set +e
+freshness_out=$("$freshness_shallow_helper" reserve --state "$freshness_shallow_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] && [[ "$freshness_out" == *"shallow"* ]] ||
+    fail "shallow stale checkout should be indeterminate, got $freshness_rc: $freshness_out"
+[ ! -e "$freshness_shallow_state" ] ||
+    fail "shallow stale checkout wrote a reservation before refusing"
+
 echo "==> checker freshness names the remedy for an unavailable base"
 missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
 printf '%s\n' "$missing_base_sha" >"${fixtures}/base-head"
@@ -9285,7 +9365,7 @@ set -e
 [[ "$freshness_out" == *"asset freshness indeterminate"* &&
     "$freshness_out" == *"checkout HEAD $freshness_checkout_head"* &&
     "$freshness_out" == *"PR base $missing_base_sha"* &&
-    "$freshness_out" == *"fetch the PR's base commit from its base repository"* ]] ||
+    "$freshness_out" == *"fetching the PR base from its base repository if it is unavailable locally"* ]] ||
     fail "unavailable checker base did not name the remedy and both SHAs: $freshness_out"
 
 echo "==> checker accepts a diverged lane checkout when the base moved an asset"
@@ -9317,10 +9397,10 @@ git checkout -q "$freshness_support_base"
 rm -f "$freshness_state" "${freshness_state}.lock"
 head_sha=$freshness_support_base
 write_defaults
-"$helper" reserve --state "$freshness_state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 >"${test_tmp}/freshness-reserve.json"
+GIT_TRACE=1 "$helper" reserve --state "$freshness_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >"${test_tmp}/freshness-reserve.json" 2>&1
 jq -e '.phase == "reserved" and .head == $head' \
-    --arg head "$head_sha" "${test_tmp}/freshness-reserve.json" >/dev/null ||
+    --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
     fail "current checker checkout did not reserve successfully"
 
 # Last line on purpose: every case above must have run for this to print.

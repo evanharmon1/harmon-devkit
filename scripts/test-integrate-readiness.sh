@@ -485,7 +485,7 @@ write_integrator_result() {
     local out="${fixtures}/integrator-result-${name}.json"
     # verdict is constrained against codex_cycle.exit_code by
     # validate-result-schemas.mjs's EXIT_CODE_VERDICT_CONSTRAINTS (0->clean,
-    # 10->findings, 11|12->pending, 13|2->escalate); the gate's own step 9c
+    # 10->findings, 11|12|16->pending, 13|2|19->escalate); the gate's own step 9c
     # additionally requires status:"completed" and verdict:"clean" of the
     # gated pass, after the codex_cycle/findings checks, so a non-clean
     # fixture that gets past those still fails there. A null codex_cycle
@@ -507,7 +507,7 @@ write_integrator_result() {
     # to wait for and nothing to certify), which is why it needs its own arm
     # rather than the pending default — review round 1 finding
     # `review-r1-codex-verification-4` added the first fixture to reach it.
-    13 | 14 | 15 | 2) verdict=escalate ;;
+    13 | 14 | 15 | 19 | 2) verdict=escalate ;;
     *) verdict=pending ;;
     esac
     jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
@@ -3050,11 +3050,11 @@ write_finder_cycle_result() {
     # The verdict must be the one the cycle's exit code demands: the envelope
     # validator aggregates EXIT_CODE_VERDICT_CONSTRAINTS over codex_cycle AND
     # every finder_cycles entry now (harmon-devkit#1050 integration cycle 1),
-    # so a finder at 16 makes the pass `pending` and a finder at 15 makes it
+    # so a finder at 16 makes the pass `pending` and a finder at 15 or 19 makes it
     # `escalate` however clean the Codex cycle is.
     jq --argjson ec "$wfc_exit" \
         '(if $ec == 11 or $ec == 12 or $ec == 16 then "pending"
-          elif $ec == 13 or $ec == 14 or $ec == 15 or $ec == 2 then "escalate"
+          elif $ec == 13 or $ec == 14 or $ec == 15 or $ec == 19 or $ec == 2 then "escalate"
           else "findings" end) as $verdict
          | .payload.verdict = $verdict
          | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
@@ -5236,6 +5236,47 @@ freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty
 [[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
     "$freshness_out" == *"PR base $fresh_integrate_base"* ]] ||
     fail "stale readiness refusal did not name both SHAs: $freshness_out"
+[[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
+    fail "stale readiness refusal did not name the workable update remedy: $freshness_out"
+
+echo "==> stale asset checkout is indeterminate in audit mode"
+write_defaults
+jq '.isDraft = false' "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+set +e
+freshness_out=$("$fresh_gate" audit --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 --remediation-cap 4 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')" = asset-freshness-unknown ] &&
+    [[ "$freshness_out" != *'"status":"fail"'* ]] ||
+    fail "stale audit checkout must be indeterminate and must not report fail: $freshness_out"
+
+echo "==> check and fingerprint keep a promoted stale checkout indeterminate"
+set +e
+freshness_out=$("$fresh_gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 --remediation-cap 4 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [[ "$freshness_out" != *'"status":"fail"'* ]] ||
+    fail "check on a promoted stale checkout must be indeterminate: $freshness_out"
+set +e
+freshness_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [[ "$freshness_out" != *'"status":"fail"'* ]] ||
+    fail "fingerprint on a promoted stale checkout must be indeterminate: $freshness_out"
+write_defaults
 
 echo "==> readiness freshness covers the sibling dev-flow-support asset directory"
 git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
@@ -5271,7 +5312,7 @@ freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty
     fail "unavailable readiness base did not report asset-freshness-unknown: $freshness_out"
 [[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
     "$freshness_out" == *"PR base $missing_base_sha"* &&
-    "$freshness_out" == *"fetch the PR's base commit from its base repository"* ]] ||
+    "$freshness_out" == *"fetching the PR base from its base repository if it is unavailable locally"* ]] ||
     fail "unavailable readiness base did not name the remedy and both SHAs: $freshness_out"
 
 echo "==> readiness accepts a diverged lane checkout when the base moved an asset"

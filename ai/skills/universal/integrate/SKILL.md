@@ -48,14 +48,18 @@ A missing sibling package is a blocker, not a fallback: vendor the `universal`
 category as a unit rather than resolving a runtime path some other way.
 
 Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
-The checker and readiness gate share one bounded local history check over the
-vendored `integrate/assets/` and `dev-flow-support/assets/` directories. They
-refuse only when checkout `HEAD` is an ancestor of the PR base and that range
-contains an asset change; a diverged or newer checkout is accepted. A definite
-stale refusal exits 19 from `check-codex-cloud-review.sh` and 3 from
-`readiness-gate.sh`; exit 2 remains indeterminate. If the PR base commit is
-unavailable locally, fetch that commit from the PR's base repository before
-running the checker or gate. Neither script fetches automatically.
+The checker and readiness gate share one bounded local comparison of the
+vendored `integrate/assets/` and `dev-flow-support/assets/` tree bytes. A
+checkout is stale only when its `HEAD` is an ancestor of the PR base and those
+bytes differ; a change followed by a revert is current, and a diverged or newer
+checkout is accepted. The check ignores `refs/replace`; a shallow checkout or
+an existing `info/grafts` file makes ancestry indeterminate. A definite stale
+refusal exits 19 from `check-codex-cloud-review.sh` and 3 from
+`readiness-gate.sh`. In `audit`, and in `check` or `fingerprint` for a promoted
+PR, stale checkout status is indeterminate (exit 2), never a reason to undo an
+existing handoff. If the PR base commit is unavailable locally, fetch that
+commit from the PR's base repository before running the checker or gate.
+Neither script fetches automatically.
 
 **Arguments:** $ARGUMENTS
 
@@ -1028,7 +1032,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     Two kinds never license an undo:
 
     - **Anything the gate could not establish** — every `audit` exit 2,
-      whatever its condition. "I could not determine this" is not "this is
+      whatever its condition. This includes a stale checkout, shallow history,
+      or grafted history: the gate reports `asset-freshness-unknown` with exit
+      2 rather than a determinate stale failure, so this branch reports the
+      blocker and never undoes the promotion. "I could not determine this" is not "this is
       wrong", and reversing a human's handoff on it destroys a real thing over
       an unproven one — while achieving nothing about the harm the
       stay-draft rule guards, because `gh pr ready --undo` cannot unsend the
