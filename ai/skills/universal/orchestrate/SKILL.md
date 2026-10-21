@@ -244,8 +244,12 @@ throwaway work only.
   SHA-256-named pointer per branch. `promote` and `close` retire only the
   matching run's pointer after the validated terminal record is written and
   read back. A reserved monitor event on an ended run defers retirement and
-  blocks a new activation on that branch; reconcile the named event, then
-  retire the run or prune its pointer before retrying.
+  blocks a new activation on that branch. Reconcile landed events. If a
+  reserved action is observed absent, record that observation and cancel it with
+  `assets/dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
+  --event <event-id> --observed <observation.json> --reason "<why>"`; landed
+  actions still go through reconcile. Then retire the run or prune its pointer
+  before retrying activation.
   `run-record.mjs prune --dry-run` reports
   which pointers are safe to remove; `prune` removes only valid pointers for
   terminal runs and reports open, malformed, mismatched, missing, reserved, or

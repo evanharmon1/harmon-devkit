@@ -633,13 +633,16 @@ on with the inline procedure.
    --slate <slate_id> --session <session> --owner-token <token>`. The writer
    retires the matching active pointer after the validated terminal write and
    readback; a cleanup failure is reported without undoing the outcome. If
-   retirement is deferred, reconcile the outstanding reservation and retry
+   retirement is deferred, reconcile the outstanding reservation. When the
+   action is observed absent, cancel it with
+   `dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
+   --event <event-id> --observed <observation.json> --reason "<why>"`. Retry
    `close` or use `run-record.mjs prune --dry-run` to inspect terminal pointers
    before pruning. A fresh run on a branch whose old pointer was retired starts
    at generation 1.
    New activation is refused while an ended run on that branch still has an
-   unreconciled reserved event; reconcile the named event, then retire the old
-   pointer or prune it before retrying activation.
+   unreconciled reserved event; reconcile landed events or cancel an absent
+   event, then retire the old pointer or prune it before retrying activation.
 
 ## 7. Security gate
 

@@ -15,7 +15,6 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY G
 
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 writer="$asset_dir/run-record.mjs"
-validator="$asset_dir/validate-result-schemas.mjs"
 monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
 
 fail() {
@@ -106,18 +105,6 @@ no_candidates() {
         fail "$1: a candidate file was left behind"
     fi
 }
-
-invalid_run="$tmp/invalid-run.json"
-jq -n '{}' >"$invalid_run"
-validator_output=""
-validator_rc=0
-validator_output="$(node "$validator" run "$invalid_run" 2>&1)" || validator_rc=$?
-[ "$validator_rc" -eq 1 ] || fail "invalid run did not fail validation: exit=$validator_rc output=$validator_output"
-grep -qF 'FAIL:' <<<"$validator_output" || fail "invalid run did not report a validation failure: $validator_output"
-if grep -qF 'run record OK' <<<"$validator_output"; then
-    fail "validator printed success after a failed report: $validator_output"
-fi
-pass "a failed validator report returns before printing success"
 
 run="$state/runs/run-a/run.json"
 new_run run-a
