@@ -35,7 +35,9 @@
 #      here with its reason rather than on 2.
 #   19 stale checkout — the checkout HEAD is an ancestor of the PR base and
 #      the base contains a newer vendored integrate/dev-flow-support asset.
-#      Run from a current checkout; no reservation or trigger was made.
+#      Run from a current checkout. For `reserve`, no reservation was made
+#      and no trigger may be posted. Other subcommands refuse before reading
+#      command-specific evidence or changing persisted state.
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #

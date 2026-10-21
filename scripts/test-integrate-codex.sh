@@ -9403,5 +9403,62 @@ jq -e '.phase == "reserved" and .head == $head' \
     --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
     fail "current checker checkout did not reserve successfully"
 
+echo "==> stale checker check and carry refuse without changing state"
+saved_state=$state
+state="${test_tmp}/freshness-clean-cycle.json"
+git checkout -q "$freshness_support_base"
+head_sha=$freshness_support_base
+write_defaults
+jq --arg base "$freshness_support_base" '.base.sha = $base' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.next"
+mv "${fixtures}/pr.next" "${fixtures}/pr.json"
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[{id:9001,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+git checkout -q -b freshness-carry-target "$freshness_support_base"
+printf '%s\n' 'freshness carry target' >freshness-target.txt
+git add freshness-target.txt
+git commit -q -m "test: create a later head for stale carry"
+freshness_carry_head=$(git rev-parse HEAD)
+head_sha=$freshness_carry_head
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+jq --arg base "$freshness_support_base" '.base.sha = $base' \
+    "${fixtures}/pr.json" >"${fixtures}/pr.next"
+mv "${fixtures}/pr.next" "${fixtures}/pr.json"
+git checkout -q "$freshness_checkout_head"
+
+check_state="${test_tmp}/freshness-check-stale.json"
+carry_state="${test_tmp}/freshness-carry-stale.json"
+cp "$state" "$check_state"
+cp "$state" "$carry_state"
+cp "$check_state" "${check_state}.before"
+cp "$carry_state" "${carry_state}.before"
+set +e
+stale_check_out=$("$helper" check --state "$check_state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" 2>&1)
+stale_check_rc=$?
+stale_carry_out=$("$helper" carry --state "$carry_state" \
+    --head "$freshness_carry_head" 2>&1)
+stale_carry_rc=$?
+set -e
+[ "$stale_check_rc" -eq 19 ] && [ "$stale_carry_rc" -eq 19 ] ||
+    fail "stale check/carry should both exit 19 (check=$stale_check_rc: $stale_check_out; carry=$stale_carry_rc: $stale_carry_out)"
+cmp -s "$check_state" "${check_state}.before" ||
+    fail "stale check changed its state file"
+cmp -s "$carry_state" "${carry_state}.before" ||
+    fail "stale carry changed its state file"
+state=$saved_state
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

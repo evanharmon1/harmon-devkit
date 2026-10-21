@@ -679,7 +679,11 @@ Three cases, mutually exclusive:
   time for GitHub to report a just-pushed head. **Exit 18** means GitHub still
   reports a predecessor of `<head>` after that wait and nothing was reserved:
   re-run the same `reserve` once; if it exits 18 again, post no trigger,
-  report `codex_cycle: null`, and report the lag as a blocker (§5). **Exit 2**
+  report `codex_cycle: null`, and report the lag as a blocker (§5). **Exit 19**
+  means the checkout is stale because its HEAD is an ancestor of the PR base
+  and the base contains newer vendored assets; stop and re-run from an up-to-
+  date checkout. For `reserve`, no reservation was made and no trigger may be
+  posted. **Exit 2**
   naming a changed head means the PR moved past the brief's head — rewritten
   or superseded: post no trigger, report `codex_cycle: null` with the
   mismatch as a finding (§5), and stop this section. **Never re-capture the

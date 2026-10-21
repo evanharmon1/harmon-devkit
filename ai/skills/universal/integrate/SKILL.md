@@ -54,9 +54,11 @@ checkout is stale only when its `HEAD` is an ancestor of the PR base and those
 bytes differ; a change followed by a revert is current, and a diverged or newer
 checkout is accepted. The check ignores `refs/replace`; a shallow checkout or
 an existing `info/grafts` file makes ancestry indeterminate. A definite stale
-refusal exits 19 from `check-codex-cloud-review.sh`; the gate maps it to
-indeterminate (exit 2) on every command, so a stale checkout is never a fail
-or evidence about the PR. If the PR base commit is unavailable locally, fetch
+refusal exits 19 from `check-codex-cloud-review.sh`; the readiness gate maps
+it to indeterminate (exit 2) on every verdict-bearing command, so a stale
+checkout is never a fail or evidence about the PR. `fingerprint` carries no
+verdict and skips freshness checking; its content digest is the same from a
+stale or current checkout. If the PR base commit is unavailable locally, fetch
 that commit from the PR's base repository before running the checker or gate.
 Neither script fetches automatically.
 
@@ -1466,6 +1468,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     inventing a poller of your own. The agent absorbs the single
     reserve-retry attempt (exit `12`) internally within one dispatch, so you
     should never see `12` at this level.
+  - `codex_cycle.exit_code: 19` (stale local asset checkout) — stop as an
+    indeterminate checkout blocker and re-run from an up-to-date checkout.
+    This is not the remediation-cap stop below.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
     never-integrate-a-closed-PR rule), `15` (the reviewer's code-review
@@ -1509,10 +1514,11 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     different document. Treat that shape as a blocker to escalate, not as a
     cycle to re-drive; a lone 16 between two good reads is still the ordinary
     transient case.
-  - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
-    resolved **remediation** cap is spent and a finding still needs a code
-    fix (see "A resolved remediation cap of 0..." above, which is the
-    zero-cap instance of this same stop). Stop condition 2.
+  - `verdict: "escalate"` with a terminal or null `codex_cycle` for the
+    remediation-cap reason — a finding still needs a code fix and the resolved
+    cap is spent (see "A resolved remediation cap of 0..." above, which is the
+    zero-cap instance of this same stop). A checker exit 19 is the stale-
+    checkout blocker above, never this cap stop. Stop condition 2.
 
   **A badged finding outside an inline thread is settled by this skill, not
   the agent** — the agent never calls `settle` (its brief has no disposition

@@ -5282,7 +5282,7 @@ set -e
     [[ "$freshness_out" != *'"status":"fail"'* ]] ||
     fail "stale audit checkout must be indeterminate and must not report fail: $freshness_out"
 
-echo "==> check and fingerprint keep a promoted stale checkout indeterminate"
+echo "==> check stays indeterminate and fingerprint ignores stale asset checkout"
 rm -f "${fixtures}/pr-view-count"
 set +e
 freshness_out=$("$fresh_gate" check --repo example/repo --pr 493 --head "$head_sha" \
@@ -5297,17 +5297,32 @@ set -e
     fail "check on a promoted stale checkout must be indeterminate: $freshness_out"
 [ ! -e "${fixtures}/pr-view-count" ] ||
     fail "check must not make a per-command PR read after stale preflight"
+
+echo "==> fresh fingerprint remains available for comparison"
+git -C "$fresh_repo" checkout -q "$fresh_integrate_base"
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 rm -f "${fixtures}/pr-view-count"
 set +e
-freshness_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
-freshness_rc=$?
+fresh_fingerprint_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
+fresh_fingerprint_rc=$?
 set -e
-[ "$freshness_rc" -eq 2 ] &&
-    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
-    [[ "$freshness_out" != *'"status":"fail"'* ]] ||
-    fail "fingerprint on a promoted stale checkout must be indeterminate: $freshness_out"
-[ ! -e "${fixtures}/pr-view-count" ] ||
-    fail "fingerprint must not make a per-command PR read after stale preflight"
+[ "$fresh_fingerprint_rc" -eq 0 ] &&
+    [ "$(tail -n 1 <<<"$fresh_fingerprint_out" | jq -r '.status // empty')" = fingerprint ] ||
+    fail "fingerprint on a current checkout should succeed: $fresh_fingerprint_out"
+
+echo "==> stale fingerprint returns the same content identity as a current checkout"
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
+rm -f "${fixtures}/pr-view-count"
+set +e
+stale_fingerprint_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
+stale_fingerprint_rc=$?
+set -e
+[ "$stale_fingerprint_rc" -eq 0 ] &&
+    [ "$(tail -n 1 <<<"$stale_fingerprint_out" | jq -r '.status // empty')" = fingerprint ] ||
+    fail "fingerprint on a stale checkout should succeed: $stale_fingerprint_out"
+[ "$stale_fingerprint_out" = "$fresh_fingerprint_out" ] ||
+    fail "stale fingerprint differs from the current-checkout identity: fresh=$fresh_fingerprint_out stale=$stale_fingerprint_out"
 write_defaults
 
 echo "==> readiness freshness covers the sibling dev-flow-support asset directory"
