@@ -1226,15 +1226,23 @@ finder cycle** is terminal-clean (exit_code 0 with accepted present), and
 `unanswered_thread_roots` and `findings` are both empty; `findings` when
 anything substantive surfaced that the orchestrator has not adjudicated away;
 `pending` when still waiting on CI or the Codex window with nothing else
-outstanding; `escalate` in exactly two cases — when your brief tells you the
-remediation cap is already spent and something still needs a code fix (you
-do not decide the cap is spent yourself), **or** when the Codex cycle ended
-on exit `13` (both attempts timed out) or `2` (indeterminate), independent of
-any cap: `validate-result-schemas.mjs`'s `EXIT_CODE_VERDICT_CONSTRAINTS`
-pairs those two exit codes with `escalate` and nothing else, because either
-way the orchestrator's next move is to stop and reconcile rather than
-re-dispatch, so a timed-out cycle reported under any other verdict fails
-validation instead of returning the escalation evidence §4 promises. Exit
+outstanding; `escalate` when your brief tells you the remediation cap is
+already spent and something still needs a code fix (you do not decide the cap
+is spent yourself); when the Codex cycle ended on exit `13` (both attempts
+timed out) or `2` (indeterminate), independent of any cap; or when it ended
+when the checker returns exit `19` (stale asset checkout), whether or not it
+created a cycle. For exit `19`, follow §4's blocked result: use
+`status: "blocked"` and `payload.verdict: "escalate"`; report
+`payload.codex_cycle: null` when no trigger was posted, or retain
+`payload.codex_cycle.exit_code: 19` when a cycle exists. In either form, the
+§9 blocker names exit 19, the checkout HEAD, and the PR base. The orchestrator
+updates the checkout and re-enters integration; do not re-dispatch this pass.
+`validate-result-schemas.mjs`'
+`EXIT_CODE_VERDICT_CONSTRAINTS` pairs exits `13` and `2` with `escalate` and
+nothing else, because either way the orchestrator's next move is to stop and
+reconcile rather than re-dispatch, so a timed-out cycle reported under any
+other verdict fails validation instead of returning the escalation evidence
+§4 promises. Exit
 `14` (the PR is no longer open) forbids `clean` and `pending` — report
 `findings` (the closed PR is the finding) or `escalate`. Exit `15` (the
 reviewer reported an exhausted usage limit) pairs with `escalate` for the

@@ -1474,9 +1474,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     `carry` that falls through to `reserve`) posted no trigger — is an
     indeterminate stale-checkout blocker. With `codex_cycle: null`, the
     integrator posts no trigger; when a cycle exists, it retains exit 19 and
-    posts no further trigger. The orchestrator, never the integrator, updates
-    the asset checkout and re-dispatches. This is never the remediation-cap
-    stop below.
+    posts no further trigger. This blocked result ends the stage like any
+    other blocked result; do not re-dispatch this pass. After updating the
+    asset checkout, the orchestrator can recover by re-entering integration.
+    This is never the remediation-cap stop below.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
     never-integrate-a-closed-PR rule), `15` (the reviewer's code-review
