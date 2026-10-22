@@ -5447,7 +5447,7 @@ fi
 case "$PROMOTE_CASE" in
 fail | remediation) printf '{"condition":"remediation-capped"}\n'; exit 1 ;;
 indeterminate | unrecorded) printf '{"condition":"integration-exit-indeterminate"}\n'; exit 2 ;;
-already) printf '{"condition":"pr-not-draft"}\n'; exit 1 ;;
+already | already-recorded | already-other-head) printf '{"condition":"pr-not-draft"}\n'; exit 1 ;;
 malformed) printf '{"status":"pass"}\n'; exit 0 ;;
 esac
 jq -n --arg head "$PROMOTE_HEAD" '{status:"pass",condition:"ready",head:$head,fingerprint:"fp"}'
@@ -5466,6 +5466,10 @@ case "$1 $2" in
         [ "$PROMOTE_CASE" != ready-error ] || exit 1
     fi ;;
 'pr view')
+    if [ "$PROMOTE_CASE" = hung-read ] && [ "$(cat "$PROMOTE_STATE")" = ready ]; then
+        # exec avoids leaving a child behind when the watchdog expires.
+        exec /bin/sleep 120
+    fi
     count=0
     [ ! -f "$PROMOTE_STATE.count" ] || count="$(cat "$PROMOTE_STATE.count")"
     count=$((count + 1)); printf '%s\n' "$count" >"$PROMOTE_STATE.count"
@@ -5495,6 +5499,10 @@ STUB
 import { appendFileSync, writeFileSync } from 'node:fs'
 const a = process.argv.slice(2)
 const value = key => a[a.indexOf(key) + 1]
+if (a[0] === 'lock' && a[1] === 'check') {
+  appendFileSync(process.env.PROMOTE_LOG, 'owner check\n')
+  process.exit(process.env.PROMOTE_CASE === 'stale-token' ? 1 : 0)
+}
 appendFileSync(process.env.PROMOTE_LOG, `record ${a[0]}\n`)
 if (process.env.PROMOTE_CASE === 'writer-refused') process.exit(1)
 if (['lost-response', 'lost-wrong-time'].includes(process.env.PROMOTE_CASE)) {
@@ -5524,15 +5532,26 @@ STUB
         rm -f "$PROMOTE_STATE.count"
         printf 'draft\n' >"$PROMOTE_STATE"
         printf '{"run_id":"run-promote"}\n' >"$PROMOTE_RECORD/run.json"
+        case "$label" in already*) printf 'ready\n' >"$PROMOTE_STATE" ;; esac
+        case "$label" in
+        already-recorded)
+            jq --arg h "$PROMOTE_HEAD" '.promotion={head:$h}' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.next"
+            mv "$promote_fixture/run.next" "$PROMOTE_RECORD/run.json"
+            ;;
+        already-other-head)
+            jq '.promotion={head:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.next"
+            mv "$promote_fixture/run.next" "$PROMOTE_RECORD/run.json"
+            ;;
+        esac
         promotion_output="$(promote_call 2>&1)" || rc=$?
         check_watchdog "$rc" "promote $label" "$promotion_output"
         [ "$rc" -eq "$expected" ] || fail "promote $label: expected $expected got $rc: $promotion_output"
         # The owner token must never be persisted by the command or logged.
         ! grep -qF fixture-token "$PROMOTE_LOG" || fail 'promote logged owner token'
     }
-    for case_name in fail remediation indeterminate unrecorded already malformed; do
+    for case_name in fail remediation indeterminate unrecorded already already-recorded already-other-head malformed; do
         expected=11
-        case "$case_name" in fail | remediation) expected=10 ;; already) expected=12 ;; esac
+        case "$case_name" in fail | remediation) expected=10 ;; already | already-other-head) expected=17 ;; already-recorded) expected=12 ;; esac
         promotion_case "$case_name" "$expected"
         [ "$(wc -l <"$PROMOTE_LOG" | tr -d ' ')" = 1 ] || fail "promote $case_name mutated after gate refusal"
         if [ "$case_name" = remediation ]; then
@@ -5548,7 +5567,7 @@ STUB
     # Exact order includes the head read AFTER the content fingerprint.
     sed -E 's/^(check|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
         "$PROMOTE_LOG" >"$promote_fixture/order"
-    printf 'check\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
+    printf 'check\nowner check\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
     cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
     grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
     for case_name in still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
@@ -5569,6 +5588,39 @@ STUB
         ! grep -q '^record ' "$PROMOTE_LOG" || fail 'unknown state recorded promotion'
         [[ "$promotion_output" = *'remote state indeterminate'* ]] || fail 'missing unknown-state blocker'
     done
+
+    promotion_case stale-token 16
+    ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'stale token notified reviewers'
+    # Simulate interruption after ready by starting a subsequent call against
+    # a non-draft PR with no record: it must route to reconciliation, not 12.
+    promotion_case already 17
+    [[ "$promotion_output" = *'unrecorded promotion'* ]] || fail 'unrecorded interruption was called complete'
+    [ "$(cat "$PROMOTE_STATE")" = ready ] || fail 'unrecorded promotion was mutated during reconciliation routing'
+
+    # Exercise the real timeout utility with a short test-only duration while
+    # asserting the production wrapper always requests -k 1 60. No process is
+    # explicitly terminated by the test; the timeout utility owns its child.
+    real_timeout="$(command -v "$watchdog_bin")"
+    cat >"$promote_fixture/bin/timeout" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = -k ]; then
+    [ "\$1 \$2 \$3" = '-k 1 60' ] || exit 98
+    shift 3
+    exec "$real_timeout" -k 1 1 "\$@"
+fi
+exec "$real_timeout" "\$@"
+STUB
+    chmod +x "$promote_fixture/bin/timeout"
+    promotion_case hung-read 13
+    [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'hung read did not undo once'
+    rm "$promote_fixture/bin/timeout"
+
+    mv "$promote_support" "$promote_fixture/support.saved"
+    promotion_case success 11
+    [[ "$promotion_output" = *'missing sibling dev-flow-support'* ]] || fail 'missing sibling lacked diagnostic'
+    [ ! -s "$PROMOTE_LOG" ] || fail 'missing sibling reached GitHub'
+    mv "$promote_fixture/support.saved" "$promote_support"
 
     # One success runs the actual run-record.mjs and strict validator in a
     # temporary Git repo, proving promotion/outcome/chain are written together.
@@ -5605,6 +5657,19 @@ JS
     done
     node "$real_writer" bind-pr --slate s-promote --session alice --owner-token "$token" \
         --run-id run-promote --number 493 --url https://example.test/pr/493 --at 2026-01-01T00:02:00Z >/dev/null
+    cp "$state/locks/s-promote.json" "$promote_fixture/lock.before"
+    node "$real_writer" lock check --slate s-promote --session alice --owner-token "$token" >/dev/null
+    cmp -s "$state/locks/s-promote.json" "$promote_fixture/lock.before" || fail 'lock check wrote state'
+    if node "$real_writer" lock check --slate s-promote --session alice --owner-token stale 2>/dev/null; then
+        fail 'real owner validation accepted stale token'
+    fi
+    export PROMOTE_CASE=success
+    : >"$PROMOTE_LOG"
+    stale_rc=0
+    stale_output="$(promote_call 2>&1)" || stale_rc=$?
+    [ "$stale_rc" -eq 16 ] || fail "real stale owner must refuse pre-mutation: $stale_output"
+    ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'real stale owner reached ready'
+    cmp -s "$state/locks/s-promote.json" "$promote_fixture/lock.before" || fail 'refused owner check wrote lock'
     export PROMOTE_CASE=success
     printf 'draft\n' >"$PROMOTE_STATE"
     rm -f "$PROMOTE_STATE.count"

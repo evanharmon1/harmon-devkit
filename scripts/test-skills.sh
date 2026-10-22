@@ -12212,11 +12212,21 @@ expect_ok "integrate: preserves no-record hand-run carve-out" \
 expect_ok "promotion callers: no bare ready instruction after gate" \
     python3 - "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md" <<'PY1409'
 import pathlib, re, sys
+pattern = re.compile(r"gh\s+pr\s+ready(?!\s+--undo\b)", re.I)
+def guarded(text):
+    # Only the documented reconciliation text may name the raw mutation;
+    # these blocks explain existing promotions and explicitly forbid a retry.
+    text = re.sub(r"(?ms)^- \*\*Unexplained promotion —.*?(?=^- Checks \(under)", "", text)
+    text = re.sub(r"(?ms)^   If the PR was already non-draft.*?(?=   When current-head Codex)", "", text)
+    return not pattern.search(text)
 for path in sys.argv[1:]:
     text = pathlib.Path(path).read_text()
     assert "assets/promote.sh" in text, path
-    assert not re.search(r'(?:Out of a passing gate, run|runs|Run) `gh pr ready(?: <n>|` at most once)', text), path
-    assert not re.search(r'check[^\n]*[;&|]+[^\n]*gh pr ready', text), path
+    assert guarded(text), path
+for planted in ("then run `gh pr ready <n> --repo`", "Promote with `GH PR READY`", "gh pr ready 42"):
+    assert not guarded(planted), planted
+assert guarded("gh pr ready --undo 42")
+
 PY1409
 
 echo ""

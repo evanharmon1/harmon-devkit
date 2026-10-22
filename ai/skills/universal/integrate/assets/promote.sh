@@ -2,14 +2,32 @@
 # Promote a recorded run through one immediate gate/mutation/readback transaction.
 # readiness-gate.sh remains read-only. No retry of the ready mutation is allowed.
 # Exit codes: 0 promoted and recorded; 10 gate failed (no mutation);
-# 11 gate indeterminate/invalid inputs (no mutation); 12 already non-draft
-# (no mutation or record; caller audits); 13 mismatch/writer refusal, undone;
+# 11 indeterminate/invalid inputs/missing sibling (no mutation);
+# 12 already non-draft with this head recorded (no mutation; caller audits); 13 mismatch/writer refusal, undone;
 # 14 remote state unknown after one undo; 15 ready command failed, undone.
+# 16 owner-check refused before mutation; 17 unrecorded non-draft promotion
+# (no mutation; caller uses unexplained-promotion reconciliation).
 # An exit-0 writer warning about incomplete active-pointer retirement is success.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-support_dir="$(cd "$script_dir/../../dev-flow-support/assets" && pwd -P)"
+if ! support_dir="$(cd "$script_dir/../../dev-flow-support/assets" 2>/dev/null && pwd -P)" ||
+    [ ! -r "$support_dir/run-record.mjs" ]; then
+    echo 'BLOCKER: missing sibling dev-flow-support/assets/run-record.mjs; indeterminate' >&2
+    exit 11
+fi
+timeout_bin=
+if command -v timeout >/dev/null 2>&1; then
+    timeout_bin=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin=gtimeout
+else
+    echo 'BLOCKER: timeout (or gtimeout) is required to bound GitHub calls' >&2
+    exit 11
+fi
+run_gh() {
+    "$timeout_bin" -k 1 60 gh "$@"
+}
 gate="$script_dir/readiness-gate.sh"
 repo= pr= head= record= slate= session= owner_token= run_id=
 gate_args=()
@@ -23,7 +41,9 @@ Usage: promote.sh --repo OWNER/REPO --pr N --head SHA --record DIR
 All gate options are forwarded unchanged to readiness-gate.sh check. The record
 must be the canonical run directory in the current checkout's common Git dir.
 Freeze the PR body and review content throughout this command. Exit 12 requires
-an audit of the existing non-draft PR; it never writes a new promotion record.
+an audit of an already recorded non-draft PR. Exit 17 instead routes an
+unrecorded non-draft promotion to the unexplained-promotion procedure. Neither
+exit writes a new promotion record.
 HELP
     exit 11
 }
@@ -74,7 +94,11 @@ verdict="$("$gate" check "${gate_args[@]}")" || rc=$?
 printf '%s\n' "$verdict"
 if [ "$rc" -ne 0 ]; then
     if [ "$rc" -eq 1 ] && jq -e '.condition == "pr-not-draft"' <<<"$verdict" >/dev/null 2>&1; then
-        exit 12
+        if jq -e --arg head "$head" '.promotion.head == $head' "$record/run.json" >/dev/null; then
+            exit 12
+        fi
+        echo 'BLOCKER: unrecorded promotion; use the unexplained-promotion procedure' >&2
+        exit 17
     fi
     [ "$rc" -ne 1 ] || exit 10
     exit 11
@@ -87,7 +111,7 @@ gate_fingerprint="$(jq -er --arg head "$head" '
 read_scalars() {
     local attempt value
     for attempt in 1 2 3; do
-        if value="$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)" &&
+        if value="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)" &&
             jq -e 'type == "object" and (.state | IN("OPEN", "CLOSED", "MERGED")) and
               (.isDraft | type == "boolean") and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$"))' <<<"$value" >/dev/null; then
             printf '%s\n' "$value"
@@ -100,7 +124,7 @@ read_scalars() {
 undo() {
     local snapshot attempt
     # Even a failed mutation may have landed; issue exactly one inverse write.
-    gh pr ready --undo "$pr" --repo "$repo" >&2 || true
+    run_gh pr ready --undo "$pr" --repo "$repo" >&2 || true
     for attempt in 1 2 3; do
         if snapshot="$(read_scalars)" && jq -e '.state == "OPEN" and .isDraft == true' <<<"$snapshot" >/dev/null; then
             echo "BLOCKER: $reason; confirmed draft on $(jq -r .headRefOid <<<"$snapshot")" >&2
@@ -111,8 +135,13 @@ undo() {
     echo "BLOCKER: $reason; remote state indeterminate after one undo; no second undo" >&2
     exit 14
 }
+if ! node "$support_dir/run-record.mjs" lock check \
+    --slate "$slate" --session "$session" --owner-token "$owner_token"; then
+    echo 'BLOCKER: slate lock owner check refused; no promotion attempted' >&2
+    exit 16
+fi
 ready_rc=0
-gh pr ready "$pr" --repo "$repo" >&2 || ready_rc=$?
+run_gh pr ready "$pr" --repo "$repo" >&2 || ready_rc=$?
 undo_code=13
 reason='post-promotion readback mismatch or unknown'
 if [ "$ready_rc" -ne 0 ]; then

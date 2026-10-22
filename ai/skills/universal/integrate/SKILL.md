@@ -148,16 +148,14 @@ caps are independent of any other loop caps used earlier in the dev flow.
 **Draft is the workbench; ready is the human handoff.** The normal entry from
 `/implement` is a draft PR. Keep it draft while checks, explicit bot reviews,
 fixes, and adjudication are active. A failed or indeterminate gate stays draft.
-Only step 6's complete readiness gate may promote the unchanged head with
-`gh pr ready`; ready-for-review requests human review and never authorizes a
+Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-for-review requests human review and never authorizes a
 merge.
 
 This skill may be re-entered on a non-draft PR. Treat that as an idempotent
 audit of an existing human handoff: if the unchanged head is still green, do
-not call `gh pr ready` again. If new work or a blocker appears, convert it back
+not invoke the promotion mutation again. If new work or a blocker appears, convert it back
 to draft before posting fixes or starting another review cycle — but through
-[§2](#2-watch)'s unexplained-promotion procedure, not a bare `gh pr ready
---undo`: entry is exactly where a promotion no session of yours made turns up,
+[§2](#2-watch)'s unexplained-promotion procedure, not a bare `gh pr ready --undo`: entry is exactly where a promotion no session of yours made turns up,
 so the same run-record/timeline guard, the same unaccounted-conversion
 escalation, and the same unknown-does-not-license-an-undo rule apply here. Verify `isDraft == true`. If
 that transition is unavailable, stop as blocked rather than doing active agent
@@ -2512,7 +2510,7 @@ that loops indefinitely:
 
    - `BLOCKED` is **promotable**. On a repo whose ruleset requires review
      it is the *expected* pre-promotion state, because the review it waits
-     on is exactly what `gh pr ready` requests — `reviewDecision:
+     on is exactly what promotion requests — `reviewDecision:
      REVIEW_REQUIRED` is expected for the same reason; only
      `CHANGES_REQUESTED` gates. **Never re-encode the gate as "must be
      `CLEAN`"**: that reading deadlocks precisely the repos that comply, as
@@ -2541,7 +2539,7 @@ that loops indefinitely:
      otherwise), so an edit landing mid-gate fails before promotion
      notifies anyone rather than after. Content-bearing fields
      only: the PR object's own `updated_at`, draft flag, and mergeability
-     stay out, because `gh pr ready` mutates those and would invalidate
+     stay out, because promotion mutates those and would invalidate
      every normal promotion (#227). Keep the value — it is the "before" of
      the promotion compare below. Thread `isResolved` is hashed but never
      gated: resolution is the maintainer's act, and rejection-answered
@@ -2610,6 +2608,12 @@ that loops indefinitely:
    inputs. The command is deliberately outside this skill's allowed-tools;
    invoke it through the normal permission mechanism. The gate stays read-only.
 
+   Before the ready mutation the command validates the existing slate lock
+   and owner token through read-only `run-record.mjs lock check` (exit 16
+   refuses without notifying anyone). Every GitHub call is bounded by
+   `timeout -k 1 60` (or `gtimeout`); a timed-out read follows the existing
+   retry/undo/indeterminate path.
+
    The command runs check → ready (exactly once) → scalar read → fingerprint
    → head re-read → record. Both scalar reads require an open PR, the expected
    head and `isDraft == false`; the fingerprint must be identical to the passing gate's.
@@ -2620,11 +2624,13 @@ that loops indefinitely:
    after GitHub accepted the mutation. The command never retries ready.
 
    Exit codes: **0** promoted and recorded; **10** gate failed, no ready
-   mutation; **11** gate indeterminate or invalid inputs, no ready mutation;
-   **12** already non-draft, no ready mutation or record (audit below);
+   mutation; **11** indeterminate, invalid inputs or missing sibling package, no ready mutation;
+   **12** already non-draft with this exact head recorded, no mutation (audit below);
    **13** mismatch or writer refusal, undone and confirmed draft;
    **14** remote state unknown after one undo; **15** ready command failed,
-   undone and confirmed draft. Gate diagnostics (including `remediation-capped`
+   undone and confirmed draft; **16** slate owner validation refused before
+   mutation; **17** unrecorded non-draft promotion, routed to §2’s
+   unexplained-promotion procedure, never complete. Gate diagnostics (including `remediation-capped`
    and `integration-exit-indeterminate`) are surfaced unchanged. No second
    unrecorded-remediation detector is introduced. Nonzero is a blocker, never
    a handoff; the report must name that unresolved remote-state risk for 14.
@@ -2690,8 +2696,8 @@ that loops indefinitely:
    result, and `Next` with human review followed by the maintainer's merge
    decision.
 
-   If the PR was already non-draft (the gate's `pr-not-draft` failure),
-   promotion is idempotently complete
+   If the PR was already non-draft and run.json records promotion for this
+   exact head (exit 12), promotion is idempotently complete
    and `gh pr ready` must not be called again. Audit the existing handoff on
    the current head with the same script's `audit` mode —
    `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh audit …`, the identical
@@ -2707,7 +2713,7 @@ that loops indefinitely:
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews
    must be disabled in the external integration before the first promotion**.
-   Otherwise `gh pr ready` can start a new asynchronous review after the gate
+   Otherwise promotion can start a new asynchronous review after the gate
    that supposedly completed automated work. Three knobs carry it:
    personal **Auto review** off, the repository's **Auto code review**
    preference on **Follow personal**, and the repository's

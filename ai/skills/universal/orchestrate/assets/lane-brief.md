@@ -136,7 +136,7 @@ checks that they still agree. Read them there:
   work in your own context, the shared working tree and `HEAD`, scratch
   namespacing, and what a relayed gating claim owes. It is written to be read
   standalone and names no values of its own.
-- § **"Hard rules"** — never run `gh pr ready`, never merge or cut a release,
+- § **"Hard rules"** — never promote, never merge or cut a release,
   never rewrite pushed history, never bypass a git hook, never disable a
   stop-gate. These bind this lane exactly as they bind any other dispatch;
   harmon-devkit#827, the incident behind the first of them, *was* an
