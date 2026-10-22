@@ -11460,11 +11460,24 @@ run_vendored "AC5: dev-flow-exit.sh runs" "usage: dev-flow-exit.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.sh" bash
 run_vendored "AC5: round-push.sh runs" "round-push: a mode is required" \
     "$AC5_SKILLS/review/assets/round-push.sh" bash
+run_vendored "AC5: record-pass.sh runs" "usage: record-pass.sh" \
+    "$AC5_SKILLS/review/assets/record-pass.sh" bash
+run_vendored "AC5: prepare-review-checkout.sh runs" "usage: prepare-review-checkout.sh" \
+    "$AC5_SKILLS/review/assets/prepare-review-checkout.sh" bash
 run_vendored "AC5: post-evidence.sh runs" "usage: post-evidence.sh" \
     "$AC5_SKILLS/review/assets/post-evidence.sh" bash
 expect_ok "review names the first-line JSON marker and publication helper" \
     grep -qF 'For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.' \
     "$AC5_SKILLS/review/SKILL.md"
+# harmon-devkit#1543: local finder recording and checkout commands (own block).
+expect_ok "review names the recorder and checkout command (#1543)" \
+    grep -qF 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
+    "$AC5_SKILLS/review/SKILL.md"
+expect_ok "record-pass fixture tests are wired into Taskfile (#1543)" \
+    grep -qF './ai/skills/universal/review/assets/test-record-pass.sh' "$repo/Taskfile.yml"
+expect_ok "record-pass fixture tests belong to task test (#1543)" \
+    grep -qF '      - test:record-pass' "$repo/Taskfile.yml"
+
 run_vendored "AC5: dev-flow-monitor.sh runs" "dev-flow-monitor.sh state-path --run-id" \
     "$AC5_SKILLS/orchestrate/assets/dev-flow-monitor.sh" bash
 # consumer-pin-audit does REAL work here rather than printing usage: the

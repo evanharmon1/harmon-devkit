@@ -296,6 +296,115 @@ and the receipt are yours, not the runner's. A finder failure is retried by
 its configured fallback and the substitution is recorded; exhausted coverage
 is a blocker, never a smaller round disguised as complete.
 
+## Record a local pass and prepare its checkout
+
+Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.
+
+The **owning orchestrator**, never the lane, calls the recorder with the role's
+validated envelope file; it never decodes CLI prose or invents challenger
+`attack_scenarios`. Integrator passes are outside this command's scope.
+Resolve the support directory physically, following its owner-token contract.
+For example, pass the reserved owner's token as specified there:
+
+```sh
+assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
+  --session <owner-session> --owner-token <token> --run-id <run-id> \
+  --pass <role-envelope.json> \
+  --head <captured-sha> --policy <governing-policy.toml>
+# Exit 23: stdout reports action=adjudicate and projection_path=<record>/verdict.json.
+# The orchestrator reads that projection and writes its adjudication file.
+assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
+  --session <owner-session> --owner-token <token> --run-id <run-id> \
+  --pass <role-envelope.json> \
+  --head <captured-sha> --policy <governing-policy.toml> \
+  --adjudication <orchestrator-adjudication.json>
+```
+
+The command validates its input envelope, existing run, and supplied
+adjudication before the first write. It then chains the shared writer's
+`receipt` → wait for every configured stage/round slot in the run's
+`policy.json` to settle through either a pass receipt or a `slot_failures`
+record for that same stage and round → `ledger --stage` → verification-only
+exit. An incomplete round
+exits **24** immediately after the receipt, prints `awaiting slots: <missing slots>`
+on stdout, and leaves `verdict.json` untouched. Record the remaining passes
+before requesting verification. Only `action: adjudicate`
+authorizes publishing the supplied adjudication, followed by the computed
+exit in `verdict.json`. Every valid verification-only projection is atomically
+persisted as `verdict.json` before its action is handled, including dispatch,
+escalation, and a later final-exit failure; it is also retained in
+`verification.<stage>.json`. Failed verification (including exit 2 and reject
+diagnostics) atomically replaces `verdict.json` with a stage- and round-bound
+indeterminate verdict before exiting. For a round awaiting adjudication, a dispatch or escalation stops the
+sequence and prints its reason without writing an adjudication. A replay of
+an already adjudicated round skips that write and recomputes its exit. For partial rounds, omit
+`--adjudication`; when verification requests it, rerun with the owning
+orchestrator's file. A failed validator stops every later step, including when
+the recorder is in a pipeline (callers must retain `pipefail`). Rerun with the
+same bytes to resume: the shared writer receipts and adjudicates idempotently,
+and immutable published evidence is never replaced. Exit status is the exit
+engine's status (0, 20, 21, 22); usage, validation, and indeterminate failures
+exit 2. Awaiting an orchestrator adjudication exits **23**, with a JSON object
+on stdout containing `action: adjudicate` and `projection_path` naming the
+retained `verdict.json`; callers handle 23 as the two-phase handoff, not as a
+validator failure.
+
+| Recorder exit | Meaning |
+|---|---|
+| 0, 20, 21, 22 | Computed exit engine status |
+| 2 | Usage, validation, or indeterminate failure |
+| 23 | Awaiting orchestrator adjudication |
+| 24 | Receipt retained; awaiting configured finder slots |
+
+`--owner-token` is also accepted; authority is forwarded to every writer
+in its environment and is never persisted or printed.
+
+Use the already resolved governing policy and recorded rigor (`--rigor` may
+make it explicit). Under the merge-base rule, `--exit-engine` must name the
+trusted materialized merge-base `dev-flow-exit.mjs`, with its sibling closure;
+pass `--merge-base-policy <file>` or `--merge-base-policy-absent` as appropriate.
+Carry the same repeatable `--add-finder` / `--select-finder` flags used at
+resolution. The recorder does not establish a policy trust boundary for its
+caller. Public round evidence remains a separate, orchestrator-owned
+`assets/post-evidence.sh` publication after the computed exit.
+
+```sh
+assets/prepare-review-checkout.sh --repo-root <repo> --head <exact-sha> -- \
+  challenge --base <captured-base>
+```
+
+The companion requires the SHA locally, freshly discovers and fetches origin's
+default branch into `refs/remotes/origin/HEAD`, and compares the head's
+`scripts/codex-review.sh` plus every entry under `scripts/lib/` to that fetched
+commit (blob identity and mode, with added/deleted paths included). It refuses
+and names differing paths; a repository without the default branch's finder
+is refused cleanly. It runs the head's own script only after this identity
+proof, so the script's directory change targets the captured head and its
+libraries are the default branch's bytes. After checkout and immediately before
+execution, it also compares the physical file set and each file's unfiltered
+`git hash-object` blob id with the fetched default branch. It refuses extra,
+missing, or changed files, symlinks, and any skip-worktree or assume-unchanged
+index flags under these paths. It preserves the finder's exit
+status; it never parses or wraps its text into a pass envelope.
+
+**Sanctioned worktree exception:** this vendored command cannot depend on a
+consumer's `task worktree:new`. It allocates a unique per-run checkout under
+`<repo>/.worktrees/` with `git worktree add --detach`. For the entire run,
+hooks are disabled by appending `core.hooksPath=/dev/null` and
+`core.fsmonitor=false` to the caller's existing `GIT_CONFIG_COUNT` entries.
+The exported entries are inherited by every Git process the tool, finder, and
+its children start. The run unsets `GIT_CONFIG_PARAMETERS` so it cannot override
+these settings, and exports `GIT_NO_REPLACE_OBJECTS=1` so all Git children read
+real objects rather than replacement refs. It retains the
+on-disk byte proof and verifies the exact detached head and cleanliness
+(including ignored files). Cleanup removes only this run's checkout, and only
+after its worktree add succeeded; a failed add authorizes no removal.
+An interrupted run may leave its checkout; clean it up manually with
+`git worktree remove <path>`. Unavailable commits, dirt, or failed cleanup is a
+refusal. This is the bounded exception to `docs/conventions.md`'s worktree
+provisioning rule, not permission for an agent to provision feature branches
+by hand.
+
 ## Verify, adjudicate, publish, exit
 
 Before adjudication, run `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage
