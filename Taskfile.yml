@@ -388,6 +388,7 @@ tasks:
       - test:dev-flow-monitor
       - test:provision-lane
       - test:post-evidence
+      - test:record-pass
       - test:render-dev-flow
       - test:retro-run-report
       - test:finder-normalization
@@ -458,6 +459,11 @@ tasks:
     desc: Provision planned lanes through real writers in fixture repositories
     cmds:
       - ./ai/skills/universal/orchestrate/assets/test-provision-lane.sh
+
+  test:record-pass:
+    desc: Offline local finder recording and detached checkout lifecycle tests
+    cmds:
+      - ./ai/skills/universal/review/assets/test-record-pass.sh
 
   test:post-evidence:
     desc: Offline reserve-first round-evidence publication and registration tests
