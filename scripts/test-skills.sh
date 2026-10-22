@@ -2200,6 +2200,29 @@ expect_ok "schemas pin-moved offline makes zero upstream probes" test "$(status_
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+expect_ok "standardize catalog pins Impact options" \
+    grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Risk options" \
+    grep -qF '| Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Complexity options" \
+    grep -qF '| Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority options" \
+    grep -qF '| Priority | urgent, high, medium, low | built-in issue field | `priority:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority AI options" \
+    grep -qF '| Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Effort ladder" \
+    grep -qF '| Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Tier on every owner type" \
+    grep -qF 'The Tier is a `tier:*` label on every owner type: local, economy, standard,' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families first half" \
+    grep -qF 'The six personal label families are `impact:*`, `risk:*`, `complexity:*`,' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families second half" \
+    grep -qF '`priority:*`, `priority-ai:*`, and `effort:*`.' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins retired classification surfaces" \
+    grep -qF '**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins current rigor order" \
+    grep -qF 'levels in `rigor_order` (`cursory → light → standard → thorough → deep → forensic`), the' "$STANDARDIZE_REFS/standards-catalog.md"
+
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"

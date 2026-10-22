@@ -1001,14 +1001,54 @@ pipeline, and `Product` identifies the product (an org issue field, or a
 personal project field). **`domain:` and `layer:` labels are the source of
 truth** for those axes, on both owner types; there are no corresponding
 Domain/Layer fields to provision or reconcile. The retired `Agent` field is
-also absent from the target state: advisory routing and live claims use labels.
-On an older board, field removal is an explicit operator migration: enumerate
-affected issues and every saved view first, provision replacement labels in
-every affected repository, migrate Domain/Layer values to those labels, and
-re-point views before deleting retired fields. Deleting an org issue field
-destroys its values across the org, so checking one board is insufficient.
-Follow the selected template's `docs/project-management.md` migration guidance;
-setup scripts never delete live fields.
+also absent: the derived Tier selects the execution tier, the configured
+backend/harness selects the family, and `claim:*` labels record live ownership.
+Field removal is an explicit operator migration, following the selected
+template's `docs/project-management.md` **Fields → Migrating a board that still
+has one**, including the #910 enumeration rule. Setup scripts never delete live
+fields.
+
+**Classification storage and options** — mirror the selected template's
+`docs/project-management.md` **The axes** and **Issue fields on an organization,
+labels on a personal account**:
+
+| Axis | Options | Organization | Personal account |
+|---|---|---|---|
+| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |
+| Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |
+| Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |
+| Priority | urgent, high, medium, low | built-in issue field | `priority:*` label |
+| Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |
+| Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |
+
+The six personal label families are `impact:*`, `risk:*`, `complexity:*`,
+`priority:*`, `priority-ai:*`, and `effort:*`. They are provisioned on every
+repository; on organizations the fields are authoritative. Only Impact, Risk
+and Complexity fall back to same-axis labels when their fields are unset;
+Priority, Priority (AI) and Effort labels are inert on organizations.
+The Tier is a `tier:*` label on every owner type: local, economy, standard,
+frontier, apex, derived from Risk × Complexity and human-pinnable with
+`tier:pinned`; there is no Tier issue field. Priority is human-only; Priority
+(AI) is an agent or human suggestion; Effort is human-only and only for human
+tasks. Impact, Risk and Complexity may be set by an agent or human.
+
+**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.
+The organization's built-in Priority issue field and personal `priority:*`
+labels stay. `tier:adaptive` and hand-managed `needs-triage` or Tier are also
+retired: these markers are derived, with a human pin for a chosen Tier. See
+`docs/project-management.md` **Migration: what the classification retired**.
+Domain/Layer fields are also retired in favor of labels. Preserve
+wanted values and migrate views using the authoritative migration guidance
+before an operator deletes any field; setup is additive only.
+
+**Classification reconciler** — `.github/workflows/classification-reconcile.yml`
+is the per-repository template default. Audit its presence and wiring against
+the selected template. An organization-wide walk is a standalone, **opt-in**
+workflow in the organization's private `.github-private` repository; it is not
+a caller in public `.github`. Follow harmon-init's `docs/architecture/ci-cd.md`
+**Organization-wide walk** for its deployment and prerequisites. Absence of this
+optional org walk is not drift unless the owner opted in. **[copier]** for the
+per-repo workflow; **[manual]** for the organization opt-in.
 
 **Human work is collected, not scattered.** Steps only a human can do live on
 collector issues labelled `human` + `umbrella` and typed `Task`, instead of as
@@ -1035,8 +1075,8 @@ drift.
 Those rows describe current setup behavior. Older pins may still provision
 retired fields: compare against the selected release, report template-version
 lag, and follow the explicit migration guidance before changing live metadata.
-The complete classification-field catalog is not re-specified here; consult
-the target's generated `docs/project-management.md` and setup scripts.
+Validate the classification options above against the target's generated
+`docs/project-management.md` and selected setup scripts.
 Pre-rollout label scripts still included legacy `agent:*` rows and,
 when `use_foreman` is enabled, phantom `foreman:*` rows rather than the
 registry-driven vocabulary. Treat those older-pin differences as version lag;
@@ -1107,32 +1147,19 @@ artifacts; the prose rules are guidance, not lint):
   `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
   `layer:backend`, `layer:infra` labels — re-map those issues and delete the three
   by hand. **[manual]**
-- **Model-centric routing and claims** — use
-  `suggest:<family>[:<model>]` for human-authored, advisory triage and
-  `claim:<family>[:<model>]` for agent-authored live ownership. Both accept a
-  family-level label; add the optional model segment only when it is known and
-  useful. Interactive session claims are released at wrap or integrate completion;
-  Claude Action claims are released by an unconditional `if: always()` cleanup
-  step, so an ordinary failure or step timeout still releases. The exception is a
-  run that never reaches that step at all — a job-cap kill, a lost runner, or a
-  force-cancel — which strands the marker; see the claim lifecycle under Part 1's
-  workflow inventory. Treat a claim with no live run as that case, not as
-  ownership.
-  Transition-compatible consumers also recognize documented legacy `agent:*`
-  claims. Neither family arms execution or records historical doneness. Harness
-  slugs never belong on either model-centric axis, and the `Agent` field is not a
-  planning axis. For a post-rollout target, `docs/project-management.md` is the
-  human authority and includes family and harness tables derived from the
-  target's selected registry revision, not an independently maintained roster.
+- **Tier routing and claims** — the derived `tier:*` label (or human pin)
+  selects the execution tier; the configured backend/harness selects the model
+  family. `suggest:*` is retired. `claim:<family>[:<model>]` records live
+  ownership, not historical completion or execution authorization. Follow the
+  selected target's claim lifecycle for cleanup and legacy `agent:*` handling.
 - **Foreman arming** — only an authorized actor's `foreman:<adapter>` label arms
-  dispatch; `suggest:*` remains advisory even when its family resembles an
-  adapter. The registry maps the harness-centric adapter and only adapters in the
-  pinned Foreman release are provisionable; test-only `mock` is not. Detailed
-  dispatch and input-trust enforcement belong to Foreman and the selected
-  target's configuration, not a second procedure in this catalog.
+  dispatch. The registry maps the harness-centric adapter and only adapters in
+  the pinned Foreman release are provisionable; test-only `mock` is not.
+  Detailed dispatch and input-trust enforcement belong to Foreman and the
+  selected target's configuration.
 - **`.devflow.toml` — Dev Loop rigor/strategy/tier config.** Root-level TOML
   parameterizing the Dev Loop stages in `AGENTS.md`: `[rigor.*]` round-cap
-  levels (`trivial`/`minimal`/`light`/`standard`/`thorough`/`deep`), the
+  levels in `rigor_order` (`cursory → light → standard → thorough → deep → forensic`), the
   `[strategy.*]` execution-topology family (`oneshot`/`plan`/`plan-approved`/
   `orchestrate`/`council`/`human-led` — harmon-init#1047 renamed the retired
   `method:*`/`[method]` family to `strategy:*`/`[strategy.*]`), and the

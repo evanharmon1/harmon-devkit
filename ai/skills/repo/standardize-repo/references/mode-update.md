@@ -3664,11 +3664,27 @@ update can create, none of which any script closes:
   the organization's built-in Priority issue field stays). Setup no longer
   creates or reconciles them at those boundaries. Nothing reads their leftover values
   after retirement. Follow the selected template's `docs/project-management.md` **Fields → Migrating a board
-  that still has one**, including its **Priority / Size** migration
+  that still has one**, including its #910 enumeration rule and **Priority / Size** migration
   (harmon-init#1451). For Domain/Layer, provision replacement labels in every
   affected repository and migrate values to those labels. Re-point every saved
   view before an operator removes the fields. Org issue-field removal destroys
   values across the org; checking only this board is insufficient.
+
+Validate classification provisioning against catalog §1.13: after
+`task setup:github-labels`, require the six personal label families and `tier:*`
+on every owner type; after `task setup:github-issue-fields` on organizations,
+check Impact, Risk, Complexity, Priority (AI) and Effort with their full options
+(Priority is built-in). For retired `suggest:*` and `tier:adaptive` labels,
+follow the selected template's `docs/project-management.md` **Migration: what
+the classification retired** and **Migrating retired and renamed labels**;
+never provision them as routing. Pin any wanted hand-set Tier before the
+reconciler's first write, as **The Tier (derivation and pin)** specifies.
+Check the per-repository `.github/workflows/classification-reconcile.yml`
+template default and its wiring against the selected release. The standalone
+organization-wide walk is a separate **opt-in** in the organization's private
+`.github-private` repository, following harmon-init's
+`docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public
+`.github` caller and is not required unless the owner opted in.
 
 A renamed label family (harmon-init#1047's `method:*` → `strategy:*`) is
 **not** one of these residues — it is a precondition 6b assumes you already
