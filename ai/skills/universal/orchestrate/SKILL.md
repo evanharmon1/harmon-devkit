@@ -240,6 +240,23 @@ throwaway work only.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
 - **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.
+- **Branch active pointers:** `<git-common-dir>/dev-flow-v2/active/`, one
+  SHA-256-named pointer per branch. `promote` and `close` retire only the
+  matching run's pointer after the validated terminal record is written and
+  read back. A reserved monitor event on an ended run defers retirement and
+  blocks a new activation on that branch.
+  Every observation must match the reservation's event, action and expected head.
+  Reconcile landed events. If a reserved action is observed absent, record that
+  observation and cancel it with
+  `assets/dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
+  --event <event-id> --observed <observation.json> --reason "<why>"`; landed
+  actions still go through reconcile. Then retire the run or prune its pointer
+  before retrying activation.
+  `run-record.mjs prune --dry-run` reports
+  which pointers are safe to remove; `prune` removes only valid pointers for
+  terminal runs and reports open, malformed, mismatched, missing, reserved, or
+  leftover entries it skips. A fresh run after retirement starts at generation
+  1.
 
 Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:
@@ -756,6 +773,57 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+### Antigravity (agy) lane permission posture
+
+Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
+or unset for dev or host (see `docs/glossary.md`).
+With `FOREMAN_DEVCONTAINER` unset (dev or host), the orchestrator does not infer
+the profile from settings. It dispatches agy lanes only after confirming that
+the agy settings in effect (`~/.gemini/antigravity-cli/settings.json`) carry the
+template dev-profile permissions from `antigravity-settings-dev.json`.
+Otherwise it does not dispatch agy lanes, and in a dev devcontainer it reports
+that a rebuild is needed. `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled` gates installing
+the bot wrapper and applying the dev settings, not profile selection.
+Disclose the chosen posture in the lane brief's verified-facts/rulings text.
+`--dangerously-skip-permissions` belongs only to the bot posture and is never
+passed under dev, host or agent.
+
+- **Bot:** `FOREMAN_DEVCONTAINER=bot`. When
+  `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the template's
+  bot-autonomy wrapper at `~/.local/bin/agy` injects
+  `--dangerously-skip-permissions` into every agy argv except bare `agy` and
+  the passthrough subcommands. Interactive pane launches with arguments receive
+  the flag too. Bare interactive `agy` uses the bot's `always-proceed` settings;
+  the wrapper injects no flag
+  for bare interactive `agy` or the subcommands it passes through unchanged.
+  Not every bot launch carries the flag. A launcher that resolves `agy`
+  another way must pass `--dangerously-skip-permissions` itself for
+  lane runs.
+- **Dev:** `FOREMAN_DEVCONTAINER` is unset; use the template's
+  `.devcontainer/config/antigravity-settings-dev.json`.
+  With `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the dev profile's post-create
+  step runs `apply-antigravity-settings.sh` to apply that file **user-global**
+  at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer.
+  This settings posture applies to interactive agy panes; headless `agy -p`
+  ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`).
+  This posture holds only in a devcontainer built with the template's dev
+  settings; a pre-existing container needs a rebuild before agy lanes run.
+- **Host:** `FOREMAN_DEVCONTAINER` is unset; use the user's own agy settings;
+  the template's dev-profile settings are not applied to the host.
+  Dispatch agy lanes only once the gate above confirms the template dev-profile
+  permissions are in effect; otherwise dispatch none.
+  Headless `agy -p` ignores settings allow-rules and auto-denies (see
+  `docs/guides/devcontainers.md`).
+- **Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by
+  `.devcontainer/config/agent/harnesses.json`;
+  do not launch an agy lane in that profile.
+
+The maintainer's 2026-10-18 ruling keeps the existing template dev settings:
+this changes no lane-scoped allowlist. Refer to the template-owned settings
+file rather than copying its contents here. This section documents the posture
+and changes no live behaviour. The agy launch argv and lane workspace
+directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290).
+
 ### Cloud lanes
 
 Cloud lanes are used only on the operator’s explicit request.
@@ -894,8 +962,10 @@ appending to a worktree's `.git` path (which is a file in linked worktrees).
 `assets/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
-with `active-path`, and activate a new run by compare-and-swap from the prior
-generation while passing the kickoff-pinned registry revision; the resulting
+with `active-path`, and activate a new run by compare-and-swap using
+`--expected-predecessor <run-id|absent>` and `--expected-generation <n>`: pass
+the observed predecessor identity and generation, or `absent` and `0` when no
+pointer exists. Also pass the kickoff-pinned registry revision; the resulting
 active pointer is the run's immutable registry binding. Activation also binds
 each run ID to exactly one branch before any branch-specific pointer can write
 its canonical monitor ledger. Every `reserve` and
