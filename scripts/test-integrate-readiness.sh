@@ -5418,4 +5418,207 @@ freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
     fail "current readiness checkout did not continue through the gate: $freshness_out"
 printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
 
-echo "integration readiness gate + gh-ro + gh-write-broker: PASS"
+# #1409: the promotion transaction is tested separately from the read-only gate.
+# A copied package supplies a controlled gate and writer; gh remains stubbed.
+(
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+    promote_fixture="$test_tmp/promote"
+    promote_assets="$promote_fixture/skills/integrate/assets"
+    promote_support="$promote_fixture/skills/dev-flow-support/assets"
+    mkdir -p "$promote_assets" "$promote_support" "$promote_fixture/bin"
+    cp "$assets/promote.sh" "$promote_assets/promote.sh"
+    git init -q -b main "$promote_fixture/repo"
+    cd "$promote_fixture/repo"
+    export PROMOTE_LOG="$promote_fixture/calls" PROMOTE_STATE="$promote_fixture/state"
+    export PROMOTE_RECORD="$promote_fixture/repo/.git/dev-flow-v2/runs/run-promote"
+    export PROMOTE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    mkdir -p "$PROMOTE_RECORD"
+    cat >"$promote_assets/readiness-gate.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$PROMOTE_LOG"
+if [ "$1" = fingerprint ]; then
+    [ "$PROMOTE_CASE" != fingerprint-error ] || exit 2
+    fp=fp
+    case "$PROMOTE_CASE" in fingerprint-mismatch | undo-error) fp=changed ;; esac
+    jq -n --arg fp "$fp" '{status:"fingerprint",fingerprint:$fp}'
+    exit
+fi
+case "$PROMOTE_CASE" in
+fail | remediation) printf '{"condition":"remediation-capped"}\n'; exit 1 ;;
+indeterminate | unrecorded) printf '{"condition":"integration-exit-indeterminate"}\n'; exit 2 ;;
+already) printf '{"condition":"pr-not-draft"}\n'; exit 1 ;;
+malformed) printf '{"status":"pass"}\n'; exit 0 ;;
+esac
+jq -n --arg head "$PROMOTE_HEAD" '{status:"pass",condition:"ready",head:$head,fingerprint:"fp"}'
+STUB
+    cat >"$promote_fixture/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$PROMOTE_LOG"
+case "$1 $2" in
+'pr ready')
+    if [ "$3" = --undo ]; then
+        printf 'draft\n' >"$PROMOTE_STATE"
+        [ "$PROMOTE_CASE" != undo-error ] || exit 1
+    else
+        printf 'ready\n' >"$PROMOTE_STATE"
+        [ "$PROMOTE_CASE" != ready-error ] || exit 1
+    fi ;;
+'pr view')
+    count=0
+    [ ! -f "$PROMOTE_STATE.count" ] || count="$(cat "$PROMOTE_STATE.count")"
+    count=$((count + 1)); printf '%s\n' "$count" >"$PROMOTE_STATE.count"
+    [ "$PROMOTE_CASE" != unknown ] || exit 1
+    [ "$PROMOTE_CASE" != malformed-read ] || { echo '{}'; exit; }
+    if [ "$PROMOTE_CASE" = transient-read ] && [ "$count" -eq 1 ]; then exit 1; fi
+    draft=false; head=$PROMOTE_HEAD; state=OPEN
+    if [ "$(cat "$PROMOTE_STATE")" = draft ]; then
+        draft=true
+    else
+        case "$PROMOTE_CASE" in
+        still-draft) draft=true ;;
+        head-mismatch) head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+        head-after-fingerprint) [ "$count" -lt 2 ] || head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+        closed) state=CLOSED ;;
+        esac
+    fi
+    jq -n --argjson draft "$draft" --arg head "$head" --arg state "$state" \
+        '{state:$state,isDraft:$draft,headRefOid:$head}' ;;
+*) exit 99 ;;
+esac
+STUB
+    # No real sleeps in retry tests; the command's number of read attempts is
+    # still observable in the gh log and the suite retains its watchdog.
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$promote_fixture/bin/sleep"
+    cat >"$promote_support/run-record.mjs" <<'STUB'
+import { appendFileSync, writeFileSync } from 'node:fs'
+const a = process.argv.slice(2)
+const value = key => a[a.indexOf(key) + 1]
+appendFileSync(process.env.PROMOTE_LOG, `record ${a[0]}\n`)
+if (process.env.PROMOTE_CASE === 'writer-refused') process.exit(1)
+if (['lost-response', 'lost-wrong-time'].includes(process.env.PROMOTE_CASE)) {
+  writeFileSync(`${process.env.PROMOTE_RECORD}/run.json`, JSON.stringify({
+    outcome: 'ready-for-review', promotion: {
+      head: value('--head'), gate_fingerprint: value('--fingerprint'),
+      promoted_at: process.env.PROMOTE_CASE === 'lost-wrong-time' ? '2000-01-01T00:00:00Z' : value('--at'),
+    },
+  }))
+  process.exit(1)
+}
+if (process.env.PROMOTE_CASE === 'retirement-warning') console.error('active pointer retirement reported incomplete')
+STUB
+    chmod +x "$promote_assets/"*.sh "$promote_fixture/bin/"*
+    export PATH="$promote_fixture/bin:$PATH"
+    promote_call() {
+        "$watchdog_bin" "$watchdog_sec" "$promote_assets/promote.sh" \
+            --repo example/repo --pr 493 --head "$PROMOTE_HEAD" --record "$PROMOTE_RECORD" \
+            --integration-cap 5 --remediation-cap 5 --codex-recheck checker.json \
+            --integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir "$PWD" \
+            --slate s-promote --session alice --owner-token fixture-token --run-id run-promote
+    }
+    promotion_case() {
+        local label=$1 expected=$2 rc=0
+        export PROMOTE_CASE=$label
+        : >"$PROMOTE_LOG"
+        rm -f "$PROMOTE_STATE.count"
+        printf 'draft\n' >"$PROMOTE_STATE"
+        printf '{"run_id":"run-promote"}\n' >"$PROMOTE_RECORD/run.json"
+        promotion_output="$(promote_call 2>&1)" || rc=$?
+        check_watchdog "$rc" "promote $label" "$promotion_output"
+        [ "$rc" -eq "$expected" ] || fail "promote $label: expected $expected got $rc: $promotion_output"
+        # The owner token must never be persisted by the command or logged.
+        ! grep -qF fixture-token "$PROMOTE_LOG" || fail 'promote logged owner token'
+    }
+    for case_name in fail remediation indeterminate unrecorded already malformed; do
+        expected=11
+        case "$case_name" in fail | remediation) expected=10 ;; already) expected=12 ;; esac
+        promotion_case "$case_name" "$expected"
+        [ "$(wc -l <"$PROMOTE_LOG" | tr -d ' ')" = 1 ] || fail "promote $case_name mutated after gate refusal"
+        if [ "$case_name" = remediation ]; then
+            [[ "$promotion_output" = *remediation-capped* ]] || fail 'gate remediation token lost'
+        fi
+    done
+    for case_name in success retirement-warning lost-response transient-read; do
+        promotion_case "$case_name" 0
+        [ "$(grep -c '^pr ready 493 ' "$PROMOTE_LOG")" = 1 ] || fail 'promote must mutate ready once'
+        ! grep -q -- --undo "$PROMOTE_LOG" || fail "promote $case_name unexpectedly undid"
+    done
+    promotion_case success 0
+    # Exact order includes the head read AFTER the content fingerprint.
+    sed -E 's/^(check|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
+        "$PROMOTE_LOG" >"$promote_fixture/order"
+    printf 'check\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
+    cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
+    grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
+    for case_name in still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
+        expected=13
+        [ "$case_name" != ready-error ] || expected=15
+        promotion_case "$case_name" "$expected"
+        [ "$(grep -c '^pr ready 493 ' "$PROMOTE_LOG")" = 1 ] || fail "promote $case_name retried ready"
+        [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail "promote $case_name did not undo once"
+        [[ "$promotion_output" = *'confirmed draft'* ]] || fail "promote $case_name did not confirm draft"
+        case "$case_name" in
+        writer-refused | lost-wrong-time) ;;
+        *) ! grep -q '^record ' "$PROMOTE_LOG" || fail "promote $case_name recorded a mismatch" ;;
+        esac
+    done
+    for case_name in unknown malformed-read; do
+        promotion_case "$case_name" 14
+        [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'unknown state caused a second undo'
+        ! grep -q '^record ' "$PROMOTE_LOG" || fail 'unknown state recorded promotion'
+        [[ "$promotion_output" = *'remote state indeterminate'* ]] || fail 'missing unknown-state blocker'
+    done
+
+    # One success runs the actual run-record.mjs and strict validator in a
+    # temporary Git repo, proving promotion/outcome/chain are written together.
+    rm -rf "$promote_support"
+    ln -s "$repo_root/ai/skills/universal/dev-flow-support/assets" "$promote_support"
+    real_writer="$promote_support/run-record.mjs"
+    state="$PWD/.git/dev-flow-v2"
+    mkdir -p "$state/slates/s-promote"
+    WRITER="$real_writer" node --input-type=module >"$state/slates/s-promote/plan.json" <<'JS'
+const { chainDigest } = await import(process.env.WRITER)
+const policy = {
+  rigor:'deep',rigor_source:'default',
+  caps:{challenge:1,review:1,integration:1,remediation:1,min_rounds:1,wall_clock_min:60},
+  breadth:{max_agent_runs:20,max_parallel_agents:1},strategy:'plan',strategy_source:'default',
+  role_tiers:{orchestrator:'apex',implementer:'frontier',challenger:'apex',reviewer:'frontier',integrator:'economy'},operator_pins:[],
+}
+const plan = {
+  base_sha:'a'.repeat(40),policy,dispatcher:{kind:'interactive',parallel_cap:1,foreman_max_parallel:null},
+  issues:[{number:493,title:'Promotion',url:'https://example.test/issues/493',verdict:'valid',candidate_files:['f.txt'],blocked_by:[]}],
+  overlaps:[],waves:[{number:1,issues:[493]}],
+  lanes:[{lane:'l493',issue:493,wave:1,branch:'493-l',run_id:'run-promote',fence:[{path:'f.txt'}],expansions:[]}],
+}
+const at='2026-01-01T00:00:00Z',reason='fixture'
+console.log(JSON.stringify({schema:1,slate_id:'s-promote',revisions:[{seq:0,prev_digest:'genesis',digest:chainDigest({seq:0,plan,at,reason},'genesis'),at,reason,plan}]}))
+JS
+    jq -n '{schema:2,run_id:"run-promote",initiated_by:"human",started_at:"2026-01-01T00:00:00Z",
+      stage_transitions:[{stage:"kickoff",entered_at:"2026-01-01T00:00:00Z"}],interventions:[],outcome:null,pr:null,
+      evidence_comments:[],evidence_registrations:[],pr_bindings:[],outcome_transitions:[],settlements:[],promotion:null,receipts:[]}' \
+        >"$PROMOTE_RECORD/run.json"
+    token="$(node "$real_writer" lock acquire --slate s-promote --session alice --issues 493)"
+    for stage in claim implement verify challenge security integration; do
+        node "$real_writer" transition --slate s-promote --session alice --owner-token "$token" \
+            --run-id run-promote --stage "$stage" --exit fixture --at 2026-01-01T00:01:00Z >/dev/null
+    done
+    node "$real_writer" bind-pr --slate s-promote --session alice --owner-token "$token" \
+        --run-id run-promote --number 493 --url https://example.test/pr/493 --at 2026-01-01T00:02:00Z >/dev/null
+    export PROMOTE_CASE=success
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count"
+    : >"$PROMOTE_LOG"
+    real_rc=0
+    real_output="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || real_rc=$?
+    [ "$real_rc" -eq 0 ] || fail "real promotion writer failed: $real_output"
+    jq -e --arg head "$PROMOTE_HEAD" '.outcome == "ready-for-review" and .promotion.head == $head and
+        .promotion.gate_fingerprint == "fp" and (.outcome_transitions | length) == 1' \
+        "$PROMOTE_RECORD/run.json" >/dev/null || fail 'real promote omitted promotion/outcome/chain'
+    node "$validator" run "$PROMOTE_RECORD/run.json" --receipts "$PROMOTE_RECORD/run.json" --no-adjudications >/dev/null ||
+        fail 'real promote produced invalid run record'
+)
+
+echo "integration readiness gate + gh-ro + gh-write-broker + promote: PASS"

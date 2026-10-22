@@ -631,6 +631,14 @@ wins, which also clears an earlier implementer's effort when this one
 records none. Like `claim:*`, the record is never a routing input — nothing here or in
 any dispatch reads it back to choose a model.
 
+For a recorded run, invoke integrate's `assets/promote.sh` with the existing
+run identity and resolved gate inputs as the only promotion path. It owns the
+immediate check → promote once → scalar read → fingerprint compare → head
+re-read → run-record promotion. Freeze body and review content until it returns;
+never concatenate a diagnostic gate with a bare ready command. A nonzero
+result blocks the handoff. The later watch below is a separate act; reversing
+a recorded handoff requires a fresh run as integrate §6 specifies.
+
 The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. **Invariant: the ready report is sent
 only for a `POST-PROMOTION-CLOSED` event that names the promotion event id

@@ -3992,7 +3992,7 @@ expect_ok "implement confirms the pushed draft head" \
 expect_ok "integration records draft state on entry" \
     grep -qF 'state,isDraft,headRepositoryOwner' "$INTEGRATE_SKILL"
 expect_ok "integration promotes only the unchanged ready head" \
-    sh -c 'grep -qF "gh pr ready <n>" "$1" &&
+    sh -c 'grep -qF "assets/promote.sh" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration fails closed on a pre-promotion head mismatch" \
@@ -4000,7 +4000,7 @@ expect_ok "integration fails closed on a pre-promotion head mismatch" \
         grep -qF "Never wait out a pre-promotion" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration reconciles partial or raced promotion" \
     sh -c 'grep -qF "response can be lost" "$1" &&
-        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "one undo internally" "$1" &&
         grep -qF "non-draft on a changed head" "$1" &&
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$INTEGRATE_SKILL"
@@ -4012,10 +4012,10 @@ expect_ok "integration re-reads canonical promotion after any writer error" \
     sh -c 'grep -qF "re-read the canonical \`run.json\`" "$1" &&
         grep -qF "Accept a lost-response success only if its \`promotion.head\` exactly matches" "$1" &&
         grep -qF "the confirmed head, its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
-        grep -qF "matches the submitted \`promoted_at\`. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
+        grep -qF "matches the submitted \`promoted_at\`. Otherwise the command runs" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
-    sh -c 'grep -qF "gh pr ready --undo <n> --repo" "$1" &&
-        grep -qF "once, then bounded-fetch until" "$1" &&
+    sh -c 'grep -qF "one undo internally" "$1" &&
+        grep -qF "one undo internally, then bounded-fetch until" "$1" &&
         grep -qF "\`isDraft == true\` is confirmed and stop **blocked**, naming the writer" "$1" &&
         grep -qF "error and the confirmed draft state" "$1" &&
         grep -qF "re-established, stop indeterminate under the once-then-stop logic below" "$1" &&
@@ -11912,9 +11912,9 @@ expect_ok "implement: solo exit command passes the recorded rigor (#1183 r2-1)" 
 expect_ok "implement: a solo round's head is fixed until adjudication (#1183 r2-2)" \
     grep -qF "**A round's head is fixed from its first receipt to its" "$IMPL_MD"
 expect_ok "integrate: the solo promote example carries every required argument (#1183 r2-3)" \
-    grep -qF -- '--run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh' "$INTEGRATE_MD"
+    grep -qF -- 'assets/promote.sh --repo <repo> --pr <n> --head <head> --record <record>' "$INTEGRATE_MD"
 expect_ok "integrate: a run without a record uses AGENTS.md's hand-run readiness procedure (#1183 r2-1)" \
-    grep -qF '**The scripted gate applies only when a record exists.**' "$INTEGRATE_MD"
+    grep -qF '**The scripted gate and promote command apply only when a record exists.**' "$INTEGRATE_MD"
 expect_ok "review: the verification call reads the per-stage ledger and the shared head map (#1183 R4)" \
     grep -qF -- '--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only' "$REVIEW_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
@@ -12169,7 +12169,7 @@ expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)"
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
     grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"
 expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
-    grep -qF 'matches the submitted `promoted_at`. Otherwise run' "$INTEGRATE_MD"
+    grep -qF 'matches the submitted `promoted_at`. Otherwise the command runs' "$INTEGRATE_MD"
 
 # #1500 round 2: one canonical contract replaces the four pasted caller copies.
 expect_ok "owner-token contract pins session context and recovery (#1500)" \
@@ -12201,6 +12201,23 @@ for name in ("implement", "review", "integrate", "orchestrate"):
     assert "RUN_RECORD_OWNER_TOKEN" not in text, name
     assert "collision guard between same-named sessions" not in text, name
 PYTOKEN
+
+# #1409: recorded callers delegate the promotion mutation to one command.
+expect_ok "promote: executable sibling outside read-only gate" \
+    test -x "$repo/ai/skills/universal/integrate/assets/promote.sh"
+expect_ok "integrate: sole recorded-run promotion path" \
+    grep -qF 'every recorded run uses `assets/promote.sh` as its only promotion path.' "$INTEGRATE_MD"
+expect_ok "integrate: preserves no-record hand-run carve-out" \
+    grep -qF 'carve-out; every recorded run' "$INTEGRATE_MD"
+expect_ok "promotion callers: no bare ready instruction after gate" \
+    python3 - "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md" <<'PY1409'
+import pathlib, re, sys
+for path in sys.argv[1:]:
+    text = pathlib.Path(path).read_text()
+    assert "assets/promote.sh" in text, path
+    assert not re.search(r'(?:Out of a passing gate, run|runs|Run) `gh pr ready(?: <n>|` at most once)', text), path
+    assert not re.search(r'check[^\n]*[;&|]+[^\n]*gh pr ready', text), path
+PY1409
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

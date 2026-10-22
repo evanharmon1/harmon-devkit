@@ -11,7 +11,7 @@
 # the first failed condition exits non-zero naming it, and only a full pass
 # prints the promotion content fingerprint.
 #
-# This helper never writes to GitHub. The caller owns `gh pr ready`.
+# This helper never writes to GitHub. Use sibling promote.sh for recorded-run promotion.
 #
 # Usage:
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA

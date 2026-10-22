@@ -92,10 +92,11 @@ inline `task challenge` / `task review` stages in a real single-lane run
 (`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
-directory unchanged, and a solo session records promotion with
-`run-record.mjs promote --slate solo-<run-id> --session <its session> --owner-token <token>
---run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh
-fingerprint output>` — `<its session>` being the session name `/claim`
+directory unchanged, and a solo session promotes through
+`assets/promote.sh --repo <repo> --pr <n> --head <head> --record <record>
+--integration-cap <cap> --remediation-cap <cap> --integrator-result <file>
+--slate solo-<run-id> --session <its session> --owner-token <token>
+--run-id <run-id>` — `<its session>` being the session name `/claim`
 recorded on its claim comment's `session:` line and `lock acquire` persisted in
 the slate lock, the same value on every write — or a non-promotion ending with
 `close --slate solo-<run-id> --session <its session> --owner-token <token> --run-id <run-id>
@@ -114,13 +115,15 @@ with another record write. The writer's mutex cannot serialize a caller that
 does not take it. Parallel record writers require routing through the shared
 `run-record.mjs` mutex and validated writer first, never a second lock.
 
-**The scripted gate applies only when a record exists.** `assets/readiness-gate.sh`
-requires `--record`, so everything below that runs it — the checker fast path,
+**The scripted gate and promote command apply only when a record exists.** `assets/readiness-gate.sh`
+and `assets/promote.sh` require `--record`, so everything below that runs them — the checker fast path,
 the integrator pass, the gate itself — is for a run that has a record. Where no
 record exists because the confidence stages never ran (or could not be
 recorded), that is not an error and not grounds to fabricate one: use
 `AGENTS.md` § Readiness gate's hand-run procedure instead, evaluating every
-condition there by hand, and say in the PR body that the run has no record.
+condition there by hand, including its promotion and readback procedure, and say
+in the PR body that the run has no record. This is the explicit no-record
+carve-out; every recorded run uses `assets/promote.sh` as its only promotion path.
 
 A consumer that has not advanced its pin still has the retired single-stage
 skill at the pin it is on, which is exactly why the pin waits for the policy;
@@ -2544,14 +2547,13 @@ that loops indefinitely:
      gated: resolution is the maintainer's act, and rejection-answered
      threads legitimately stay unresolved until a human resolves them.
 
-   The pass fingerprint certifies the exact content the gate evaluated, and
-   a pass is evidence about that moment only. Run `gh pr ready` immediately
-   out of it — content landing in between shows up in the post-promotion
-   compare, but checks and mergeability sit deliberately outside the
-   fingerprint, so time is what erodes a pass. When anything has held the
-   promotion beyond moments — the permission prompt on `gh pr ready`
-   included, which can wait minutes for a human — re-run `check` and
-   promote only out of the fresh pass, never out of a remembered one.
+   The pass fingerprint certifies the exact content the gate evaluated.
+   For recorded runs, `assets/promote.sh` is the only promotion path: it runs
+   a fresh `check` internally and immediately owns the compare and readback.
+   Never join a standalone gate invocation to a bare ready command, whether
+   with a semicolon or a pipeline. Freeze the body and review content until
+   the command returns; a body edit can restart CI. An earlier diagnostic
+   pass never authorizes promotion.
 
    **Re-check the implementer record before the gate** (harmon-devkit#1262).
    The PR must carry exactly one `model-family:*`, `model:*` and
@@ -2572,9 +2574,8 @@ that loops indefinitely:
      --harness <implementer harness slug, when known>
    ```
 
-   Run it immediately before `readiness-gate.sh check`, and again whenever
-   that gate is re-run, so `gh pr ready` still follows the gate pass
-   directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
+   Run it immediately before `assets/promote.sh` (and before any diagnostic
+   `readiness-gate.sh check`), so its internal gate follows this check directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
    nonexistent values) and exit 2 (an unreadable registry or label read) both
    leave the PR draft with a blocker naming the record; never write or
    "fix" a value here from anything but the implementer's attested values,
@@ -2592,30 +2593,47 @@ that loops indefinitely:
    that cannot be established, stop blocked and leave the PR draft; reconfigure
    the automation rather than promoting speculatively.
 
-   Out of a passing gate, run `gh pr ready <n> --repo "$repo"`, then bounded-
-   fetch `state,isDraft,headRefOid` and re-read the content fingerprint with
-   `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh fingerprint --repo "$repo" --pr <n>`
-   — the same five guarded surfaces with no gate attached, which is the
-   point: `check` itself would rightly refuse the now-non-draft PR, and a
-   fetch error here is still *unknown*, not *unchanged*. Then re-read
-   `headRefOid` once more, **after** the fingerprint: the fingerprint
-   deliberately excludes the head, so a push landing between the scalar
-   fetch and the fingerprint read leaves the hash identical, and only a head
-   re-read on the far side proves the content you compared belongs to the
-   promoted head. Reconcile the
-   state even when the promotion command failed: its
-   response can be lost after GitHub accepted the mutation. Success requires
-   the verified head on both scalar reads, an open PR, `isDraft == false`,
-   and a fingerprint identical to the passing gate's.
+   Invoke the sibling command from the foreground turn, with the same
+   resolved gate inputs and the run's existing owner identity:
 
-   Once success is confirmed, record it in the run record (where one is kept
-   for this run — harmon-devkit#685's `promotion.head` invariant) through
-   `run-record.mjs promote`. Bind `slate`, `session` and `run_id` to the
-   run's existing owner and session identity; copy `head` and
-   `gate_fingerprint` verbatim from the confirmed reads above, never
-   re-derive them. Set `promoted_at` to the UTC time of that confirmation,
-   no earlier than any PR binding or stage transition. With `support_dir`
-   resolved physically as at entry, run:
+   ```sh
+   "${CLAUDE_SKILL_DIR}"/assets/promote.sh \
+     --repo "$repo" --pr <n> --head "$head" --record <record_directory> \
+     --integration-cap <resolved integration cap> --remediation-cap <resolved remediation cap> \
+     --integrator-result <integrator-result.json> --codex-recheck <checker-state.json> \
+     --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id"
+   ```
+
+   Pass the applicable evidence flags as for `check` above; a cap-0 run omits
+   the checker and still supplies the integrator result. Preserve any
+   `--integration-exempt-cap`, `--codex-repo-dir` and `--allow-edited-root`
+   inputs. The command is deliberately outside this skill's allowed-tools;
+   invoke it through the normal permission mechanism. The gate stays read-only.
+
+   The command runs check → ready (exactly once) → scalar read → fingerprint
+   → head re-read → record. Both scalar reads require an open PR, the expected
+   head and `isDraft == false`; the fingerprint must be identical to the passing gate's.
+   The head re-read follows the fingerprint because the hash excludes the head.
+   The command will re-read the content fingerprint using
+   `readiness-gate.sh fingerprint --repo "$repo" --pr <n>`.
+   Reconcile even when the ready response failed: its response can be lost
+   after GitHub accepted the mutation. The command never retries ready.
+
+   Exit codes: **0** promoted and recorded; **10** gate failed, no ready
+   mutation; **11** gate indeterminate or invalid inputs, no ready mutation;
+   **12** already non-draft, no ready mutation or record (audit below);
+   **13** mismatch or writer refusal, undone and confirmed draft;
+   **14** remote state unknown after one undo; **15** ready command failed,
+   undone and confirmed draft. Gate diagnostics (including `remediation-capped`
+   and `integration-exit-indeterminate`) are surfaced unchanged. No second
+   unrecorded-remediation detector is introduced. Nonzero is a blocker, never
+   a handoff; the report must name that unresolved remote-state risk for 14.
+   A non-draft on a changed head or content snapshot is undone, not accepted.
+
+   The following marker documents the command's internal record call; it is
+   not a second caller-side step. `head` and `gate_fingerprint` come verbatim
+   from the confirmed reads; `promoted_at` is their UTC confirmation time.
+   With `support_dir` resolved physically, the command invokes:
 
    <!-- promotion-record-command -->
 
@@ -2625,15 +2643,15 @@ that loops indefinitely:
      --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
    ```
 
-   The helper writes `promotion`, the `ready-for-review` outcome and its
+   Internally, the helper writes `promotion`, the `ready-for-review` outcome and its
    outcome-transition chain together, under the shared mutex, validating
    the candidate and canonical readback with `run --receipts` and the run's
-   adjudications. On any writer error, re-read the canonical `run.json`.
+   adjudications. On any writer error, the command will re-read the canonical `run.json`.
    Accept a lost-response success only if its `promotion.head` exactly matches
    the confirmed head, its `promotion.gate_fingerprint` exactly matches
    the confirmed gate fingerprint, and its `promotion.promoted_at` exactly
-   matches the submitted `promoted_at`. Otherwise run
-   `gh pr ready --undo <n> --repo "$repo"` once, then bounded-fetch until
+   matches the submitted `promoted_at`. Otherwise the command runs
+   one undo internally, then bounded-fetch until
    `isDraft == true` is confirmed and stop **blocked**, naming the writer
    error and the confirmed draft state. If the remote state cannot be
    re-established, stop indeterminate under the once-then-stop logic below;
@@ -2645,19 +2663,11 @@ that loops indefinitely:
    live state head or proven `carry.attests_head` to that same gated head.
    Thus a `promotion` entry can never legitimately
    name a head other than this one.
-   If the open PR is non-draft on a changed head or content snapshot, or any
-   other confirmation result cannot
-   prove that exact successful transition, run
-   `gh pr ready --undo <n> --repo "$repo"` and bounded-fetch again until the
-   current open PR is confirmed draft. A changed head or content snapshot then
-   returns to step 2; another failed transition stops blocked. If repeated reads
-   cannot establish the remote state, attempt the undo once because this session
-   initiated the transition, then stop as indeterminate without claiming either
-   a handoff or a confirmed draft—the report must name that unresolved
-   remote-state risk. Every undo in this paragraph reverses a promotion *this
-   session just attempted*, so it is governed by the once-then-stop logic here
-   and not by §2's unexplained-promotion guard; a promotion somebody else made
-   is that procedure's, not this one's.
+   For any immediate mismatch the command attempts exactly one undo, confirms
+   draft state with bounded reads, writes no promotion record and returns a
+   blocker. If remote state stays unknown after that undo, it stops
+   indeterminate with no second undo. A fresh gate is required before another
+   promotion attempt; a mismatch never becomes permission to retry ready.
    A later human request to reverse a **recorded handoff**, including after
    resume, is distinct from that failed-confirmation recovery. Reserve a
    **fresh run** with a new run id and record directory before any follow-up
