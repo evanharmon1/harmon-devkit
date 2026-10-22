@@ -178,7 +178,7 @@
       }
     },
     "interventions": {
-      "description": "Touchpoints between kickoff and gh pr ready: asked answers an implementer blocked_question; other records other human action; prompt records an answered harness approval prompt. The success metric still counts only other as interventions and asked separately — docs/glossary.md intervention.",
+      "description": "Touchpoints between kickoff and gh pr ready: asked answers an implementer blocked_question; other records other human action; prompt records an answered harness approval prompt. The fields decision, command and answered_by are forbidden on asked and other entries. Answered prompts (kind prompt) never count against the success metric, which is unchanged; asked is reported separately — docs/glossary.md intervention.",
       "type": "array",
       "items": {
         "type": "object",

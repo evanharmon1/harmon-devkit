@@ -992,9 +992,11 @@ decisions):
   implementer's blocked question; `other` records other human action. `prompt`
   records an answered harness approval request, with required `decision`
   (`approved | denied`) and `command`, and optional `answered_by`
-  (`orchestrator | human`). Every item retains `at` and `note`. Prompt counts
-  are reported beside interventions by stage; the closed-cohort success metric
-  still counts only `other` and counts `asked` separately.
+  (`orchestrator | human`). Every item retains `at` and `note`. `decision`,
+  `command` and `answered_by` are forbidden on `asked` and `other` entries.
+  Prompt counts are reported beside interventions by stage. Answered prompts
+  (kind `prompt`) never count against the success metric, which is unchanged;
+  `asked` is reported separately.
 - **Every `*_at` timestamp** (`produced_at`, `started_at`, `entered_at`,
   `settled_at`, `promoted_at`, evidence `marker` timestamps) uses the same
   pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`
