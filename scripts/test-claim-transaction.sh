@@ -73,6 +73,15 @@ api)
 issue)
     case "${2:-}" in
     view)
+        if [ -n "${CLAIM_MUTATE_REVIEW_ON_VIEW:-}" ]; then
+            count=0
+            [ ! -f "$CLAIM_ISSUE_READ_COUNT" ] || count="$(cat "$CLAIM_ISSUE_READ_COUNT")"
+            count=$((count + 1))
+            printf '%s\n' "$count" >"$CLAIM_ISSUE_READ_COUNT"
+            if [ "$count" -eq "$CLAIM_MUTATE_REVIEW_ON_VIEW" ]; then
+                write_issue '.labels += [{name:$value}]' needs-review
+            fi
+        fi
         cat "$CLAIM_ISSUE_FILE"
         ;;
     edit)
@@ -103,7 +112,9 @@ issue)
                 shift 2
                 ;;
             --remove-label)
-                write_issue '.labels = [.labels[] | select(.name != $value)]' "$2"
+                if [ "${CLAIM_IGNORE_REVIEW_REMOVAL:-false}" != true ]; then
+                    write_issue '.labels = [.labels[] | select(.name != $value)]' "$2"
+                fi
                 shift 2
                 ;;
             *) shift ;;
@@ -157,6 +168,7 @@ comments_fail_flag="$tmp/comments.fail"
 timeline_fail_flag="$tmp/timeline.fail"
 timeline_read_count="$tmp/timeline.read-count"
 comments_read_count="$tmp/comments.read-count"
+issue_read_count="$tmp/issue.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
 err="$tmp/err"
@@ -170,6 +182,7 @@ scenario() {
     rm -f "$timeline_fail_flag"
     rm -f "$timeline_read_count"
     rm -f "$comments_read_count"
+    rm -f "$issue_read_count"
 }
 
 make_record() {
@@ -223,6 +236,9 @@ run_claim() {
         CLAIM_CONCURRENT_LOGIN="${RUN_CONCURRENT_LOGIN:-collaborator}" \
         CLAIM_CLOSE_AFTER_COMMENT="${RUN_CLOSE_AFTER_COMMENT:-false}" \
         CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH="${CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH:-}" \
+        CLAIM_ISSUE_READ_COUNT="$issue_read_count" \
+        CLAIM_MUTATE_REVIEW_ON_VIEW="${RUN_MUTATE_REVIEW_ON_VIEW:-}" \
+        CLAIM_IGNORE_REVIEW_REMOVAL="${RUN_IGNORE_REVIEW_REMOVAL:-false}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" "$@" \
@@ -292,6 +308,90 @@ scenario '{"assignees":[],"labels":[{"name":"Human"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "a human-labelled issue must be rejected"
 [ ! -s "$log" ] || fail "a human-labelled issue must trigger zero writes"
+
+echo "==> review holds require explicit pull-back approval before any write"
+for review_label in needs-review Needs-Review; do
+    scenario "$(jq -n --arg label "$review_label" '{assignees:[{login:"evanharmon1"}],labels:[{name:$label}]}')"
+    make_record no claim:gpt none no evanharmon1 claim:gpt none
+    [ "$(run_claim --claim-label claim:gpt)" = 2 ] || fail "review hold must refuse an unapproved claim"
+    [ ! -s "$log" ] || fail "an unapproved review hold must perform zero writes"
+    grep -q 'needs-review' "$err" || fail "review hold refusal must name needs-review"
+done
+
+echo "==> approved pull-back commits the claim, removes the exact review marker, and verifies"
+for review_label in needs-review Needs-Review; do
+    scenario "$(jq -n --arg label "$review_label" '{assignees:[],labels:[{name:$label},{name:"feature"}]}')"
+    make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+    [ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
+        fail "approved pull-back must commit: $(cat "$err")"
+    jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review") and
+        any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "feature") and
+        any(.assignees[]; .login == "evanharmon1")' "$issue_file" >/dev/null ||
+        fail "approved pull-back must clear only the review hold and retain the claim"
+    [ "$(sed -n '3p' "$log")" = comment ] || fail "claim must publish before review cleanup"
+    grep -Fq -- "--remove-label $review_label" < <(sed -n '4p' "$log") ||
+        fail "approved pull-back must remove the exact review marker after publication"
+    [ "$(wc -l <"$log" | tr -d ' ')" = 4 ] || fail "approved pull-back must make only the expected writes"
+done
+
+echo "==> failed review removal is non-zero and an approved exact retry finishes cleanup"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(CLAIM_FAIL_EDIT_MATCH=--remove-label run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
+    fail "failed review removal must not report a committed success"
+grep -q 'needs-review removal failed' "$err" || fail "review cleanup failure must be explicit"
+jq -e 'any(.labels[]; .name == "needs-review") and any(.labels[]; .name == "claim:gpt")' \
+    "$issue_file" >/dev/null || fail "failed cleanup must leave both markers visible"
+[ "$(jq 'length' "$comments_file")" = 1 ] || fail "failed cleanup retains the published claim for retry"
+: >"$log"
+[ "$(run_claim --claim-label claim:gpt)" = 6 ] || fail "an exact retry still needs pull-back approval"
+[ ! -s "$log" ] || fail "unapproved exact retry must not write"
+grep -q 'needs-review' "$err" || fail "exact retry refusal must name the review hold"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
+    fail "approved exact retry must finish review cleanup: $(cat "$err")"
+[ "$(jq 'length' "$comments_file")" = 1 ] || fail "cleanup retry must not republish the claim"
+[ "$(wc -l <"$log" | tr -d ' ')" = 1 ] || fail "cleanup retry must write only the review removal"
+grep -Fq -- '--remove-label needs-review' "$log" || fail "exact retry must clear the hold"
+jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "retry left the review hold"
+
+echo "==> a successful removal response that leaves the review marker is refused"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_IGNORE_REVIEW_REMOVAL=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
+    fail "review cleanup must verify absence after a successful write"
+grep -q 'could not be verified' "$err" || fail "unverified cleanup must be explicit"
+
+echo "==> pull-back approval never waives other claim blockers"
+for blocked in \
+    '{"assignees":[],"labels":[{"name":"needs-review"},{"name":"Human"}]}' \
+    '{"assignees":[],"labels":[{"name":"needs-review"},{"name":"claim:claude"}]}' \
+    '{"assignees":[{"login":"someone-else"}],"labels":[{"name":"needs-review"}]}' \
+    '{"state":"CLOSED","assignees":[],"labels":[{"name":"needs-review"}]}'; do
+    scenario "$blocked"
+    make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+    [ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 2 ] ||
+        fail "review approval must not waive another blocker"
+    [ ! -s "$log" ] || fail "another blocker must still prevent every write"
+done
+
+echo "==> approval on an issue without a review hold adds no cleanup writes"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "approval without a hold must still claim"
+[ "$(wc -l <"$log" | tr -d ' ')" = 3 ] || fail "approval without a hold must preserve ordinary claim writes"
+if grep -q -- '--remove-label' "$log"; then fail "no hold means no label removal"; fi
+: >"$log"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "exact no-hold retry should succeed"
+[ ! -s "$log" ] || fail "approval must preserve no-write exact retries without a hold"
+
+echo "==> a review hold appearing before publication is rechecked"
+scenario "$empty_issue"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_MUTATE_REVIEW_ON_VIEW=2 run_claim --claim-label claim:gpt)" = 6 ] ||
+    fail "a review hold arriving after preflight must stop publication"
+grep -q 'needs-review' "$err" || fail "late review hold refusal must name the marker"
+[ "$(jq 'length' "$comments_file")" = 0 ] || fail "late hold must prevent the durable claim record"
+if grep -q -- '--remove-label' "$log"; then fail "unapproved late hold must not be cleared"; fi
 
 echo "==> trusted family rejects mismatched family and model-shaped claim labels"
 for mismatched_label in claim:gpt claim:gpt:terra; do

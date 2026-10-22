@@ -54,7 +54,11 @@ Three transitions remove the review marker:
 
 - **Pull-back into fix rounds:** `/integrate` removes `needs-review` in the
   same step that restores the recorded chain-owned claim labels, then verifies
-  the transition before resuming fixes.
+  the transition before resuming fixes. An operator-approved reclaim through
+  `/claim` is the claim-side pull-back: pass `--approve-review-pullback` to
+  `claim-transaction.sh`, which otherwise enforces the review hold. It clears
+  the marker after establishing the live claim and verifies removal; the flag
+  waives no other blocker and a cleanup failure returns non-zero.
 - **Issue close:** terminal cleanup clears `needs-review` even if no trusted
   claim remains.
 - **End of the delivery PR:** terminal cleanup clears it when a ready PR is
