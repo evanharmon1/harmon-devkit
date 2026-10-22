@@ -256,7 +256,7 @@ contains "$agy_posture" "With \`HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled\`, the d
 contains "$agy_posture" 'step runs `apply-antigravity-settings.sh` to apply that file **user-global** at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer'
 contains "$agy_posture" 'This settings posture applies to interactive agy panes; headless `agy -p` ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`)'
 contains "$agy_posture" "This posture holds only in a devcontainer built with the template's dev settings; a pre-existing container needs a rebuild before agy lanes run"
-contains "$agy_posture" "**Host:** \`FOREMAN_DEVCONTAINER\` is unset; use the user's own agy settings; the template's dev-profile settings are not applied to the host"
+contains "$agy_posture" "**Host:** \`FOREMAN_DEVCONTAINER\` is unset; use the user's own agy settings; the template's dev-profile settings are not applied to the host. Dispatch agy lanes only once the gate above confirms the template dev-profile permissions are in effect; otherwise dispatch none"
 contains "$agy_posture" 'Headless `agy -p` ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`)'
 contains "$agy_posture" '**Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by `.devcontainer/config/agent/harnesses.json`; do not launch an agy lane in that profile'
 contains "$agy_posture" "The maintainer's 2026-10-18 ruling keeps the existing template dev settings: this changes no lane-scoped allowlist"

@@ -793,6 +793,8 @@ passed under dev, host or agent.
   settings; a pre-existing container needs a rebuild before agy lanes run.
 - **Host:** `FOREMAN_DEVCONTAINER` is unset; use the user's own agy settings;
   the template's dev-profile settings are not applied to the host.
+  Dispatch agy lanes only once the gate above confirms the template dev-profile
+  permissions are in effect; otherwise dispatch none.
   Headless `agy -p` ignores settings allow-rules and auto-denies (see
   `docs/guides/devcontainers.md`).
 - **Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by
