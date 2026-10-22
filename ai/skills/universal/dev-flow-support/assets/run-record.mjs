@@ -69,8 +69,9 @@
 // run.schema.json closes intervention items, so the digest travels in the note.
 //
 // Exit codes: 0 written (or an idempotent no-op), 1 refused, 2 usage.
-// The state root is always resolved from the current directory's
-// `git rev-parse --git-common-dir`.
+// The state root is resolved from the current directory's
+// `git rev-parse --git-common-dir`, except `prune --repo-root DIR` uses DIR's
+// common directory.
 
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
