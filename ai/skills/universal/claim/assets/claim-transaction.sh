@@ -16,6 +16,7 @@ Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
 Exit: 0 = record committed
       2 = usage, invalid record, or pre-write state could not be verified
       6 = publication/marker state is indeterminate; markers remain visible
+          Includes committed claims with failed/unverified needs-review cleanup; retry same record with --approve-review-pullback.
 EOF
     exit 2
 }

@@ -24,9 +24,9 @@ consequences that hold independently of whether any session is running:
 | Stage | Writes |
 | --- | --- |
 | `kickoff` | none — detects drift, never fixes it |
-| `claim` | assignee, `claim:*` label, claim comment — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
+| `claim` | assignee, `claim:*` label, claim comment; removes `needs-review` on an approved pull-back (`--approve-review-pullback`) — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `integrate` | review replies; adds `needs-review` while releasing chain-owned `claim:*` labels at ready-for-review; reverses those markers on pull-back into fixes |
+| `integrate` | review replies; releases chain-owned `claim:*` labels independently and adds `needs-review` separately where provisioned (otherwise skips and reports the add); restores claims and removes a present review marker separately on pull-back |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 
@@ -43,18 +43,25 @@ release invariant costs no new secret.
 ## Review marker: `needs-review`
 
 `needs-review` means the issue is awaiting human review; it is **not a claim**.
-At its ready-for-review stop, `/integrate` adds it in the same step that
-removes the exact chain-owned `claim:*` labels, verifies the resulting markers,
-and records both changes in the ready summary. The assignee and durable claim
-record remain live until ordinary release; `needs-review` supplies no claim
-ownership or trust evidence. Agent queues exclude this marker, and `/claim`
-reports it as awaiting human review and requires confirmation to claim it.
+At its ready-for-review stop, `/integrate` removes the exact chain-owned
+`claim:*` labels independently and adds the review marker with a separate write
+only where the repository provisions it (case-insensitive exact name match).
+For label-less claims (`n/a`), missing/unverified provisioning, or a failed add,
+it skips or reports the marker with `needs-review not added: <reason>` and
+continues the handoff; it never creates the label or makes claim release depend
+on the marker. It verifies actual successful writes and records their results
+in the ready summary. The assignee and durable claim record remain live until
+ordinary release; `needs-review` supplies no claim ownership or trust evidence.
+Agent queues exclude this marker: `/orchestrate` planning drops marked issues
+and their slate dependents before re-verifying, while `/claim` reports the
+review hold and requires confirmation to claim it.
 
 Three transitions remove the review marker:
 
-- **Pull-back into fix rounds:** `/integrate` removes `needs-review` in the
-  same step that restores the recorded chain-owned claim labels, then verifies
-  the transition before resuming fixes. An operator-approved reclaim through
+- **Pull-back into fix rounds:** `/integrate` removes `needs-review` only when
+  present and restores the recorded chain-owned claim labels in separate
+  commands, then verifies applicable changes before resuming fixes. An
+  operator-approved reclaim through
   `/claim` is the claim-side pull-back: pass `--approve-review-pullback` to
   `claim-transaction.sh`, which otherwise enforces the review hold. It clears
   the marker after establishing the live claim and verifies removal; the flag
