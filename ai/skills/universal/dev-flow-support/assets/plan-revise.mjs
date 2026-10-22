@@ -446,7 +446,7 @@ function decisionWrite(command, args) {
     if (command === 'genesis') {
       if (!Array.isArray(plan.issues)) throw new UsageError('plan.issues must be an array')
       if (!Array.isArray(plan.lanes)) throw new UsageError('plan.lanes must be an array')
-      for (const issue of plan.issues) decisionPaths(issue?.candidate_files, 'issue.candidate_files')
+      for (const issue of plan.issues) if (issue?.verdict !== 'done') decisionPaths(issue?.candidate_files, 'issue.candidate_files')
       for (const lane of plan.lanes) decisionPaths(lane?.fence, 'lane.fence', true)
       const outside = plan.issues?.filter((issue) => !held.issues.includes(issue.number)) ?? []
       if (outside.length) throw new Refusal(`genesis issues outside the lock reservation: ${outside.map((issue) => issue.number).join(', ')}`)

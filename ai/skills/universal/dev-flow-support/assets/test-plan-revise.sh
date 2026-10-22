@@ -589,6 +589,26 @@ current = literalBracket.ok('release', { input: { addition: addition(2, 'other/*
   flags: ['--issue', '1', '--lane', 'l2', '--path', 'src/[id]/page.js'] })
 assert.equal(current.lanes[0].fence.at(-1).path, 'src/[id]/page.js')
 console.log('  PASS: release and done refuse uninterpretable source/request patterns without plan or lock changes; literal brackets remain supported')
+// Review r1: retained done issues may have no candidate files; live issues may not.
+const retainedDone = fixture('1,2')
+const withDone = structuredClone(retainedDone.plan)
+const doneIssue = { ...addition(2).issue, verdict: 'done', candidate_files: [] }
+withDone.issues.push(doneIssue)
+current = retainedDone.ok('genesis', { input: withDone })
+assert.deepEqual(current.issues.find((issue) => issue.number === 2), doneIssue)
+const interactivePlan = JSON.parse(readFileSync(join(assets, '../../../../schemas/fixtures/plan/valid/interactive.json'), 'utf8')).revisions[0].plan
+const interactive = fixture(interactivePlan.issues.map((issue) => issue.number).join(','))
+current = interactive.ok('genesis', { input: interactivePlan })
+assert.deepEqual(current, interactivePlan)
+for (const verdict of ['valid', 'partial']) {
+  const emptyLive = fixture('1')
+  const input = structuredClone(emptyLive.plan)
+  input.issues[0].verdict = verdict
+  input.issues[0].candidate_files = []
+  emptyLive.refuse('genesis', { input }, /candidate_files/, 2)
+}
+console.log('  PASS: genesis preserves done issues with empty candidates and accepts the interactive fixture; live empty candidates still exit 2')
+
 
 
 NODE
