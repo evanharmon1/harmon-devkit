@@ -7,9 +7,11 @@
 # 14 remote state unknown after one undo; 15 ready command failed, undone.
 # 16 owner-check refused before mutation; 17 unrecorded non-draft promotion
 # (no mutation; caller uses unexplained-promotion reconciliation).
-# After mutation: at most six bounded calls × 60s (360s, plus up to 6s kill grace).
-# Callers must allow at least 366s after the pre-mutation gate completes; include
-# gate/runtime overhead in the tool timeout. A run killed before exit is exit 14
+# After mutation: at most ten network reads/writes (fingerprint contributes five):
+# 10 × 60s + 10 × 1s kill grace + two writer mutex waits × 15s = 640s.
+# The pre-mutation gate uses its own per-read limits. Callers must allow at least
+# 640s after it completes, plus gate/runtime overhead in the tool timeout.
+# A run killed before exit is exit 14
 # (remote state unknown), never a confirmed handoff. No read retries.
 # An exit-0 writer warning about incomplete active-pointer retirement is success.
 set -euo pipefail
@@ -147,7 +149,7 @@ scalars="$(read_scalars)" || undo
 if ! jq -e --arg head "$head" '.state == "OPEN" and .isDraft == false and .headRefOid == $head' <<<"$scalars" >/dev/null; then
     undo
 fi
-fingerprint="$("$timeout_bin" -k 1 60 "$gate" fingerprint --repo "$repo" --pr "$pr")" || undo
+fingerprint="$("$gate" fingerprint --repo "$repo" --pr "$pr")" || undo
 if ! jq -e --arg fp "$gate_fingerprint" '.status == "fingerprint" and .fingerprint == $fp' <<<"$fingerprint" >/dev/null; then
     undo
 fi

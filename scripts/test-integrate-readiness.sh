@@ -5616,10 +5616,10 @@ STUB
     promotion_case hung-read 13
     [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'hung read did not undo once'
     # Every GitHub operation hangs: four one-second windows must terminate
-    # inside the six-call budget (with scheduling/grace allowance).
+    # inside the ten-call network budget (with scheduling/grace allowance).
     started=$SECONDS
     promotion_case all-hang 14
-    [ "$((SECONDS - started))" -le 12 ] || fail 'all-hang exceeded six-call bounded budget'
+    [ "$((SECONDS - started))" -le 20 ] || fail 'all-hang exceeded ten-call bounded budget'
     [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'all-hang retried undo'
     [ "$(grep -c '^pr view ' "$PROMOTE_LOG")" = 2 ] || fail 'all-hang retried reads'
     rm "$promote_fixture/bin/timeout"

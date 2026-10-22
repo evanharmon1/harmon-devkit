@@ -1028,6 +1028,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     deferred findings settled, `mergeStateStatus` acceptable: **reconcile**.
     Accept the promotion and audit the existing handoff exactly as step 6's
     already-non-draft path prescribes; do **not** call `gh pr ready` again.
+    Only audit status `pass` on the current head may be recorded, never
+    `audit-behind`; catch up a behind head first. Record the accepted promotion
+    with `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
+    and the existing slate/session/owner/run arguments, as on exit 17.
     Reverting a promotion the gate would itself have made un-notifies nobody
     and can override a genuine human click.
   - **Indeterminate, or ordinary post-promotion drift — report, never undo.**
@@ -2611,12 +2615,15 @@ that loops indefinitely:
    Before the ready mutation the command validates the existing slate lock
    and owner token through read-only `run-record.mjs lock check` (exit 16
    refuses without notifying anyone). Every GitHub call is bounded by
-   `timeout -k 1 60` (or `gtimeout`), including the whole post-mutation
-   fingerprint invocation. There are no read retries: after mutation there
-   are at most six bounded calls (ready, scalar read, fingerprint, head
-   re-read, one undo, one confirm read): 6 × 60s = 360s, plus at most 6s
-   kill grace. Callers must allow at least 366s after the pre-mutation gate
-   completes and add gate/runtime overhead to their tool timeout. A run killed
+   `timeout -k 1 60` (or `gtimeout`); the fingerprint uses the gate's five
+   individually bounded network reads. There are no read retries: after mutation
+   there are at most ten network calls (ready, scalar read, five fingerprint
+   reads, head re-read, one undo, one confirm read). Including the record
+   writer's two mutex waits of up to 15s each, the bound is
+   10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s.
+   The pre-mutation gate is bounded by its own per-read limits. Callers must
+   allow at least 640s after that gate completes and add gate/runtime overhead
+   to their tool timeout. A run killed
    before it exits is treated as exit 14 (remote state unknown).
 
    The command runs check → ready (exactly once) → scalar read → fingerprint
@@ -2638,8 +2645,11 @@ that loops indefinitely:
    unexplained-promotion procedure. When §2's reconcile branch accepts the
    promotion (the current head independently passes `readiness-gate.sh audit`),
    the orchestrator records it with
-   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint>`
-   and the existing slate/session/owner/run arguments. Otherwise it reports,
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
+   and the existing slate/session/owner/run arguments. Only audit status `pass`
+   on the current head may be recorded, never `audit-behind`; catch up a behind
+   head first. The event time correlates `promoted_at` with §2's timeline.
+   Otherwise it reports,
    and the run stays open until `run-record.mjs close`. Gate diagnostics (including `remediation-capped`
    and `integration-exit-indeterminate`) are surfaced unchanged. No second
    unrecorded-remediation detector is introduced. Nonzero is a blocker, never
@@ -2718,8 +2728,13 @@ that loops indefinitely:
    what step 2's unexplained-promotion procedure points at: where that
    procedure's first branch applies — a promotion this session did not make, on
    a head that independently passes the gate — reconciling *is* this paragraph
-   and its `audit` run,
-   and the choice between reconciling and a single undo is made there, not here.
+   and its `audit` run. For that accepted unexplained promotion, use the same
+   record step as exit 17:
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
+   with the existing slate/session/owner/run arguments. Only audit status `pass`
+   on the current head may be recorded, never `audit-behind`; catch up a behind
+   head first. An already recorded promotion needs no second record write.
+   The choice between reconciling and a single undo is made in §2, not here.
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews
    must be disabled in the external integration before the first promotion**.

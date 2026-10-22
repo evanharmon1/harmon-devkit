@@ -12216,20 +12216,24 @@ pattern = re.compile(r"gh\s+pr\s+ready", re.I)
 def guarded(text):
     # Literal exemptions only; no surrounding region can hide a new recipe.
     for allowed in (
-        "gh pr ready --undo",
         "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
         "and `gh pr ready` must not be called again.",
         "an `audit` pass never authorizes `gh pr ready`.",
     ):
         text = text.replace(allowed, "")
+    # Markdown code-span boundaries delimit command text, like line endings.
+    text = text.replace("`", "\n")
+    text = re.sub(r"gh pr ready --undo(?=\s|$)", "", text, flags=re.M)
     return not pattern.search(text)
 for path in sys.argv[1:]:
     text = pathlib.Path(path).read_text()
     assert "assets/promote.sh" in text, path
     assert guarded(text), path
-for planted in ("then run `gh pr ready <n> --repo`", "Promote with `GH PR READY`", "gh pr ready 42"):
+for planted in ("then run `gh pr ready <n> --repo`", "Promote with `GH PR READY`", "gh pr ready 42", "gh pr ready --undo=false 123"):
     assert not guarded(planted), planted
 assert guarded("gh pr ready --undo 42")
+assert guarded("gh pr ready --undo")
+assert not guarded("gh pr ready --undo=false 123")
 for region in (
     "- **Unexplained promotion — fixture**\n%s\n- Checks (under fixture)",
     "   If the PR was already non-draft\n%s\n   When current-head Codex",
@@ -12239,7 +12243,10 @@ for region in (
 integrate = pathlib.Path(sys.argv[1]).read_text()
 for required in (
     "promotion (the current head independently passes `readiness-gate.sh audit`)",
-    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint>`",
+    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
+    "Only audit status `pass`",
+    "on the current head may be recorded, never `audit-behind`",
+    "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
     "and the run stays open until `run-record.mjs close`",
 ):
     assert required in integrate, required
