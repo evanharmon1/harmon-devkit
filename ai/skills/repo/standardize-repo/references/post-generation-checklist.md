@@ -421,8 +421,8 @@ that task is rendered for `github` **and** an org owner, so an org repo answerin
       If any eligible field exists, migrate it regardless of board age or the
       `project_management` answer. Follow the selected template's
       `docs/project-management.md` **Fields → Migrating a board that still has
-      one**, including its #910 enumeration rule, even when that document is not
-      generated locally: provision
+      one**, including its #910 enumeration rule,
+      even when that document is not generated locally: provision
       `domain:` and `layer:` labels in every affected repository, migrate
       Domain/Layer values to those labels, and re-point every saved view before
       deleting retired fields.

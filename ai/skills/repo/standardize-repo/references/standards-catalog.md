@@ -1001,12 +1001,15 @@ pipeline, and `Product` identifies the product (an org issue field, or a
 personal project field). **`domain:` and `layer:` labels are the source of
 truth** for those axes, on both owner types; there are no corresponding
 Domain/Layer fields to provision or reconcile. The retired `Agent` field is
-also absent: the derived Tier selects the execution tier, the configured
+also absent from the target state: live claims use labels. The derived Tier
+selects the execution tier, the configured
 backend/harness selects the family, and `claim:*` labels record live ownership.
 Field removal is an explicit operator migration, following the selected
 template's `docs/project-management.md` **Fields → Migrating a board that still
 has one**, including the #910 enumeration rule. Setup scripts never delete live
 fields.
+
+`docs/project-management.md` stays the source of truth this catalog mirrors.
 
 **Classification storage and options** — mirror the selected template's
 `docs/project-management.md` **The axes** and **Issue fields on an organization,
@@ -1147,16 +1150,27 @@ artifacts; the prose rules are guidance, not lint):
   `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
   `layer:backend`, `layer:infra` labels — re-map those issues and delete the three
   by hand. **[manual]**
-- **Tier routing and claims** — the derived `tier:*` label (or human pin)
-  selects the execution tier; the configured backend/harness selects the model
-  family. `suggest:*` is retired. `claim:<family>[:<model>]` records live
-  ownership, not historical completion or execution authorization. Follow the
-  selected target's claim lifecycle for cleanup and legacy `agent:*` handling.
+- **Model-centric claims** — use
+  `claim:<family>[:<model>]` for agent-authored live ownership. Claims accept a
+  family-level label; add the optional model segment only when it is known and
+  useful. Interactive session claims are released at wrap or integrate completion;
+  Claude Action claims are released by an unconditional `if: always()` cleanup
+  step, so an ordinary failure or step timeout still releases. The exception is a
+  run that never reaches that step at all — a job-cap kill, a lost runner, or a
+  force-cancel — which strands the marker; see the claim lifecycle under Part 1's
+  workflow inventory. Treat a claim with no live run as that case, not as
+  ownership.
+  Transition-compatible consumers also recognize documented legacy `agent:*`
+  claims. Neither claim family arms execution or records historical doneness.
+  Harness slugs never belong on the claim axis, and the `Agent` field is not a
+  planning axis. For a post-rollout target, `docs/project-management.md` is the
+  human authority and includes family and harness tables derived from the
+  target's selected registry revision, not an independently maintained roster.
 - **Foreman arming** — only an authorized actor's `foreman:<adapter>` label arms
-  dispatch. The registry maps the harness-centric adapter and only adapters in
-  the pinned Foreman release are provisionable; test-only `mock` is not.
-  Detailed dispatch and input-trust enforcement belong to Foreman and the
-  selected target's configuration.
+  dispatch. The registry maps the harness-centric adapter and only adapters in the
+  pinned Foreman release are provisionable; test-only `mock` is not. Detailed
+  dispatch and input-trust enforcement belong to Foreman and the selected
+  target's configuration, not a second procedure in this catalog.
 - **`.devflow.toml` — Dev Loop rigor/strategy/tier config.** Root-level TOML
   parameterizing the Dev Loop stages in `AGENTS.md`: `[rigor.*]` round-cap
   levels in `rigor_order` (`cursory → light → standard → thorough → deep → forensic`), the

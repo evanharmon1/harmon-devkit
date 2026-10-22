@@ -2531,11 +2531,8 @@ expect_ok "standards catalog removes Agent from the target field set" \
 expect_ok "standards catalog distinguishes current setup from older pins" \
     grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog leaves transition execution to harmon-init" \
-    python3 -c 'import pathlib, sys
-sentence = ("The complete classification-field catalog is not re-specified here; consult\n"
-            "the target\u0027s generated `docs/project-management.md` and setup scripts.")
-sys.exit(sentence not in pathlib.Path(sys.argv[1]).read_text())' \
+expect_ok "standards catalog mirrors the authoritative project-management doc" \
+    grep -qF '`docs/project-management.md` stays the source of truth this catalog mirrors.' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 CATALOG_PM_FIELDS="$TMPROOT/catalog-pm-fields.md"
 awk '
@@ -2693,7 +2690,10 @@ for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
         grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
         "$STANDARDIZE_REFS/$adr_rename_guide.md"
 done
-expect_ok "standards catalog documents model-centric suggestions" \
+expect_ok "standards catalog retires suggest labels" \
+    grep -qF '**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog does not prescribe retired advisory suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog documents model-centric claims" \
