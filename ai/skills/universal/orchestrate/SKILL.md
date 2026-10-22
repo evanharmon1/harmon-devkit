@@ -758,26 +758,38 @@ this asset is for a single bounded wait.
 
 ### Antigravity (agy) lane permission posture
 
-Choose the agy permission posture from the actual devcontainer profile or host,
-and disclose the chosen posture in the lane brief's verified-facts/rulings text:
+Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
+or unset for dev or host (see `docs/glossary.md`).
+Dev and host share the unset marker; they differ in whether the template's dev
+settings were applied. `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled` gates installing
+the bot wrapper and applying the dev settings, not profile selection.
+Disclose the chosen posture in the lane brief's verified-facts/rulings text.
+`--dangerously-skip-permissions` belongs only to the bot posture and is never
+passed under dev, host or agent. The agy example in `docs/guides/herdr.md` is a
+bot-profile example.
 
-- **Bot:** when `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the template's
+- **Bot:** `FOREMAN_DEVCONTAINER=bot`. When
+  `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the template's
   bot-autonomy wrapper at `~/.local/bin/agy` injects
   `--dangerously-skip-permissions` for headless lane runs. Bare interactive
-  `agy` uses the bot's `always-proceed` settings; the wrapper passes it and
-  supported informational subcommands through without injecting the flag.
+  `agy` uses the bot's `always-proceed` settings; the wrapper injects no flag
+  for bare interactive `agy` or the subcommands it passes through unchanged.
   Not every bot launch carries the flag. A launcher that resolves `agy`
   another way must pass `--dangerously-skip-permissions` itself for headless
   lane runs.
-- **Dev:** use the template's `.devcontainer/config/antigravity-settings-dev.json`.
+- **Dev:** `FOREMAN_DEVCONTAINER` is unset; use the template's
+  `.devcontainer/config/antigravity-settings-dev.json`.
   With `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the dev profile's post-create
   step runs `apply-antigravity-settings.sh` to apply that file **user-global**
   at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer.
+  This settings posture applies to interactive agy panes; headless `agy -p`
+  ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`).
   This posture holds only in a devcontainer built with the template's dev
   settings; a pre-existing container needs a rebuild before agy lanes run.
-- **Host:** use the user's own agy settings; the template's dev-profile
-  settings are not applied to the host.
-- **Agent:** agy is refused by `.devcontainer/config/agent/harnesses.json`;
+- **Host:** `FOREMAN_DEVCONTAINER` is unset; use the user's own agy settings;
+  the template's dev-profile settings are not applied to the host.
+- **Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by
+  `.devcontainer/config/agent/harnesses.json`;
   do not launch an agy lane in that profile.
 
 The maintainer's 2026-10-18 ruling keeps the existing template dev settings:

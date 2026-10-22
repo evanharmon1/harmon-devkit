@@ -230,22 +230,43 @@ esac
 # Scope these pins to Lane launch and waits, so matching prose elsewhere
 # cannot mask a missing launch-posture subsection.
 agy_posture="$test_tmp/agy-posture.md"
-sed -n '/^### Antigravity (agy) lane permission posture$/,/^### Cloud lanes$/p' "$skill" >"$agy_posture"
-contains "$agy_posture" "disclose the chosen posture in the lane brief's verified-facts/rulings text"
-contains "$agy_posture" '**Bot:** when `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`'
+awk '
+    /^## Lane launch and waits$/ { in_launch = 1; next }
+    in_launch && /^## / { exit }
+    in_posture && /^#+ / { exit }
+    in_launch && /^### Antigravity \(agy\) lane permission posture$/ { in_posture = 1 }
+    in_posture { print }
+' "$skill" >"$agy_posture"
+contains "$agy_posture" 'Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`, or unset for dev or host (see `docs/glossary.md`)'
+contains "$agy_posture" "Dev and host share the unset marker; they differ in whether the template's dev settings were applied"
+contains "$agy_posture" '`HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled` gates installing the bot wrapper and applying the dev settings, not profile selection'
+contains "$agy_posture" "Disclose the chosen posture in the lane brief's verified-facts/rulings text"
+contains "$agy_posture" '`--dangerously-skip-permissions` belongs only to the bot posture and is never passed under dev, host or agent'
+contains "$agy_posture" 'The agy example in `docs/guides/herdr.md` is a bot-profile example'
+contains "$agy_posture" '**Bot:** `FOREMAN_DEVCONTAINER=bot`. When `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`'
 contains "$agy_posture" 'bot-autonomy wrapper at `~/.local/bin/agy` injects `--dangerously-skip-permissions` for headless lane runs'
 contains "$agy_posture" "Bare interactive \`agy\` uses the bot's \`always-proceed\` settings"
+contains "$agy_posture" 'the wrapper injects no flag for bare interactive `agy` or the subcommands it passes through unchanged'
 contains "$agy_posture" 'Not every bot launch carries the flag'
 contains "$agy_posture" 'A launcher that resolves `agy` another way must pass `--dangerously-skip-permissions` itself for headless lane runs'
-contains "$agy_posture" "**Dev:** use the template's \`.devcontainer/config/antigravity-settings-dev.json\`"
+contains "$agy_posture" "**Dev:** \`FOREMAN_DEVCONTAINER\` is unset; use the template's \`.devcontainer/config/antigravity-settings-dev.json\`"
 contains "$agy_posture" "With \`HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled\`, the dev profile's post-create"
 contains "$agy_posture" 'step runs `apply-antigravity-settings.sh` to apply that file **user-global** at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer'
+contains "$agy_posture" 'This settings posture applies to interactive agy panes; headless `agy -p` ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`)'
 contains "$agy_posture" "This posture holds only in a devcontainer built with the template's dev settings; a pre-existing container needs a rebuild before agy lanes run"
-contains "$agy_posture" "**Host:** use the user's own agy settings; the template's dev-profile settings are not applied to the host"
-contains "$agy_posture" '**Agent:** agy is refused by `.devcontainer/config/agent/harnesses.json`; do not launch an agy lane in that profile'
+contains "$agy_posture" "**Host:** \`FOREMAN_DEVCONTAINER\` is unset; use the user's own agy settings; the template's dev-profile settings are not applied to the host"
+contains "$agy_posture" '**Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by `.devcontainer/config/agent/harnesses.json`; do not launch an agy lane in that profile'
 contains "$agy_posture" "The maintainer's 2026-10-18 ruling keeps the existing template dev settings: this changes no lane-scoped allowlist"
 contains "$agy_posture" 'Refer to the template-owned settings file rather than copying its contents here'
 contains "$agy_posture" 'changes no live behaviour'
 contains "$agy_posture" 'The agy launch argv and lane workspace directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290)'
+if awk '
+    /^- / { non_bot = ($0 ~ /^- \*\*(Dev|Host|Agent)/) }
+    /^[^[:space:]-]/ { non_bot = 0 }
+    non_bot && /--dangerously-skip-permissions/ { print; found = 1 }
+    END { exit !found }
+' "$agy_posture"; then
+    fail 'Dev, Host and Agent bullets must never pass --dangerously-skip-permissions'
+fi
 
 echo "lane launch and waits: ok"
