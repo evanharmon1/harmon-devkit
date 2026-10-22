@@ -36,6 +36,7 @@ import { pathToFileURL } from 'node:url'
 const [source, tmp] = process.argv.slice(2)
 const support = join(source, 'ai/skills/universal/dev-flow-support/assets')
 const runRecord = join(support, 'run-record.mjs')
+const monitor = join(source, 'ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh')
 const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const put = (p, v) => writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`)
 const pass = (message) => console.log(`PASS: ${message}`)
@@ -576,6 +577,7 @@ withMutex(runJson, () => {
 `)
 sh('node', [settle, pathToFileURL(runRecord).href, runJson, reviewFinding.id, now()])
 write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint')
+assert.equal(existsSync(identity.active_state_path), false)
 const releaseLock = releaseFixtureLock
 assert.match(releaseLock(identity.slate_id), /released/)
 assert.equal(existsSync(join(state, 'locks', `solo-${RUN}.json`)), false)
@@ -642,6 +644,7 @@ pass("the writer's ledger verifies a round-2 repeat-of finding on round 1's own 
 dWrite('close', '--outcome', 'escalated', '--exit', 'diverging: repeat_after_fix after challenge round 2/' + policy.rounds.challenge)
 releaseLock(dIdentity.slate_id)
 assert.equal(read(join(dIdentity.record_directory, 'run.json')).outcome, 'escalated')
+assert.equal(existsSync(dIdentity.active_state_path), false)
 assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 const closedLedger = readFileSync(join(dIdentity.record_directory, 'history.challenge.json'), 'utf8')
 refused(dSlate, ['ledger', '--stage', 'challenge'], /lock acquire/)
@@ -650,8 +653,8 @@ assert.equal(existsSync(join(state, 'locks', `solo-${DRUN}.json`)), false)
 acquire(`${DRUN}-r2`, 3)
 r = run('node', [runRecord, ...soloArgs({ runId: `${DRUN}-r2`, issue: 3, branch: DBRANCH })])
 assert.equal(r.status, 0, r.stderr)
-assert.equal(JSON.parse(r.stdout).generation, 2)
-pass('a solo run stopped at a blocker is closed and its lock released; ledger then refuses without rewriting it or re-taking the lock; a fresh solo run supersedes the ended one on the same branch')
+assert.equal(JSON.parse(r.stdout).generation, 1)
+pass('promote and close retire solo pointers; a fresh run on the same branch starts again at generation 1')
 
 // A two-slot challenge stage, the second slot added per run with
 // --add-finder: the reservation persists that selection in run.json, a round
@@ -783,6 +786,50 @@ refused([], regArgs(), /info\/grafts exists; a grafted history cannot prove/)
 rmSync(grafts)
 assert.ok(nothingWritten('run-11-registry'))
 pass('a repository with an info/grafts file is refused before any ledger or reservation proof')
+
+// A terminal run whose retirement is deferred by a reserved action cannot be
+// superseded by solo-init until the event is reconciled and the pointer retired.
+const reservedBranch = '42-reserved'
+const reservedRun = 'run-42-reserved'
+const reservedSlate = `solo-${reservedRun}`
+sh('git', ['branch', reservedBranch, base])
+acquire(reservedRun, 42)
+r = run('node', [runRecord, ...soloArgs({ runId: reservedRun, issue: 42, branch: reservedBranch })])
+assert.equal(r.status, 0, r.stderr)
+const reservedIdentity = JSON.parse(r.stdout)
+const reservedState = sh('bash', [monitor, 'state-path', '--run-id', reservedRun, '--repo-root', repo])
+const reservedHead = sh('git', ['rev-parse', 'HEAD'])
+const reservedEvent = 'evt-activation-hold'
+sh('bash', [monitor, 'reserve', '--state', reservedState, '--event', reservedEvent, '--action', 'push',
+  '--expected-head', reservedHead, '--writer', 'feature-owner', '--active-state', reservedIdentity.active_state_path,
+  '--run-id', reservedRun, '--branch', reservedBranch, '--generation', '1', '--repo-root', repo])
+const initialRecord = read(join(reservedIdentity.record_directory, 'run.json'))
+const transitionAt = new Date(Date.now() + 30000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+const closeAt = new Date(Date.now() + 90000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+sh('node', [runRecord, 'transition', '--slate', reservedSlate, '--session', SESSION, ...ownerArgs(reservedSlate),
+  '--run-id', reservedRun, '--stage', 'claim', '--exit', initialRecord.stage_transitions.at(-1).exit, '--at', transitionAt])
+sh('node', [runRecord, 'close', '--slate', reservedSlate, '--session', SESSION, ...ownerArgs(reservedSlate),
+  '--run-id', reservedRun, '--outcome', 'abandoned', '--exit', 'activation reservation fixture', '--at', closeAt])
+assert.equal(existsSync(reservedIdentity.active_state_path), true, 'close must preserve the pointer while its action is reserved')
+releaseFixtureLock(reservedSlate)
+
+const replacementRun = 'run-42-replacement'
+r = run('node', [runRecord, ...soloArgs({ runId: replacementRun, issue: 42, branch: reservedBranch })])
+assert.equal(r.status, 1, r.stderr)
+assert.match(r.stderr, new RegExp(`${reservedRun}.*${reservedEvent}.*reconcile.*retire.*prune`))
+assert.ok(nothingWritten(replacementRun), 'a deferred activation refusal must precede every new-run write')
+
+const observed = join(tmp, 'activation-reservation-observed.json')
+put(observed, { status: 'landed', event: reservedEvent, action: 'push', head: reservedHead })
+sh('bash', [monitor, 'reconcile', '--state', reservedState, '--event', reservedEvent, '--observed', observed,
+  '--active-state', reservedIdentity.active_state_path, '--run-id', reservedRun, '--branch', reservedBranch,
+  '--generation', '1', '--repo-root', repo])
+sh('bash', [monitor, 'retire', '--run-id', reservedRun, '--repo-root', repo])
+acquire(replacementRun, 42)
+r = run('node', [runRecord, ...soloArgs({ runId: replacementRun, issue: 42, branch: reservedBranch })])
+assert.equal(r.status, 0, r.stderr)
+assert.equal(JSON.parse(r.stdout).generation, 1)
+pass('solo-init refuses activation after deferred retirement, then succeeds after reconcile and retire')
 
 JS
 echo "PASS: test-inline-record.sh"

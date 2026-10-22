@@ -11872,6 +11872,22 @@ for writer_test in test-run-record.sh test-plan-revise.sh; do
         grep -qF "./ai/skills/universal/dev-flow-support/assets/$writer_test" "$repo/Taskfile.yml"
 done
 
+# Active-pointer retirement and reservation-aware activation (harmon-devkit#1544).
+expect_ok "orchestrate: names the canonical active-pointer directory (#1544)" \
+    grep -qF '<git-common-dir>/dev-flow-v2/active/' "$ORCH_MD"
+expect_ok "orchestrate: retires the matching pointer after terminal readback (#1544)" \
+    grep -qF "matching run's pointer after the validated terminal record is written and" "$ORCH_MD"
+expect_ok "orchestrate: blocks activation while an ended run has a reserved event (#1544)" \
+    grep -qF 'blocks a new activation on that branch.' "$ORCH_MD"
+expect_ok "orchestrate: binds monitor observations to event, action and head (#1544)" \
+    grep -qF "Every observation must match the reservation's event, action and expected head." "$ORCH_MD"
+expect_ok "orchestrate: documents prune's dry-run and terminal-only behavior (#1544)" \
+    grep -qF 'run-record.mjs prune --dry-run' "$ORCH_MD"
+expect_ok "dev-flow-support: run-record documents retirement and prune (#1544)" \
+    grep -qF 'retire the matching active pointer after validated readback' "$DFS_MD"
+expect_ok "implement: documents the activation recovery refusal (#1544)" \
+    grep -qF 'New activation is refused while an ended run on that branch still has an' "$IMPL_MD"
+
 # harmon-devkit#1183: the inline confidence-stage path records a real run, and
 # every stage skill says which path produces the record, so a lane cannot be
 # surprised at the integrate gate.

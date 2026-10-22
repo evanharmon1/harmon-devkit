@@ -240,6 +240,23 @@ throwaway work only.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
 - **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.
+- **Branch active pointers:** `<git-common-dir>/dev-flow-v2/active/`, one
+  SHA-256-named pointer per branch. `promote` and `close` retire only the
+  matching run's pointer after the validated terminal record is written and
+  read back. A reserved monitor event on an ended run defers retirement and
+  blocks a new activation on that branch.
+  Every observation must match the reservation's event, action and expected head.
+  Reconcile landed events. If a reserved action is observed absent, record that
+  observation and cancel it with
+  `assets/dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
+  --event <event-id> --observed <observation.json> --reason "<why>"`; landed
+  actions still go through reconcile. Then retire the run or prune its pointer
+  before retrying activation.
+  `run-record.mjs prune --dry-run` reports
+  which pointers are safe to remove; `prune` removes only valid pointers for
+  terminal runs and reports open, malformed, mismatched, missing, reserved, or
+  leftover entries it skips. A fresh run after retirement starts at generation
+  1.
 
 Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:
@@ -894,8 +911,10 @@ appending to a worktree's `.git` path (which is a file in linked worktrees).
 `assets/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
-with `active-path`, and activate a new run by compare-and-swap from the prior
-generation while passing the kickoff-pinned registry revision; the resulting
+with `active-path`, and activate a new run by compare-and-swap using
+`--expected-predecessor <run-id|absent>` and `--expected-generation <n>`: pass
+the observed predecessor identity and generation, or `absent` and `0` when no
+pointer exists. Also pass the kickoff-pinned registry revision; the resulting
 active pointer is the run's immutable registry binding. Activation also binds
 each run ID to exactly one branch before any branch-specific pointer can write
 its canonical monitor ledger. Every `reserve` and
