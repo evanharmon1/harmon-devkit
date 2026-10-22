@@ -773,6 +773,57 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+### Antigravity (agy) lane permission posture
+
+Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
+or unset for dev or host (see `docs/glossary.md`).
+With `FOREMAN_DEVCONTAINER` unset (dev or host), the orchestrator does not infer
+the profile from settings. It dispatches agy lanes only after confirming that
+the agy settings in effect (`~/.gemini/antigravity-cli/settings.json`) carry the
+template dev-profile permissions from `antigravity-settings-dev.json`.
+Otherwise it does not dispatch agy lanes, and in a dev devcontainer it reports
+that a rebuild is needed. `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled` gates installing
+the bot wrapper and applying the dev settings, not profile selection.
+Disclose the chosen posture in the lane brief's verified-facts/rulings text.
+`--dangerously-skip-permissions` belongs only to the bot posture and is never
+passed under dev, host or agent.
+
+- **Bot:** `FOREMAN_DEVCONTAINER=bot`. When
+  `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the template's
+  bot-autonomy wrapper at `~/.local/bin/agy` injects
+  `--dangerously-skip-permissions` into every agy argv except bare `agy` and
+  the passthrough subcommands. Interactive pane launches with arguments receive
+  the flag too. Bare interactive `agy` uses the bot's `always-proceed` settings;
+  the wrapper injects no flag
+  for bare interactive `agy` or the subcommands it passes through unchanged.
+  Not every bot launch carries the flag. A launcher that resolves `agy`
+  another way must pass `--dangerously-skip-permissions` itself for
+  lane runs.
+- **Dev:** `FOREMAN_DEVCONTAINER` is unset; use the template's
+  `.devcontainer/config/antigravity-settings-dev.json`.
+  With `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the dev profile's post-create
+  step runs `apply-antigravity-settings.sh` to apply that file **user-global**
+  at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer.
+  This settings posture applies to interactive agy panes; headless `agy -p`
+  ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`).
+  This posture holds only in a devcontainer built with the template's dev
+  settings; a pre-existing container needs a rebuild before agy lanes run.
+- **Host:** `FOREMAN_DEVCONTAINER` is unset; use the user's own agy settings;
+  the template's dev-profile settings are not applied to the host.
+  Dispatch agy lanes only once the gate above confirms the template dev-profile
+  permissions are in effect; otherwise dispatch none.
+  Headless `agy -p` ignores settings allow-rules and auto-denies (see
+  `docs/guides/devcontainers.md`).
+- **Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by
+  `.devcontainer/config/agent/harnesses.json`;
+  do not launch an agy lane in that profile.
+
+The maintainer's 2026-10-18 ruling keeps the existing template dev settings:
+this changes no lane-scoped allowlist. Refer to the template-owned settings
+file rather than copying its contents here. This section documents the posture
+and changes no live behaviour. The agy launch argv and lane workspace
+directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290).
+
 ### Cloud lanes
 
 Cloud lanes are used only on the operator’s explicit request.
