@@ -5820,6 +5820,24 @@ const prototypeCounts = renderTrajectory({
 assert.deepEqual(prototypeCounts.findings_by_stage_finder, {
   challenge: {constructor: 1}, review: {constructor: 1}
 });
+// Prompt fields must participate in chain verification, and stage counts
+// must be visible without changing the other-only success metric.
+const { CHAIN_FIELDS, entryDigest, verifyChain, computeIssueVerdict } = await import('./ai/skills/universal/retro/assets/dev-flow-stats.mjs');
+const prompts = ['approved', 'denied', 'approved'].map(decision => ({kind: 'prompt',
+  at: '2026-10-19T00:00:30Z', note: 'approval request', decision, command: 'task verify', answered_by: 'orchestrator'}));
+const promptTrajectory = renderTrajectory({...run, state: {...run.state, interventions: prompts}});
+assert.deepEqual(promptTrajectory.answered_prompts_by_stage, {integration: 3});
+const verdict = computeIssueVerdict([{...run, state: {...run.state, outcome: 'ready-for-review', interventions: prompts}}], {});
+assert.equal(verdict.interventions, 0);
+assert.equal(verdict.asked, 0);
+assert.equal(verdict.success, true); // Prompts are reported, but the established cohort definition stays unchanged.
+assert.ok(renderTrajectoryTable(promptTrajectory).includes('answered prompts by stage: {"integration":3}'));
+const entry = {...prompts[0], seq: 0, prev_digest: 'genesis'};
+entry.digest = entryDigest(prompts[0], 'genesis');
+assert.equal(verifyChain([entry], CHAIN_FIELDS.interventions).ok, true);
+for (const [key, value] of Object.entries({decision: 'denied', command: 'other command', answered_by: 'human'})) {
+  assert.equal(verifyChain([{...entry, [key]: value}], CHAIN_FIELDS.interventions).ok, false, key);
+}
 const t = renderTrajectory(run);
 assert.equal(t.retained_record_findings_by_stage_finder, null);
 assert.equal(t.remediation_pushes.length, 1);

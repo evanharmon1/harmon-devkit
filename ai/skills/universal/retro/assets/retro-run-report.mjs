@@ -1071,7 +1071,7 @@ function measure(trajectory, policy) {
       .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null }))
     const stageInterventions = interventions
       .filter((entry) => stageAt(transitions, entry.at) === stage)
-      .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
+      .map((entry) => ({ ...entry }))
     // Unlike challenge/review, the review skill posts no evidence marker for
     // integration passes, so local evidence can never authenticate a round,
     // pass, or finding count here. Disclose that plainly instead of a count
@@ -1169,7 +1169,8 @@ function measure(trajectory, policy) {
       at: entry.at,
       kind: entry.kind,
       stage: stageAt(transitions, entry.at),
-      note: entry.note
+      note: entry.note,
+      ...(entry.kind === 'prompt' ? { decision: entry.decision, command: entry.command, answered_by: entry.answered_by ?? null } : {})
     })),
     settlements: settlements.map((entry) => {
       const parts = FINDING_ID_RE.exec(entry.finding_id)
@@ -1328,6 +1329,7 @@ function renderMarkdown(report) {
           : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)})`).join('; ')
       }`
     )
+    l.push(`- Answered approval prompts during this stage: ${stage.interventions.filter((entry) => entry.kind === 'prompt').length}`)
     const finderCounts = stage.stage === 'integration' ? stage.retained_record_findings_by_finder : stage.findings_by_finder
     if (['challenge', 'review', 'integration'].includes(stage.stage)) {
       const source = stage.stage === 'integration'
@@ -1449,10 +1451,12 @@ function renderMarkdown(report) {
         : 'None recorded so far. The run has no terminal outcome yet, so this is not yet an unattended run — only one that has not needed a human up to this point.'
     )
   } else {
-    l.push('| at | kind | stage | note |')
-    l.push('| --- | --- | --- | --- |')
+    l.push(`Answered approval prompts: ${report.measurements.interventions.filter((entry) => entry.kind === 'prompt').length}`)
+    l.push('')
+    l.push('| at | kind | stage | note | decision | command | answered by |')
+    l.push('| --- | --- | --- | --- | --- | --- | --- |')
     for (const entry of report.measurements.interventions) {
-      l.push(`| ${cell(entry.at)} | ${cell(entry.kind)} | ${cell(entry.stage ?? '—')} | ${cell(entry.note)} |`)
+      l.push(`| ${cell(entry.at)} | ${cell(entry.kind)} | ${cell(entry.stage ?? '—')} | ${cell(entry.note)} | ${cell(entry.decision ?? '—')} | ${cell(entry.command ?? '—')} | ${cell(entry.answered_by ?? '—')} |`)
     }
   }
   l.push('')

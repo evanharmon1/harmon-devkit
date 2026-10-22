@@ -266,6 +266,8 @@ two retros of two different runs are comparable line for line:
 
 When the run's slate has a `plan.json`, read its validated revision and include
 planned versus actual waves and interventions for each lane in the report;
+report answered approval prompts by stage beside interventions, including their
+decision and command, and never describe a run with recorded prompts as unattended;
 name assignments that moved, serialization or fence decisions that changed,
 and the recorded reason rather than reconstructing the original plan from lane
 briefs or memory. The plan for a run is the unique validated slate whose

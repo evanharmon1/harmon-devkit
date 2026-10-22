@@ -1397,7 +1397,7 @@ function verifyChain(rawEntries, contentKeys) {
 
 const CHAIN_FIELDS = {
   stage_transitions: ["stage", "entered_at", "exit"],
-  interventions: ["kind", "at", "note"],
+  interventions: ["kind", "at", "note", "decision", "command", "answered_by"],
   settlements: ["finding_id", "disposition", "settled_at", "reference"],
   splits: ["mechanism", "stage", "round", "issue", "milestone", "finding_ids", "split_at"],
   // The three chains below protect evidence_comments[]/pr/outcome — round 4
@@ -3410,6 +3410,11 @@ function renderTrajectory(run) {
     retained_record_findings_by_stage_finder: run.retainedIntegrationFinderCounts === undefined
       ? null : { integration: run.retainedIntegrationFinderCounts },
     interventions: run.state.interventions,
+    answered_prompts_by_stage: run.state.interventions.filter((entry) => entry.kind === "prompt").reduce((counts, entry) => {
+      const stage = [...run.state.stage_transitions].reverse().find((transition) => Date.parse(transition.entered_at) <= Date.parse(entry.at))?.stage ?? "unknown";
+      counts[stage] = (counts[stage] ?? 0) + 1;
+      return counts;
+    }, {}),
     settlements: run.state.settlements,
     splits: run.state.splits,
     rounds: rounds.map((r) => {
@@ -3522,7 +3527,8 @@ function renderTrajectoryTable(trajectory) {
   if (trajectory.interventions.length > 0) {
     lines.push("");
     lines.push("interventions:");
-    for (const i of trajectory.interventions) lines.push(`  ${i.at}  ${i.kind}: ${i.note}`);
+    lines.push(`answered prompts by stage: ${JSON.stringify(trajectory.answered_prompts_by_stage)}`);
+    for (const i of trajectory.interventions) lines.push(`  ${i.at}  ${i.kind}: ${i.note}${i.kind === "prompt" ? ` (${i.decision}: ${i.command}; answered by ${i.answered_by ?? "unspecified"})` : ""}`);
   }
   if (trajectory.unreceipted_pass_files.length > 0) {
     lines.push("");

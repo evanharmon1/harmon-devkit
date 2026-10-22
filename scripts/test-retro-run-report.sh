@@ -1582,6 +1582,25 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 contains "$OUT" '- Outcome: `ready-for-review`' &&
     ok "the fixture's terminal outcome renders" || bad "terminal outcome missing"
 
+echo "==> three answered approval prompts are counted per stage and never unattended"
+d="$TMPROOT/answered-prompts"
+scaffold "$d" further-along "$POLICY_SECTION"
+node --input-type=module - "$d/trajectory.json" "$FIXTURES/interventions-answered-prompt.json" <<'NODE'
+import fs from 'node:fs'
+const [file, fixture] = process.argv.slice(2)
+const trajectory = JSON.parse(fs.readFileSync(file, 'utf8'))
+trajectory.interventions = JSON.parse(fs.readFileSync(fixture, 'utf8')).interventions
+trajectory.stage_transitions = [{stage: 'challenge', entered_at: '2026-08-29T09:00:00Z'}]
+fs.writeFileSync(file, JSON.stringify(trajectory))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'Answered approval prompts: 3' &&
+    contains "$OUT" 'Answered approval prompts during this stage: 3' &&
+    contains "$OUT" 'denied' && contains "$OUT" 'task verify' &&
+    ! contains "$OUT" 'reached its outcome unattended' &&
+    ok "three prompts retain decisions and commands beside stage interventions" || bad "prompt report failed: $RC $ERR $OUT"
+
 echo "==> class/provenance is attributed to the one stage that found anything"
 d="$TMPROOT/onestage"
 mkdir -p "$d"

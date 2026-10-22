@@ -854,3 +854,35 @@ pass "lane-init creates a receipt-complete owned run, accepts an intervention, a
 
 no_candidates "suite"
 echo "test-run-record: all cases passed"
+
+# -- answered harness approvals (#1529): fresh run, independent of promotion cases --
+new_run run-prompts
+acquire prompt-slate alice --issues 999
+write_plan prompt-slate 999:run-prompts
+prompt_rr() {
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for prompt-slate)" node "$writer" "$@" --slate prompt-slate --session alice)
+}
+for decision in approved denied; do
+    prompt_rr intervention --run-id run-prompts --kind prompt --decision "$decision" \
+        --command 'task verify' --answered-by orchestrator --note 'inspected full request' \
+        --at 2026-01-01T00:01:00Z >/dev/null
+done
+jq -e '(.interventions | length) == 2 and .interventions[0].decision == "approved" and .interventions[1].decision == "denied" and all(.interventions[]; .command == "task verify" and .answered_by == "orchestrator")' \
+    "$state/runs/run-prompts/run.json" >/dev/null || fail "prompt fields were not retained"
+for flags in '--decision approved' '--command verify' '--decision unknown --command verify' '--decision denied --command verify --answered-by bot'; do
+    # Fixed test vectors only; split intentionally into CLI arguments.
+    read -r -a prompt_flags <<<"$flags"
+    prompt_rc=0
+    prompt_rr intervention --run-id run-prompts --kind prompt --note request "${prompt_flags[@]}" >"$tmp/prompt-refusal" 2>&1 || prompt_rc=$?
+    [ "$prompt_rc" -ne 0 ] || fail "invalid prompt accepted: $flags"
+done
+[ "$(jq '.interventions | length' "$state/runs/run-prompts/run.json")" -eq 2 ] || fail "refused prompt mutated run"
+pass "answered approval prompts retain decisions and commands and refuse incomplete or invalid input"
+for field in decision command; do
+    jq --arg field "$field" 'del(.interventions[0][$field])' "$state/runs/run-prompts/run.json" >"$tmp/incomplete-prompt.json"
+    prompt_rc=0
+    node "$asset_dir/validate-result-schemas.mjs" run "$tmp/incomplete-prompt.json" >"$tmp/prompt-schema-refusal" 2>&1 || prompt_rc=$?
+    [ "$prompt_rc" -ne 0 ] || fail "schema accepted prompt missing $field"
+    grep -qF "$field" "$tmp/prompt-schema-refusal" || fail "schema refusal omitted missing $field"
+done
+pass "run schema requires prompt decision and command independently of writer checks"

@@ -1,1 +1,1 @@
-$run.interventions[0].kind: must be one of "asked", "other"
+$run.interventions[0].kind: must be one of "asked", "other", "prompt"
