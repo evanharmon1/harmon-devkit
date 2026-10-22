@@ -39,6 +39,9 @@ if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
 fi
 
 labels="$(gh issue view "$issue" --repo "$repo" --json labels --jq '.labels[].name')" || exit $?
-if grep -Fxq 'needs-review' <<<"$labels"; then
-    gh issue edit "$issue" --repo "$repo" --remove-label needs-review
-fi
+while IFS= read -r label; do
+    if [ "$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')" = needs-review ]; then
+        gh issue edit "$issue" --repo "$repo" --remove-label "$label"
+        break
+    fi
+done <<<"$labels"

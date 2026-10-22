@@ -22,12 +22,17 @@ case "$*" in
 'issue view 42 --repo test-owner/test.repo --json labels --jq .labels[].name')
     [ "$NR_SCENARIO" != read-fail ] || exit 7
     printf '%s\n' 'feature' 'claim:gpt' 'needs-review-extra'
-    if [ "$NR_SCENARIO" != absent ]; then
-        printf '%s\n' 'needs-review'
-    fi
+    case "$NR_SCENARIO" in
+    absent) ;;
+    case-variant) printf '%s\n' 'Needs-Review' ;;
+    *) printf '%s\n' 'needs-review' ;;
+    esac
     ;;
 'issue edit 42 --repo test-owner/test.repo --remove-label needs-review')
     [ "$NR_SCENARIO" != write-fail ] || exit 8
+    ;;
+'issue edit 42 --repo test-owner/test.repo --remove-label Needs-Review')
+    [ "$NR_SCENARIO" = case-variant ] || exit 9
     ;;
 *) exit 9 ;;
 esac
@@ -46,6 +51,11 @@ scenario=present
 [ "$(run_helper --repo test-owner/test.repo --issue 42)" = 0 ] || fail "present label should be removed"
 [ "$(wc -l <"$tmp/calls" | tr -d ' ')" = 2 ] || fail "present label needs exactly one read and one removal"
 grep -Fxq 'issue edit 42 --repo test-owner/test.repo --remove-label needs-review' "$tmp/calls" || fail "only needs-review may be removed"
+
+scenario=case-variant
+[ "$(run_helper --repo test-owner/test.repo --issue 42)" = 0 ] || fail "mixed-case label should be removed"
+[ "$(wc -l <"$tmp/calls" | tr -d ' ')" = 2 ] || fail "mixed-case label needs exactly one read and one removal"
+grep -Fxq 'issue edit 42 --repo test-owner/test.repo --remove-label Needs-Review' "$tmp/calls" || fail "mixed-case removal must use the exact live name"
 
 # A second call after removal sees no marker: no write, including similarly named labels.
 scenario=absent
