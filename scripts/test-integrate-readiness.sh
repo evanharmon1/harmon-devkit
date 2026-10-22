@@ -5456,6 +5456,7 @@ STUB
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$PROMOTE_LOG"
+[ "$PROMOTE_CASE" != all-hang ] || exec /bin/sleep 120
 case "$1 $2" in
 'pr ready')
     if [ "$3" = --undo ]; then
@@ -5558,7 +5559,7 @@ STUB
             [[ "$promotion_output" = *remediation-capped* ]] || fail 'gate remediation token lost'
         fi
     done
-    for case_name in success retirement-warning lost-response transient-read; do
+    for case_name in success retirement-warning lost-response; do
         promotion_case "$case_name" 0
         [ "$(grep -c '^pr ready 493 ' "$PROMOTE_LOG")" = 1 ] || fail 'promote must mutate ready once'
         ! grep -q -- --undo "$PROMOTE_LOG" || fail "promote $case_name unexpectedly undid"
@@ -5570,7 +5571,7 @@ STUB
     printf 'check\nowner check\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
     cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
     grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
-    for case_name in still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
+    for case_name in transient-read still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
         expected=13
         [ "$case_name" != ready-error ] || expected=15
         promotion_case "$case_name" "$expected"
@@ -5614,6 +5615,13 @@ STUB
     chmod +x "$promote_fixture/bin/timeout"
     promotion_case hung-read 13
     [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'hung read did not undo once'
+    # Every GitHub operation hangs: four one-second windows must terminate
+    # inside the six-call budget (with scheduling/grace allowance).
+    started=$SECONDS
+    promotion_case all-hang 14
+    [ "$((SECONDS - started))" -le 12 ] || fail 'all-hang exceeded six-call bounded budget'
+    [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'all-hang retried undo'
+    [ "$(grep -c '^pr view ' "$PROMOTE_LOG")" = 2 ] || fail 'all-hang retried reads'
     rm "$promote_fixture/bin/timeout"
 
     mv "$promote_support" "$promote_fixture/support.saved"

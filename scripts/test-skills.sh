@@ -4015,8 +4015,8 @@ expect_ok "integration re-reads canonical promotion after any writer error" \
         grep -qF "matches the submitted \`promoted_at\`. Otherwise the command runs" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
     sh -c 'grep -qF "one undo internally" "$1" &&
-        grep -qF "one undo internally, then bounded-fetch until" "$1" &&
-        grep -qF "\`isDraft == true\` is confirmed and stop **blocked**, naming the writer" "$1" &&
+        grep -qF "one undo internally, then one bounded read to confirm" "$1" &&
+        grep -qF "\`isDraft == true\` and stop **blocked**, naming the writer" "$1" &&
         grep -qF "error and the confirmed draft state" "$1" &&
         grep -qF "re-established, stop indeterminate under the once-then-stop logic below" "$1" &&
         grep -qF "do not attempt a second undo or claim a handoff or confirmed draft" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
@@ -12212,12 +12212,16 @@ expect_ok "integrate: preserves no-record hand-run carve-out" \
 expect_ok "promotion callers: no bare ready instruction after gate" \
     python3 - "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md" <<'PY1409'
 import pathlib, re, sys
-pattern = re.compile(r"gh\s+pr\s+ready(?!\s+--undo\b)", re.I)
+pattern = re.compile(r"gh\s+pr\s+ready", re.I)
 def guarded(text):
-    # Only the documented reconciliation text may name the raw mutation;
-    # these blocks explain existing promotions and explicitly forbid a retry.
-    text = re.sub(r"(?ms)^- \*\*Unexplained promotion —.*?(?=^- Checks \(under)", "", text)
-    text = re.sub(r"(?ms)^   If the PR was already non-draft.*?(?=   When current-head Codex)", "", text)
+    # Literal exemptions only; no surrounding region can hide a new recipe.
+    for allowed in (
+        "gh pr ready --undo",
+        "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
+        "and `gh pr ready` must not be called again.",
+        "an `audit` pass never authorizes `gh pr ready`.",
+    ):
+        text = text.replace(allowed, "")
     return not pattern.search(text)
 for path in sys.argv[1:]:
     text = pathlib.Path(path).read_text()
@@ -12226,6 +12230,19 @@ for path in sys.argv[1:]:
 for planted in ("then run `gh pr ready <n> --repo`", "Promote with `GH PR READY`", "gh pr ready 42"):
     assert not guarded(planted), planted
 assert guarded("gh pr ready --undo 42")
+for region in (
+    "- **Unexplained promotion — fixture**\n%s\n- Checks (under fixture)",
+    "   If the PR was already non-draft\n%s\n   When current-head Codex",
+    "%s",
+):
+    assert not guarded(region % "then run `gh pr ready 42`"), region
+integrate = pathlib.Path(sys.argv[1]).read_text()
+for required in (
+    "promotion (the current head independently passes `readiness-gate.sh audit`)",
+    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint>`",
+    "and the run stays open until `run-record.mjs close`",
+):
+    assert required in integrate, required
 
 PY1409
 

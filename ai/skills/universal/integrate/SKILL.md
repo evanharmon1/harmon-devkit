@@ -2611,8 +2611,13 @@ that loops indefinitely:
    Before the ready mutation the command validates the existing slate lock
    and owner token through read-only `run-record.mjs lock check` (exit 16
    refuses without notifying anyone). Every GitHub call is bounded by
-   `timeout -k 1 60` (or `gtimeout`); a timed-out read follows the existing
-   retry/undo/indeterminate path.
+   `timeout -k 1 60` (or `gtimeout`), including the whole post-mutation
+   fingerprint invocation. There are no read retries: after mutation there
+   are at most six bounded calls (ready, scalar read, fingerprint, head
+   re-read, one undo, one confirm read): 6 × 60s = 360s, plus at most 6s
+   kill grace. Callers must allow at least 366s after the pre-mutation gate
+   completes and add gate/runtime overhead to their tool timeout. A run killed
+   before it exits is treated as exit 14 (remote state unknown).
 
    The command runs check → ready (exactly once) → scalar read → fingerprint
    → head re-read → record. Both scalar reads require an open PR, the expected
@@ -2630,7 +2635,12 @@ that loops indefinitely:
    **14** remote state unknown after one undo; **15** ready command failed,
    undone and confirmed draft; **16** slate owner validation refused before
    mutation; **17** unrecorded non-draft promotion, routed to §2’s
-   unexplained-promotion procedure, never complete. Gate diagnostics (including `remediation-capped`
+   unexplained-promotion procedure. When §2's reconcile branch accepts the
+   promotion (the current head independently passes `readiness-gate.sh audit`),
+   the orchestrator records it with
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint>`
+   and the existing slate/session/owner/run arguments. Otherwise it reports,
+   and the run stays open until `run-record.mjs close`. Gate diagnostics (including `remediation-capped`
    and `integration-exit-indeterminate`) are surfaced unchanged. No second
    unrecorded-remediation detector is introduced. Nonzero is a blocker, never
    a handoff; the report must name that unresolved remote-state risk for 14.
@@ -2657,8 +2667,8 @@ that loops indefinitely:
    the confirmed head, its `promotion.gate_fingerprint` exactly matches
    the confirmed gate fingerprint, and its `promotion.promoted_at` exactly
    matches the submitted `promoted_at`. Otherwise the command runs
-   one undo internally, then bounded-fetch until
-   `isDraft == true` is confirmed and stop **blocked**, naming the writer
+   one undo internally, then one bounded read to confirm
+   `isDraft == true` and stop **blocked**, naming the writer
    error and the confirmed draft state. If the remote state cannot be
    re-established, stop indeterminate under the once-then-stop logic below;
    do not attempt a second undo or claim a handoff or confirmed draft.
@@ -2670,7 +2680,7 @@ that loops indefinitely:
    Thus a `promotion` entry can never legitimately
    name a head other than this one.
    For any immediate mismatch the command attempts exactly one undo, confirms
-   draft state with bounded reads, writes no promotion record and returns a
+   draft state with one bounded read, writes no promotion record and returns a
    blocker. If remote state stays unknown after that undo, it stops
    indeterminate with no second undo. A fresh gate is required before another
    promotion attempt; a mismatch never becomes permission to retry ready.

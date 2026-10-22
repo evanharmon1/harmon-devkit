@@ -7,6 +7,10 @@
 # 14 remote state unknown after one undo; 15 ready command failed, undone.
 # 16 owner-check refused before mutation; 17 unrecorded non-draft promotion
 # (no mutation; caller uses unexplained-promotion reconciliation).
+# After mutation: at most six bounded calls × 60s (360s, plus up to 6s kill grace).
+# Callers must allow at least 366s after the pre-mutation gate completes; include
+# gate/runtime overhead in the tool timeout. A run killed before exit is exit 14
+# (remote state unknown), never a confirmed handoff. No read retries.
 # An exit-0 writer warning about incomplete active-pointer retirement is success.
 set -euo pipefail
 
@@ -107,31 +111,22 @@ gate_fingerprint="$(jq -er --arg head "$head" '
   select(.status == "pass" and .condition == "ready" and .head == $head)
   | .fingerprint | select(type == "string" and length > 0)' <<<"$verdict")" || exit 11
 
-# Retry only failed/malformed reads. A valid mismatch is evidence, never lag.
+# Each read is attempted once; failed or malformed evidence routes to undo.
 read_scalars() {
-    local attempt value
-    for attempt in 1 2 3; do
-        if value="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)" &&
-            jq -e 'type == "object" and (.state | IN("OPEN", "CLOSED", "MERGED")) and
-              (.isDraft | type == "boolean") and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$"))' <<<"$value" >/dev/null; then
-            printf '%s\n' "$value"
-            return 0
-        fi
-        [ "$attempt" -eq 3 ] || sleep 1
-    done
-    return 1
+    local value
+    value="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)" || return 1
+    jq -e 'type == "object" and (.state | IN("OPEN", "CLOSED", "MERGED")) and
+      (.isDraft | type == "boolean") and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$"))' <<<"$value" >/dev/null || return 1
+    printf '%s\n' "$value"
 }
 undo() {
-    local snapshot attempt
+    local snapshot
     # Even a failed mutation may have landed; issue exactly one inverse write.
     run_gh pr ready --undo "$pr" --repo "$repo" >&2 || true
-    for attempt in 1 2 3; do
-        if snapshot="$(read_scalars)" && jq -e '.state == "OPEN" and .isDraft == true' <<<"$snapshot" >/dev/null; then
-            echo "BLOCKER: $reason; confirmed draft on $(jq -r .headRefOid <<<"$snapshot")" >&2
-            exit "$undo_code"
-        fi
-        [ "$attempt" -eq 3 ] || sleep 1
-    done
+    if snapshot="$(read_scalars)" && jq -e '.state == "OPEN" and .isDraft == true' <<<"$snapshot" >/dev/null; then
+        echo "BLOCKER: $reason; confirmed draft on $(jq -r .headRefOid <<<"$snapshot")" >&2
+        exit "$undo_code"
+    fi
     echo "BLOCKER: $reason; remote state indeterminate after one undo; no second undo" >&2
     exit 14
 }
@@ -152,7 +147,7 @@ scalars="$(read_scalars)" || undo
 if ! jq -e --arg head "$head" '.state == "OPEN" and .isDraft == false and .headRefOid == $head' <<<"$scalars" >/dev/null; then
     undo
 fi
-fingerprint="$("$gate" fingerprint --repo "$repo" --pr "$pr")" || undo
+fingerprint="$("$timeout_bin" -k 1 60 "$gate" fingerprint --repo "$repo" --pr "$pr")" || undo
 if ! jq -e --arg fp "$gate_fingerprint" '.status == "fingerprint" and .fingerprint == $fp' <<<"$fingerprint" >/dev/null; then
     undo
 fi
