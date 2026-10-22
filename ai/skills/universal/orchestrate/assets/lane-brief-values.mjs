@@ -3,7 +3,9 @@
 // prose is accepted as an input.
 import { readFileSync } from 'node:fs'
 import { Refusal, requireId } from '../../dev-flow-support/assets/run-record.mjs'
-import { pathMatches } from '../../dev-flow-support/assets/plan-revise.mjs'
+import { pathMatches, effectiveFence, mayOverlap } from '../../dev-flow-support/assets/plan-revise.mjs'
+
+export { effectiveFence } from '../../dev-flow-support/assets/plan-revise.mjs'
 
 const FACT_TEXT = ['worktree_path', 'harness', 'harness_text', 'effort', 'codex_model_id', 'codex_launch_flags',
   'scratch_dir', 'repo_tier', 'gate_bounds_override', 'gate_commands', 'git_sandbox_note',
@@ -29,28 +31,6 @@ export function validateFacts(facts) {
       }
     }
   }
-}
-
-export function effectiveFence(lane) {
-  return [...lane.fence.map((item) => typeof item === 'string' ? { path: item } : item),
-    ...lane.expansions.map((entry) => ({ path: entry.path, note: `expansion ${entry.at}: ${entry.reason}` }))]
-}
-
-// Literal-vs-pattern matching uses the existing fence matcher. Two globs with
-// disjoint literal prefixes are provably disjoint; otherwise fail closed rather
-// than claim disjointness from the files that happen to exist today.
-function mayOverlap(left, right) {
-  const uncertain = (pattern) => pattern.split('/').some((part) => part.includes('\\') || (part.includes('[') && /[*?]/.test(part)))
-  if (uncertain(left) || uncertain(right)) return true
-  const glob = (pattern) => /[*?]/.test(pattern)
-  if (!glob(left)) return pathMatches(left, right)
-  if (!glob(right)) return pathMatches(right, left)
-  const a = left.split('/'), b = right.split('/')
-  for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
-    if (glob(a[i]) || glob(b[i])) return true
-    if (a[i] !== b[i]) return false
-  }
-  return true
 }
 
 export function assertDisjointFences(plan, lane) {

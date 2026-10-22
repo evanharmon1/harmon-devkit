@@ -348,5 +348,163 @@ expect_refused "slate held by another session" "slate s7 is locked by session al
     pr "$repo7" bob s7 --new-base "$moved" --at 2026-01-01T02:00:00Z
 pass "plan writes take the slate lock and refuse while another session holds the work"
 
+# Decision writers exercise the public CLI and canonical bytes in isolated repos.
+node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
+import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const [assets, tmp] = process.argv.slice(2)
+process.argv[1] = tmp
+const reviser = join(assets, 'plan-revise.mjs'), writer = join(assets, 'run-record.mjs')
+const { mayOverlap, effectiveFence } = await import(reviser)
+assert.equal(mayOverlap('src/a.js', 'src/**'), true)
+assert.equal(mayOverlap('src/a*.js', 'docs/**'), false)
+assert.equal(mayOverlap('src/a*.js', 'src/b*.js'), true) // conservative
+assert.deepEqual(effectiveFence({ fence: ['a'], expansions: [] }), [{ path: 'a' }])
+const policy = {
+  rigor: 'deep', rigor_source: 'fixture',
+  caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
+  breadth: { max_agent_runs: 10, max_parallel_agents: 3 }, strategy: 'plan', strategy_source: 'fixture',
+  role_tiers: { orchestrator: 'apex', implementer: 'frontier', challenger: 'apex', reviewer: 'frontier', integrator: 'economy' }, operator_pins: [],
+}
+function addition(n, path = `area${n}/**`, wave = n) {
+  return {
+    issue: { number: n, title: `Issue ${n}`, url: `https://example.test/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
+    lane: { lane: `l${n}`, issue: n, wave, branch: `issue-${n}`, run_id: `run-${n}`, fence: [{ path }], expansions: [] },
+    profile: { lane: `l${n}`, policy },
+  }
+}
+function content(base, additions) {
+  return { base_sha: base, policy, dispatcher: { kind: 'interactive', parallel_cap: 3, foreman_max_parallel: null },
+    issues: additions.map((a) => a.issue), lanes: additions.map((a) => a.lane), lane_profiles: additions.map((a) => a.profile),
+    waves: additions.map((a) => ({ number: a.lane.wave, issues: [a.issue.number] })), overlaps: [] }
+}
+let serial = 0
+function fixture(issues = '1,2,3,4,5') {
+  const repo = join(tmp, `decisions-${++serial}`)
+  mkdirSync(repo)
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  git('init', '-q', '-b', 'main')
+  git('-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base')
+  const root = join(repo, '.git/dev-flow-v2'), canonical = join(root, 'slates/s/plan.json')
+  const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issues], { cwd: repo, encoding: 'utf8' }).trim()
+  const plan = content(git('rev-parse', 'HEAD'), [addition(1)])
+  let calls = 0
+  function call(command, { input, flags = [], ownerToken = token, at = '2026-10-22T12:00:00Z' } = {}) {
+    const inputArgs = []
+    if (input !== undefined) {
+      const file = join(repo, `input-${++calls}.json`)
+      writeFileSync(file, JSON.stringify(input))
+      inputArgs.push('--input', file)
+    }
+    return spawnSync(process.execPath, [reviser, command, '--slate', 's', '--session', 'owner',
+      ...(ownerToken === null ? [] : ['--owner-token', ownerToken]), '--reason', 'verified operator decision', '--at', at, ...inputArgs, ...flags], { cwd: repo, encoding: 'utf8' })
+  }
+  function ok(command, options) {
+    const r = call(command, options)
+    assert.equal(r.status, 0, `${command}: ${r.stderr}`)
+    const doc = JSON.parse(readFileSync(canonical))
+    const validation = spawnSync(process.execPath, [join(assets, 'validate-result-schemas.mjs'), 'plan', canonical], { encoding: 'utf8' })
+    assert.equal(validation.status, 0, validation.stderr)
+    return doc.revisions.at(-1).plan
+  }
+  function refuse(command, options, message) {
+    const before = existsSync(canonical) ? readFileSync(canonical, 'utf8') : null
+    const r = call(command, options)
+    assert.equal(r.status, 1, `${command} expected refusal: ${r.stderr}`)
+    assert.match(r.stderr, message)
+    assert.equal(existsSync(canonical) ? readFileSync(canonical, 'utf8') : null, before, 'refusal mutated canonical plan')
+  }
+  return { repo, root, canonical, token, plan, ok, refuse }
+}
+const a = fixture('1')
+a.refuse('genesis', { input: a.plan, ownerToken: null }, /requires --owner-token/)
+a.refuse('genesis', { input: a.plan, ownerToken: 'wrong' }, /owner token does not match/)
+a.refuse('genesis', { input: content(a.plan.base_sha, [addition(2)]) }, /outside the lock reservation/)
+const unlocked = fixture()
+execFileSync(process.execPath, [writer, 'lock', 'release', '--slate', 's', '--session', 'owner', '--owner-token', unlocked.token], { cwd: unlocked.repo })
+unlocked.refuse('genesis', { input: unlocked.plan }, /lock acquire/)
+assert.equal(existsSync(join(unlocked.root, 'locks/s.json')), false, 'genesis acquired a lock')
+a.ok('genesis', { input: a.plan })
+a.refuse('genesis', { input: a.plan }, /already has a plan/)
+a.refuse('add-issue', { input: { issue: addition(2).issue, lane: addition(2).lane } }, /complete resolved profile/)
+let current = a.ok('add-issue', { input: addition(2) })
+assert.deepEqual(current.lane_profiles.find((p) => p.lane === 'l2'), addition(2).profile)
+assert.deepEqual(JSON.parse(readFileSync(join(a.root, 'locks/s.json'))).issues, [1, 2])
+a.refuse('add-issue', { input: addition(2) }, /already exists/)
+a.refuse('expand', { flags: ['--lane', 'missing', '--path', 'free.txt'] }, /unknown receiving live lane/)
+a.refuse('expand', { flags: ['--lane', 'l1', '--path', 'area2/deep/file.js'] }, /another live lane l2/)
+a.refuse('expand', { flags: ['--lane', 'l1', '--path', 'free.txt'], at: '2026-10-21T00:00:00Z' }, /precedes revision/)
+current = a.ok('expand', { flags: ['--lane', 'l1', '--path', 'free.txt'] })
+assert.deepEqual(current.lanes[0].fence, a.plan.lanes[0].fence)
+assert.deepEqual(current.lanes[0].expansions, [{ path: 'free.txt', at: '2026-10-22T12:00:00Z', reason: 'verified operator decision' }])
+a.refuse('expand', { flags: ['--lane', 'l1', '--path', 'free.txt'] }, /already covered/)
+// A retirement input cannot smuggle replacement original fences.
+a.refuse('done', { input: { lanes: [{ ...current.lanes[1], fence: ['replacement'] }] }, flags: ['--issue', '1'] }, /original fences are immutable/)
+a.refuse('release', { flags: ['--issue', '1', '--lane', 'l2', '--path', 'not-owned.txt'] }, /outside finished lane/)
+current = a.ok('release', { flags: ['--issue', '1', '--lane', 'l2', '--path', 'free.txt'] })
+assert.equal(current.issues[0].verdict, 'done')
+assert.equal(current.lanes.length, 1)
+assert.deepEqual(current.lanes[0].fence, addition(2).lane.fence)
+assert.equal(current.lanes[0].expansions[0].path, 'free.txt')
+a.refuse('done', { flags: ['--issue', '1'] }, /no live source lane/)
+current = a.ok('done', { flags: ['--issue', '2'] })
+assert.deepEqual(current.lanes, [])
+assert.deepEqual(current.waves, [])
+assert.deepEqual(current.lane_profiles, [])
+console.log('  PASS: genesis, add-issue, expand, release and done publish validated chains and refuse invalid decisions')
+// Both genesis and add-issue refuse cross-wave glob intersections without a
+// recorded decision; exact-string schema validation alone would accept these.
+const b = fixture()
+const glob = addition(2, 'area1/deep/file.js')
+b.refuse('genesis', { input: content(b.plan.base_sha, [addition(1), glob]) }, /unresolved overlap/)
+b.ok('genesis', { input: b.plan })
+b.refuse('add-issue', { input: glob }, /unresolved overlap/)
+const fenceOnly = addition(2)
+fenceOnly.lane.fence = [{ path: 'area1/deep/file.js' }]
+b.refuse('add-issue', { input: fenceOnly }, /unresolved effective fence overlap/)
+const ambiguous = addition(2, 'area1/*.js')
+b.refuse('add-issue', { input: ambiguous }, /unresolved overlap/)
+const recorded = addition(2, 'area1/deep/file.js')
+recorded.overlaps = [{ issue_a: 2, issue_b: 1, resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }]
+b.refuse('add-issue', { input: recorded }, /needs a shared candidate entry/)
+console.log('  PASS: glob-covered and cross-wave collisions fail closed beyond exact schema comparisons')
+// Resolutions provide choices; the writer computes all intersection paths and
+// canonical issue ordering even when input issues/decisions are reversed.
+const c = fixture()
+const one = addition(1, 'shared.txt', 1), two = addition(2, 'shared.txt', 2)
+const shared = content(c.plan.base_sha, [two, one])
+shared.overlaps = [{ issue_a: 2, issue_b: 1, paths: ['invented.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }]
+current = c.ok('genesis', { input: shared })
+assert.deepEqual(current.overlaps, [{ issue_a: 1, issue_b: 2, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }])
+const three = addition(3, 'shared.txt', 3)
+three.overlaps = [1, 2].map((n) => ({ issue_a: 3, issue_b: n, resolution: 'split', merge_dependency: { before: n, after: 3 } }))
+current = c.ok('add-issue', { input: three })
+assert.equal(current.overlaps.length, 3)
+c.refuse('release', { flags: ['--issue', '1', '--lane', 'l2', '--path', 'shared.txt'] }, /another live lane l3/)
+current = c.ok('done', { flags: ['--issue', '1'], input: { waves: [{ number: 1, issues: [2] }, { number: 2, issues: [3] }] } })
+assert.equal(current.issues.find((i) => i.number === 1).verdict, 'done')
+console.log('  PASS: complete pairwise intersections, canonical pairs and wave decisions are recorded')
+const d = fixture()
+d.ok('genesis', { input: d.plan })
+current = d.ok('done', { flags: ['--issue', '1'], input: { addition: addition(2), releases: [{ lane: 'l2', paths: ['area1/file.js'] }], waves: [{ number: 1, issues: [2] }] } })
+assert.equal(current.lanes[0].expansions.length, 0)
+assert.equal(current.lanes[0].fence.at(-1).path, 'area1/file.js')
+const e = fixture()
+e.ok('genesis', { input: content(e.plan.base_sha, [addition(1), addition(2)]) })
+current = e.ok('done', { flags: ['--issue', '1'], input: { releases: [{ lane: 'l2', paths: ['area1/file.js'] }] } })
+assert.equal(current.lanes[0].expansions[0].path, 'area1/file.js')
+console.log('  PASS: retirement releases to an existing receiver append expansions; a new receiver gets its original fence')
+// Try to introduce a lane reusing an existing run with a changed original
+// fence. The candidate validator must reject without changing canonical bytes.
+const f = fixture()
+f.ok('genesis', { input: f.plan })
+const reuse = addition(2)
+reuse.lane.run_id = 'run-1'
+f.refuse('add-issue', { input: reuse }, /immutable|duplicate run_id|remain bound/)
+console.log('  PASS: immutable original fences and run bindings survive candidate publication')
+NODE
+
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
 echo "test-plan-revise: all cases passed"
