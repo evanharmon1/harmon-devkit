@@ -93,7 +93,9 @@ chmodSync(join(bin,'gitleaks'),0o755);
 const runID = 'run-1-evidence-test';
 const active = command('bash', [monitor, 'active-path', '--branch', 'test', '--repo-root', repo]);
 const state = command('bash', [monitor, 'state-path', '--run-id', runID, '--repo-root', repo]);
-command('bash', [monitor, 'activate', '--active-state', active, '--run-id', runID, '--branch', 'test', '--expected-generation', '0', '--registry-revision', head, '--writer', 'feature-owner', '--repo-root', repo]);
+command('bash', [monitor, 'activate', '--active-state', active, '--run-id', runID, '--branch', 'test',
+  '--expected-predecessor', 'absent', '--expected-generation', '0', '--registry-revision', head,
+  '--writer', 'feature-owner', '--repo-root', repo]);
 const run = join(dirname(state), 'run.json');
 mkdirSync(join(dirname(run), 'adjudications'));
 mkdirSync(join(dirname(run), 'passes'));

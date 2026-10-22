@@ -77,7 +77,17 @@ function provision(args) {
     const revision = git(['log', '-1', '--format=%H', plan.base_sha, '--', ':(top)agent-registry.json'])
     if (!/^[0-9a-f]{40}$/.test(revision)) throw new Refusal('plan base has no governing registry revision')
     const active = monitor(['active-path', '--branch', lane.branch])
-    if (existsSync(active)) throw new Refusal(`branch ${lane.branch} already has an active pointer; inspect before provisioning`)
+    const activationOutput = monitor(['check-activation', '--branch', lane.branch, '--run-id', lane.run_id])
+    let activationPredecessor
+    try {
+      activationPredecessor = JSON.parse(activationOutput)
+    } catch {
+      throw new Refusal('activation preflight returned an invalid predecessor snapshot')
+    }
+    if (!activationPredecessor || activationPredecessor.run_id !== null || activationPredecessor.generation !== 0 ||
+        existsSync(active)) {
+      throw new Refusal(`branch ${lane.branch} already has an active pointer; inspect terminal pointers with run-record.mjs prune --dry-run before provisioning`)
+    }
     const directory = monitor(['orchestrator-dir', '--slate-id', slate, '--run-id', lane.run_id, '--nonce', args.nonce])
     if (existsSync(directory)) throw new Refusal('orchestrator attempt directory already exists')
     const generation = 1
@@ -96,7 +106,8 @@ function provision(args) {
     acquireSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
     laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
-      '--expected-generation', '0', '--registry-revision', revision, '--writer', 'feature-owner'])
+      '--expected-predecessor', 'absent', '--expected-generation', '0',
+      '--registry-revision', revision, '--writer', 'feature-owner'])
     if (activated !== String(generation)) throw new Refusal('activation generation differs from the validated brief')
     const state = monitor(['state-path', '--run-id', lane.run_id])
     monitor(['reserve-agent-run', '--state', state, '--event', `dispatch-${lane.lane}-${args.nonce}`,

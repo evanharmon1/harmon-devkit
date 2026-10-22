@@ -125,8 +125,10 @@ function refusal(f, pattern, file = command, args = f.args()) {
   const before = snapshot(f.root)
   const result = spawnSync(process.execPath, [file, ...args], { cwd: f.repo, encoding: 'utf8' })
   assert.equal(result.status, 1, `expected refusal, got ${result.status}: ${result.stderr}`)
-  assert.match(result.stderr, pattern)
+  assert.match(result.stderr, pattern,
+    `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)})`)
   assert.deepEqual(snapshot(f.root), before, 'refusal changed durable record tree')
+  assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
 }
 
@@ -213,6 +215,29 @@ git(unwidened.repo, 'switch', '-q', '-c', 'lane-two')
 unwidened.facts.claim_handoff.branch = 'lane-two'; unwidened.saveFacts()
 refusal(unwidened, /outside the reserved scope/, command, unwidened.args('l2'))
 console.log('PASS: unreserved added lane is refused with byte-unchanged durable record tree')
+
+const deferredProvision = fixture()
+const monitor = join(assets, 'dev-flow-monitor.sh')
+const deferredRun = 'run-deferred-provision'
+const deferredBranch = 'lane-one'
+const deferredHead = git(deferredProvision.repo, 'rev-parse', 'HEAD')
+const activeState = execFileSync('bash', [monitor, 'active-path', '--branch', deferredBranch,
+  '--repo-root', deferredProvision.repo], { encoding: 'utf8' }).trim()
+execFileSync('bash', [monitor, 'activate', '--active-state', activeState,
+  '--run-id', deferredRun, '--branch', deferredBranch, '--expected-predecessor', 'absent',
+  '--expected-generation', '0',
+  '--registry-revision', deferredHead, '--writer', 'feature-owner', '--repo-root', deferredProvision.repo],
+{ stdio: 'ignore' })
+const monitorState = execFileSync('bash', [monitor, 'state-path', '--run-id', deferredRun,
+  '--repo-root', deferredProvision.repo], { encoding: 'utf8' }).trim()
+execFileSync('bash', [monitor, 'reserve', '--state', monitorState, '--event', 'evt-provision',
+  '--action', 'push', '--expected-head', deferredHead, '--writer', 'feature-owner',
+  '--active-state', activeState, '--run-id', deferredRun, '--branch', deferredBranch,
+  '--generation', '1', '--repo-root', deferredProvision.repo], { stdio: 'ignore' })
+writeFileSync(join(monitorState, '..', 'run.json'),
+  JSON.stringify({ schema: 2, run_id: deferredRun, outcome: 'abandoned' }))
+refusal(deferredProvision, /activation refused:.*run-deferred-provision.*evt-provision.*cancel --state/)
+console.log('PASS: provision-lane uses the shared activation guard for a deferred terminal reservation')
 
 // Reservation widening precedes publishing the added-lane revision (#1410).
 node(f.repo, writer, ['lock', 'acquire', '--slate', 'other', '--session', 'other', '--issues', '2'])
