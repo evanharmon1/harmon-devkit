@@ -321,7 +321,8 @@ recorded prompts as unattended.
    rendered the trajectory's adjudication details (harmon-devkit#1382), so an
    empty section means "nothing was disclosed", never "nothing was
    overridden". Say which you mean in the retro.
-6. `### Interventions` — every human touchpoint, with the stage it interrupted.
+6. `### Interventions` — human touchpoints plus answered prompts (kind `prompt`),
+   with the stage each interrupted.
 7. `### Deferred findings settled` — each settled deferral with the finder slug
    recovered from its finding id (`<stage>-r<round>-<finder>-<n>`, the slugs
    `agent-registry.json` `finders[]` declares).
@@ -350,9 +351,9 @@ most of the signal:
   AGENTS.md's round-2 scaffolding checkpoint exists to catch. If the trajectory
   shows it, the improvement cites that stage, its convergence policy or skill,
   and this run id.
-- **Interventions.** Each one is a place the run could not proceed unattended,
-  and the closed-cohort success metric counts them. Ask what would have had to
-  be true for each not to happen.
+- **Interventions.** `interventions[]` holds human touchpoints plus answered
+  prompts (kind `prompt`). The success metric never counts kind `prompt`. Ask
+  what would have had to be true for each touchpoint or prompt not to happen.
 - **Integrity.** A forged-author or orphan comment is a finding about the
   evidence protocol, not a footnote.
 

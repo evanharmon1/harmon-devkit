@@ -1601,6 +1601,31 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     ! contains "$OUT" 'reached its outcome unattended' &&
     ok "three prompts retain decisions and commands beside stage interventions" || bad "prompt report failed: $RC $ERR $OUT"
 
+echo "==> per-stage JSON interventions project details without chain metadata"
+node --input-type=module - "$d/trajectory.json" <<'NODE'
+import fs from 'node:fs'
+const file = process.argv[2]
+const trajectory = JSON.parse(fs.readFileSync(file, 'utf8'))
+trajectory.interventions = trajectory.interventions.map((entry, seq) => ({
+  ...entry, seq, prev_digest: `previous-${seq}`, digest: `digest-${seq}`
+}))
+fs.writeFileSync(file, JSON.stringify(trajectory))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+if [ "$RC" -eq 0 ] && node -e '
+  const report = JSON.parse(process.argv[1])
+  const entries = report.measurements.stages.flatMap(stage => stage.interventions)
+  const top = report.measurements.interventions
+  if (entries.length !== 3 || entries.some((entry, index) =>
+    ["seq", "prev_digest", "digest"].some(key => Object.hasOwn(entry, key)) ||
+    JSON.stringify(entry) !== JSON.stringify(top[index]))) process.exit(1)
+' "$OUT"; then
+    ok "stage entries retain projected prompt details and omit all chain fields"
+else
+    bad "stage projection leaked metadata or lost details: $RC $ERR $OUT"
+fi
+
 echo "==> class/provenance is attributed to the one stage that found anything"
 d="$TMPROOT/onestage"
 mkdir -p "$d"

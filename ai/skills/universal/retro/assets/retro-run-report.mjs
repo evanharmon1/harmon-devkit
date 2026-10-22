@@ -1087,7 +1087,13 @@ function measure(trajectory, policy) {
       .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null }))
     const stageInterventions = interventions
       .filter((entry) => stageAt(transitions, entry.at) === stage)
-      .map((entry) => ({ ...entry }))
+      .map((entry) => ({
+        at: entry.at,
+        kind: entry.kind,
+        stage: stageAt(transitions, entry.at),
+        note: entry.note,
+        ...(entry.kind === 'prompt' ? { decision: entry.decision, command: entry.command, answered_by: entry.answered_by ?? null } : {})
+      }))
     // Unlike challenge/review, the review skill posts no evidence marker for
     // integration passes, so local evidence can never authenticate a round,
     // pass, or finding count here. Disclose that plainly instead of a count
