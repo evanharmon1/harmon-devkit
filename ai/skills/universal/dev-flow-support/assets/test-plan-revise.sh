@@ -569,6 +569,27 @@ strings.lane.fence = ['area2/**']
 current = malformed.ok('add-issue', { input: strings })
 assert.deepEqual(current.lanes[1].fence, ['area2/**'])
 console.log('  PASS: malformed decision paths exit 2 with the named field, preserving string and object fence support')
+// Challenge r2: source ownership must never interpret a bracket-class glob.
+for (const command of ['release', 'done']) {
+  for (const [source, path] of [['src/[ab]*.js', 'src/[ab]evil.js'], ['src/**', 'src/[ab]*.js']]) {
+    const guarded = fixture('1')
+    guarded.ok('genesis', { input: content(guarded.plan.base_sha, [addition(1, source)]) })
+    const before = readFileSync(join(guarded.root, 'locks/s.json'), 'utf8')
+    const input = { addition: addition(2, 'other/**', 1) }
+    const flags = ['--issue', '1']
+    if (command === 'release') flags.push('--lane', 'l2', '--path', path)
+    else input.releases = [{ lane: 'l2', paths: [path] }]
+    guarded.refuse(command, { input, flags }, /needs orchestrator judgment/)
+    assert.equal(readFileSync(join(guarded.root, 'locks/s.json'), 'utf8'), before, 'uninterpretable release changed the lock')
+  }
+}
+const literalBracket = fixture('1')
+literalBracket.ok('genesis', { input: content(literalBracket.plan.base_sha, [addition(1, 'src/**')]) })
+current = literalBracket.ok('release', { input: { addition: addition(2, 'other/**', 1) },
+  flags: ['--issue', '1', '--lane', 'l2', '--path', 'src/[id]/page.js'] })
+assert.equal(current.lanes[0].fence.at(-1).path, 'src/[id]/page.js')
+console.log('  PASS: release and done refuse uninterpretable source/request patterns without plan or lock changes; literal brackets remain supported')
+
 
 NODE
 

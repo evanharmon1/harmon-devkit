@@ -403,6 +403,8 @@ function expandLane(plan, laneName, paths, at, reason, { source, fresh = false }
     throw new Refusal('at least one nonempty path is required')
   }
   for (const path of paths) {
+    const uncertain = source && [path, ...fencePaths(source)].find(uninterpretable)
+    if (uncertain) throw new Refusal(`pattern needs orchestrator judgment (not matched here): ${uncertain}`)
     if (source && !effectiveFence(source).some((item) => path === item.path || (!/[*?]/.test(path) && pathMatches(path, item.path)))) {
       throw new Refusal(`released path ${path} is outside finished lane ${source.lane}'s effective fence`)
     }
