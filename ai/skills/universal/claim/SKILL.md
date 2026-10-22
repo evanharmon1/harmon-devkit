@@ -462,6 +462,12 @@ worked there. The claim's identity signal is the **`claim:*` label**; never
 write `Agent`, and never treat a `suggest:*` label as a claim (it is advice,
 not ownership).
 
+**An issue carrying `needs-review` is awaiting human review.** Report that
+state and stop for confirmation before claiming it; pulling work back from
+review is an escalation, just like an issue assigned to someone else, rather
+than a routine claim authorized by this invocation. It is a review marker,
+not ownership evidence or permission to remove another session's claim.
+
 **An existing `claim:*` label — or a legacy `agent:*` label, during the rolling
 transition — naming a *different* agent is a `blocker`.** That one is a live
 claim, and adding a second owner's label would leave the issue claiming two.

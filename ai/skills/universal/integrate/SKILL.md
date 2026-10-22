@@ -2720,7 +2720,8 @@ that loops indefinitely:
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
-   **Release the chain-owned `claim:*` labels** as part of this stop: the labels assert an
+   **Add `needs-review` and release the chain-owned `claim:*` labels** in the
+   same ready-for-review handoff step: the labels assert an
    agent is implementing the issue *right now*, which becomes false the
    moment the work is handed to a human — leaving it is the misleading claim
    state harmon-devkit#210 exists to remove. Remove them only when they are
@@ -2735,22 +2736,32 @@ that loops indefinitely:
    below; do not infer either one:
 
    ```sh
-   gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
+   gh issue edit <n> --repo "$repo" --add-label needs-review --remove-label <the label the claim record names>
    gh issue edit <n> --repo "$repo" --remove-label <the model label the claim record names, when present>
    ```
 
-   If the record is missing or unreadable, leave the labels and say so in the
-   report instead of guessing. Skip a recorded label that is already absent.
+   If the record is missing or unreadable, add `needs-review`, leave the claim
+   labels, and report the unverified claim-label cleanup instead of guessing.
+   Add `needs-review` even when every recorded
+   claim label is already absent; skip only the absent label removals. Require
+   the label writes to succeed and re-read the issue to confirm `needs-review`
+   is present and the chain-owned claim labels are absent before reporting
+   that the handoff markers are settled.
    Do **not** post a release comment — the claim
    as a whole is still live (assignee) until the close event or
    `/wrap` releases it; only the label's "right now" assertion has expired.
    And the release is not one-way: if review activity later pulls integration
-   back into §5 fix rounds, **re-add the label first** (same guard — the
-   record said the claim added it), because "implementing right now" has
-   become true again and coordination checks read the label as exactly that.
-   Report the release in the ready summary naming the exact label removed, e.g.
-   `released claim:claude — ready for review, awaiting the maintainer; the close
-   event releases the rest.`
+   back into §5 fix rounds, **remove `needs-review` in the same step that
+   re-adds the chain-owned claim labels first** (same guard — the record said
+   the claim added them). Use `gh issue edit <n> --repo "$repo"
+   --remove-label needs-review --add-label <the label the claim record names>`
+   and restore the distinct recorded model label when present; require success
+   and re-read the issue to confirm the marker transition before resuming fixes.
+   "Implementing right now" has become true again and coordination checks read
+   the claim label as exactly that.
+   Report both marker changes in the ready summary naming the exact labels, e.g.
+   `added needs-review; released claim:claude — ready for review, awaiting the
+   maintainer; the close event releases the rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator
