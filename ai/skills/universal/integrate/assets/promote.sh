@@ -3,7 +3,8 @@
 # readiness-gate.sh remains read-only. No retry of the ready mutation is allowed.
 # Exit codes: 0 promoted and recorded; 10 gate failed (no mutation);
 # 11 indeterminate/invalid inputs/missing sibling (no mutation);
-# 12 already non-draft with this head recorded (no mutation; caller audits); 13 mismatch/writer refusal, undone;
+# 12 already non-draft and a promotion is recorded for the requested head;
+# no mutation, caller audits the current head. 13 mismatch/writer refusal, undone;
 # 14 remote state unknown after one undo; 15 ready command failed, undone.
 # 16 owner-check refused before mutation; 17 unrecorded non-draft promotion
 # (no mutation; caller uses unexplained-promotion reconciliation).

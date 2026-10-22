@@ -33,7 +33,8 @@
 # "does this head independently pass everything else" for a PR somebody
 # already promoted — §2's unexplained-promotion reconcile branch and §6's
 # already-non-draft audit run it instead of hand-rolling the evidence — and
-# its pass never authorizes `gh pr ready`; only a passing `check` does.
+# its pass never authorizes promotion. A passing `check` is promote.sh's
+# precondition; promote.sh is the only promotion path.
 # `fingerprint` recomputes the same five-surface content fingerprint with no
 # gate attached — it is the post-promotion read the caller compares against
 # `check`'s value.

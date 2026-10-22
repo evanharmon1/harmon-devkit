@@ -2595,8 +2595,9 @@ that loops indefinitely:
    that cannot be established, stop blocked and leave the PR draft; reconfigure
    the automation rather than promoting speculatively.
 
-   Invoke the sibling command from the foreground turn, with the same
-   resolved gate inputs and the run's existing owner identity:
+   Run the sibling command in the background, or under a supervisor, with a
+   timeout at or above the documented bound (including gate/runtime overhead).
+   Use the same resolved gate inputs and the run's existing owner identity:
 
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/promote.sh \
@@ -2624,7 +2625,9 @@ that loops indefinitely:
    The pre-mutation gate is bounded by its own per-read limits. Callers must
    allow at least 640s after that gate completes and add gate/runtime overhead
    to their tool timeout. A run killed
-   before it exits is treated as exit 14 (remote state unknown).
+   before it exits is treated as exit 14 (remote state unknown). Re-run the
+   command on resumption: if promotion landed, exit 17 routes an unrecorded
+   promotion to reconciliation, or exit 12 routes a recorded promotion to audit.
 
    The command runs check → ready (exactly once) → scalar read → fingerprint
    → head re-read → record. Both scalar reads require an open PR, the expected
@@ -2637,7 +2640,8 @@ that loops indefinitely:
 
    Exit codes: **0** promoted and recorded; **10** gate failed, no ready
    mutation; **11** indeterminate, invalid inputs or missing sibling package, no ready mutation;
-   **12** already non-draft with this exact head recorded, no mutation (audit below);
+   **12** already non-draft and a promotion is recorded for the requested head,
+   no mutation; audit the current head (below);
    **13** mismatch or writer refusal, undone and confirmed draft;
    **14** remote state unknown after one undo; **15** ready command failed,
    undone and confirmed draft; **16** slate owner validation refused before
@@ -2716,8 +2720,8 @@ that loops indefinitely:
    result, and `Next` with human review followed by the maintainer's merge
    decision.
 
-   If the PR was already non-draft and run.json records promotion for this
-   exact head (exit 12), promotion is idempotently complete
+   If the PR was already non-draft and run.json records promotion for the
+   requested head (exit 12), no mutation was performed
    and `gh pr ready` must not be called again. Audit the existing handoff on
    the current head with the same script's `audit` mode —
    `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh audit …`, the identical
