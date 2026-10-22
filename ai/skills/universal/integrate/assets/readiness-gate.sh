@@ -42,8 +42,9 @@
 #   0  pass — every condition held; fingerprint and cycle_evidence are on stdout
 #   1  fail — a readiness condition is definitively not met
 #   2  indeterminate — a fetch failed, data is malformed, GitHub has not
-#      populated an answer yet, or the arguments are unusable. Unknown never
-#      passes: 2 is "re-poll or reconcile", never "promote".
+#      populated an answer yet, the arguments are unusable, or the checkout is
+#      stale. Unknown never passes: 2 is "re-poll or reconcile", never
+#      "promote".
 #
 # `check` emits one JSON line naming the decisive condition. This list is the
 # contract a caller reads to know which conditions it must handle, so it is
@@ -54,13 +55,13 @@
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing, checks-pending                          (fail)
 #   changes-requested, merge-state-dirty                    (fail)
-#   behind-base, base-retargeted                            (fail)
+#   behind-base, base-retargeted                              (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled, closing-linkage-missing,
 #   content-moved                                            (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
-#   codex-quota-exhausted, finder-quota-exhausted,          (fail)
+#   codex-quota-exhausted, finder-quota-exhausted             (fail)
 #   finder-not-clean, finder-pr-not-open,                   (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
 #   evidence-marker-missing, remediation-capped,            (fail)
@@ -69,7 +70,9 @@
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
-#   behind-base-unknown, merge-state-stale,
+#   behind-base-unknown, asset-freshness-unknown,
+#   codex-asset-freshness-unknown, finder-asset-freshness-unknown,
+#   merge-state-stale,
 #   integration-exit-indeterminate, integration-record-unbound,
 #   checker-fast-path-unavailable, usage                     (indeterminate)
 #
@@ -302,6 +305,9 @@ elif command -v gtimeout >/dev/null 2>&1; then
 else
     printf 'readiness-gate: no GNU timeout (coreutils; gtimeout on macOS) — network calls are unbounded\n' >&2
 fi
+
+# shellcheck source=asset-freshness.sh
+. "$script_dir/asset-freshness.sh"
 
 command_name="${1:-}"
 [ -n "$command_name" ] || usage
@@ -605,6 +611,9 @@ exit_condition() {
         # the reason named, and the caller repeats the READ.
         indeterminate "${ec_prefix}-transient-read" "$ec_subject exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
         ;;
+    19)
+        indeterminate "${ec_prefix}-asset-freshness-unknown" "$ec_subject exited 19: its result came from a stale asset checkout and cannot establish anything about the PR — update this checkout to the PR base or newer (fetch and fast-forward), then rerun the pass"
+        ;;
     2)
         # Review round 3, finding `review-r3-codex-verification-4` (confirmed
         # P3): 2 was the LAST documented code still falling to the catch-all,
@@ -685,6 +694,13 @@ run_gh() {
     else
         gh "$@"
     fi
+}
+
+asset_freshness_check() {
+    if check_vendored_asset_freshness "$pr" "$repo" "$script_dir" "$timeout_bin"; then
+        return 0
+    fi
+    indeterminate asset-freshness-unknown "$asset_freshness_detail"
 }
 
 # ---- Fingerprint components (ported from SKILL.md §6's promo_fp recipe) ----
@@ -855,6 +871,12 @@ recheck_codex_freshness() {
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "live Codex check does not confirm terminal-clean evidence (check-codex-cloud-review.sh exited $codex_recheck_exit) — resolve the checker-reported condition before gating: $codex_recheck_output"
 }
+
+# Fingerprinting only recomputes PR-content identity; it carries no verdict.
+# A stale checkout must not invalidate a post-promotion content comparison.
+if [ "$command_name" != fingerprint ]; then
+    asset_freshness_check
+fi
 
 # `behind` is the read-only preflight the reserved-cycle rule needs. Before
 # dispatching the last permitted review cycle an integrator must know whether

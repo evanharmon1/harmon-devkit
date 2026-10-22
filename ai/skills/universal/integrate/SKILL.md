@@ -47,6 +47,22 @@ tree and in a consumer's flattened `.claude/skills/` one:
 A missing sibling package is a blocker, not a fallback: vendor the `universal`
 category as a unit rather than resolving a runtime path some other way.
 
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
+The checker and readiness gate share one bounded local comparison of the
+vendored `integrate/assets/` and `dev-flow-support/assets/` tree bytes. A
+checkout is stale only when its `HEAD` is an ancestor of the PR base and those
+bytes differ; a change followed by a revert is current, and a diverged or newer
+checkout is accepted. The check ignores `refs/replace`; a shallow checkout or
+an existing `info/grafts` file makes ancestry indeterminate. A definite stale
+refusal exits 19 from `check-codex-cloud-review.sh`; the readiness gate maps
+it to indeterminate (exit 2) on every verdict-bearing command, so a stale
+checkout is never a fail or evidence about the PR. `fingerprint` carries no
+verdict and skips freshness checking. Compare its output only with a
+fingerprint produced by the same checkout's gate bytes; a stale checkout may
+carry different fingerprint code. If the PR base commit is unavailable
+locally, fetch that commit from the PR's base repository before running the
+checker or gate. Neither script fetches automatically.
+
 **Arguments:** $ARGUMENTS
 
 **Version 2 only.** This skill and its readiness gate
@@ -1018,7 +1034,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     Two kinds never license an undo:
 
     - **Anything the gate could not establish** — every `audit` exit 2,
-      whatever its condition. "I could not determine this" is not "this is
+      whatever its condition. This includes a stale checkout, shallow history,
+      or grafted history: the gate reports `asset-freshness-unknown` with exit
+      2 rather than a determinate stale failure, so this branch reports the
+      blocker and never undoes the promotion. "I could not determine this" is not "this is
       wrong", and reversing a human's handoff on it destroys a real thing over
       an unproven one — while achieving nothing about the harm the
       stay-draft rule guards, because `gh pr ready --undo` cannot unsend the
@@ -1450,6 +1469,15 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     inventing a poller of your own. The agent absorbs the single
     reserve-retry attempt (exit `12`) internally within one dispatch, so you
     should never see `12` at this level.
+  - A checker exit `19` — whether recorded as `codex_cycle.exit_code: 19` or
+    reported with `codex_cycle: null` because a stale `reserve` (including a
+    `carry` that falls through to `reserve`) posted no trigger — is an
+    indeterminate stale-checkout blocker. With `codex_cycle: null`, the
+    integrator posts no trigger; when a cycle exists, it retains exit 19 and
+    posts no further trigger. This blocked result ends the stage like any
+    other blocked result; do not re-dispatch this pass. After updating the
+    asset checkout, the orchestrator can recover by re-entering integration.
+    This is never the remediation-cap stop below.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
     never-integrate-a-closed-PR rule), `15` (the reviewer's code-review
@@ -1493,10 +1521,11 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     different document. Treat that shape as a blocker to escalate, not as a
     cycle to re-drive; a lone 16 between two good reads is still the ordinary
     transient case.
-  - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
-    resolved **remediation** cap is spent and a finding still needs a code
-    fix (see "A resolved remediation cap of 0..." above, which is the
-    zero-cap instance of this same stop). Stop condition 2.
+  - `verdict: "escalate"` with a terminal or null `codex_cycle` for the
+    remediation-cap reason — a finding still needs a code fix and the resolved
+    cap is spent (see "A resolved remediation cap of 0..." above, which is the
+    zero-cap instance of this same stop). A checker exit 19 is the stale-
+    checkout blocker above, never this cap stop. Stop condition 2.
 
   **A badged finding outside an inline thread is settled by this skill, not
   the agent** — the agent never calls `settle` (its brief has no disposition
@@ -2303,8 +2332,9 @@ round. Two consequences follow rather than needing their own procedure:
   as any head move does. **The last permitted cycle is therefore reserved for
   the reconciled head**: before dispatching it, run
   `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
-  (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
-  behind, reconcile first (update-branch, or the fallback) and spend that
+  (read-only; 0 level, 1 behind, 2 could not establish, including a stale
+  checkout) and,
+  if it reports behind, reconcile first (update-branch, or the fallback) and spend that
   cycle on the merged head. Use the
   subcommand rather than a compare call of your own: ref encoding and the
   fail-closed handling of an unreadable comparison live there and are tested

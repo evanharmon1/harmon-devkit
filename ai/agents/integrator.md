@@ -136,6 +136,15 @@ derive every action from this brief and your own reads.
 
 ## 2. Resolve paths
 
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
+The checker and readiness gate compare the relevant asset bytes between their
+checkout and the PR base. A checkout is stale only when its HEAD is an ancestor
+of that base and the bytes differ; shallow checkouts and checkouts with
+`info/grafts` are indeterminate. An unavailable local base is indeterminate,
+and these checks never fetch commits. On a stale refusal, stop and report the
+blocker; only the orchestrator updates the checkout and re-dispatches you. The
+integrator never fetches, fast-forwards, or switches worktrees to recover.
+
 Locate this skill's asset directory (the directory this file's dispatcher
 resolves it from, conventionally `ai/skills/universal/integrate/assets/`) and
 resolve, relative to it:
@@ -548,6 +557,12 @@ carry_out="$("$helper" carry --state "$state" --head "<head>" \
 - **exit 14** — the PR is merged or closed. The stage is over: reserve,
   trigger, and poll nothing, and report `codex_cycle.exit_code: 14`, exactly as
   a `check` that returned 14.
+- **exit 19** — stale checkout, not a carry miss. Stop this pass, post no
+  trigger, and report the blocked envelope shape from §7: `status: "blocked"`,
+  `payload.codex_cycle: null`, and `payload.verdict: "escalate"`. The §9
+  blocker names checker exit 19, the checkout HEAD, and the PR base. Stop; the
+  orchestrator updates the checkout and re-dispatches. The integrator never
+  fetches, fast-forwards, or switches worktrees to recover.
 - **any other exit** — treat as 17 and continue. `carry` is an optimization
   over a cycle you were going to run anyway, so a broken one costs a cycle
   rather than a verdict.
@@ -602,8 +617,8 @@ Three cases, mutually exclusive:
       reserve_exit=0
       "$helper" reserve "${reserve_args[@]}" || reserve_exit=$?
   fi
-  # A second 18 is a blocker; any other non-zero is a refusal. Either way:
-  # post no trigger, codex_cycle null, report it (below).
+  # A second 18 or exit 19 is a blocker; any other non-zero is a refusal. Either
+  # way: post no trigger, report codex_cycle null, and name the blocker below.
   [ "$reserve_exit" -eq 0 ] || exit "$reserve_exit"
   pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
   # Any mismatch: post no trigger, report codex_cycle null.
@@ -670,7 +685,14 @@ Three cases, mutually exclusive:
   time for GitHub to report a just-pushed head. **Exit 18** means GitHub still
   reports a predecessor of `<head>` after that wait and nothing was reserved:
   re-run the same `reserve` once; if it exits 18 again, post no trigger,
-  report `codex_cycle: null`, and report the lag as a blocker (§5). **Exit 2**
+  report `codex_cycle: null`, and report the lag as a blocker (§5). **Exit 19**
+  means the checkout is stale because its HEAD is an ancestor of the PR base
+  and the base contains newer vendored assets. Stop this pass, post no trigger,
+  and report the blocked envelope shape from §7: `status: "blocked"`,
+  `payload.codex_cycle: null`, and `payload.verdict: "escalate"`. The §9
+  blocker names checker exit 19, the checkout HEAD, and the PR base. Stop; the
+  orchestrator updates the checkout and re-dispatches. The integrator never
+  fetches, fast-forwards, or switches worktrees to recover. **Exit 2**
   naming a changed head means the PR moved past the brief's head — rewritten
   or superseded: post no trigger, report `codex_cycle: null` with the
   mismatch as a finding (§5), and stop this section. **Never re-capture the
@@ -720,8 +742,15 @@ Resetting to `0` first means every invocation starts from a known baseline
 and only moves off it when *this* call actually fails.
 
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
-PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
-**12 (retry)**, repeat the
+PR no longer open, 15 quota exhausted, 16 transient read, 19 stale asset
+checkout, 2 indeterminate. On **19 (stale asset checkout)**, stop driving the
+cycle and report a blocked result with `verdict: "escalate"`; retain exit 19
+in `codex_cycle`. The §9 blocker names checker exit 19, the checkout HEAD,
+and the PR base. Stop; the orchestrator updates the checkout and
+re-dispatches. Do not trigger another review. The integrator never fetches,
+fast-forwards, or switches worktrees to recover. Keep the checker's detail in
+the report, not in `codex_cycle`.
+On **12 (retry)**, repeat the
 two-call reserve/read → literal broker trigger (including attach) procedure
 above, including step 1's assignments, then `check`, once more with `--attempt 2` against the **same** state
 and head — this is the one bounded retry your brief expects; do not retry a
@@ -1197,15 +1226,23 @@ finder cycle** is terminal-clean (exit_code 0 with accepted present), and
 `unanswered_thread_roots` and `findings` are both empty; `findings` when
 anything substantive surfaced that the orchestrator has not adjudicated away;
 `pending` when still waiting on CI or the Codex window with nothing else
-outstanding; `escalate` in exactly two cases — when your brief tells you the
-remediation cap is already spent and something still needs a code fix (you
-do not decide the cap is spent yourself), **or** when the Codex cycle ended
-on exit `13` (both attempts timed out) or `2` (indeterminate), independent of
-any cap: `validate-result-schemas.mjs`'s `EXIT_CODE_VERDICT_CONSTRAINTS`
-pairs those two exit codes with `escalate` and nothing else, because either
-way the orchestrator's next move is to stop and reconcile rather than
-re-dispatch, so a timed-out cycle reported under any other verdict fails
-validation instead of returning the escalation evidence §4 promises. Exit
+outstanding; `escalate` when your brief tells you the remediation cap is
+already spent and something still needs a code fix (you do not decide the cap
+is spent yourself); when the Codex cycle ended on exit `13` (both attempts
+timed out) or `2` (indeterminate), independent of any cap; or when it ended
+when the checker returns exit `19` (stale asset checkout), whether or not it
+created a cycle. For exit `19`, follow §4's blocked result: use
+`status: "blocked"` and `payload.verdict: "escalate"`; report
+`payload.codex_cycle: null` when no trigger was posted, or retain
+`payload.codex_cycle.exit_code: 19` when a cycle exists. In either form, the
+§9 blocker names exit 19, the checkout HEAD, and the PR base. The orchestrator
+updates the checkout and re-enters integration; do not re-dispatch this pass.
+`validate-result-schemas.mjs`'
+`EXIT_CODE_VERDICT_CONSTRAINTS` pairs exits `13` and `2` with `escalate` and
+nothing else, because either way the orchestrator's next move is to stop and
+reconcile rather than re-dispatch, so a timed-out cycle reported under any
+other verdict fails validation instead of returning the escalation evidence
+§4 promises. Exit
 `14` (the PR is no longer open) forbids `clean` and `pending` — report
 `findings` (the closed PR is the finding) or `escalate`. Exit `15` (the
 reviewer reported an exhausted usage limit) pairs with `escalate` for the

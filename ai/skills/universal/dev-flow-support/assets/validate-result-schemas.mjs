@@ -998,8 +998,8 @@ function checkIntegratorBlockedStatus(envelope, errors) {
 // OTHER exit code, since "required when" is the only shape if/then can
 // express. `accepted` is evidence of a terminal result, so its presence
 // alongside a non-terminal exit_code (11 pending, 12 retry, 13 escalate,
-// 14 PR no longer open, 15 quota exhausted, 16 transient read,
-// 2 indeterminate) is contradictory and forbidden
+// 14 PR no longer open, 15 quota exhausted, 16 transient read, 19 stale
+// asset checkout, 2 indeterminate) is contradictory and forbidden
 // here, in the validator, the same way "required when" and "forbidden
 // otherwise" are two separate assertions throughout this family.
 function checkCodexCycleAcceptedScope(payload, errors) {
@@ -1030,7 +1030,8 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // documents, which is itself integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
-// indeterminate, plus 15 quota exhausted and 16 transient read.
+// indeterminate, plus 15 quota exhausted, 16 transient read, and 19 stale
+// asset checkout (a blocker that requires updating the local checkout).
 // checkIntegratorCleanVerdict separately requires exit_code
 // 0 (with accepted present) when verdict IS clean — clean implies 0 — but
 // 0 does NOT imply clean: ai/agents/integrator.md §7's own verdict rule
@@ -1088,6 +1089,7 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
   14: { excludes: new Set(['clean', 'pending']) },
   15: { equals: 'escalate' },
   16: { excludes: new Set(['clean', 'escalate']) },
+  19: { equals: 'escalate' },
   2: { equals: 'escalate' }
 }
 
