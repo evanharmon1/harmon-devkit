@@ -196,7 +196,11 @@
           "answered_by": { "enum": ["orchestrator", "human"] }
         },
         "if": { "properties": { "kind": { "const": "prompt" } } },
-        "then": { "required": ["decision", "command"] }
+        "then": { "required": ["decision", "command"] },
+        "else": {
+          "properties": { "kind": {}, "at": {}, "note": {} },
+          "additionalProperties": false
+        }
       }
     },
     "outcome": {

@@ -852,9 +852,6 @@ expect_refused "unknown planned lane" "unknown lane" \
     _ "$repo" "$writer" "$(token_for planned-lane)"
 pass "lane-init creates a receipt-complete owned run, accepts an intervention, and never overwrites"
 
-no_candidates "suite"
-echo "test-run-record: all cases passed"
-
 # -- answered harness approvals (#1529): fresh run, independent of promotion cases --
 new_run run-prompts
 acquire prompt-slate alice --issues 999
@@ -869,13 +866,24 @@ for decision in approved denied; do
 done
 jq -e '(.interventions | length) == 2 and .interventions[0].decision == "approved" and .interventions[1].decision == "denied" and all(.interventions[]; .command == "task verify" and .answered_by == "orchestrator")' \
     "$state/runs/run-prompts/run.json" >/dev/null || fail "prompt fields were not retained"
-for flags in '--decision approved' '--command verify' '--decision unknown --command verify' '--decision denied --command verify --answered-by bot'; do
+for vector in \
+    '--decision approved|--command is required' \
+    '--command verify|--decision must be approved or denied' \
+    '--decision unknown --command verify|--decision must be approved or denied' \
+    '--decision denied --command verify --answered-by bot|--answered-by must be orchestrator or human'; do
+    flags="${vector%%|*}"
+    expected="${vector#*|}"
     # Fixed test vectors only; split intentionally into CLI arguments.
     read -r -a prompt_flags <<<"$flags"
     prompt_rc=0
     prompt_rr intervention --run-id run-prompts --kind prompt --note request "${prompt_flags[@]}" >"$tmp/prompt-refusal" 2>&1 || prompt_rc=$?
     [ "$prompt_rc" -ne 0 ] || fail "invalid prompt accepted: $flags"
+    grep -qF -- "$expected" "$tmp/prompt-refusal" || fail "writer refusal omitted '$expected': $(cat "$tmp/prompt-refusal")"
 done
+prompt_rc=0
+prompt_rr intervention --run-id run-prompts --kind other --decision approved --note request >"$tmp/prompt-refusal" 2>&1 || prompt_rc=$?
+[ "$prompt_rc" -ne 0 ] || fail "other accepted prompt fields"
+grep -qF -- 'prompt fields require --kind prompt' "$tmp/prompt-refusal" || fail "other refusal was not the writer's diagnostic"
 [ "$(jq '.interventions | length' "$state/runs/run-prompts/run.json")" -eq 2 ] || fail "refused prompt mutated run"
 pass "answered approval prompts retain decisions and commands and refuse incomplete or invalid input"
 for field in decision command; do
@@ -886,3 +894,6 @@ for field in decision command; do
     grep -qF "$field" "$tmp/prompt-schema-refusal" || fail "schema refusal omitted missing $field"
 done
 pass "run schema requires prompt decision and command independently of writer checks"
+
+no_candidates "suite"
+echo "test-run-record: all cases passed"

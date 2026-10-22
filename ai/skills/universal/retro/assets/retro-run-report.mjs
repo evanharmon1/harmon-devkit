@@ -1024,6 +1024,22 @@ function stageAt(transitions, at) {
   return current
 }
 
+function promptSummary(entry) {
+  return entry.kind === 'prompt'
+    ? `; ${entry.decision}: ${entry.command}; answered by ${entry.answered_by ?? 'unspecified'}`
+    : ''
+}
+
+function promptCountsByStage(interventions, transitions) {
+  const counts = {}
+  for (const entry of interventions) {
+    if (entry.kind !== 'prompt') continue
+    const stage = stageAt(transitions, entry.at) ?? 'unknown'
+    counts[stage] = (counts[stage] ?? 0) + 1
+  }
+  return counts
+}
+
 function classProvenanceRows(counts) {
   return Object.entries(counts || {})
     .map(([key, count]) => {
@@ -1163,6 +1179,7 @@ function measure(trajectory, policy) {
 
   return {
     stages,
+    answered_prompts_by_stage: promptCountsByStage(interventions, transitions),
     class_provenance_attribution: attribution,
     findings_by_class_and_provenance: classProvenance,
     interventions: interventions.map((entry) => ({
@@ -1326,10 +1343,10 @@ function renderMarkdown(report) {
       `- Interventions during this stage: ${
         stage.interventions.length === 0
           ? 'none'
-          : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)})`).join('; ')
+          : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)}${safe(promptSummary(entry))})`).join('; ')
       }`
     )
-    l.push(`- Answered approval prompts during this stage: ${stage.interventions.filter((entry) => entry.kind === 'prompt').length}`)
+    l.push(`- Answered approval prompts during this stage: ${report.measurements.answered_prompts_by_stage[stage.stage] ?? 0}`)
     const finderCounts = stage.stage === 'integration' ? stage.retained_record_findings_by_finder : stage.findings_by_finder
     if (['challenge', 'review', 'integration'].includes(stage.stage)) {
       const source = stage.stage === 'integration'
@@ -1705,7 +1722,10 @@ function renderLocalUnverified(args, runId, requestedPr) {
     : 'not recorded — adjudications/ is absent')
   add('Findings and convergence', 'not measured — no authenticated adjudication evidence')
   if (record.interventions.length === 0) add('Interventions', 'none recorded')
-  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}`)
+  for (const [stage, count] of Object.entries(promptCountsByStage(record.interventions, record.stage_transitions))) {
+    add('Answered approval prompts', `${stage}: ${count}`)
+  }
+  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}${promptSummary(entry)}`)
   if (record.settlements.length === 0) add('Settlements', 'none recorded')
   for (const entry of record.settlements) {
     add('Settlement recorded locally', `${entry.finding_id}: ${entry.disposition} at ${entry.settled_at}; ${entry.reference.type} ${entry.reference.value}`)

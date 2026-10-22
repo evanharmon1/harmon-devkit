@@ -202,7 +202,7 @@ expect_ok "orchestrate records answered approvals through the shipped writer" \
     grep -qF 'run-record.mjs intervention --kind prompt --decision approved|denied --command TEXT --note TEXT' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "retro reports answered prompts beside interventions" \
-    grep -qF 'report answered approval prompts by stage beside interventions' \
+    grep -qF 'For every run, report answered approval prompts by stage beside interventions,' \
     "$repo/ai/skills/universal/retro/SKILL.md"
 
 # Cloud dispatch is an explicit operator choice across the whole mode.

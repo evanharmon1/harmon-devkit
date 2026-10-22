@@ -2974,6 +2974,25 @@ node -e '
       inside("/selected","/outside/run.json")) process.exit(1)
 ' "$REPORT" && ok "actual containment helper accepts root and refuses an escape" || bad "root containment failed"
 
+echo "==> local-unverified reports prompt details and stage counts"
+node -e '
+  const fs=require("node:fs"), file=process.argv[1], record=JSON.parse(fs.readFileSync(file,"utf8"))
+  const fixture=JSON.parse(fs.readFileSync(process.argv[2],"utf8"))
+  record.interventions=fixture.interventions.map(entry=>({...entry,at:record.started_at}))
+  fs.writeFileSync(file,JSON.stringify(record))
+' "$d/records/run-6000-fresh-kickoff/run.json" "$FIXTURES/interventions-answered-prompt.json"
+run_report "$d" "${local_args[@]}" --local-unverified
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" 'kickoff: 3' &&
+        contains "$OUT" 'approved: task verify' && contains "$OUT" 'denied: task verify' &&
+        contains "$OUT" 'answered by orchestrator' &&
+        ! contains "$OUT" 'reached its outcome unattended' &&
+        ok "local prompt details and per-stage count are retained" || bad "local prompt details missing: $RC $ERR $OUT"
+else
+    expect_local_platform_refusal "local prompts"
+fi
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+
 echo "==> all local line terminators are folded before rendering"
 node -e '
   const fs=require("node:fs"), file=process.argv[1]
