@@ -50,7 +50,8 @@
 // Exit codes: 0 written, 1 refused, 2 usage.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -273,7 +274,21 @@ function baseMove(args) {
 function fields(value, allowed, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Refusal(`${label} must be an object`)
   for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) throw new Refusal(`${label}.${key} is not accepted; existing original fences are immutable`)
+    if (!allowed.includes(key)) {
+      const fenceNote = ['fence', 'plan'].includes(key) ? '; existing original fences are immutable' : ''
+      throw new Refusal(`${label}.${key} is not accepted by this writer${fenceNote}`)
+    }
+  }
+}
+
+// Fence entries use the plan schema's string or {path, note} shape. Check
+// their path strings before the glob matcher, leaving closed-object checks to
+// candidate validation.
+function decisionPaths(value, label, fence = false) {
+  if (!Array.isArray(value) || value.length === 0) throw new UsageError(`${label} must be a non-empty array of path strings`)
+  const paths = fence ? value.map((entry) => typeof entry === 'string' ? entry : entry?.path) : value
+  if (paths.some((path) => typeof path !== 'string' || !path.trim())) {
+    throw new UsageError(`${label} must contain non-empty path strings`)
   }
 }
 
@@ -336,10 +351,14 @@ function appendIssue(plan, input) {
   if (!input.issue || !input.lane || !input.profile?.policy || input.profile.lane !== input.lane.lane) {
     throw new Refusal('addition requires issue, lane and complete resolved profile {lane, policy}')
   }
+  decisionPaths(input.issue.candidate_files, 'issue.candidate_files')
+  decisionPaths(input.lane.fence, 'lane.fence', true)
   if (plan.issues.some((issue) => issue.number === input.issue.number)) throw new Refusal(`issue #${input.issue.number} already exists`)
   if (input.issue.verdict === 'done') throw new Refusal('an added issue must be live')
   if (input.lane.issue !== input.issue.number) throw new Refusal('added lane must name the added issue')
-  if (!plan.lane_profiles) throw new Refusal('record complete existing lane_profiles before adding an issue')
+  if (!plan.lane_profiles) {
+    throw new Refusal('before adding an issue, hand-append a validated revision recording complete lane_profiles, per orchestrate SKILL.md § Planning')
+  }
   plan.issues.push(structuredClone(input.issue))
   plan.lanes.push(structuredClone(input.lane))
   plan.lane_profiles.push(structuredClone(input.profile))
@@ -369,7 +388,7 @@ function retireIssue(plan, number) {
   if (plan.lane_profiles) plan.lane_profiles = plan.lane_profiles.filter((entry) => !lanes.has(entry.lane))
   const remap = new Map()
   plan.waves = plan.waves.map((wave) => ({ ...wave, issues: wave.issues.filter((n) => n !== number) }))
-    .filter((wave) => wave.issues.length).map((wave, index) => {
+    .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number).map((wave, index) => {
       remap.set(wave.number, index + 1)
       return { ...wave, number: index + 1 }
     })
@@ -423,6 +442,10 @@ function decisionWrite(command, args) {
     const held = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
     let decisions = plan.overlaps
     if (command === 'genesis') {
+      if (!Array.isArray(plan.issues)) throw new UsageError('plan.issues must be an array')
+      if (!Array.isArray(plan.lanes)) throw new UsageError('plan.lanes must be an array')
+      for (const issue of plan.issues) decisionPaths(issue?.candidate_files, 'issue.candidate_files')
+      for (const lane of plan.lanes) decisionPaths(lane?.fence, 'lane.fence', true)
       const outside = plan.issues?.filter((issue) => !held.issues.includes(issue.number)) ?? []
       if (outside.length) throw new Refusal(`genesis issues outside the lock reservation: ${outside.map((issue) => issue.number).join(', ')}`)
     } else if (command === 'add-issue') {
@@ -462,9 +485,16 @@ function decisionWrite(command, args) {
     const entry = { seq, prev_digest, at, reason: args.reason, plan }
     entry.digest = chainDigest({ seq, plan, at, reason: args.reason }, prev_digest)
     document.revisions.push(entry)
-    // Publication validates history, original fences, expansions and profiles.
-    // The held lock's existing reservations are retained on addition.
+    // Prove the complete candidate valid before reserving any additional
+    // issues. A refused revision must leave the held reservation unchanged.
     if (command === 'add-issue' || input.addition) {
+      const candidate = `${canonical}.candidate.${process.pid}.${randomBytes(4).toString('hex')}`
+      writeFileSync(candidate, `${JSON.stringify(document, null, 2)}\n`, { flag: 'wx' })
+      try {
+        validateFile('plan', candidate, 'candidate before lock widening')
+      } finally {
+        unlinkSync(candidate)
+      }
       acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }

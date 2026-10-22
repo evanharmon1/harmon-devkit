@@ -409,10 +409,11 @@ function fixture(issues = '1,2,3,4,5') {
     assert.equal(validation.status, 0, validation.stderr)
     return doc.revisions.at(-1).plan
   }
-  function refuse(command, options, message) {
+  function refuse(command, options, message, expectedStatus = 1) {
     const before = existsSync(canonical) ? readFileSync(canonical, 'utf8') : null
     const r = call(command, options)
-    assert.equal(r.status, 1, `${command} expected refusal: ${r.stderr}`)
+    assert.equal(r.status, expectedStatus, `${command} expected exit ${expectedStatus}: ${r.stderr}`)
+    assert.doesNotMatch(r.stderr, /TypeError|\n\s+at /, 'input error leaked a stack trace')
     assert.match(r.stderr, message)
     assert.equal(existsSync(canonical) ? readFileSync(canonical, 'utf8') : null, before, 'refusal mutated canonical plan')
   }
@@ -441,7 +442,7 @@ assert.deepEqual(current.lanes[0].fence, a.plan.lanes[0].fence)
 assert.deepEqual(current.lanes[0].expansions, [{ path: 'free.txt', at: '2026-10-22T12:00:00Z', reason: 'verified operator decision' }])
 a.refuse('expand', { flags: ['--lane', 'l1', '--path', 'free.txt'] }, /already covered/)
 // A retirement input cannot smuggle replacement original fences.
-a.refuse('done', { input: { lanes: [{ ...current.lanes[1], fence: ['replacement'] }] }, flags: ['--issue', '1'] }, /original fences are immutable/)
+a.refuse('done', { input: { plan: { lanes: [{ ...current.lanes[1], fence: ['replacement'] }] } }, flags: ['--issue', '1'] }, /original fences are immutable/)
 a.refuse('release', { flags: ['--issue', '1', '--lane', 'l2', '--path', 'not-owned.txt'] }, /outside finished lane/)
 current = a.ok('release', { flags: ['--issue', '1', '--lane', 'l2', '--path', 'free.txt'] })
 assert.equal(current.issues[0].verdict, 'done')
@@ -504,6 +505,71 @@ const reuse = addition(2)
 reuse.lane.run_id = 'run-1'
 f.refuse('add-issue', { input: reuse }, /immutable|duplicate run_id|remain bound/)
 console.log('  PASS: immutable original fences and run bindings survive candidate publication')
+// R1: schema rejection must not widen a live lock or strand issue 2.
+const narrow = fixture('1')
+narrow.ok('genesis', { input: narrow.plan })
+const lockFile = join(narrow.root, 'locks/s.json')
+const lockBefore = readFileSync(lockFile, 'utf8')
+const badRun = addition(2)
+badRun.lane.run_id = 'run-1'
+narrow.refuse('add-issue', { input: badRun }, /duplicate run_id|remain bound|immutable/)
+assert.equal(readFileSync(lockFile, 'utf8'), lockBefore, 'refused addition widened reservation')
+// The same prevalidation covers a done/release decision adding a receiver.
+const badProfile = addition(2)
+badProfile.profile.policy = { ...policy, extra: true }
+narrow.refuse('done', { flags: ['--issue', '1'], input: { addition: badProfile } }, /additional property|extra/)
+assert.equal(readFileSync(lockFile, 'utf8'), lockBefore, 'refused receiver addition widened reservation')
+const other = spawnSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 'other', '--session', 'other', '--issues', '2'], { cwd: narrow.repo, encoding: 'utf8' })
+assert.equal(other.status, 0, other.stderr)
+console.log('  PASS: validation refuses additions before lock widening, leaving other slates free to reserve the issue')
+// R2: valid unsorted input is normalized by wave number, not array order.
+const unsorted = fixture('1,2,3')
+const unsortedPlan = content(unsorted.plan.base_sha, [addition(1), addition(2), addition(3)])
+unsortedPlan.waves = [unsortedPlan.waves[1], unsortedPlan.waves[0], unsortedPlan.waves[2]]
+unsorted.ok('genesis', { input: unsortedPlan })
+current = unsorted.ok('done', { flags: ['--issue', '3'] })
+assert.deepEqual(current.lanes.map((lane) => [lane.lane, lane.wave]), [['l1', 1], ['l2', 2]])
+assert.deepEqual(current.waves, [{ number: 1, issues: [1] }, { number: 2, issues: [2] }])
+console.log('  PASS: retirement sorts unsorted waves before renumbering, preserving dispatch order')
+// R3: legacy plans name the documented manual backfill path, while unrelated
+// keys are rejected without implying a fence violation.
+const legacy = fixture('1')
+const legacyPlan = structuredClone(legacy.plan)
+delete legacyPlan.lane_profiles
+legacy.ok('genesis', { input: legacyPlan })
+legacy.refuse('add-issue', { input: addition(2) }, /hand-append a validated revision recording complete lane_profiles, per orchestrate SKILL.md § Planning/)
+legacy.refuse('add-issue', { input: { ...addition(2), lane_profiles: [] } }, /^refused: addition\.lane_profiles is not accepted by this writer\s*$/)
+legacy.refuse('done', { flags: ['--issue', '1'], input: { fence: ['replacement'] } }, /is not accepted by this writer; existing original fences are immutable/)
+console.log('  PASS: refusal messages distinguish unsupported keys, immutable fences and manual profile backfill')
+// R4: missing, scalar, empty and non-string path inputs are usage errors,
+// never TypeErrors; the canonical plan and lock remain unchanged.
+const malformed = fixture('1')
+malformed.ok('genesis', { input: malformed.plan })
+for (const [field, values] of [['candidate_files', [undefined, null, 'file.js', [], [17], ['']]],
+  ['fence', [undefined, null, 'file.js', [], [17], [''], [{}], [{ path: 17 }]]]]) {
+  for (const value of values) {
+    const bad = addition(2)
+    const target = field === 'fence' ? bad.lane : bad.issue
+    if (value === undefined) delete target[field]
+    else target[field] = value
+    const before = readFileSync(join(malformed.root, 'locks/s.json'), 'utf8')
+    malformed.refuse('add-issue', { input: bad }, new RegExp(field), 2)
+    assert.equal(readFileSync(join(malformed.root, 'locks/s.json'), 'utf8'), before)
+  }
+}
+const invalidGenesis = fixture('1')
+const missingCandidates = structuredClone(invalidGenesis.plan)
+delete missingCandidates.issues[0].candidate_files
+invalidGenesis.refuse('genesis', { input: missingCandidates }, /candidate_files/, 2)
+const missingFence = structuredClone(invalidGenesis.plan)
+delete missingFence.lanes[0].fence
+invalidGenesis.refuse('genesis', { input: missingFence }, /fence/, 2)
+const strings = addition(2)
+strings.lane.fence = ['area2/**']
+current = malformed.ok('add-issue', { input: strings })
+assert.deepEqual(current.lanes[1].fence, ['area2/**'])
+console.log('  PASS: malformed decision paths exit 2 with the named field, preserving string and object fence support')
+
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
