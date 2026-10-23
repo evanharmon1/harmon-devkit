@@ -529,6 +529,8 @@ EOF
 chmod +x "${semgrep_bin}/uvx"
 PATH="${semgrep_bin}:${PATH}" SEMGREP_ARGS="$semgrep_args" \
     ./scripts/run-semgrep.sh scripts
+[ "$(sed -n '1,2p' "$semgrep_args")" = "$(printf '%s\n' --python 3.14)" ] ||
+    fail "Semgrep wrapper must select Python 3.14 independently of the active interpreter"
 [ "$(tail -n 1 "$semgrep_args")" = "scripts" ] ||
     fail "Semgrep wrapper did not preserve the explicit target"
 if grep -Fxq . "$semgrep_args"; then
