@@ -1582,6 +1582,50 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 contains "$OUT" '- Outcome: `ready-for-review`' &&
     ok "the fixture's terminal outcome renders" || bad "terminal outcome missing"
 
+echo "==> three answered approval prompts are counted per stage and never unattended"
+d="$TMPROOT/answered-prompts"
+scaffold "$d" further-along "$POLICY_SECTION"
+node --input-type=module - "$d/trajectory.json" "$FIXTURES/interventions-answered-prompt.json" <<'NODE'
+import fs from 'node:fs'
+const [file, fixture] = process.argv.slice(2)
+const trajectory = JSON.parse(fs.readFileSync(file, 'utf8'))
+trajectory.interventions = JSON.parse(fs.readFileSync(fixture, 'utf8')).interventions
+trajectory.stage_transitions = [{stage: 'challenge', entered_at: '2026-08-29T09:00:00Z'}]
+fs.writeFileSync(file, JSON.stringify(trajectory))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'Answered approval prompts: 3' &&
+    contains "$OUT" 'Answered approval prompts during this stage: 3' &&
+    contains "$OUT" 'denied' && contains "$OUT" 'task verify' &&
+    ! contains "$OUT" 'reached its outcome unattended' &&
+    ok "three prompts retain decisions and commands beside stage interventions" || bad "prompt report failed: $RC $ERR $OUT"
+
+echo "==> per-stage JSON interventions project details without chain metadata"
+node --input-type=module - "$d/trajectory.json" <<'NODE'
+import fs from 'node:fs'
+const file = process.argv[2]
+const trajectory = JSON.parse(fs.readFileSync(file, 'utf8'))
+trajectory.interventions = trajectory.interventions.map((entry, seq) => ({
+  ...entry, seq, prev_digest: `previous-${seq}`, digest: `digest-${seq}`
+}))
+fs.writeFileSync(file, JSON.stringify(trajectory))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+if [ "$RC" -eq 0 ] && node -e '
+  const report = JSON.parse(process.argv[1])
+  const entries = report.measurements.stages.flatMap(stage => stage.interventions)
+  const top = report.measurements.interventions
+  if (entries.length !== 3 || entries.some((entry, index) =>
+    ["seq", "prev_digest", "digest"].some(key => Object.hasOwn(entry, key)) ||
+    JSON.stringify(entry) !== JSON.stringify(top[index]))) process.exit(1)
+' "$OUT"; then
+    ok "stage entries retain projected prompt details and omit all chain fields"
+else
+    bad "stage projection leaked metadata or lost details: $RC $ERR $OUT"
+fi
+
 echo "==> class/provenance is attributed to the one stage that found anything"
 d="$TMPROOT/onestage"
 mkdir -p "$d"
@@ -2954,6 +2998,25 @@ node -e '
       !inside("/selected","/selected/run-6000-fresh-kickoff/run.json") ||
       inside("/selected","/outside/run.json")) process.exit(1)
 ' "$REPORT" && ok "actual containment helper accepts root and refuses an escape" || bad "root containment failed"
+
+echo "==> local-unverified reports prompt details and stage counts"
+node -e '
+  const fs=require("node:fs"), file=process.argv[1], record=JSON.parse(fs.readFileSync(file,"utf8"))
+  const fixture=JSON.parse(fs.readFileSync(process.argv[2],"utf8"))
+  record.interventions=fixture.interventions.map(entry=>({...entry,at:record.started_at}))
+  fs.writeFileSync(file,JSON.stringify(record))
+' "$d/records/run-6000-fresh-kickoff/run.json" "$FIXTURES/interventions-answered-prompt.json"
+run_report "$d" "${local_args[@]}" --local-unverified
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" 'kickoff: 3' &&
+        contains "$OUT" 'approved: task verify' && contains "$OUT" 'denied: task verify' &&
+        contains "$OUT" 'answered by orchestrator' &&
+        ! contains "$OUT" 'reached its outcome unattended' &&
+        ok "local prompt details and per-stage count are retained" || bad "local prompt details missing: $RC $ERR $OUT"
+else
+    expect_local_platform_refusal "local prompts"
+fi
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
 echo "==> all local line terminators are folded before rendering"
 node -e '

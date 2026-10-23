@@ -988,12 +988,15 @@ decisions):
   `defer` forever in its own document; the settlement that later resolves it
   to `fix | decline | file` is a new entry in the run record instead, so
   neither document is edited to reflect the other).
-- **`interventions[].kind` is `asked | other`.** The spec's own success
-  metric draws exactly this one distinction — "any human action... except
-  answering an implementer's `blocked_question`, counted separately as
-  asked" — so the schema states only the two categories that distinction
-  needs; finer human-action taxonomy, if ever wanted, belongs to
-  `dev-flow-stats.sh` ([#663](https://github.com/evanharmon1/harmon-devkit/issues/663)), not this contract.
+- **`interventions[].kind` is `asked | other | prompt`.** `asked` answers an
+  implementer's blocked question; `other` records other human action. `prompt`
+  records an answered harness approval request, with required `decision`
+  (`approved | denied`) and `command`, and optional `answered_by`
+  (`orchestrator | human`). Every item retains `at` and `note`. `decision`,
+  `command` and `answered_by` are forbidden on `asked` and `other` entries.
+  Prompt counts are reported beside interventions by stage. Answered prompts
+  (kind `prompt`) never count against the success metric, which is unchanged;
+  `asked` is reported separately.
 - **Every `*_at` timestamp** (`produced_at`, `started_at`, `entered_at`,
   `settled_at`, `promoted_at`, evidence `marker` timestamps) uses the same
   pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`

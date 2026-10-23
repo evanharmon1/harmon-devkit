@@ -264,7 +264,7 @@ it supports, never a hand edit:
 - `transition`, which also appends the matching transition receipt;
 - `lane-init`, which creates a receipt-complete kickoff record and its dispatch
   policy projection for a lane in the last validated plan revision;
-- `intervention`;
+- `intervention` (including answered harness approval prompts);
 - `authorize-cap` for one attributable maintainer instruction, shared with solo runs;
 - `bind-pr`;
 - `close`.
@@ -899,7 +899,13 @@ The watcher also emits these supervision events:
   `herdr agent read` before approving; never approve from the event quote.
   A Herdr `blocked` state can be a question rather than an approval: answer
   or escalate questions. For approvals, read the full pane first, then:
-  Inspect the request and approve or deny within your authority. Each episode
+  Inspect the request and approve or deny within your authority. Record every
+  prompt answered by you or by a human in a pane through
+  `run-record.mjs intervention --kind prompt --decision approved|denied --command TEXT --note TEXT`
+  with the run/slate/session identity, `--at` set to the answer time, and
+  optional `--answered-by orchestrator|human`. Record the full command named
+  by the request; one record per answered prompt, never per repeated event.
+  Each episode
   retains its first-seen time across redraws and restarts, repeats after
   `--prompt-reemit-seconds` (default 180), and starts anew after a poll outside
   the episode, even for identical text.
