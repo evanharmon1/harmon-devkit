@@ -209,7 +209,8 @@ jobs:
       - name: Dependency audit
         run: task security:audit
       - name: SAST (Semgrep Community Edition)
-        run: task security:sast
+        # Bound the native scanner's thread demand on hosted runners.
+        run: task security:sast -- --jobs 2
 
   verify:
     if: always()
