@@ -30,4 +30,5 @@ record is still open to edits.
   record and nothing in its body is seed-specific.
 - [2026-08-25-versioned-devflow-compatibility-contract.md](2026-08-25-versioned-devflow-compatibility-contract.md)
   — version the devflow compatibility contract (Accepted).
-- [2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md](2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md) — PR lifecycle, live handoff check and ordered merge queue (Accepted).
+- [2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md](2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md)
+  — PR lifecycle, live handoff check and ordered merge queue (Accepted).

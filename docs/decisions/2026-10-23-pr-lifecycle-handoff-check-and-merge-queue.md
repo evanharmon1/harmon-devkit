@@ -41,11 +41,11 @@ GitHub states are facts: **Draft** is open with `isDraft = true`;
 passing handoff check and retain the right to demote. **Merged** and **Closed**
 are always human acts.
 
-Agent states are shown with labels:
+Agent states are shown with labels; the Working claim label is on the issue:
 
 | State | GitHub | Label | Meaning |
 |---|---|---|---|
-| Working | draft | `claim:<harness>` | An agent owes implementation, review rounds, fixes, CI or catch-up. |
+| Working | draft | `claim:<harness>` on the issue | An agent owes implementation, review rounds, fixes, CI or catch-up on a draft. |
 | Needs review | draft or promoted | `needs-review` | A requested review is incomplete, usually from an agent reviewer, sometimes a human. |
 | Parked | draft | `parked` | Passed the handoff check earlier and waits in the merge queue; deliberately not kept current. |
 | Blocked | draft | `blocked` | Needs a human decision or input named in a comment. |
@@ -74,7 +74,8 @@ is never reused:
 3. **Required reviews complete on this head:** every reviewer required for this
    PR by `.devflow.toml` was requested on this head or its verdict legitimately
    carries; it finished by its own completion signal, not a timer; and every
-   finding is fixed, declined with evidence, or filed.
+   finding is fixed, declined with evidence, or filed. There is no outstanding
+   `CHANGES_REQUESTED` review on the PR (`reviewDecision != CHANGES_REQUESTED`).
 4. **Every thread settled:** it has the agent's reply, and either the agent has
    the last word or the thread is resolved. A reviewer's acknowledgement
    followed by resolving the thread settles it.
@@ -97,7 +98,9 @@ This supersedes the wording in
 [harmon-init#1781](https://github.com/evanharmon1/harmon-init/issues/1781)
 that promoted PRs further back stay behind the base: those PRs stay drafts.
 
-Lanes retire at handoff. The orchestrator owns and watches each PR until it
+A lane retires when its PR passes the handoff check, whether parked or
+merge-ready. The orchestrator owns parked drafts, catches them up and re-checks
+them when they reach the queue head, and owns and watches every PR until it
 merges or closes, for as long as it is open. There is no fixed 15-minute
 post-promotion window: time passing cannot prove a review finished. Keep
 [#969](https://github.com/evanharmon1/harmon-devkit/issues/969)'s rule to lead
@@ -107,9 +110,11 @@ Any change on a promoted PR — late review, red required CI or base movement �
 removes merge-ready status; the orchestrator removes `merge-ready` and acts.
 A late finding needing a code change sends the PR back to draft by default.
 A finding declined or filed without a code change is settled in place. A base
-move gets a catch-up; return to draft only if the new head owes a review.
-Remove the prohibition on restarting work on a promoted PR, and re-add the
-claim label whenever work resumes.
+move gets a catch-up as queue-head upkeep, not Working-state work: the PR
+stays promoted, with `merge-ready` removed only while the handoff check re-runs.
+Return to draft only if the new head owes a review. Remove the prohibition on
+restarting work on a promoted PR, and re-add the claim label on the issue only
+when the PR goes back to draft. Working remains draft-only.
 
 ### Reviewer coverage and carry
 
@@ -137,6 +142,21 @@ On the second sighting, file and fix the flake rather than re-running again.
 The bot reads check runs through a GitHub App installation token so the handoff
 check can see them through the Checks API.
 
+### Alternatives rejected (the explicit “not”)
+
+- **Not a fixed 15-minute post-promotion window:** a late review can arrive
+  after it closes; elapsed time does not prove reviewer completion.
+- **Not `mergeStateStatus` for currency:** it is an unreliable cache; the live
+  comparison's `behind_by` proves whether the head is current.
+- **Not reusing an earlier handoff-check result:** base, head, CI or review
+  activity may have changed; each action and readiness message needs live proof.
+- **Not keeping non-head passed PRs promoted but behind:** only the queue head
+  is kept current and offered for merge; waiting PRs remain parked drafts to
+  avoid misleading readiness and repeated catch-ups and reviews.
+- **Not withdrawing promotion by default for late findings settled without
+  code:** declining with evidence or filing can settle them in place; draft
+  withdrawal is the default when the finding needs a code change.
+
 ## Consequences
 
 Promotion alone no longer tells the maintainer to merge: a live handoff check
@@ -149,20 +169,23 @@ This ADR records the accepted model; implementation is split across:
 
 - [#1602](https://github.com/evanharmon1/harmon-devkit/issues/1602): integrate's
   handoff check, finder coverage, late findings to draft, thread settlement and
-  required CI.
+  required CI, including condition 3’s outstanding changes-requested block.
 - [#1603](https://github.com/evanharmon1/harmon-devkit/issues/1603): orchestrate's
   queue and labels, watch until merge, removal of the fixed window, sentinel
-  renames, ownership and flake policy.
-- [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): reviewer
-  registry schema in dev-flow-support and `.devflow.toml`, plus the `parked`,
-  `merge-ready` and `needs-review` labels.
+  renames, ownership and flake policy, including queue-head catch-up upkeep
+  and lane retirement after passing the handoff check.
+- [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): the
+  `devflow-policy.mjs` reader, finder fields and per-repository then per-PR
+  override resolution, plus the skills’ `needs-review` wiring.
 - [#1605](https://github.com/evanharmon1/harmon-devkit/issues/1605): handoff check
   reads check runs through the GitHub App installation token.
 - [harmon-init#1786](https://github.com/evanharmon1/harmon-init/issues/1786):
   `AGENTS.md` template and root twin implement the policy.
 - [harmon-init#1787](https://github.com/evanharmon1/harmon-init/issues/1787):
   `.devflow.toml.jinja` reviewer entries gated on Copier answers,
-  `use_claude_review`, and labels.
+  `use_claude_review`, the `.devflow.schema.json` finder fields,
+  `agent-registry.json` reviewer entries, and `label-registry.json` definitions
+  of `parked`, `merge-ready` and `needs-review`.
 
 Until those children land, existing skills and gates may still implement the
 older contract. This documentation change does not modify their behaviour.
