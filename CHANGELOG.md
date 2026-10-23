@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.60.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.59.0...v0.60.0) (2026-10-23)
+
+
+### Features
+
+* **dev-flow-support:** retire a run's active pointer at its outcome and prune stale ones ([#1586](https://github.com/evanharmon1/harmon-devkit/issues/1586)) ([af4dccc](https://github.com/evanharmon1/harmon-devkit/commit/af4dcccb64009d615ac1f343f0bae8e995ad3cf1))
+* **dev-flow:** record answered approval prompts so prompt-heavy runs never read as unattended ([#1596](https://github.com/evanharmon1/harmon-devkit/issues/1596)) ([24f0d3f](https://github.com/evanharmon1/harmon-devkit/commit/24f0d3ffedc9f60aacc31f50a53d9201844d9943))
+* **integrate:** mark an issue needs-review while its PR awaits human review ([#1592](https://github.com/evanharmon1/harmon-devkit/issues/1592)) ([e62968b](https://github.com/evanharmon1/harmon-devkit/commit/e62968b4b1b14ad97cec75ef0c84be891638af81))
+* **integrate:** promote a draft through one command that gates, promotes and reads back ([#1597](https://github.com/evanharmon1/harmon-devkit/issues/1597)) ([496dbee](https://github.com/evanharmon1/harmon-devkit/commit/496dbee65f8f82fed88661c5b882c7d548cd8b5b))
+* **orchestrate:** provision a lane from a validated plan revision in one command ([#1572](https://github.com/evanharmon1/harmon-devkit/issues/1572)) ([6141d10](https://github.com/evanharmon1/harmon-devkit/commit/6141d10303805a38e04e37a9809a2f0d028de052))
+* **review:** record a local finder pass end to end and prepare its review checkout ([#1582](https://github.com/evanharmon1/harmon-devkit/issues/1582)) ([54c4d3a](https://github.com/evanharmon1/harmon-devkit/commit/54c4d3ac1575e1f3b82067b706c31bb2692c3f0c))
+
+
+### Bug Fixes
+
+* **integrate:** exempt fingerprint from the asset freshness check and ([3990148](https://github.com/evanharmon1/harmon-devkit/commit/3990148ec3891e59e7c3a9078f0dfdc714cc2454))
+* **integrate:** run the vendored checker and gate from an up-to-date checkout ([#1580](https://github.com/evanharmon1/harmon-devkit/issues/1580)) ([3990148](https://github.com/evanharmon1/harmon-devkit/commit/3990148ec3891e59e7c3a9078f0dfdc714cc2454))
+* **orchestrate:** document the agy lane posture for each devcontainer profile ([#1587](https://github.com/evanharmon1/harmon-devkit/issues/1587)) ([24163f6](https://github.com/evanharmon1/harmon-devkit/commit/24163f69600ddab7d0f1a2d5a7e8df2571956d85))
+* **orchestrate:** make the lane-watch operating rules binding ([#1577](https://github.com/evanharmon1/harmon-devkit/issues/1577)) ([fb3e2af](https://github.com/evanharmon1/harmon-devkit/commit/fb3e2afb6d67fe85f7263e12aa53ac0e087bd9fd))
+* **retro:** measure remediation pushes and findings by finder; stop citing closed issues ([#1569](https://github.com/evanharmon1/harmon-devkit/issues/1569)) ([779e4d7](https://github.com/evanharmon1/harmon-devkit/commit/779e4d7288df041d62be47e2928fe94f2bc1cbe0))
+* **standardize-repo:** catalog the classification fields, labels and reconciler ([#1598](https://github.com/evanharmon1/harmon-devkit/issues/1598)) ([cc3336f](https://github.com/evanharmon1/harmon-devkit/commit/cc3336fe1cbc2a8924edfb71a9a6135ca333e3c7))
+
 ## [0.59.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.2...v0.59.0) (2026-10-20)
 
 
