@@ -188,6 +188,15 @@ expect_ok "track-work defines the canonical scoped issue-title contract" \
 expect_ok "track-work names the exact-draft receipt and verifier" \
     grep -qF 'A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.' \
     "$repo/ai/skills/universal/track-work/SKILL.md"
+expect_ok "integrate files review follow-ups through the priority helper" \
+    grep -qF 'track-work/assets/file-review-finding.sh' \
+    "$repo/ai/skills/universal/integrate/SKILL.md"
+expect_ok "review files split findings through the priority helper" \
+    grep -qF 'track-work/assets/file-review-finding.sh' \
+    "$repo/ai/skills/universal/review/SKILL.md"
+expect_ok "track-work documents adjudicated review priority" \
+    grep -qF 'assets/file-review-finding.sh' \
+    "$repo/ai/skills/universal/track-work/SKILL.md"
 expect_ok "cross-repo filing runs the full pre-create contract" \
     grep -qF 'check-issue-metadata.sh' \
     "$repo/ai/skills/universal/track-work/references/cross-repo-work.md"

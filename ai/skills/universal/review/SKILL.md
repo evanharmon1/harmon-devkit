@@ -114,6 +114,20 @@ addressing is restored as a filed follow-up so the defect it existed for is not
 silently dropped; and one deletion round confirms the removal, after which the
 stage exits through its ordinary conditions.
 
+File the mechanism and restored finding through
+`track-work/assets/file-review-finding.sh`, retaining the current milestone via
+`--milestone`. Supply the finding's reviewer badge from its text, the
+orchestrator's adjudicated priority, source PR (or the pre-PR branch), reviewer
+and round, and the filer's complete classification including
+Impact/Risk/Complexity. Priority (AI) follows the adjudicated badge via
+triage-apply `--priority-ai` (personal `priority-ai:<value>` label, organization
+field), with a p2 floor for unbadged findings and no p4 mapping. Require exit 0;
+a partially created issue number is a blocker to resolve, never a reason to
+create again. Preserve the helper's issue number and actual Priority (AI) on
+its adjudication reference as `priority_ai`. This helper also handles every
+ordinary review finding filed as follow-up work; it does not change stage
+exit rules or the gating severity of an escalated P0/P1.
+
 **Where the deletion round comes from depends on when the split is decided.**
 With cap headroom left it is an ordinary next round. Decided on the **final
 permitted round** there is none to spend without an explicit maintainer

@@ -12,9 +12,15 @@
       "disposition": "file",
       "reason": "confirmed but out of this lane's scope, tracked separately",
       "evidence": "predates this PR on main and affects every role's envelope equally",
-      "override": { "reason": "downgraded from the reviewer's P1: real but not blocking, scope-bounded elsewhere" },
+      "override": {
+        "reason": "downgraded from the reviewer's P1: real but not blocking, scope-bounded elsewhere"
+      },
       "classification": "confirmed",
-      "reference": { "type": "issue_number", "value": "636" }
+      "reference": {
+        "type": "issue_number",
+        "value": "636",
+        "priority_ai": "p2"
+      }
     }
   ]
 }
