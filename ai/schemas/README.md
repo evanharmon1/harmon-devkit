@@ -439,6 +439,21 @@ sequence checks below run; those later checks remain script responsibilities.
   `run_id`. Unlike the checks above this one needs no external context (both
   values live in the one `run.schema.json` document), so it always runs, not
   only when extra CLI context is supplied.
+- **Filed review issue priority** — an adjudication `reference` with type
+  `issue_number` may carry `priority_ai` (`p0`–`p3`). New `file` adjudications
+  must record the value the helper reports, as the integrate/review procedures
+  require. The schema keeps it optional so retained schema-2 records without
+  this field remain valid. It records the value actually written by
+  `track-work/assets/file-review-finding.sh` through triage-apply, from the
+  adjudicated badge in lowercase (unbadged + P3 is refused before creation).
+  Other reference
+  types cannot carry it; p4 is never accepted. A split's issue reference may
+  also retain it, while older split records remain valid without it.
+  Integration `reviewer_priority` remains null: the raw badge is read from
+  the finding text by the filer, not copied into that record. The value bounds
+  and reference-type restriction are schema conditions; requiring the value on
+  new records is procedural. No new validator code is needed. Run settlement
+  references keep their existing `{type, value}` shape.
 - **Adjudication override required when priorities differ — challenge/
   review only; integration is unconditionally null** — each
   `adjudications[]` entry carries its own `reviewer_priority` (a copy of the
