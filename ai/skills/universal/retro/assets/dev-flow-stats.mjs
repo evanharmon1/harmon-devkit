@@ -20,6 +20,7 @@
 // payload is ever trusted to name its own author — see "Trust" below.
 
 import { spawnSync } from "node:child_process";
+import { authorizedCeiling } from "../../dev-flow-support/assets/lib/cap-authorizations.mjs";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1396,7 +1397,7 @@ function verifyChain(rawEntries, contentKeys) {
 
 const CHAIN_FIELDS = {
   stage_transitions: ["stage", "entered_at", "exit"],
-  interventions: ["kind", "at", "note"],
+  interventions: ["kind", "at", "note", "decision", "command", "answered_by"],
   settlements: ["finding_id", "disposition", "settled_at", "reference"],
   splits: ["mechanism", "stage", "round", "issue", "milestone", "finding_ids", "split_at"],
   // The three chains below protect evidence_comments[]/pr/outcome — round 4
@@ -2103,6 +2104,17 @@ function recordedRoundsPolicy(runDir) {
   return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
 }
 
+function assertAuthorizedCeilingProjection(run, stage, cap, projected) {
+  const ceiling = authorizedCeiling(run, stage, cap);
+  const expected = ceiling > cap ? ceiling : undefined;
+  if (projected !== expected) {
+    throw new EvidenceError(
+      `local-record trajectory for ${stage}: authorized ceiling projection disagrees — shared authorization resolves ${expected ?? "none"}, exit engine reported ${projected ?? "none"}`,
+    );
+  }
+  return expected;
+}
+
 // harmon-devkit#1001 item 11 / challenge round 5/7 (P2): a comment's
 // created_at alone answers "when was this comment first posted," not "is
 // this comment's CURRENT content visible as of a historical --as-of
@@ -2179,7 +2191,7 @@ function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, polic
   return { verification: parsed };
 }
 
-function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd()) {
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd(), exitScriptPath = DEFAULT_EXIT_SCRIPT) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
@@ -2420,6 +2432,18 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const rigor = recordedRigorLevel(engineSnapshotDir);
     const recordedRounds = recordedRoundsPolicy(engineSnapshotDir);
     const engineRoundsByStage = new Map();
+    const authorizedCeilings = {};
+    if (recordedRounds) {
+      for (const stage of ["challenge", "review"]) {
+        const ceiling = authorizedCeiling(body, stage, recordedRounds[stage]);
+        if (ceiling > recordedRounds[stage]) authorizedCeilings[stage] = ceiling;
+      }
+    }
+    // Integration's spend is not measured here, but its recorded permission
+    // can be disclosed without inventing a cycle count.
+    const integrationCap = recordedRounds?.integration;
+    const integrationCeiling = authorizedCeiling(body, "integration", integrationCap);
+    if (integrationCeiling > integrationCap) authorizedCeilings.integration = integrationCeiling;
     const diagnostics = [];
     const seenDiagnostics = new Set();
     // harmon-devkit#1001 challenge round 5/7 (P1), confirmed: the engine's
@@ -2462,7 +2486,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         // is safe here specifically — never for a stage that has real
         // rounds, which still uses its own genuine head below.
         let currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
-        let { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+        let { verification, error, code } = invokeExitScriptVerificationOnly(exitScriptPath, {
           runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
         });
         // Integration cycle 5 (P2), confirmed and fixed: the naive currentHead
@@ -2501,7 +2525,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
             }
             if (correctedHead && correctedHead !== currentHead) {
               currentHead = correctedHead;
-              ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+              ({ verification, error, code } = invokeExitScriptVerificationOnly(exitScriptPath, {
                 runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot, ledgerDir: engineSnapshotDir,
               }));
             }
@@ -2558,6 +2582,12 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           }
         }
         engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
+        if (recordedRounds) {
+          const ceiling = assertAuthorizedCeilingProjection(body, stage, recordedRounds[stage], verification.authorized_ceiling);
+          if (ceiling !== undefined) authorizedCeilings[stage] = ceiling;
+        } else if (verification.authorized_ceiling !== undefined) {
+          authorizedCeilings[stage] = verification.authorized_ceiling;
+        }
         // validateReceipts (inside the spawned process) is not itself stage-
         // scoped — it validates every pass on disk regardless of --stage — so
         // two successful invocations report byte-identical diagnostics for
@@ -2800,18 +2830,56 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     const forged = [...allUntrustedMarkers.filter((observed) => observed.reason === "untrusted-actor"), ...legacyForged];
     const tampered = allUntrustedMarkers.filter((observed) => observed.reason !== "untrusted-actor");
 
+    // The exit engine does not validate integrator passes. Only
+    // receipt-backed envelopes validated for this run contribute to this
+    // retained-record grouping; rejected integrators remain diagnostics.
+    const integratorsByRound = new Map();
+    for (const entry of localPasses) {
+      if (entry.content.role !== "integrator" || !receiptBackedNames.has(entry.name)) continue;
+      try {
+        runExitValidator(
+          ["integrator", entry.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
+          `integrator pass ${entry.name}`,
+        );
+        const round = entry.content.payload.integration_round;
+        const entries = integratorsByRound.get(round) ?? [];
+        entries.push(entry);
+        integratorsByRound.set(round, entries);
+      } catch (error) {
+        if (!(error instanceof EvidenceError)) throw error;
+        diagnostics.push({ pass: entry.name, level: "reject", reason: error.message });
+      }
+    }
+
+    const retainedIntegratorPasses = [];
+    for (const [round, entries] of integratorsByRound) {
+      if (entries.length === 1) {
+        retainedIntegratorPasses.push(entries[0].content);
+      } else {
+        const files = entries.map((entry) => entry.name).sort();
+        diagnostics.push({
+          level: "reject", passes: files,
+          reason: `duplicate integrator passes for integration round ${round}: ${files.join(", ")}`,
+        });
+      }
+    }
+
     return {
       status: "ok",
       runId,
       issueNumber,
+      finderCountsSource: "retained-pass-files",
       record: { body },
       state,
       rounds,
       slotFailures: localSlotFailures,
       slotFailuresUnavailable: false,
       futureAdjudicationFiles: [],
+      remediationCap: recordedRounds?.remediation ?? null,
+      retainedIntegrationFinderCounts: integrationFinderCounts(retainedIntegratorPasses),
       localRecordCurrentState: Boolean(asOf),
       trajectoryDiagnostics: diagnostics,
+      authorizedCeilings,
       untrusted: legacyOrphans,
       forged,
       tampered,
@@ -2824,7 +2892,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   }
 }
 
-function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd() }) {
+function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd(), exitScriptPath = DEFAULT_EXIT_SCRIPT }) {
   const issueComments = fetchIssueComments(repo, issueNumber);
   const cutoffEpoch = asOf ? Date.parse(asOf) : Infinity;
   const withinCutoff = (comment) => Date.parse(comment.created_at) <= cutoffEpoch;
@@ -2862,7 +2930,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
     } else {
       try {
         const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
-        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot);
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot, exitScriptPath);
         if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
       } catch (err) {
         if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
@@ -3147,6 +3215,7 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
   let closedCount = 0;
   let successCount = 0;
   let askedTotal = 0;
+  let answeredPromptsTotal = 0;
   let postReadyFixCount = 0;
   let postReadyFixIndeterminateCount = 0;
   let indeterminateCount = 0;
@@ -3166,6 +3235,8 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
     }
     closedCount++;
     askedTotal += verdict.asked;
+    const answeredPrompts = verdict.runs.reduce((n, run) => n + run.state.interventions.filter((entry) => entry.kind === "prompt").length, 0);
+    answeredPromptsTotal += answeredPrompts;
     if (verdict.success) successCount++;
     // Post-ready fixes are a SECOND, independent failure measure
     // (specs/dev-flow-v2.md § Success metric) — evaluated for any issue
@@ -3180,13 +3251,14 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
       if (fixed) postReadyFixCount++;
       if (indeterminate) postReadyFixIndeterminateCount++;
     }
-    perIssue.push({ issueNumber, closed: true, success: verdict.success, interventions: verdict.interventions, asked: verdict.asked });
+    perIssue.push({ issueNumber, closed: true, success: verdict.success, interventions: verdict.interventions, asked: verdict.asked, answered_prompts: answeredPrompts });
   }
   return {
     cohort_size: closedCount,
     unattended_success_count: successCount,
     unattended_success_rate: closedCount > 0 ? successCount / closedCount : null,
     asked_count: askedTotal,
+    answered_prompts_count: answeredPromptsTotal,
     post_ready_fix_count: postReadyFixCount,
     post_ready_fix_indeterminate_count: postReadyFixIndeterminateCount,
     indeterminate_count: indeterminateCount,
@@ -3286,6 +3358,33 @@ function projectAdjudicationEntries(doc) {
   });
 }
 
+// Each integrator finding id carries
+// its source finder, and one integrator pass can include several sources.
+function integrationFinderCounts(passes) {
+  const counts = {};
+  for (const pass of passes) {
+    const payload = pass.payload || {};
+    for (const finding of payload.findings || []) {
+      const finder = /^integration-r[1-9][0-9]*-([a-z0-9-]+)-[1-9][0-9]*$/.exec(finding.id)?.[1] || "unknown";
+      counts[finder] = (Object.hasOwn(counts, finder) ? counts[finder] : 0) + 1;
+    }
+  }
+  return counts;
+}
+
+// Finder identity belongs to the pass, never to a deferred finding id.
+function findingsByStageFinder(rounds) {
+  const counts = {};
+  for (const round of rounds) {
+    const stage = counts[round.stage] ??= {};
+    for (const pass of round.payload.passes || []) {
+      const finder = pass.payload?.finder || pass.payload?.slot || "unknown";
+      stage[finder] = (Object.hasOwn(stage, finder) ? stage[finder] : 0) + (pass.payload?.findings || []).length;
+    }
+  }
+  return counts;
+}
+
 function renderTrajectory(run) {
   // Chronological (by comment id — ascending id IS creation order on
   // GitHub, the same fact buildRunDirectory's own chronology already
@@ -3306,7 +3405,20 @@ function renderTrajectory(run) {
     pr: run.state.pr,
     promotion: run.state.promotion,
     stage_transitions: run.state.stage_transitions,
+    remediation_cap: run.remediationCap ?? null,
+    remediation_pushes: (run.state.stage_transitions || [])
+      .filter((entry) => entry.stage === "integration" && entry.remediation)
+      .map((entry) => ({ entered_at: entry.entered_at, ...entry.remediation })),
+    findings_by_stage_finder_source: run.finderCountsSource ?? "authenticated-posted-projection",
+    findings_by_stage_finder: findingsByStageFinder(rounds.filter((entry) => entry.stage !== "integration")),
+    retained_record_findings_by_stage_finder: run.retainedIntegrationFinderCounts === undefined
+      ? null : { integration: run.retainedIntegrationFinderCounts },
     interventions: run.state.interventions,
+    answered_prompts_by_stage: run.state.interventions.filter((entry) => entry.kind === "prompt").reduce((counts, entry) => {
+      const stage = [...run.state.stage_transitions].reverse().find((transition) => Date.parse(transition.entered_at) <= Date.parse(entry.at))?.stage ?? "unknown";
+      counts[stage] = (counts[stage] ?? 0) + 1;
+      return counts;
+    }, {}),
     settlements: run.state.settlements,
     splits: run.state.splits,
     rounds: rounds.map((r) => {
@@ -3344,6 +3456,7 @@ function renderTrajectory(run) {
     future_adjudication_files: run.futureAdjudicationFiles || [],
     local_record_current_state: Boolean(run.localRecordCurrentState),
     trajectory_diagnostics: run.trajectoryDiagnostics || [],
+    ...(Object.keys(run.authorizedCeilings ?? {}).length > 0 ? { authorized_ceiling: run.authorizedCeilings } : {}),
     // Integration passes carry no authenticated evidence marker today (unlike
     // challenge/review, which the review skill posts to the issue), so there
     // is no trustworthy local-evidence count to report — disclose that
@@ -3385,7 +3498,23 @@ function renderTrajectoryTable(trajectory) {
       lines.push(`    ${JSON.stringify(entry.finding_id)}: reviewer=${entry.reviewer_priority === null ? "not-applicable" : JSON.stringify(entry.reviewer_priority)} adjudicated=${JSON.stringify(entry.adjudicated_priority)} disposition=${JSON.stringify(entry.disposition)}${entry.override ? ` override: ${JSON.stringify(entry.override.reason)}` : ""}`);
     }
   }
+  lines.push(`remediation pushes: ${trajectory.remediation_pushes.length} / ${trajectory.remediation_cap === null ? "no cap recorded" : `cap ${trajectory.remediation_cap} (retained policy)`}`);
+  lines.push("findings_by_stage_finder:");
+  for (const [stage, counts] of Object.entries(trajectory.findings_by_stage_finder)) {
+    lines.push(`  ${stage}:`);
+    for (const [finder, count] of Object.entries(counts)) lines.push(`    ${finder}: ${count}`);
+  }
+  lines.push("retained-record findings by finder (not verified by GitHub):");
+  if (trajectory.retained_record_findings_by_stage_finder === null) {
+    lines.push("  not measured on this path: no retained run record was read");
+  }
+  for (const [stage, counts] of Object.entries(trajectory.retained_record_findings_by_stage_finder ?? {})) {
+    for (const [finder, count] of Object.entries(counts)) lines.push(`  ${stage}/${finder}: ${count}`);
+  }
   lines.push("integration: not measured from local evidence");
+  for (const [stage, ceiling] of Object.entries(trajectory.authorized_ceiling ?? {})) {
+    lines.push(`${stage}: authorized ceiling ${ceiling}`);
+  }
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
     lines.push("");
     lines.push("findings by class/provenance:");
@@ -3402,7 +3531,8 @@ function renderTrajectoryTable(trajectory) {
   if (trajectory.interventions.length > 0) {
     lines.push("");
     lines.push("interventions:");
-    for (const i of trajectory.interventions) lines.push(`  ${i.at}  ${i.kind}: ${i.note}`);
+    lines.push(`answered prompts by stage: ${JSON.stringify(trajectory.answered_prompts_by_stage)}`);
+    for (const i of trajectory.interventions) lines.push(`  ${i.at}  ${i.kind}: ${i.note}${i.kind === "prompt" ? ` (${i.decision}: ${i.command}; answered by ${i.answered_by ?? "unspecified"})` : ""}`);
   }
   if (trajectory.unreceipted_pass_files.length > 0) {
     lines.push("");
@@ -3694,6 +3824,7 @@ export {
   resolveCanonical,
   findRunRecord,
   EvidenceError,
+  assertAuthorizedCeilingProjection,
   RUN_STAGES,
   firstSeen,
   resolveRegistryTrustedActorIds,
@@ -3953,6 +4084,7 @@ function cliMetrics(args) {
   } else {
     const pct = metric.unattended_success_rate === null ? "n/a" : `${(metric.unattended_success_rate * 100).toFixed(1)}%`;
     console.log(`unattended-success: ${metric.unattended_success_count}/${metric.cohort_size} (${pct})`);
+    console.log(`answered-prompts: ${metric.answered_prompts_count} (reported separately; excluded from success metric)`);
     console.log(`asked: ${metric.asked_count}`);
     console.log(`post-ready human fixes: ${metric.post_ready_fix_count}`);
     // shepherd round 3, Codex-confirmed (P2): computeClosedCohortMetric
@@ -3964,7 +4096,7 @@ function cliMetrics(args) {
     if (metric.post_ready_fix_indeterminate_count > 0) console.log(`post-ready human fixes indeterminate (could not resolve commit visibility): ${metric.post_ready_fix_indeterminate_count}`);
     if (metric.indeterminate_count > 0) console.log(`indeterminate (broken/forged evidence, excluded above): ${metric.indeterminate_count}`);
     console.log("");
-    console.log("issue  closed  success  interventions  asked");
+    console.log("issue  closed  success  interventions  asked  prompts");
     for (const row of metric.per_issue) {
       if (row.indeterminate) {
         console.log(`#${row.issueNumber}  INDETERMINATE — ${row.reasons.join("; ")}`);
@@ -3974,7 +4106,7 @@ function cliMetrics(args) {
         console.log(`#${row.issueNumber}  no (not yet terminal / not stale)`);
         continue;
       }
-      console.log(`#${row.issueNumber}  yes  ${row.success}  ${row.interventions}  ${row.asked}`);
+      console.log(`#${row.issueNumber}  yes  ${row.success}  ${row.interventions}  ${row.asked}  ${row.answered_prompts}`);
     }
   }
   return 0;
@@ -4023,6 +4155,19 @@ function cliRun(args) {
     console.error(`dev-flow-stats: --record-dir path does not exist: ${recordDirRequired.value}`);
     return 2;
   }
+  let exitScriptPath = DEFAULT_EXIT_SCRIPT;
+  if (recordDirRequired.value !== null) {
+    const exitScriptRequired = requiredArgValue("exit-script", args["exit-script"]);
+    if (!exitScriptRequired.ok) {
+      console.error(exitScriptRequired.error);
+      return 2;
+    }
+    exitScriptPath = exitScriptRequired.value || DEFAULT_EXIT_SCRIPT;
+    if (!existsSync(exitScriptPath)) {
+      console.error(`dev-flow-stats: exit script does not exist: ${exitScriptPath}`);
+      return 2;
+    }
+  }
   // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
   // path used to hardcode process.cwd() for the local-record trajectory's
   // repository root, ignoring this same flag the --replay path already
@@ -4036,7 +4181,7 @@ function cliRun(args) {
 
   let runs;
   try {
-    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot, exitScriptPath });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;

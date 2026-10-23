@@ -185,6 +185,18 @@ expect_ok "track-work pre-approves portable asset paths" \
 expect_ok "track-work defines the canonical scoped issue-title contract" \
     grep -qF '(<scope>): <imperative problem/outcome' \
     "$repo/ai/skills/universal/track-work/SKILL.md"
+expect_ok "track-work names the exact-draft receipt and verifier" \
+    grep -qF 'A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.' \
+    "$repo/ai/skills/universal/track-work/SKILL.md"
+expect_ok "integrate files review follow-ups through the priority helper" \
+    grep -qF 'track-work/assets/file-review-finding.sh' \
+    "$repo/ai/skills/universal/integrate/SKILL.md"
+expect_ok "review files split findings through the priority helper" \
+    grep -qF 'track-work/assets/file-review-finding.sh' \
+    "$repo/ai/skills/universal/review/SKILL.md"
+expect_ok "track-work documents adjudicated review priority" \
+    grep -qF 'assets/file-review-finding.sh' \
+    "$repo/ai/skills/universal/track-work/SKILL.md"
 expect_ok "cross-repo filing runs the full pre-create contract" \
     grep -qF 'check-issue-metadata.sh' \
     "$repo/ai/skills/universal/track-work/references/cross-repo-work.md"
@@ -194,6 +206,14 @@ expect_ok "breakdown applies scoped titles to every issue shape" \
 expect_ok "breakdown authors a dispatch-planning surface per issue" \
     grep -qF 'Each authored issue also carries a `## Surface` section' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+# Answered approval prompts are durable run evidence (#1529).
+expect_ok "orchestrate records answered approvals through the shipped writer" \
+    grep -qF 'run-record.mjs intervention --kind prompt --decision approved|denied --command TEXT --note TEXT' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "retro reports answered prompts beside interventions" \
+    grep -qF 'For every run, report answered approval prompts by stage beside interventions,' \
+    "$repo/ai/skills/universal/retro/SKILL.md"
+
 # Cloud dispatch is an explicit operator choice across the whole mode.
 cloud_forbidden='cloud.*by default|by default.*cloud|default to cloud|recommend.*cloud|prefer.*cloud|automatically (choose|use).*cloud|cloud lanes (are|as) (the )?default|cloud lanes are (recommended|preferred)'
 for cloud_md in \
@@ -250,6 +270,32 @@ expect_ok "orchestrator planning refuses a second plan writer" \
 expect_ok "orchestrator planning publishes expansions as complete revisions" \
     grep -qF 'accepted expansion is a recomputation reason' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+# Plan decision writers (#1410): separate from other live lanes' pins.
+for plan_command in genesis add-issue expand release done; do
+    expect_ok "orchestrator Planning names the $plan_command writer (#1410)" \
+        grep -qF "dev-flow-support/assets/plan-revise.mjs $plan_command" \
+        "$repo/ai/skills/universal/orchestrate/SKILL.md"
+done
+expect_ok "orchestrator adds queue issues to its live slate (#1410)" \
+    grep -qF "A session adds issues to its live slate" \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "dev-flow-support documents decision writers (#1410)" \
+    grep -qF 'Write held-lock `genesis`, `add-issue`' \
+    "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+
+# Lane provisioning (#1542): keep these pins separate from other live lanes.
+expect_ok "orchestrator Lane briefs names the provisioning command" \
+    grep -qF 'Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator added-lane sequence widens the existing lock first" \
+    grep -qF 'For an added lane, widen the lock with `run-record.mjs lock acquire --issues`' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator provisioning has a behavioral Taskfile target" \
+    grep -qF 'test:provision-lane' "$repo/Taskfile.yml"
+expect_ok "orchestrator live-overlap catalog pins body rendering and points to the envelope grammar" \
+    grep -qF 'Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
@@ -2184,6 +2230,44 @@ expect_ok "schemas pin-moved offline makes zero upstream probes" test "$(status_
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+expect_ok "standardize catalog pins Impact options" \
+    grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Risk options" \
+    grep -qF '| Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Complexity options" \
+    grep -qF '| Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority options" \
+    grep -qF '| Priority | urgent, high, medium, low | built-in issue field | `priority:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority AI options" \
+    grep -qF '| Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Effort ladder" \
+    grep -qF '| Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Tier on every owner type" \
+    sh -c 'grep -qF "The Tier is a \`tier:*\` label on every owner type: local, economy, standard," "$1" &&
+        grep -qF "frontier, apex, derived from Risk × Complexity and human-pinnable with" "$1" &&
+        grep -qF "\`tier:pinned\`; there is no Tier issue field." "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families first half" \
+    grep -qF 'The six personal label families are `impact:*`, `risk:*`, `complexity:*`,' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families second half" \
+    grep -qF '`priority:*`, `priority-ai:*`, and `effort:*`.' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins current rigor order" \
+    grep -qF 'levels in `rigor_order` (`cursory → light → standard → thorough → deep → forensic`), the' "$STANDARDIZE_REFS/standards-catalog.md"
+
+expect_ok "update pins wanted hand-set Tiers before merge" \
+    sh -c 'sed -n "/^## 5\. Hand off/,/^## 6\./p" "$1" > "$2" &&
+        grep -qF "**Pin wanted hand-set Tiers before merge.**" "$2" &&
+        grep -qF "**before the PR merges**" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-premerge-tier.md"
+expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
+    sh -c 'grep -qF "before the update or adoption PR merges" "$1" &&
+        grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "adoption points wanted hand-set Tiers to the pre-merge pin step" \
+    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, pin each wanted Tier with \`tier:pinned\` before" "$1" &&
+        grep -qF "the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes." "$1"' sh \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
@@ -2492,11 +2576,8 @@ expect_ok "standards catalog removes Agent from the target field set" \
 expect_ok "standards catalog distinguishes current setup from older pins" \
     grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog leaves transition execution to harmon-init" \
-    python3 -c 'import pathlib, sys
-sentence = ("The complete classification-field catalog is not re-specified here; consult\n"
-            "the target\u0027s generated `docs/project-management.md` and setup scripts.")
-sys.exit(sentence not in pathlib.Path(sys.argv[1]).read_text())' \
+expect_ok "standards catalog mirrors the authoritative project-management doc" \
+    grep -qF '`docs/project-management.md` stays the source of truth this catalog mirrors.' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 CATALOG_PM_FIELDS="$TMPROOT/catalog-pm-fields.md"
 awk '
@@ -2654,7 +2735,10 @@ for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
         grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
         "$STANDARDIZE_REFS/$adr_rename_guide.md"
 done
-expect_ok "standards catalog documents model-centric suggestions" \
+expect_ok "standards catalog retires suggest labels" \
+    grep -qF '**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog does not prescribe retired advisory suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog documents model-centric claims" \
@@ -3976,7 +4060,7 @@ expect_ok "implement confirms the pushed draft head" \
 expect_ok "integration records draft state on entry" \
     grep -qF 'state,isDraft,headRepositoryOwner' "$INTEGRATE_SKILL"
 expect_ok "integration promotes only the unchanged ready head" \
-    sh -c 'grep -qF "gh pr ready <n>" "$1" &&
+    sh -c 'grep -qF "assets/promote.sh" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration fails closed on a pre-promotion head mismatch" \
@@ -3984,7 +4068,7 @@ expect_ok "integration fails closed on a pre-promotion head mismatch" \
         grep -qF "Never wait out a pre-promotion" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration reconciles partial or raced promotion" \
     sh -c 'grep -qF "response can be lost" "$1" &&
-        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "one undo internally" "$1" &&
         grep -qF "non-draft on a changed head" "$1" &&
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$INTEGRATE_SKILL"
@@ -3995,12 +4079,12 @@ sed -n '/   adjudications. On any writer error,/,/   This is the write side/p' \
 expect_ok "integration re-reads canonical promotion after any writer error" \
     sh -c 'grep -qF "re-read the canonical \`run.json\`" "$1" &&
         grep -qF "Accept a lost-response success only if its \`promotion.head\` exactly matches" "$1" &&
-        grep -qF "the confirmed head and its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
-        grep -qF "the confirmed gate fingerprint. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
+        grep -qF "the confirmed head, its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
+        grep -qF "matches the submitted \`promoted_at\`. Otherwise the command runs" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
-    sh -c 'grep -qF "gh pr ready --undo <n> --repo" "$1" &&
-        grep -qF "once, then bounded-fetch until" "$1" &&
-        grep -qF "\`isDraft == true\` is confirmed and stop **blocked**, naming the writer" "$1" &&
+    sh -c 'grep -qF "one undo internally" "$1" &&
+        grep -qF "one undo internally, then one bounded read to confirm" "$1" &&
+        grep -qF "\`isDraft == true\` and stop **blocked**, naming the writer" "$1" &&
         grep -qF "error and the confirmed draft state" "$1" &&
         grep -qF "re-established, stop indeterminate under the once-then-stop logic below" "$1" &&
         grep -qF "do not attempt a second undo or claim a handoff or confirmed draft" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
@@ -11444,11 +11528,24 @@ run_vendored "AC5: dev-flow-exit.sh runs" "usage: dev-flow-exit.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.sh" bash
 run_vendored "AC5: round-push.sh runs" "round-push: a mode is required" \
     "$AC5_SKILLS/review/assets/round-push.sh" bash
+run_vendored "AC5: record-pass.sh runs" "usage: record-pass.sh" \
+    "$AC5_SKILLS/review/assets/record-pass.sh" bash
+run_vendored "AC5: prepare-review-checkout.sh runs" "usage: prepare-review-checkout.sh" \
+    "$AC5_SKILLS/review/assets/prepare-review-checkout.sh" bash
 run_vendored "AC5: post-evidence.sh runs" "usage: post-evidence.sh" \
     "$AC5_SKILLS/review/assets/post-evidence.sh" bash
 expect_ok "review names the first-line JSON marker and publication helper" \
     grep -qF 'For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.' \
     "$AC5_SKILLS/review/SKILL.md"
+# harmon-devkit#1543: local finder recording and checkout commands (own block).
+expect_ok "review names the recorder and checkout command (#1543)" \
+    grep -qF 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
+    "$AC5_SKILLS/review/SKILL.md"
+expect_ok "record-pass fixture tests are wired into Taskfile (#1543)" \
+    grep -qF './ai/skills/universal/review/assets/test-record-pass.sh' "$repo/Taskfile.yml"
+expect_ok "record-pass fixture tests belong to task test (#1543)" \
+    grep -qF '      - test:record-pass' "$repo/Taskfile.yml"
+
 run_vendored "AC5: dev-flow-monitor.sh runs" "dev-flow-monitor.sh state-path --run-id" \
     "$AC5_SKILLS/orchestrate/assets/dev-flow-monitor.sh" bash
 # consumer-pin-audit does REAL work here rather than printing usage: the
@@ -11843,6 +11940,22 @@ for writer_test in test-run-record.sh test-plan-revise.sh; do
         grep -qF "./ai/skills/universal/dev-flow-support/assets/$writer_test" "$repo/Taskfile.yml"
 done
 
+# Active-pointer retirement and reservation-aware activation (harmon-devkit#1544).
+expect_ok "orchestrate: names the canonical active-pointer directory (#1544)" \
+    grep -qF '<git-common-dir>/dev-flow-v2/active/' "$ORCH_MD"
+expect_ok "orchestrate: retires the matching pointer after terminal readback (#1544)" \
+    grep -qF "matching run's pointer after the validated terminal record is written and" "$ORCH_MD"
+expect_ok "orchestrate: blocks activation while an ended run has a reserved event (#1544)" \
+    grep -qF 'blocks a new activation on that branch.' "$ORCH_MD"
+expect_ok "orchestrate: binds monitor observations to event, action and head (#1544)" \
+    grep -qF "Every observation must match the reservation's event, action and expected head." "$ORCH_MD"
+expect_ok "orchestrate: documents prune's dry-run and terminal-only behavior (#1544)" \
+    grep -qF 'run-record.mjs prune --dry-run' "$ORCH_MD"
+expect_ok "dev-flow-support: run-record documents retirement and prune (#1544)" \
+    grep -qF 'retire the matching active pointer after validated readback' "$DFS_MD"
+expect_ok "implement: documents the activation recovery refusal (#1544)" \
+    grep -qF 'New activation is refused while an ended run on that branch still has an' "$IMPL_MD"
+
 # harmon-devkit#1183: the inline confidence-stage path records a real run, and
 # every stage skill says which path produces the record, so a lane cannot be
 # surprised at the integrate gate.
@@ -11867,9 +11980,9 @@ expect_ok "implement: solo exit command passes the recorded rigor (#1183 r2-1)" 
 expect_ok "implement: a solo round's head is fixed until adjudication (#1183 r2-2)" \
     grep -qF "**A round's head is fixed from its first receipt to its" "$IMPL_MD"
 expect_ok "integrate: the solo promote example carries every required argument (#1183 r2-3)" \
-    grep -qF -- '--run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh' "$INTEGRATE_MD"
+    grep -qF -- 'assets/promote.sh --repo <repo> --pr <n> --head <head> --record <record>' "$INTEGRATE_MD"
 expect_ok "integrate: a run without a record uses AGENTS.md's hand-run readiness procedure (#1183 r2-1)" \
-    grep -qF '**The scripted gate applies only when a record exists.**' "$INTEGRATE_MD"
+    grep -qF '**The scripted gate and promote command apply only when a record exists.**' "$INTEGRATE_MD"
 expect_ok "review: the verification call reads the per-stage ledger and the shared head map (#1183 R4)" \
     grep -qF -- '--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only' "$REVIEW_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
@@ -11905,6 +12018,46 @@ for doc in "$ORCH_MD" "$LANE_BRIEF_MD"; do
     expect_ok "$doc_label: points at integrate/SKILL.md §2's rule (#1077 C1-1)" \
         grep -qF "follow \`integrate/SKILL.md\` §2's rule" "$doc"
 done
+
+# harmon-devkit#1528: integration assets run from the lane worktree or a
+# checkout whose freshness is checked against the PR base.
+ASSET_FRESHNESS_SENTENCE='Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.'
+for doc in "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/agents/integrator.md"; do
+    doc_label="$(basename "$(dirname "$doc")")/$(basename "$doc")"
+    expect_ok "$doc_label: binds vendored integrate assets to the PR base (#1528)" \
+        grep -qF "$ASSET_FRESHNESS_SENTENCE" "$doc"
+done
+expect_ok "orchestrate: freshness rule is in PR-open confirmation, outside lane briefs (#1528)" \
+    awk -v rule="$ASSET_FRESHNESS_SENTENCE" '
+        $0 == "## PR-open confirmation" { section=1; next }
+        /^## / && section { exit 1 }
+        section && index($0, rule) { found=1 }
+        END { exit !found }
+    ' "$ORCH_MD"
+CHECKER_ASSET="$repo/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+GATE_ASSET="$repo/ai/skills/universal/integrate/assets/readiness-gate.sh"
+FRESHNESS_ASSET="$repo/ai/skills/universal/integrate/assets/asset-freshness.sh"
+expect_ok "checker: sources the shared freshness helper (#1528)" \
+    grep -qF '. "$SCRIPT_DIR/asset-freshness.sh"' "$CHECKER_ASSET"
+expect_ok "readiness gate: sources the shared freshness helper (#1528)" \
+    grep -qF '. "$script_dir/asset-freshness.sh"' "$GATE_ASSET"
+for asset in "$CHECKER_ASSET" "$GATE_ASSET"; do
+    expect_ok "$(basename "$asset"): delegates freshness to the shared helper (#1528)" \
+        grep -qF 'check_vendored_asset_freshness' "$asset"
+    freshness_wrapper=$(sed -n '/^asset_freshness_check() {/,/^}/p' "$asset")
+    if [[ "$freshness_wrapper" == *'merge-base --is-ancestor'* ||
+        "$freshness_wrapper" == *'log --max-count=1 --format=%H'* ]]; then
+        bad "$(basename "$asset"): duplicates the shared asset-history check (#1528)"
+    else
+        ok "$(basename "$asset"): does not duplicate the shared asset-history check (#1528)"
+    fi
+done
+expect_ok "shared freshness helper: limits refusal to an ancestor checkout (#1528)" \
+    grep -qF 'merge-base --is-ancestor' "$FRESHNESS_ASSET"
+expect_ok "shared freshness helper: checks both vendored asset directories (#1528)" \
+    grep -qF '"$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
+expect_ok "shared freshness helper: compares vendored asset bytes after proving ancestry (#1528)" \
+    grep -qF 'diff --quiet "$head" "$base" -- "$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
 
 # harmon-devkit#1338: session-facing REST reads must work in the agent posture.
 # This is a documented text pattern, NOT a shell/Markdown parser: inspect raw
@@ -12064,6 +12217,109 @@ expect_ok "retro: GraphQL read explicitly discloses the agent posture limitation
 printf '%s\n' 'gh api endpoint --input payload.json # gh-api-write: approved payload write' >"$GH_READ_FIXTURE"
 expect_ok "API lint permits an explicitly annotated exceptional write (#1338)" \
     python3 "$GH_READ_LINT" "$GH_READ_FIXTURE"
+
+# New lane-watch supervision events retain their operator action contract.
+expect_ok "orchestrator documents approval prompt action" \
+    grep -qF 'Inspect the request and approve or deny within your authority.' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator documents stall action" \
+    grep -qF 'Read the pane and act: investigate,' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator documents missing heartbeat recovery" \
+    grep -qF 'A missing heartbeat means re-arm the watcher' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
+# #1518: lane-watch operation and terminal sentinels follow one contract.
+expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)" \
+    python3 "$repo/scripts/test-orchestrate-watcher-rules.py" "$repo"
+
+# #1500: lost-response acceptance binds every submitted promotion field.
+expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
+    grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"
+expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
+    grep -qF 'matches the submitted `promoted_at`. Otherwise the command runs' "$INTEGRATE_MD"
+
+# #1500 round 2: one canonical contract replaces the four pasted caller copies.
+expect_ok "owner-token contract pins session context and recovery (#1500)" \
+    python3 - "$repo" <<'PYTOKEN'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]) / "ai/skills/universal"
+canonical = (root / "dev-flow-support/SKILL.md").read_text()
+flat = " ".join(canonical.split())
+for required in (
+    "Take the one-time initial reservation once before the slate's first write",
+    "without capturing its output. Read the single printed token line",
+    "Pass it literally as `--owner-token <token>` on every later",
+    "The token lives only in the session's own context.",
+    "Never put the token in a shared path keyed by session name",
+    "never write it to repository files, logs, or PR or issue text",
+    "collision guard between same-named sessions, not a credential",
+    "`RUN_RECORD_OWNER_TOKEN` is usable within one process or script only",
+    "an export does not survive separate tool calls",
+    "A restart, `/clear` or compaction loses it",
+    "operator-confirmed `lock release --force --reason`",
+    "then a fresh `lock acquire`",
+):
+    assert required in flat, required
+for name in ("implement", "review", "integrate", "orchestrate"):
+    text = (root / name / "SKILL.md").read_text()
+    assert text.count("Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`") == 1, name
+    assert "support directory resolved physically via `cd … && pwd -P`" in text, name
+    assert "RUN_RECORD_OWNER_TOKEN" not in text, name
+    assert "collision guard between same-named sessions" not in text, name
+PYTOKEN
+
+# #1409: recorded callers delegate the promotion mutation to one command.
+expect_ok "promote: executable sibling outside read-only gate" \
+    test -x "$repo/ai/skills/universal/integrate/assets/promote.sh"
+expect_ok "integrate: sole recorded-run promotion path" \
+    grep -qF 'every recorded run uses `assets/promote.sh` as its only promotion path.' "$INTEGRATE_MD"
+expect_ok "integrate: preserves no-record hand-run carve-out" \
+    grep -qF 'carve-out; every recorded run' "$INTEGRATE_MD"
+expect_ok "promotion callers: no bare ready instruction after gate" \
+    python3 - "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md" <<'PY1409'
+import pathlib, re, sys
+pattern = re.compile(r"gh\s+pr\s+ready", re.I)
+def guarded(text):
+    # Literal exemptions only; no surrounding region can hide a new recipe.
+    for allowed in (
+        "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
+        "and `gh pr ready` must not be called again.",
+        "an `audit` pass never authorizes `gh pr ready`.",
+    ):
+        text = text.replace(allowed, "")
+    # Markdown code-span boundaries delimit command text, like line endings.
+    text = text.replace("`", "\n")
+    text = re.sub(r"gh pr ready --undo(?=\s|$)", "", text, flags=re.M)
+    return not pattern.search(text)
+for path in sys.argv[1:]:
+    text = pathlib.Path(path).read_text()
+    assert "assets/promote.sh" in text, path
+    assert guarded(text), path
+for planted in ("then run `gh pr ready <n> --repo`", "Promote with `GH PR READY`", "gh pr ready 42", "gh pr ready --undo=false 123"):
+    assert not guarded(planted), planted
+assert guarded("gh pr ready --undo 42")
+assert guarded("gh pr ready --undo")
+assert not guarded("gh pr ready --undo=false 123")
+for region in (
+    "- **Unexplained promotion — fixture**\n%s\n- Checks (under fixture)",
+    "   If the PR was already non-draft\n%s\n   When current-head Codex",
+    "%s",
+):
+    assert not guarded(region % "then run `gh pr ready 42`"), region
+integrate = pathlib.Path(sys.argv[1]).read_text()
+for required in (
+    "promotion (the current head independently passes `readiness-gate.sh audit`)",
+    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
+    "Only audit status `pass`",
+    "on the current head may be recorded, never `audit-behind`",
+    "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
+    "and the run stays open until `run-record.mjs close`",
+):
+    assert required in integrate, required
+
+PY1409
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

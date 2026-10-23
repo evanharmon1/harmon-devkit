@@ -271,6 +271,10 @@ and the recorded reason rather than reconstructing the original plan from lane
 briefs or memory. The plan for a run is the unique validated slate whose
 revision history lists that `run_id` in `lanes[]`.
 
+For every run, report answered approval prompts by stage beside interventions,
+including their decision, command and answering actor. Never describe a run with
+recorded prompts as unattended.
+
 1. `## Run evidence` — run id, issue, PR, who initiated it, outcome, promotion,
    and where the run id was discovered.
 2. `### Policy the PR discloses (unverified)` — the resolved rigor line read
@@ -286,26 +290,39 @@ revision history lists that `run_id` in `lanes[]`.
    entry — rounds spent against the cap, findings and passes, rounds with no
    adjudication record, every entry and exit (a stage re-entered by a
    remediation loop keeps **one** section holding all of its rounds), the
-   interventions that landed while that stage was open, and — for a stage that
+   remediation pushes counted from integration re-entry `remediation` records
+   against the disclosed remediation cap, the interventions that landed while
+   that stage was open, and — for a stage that
    found something — its findings by class and provenance plus its
-   adjudication overrides. The trajectory supplies verified class/provenance
+   adjudication overrides. Findings are grouped by each pass's finder or slot
+   per stage, including findings that were never deferred. Counts from retained
+   pass files cover rounds with authenticated evidence, but their pass contents
+   are not verified by GitHub; posted-projection counts name that source. Integration's
+   receipt-backed grouping is labelled retained-record evidence, not verified
+   by GitHub; it does not authenticate integration rounds or outcomes. The
+   trajectory supplies verified class/provenance
    counts keyed by stage; unavailable rounds are named, and unverified findings
    are excluded from those counts. Older harvesters
    expose only the run-wide aggregate, attributed to a stage only when that
-   stage is the sole one with findings. Adjudication overrides are not exposed
-   at all (harmon-devkit#753). Each affected stage section says which case it is in rather than leaving the line
+   stage is the sole one with findings. The retro does not yet render
+   adjudication priorities and override reasons (harmon-devkit#1382). Each
+   affected stage section says which case it is in rather than leaving the line
    out; treat a "not derivable" line as a real gap in the retro, not as
    "nothing to report".
+   Finder lines "unavailable from this harvester" and "not measured on this path"
+   are real gaps for the retro to report; only "- No findings recorded." means
+   measured and empty.
 4. `### Findings by class and provenance` — `class` from the reviewer's own
    finding, `provenance` its `original` / `round:N` field.
 5. `### Policy overrides the PR discloses (unverified)` — the cap, waiver,
    tier, and strategy disclosures the PR published, under the same caveat as
    the policy line. **Adjudication overrides — a finding whose adjudicated
-   priority differs from the reviewer's — are not in it**: the trajectory
-   reduces each round's adjudication to a boolean (harmon-devkit#753), so an
+   priority differs from the reviewer's — are not in it**: the retro has not yet
+   rendered the trajectory's adjudication details (harmon-devkit#1382), so an
    empty section means "nothing was disclosed", never "nothing was
    overridden". Say which you mean in the retro.
-6. `### Interventions` — every human touchpoint, with the stage it interrupted.
+6. `### Interventions` — human touchpoints plus answered prompts (kind `prompt`),
+   with the stage each interrupted.
 7. `### Deferred findings settled` — each settled deferral with the finder slug
    recovered from its finding id (`<stage>-r<round>-<finder>-<n>`, the slugs
    `agent-registry.json` `finders[]` declares).
@@ -334,9 +351,9 @@ most of the signal:
   AGENTS.md's round-2 scaffolding checkpoint exists to catch. If the trajectory
   shows it, the improvement cites that stage, its convergence policy or skill,
   and this run id.
-- **Interventions.** Each one is a place the run could not proceed unattended,
-  and the closed-cohort success metric counts them. Ask what would have had to
-  be true for each not to happen.
+- **Interventions.** `interventions[]` holds human touchpoints plus answered
+  prompts (kind `prompt`). The success metric never counts kind `prompt`. Ask
+  what would have had to be true for each touchpoint or prompt not to happen.
 - **Integrity.** A forged-author or orphan comment is a finding about the
   evidence protocol, not a footnote.
 

@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.60.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.59.0...v0.60.0) (2026-10-23)
+
+
+### Features
+
+* **dev-flow-support:** retire a run's active pointer at its outcome and prune stale ones ([#1586](https://github.com/evanharmon1/harmon-devkit/issues/1586)) ([af4dccc](https://github.com/evanharmon1/harmon-devkit/commit/af4dcccb64009d615ac1f343f0bae8e995ad3cf1))
+* **dev-flow:** record answered approval prompts so prompt-heavy runs never read as unattended ([#1596](https://github.com/evanharmon1/harmon-devkit/issues/1596)) ([24f0d3f](https://github.com/evanharmon1/harmon-devkit/commit/24f0d3ffedc9f60aacc31f50a53d9201844d9943))
+* **integrate:** mark an issue needs-review while its PR awaits human review ([#1592](https://github.com/evanharmon1/harmon-devkit/issues/1592)) ([e62968b](https://github.com/evanharmon1/harmon-devkit/commit/e62968b4b1b14ad97cec75ef0c84be891638af81))
+* **integrate:** promote a draft through one command that gates, promotes and reads back ([#1597](https://github.com/evanharmon1/harmon-devkit/issues/1597)) ([496dbee](https://github.com/evanharmon1/harmon-devkit/commit/496dbee65f8f82fed88661c5b882c7d548cd8b5b))
+* **orchestrate:** provision a lane from a validated plan revision in one command ([#1572](https://github.com/evanharmon1/harmon-devkit/issues/1572)) ([6141d10](https://github.com/evanharmon1/harmon-devkit/commit/6141d10303805a38e04e37a9809a2f0d028de052))
+* **review:** record a local finder pass end to end and prepare its review checkout ([#1582](https://github.com/evanharmon1/harmon-devkit/issues/1582)) ([54c4d3a](https://github.com/evanharmon1/harmon-devkit/commit/54c4d3ac1575e1f3b82067b706c31bb2692c3f0c))
+
+
+### Bug Fixes
+
+* **integrate:** exempt fingerprint from the asset freshness check and ([3990148](https://github.com/evanharmon1/harmon-devkit/commit/3990148ec3891e59e7c3a9078f0dfdc714cc2454))
+* **integrate:** run the vendored checker and gate from an up-to-date checkout ([#1580](https://github.com/evanharmon1/harmon-devkit/issues/1580)) ([3990148](https://github.com/evanharmon1/harmon-devkit/commit/3990148ec3891e59e7c3a9078f0dfdc714cc2454))
+* **orchestrate:** document the agy lane posture for each devcontainer profile ([#1587](https://github.com/evanharmon1/harmon-devkit/issues/1587)) ([24163f6](https://github.com/evanharmon1/harmon-devkit/commit/24163f69600ddab7d0f1a2d5a7e8df2571956d85))
+* **orchestrate:** make the lane-watch operating rules binding ([#1577](https://github.com/evanharmon1/harmon-devkit/issues/1577)) ([fb3e2af](https://github.com/evanharmon1/harmon-devkit/commit/fb3e2afb6d67fe85f7263e12aa53ac0e087bd9fd))
+* **retro:** measure remediation pushes and findings by finder; stop citing closed issues ([#1569](https://github.com/evanharmon1/harmon-devkit/issues/1569)) ([779e4d7](https://github.com/evanharmon1/harmon-devkit/commit/779e4d7288df041d62be47e2928fe94f2bc1cbe0))
+* **standardize-repo:** catalog the classification fields, labels and reconciler ([#1598](https://github.com/evanharmon1/harmon-devkit/issues/1598)) ([cc3336f](https://github.com/evanharmon1/harmon-devkit/commit/cc3336fe1cbc2a8924edfb71a9a6135ca333e3c7))
+
+## [0.59.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.2...v0.59.0) (2026-10-20)
+
+
+### Features
+
+* accept max effort for Codex CLI ([#1557](https://github.com/evanharmon1/harmon-devkit/issues/1557)) ([af32a00](https://github.com/evanharmon1/harmon-devkit/commit/af32a0057cb453d8a03eb28fed38a2b7e47f914c))
+* **track-work:** write a metadata receipt on a passing preflight and ship its verifier ([#1559](https://github.com/evanharmon1/harmon-devkit/issues/1559)) ([8585a6a](https://github.com/evanharmon1/harmon-devkit/commit/8585a6a8b2b996398f3658f1dcc2945662d2df3c))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** give the slate lock a unique owner token and match every promotion field ([#1567](https://github.com/evanharmon1/harmon-devkit/issues/1567)) ([b8b77dd](https://github.com/evanharmon1/harmon-devkit/commit/b8b77dd63504aa332b7a801af13079907fb9877d))
+* **dev-flow-support:** make test-run-record.sh's partial-archive fault independent of readdir order ([#1548](https://github.com/evanharmon1/harmon-devkit/issues/1548)) ([56d408b](https://github.com/evanharmon1/harmon-devkit/commit/56d408bb6807e2f49ca4ca198650690d2c6a1b50))
+* **orchestrate:** make lane-watch.sh report approval prompts, stalls and a heartbeat ([#1563](https://github.com/evanharmon1/harmon-devkit/issues/1563)) ([e2520a3](https://github.com/evanharmon1/harmon-devkit/commit/e2520a331630badd8f632c4426408d735d846f5e))
+* **orchestrate:** make test-settle-wait's paging case robust under host load ([#1561](https://github.com/evanharmon1/harmon-devkit/issues/1561)) ([10943e7](https://github.com/evanharmon1/harmon-devkit/commit/10943e7ed7f73a410f3b691aaee47946303fa19f))
+* **retro:** report a preauthorized cap ceiling for a stage that has not started ([#1566](https://github.com/evanharmon1/harmon-devkit/issues/1566)) ([03b2a35](https://github.com/evanharmon1/harmon-devkit/commit/03b2a3539bf008d8cf7ed54d95ddeaaa73dee0ca))
+* **test:** escape command substitution in fixture heredoc ([#1546](https://github.com/evanharmon1/harmon-devkit/issues/1546)) ([749c319](https://github.com/evanharmon1/harmon-devkit/commit/749c31905a6524199a7099de7079093c3bd8e14c))
+
+## [0.58.2](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.1...v0.58.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* **dev-flow:** authorize extra charged integration cycles ([#1511](https://github.com/evanharmon1/harmon-devkit/issues/1511)) ([e6f0a7c](https://github.com/evanharmon1/harmon-devkit/commit/e6f0a7c483fc7d0366ce754ecc06d2417696cb72))
+* **dev-flow:** complete cap authorization recording and reporting ([#1521](https://github.com/evanharmon1/harmon-devkit/issues/1521)) ([fc1b05a](https://github.com/evanharmon1/harmon-devkit/commit/fc1b05a849afd887134a575494f8b3ae9b6760bd))
+* **groom:** keep audit grants intact for spaced paths and find triage beside the synced skill ([#1512](https://github.com/evanharmon1/harmon-devkit/issues/1512)) ([8ba39b3](https://github.com/evanharmon1/harmon-devkit/commit/8ba39b333bbc973e428a263647dd3ba726cf0197))
+
 ## [0.58.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.58.0...v0.58.1) (2026-10-16)
 
 

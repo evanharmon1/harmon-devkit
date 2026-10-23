@@ -105,17 +105,18 @@ const actualVersions = Object.fromEntries(
 )
 deepStrictEqual(actualVersions, expectedVersions, "model line versions must match harmon-init's")
 
-// Effort is a harness property (#1268): the ladder and each harness's accepted
-// levels match harmon-init's at REGISTRY_PARITY_REV (harmon-init#1610 recorded
-// the verified ladders). A harness absent here records [] until its effort
-// control is verified for the model it resolves.
+// Effort is a harness property (#1268). These expected values mirror
+// harmon-init's pinned set except for codex-cli's max addition, tracked by
+// harmon-init#1741: harmon-devkit's readiness gate needs the value now because
+// it validates against this repository's registry. A harness absent here
+// records [] until its effort control is verified for the model it resolves.
 deepStrictEqual(registry.effort_ladder, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const verifiedEfforts = {
     'claude-code': ['low', 'medium', 'high', 'xhigh', 'max'],
     'claude-code-action': ['low', 'medium', 'high', 'xhigh', 'max'],
     'claude-code-deepseek': ['low', 'high', 'max'],
     'claude-code-kimi': ['low', 'high', 'max'],
-    'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     'copilot-cli': ['low', 'medium', 'high', 'xhigh', 'max'],
     'qwen-code': ['low', 'medium', 'high', 'xhigh', 'max'],
     opencode: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -127,7 +128,7 @@ const verifiedEfforts = {
 deepStrictEqual(
     Object.fromEntries(registry.harnesses.map(({ slug, efforts }) => [slug, efforts])),
     Object.fromEntries(registry.harnesses.map(({ slug }) => [slug, verifiedEfforts[slug] ?? []])),
-    "harness efforts must match harmon-init's"
+    "harness efforts must match harmon-init parity or the tracked codex-cli max exception"
 )
 
 const expectedCliIds = {
@@ -1117,7 +1118,7 @@ rejects "a harness effort that is not on the ladder" \
     'harness claude-code declares effort(s) max that are not on effort_ladder'
 rejects "harness efforts out of ladder order" \
     'harness-efforts-out-of-order' \
-    'harness codex-cli efforts ["xhigh","high","medium","low","minimal"] are out of ladder order'
+    'harness codex-cli efforts ["max","xhigh","high","medium","low","minimal"] are out of ladder order'
 rejects "a repeated harness effort" \
     'harness-duplicate-effort' \
     'items must be unique'

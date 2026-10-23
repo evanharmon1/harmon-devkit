@@ -146,6 +146,7 @@
 // violation (one per line) otherwise. A usage error (bad kind, missing
 // file, a paired flag given alone, or a --receipt-required flag missing)
 // exits 2.
+import { validateCapAuthorizations } from './lib/cap-authorizations.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -300,6 +301,44 @@ function loadBrief(file) {
 }
 
 function checkBriefFacts(instance, errors) {
+  // Lane labels already live in the rendered title and canonical sentinels;
+  // do not add a competing inferred identity to the envelope schema.
+  const ownLanes = new Set()
+  const prose = []
+  let fence = null
+  for (const line of instance.body.split(/\r?\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null
+    } else if (marker && (marker[1][0] !== '`' || !marker[2].includes('`'))) {
+      fence = marker[1]
+    } else {
+      prose.push(line)
+    }
+  }
+  const heading = prose.join('\n').match(/^# Lane brief — (.+?)(?: \([^\n]+\))?$/m)
+  if (heading) ownLanes.add(heading[1])
+  const suffix = `-${instance.sentinels.attempt_nonce}`
+  for (const field of ['ready', 'handoff', 'blocked']) {
+    const sentinel = instance.sentinels[field]
+    const prefix = `${field.toUpperCase()}-`
+    if (sentinel.startsWith(prefix) && sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
+  }
+  ownLanes.delete('')
+  if (ownLanes.size === 0) errors.push('$brief: cannot derive its own lane identity from the title or sentinels')
+  const overlaps = Array.isArray(instance.live_lane_overlaps) ? instance.live_lane_overlaps : [instance.live_lane_overlaps]
+  for (const entry of overlaps) {
+    // Every entry must first parse as the builder's canonical lane tuple.
+    // Free-form prose cannot bypass the identity comparison.
+    const identity = /^lane `([^`\r\n]+)` \(#([1-9][0-9]*), branch `([^`\r\n]+)`, wave [1-9][0-9]*\)(?: [^\r\n]+)?$/.exec(entry)
+    if (!identity) {
+      errors.push('$brief.live_lane_overlaps: non-canonical lane tuple')
+      continue
+    }
+    if (ownLanes.has(identity[1]) || Number(identity[2]) === instance.issue.number || identity[3] === instance.branch) {
+      errors.push('$brief.live_lane_overlaps: names its own lane by label, branch or issue')
+    }
+  }
   if (instance.branch !== instance.claim_handoff.branch) {
     errors.push(
       `$brief.branch: ${JSON.stringify(instance.branch)} does not match claim_handoff.branch ${JSON.stringify(instance.claim_handoff.branch)}`
@@ -959,8 +998,8 @@ function checkIntegratorBlockedStatus(envelope, errors) {
 // OTHER exit code, since "required when" is the only shape if/then can
 // express. `accepted` is evidence of a terminal result, so its presence
 // alongside a non-terminal exit_code (11 pending, 12 retry, 13 escalate,
-// 14 PR no longer open, 15 quota exhausted, 16 transient read,
-// 2 indeterminate) is contradictory and forbidden
+// 14 PR no longer open, 15 quota exhausted, 16 transient read, 19 stale
+// asset checkout, 2 indeterminate) is contradictory and forbidden
 // here, in the validator, the same way "required when" and "forbidden
 // otherwise" are two separate assertions throughout this family.
 function checkCodexCycleAcceptedScope(payload, errors) {
@@ -991,7 +1030,8 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // documents, which is itself integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
-// indeterminate, plus 15 quota exhausted and 16 transient read.
+// indeterminate, plus 15 quota exhausted, 16 transient read, and 19 stale
+// asset checkout (a blocker that requires updating the local checkout).
 // checkIntegratorCleanVerdict separately requires exit_code
 // 0 (with accepted present) when verdict IS clean — clean implies 0 — but
 // 0 does NOT imply clean: ai/agents/integrator.md §7's own verdict rule
@@ -1049,6 +1089,7 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
   14: { excludes: new Set(['clean', 'pending']) },
   15: { equals: 'escalate' },
   16: { excludes: new Set(['clean', 'escalate']) },
+  19: { equals: 'escalate' },
   2: { equals: 'escalate' }
 }
 
@@ -3140,17 +3181,10 @@ function checkSlotFailureKeys(document, errors) {
 // renderer's check (lib/cap-authorizations.mjs): this document carries no
 // policy to compare against.
 function checkCapAuthorizationKeys(document, errors) {
-  const firstIndexByKey = new Map()
-  for (const [index, entry] of (document.cap_authorizations ?? []).entries()) {
-    const key = JSON.stringify([entry.stage, entry.round])
-    const firstIndex = firstIndexByKey.get(key)
-    if (firstIndex !== undefined) {
-      errors.push(
-        `$run.cap_authorizations[${index}]: duplicates cap_authorizations[${firstIndex}] key (${entry.stage}, ${entry.round})`
-      )
-      continue
-    }
-    firstIndexByKey.set(key, index)
+  try {
+    validateCapAuthorizations(document)
+  } catch (error) {
+    errors.push(`$run.${error.message}`)
   }
 }
 

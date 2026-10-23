@@ -503,12 +503,19 @@ on with the inline procedure.
    scratch file, then:
 
    ```sh
-   node "$support_dir/run-record.mjs" solo-init --session <session> \
+   node "$support_dir/run-record.mjs" lock acquire \
+     --slate solo-run-<issue>-<slug> --session <session> --issues <issue> || exit 1
+   node "$support_dir/run-record.mjs" solo-init --session <session> --owner-token <token> \
      --run-id run-<issue>-<slug> --issue <issue> --title <issue title> \
      --url <issue url> --branch <branch> --base <merge base> --policy <file> \
      --actor-id "$(gh api user --jq .id)" --strategy-source <strategy source> \
      [--operator-pin <pin>]...
    ```
+
+   Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
+
+   A failed `solo-init` preserves the explicitly acquired reservation;
+   release it with the token when abandoning the attempt.
 
    `--session` is this session's name: the one `/claim` recorded on its claim
    comment's `session:` line (the identity `/wrap` and every claim check
@@ -521,9 +528,9 @@ on with the inline procedure.
 
    It prints the run identity (`run_id`, `slate_id`, `generation`,
    `active_state_path`, `record_directory`, `policy_projection`) — keep it;
-   every later write names `--slate <slate_id> --session <session> --run-id
-   <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan, slate lock
-   on the issue, owner binding), `policy.json`, a kickoff `run.json`, and the
+   every later write names `--slate <slate_id> --session <session> --owner-token <token> --run-id
+   <run_id>`. It writes a single-lane slate (`solo-<run-id>`: plan and owner binding,
+   under the already-acquired lock on the issue), `policy.json`, a kickoff `run.json`, and the
    branch's active pointer. Every refusable precondition is checked before the
    first write — a run id that is not `run-<issue>-…`, a run id whose run has
    already ended (reserve a fresh one), a grafted history, an unresolvable
@@ -623,8 +630,19 @@ on with the inline procedure.
    ended with `close --outcome capped|escalated|abandoned --exit "<why>"`
    (every adjudicated round's evidence marker must already be posted). After
    `promote` or `close`, release the slate lock: `run-record.mjs lock release
-   --slate <slate_id> --session <session>`. An ended run's active pointer is
-   the only one a later `solo-init` on the same branch may supersede.
+   --slate <slate_id> --session <session> --owner-token <token>`. The writer
+   retires the matching active pointer after the validated terminal write and
+   readback; a cleanup failure is reported without undoing the outcome. If
+   retirement is deferred, reconcile the outstanding reservation. When the
+   action is observed absent, cancel it with
+   `dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
+   --event <event-id> --observed <observation.json> --reason "<why>"`. Retry
+   `close` or use `run-record.mjs prune --dry-run` to inspect terminal pointers
+   before pruning. A fresh run on a branch whose old pointer was retired starts
+   at generation 1.
+   New activation is refused while an ended run on that branch still has an
+   unreconciled reserved event; reconcile landed events or cancel an absent
+   event, then retire the old pointer or prune it before retrying activation.
 
 ## 7. Security gate
 

@@ -93,7 +93,9 @@ chmodSync(join(bin,'gitleaks'),0o755);
 const runID = 'run-1-evidence-test';
 const active = command('bash', [monitor, 'active-path', '--branch', 'test', '--repo-root', repo]);
 const state = command('bash', [monitor, 'state-path', '--run-id', runID, '--repo-root', repo]);
-command('bash', [monitor, 'activate', '--active-state', active, '--run-id', runID, '--branch', 'test', '--expected-generation', '0', '--registry-revision', head, '--writer', 'feature-owner', '--repo-root', repo]);
+command('bash', [monitor, 'activate', '--active-state', active, '--run-id', runID, '--branch', 'test',
+  '--expected-predecessor', 'absent', '--expected-generation', '0', '--registry-revision', head,
+  '--writer', 'feature-owner', '--repo-root', repo]);
 const run = join(dirname(state), 'run.json');
 mkdirSync(join(dirname(run), 'adjudications'));
 mkdirSync(join(dirname(run), 'passes'));
@@ -223,6 +225,7 @@ console.log('PASS: two concurrent invocations serialize the complete transaction
 // both read/modify/writes must survive regardless of their acquisition order.
 reset();
 const runWriter=join(assets,'../../dev-flow-support/assets/run-record.mjs');
+const ownerToken=execFileSync('node',[runWriter,'lock','acquire','--slate','test-slate','--session','test-session','--issues','1'],{env,cwd:repo,encoding:'utf8'}).trim();
 writeFileSync(join(dirname(run),'owner-slate'),'test-slate\n');
 const held=join(tmp,'run-mutex-held'), release=join(tmp,'run-mutex-release');
 const launch=(args)=>{
@@ -253,7 +256,7 @@ const waitFor=async(predicate)=>{
 let transitioning, publishing;
 try {
   await waitFor(()=>{try{return readFileSync(held,'utf8')==='held';}catch{return false;}});
-  transitioning=launch([runWriter,'transition','--slate','test-slate','--session','test-session','--issues','1',
+  transitioning=launch([runWriter,'transition','--slate','test-slate','--session','test-session','--owner-token',ownerToken,'--issues','1',
     '--run-id',runID,'--stage','implement','--exit','fixture remediation','--at','2026-08-20T09:02:00Z']);
   publishing=concurrent();
   await waitFor(()=>{try{return readFileSync(data+'.posts','utf8').trim().length>0;}catch{return false;}});

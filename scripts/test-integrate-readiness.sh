@@ -69,6 +69,16 @@ cat >"${bin_dir}/gh" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
+if [ "${1:-}" = pr ] && [ "${2:-}" = view ] &&
+    [[ "$*" = *"--json baseRefOid --jq .baseRefOid"* ]]; then
+    if [ -f "$GH_FIXTURES/asset-base" ]; then
+        cat "$GH_FIXTURES/asset-base"
+    else
+        jq -r '.baseRefOid' "$GH_FIXTURES/pr-view.json"
+    fi
+    exit 0
+fi
+
 # Broker fixtures use the same gh log, with explicit read and post responses.
 if [ -f "$GH_FIXTURES/broker-mode" ]; then
     if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
@@ -246,6 +256,8 @@ export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
 
 head_sha="1111111111111111111111111111111111111111"
+asset_base_sha=$(git -C "$repo_root" rev-parse HEAD)
+printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
 # A second, distinct full SHA for the fixtures that need one head to disagree
 # with another (harmon-devkit#685's promotion-head binding).
 stale_head_sha="2222222222222222222222222222222222222222"
@@ -473,7 +485,7 @@ write_integrator_result() {
     local out="${fixtures}/integrator-result-${name}.json"
     # verdict is constrained against codex_cycle.exit_code by
     # validate-result-schemas.mjs's EXIT_CODE_VERDICT_CONSTRAINTS (0->clean,
-    # 10->findings, 11|12->pending, 13|2->escalate); the gate's own step 9c
+    # 10->findings, 11|12|16->pending, 13|2|19->escalate); the gate's own step 9c
     # additionally requires status:"completed" and verdict:"clean" of the
     # gated pass, after the codex_cycle/findings checks, so a non-clean
     # fixture that gets past those still fails there. A null codex_cycle
@@ -495,7 +507,7 @@ write_integrator_result() {
     # to wait for and nothing to certify), which is why it needs its own arm
     # rather than the pending default — review round 1 finding
     # `review-r1-codex-verification-4` added the first fixture to reach it.
-    13 | 14 | 15 | 2) verdict=escalate ;;
+    13 | 14 | 15 | 19 | 2) verdict=escalate ;;
     *) verdict=pending ;;
     esac
     jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
@@ -660,9 +672,10 @@ run_audit() {
 recheck_root="${test_tmp}/recheck-gate"
 recheck_dir="${recheck_root}/integrate/assets"
 mkdir -p "$recheck_dir" "${recheck_root}/dev-flow-support"
-ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
     "${recheck_root}/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
+cp "${assets}/asset-freshness.sh" "${recheck_dir}/asset-freshness.sh"
 cp "${assets}/trusted-registry.sh" "${recheck_dir}/trusted-registry.sh"
 chmod +x "${recheck_dir}/readiness-gate.sh"
 # Challenge round 3, finding `challenge-r3-codex-adversarial-13` (confirmed
@@ -719,6 +732,17 @@ exit "${RECHECK_FAKE_EXIT:-0}"
 STUB
 chmod +x "${recheck_dir}/check-codex-cloud-review.sh"
 recheck_gate="${recheck_dir}/readiness-gate.sh"
+git init -q "$recheck_root"
+recheck_objects=$(git -C "$repo_root" rev-parse --git-path objects)
+case "$recheck_objects" in
+/*) ;;
+*) recheck_objects="$repo_root/$recheck_objects" ;;
+esac
+recheck_objects=$(cd "$recheck_objects" && pwd -P)
+mkdir -p "${recheck_root}/.git/objects/info"
+printf '%s\n' "$recheck_objects" >"${recheck_root}/.git/objects/info/alternates"
+git -C "$recheck_root" update-ref refs/heads/asset-base "$asset_base_sha"
+git -C "$recheck_root" symbolic-ref HEAD refs/heads/asset-base
 
 # recheck_codex_freshness checks repo/pr/head against the gate's own before
 # ever invoking the checker, so these three fields are the only ones that
@@ -939,12 +963,13 @@ build_solo_record() {
         node "${repo_root}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" resolve \
             --policy .devflow.toml --registry agent-registry.json --json >policy.json || rc=$?
         [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit 1
-        node "$writer" solo-init --session "$session" --run-id "$run" --issue 380 --title "A change" \
+        owner_token="$(node "$writer" lock acquire --slate "$slate" --session "$session" --issues 380)" || exit 1
+        node "$writer" solo-init --owner-token "$owner_token" --session "$session" --run-id "$run" --issue 380 --title "A change" \
             --url https://github.com/example/repo/issues/380 --branch feature-branch \
             --base "$(git rev-parse main)" --policy policy.json \
             --actor-id "$(jq -r '.trusted_orchestrator_actor_ids[0]' agent-registry.json)" \
             --strategy-source default_strategy >/dev/null || exit 1
-        w() { node "$writer" "$1" --slate "$slate" --session "$session" --run-id "$run" "${@:2}" >/dev/null || exit 1; }
+        w() { node "$writer" "$1" --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run" "${@:2}" >/dev/null || exit 1; }
         w transition --stage claim
         w transition --stage implement --exit claimed
         w transition --stage verify --exit "committed $head_sha"
@@ -3025,11 +3050,11 @@ write_finder_cycle_result() {
     # The verdict must be the one the cycle's exit code demands: the envelope
     # validator aggregates EXIT_CODE_VERDICT_CONSTRAINTS over codex_cycle AND
     # every finder_cycles entry now (harmon-devkit#1050 integration cycle 1),
-    # so a finder at 16 makes the pass `pending` and a finder at 15 makes it
+    # so a finder at 16 makes the pass `pending` and a finder at 15 or 19 makes it
     # `escalate` however clean the Codex cycle is.
     jq --argjson ec "$wfc_exit" \
         '(if $ec == 11 or $ec == 12 or $ec == 16 then "pending"
-          elif $ec == 13 or $ec == 14 or $ec == 15 or $ec == 2 then "escalate"
+          elif $ec == 13 or $ec == 14 or $ec == 15 or $ec == 19 or $ec == 2 then "escalate"
           else "findings" end) as $verdict
          | .payload.verdict = $verdict
          | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
@@ -3475,6 +3500,36 @@ jq '.payload.integration_round = 2' "$clean_result" >"${clean_result}.next" && m
 cp "$clean_result" "${record_dir}/passes/integration-r2-codex-cloud.json"
 run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 2
 assert_gate 0 pass ready
+
+echo "==> integration authorization admits cycle C+1 without raising the resolved cap"
+# Reuse the complete two-cycle record above, first under cap 1 with no authority.
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
+assert_gate 2 indeterminate codex-cap-mismatch
+jq '.cap_authorizations=[{stage:"integration",round:2,actor:"maintainer",instruction:"run charged cycle 2",at:"2026-10-16T00:00:00Z"}]' \
+    "$record_dir/run.json" >"$record_dir/run.next"
+mv "$record_dir/run.next" "$record_dir/run.json"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
+assert_gate 0 pass ready
+# A retry adds a pass round, not a charged cycle. Persist that snapshot for 9f.
+jq '.payload.integration_round=3 | .payload.codex_cycle.attempt=2' "$clean_result" >"${clean_result}.next"
+mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "$record_dir/passes/integration-r3-codex-cloud.json"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
+assert_gate 0 pass ready
+# One exempt cycle after the authorized charged cycle keeps charged spend at 2.
+jq '.payload.integration_round=4 | .payload.codex_cycle.cycle=3 |
+    .payload.codex_cycle.attempt=1 | .payload.codex_cycle.charged=2 | .payload.codex_cycle.exempt=1' \
+    "$clean_result" >"${clean_result}.next"
+mv "${clean_result}.next" "$clean_result"
+cp "$clean_result" "$record_dir/passes/integration-r4-codex-cloud.json"
+jq '.charged_cycles=2 | .exempt_cycles=1' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1 --integration-exempt-cap 1
+assert_gate 0 pass ready
+jq '.payload.codex_cycle.charged=3 | .payload.codex_cycle.exempt=0' "$clean_result" >"${clean_result}.next"
+mv "${clean_result}.next" "$clean_result"
+run_gate --integrator-result "$clean_result" --integration-cap 1
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> codex_cycle.cycle exceeding --integration-cap is codex-cap-mismatch"
 write_defaults
@@ -4133,6 +4188,32 @@ run_audit --codex-recheck "$recheck_state" --integrator-result "$clean_recheck" 
 unset RECHECK_FAKE_EXIT
 gate="$saved_gate"
 assert_gate 1 fail codex-not-clean
+
+echo "==> challenge-r3-codex-adversarial-1: a promoted audit with recorded Codex exit 19 is indeterminate"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+stale_codex_result="$(write_integrator_result audit-codex-asset-stale "$(codex_cycle_json 19)")"
+run_audit --integrator-result "$stale_codex_result" --integration-cap 1
+assert_gate 2 indeterminate codex-asset-freshness-unknown
+[[ "$gate_out" != *'"status":"fail"'* ]] ||
+    fail "a stale recorded Codex result must never fail a promoted audit: $gate_out"
+
+echo "==> challenge-r3-codex-adversarial-1: a promoted audit with recorded finder exit 19 is indeterminate"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+stale_finder_result="$(write_finder_cycle_result audit-finder-asset-stale 19)"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=0
+run_audit --codex-recheck "$recheck_state" \
+    --integrator-result "$stale_finder_result" --integration-cap 1
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 2 indeterminate finder-asset-freshness-unknown
+[[ "$gate_out" != *'"status":"fail"'* ]] ||
+    fail "a stale recorded finder result must never fail a promoted audit: $gate_out"
 
 echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
 write_defaults
@@ -5146,4 +5227,471 @@ assert_gate 2 indeterminate integration-exit-indeterminate
 grep -Fq "without a recorded delete or restructure remedy" <<<"$gate_out" ||
     fail "#1272: the gate did not name the unrecorded tell remedy: $gate_out"
 
-echo "integration readiness gate + gh-ro + gh-write-broker: PASS"
+echo "==> readiness asset freshness is indeterminate on a stale fixture checkout"
+fresh_repo="${test_tmp}/asset-freshness-gate"
+fresh_gate="${fresh_repo}/integrate/assets/readiness-gate.sh"
+fresh_support_assets="${fresh_repo}/dev-flow-support/assets"
+mkdir -p "${fresh_repo}/integrate/assets" "${fresh_repo}/dev-flow-support"
+cp "$gate" "$fresh_gate"
+cp "${assets}/asset-freshness.sh" "${fresh_repo}/integrate/assets/asset-freshness.sh"
+cp "${assets}/trusted-registry.sh" "${fresh_repo}/integrate/assets/trusted-registry.sh"
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+    "${fresh_repo}/dev-flow-support/"
+git init -q "$fresh_repo"
+git -C "$fresh_repo" config user.name "Readiness Freshness Test"
+git -C "$fresh_repo" config user.email "readiness-freshness@example.invalid"
+git -C "$fresh_repo" add integrate/assets dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: seed readiness gate fixture"
+fresh_checkout_head=$(git -C "$fresh_repo" rev-parse HEAD)
+printf '\n# freshness fixture change\n' >>"$fresh_gate"
+git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
+git -C "$fresh_repo" commit -q -m "test: advance readiness gate fixture"
+fresh_integrate_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "stale readiness ancestor should exit 2, got $freshness_rc: $freshness_out"
+freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
+freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')
+[ "$freshness_status" = indeterminate ] && [ "$freshness_condition" = asset-freshness-unknown ] ||
+    fail "stale readiness ancestor did not report asset-freshness-unknown: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
+    "$freshness_out" == *"PR base $fresh_integrate_base"* ]] ||
+    fail "stale readiness refusal did not name both SHAs: $freshness_out"
+[[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
+    fail "stale readiness refusal did not name the workable update remedy: $freshness_out"
+
+echo "==> stale asset checkout is indeterminate in audit mode"
+write_defaults
+jq '.isDraft = false' "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+set +e
+freshness_out=$("$fresh_gate" audit --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 --remediation-cap 4 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')" = asset-freshness-unknown ] &&
+    [[ "$freshness_out" != *'"status":"fail"'* ]] ||
+    fail "stale audit checkout must be indeterminate and must not report fail: $freshness_out"
+
+echo "==> check stays indeterminate and fingerprint ignores stale asset checkout"
+rm -f "${fixtures}/pr-view-count"
+set +e
+freshness_out=$("$fresh_gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 --remediation-cap 4 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [[ "$freshness_out" != *'"status":"fail"'* ]] ||
+    fail "check on a promoted stale checkout must be indeterminate: $freshness_out"
+[ ! -e "${fixtures}/pr-view-count" ] ||
+    fail "check must not make a per-command PR read after stale preflight"
+
+echo "==> fresh fingerprint remains available for comparison"
+git -C "$fresh_repo" checkout -q "$fresh_integrate_base"
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
+rm -f "${fixtures}/pr-view-count"
+set +e
+fresh_fingerprint_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
+fresh_fingerprint_rc=$?
+set -e
+[ "$fresh_fingerprint_rc" -eq 0 ] &&
+    [ "$(tail -n 1 <<<"$fresh_fingerprint_out" | jq -r '.status // empty')" = fingerprint ] ||
+    fail "fingerprint on a current checkout should succeed: $fresh_fingerprint_out"
+
+echo "==> stale fingerprint returns the same content identity as a current checkout"
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
+rm -f "${fixtures}/pr-view-count"
+set +e
+stale_fingerprint_out=$("$fresh_gate" fingerprint --repo example/repo --pr 493 2>&1)
+stale_fingerprint_rc=$?
+set -e
+[ "$stale_fingerprint_rc" -eq 0 ] &&
+    [ "$(tail -n 1 <<<"$stale_fingerprint_out" | jq -r '.status // empty')" = fingerprint ] ||
+    fail "fingerprint on a stale checkout should succeed: $stale_fingerprint_out"
+# The stale fixture only appends "# freshness fixture change" to the gate.
+# Equal output is not general for stale gate bytes.
+[ "$stale_fingerprint_out" = "$fresh_fingerprint_out" ] ||
+    fail "stale fingerprint differs from the current-checkout identity: fresh=$fresh_fingerprint_out stale=$stale_fingerprint_out"
+write_defaults
+
+echo "==> readiness freshness covers the sibling dev-flow-support asset directory"
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '\n# freshness support fixture change\n' >>"$fresh_support_assets/tier-inputs.mjs"
+git -C "$fresh_repo" add dev-flow-support/assets/tier-inputs.mjs
+git -C "$fresh_repo" commit -q -m "test: advance dev-flow-support fixture asset"
+fresh_support_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "stale readiness support ancestor should exit 2, got $freshness_rc: $freshness_out"
+[ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = indeterminate ] &&
+    [ "$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')" = asset-freshness-unknown ] ||
+    fail "stale readiness support ancestor did not report asset-freshness-unknown: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
+    "$freshness_out" == *"PR base $fresh_support_base"* ]] ||
+    fail "stale readiness support refusal did not name both SHAs: $freshness_out"
+
+echo "==> readiness asset freshness treats an unavailable base as indeterminate"
+missing_base_sha=ffffffffffffffffffffffffffffffffffffffff
+printf '%s\n' "$missing_base_sha" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 2 ] ||
+    fail "unavailable readiness base should exit 2, got $freshness_rc: $freshness_out"
+freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
+freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty')
+[ "$freshness_status" = indeterminate ] &&
+    [ "$freshness_condition" = asset-freshness-unknown ] ||
+    fail "unavailable readiness base did not report asset-freshness-unknown: $freshness_out"
+[[ "$freshness_out" == *"checkout HEAD $fresh_checkout_head"* &&
+    "$freshness_out" == *"PR base $missing_base_sha"* &&
+    "$freshness_out" == *"fetching the PR base from its base repository if it is unavailable locally"* ]] ||
+    fail "unavailable readiness base did not name the remedy and both SHAs: $freshness_out"
+
+echo "==> readiness accepts a diverged lane checkout when the base moved an asset"
+git -C "$fresh_repo" checkout -q -b freshness-lane "$fresh_checkout_head"
+printf '\n# freshness diverged lane fixture\n' >>"${fresh_repo}/integrate/assets/trusted-registry.sh"
+git -C "$fresh_repo" add integrate/assets/trusted-registry.sh
+git -C "$fresh_repo" commit -q -m "test: advance diverged readiness lane asset"
+fresh_diverged_head=$(git -C "$fresh_repo" rev-parse HEAD)
+if git -C "$fresh_repo" merge-base --is-ancestor "$fresh_diverged_head" "$fresh_support_base"; then
+    fail "diverged readiness fixture HEAD unexpectedly is an ancestor of the PR base"
+fi
+write_defaults
+rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" \
+    "${fixtures}/pr-view-third.json"
+jq --arg base "$fresh_support_base" '.baseRefOid = $base' \
+    "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+jq --arg base "$fresh_support_base" '.base_commit.sha = $base' \
+    "${fixtures}/compare.json" >"${fixtures}/compare.next"
+mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "diverged readiness checkout should be accepted, got $freshness_rc: $freshness_out"
+[ "$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')" = level ] ||
+    fail "diverged readiness checkout did not continue through the gate: $freshness_out"
+
+echo "==> readiness asset freshness accepts a current fixture checkout"
+git -C "$fresh_repo" checkout -q "$fresh_support_base"
+write_defaults
+rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" \
+    "${fixtures}/pr-view-third.json"
+jq --arg base "$fresh_support_base" '.baseRefOid = $base' \
+    "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+jq --arg base "$fresh_support_base" '.base_commit.sha = $base' \
+    "${fixtures}/compare.json" >"${fixtures}/compare.next"
+mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
+set +e
+freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
+freshness_rc=$?
+set -e
+[ "$freshness_rc" -eq 0 ] ||
+    fail "current readiness checkout should be accepted, got $freshness_rc: $freshness_out"
+freshness_status=$(tail -n 1 <<<"$freshness_out" | jq -r '.status // empty')
+[ "$freshness_status" = level ] ||
+    fail "current readiness checkout did not continue through the gate: $freshness_out"
+printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
+
+# #1409: the promotion transaction is tested separately from the read-only gate.
+# A copied package supplies a controlled gate and writer; gh remains stubbed.
+(
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+    promote_fixture="$test_tmp/promote"
+    promote_assets="$promote_fixture/skills/integrate/assets"
+    promote_support="$promote_fixture/skills/dev-flow-support/assets"
+    mkdir -p "$promote_assets" "$promote_support" "$promote_fixture/bin"
+    cp "$assets/promote.sh" "$promote_assets/promote.sh"
+    git init -q -b main "$promote_fixture/repo"
+    cd "$promote_fixture/repo"
+    export PROMOTE_LOG="$promote_fixture/calls" PROMOTE_STATE="$promote_fixture/state"
+    export PROMOTE_RECORD="$promote_fixture/repo/.git/dev-flow-v2/runs/run-promote"
+    export PROMOTE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    mkdir -p "$PROMOTE_RECORD"
+    cat >"$promote_assets/readiness-gate.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$PROMOTE_LOG"
+if [ "$1" = fingerprint ]; then
+    [ "$PROMOTE_CASE" != fingerprint-error ] || exit 2
+    fp=fp
+    case "$PROMOTE_CASE" in fingerprint-mismatch | undo-error) fp=changed ;; esac
+    jq -n --arg fp "$fp" '{status:"fingerprint",fingerprint:$fp}'
+    exit
+fi
+case "$PROMOTE_CASE" in
+fail | remediation) printf '{"condition":"remediation-capped"}\n'; exit 1 ;;
+indeterminate | unrecorded) printf '{"condition":"integration-exit-indeterminate"}\n'; exit 2 ;;
+already | already-recorded | already-other-head) printf '{"condition":"pr-not-draft"}\n'; exit 1 ;;
+malformed) printf '{"status":"pass"}\n'; exit 0 ;;
+esac
+jq -n --arg head "$PROMOTE_HEAD" '{status:"pass",condition:"ready",head:$head,fingerprint:"fp"}'
+STUB
+    cat >"$promote_fixture/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$PROMOTE_LOG"
+[ "$PROMOTE_CASE" != all-hang ] || exec /bin/sleep 120
+case "$1 $2" in
+'pr ready')
+    if [ "$3" = --undo ]; then
+        printf 'draft\n' >"$PROMOTE_STATE"
+        [ "$PROMOTE_CASE" != undo-error ] || exit 1
+    else
+        printf 'ready\n' >"$PROMOTE_STATE"
+        [ "$PROMOTE_CASE" != ready-error ] || exit 1
+    fi ;;
+'pr view')
+    if [ "$PROMOTE_CASE" = hung-read ] && [ "$(cat "$PROMOTE_STATE")" = ready ]; then
+        # exec avoids leaving a child behind when the watchdog expires.
+        exec /bin/sleep 120
+    fi
+    count=0
+    [ ! -f "$PROMOTE_STATE.count" ] || count="$(cat "$PROMOTE_STATE.count")"
+    count=$((count + 1)); printf '%s\n' "$count" >"$PROMOTE_STATE.count"
+    [ "$PROMOTE_CASE" != unknown ] || exit 1
+    [ "$PROMOTE_CASE" != malformed-read ] || { echo '{}'; exit; }
+    if [ "$PROMOTE_CASE" = transient-read ] && [ "$count" -eq 1 ]; then exit 1; fi
+    draft=false; head=$PROMOTE_HEAD; state=OPEN
+    if [ "$(cat "$PROMOTE_STATE")" = draft ]; then
+        draft=true
+    else
+        case "$PROMOTE_CASE" in
+        still-draft) draft=true ;;
+        head-mismatch) head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+        head-after-fingerprint) [ "$count" -lt 2 ] || head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+        closed) state=CLOSED ;;
+        esac
+    fi
+    jq -n --argjson draft "$draft" --arg head "$head" --arg state "$state" \
+        '{state:$state,isDraft:$draft,headRefOid:$head}' ;;
+*) exit 99 ;;
+esac
+STUB
+    # No real sleeps in retry tests; the command's number of read attempts is
+    # still observable in the gh log and the suite retains its watchdog.
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$promote_fixture/bin/sleep"
+    cat >"$promote_support/run-record.mjs" <<'STUB'
+import { appendFileSync, writeFileSync } from 'node:fs'
+const a = process.argv.slice(2)
+const value = key => a[a.indexOf(key) + 1]
+if (a[0] === 'lock' && a[1] === 'check') {
+  appendFileSync(process.env.PROMOTE_LOG, 'owner check\n')
+  process.exit(process.env.PROMOTE_CASE === 'stale-token' ? 1 : 0)
+}
+appendFileSync(process.env.PROMOTE_LOG, `record ${a[0]}\n`)
+if (process.env.PROMOTE_CASE === 'writer-refused') process.exit(1)
+if (['lost-response', 'lost-wrong-time'].includes(process.env.PROMOTE_CASE)) {
+  writeFileSync(`${process.env.PROMOTE_RECORD}/run.json`, JSON.stringify({
+    outcome: 'ready-for-review', promotion: {
+      head: value('--head'), gate_fingerprint: value('--fingerprint'),
+      promoted_at: process.env.PROMOTE_CASE === 'lost-wrong-time' ? '2000-01-01T00:00:00Z' : value('--at'),
+    },
+  }))
+  process.exit(1)
+}
+if (process.env.PROMOTE_CASE === 'retirement-warning') console.error('active pointer retirement reported incomplete')
+STUB
+    chmod +x "$promote_assets/"*.sh "$promote_fixture/bin/"*
+    export PATH="$promote_fixture/bin:$PATH"
+    promote_call() {
+        "$watchdog_bin" "$watchdog_sec" "$promote_assets/promote.sh" \
+            --repo example/repo --pr 493 --head "$PROMOTE_HEAD" --record "$PROMOTE_RECORD" \
+            --integration-cap 5 --remediation-cap 5 --codex-recheck checker.json \
+            --integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir "$PWD" \
+            --slate s-promote --session alice --owner-token fixture-token --run-id run-promote
+    }
+    promotion_case() {
+        local label=$1 expected=$2 rc=0
+        export PROMOTE_CASE=$label
+        : >"$PROMOTE_LOG"
+        rm -f "$PROMOTE_STATE.count"
+        printf 'draft\n' >"$PROMOTE_STATE"
+        printf '{"run_id":"run-promote"}\n' >"$PROMOTE_RECORD/run.json"
+        case "$label" in already*) printf 'ready\n' >"$PROMOTE_STATE" ;; esac
+        case "$label" in
+        already-recorded)
+            jq --arg h "$PROMOTE_HEAD" '.promotion={head:$h}' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.next"
+            mv "$promote_fixture/run.next" "$PROMOTE_RECORD/run.json"
+            ;;
+        already-other-head)
+            jq '.promotion={head:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.next"
+            mv "$promote_fixture/run.next" "$PROMOTE_RECORD/run.json"
+            ;;
+        esac
+        promotion_output="$(promote_call 2>&1)" || rc=$?
+        check_watchdog "$rc" "promote $label" "$promotion_output"
+        [ "$rc" -eq "$expected" ] || fail "promote $label: expected $expected got $rc: $promotion_output"
+        # The owner token must never be persisted by the command or logged.
+        ! grep -qF fixture-token "$PROMOTE_LOG" || fail 'promote logged owner token'
+    }
+    for case_name in fail remediation indeterminate unrecorded already already-recorded already-other-head malformed; do
+        expected=11
+        case "$case_name" in fail | remediation) expected=10 ;; already | already-other-head) expected=17 ;; already-recorded) expected=12 ;; esac
+        promotion_case "$case_name" "$expected"
+        [ "$(wc -l <"$PROMOTE_LOG" | tr -d ' ')" = 1 ] || fail "promote $case_name mutated after gate refusal"
+        if [ "$case_name" = remediation ]; then
+            [[ "$promotion_output" = *remediation-capped* ]] || fail 'gate remediation token lost'
+        fi
+    done
+    for case_name in success retirement-warning lost-response; do
+        promotion_case "$case_name" 0
+        [ "$(grep -c '^pr ready 493 ' "$PROMOTE_LOG")" = 1 ] || fail 'promote must mutate ready once'
+        ! grep -q -- --undo "$PROMOTE_LOG" || fail "promote $case_name unexpectedly undid"
+    done
+    promotion_case success 0
+    # Exact order includes the head read AFTER the content fingerprint.
+    sed -E 's/^(check|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
+        "$PROMOTE_LOG" >"$promote_fixture/order"
+    printf 'check\nowner check\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
+    cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
+    grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
+    for case_name in transient-read still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
+        expected=13
+        [ "$case_name" != ready-error ] || expected=15
+        promotion_case "$case_name" "$expected"
+        [ "$(grep -c '^pr ready 493 ' "$PROMOTE_LOG")" = 1 ] || fail "promote $case_name retried ready"
+        [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail "promote $case_name did not undo once"
+        [[ "$promotion_output" = *'confirmed draft'* ]] || fail "promote $case_name did not confirm draft"
+        case "$case_name" in
+        writer-refused | lost-wrong-time) ;;
+        *) ! grep -q '^record ' "$PROMOTE_LOG" || fail "promote $case_name recorded a mismatch" ;;
+        esac
+    done
+    for case_name in unknown malformed-read; do
+        promotion_case "$case_name" 14
+        [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'unknown state caused a second undo'
+        ! grep -q '^record ' "$PROMOTE_LOG" || fail 'unknown state recorded promotion'
+        [[ "$promotion_output" = *'remote state indeterminate'* ]] || fail 'missing unknown-state blocker'
+    done
+
+    promotion_case stale-token 16
+    ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'stale token notified reviewers'
+    # Simulate interruption after ready by starting a subsequent call against
+    # a non-draft PR with no record: it must route to reconciliation, not 12.
+    promotion_case already 17
+    [[ "$promotion_output" = *'unrecorded promotion'* ]] || fail 'unrecorded interruption was called complete'
+    [ "$(cat "$PROMOTE_STATE")" = ready ] || fail 'unrecorded promotion was mutated during reconciliation routing'
+
+    # Exercise the real timeout utility with a short test-only duration while
+    # asserting the production wrapper always requests -k 1 60. No process is
+    # explicitly terminated by the test; the timeout utility owns its child.
+    real_timeout="$(command -v "$watchdog_bin")"
+    cat >"$promote_fixture/bin/timeout" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = -k ]; then
+    [ "\$1 \$2 \$3" = '-k 1 60' ] || exit 98
+    shift 3
+    exec "$real_timeout" -k 1 1 "\$@"
+fi
+exec "$real_timeout" "\$@"
+STUB
+    chmod +x "$promote_fixture/bin/timeout"
+    promotion_case hung-read 13
+    [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'hung read did not undo once'
+    # Every GitHub operation hangs: four one-second windows must terminate
+    # inside the ten-call network budget (with scheduling/grace allowance).
+    started=$SECONDS
+    promotion_case all-hang 14
+    [ "$((SECONDS - started))" -le 20 ] || fail 'all-hang exceeded ten-call bounded budget'
+    [ "$(grep -c '^pr ready --undo ' "$PROMOTE_LOG")" = 1 ] || fail 'all-hang retried undo'
+    [ "$(grep -c '^pr view ' "$PROMOTE_LOG")" = 2 ] || fail 'all-hang retried reads'
+    rm "$promote_fixture/bin/timeout"
+
+    mv "$promote_support" "$promote_fixture/support.saved"
+    promotion_case success 11
+    [[ "$promotion_output" = *'missing sibling dev-flow-support'* ]] || fail 'missing sibling lacked diagnostic'
+    [ ! -s "$PROMOTE_LOG" ] || fail 'missing sibling reached GitHub'
+    mv "$promote_fixture/support.saved" "$promote_support"
+
+    # One success runs the actual run-record.mjs and strict validator in a
+    # temporary Git repo, proving promotion/outcome/chain are written together.
+    rm -rf "$promote_support"
+    ln -s "$repo_root/ai/skills/universal/dev-flow-support/assets" "$promote_support"
+    real_writer="$promote_support/run-record.mjs"
+    state="$PWD/.git/dev-flow-v2"
+    mkdir -p "$state/slates/s-promote"
+    WRITER="$real_writer" node --input-type=module >"$state/slates/s-promote/plan.json" <<'JS'
+const { chainDigest } = await import(process.env.WRITER)
+const policy = {
+  rigor:'deep',rigor_source:'default',
+  caps:{challenge:1,review:1,integration:1,remediation:1,min_rounds:1,wall_clock_min:60},
+  breadth:{max_agent_runs:20,max_parallel_agents:1},strategy:'plan',strategy_source:'default',
+  role_tiers:{orchestrator:'apex',implementer:'frontier',challenger:'apex',reviewer:'frontier',integrator:'economy'},operator_pins:[],
+}
+const plan = {
+  base_sha:'a'.repeat(40),policy,dispatcher:{kind:'interactive',parallel_cap:1,foreman_max_parallel:null},
+  issues:[{number:493,title:'Promotion',url:'https://example.test/issues/493',verdict:'valid',candidate_files:['f.txt'],blocked_by:[]}],
+  overlaps:[],waves:[{number:1,issues:[493]}],
+  lanes:[{lane:'l493',issue:493,wave:1,branch:'493-l',run_id:'run-promote',fence:[{path:'f.txt'}],expansions:[]}],
+}
+const at='2026-01-01T00:00:00Z',reason='fixture'
+console.log(JSON.stringify({schema:1,slate_id:'s-promote',revisions:[{seq:0,prev_digest:'genesis',digest:chainDigest({seq:0,plan,at,reason},'genesis'),at,reason,plan}]}))
+JS
+    jq -n '{schema:2,run_id:"run-promote",initiated_by:"human",started_at:"2026-01-01T00:00:00Z",
+      stage_transitions:[{stage:"kickoff",entered_at:"2026-01-01T00:00:00Z"}],interventions:[],outcome:null,pr:null,
+      evidence_comments:[],evidence_registrations:[],pr_bindings:[],outcome_transitions:[],settlements:[],promotion:null,receipts:[]}' \
+        >"$PROMOTE_RECORD/run.json"
+    token="$(node "$real_writer" lock acquire --slate s-promote --session alice --issues 493)"
+    for stage in claim implement verify challenge security integration; do
+        node "$real_writer" transition --slate s-promote --session alice --owner-token "$token" \
+            --run-id run-promote --stage "$stage" --exit fixture --at 2026-01-01T00:01:00Z >/dev/null
+    done
+    node "$real_writer" bind-pr --slate s-promote --session alice --owner-token "$token" \
+        --run-id run-promote --number 493 --url https://example.test/pr/493 --at 2026-01-01T00:02:00Z >/dev/null
+    cp "$state/locks/s-promote.json" "$promote_fixture/lock.before"
+    node "$real_writer" lock check --slate s-promote --session alice --owner-token "$token" >/dev/null
+    cmp -s "$state/locks/s-promote.json" "$promote_fixture/lock.before" || fail 'lock check wrote state'
+    if node "$real_writer" lock check --slate s-promote --session alice --owner-token stale 2>/dev/null; then
+        fail 'real owner validation accepted stale token'
+    fi
+    export PROMOTE_CASE=success
+    : >"$PROMOTE_LOG"
+    stale_rc=0
+    stale_output="$(promote_call 2>&1)" || stale_rc=$?
+    [ "$stale_rc" -eq 16 ] || fail "real stale owner must refuse pre-mutation: $stale_output"
+    ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'real stale owner reached ready'
+    cmp -s "$state/locks/s-promote.json" "$promote_fixture/lock.before" || fail 'refused owner check wrote lock'
+    export PROMOTE_CASE=success
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count"
+    : >"$PROMOTE_LOG"
+    real_rc=0
+    real_output="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || real_rc=$?
+    [ "$real_rc" -eq 0 ] || fail "real promotion writer failed: $real_output"
+    jq -e --arg head "$PROMOTE_HEAD" '.outcome == "ready-for-review" and .promotion.head == $head and
+        .promotion.gate_fingerprint == "fp" and (.outcome_transitions | length) == 1' \
+        "$PROMOTE_RECORD/run.json" >/dev/null || fail 'real promote omitted promotion/outcome/chain'
+    node "$validator" run "$PROMOTE_RECORD/run.json" --receipts "$PROMOTE_RECORD/run.json" --no-adjudications >/dev/null ||
+        fail 'real promote produced invalid run record'
+)
+
+echo "integration readiness gate + gh-ro + gh-write-broker + promote: PASS"

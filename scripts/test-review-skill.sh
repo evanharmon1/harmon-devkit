@@ -86,6 +86,17 @@ done
 grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 
+echo "==> review names the local recorder and sanctioned checkout lifecycle"
+for text in 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
+    'Only `action: adjudicate`' 'A failed validator stops every later step' \
+    '**Sanctioned worktree exception:**' 'hooks are disabled' 'scripts/lib/' \
+    '--owner-token <token>' 'Integrator passes are outside' \
+    'Awaiting an orchestrator adjudication exits **23**' \
+    'Every valid verification-only projection is atomically' \
+    'skip-worktree or assume-unchanged' 'An interrupted run may leave its checkout'; do
+    grep -Fq -- "$text" "$skill" || fail "review local-pass contract is missing: $text"
+done
+
 echo "==> review stage advance writes and validates schema-shaped transitions"
 for text in 'Before replacing `run.json`, write the complete candidate beside it' \
     'dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>' \
@@ -596,14 +607,14 @@ mkdir -p "$(dirname "$stale_active_state")"
 printf '999999|%s|%s|fixture-dead-owner|Mon Jan  1 00:00:00 2001\n' \
     "$(hostname)" "$(id -u)" >"${stale_active_state}.lock"
 stale_generation="$("$monitor" activate --active-state "$stale_active_state" \
-    --run-id stale-lock-run --branch "$stale_branch" --expected-generation 0 \
+    --run-id stale-lock-run --branch "$stale_branch" --expected-predecessor absent --expected-generation 0 \
     --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
 [ "$stale_generation" -eq 1 ] || fail "stale owner recovery did not activate the run"
 [ ! -e "${stale_active_state}.lock" ] || fail "recovered monitor lock remained after activation"
 branch="feat/fixture-run"
 active_state="$("$monitor" active-path --branch "$branch" --repo-root "$trust_repo")"
 generation="$("$monitor" activate --active-state "$active_state" --run-id fixture-run \
-    --branch "$branch" --expected-generation 0 --registry-revision "$registry_revision" \
+    --branch "$branch" --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
     --writer feature-owner --repo-root "$trust_repo")"
 jq -e --arg registry "$registry_revision" '.registry_revision == $registry' "$active_state" >/dev/null ||
     fail "active run did not pin its registry revision"
@@ -706,9 +717,10 @@ monitor_reserve --state "$state" --event comment-retry --action comment \
     --registry-revision "$registry_revision" "${comment_binding_args[@]}" \
     --marker "$retry_marker" --payload-digest "$retry_digest" >/dev/null
 jq -n --arg run fixture-run --arg head "$head" --arg role challenger --arg finder codex-cli \
+    --arg event comment-retry --arg action comment \
     --arg actor "$trusted_actor_id" --arg marker "$retry_marker" --arg body "$retry_body" \
     --arg digest "$retry_digest" \
-    '{status: "absent", comments: [{comment_id: 84, actor_id: $actor,
+    '{status: "absent", event: $event, action: $action, head: $head, comments: [{comment_id: 84, actor_id: $actor,
       run_id: $run, head: $head, role: $role, finder: $finder, marker: $marker,
       body: $body, payload_digest: $digest}]}' >"$tmp/comment-candidate.json"
 for binding in run_id head role finder payload_digest; do
@@ -739,7 +751,9 @@ set -e
 grep -Fq 'absent comment observation contains an authenticated match' \
     "$tmp/comment-candidate-match.out" ||
     fail "authenticated comment match did not block retry"
-jq -n '{status: "absent", comments: []}' >"$tmp/comment-candidate-empty.json"
+jq -n --arg event comment-retry --arg head "$head" \
+    '{status: "absent", event: $event, action: "comment", head: $head, comments: []}' \
+    >"$tmp/comment-candidate-empty.json"
 monitor_out="$(monitor_reconcile --state "$state" --event comment-retry --observed "$tmp/comment-candidate-empty.json")" &&
     grep -Fq 'retry comment-retry' <<<"$monitor_out" || fail "empty authenticated candidate set did not authorize retry"
 jq '.status = "landed" | .event = "comment-retry" | .action = "comment" |
@@ -790,7 +804,8 @@ grep -Fq 'only the feature-branch owner may reserve an agent run' "$tmp/lane-age
 
 monitor_reserve --state "$state" --event absent-write --action push \
     --expected-head "$head" --writer feature-owner >/dev/null
-jq -n '{status: "absent"}' >"$tmp/absent.json"
+jq -n --arg event absent-write --arg head "$head" \
+    '{status: "absent", event: $event, action: "push", head: $head}' >"$tmp/absent.json"
 monitor_out="$(monitor_reconcile --state "$state" --event absent-write --observed "$tmp/absent.json")" &&
     grep -Fq 'retry absent-write' <<<"$monitor_out" || fail "absent action was not marked retryable"
 jq -e '.cursor == "comment-retry" and
@@ -798,7 +813,8 @@ jq -e '.cursor == "comment-retry" and
     "$state" >/dev/null ||
     fail "absent action advanced the cursor"
 
-jq -n '{status: "indeterminate"}' >"$tmp/indeterminate.json"
+jq -n --arg event absent-write --arg head "$head" \
+    '{status: "indeterminate", event: $event, action: "push", head: $head}' >"$tmp/indeterminate.json"
 set +e
 monitor_reconcile --state "$state" --event absent-write --observed "$tmp/indeterminate.json" \
     >"$tmp/indeterminate.out" 2>&1
@@ -822,7 +838,7 @@ ordered_run_id="ordered-run"
 ordered_branch="feat/ordered-run"
 ordered_active_state="$("$monitor" active-path --branch "$ordered_branch" --repo-root "$trust_repo")"
 ordered_generation="$("$monitor" activate --active-state "$ordered_active_state" \
-    --run-id "$ordered_run_id" --branch "$ordered_branch" --expected-generation 0 \
+    --run-id "$ordered_run_id" --branch "$ordered_branch" --expected-predecessor absent --expected-generation 0 \
     --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
 ordered_state="$("$monitor" state-path --run-id "$ordered_run_id" --repo-root "$trust_repo")"
 ordered_args=(--active-state "$ordered_active_state" --run-id "$ordered_run_id"
@@ -831,7 +847,8 @@ ordered_args=(--active-state "$ordered_active_state" --run-id "$ordered_run_id"
     --expected-head "$head" --writer feature-owner --assembly-plan "$tmp/assembly-plan.json" >/dev/null
 "$monitor" reserve "${ordered_args[@]}" --state "$ordered_state" --event e2 --action assembly \
     --expected-head "$head" --writer feature-owner --assembly-plan "$tmp/assembly-plan.json" >/dev/null
-jq -n '{status: "absent"}' >"$tmp/e2-absent.json"
+jq -n --arg head "$head" \
+    '{status: "absent", event: "e2", action: "assembly", head: $head}' >"$tmp/e2-absent.json"
 set +e
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
     --observed "$tmp/e2-absent.json" >"$tmp/e2-absent.out" 2>&1
@@ -865,7 +882,8 @@ grep -Fq 'assembled lane selection does not match reservation' "$tmp/e2-wrong-pl
     fail "assembly-plan mismatch was not reported"
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
     --observed "$tmp/e2.json" >/dev/null
-jq -n '{status: "absent"}' >"$tmp/stale.json"
+jq -n --arg head "$head" \
+    '{status: "absent", event: "e2", action: "assembly", head: $head}' >"$tmp/stale.json"
 monitor_out="$("$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 --observed "$tmp/stale.json")" &&
     grep -Fq 'adopt e2' <<<"$monitor_out" || fail "adopted action was retryable"
 
@@ -874,7 +892,7 @@ concurrent_run_id="concurrent-run"
 concurrent_branch="feat/concurrent-run"
 concurrent_active_state="$("$monitor" active-path --branch "$concurrent_branch" --repo-root "$trust_repo")"
 concurrent_generation="$("$monitor" activate --active-state "$concurrent_active_state" \
-    --run-id "$concurrent_run_id" --branch "$concurrent_branch" --expected-generation 0 \
+    --run-id "$concurrent_run_id" --branch "$concurrent_branch" --expected-predecessor absent --expected-generation 0 \
     --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
 concurrent_state="$("$monitor" state-path --run-id "$concurrent_run_id" --repo-root "$trust_repo")"
 concurrent_args=(--active-state "$concurrent_active_state" --run-id "$concurrent_run_id"
@@ -895,7 +913,7 @@ other_branch="feat/other-fixture-run"
 other_active_state="$("$monitor" active-path --branch "$other_branch" --repo-root "$trust_repo")"
 set +e
 "$monitor" activate --active-state "$other_active_state" --run-id fixture-run \
-    --branch "$other_branch" --expected-generation 0 --registry-revision "$registry_revision" \
+    --branch "$other_branch" --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
     --writer feature-owner --repo-root "$trust_repo" >"$tmp/other-branch.out" 2>&1
 status=$?
 set -e
@@ -905,7 +923,8 @@ grep -Fq 'already bound to a different branch' "$tmp/other-branch.out" ||
 
 echo "==> monitor rejects a superseded run at the same head"
 replacement_generation="$("$monitor" activate --active-state "$active_state" --run-id replacement-run \
-    --branch "$branch" --expected-generation "$generation" --registry-revision "$registry_revision" \
+    --branch "$branch" --expected-predecessor fixture-run --expected-generation "$generation" \
+    --registry-revision "$registry_revision" \
     --writer feature-owner --repo-root "$trust_repo")"
 [ "$replacement_generation" -eq $((generation + 1)) ] || fail "replacement run did not advance generation"
 set +e

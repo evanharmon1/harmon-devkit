@@ -187,18 +187,24 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set:
-   `dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
+   slate lock with its explicit issue set, reading its one-time stdout token from visible output:
+   `node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
    --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
    milestone-backed slate (the milestone exists only in the lock). A second
    orchestrator naming the same work is refused here, before it can publish a
-   plan or dispatch anything. Then write the closed record and validate it with
+   plan or dispatch anything. Publish revision 0 with
+   `dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id>
+   --session <session> --owner-token <token> --input <plan-input.json> --reason "initial slate"`.
+   The input is the complete plan content from step 5; overlap entries supply
+   the chosen resolution and merge dependency, while the writer computes their
+   complete shared paths. Genesis requires the already-held lock and refuses
+   any issue outside its reservation; it never acquires a new lock. Validate with
    `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
    a graph/projection mismatch, an ownership error, or a cap violation. Both
    writers refuse while the canonical plan names an issue outside the
    reservation, so a later revision that adds issues widens the reservation
-   with `lock acquire --issues` first.
+   with `lock acquire --issues --owner-token <token>` first.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -220,12 +226,55 @@ Build and publish the plan in this order:
    that sequence. It refuses, naming the paths or issues, whenever the move
    needs judgment: the new commits touch a live lane's fence or candidate
    files, or a done issue releases a dependent. Fence expansions, overlap
-   choices and wave changes stay yours; write them as a complete revision.
+   choices and wave changes stay yours; supply those decisions to the writers
+   below. Every writer extends the digest chain and runs the same candidate,
+   validate, rename and canonical-readback sequence. Original fences of existing
+   runs never change; only dated expansions grow.
+
+**Keep the session's live slate.** A session adds issues to its live slate as
+its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
+<issue.json>` rather than creating a slate per issue. All revision commands
+also require `--slate`, `--session`, `--owner-token` and `--reason`. The input is
+`{issue, lane, profile: {lane, policy}, overlaps?: [...], waves?: [...]}`:
+the new issue and lane, its complete resolved profile, resolutions and merge
+dependencies for its overlaps with live lanes, and optional complete wave
+placement. The writer computes pairwise intersections, stores the profile in
+`plan.lane_profiles`, and widens the held lock through its existing owner-checked
+acquire path before publication. Existing reservations remain held.
+
+Use `dev-flow-support/assets/plan-revise.mjs expand --lane <lane> --path <path>`
+for one authorized expansion. It stamps `{path, at, reason}` itself and refuses
+a timestamp earlier than the last revision or a path covered by any other live
+lane's effective fence, including globs and lanes in other waves. The optional
+`--at` timestamp is for reproducible operator input, never backdating.
+
+After verifying an external merge, use
+`dev-flow-support/assets/plan-revise.mjs done --issue <n> --reason <evidence>`
+to retain the verified issue as done while retiring its lane without requiring
+a base move. For a path handoff use
+`dev-flow-support/assets/plan-revise.mjs release --issue <finished-issue>
+--lane <receiver> --path <path>... --reason <evidence>` instead. Both retire the
+source and apply supplied release decisions in ONE revision. Their optional
+`--input` file is `{releases?: [{lane, paths}], addition?: <add-issue input>,
+waves?: [...]}`. Existing receivers gain dated expansions; a receiver first
+introduced by `addition` gets the paths in its original fence. A previously
+planned receiver always keeps its original fence, even before dispatch. Released
+paths must belong to the finished lane and must not remain covered by another
+live lane. Supply complete `waves` when a merge changes placement; the writer
+updates lane wave assignments and validates the resulting graph.
+
+Candidate overlaps and effective fences are checked with glob-aware coverage
+across all live lanes, not just one wave. An unresolved collision is refused.
+The schema records exact candidate-file intersections: when a glob-only
+intersection cannot be represented, the writer refuses and asks for a shared
+candidate entry plus the operator's resolution. It never invents fence scope or
+overlap decisions. `base-move` keeps its mechanical-only refusal contract.
 
 ## Durable orchestrator state
 
 Everything you need in order to resume lives under the Git common directory,
-never in the session scratchpad. A scratchpad does not survive a session
+never in the session scratchpad, with one deliberate exception: the owner token
+lives only in session context, never under the Git common directory. A scratchpad does not survive a session
 restart, and one that was wiped mid-slate took every dispatch file, ruling
 and watcher script with it (harmon-devkit#1296). The scratchpad is for
 throwaway work only.
@@ -233,18 +282,38 @@ throwaway work only.
 - **Run records:** `<git-common-dir>/dev-flow-v2/runs/<run-id>/run.json`,
   beside `monitor.json`.
 - **Slate plan:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json`.
-- **Your own working files** — dispatch files, rendered briefs, ruling files,
-  watcher state:
+- **Your own working files** — dispatch files, rendered briefs, ruling files:
   `<git-common-dir>/dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/`,
   keyed by run id and attempt nonce the way lane reports are.
   `assets/dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID
   --nonce NONCE` prints the path.
+- **Watcher state:** `<git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state`.
+- **Branch active pointers:** `<git-common-dir>/dev-flow-v2/active/`, one
+  SHA-256-named pointer per branch. `promote` and `close` retire only the
+  matching run's pointer after the validated terminal record is written and
+  read back. A reserved monitor event on an ended run defers retirement and
+  blocks a new activation on that branch.
+  Every observation must match the reservation's event, action and expected head.
+  Reconcile landed events. If a reserved action is observed absent, record that
+  observation and cancel it with
+  `assets/dev-flow-monitor.sh cancel --state <monitor.json> --run-id <run-id>
+  --event <event-id> --observed <observation.json> --reason "<why>"`; landed
+  actions still go through reconcile. Then retire the run or prune its pointer
+  before retrying activation.
+  `run-record.mjs prune --dry-run` reports
+  which pointers are safe to remove; `prune` removes only valid pointers for
+  terminal runs and reports open, malformed, mismatched, missing, reserved, or
+  leftover entries it skips. A fresh run after retirement starts at generation
+  1.
 
 Use `dev-flow-support/assets/run-record.mjs` for the run-record operations
 it supports, never a hand edit:
 
 - `transition`, which also appends the matching transition receipt;
-- `intervention`;
+- `lane-init`, which creates a receipt-complete kickoff record and its dispatch
+  policy projection for a lane in the last validated plan revision;
+- `intervention` (including answered harness approval prompts);
+- `authorize-cap` for one attributable maintainer instruction, shared with solo runs;
 - `bind-pr`;
 - `close`.
 
@@ -276,6 +345,22 @@ the same candidate, validate, rename and readback sequence. Parallel writers
 must first use `run-record.mjs`'s shared mutex and validated writer; its lock
 does not protect a caller that bypasses it.
 
+For a maintainer-authorized round above the resolved cap, use
+`run-record.mjs authorize-cap --slate <id> --session <id> --owner-token <token> --run-id <id>
+--stage <challenge|review|integration> --round <n> --actor <maintainer-identity>
+--instruction '<verbatim session instruction>' --at <instruction-UTC-time>`.
+An agent never authorizes itself: the writer records the maintainer's instruction,
+which may precede or follow the round. For integration, `round` names the charged
+cycle count, not a pass or retry. Each intervening over-cap round needs its own
+entry; malformed or duplicate entries refuse. A cap of 0 stays disabled. Never
+rewrite the resolved caps in `policy.json`. Continue the same run's numbering
+and show `round n/cap (authorized) — maintainer authorized on <date>` in the
+stage ledger, citing the instruction verbatim, actor and time; the PR body's
+budget line discloses that same overage alongside rigor overrides
+(harmon-devkit#683). Follow `/review`'s authorization procedure and ordinary
+convergence rules. An older merge-base engine/schema under `--closure` fails
+closed; report compatibility refusal rather than bypassing that trusted engine.
+
 Point an intervention that rests on a ruling file at it with
 `--ruling FILE`: the writer copies those bytes into the run's
 `rulings/<sha256>` file without overwriting an existing snapshot, and the
@@ -290,23 +375,29 @@ later session. Files under `.git/` never show in `git status`.
 
 Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
-with the slate's milestone and issue set. While another session holds the
-same slate, the same milestone, or any of the same issues — under any slate
-id — every write is refused. Take it before publishing the plan (§ Planning
+with the slate's milestone and issue set. Every run-record.mjs and
+plan-revise.mjs write is refused while any lock other than this session's own
+covers the same slate, the same milestone, or any of the same issues; the
+owner-token caller contract below defines "own".
+Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
-implicit lock taken at a first write records no milestone, and a plan
+unlocked slate refuses every run-record.mjs and plan-revise.mjs write except explicit `lock acquire`, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
-claim comment's `session:` line. Reuse it after a restart; it is not a PID or
-a liveness signal. A different session is refused even on the same host.
+claim comment's `session:` line; it is not a PID or a liveness signal.
+A restart, `/clear` or compaction also loses the owner token; resume through
+the recovery procedure below: operator confirmation, force release, then a
+fresh `lock acquire`. A different session is refused even on the same host.
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 Recovery is an explicit operator decision, never an automatic timeout or a
 cross-host process probe. Inspect `lock status --slate <slate>`, have the
-operator confirm that the previous session and its writers have stopped, then
+operator confirm that the previous session, its writers, and its lane watcher
+have stopped, then
 run `lock release --slate <slate> --session <recovering-session> --force
 --reason "<operator attribution and why the old session is abandoned>"` once.
-The helper records that request, its session, reason, timestamp and complete
-previous lock in `locks/recoveries/<slate>/<id>.json` before removing the lock;
+The helper records that request, its session, reason, timestamp and
+previous lock metadata (including only the owner-token digest) in `locks/recoveries/<slate>/<id>.json` before removing the lock;
 failure to record it leaves the lock held. Re-read status after any failure:
 the audit records intent, so a crash may leave the lock still held. Acquire
 normally as the recovering session only after release; ordinary scope
@@ -329,6 +420,52 @@ only check that an edit happened.
 Lane briefs consume the validated plan's last revision assignments, fences,
 overlap choices, and merge dependencies rather than reconstructing them from
 session prose.
+
+Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.
+Run it from the target clone after preparing the lane branch/worktree and
+transactionally refreshing its claim:
+
+```sh
+node assets/provision-lane.mjs --slate ID --session ID --owner-token TOKEN \
+  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT
+```
+
+For an added lane, widen the lock with `run-record.mjs lock acquire --issues`
+and the existing owner token, then publish the plan revision through #1410's
+plan writer, then run `provision-lane.mjs`. Provisioning never widens the
+reservation or writes a plan. A conflicting reservation, invalid plan or facts,
+unknown lane, existing run, or unrecorded effective-fence overlap with another
+live lane refuses before durable state is written. Plan-recorded `serialize`
+and `split` overlaps provision with their overlap text and merge dependency.
+For each shared path, the facts file must supply `fence_notes[path][lane]` section boundaries for both live lanes; both notes appear beside that path in the brief, and missing notes refuse provisioning before any write.
+Fence checks include expansions and unmaterialized globs; a possible overlap
+not covered by the recorded issue pair is refused for plan revision or judgment.
+
+The command composes `run-record.mjs lane-init`, the monitor's `activate` and
+`reserve-agent-run`, and the `brief` validator. It obtains its output directory
+from `dev-flow-monitor.sh orchestrator-dir`, prints a JSON handoff including
+the brief and report paths, and never mints, stores or prints an owner token.
+Inspect durable state after an operational failure; an existing run is never
+overwritten or silently resumed by provisioning.
+
+`--policy` is the complete trusted `devflow-policy.mjs resolve --json` output
+for this lane, as supplied to `solo-init`. Its dispatch fields must agree with
+the last validated plan's lane profile. Both kickoff writers preserve the same
+full projection, including finder slots, producer-tier order and push gates.
+
+The facts file is a JSON object with only these per-lane dispatch facts:
+`worktree_path`, `harness`, `harness_text`, `effort`, `codex_model_id`,
+`codex_launch_flags`, `scratch_dir`, `repo_tier`, `gate_bounds_override`,
+`gate_commands`, `git_sandbox_note`, `known_environmental_failure`, `unit_kind`,
+`pr_title`, `verified_facts_and_rulings` (nonempty strings), and the authenticated
+`claim_handoff` object described in the catalog below. Use `n/a` for inapplicable
+Codex facts. No plan-owned value may be overridden in facts. The builder uses
+the last revision's lane profile (or its slate profile when lane profiles are
+absent), fence plus expansions, and other live lanes; overlap text is never
+copied from a previous brief. The prepared worktree must belong to this clone,
+name the lane branch, and still be at the plan's base, which must equal the
+locally fetched target tracking head. Fetch and recheck target freshness under
+§ Planning before invoking the command.
 
 ### File-scope fences
 
@@ -391,7 +528,7 @@ table before their intended sections.
 | `{{record-directory}}` | Active run record directory |
 | `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
 | `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
-| `{{live-lane-overlaps}}` | Orchestrator's complete live-lane overlap map |
+| `{{live-lane-overlaps}}` | Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`. |
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
@@ -416,10 +553,12 @@ table before their intended sections.
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
-| `{{ready-sentinel}}` | `READY-<lane-name>` using the brief lane label |
-| `{{handoff-sentinel}}` | `HANDOFF-<lane-name>` using the brief lane label |
-| `{{blocked-sentinel}}` | `BLOCKED-<lane-name>` using the brief lane label |
+| `{{ready-sentinel}}` | `READY-<lane-label>` |
+| `{{handoff-sentinel}}` | `HANDOFF-<lane-label>` |
+| `{{blocked-sentinel}}` | `BLOCKED-<lane-label>` |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+
+The sentinel placeholder values are kind/lane prefixes; the lane-brief template appends `-{{attempt-nonce}}` to form the complete sentinel.
 
 Every local PR-owning lane brief MUST carry the active run identity so the lane worker can
 route confidence stages through `/review` and publish a draft with v2 evidence;
@@ -483,10 +622,11 @@ named by the rendered brief. Provision the lane branch/worktree, then
 transactionally refresh the existing claim so its record names that exact branch.
 Authenticate the refreshed claim into the handoff snapshot without transferring
 its ownership.
-As a render-time completeness check, scan the entire rendered file and refuse
-dispatch if any unreplaced `{{name}}` token remains. This is the renderer's
-check, not content validation of the opaque body; the `brief` validator checks
-double-brace tokens only inside the envelope block.
+As a render-time completeness check, compare the unrendered template's
+placeholder set with the source catalog and the complete values set before
+substitution. Substitute every value in one pass; do not rescan inserted values
+for tokens, since a fact or issue title may legitimately contain one. The
+`brief` validator checks double-brace tokens only inside the envelope block.
 For local PR-owning lanes, validate the rendered brief before dispatch and refuse dispatch on any failure:
 `node dev-flow-support/assets/validate-result-schemas.mjs brief "$brief_path"`.
 Place the per-attempt report under the common Git directory, or install and
@@ -496,6 +636,8 @@ refer to that reporting contract indirectly and never quote a sentinel value,
 because old pane output must not satisfy a later attempt.
 
 ## PR-open confirmation
+
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
 
 Before promoting a lane's PR, confirm the lane produced v2 evidence
 appropriate to its topology and resolved policy for the lane's active
@@ -536,6 +678,14 @@ labels; the PR takes labels on both; and on the issue the last implementer
 wins, which also clears an earlier implementer's effort when this one
 records none. Like `claim:*`, the record is never a routing input — nothing here or in
 any dispatch reads it back to choose a model.
+
+For a recorded run, invoke integrate's `assets/promote.sh` with the existing
+run identity and resolved gate inputs as the only promotion path. It owns the
+immediate check → promote once → scalar read → fingerprint compare → head
+re-read → run-record promotion. Freeze body and review content until it returns;
+never concatenate a diagnostic gate with a bare ready command. A nonzero
+result blocks the handoff. The later watch below is a separate act; reversing
+a recorded handoff requires a fresh run as integrate §6 specifies.
 
 The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. **Invariant: the ready report is sent
@@ -679,6 +829,57 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+### Antigravity (agy) lane permission posture
+
+Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
+or unset for dev or host (see `docs/glossary.md`).
+With `FOREMAN_DEVCONTAINER` unset (dev or host), the orchestrator does not infer
+the profile from settings. It dispatches agy lanes only after confirming that
+the agy settings in effect (`~/.gemini/antigravity-cli/settings.json`) carry the
+template dev-profile permissions from `antigravity-settings-dev.json`.
+Otherwise it does not dispatch agy lanes, and in a dev devcontainer it reports
+that a rebuild is needed. `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled` gates installing
+the bot wrapper and applying the dev settings, not profile selection.
+Disclose the chosen posture in the lane brief's verified-facts/rulings text.
+`--dangerously-skip-permissions` belongs only to the bot posture and is never
+passed under dev, host or agent.
+
+- **Bot:** `FOREMAN_DEVCONTAINER=bot`. When
+  `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the template's
+  bot-autonomy wrapper at `~/.local/bin/agy` injects
+  `--dangerously-skip-permissions` into every agy argv except bare `agy` and
+  the passthrough subcommands. Interactive pane launches with arguments receive
+  the flag too. Bare interactive `agy` uses the bot's `always-proceed` settings;
+  the wrapper injects no flag
+  for bare interactive `agy` or the subcommands it passes through unchanged.
+  Not every bot launch carries the flag. A launcher that resolves `agy`
+  another way must pass `--dangerously-skip-permissions` itself for
+  lane runs.
+- **Dev:** `FOREMAN_DEVCONTAINER` is unset; use the template's
+  `.devcontainer/config/antigravity-settings-dev.json`.
+  With `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`, the dev profile's post-create
+  step runs `apply-antigravity-settings.sh` to apply that file **user-global**
+  at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer.
+  This settings posture applies to interactive agy panes; headless `agy -p`
+  ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`).
+  This posture holds only in a devcontainer built with the template's dev
+  settings; a pre-existing container needs a rebuild before agy lanes run.
+- **Host:** `FOREMAN_DEVCONTAINER` is unset; use the user's own agy settings;
+  the template's dev-profile settings are not applied to the host.
+  Dispatch agy lanes only once the gate above confirms the template dev-profile
+  permissions are in effect; otherwise dispatch none.
+  Headless `agy -p` ignores settings allow-rules and auto-denies (see
+  `docs/guides/devcontainers.md`).
+- **Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by
+  `.devcontainer/config/agent/harnesses.json`;
+  do not launch an agy lane in that profile.
+
+The maintainer's 2026-10-18 ruling keeps the existing template dev settings:
+this changes no lane-scoped allowlist. Refer to the template-owned settings
+file rather than copying its contents here. This section documents the posture
+and changes no live behaviour. The agy launch argv and lane workspace
+directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290).
+
 ### Cloud lanes
 
 Cloud lanes are used only on the operator’s explicit request.
@@ -694,18 +895,30 @@ lane is planned, fenced and claimed like any other.
 
 ## Persistent supervision
 
-Watching is the standing mode, not a one-shot step. Use the harness's
-session-lifetime persistent monitor primitive—never a background shell subject
-to an ordinary command timeout—to poll fresh lane-agent and PR state and emit
-only transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas). If it
-exits before the overall run reaches a terminal outcome, re-arm it immediately;
-never interpret monitor termination as human cancellation. If no persistent
-primitive is available, block instead of silently falling back to occasional
-manual polling.
+Watching is the standing mode, not a one-shot step.
+Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`).
+Invoke it as that file. The monitor is the
+session-lifetime persistent monitor primitive that streams its output.
+Never inline its loop, write a substitute, or run it as an unobserved background shell job.
+The monitor polls fresh
+lane-agent and PR state and emits transitions (`idle`, `done`, `blocked`,
+`unknown`, and PR deltas), approval prompts, stalls, and periodic heartbeat
+summaries. On every monitor expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `--state-file`;
+then check lane staleness before other work. Never interpret monitor termination as human cancellation. If
+no persistent primitive is available, block instead of silently falling back
+to occasional manual polling.
 
-Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
-their command under a non-Bash shell, so always invoke the file as
-`bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state --registry
+On every other wakeup (a user message or monitor event), first compare the current
+time with each lane's last observed change; read and act on any lane silent
+past the stall threshold before other work.
+Keep exactly one watcher per slate.
+Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
+A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.
+
+Harness monitor primitives may run their command under a non-Bash shell, so
+always invoke the file as
+`bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state --registry
 <kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>...`;
 never paste its loop inline. The first spec token is the **herdr agent name**;
 herdr requires lowercase names (for example `lane-d1220`), while the brief's
@@ -715,13 +928,55 @@ field may contain a colon. Four-field specs still default to
 `<checkout>/.worktrees/<agent>/.lane-report.md` with lane-label equal to agent;
 with `--workspace-root`, checkout is `<workspace-root>/<repo-name>`. A fifth
 field of `cloud` retains the GitHub-only spec and takes no report or label.
-The ready/handoff/blocked prefixes must be `READY-<lane-label>`,
-`HANDOFF-<lane-label>`, and `BLOCKED-<lane-label>`; labels and nonces contain
+Sentinels use the exact kind-first form
+`(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, matching
+`^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
 only ASCII letters, digits, underscores and hyphens. Both report and pane
-observations match the whole final nonblank line `<kind>-<lane-label>-<nonce>`.
+observations match that whole final nonblank line.
 A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
-Keep the state file across re-arms so reported
+The watcher also emits these supervision events:
+
+- `PROMPT <lane>: <approval request>` uses Herdr state for classified harnesses
+  (parsed explain with null `fallback_reason`): an episode starts at `blocked`
+  and ends when the lane leaves `blocked`. Pane text only quotes the request;
+  unavailable text uses `(input requested; text not captured)`. For agy and
+  fallback lanes, pane-text detection uses agy's approval strings instead.
+  The quote is partial: Codex/Claude show only the dialog header; agy shows
+  the first command line, cut at 300 bytes. Read the full pane with
+  `herdr agent read` before approving; never approve from the event quote.
+  A Herdr `blocked` state can be a question rather than an approval: answer
+  or escalate questions. For approvals, read the full pane first, then:
+  Inspect the request and approve or deny within your authority. Record every
+  prompt answered by you or by a human in a pane through
+  `run-record.mjs intervention --kind prompt --decision approved|denied --command TEXT --note TEXT`
+  with the run/slate/session identity, `--at` set to the answer time, and
+  optional `--answered-by orchestrator|human`. Record the full command named
+  by the request; one record per answered prompt, never per repeated event.
+  Each episode
+  retains its first-seen time across redraws and restarts, repeats after
+  `--prompt-reemit-seconds` (default 180), and starts anew after a poll outside
+  the episode, even for identical text.
+- `STALL <lane>: no pane change for <N>m` fires once per unchanged-pane episode
+  after `--stall-minutes` (default 10). Read the pane and act: investigate,
+  re-brief, or escalate within authority. Pane content or Herdr revision/state
+  changes reset the timer; a terminal report or pane sentinel suppresses it.
+- `HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...` summarizes
+  every lane after `--heartbeat-minutes` (default 15), including cloud lanes.
+  Cloud age measures branch/PR changes; unavailable local progress has age
+  `unknown`. A missing heartbeat means re-arm the watcher and investigate its
+  exit, rather than assuming the lanes are healthy.
+
+When `herdr agent explain --json` identifies fallback detection, a visible
+approval prompt derives `blocked`; otherwise the watcher uses `unknown`.
+These agent events and approval requests carry `(fallback)`; fallback alone
+never proves `idle` or `done`. For a lane present in a successful agent list,
+a failed or unparseable explain read carries no new state: retain the previous
+AGENT state and emit no AGENT transition for that poll. A lane missing from a
+successful list is `absent` regardless of explain. Cloud lanes have no pane,
+so receive heartbeat summaries alongside their GitHub events, with no `PROMPT` or `STALL` events.
+Keep the state file across re-arms so prompt episodes and re-emission times,
+stall episodes, heartbeat timing, reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds
 every `herdr` and `gh` read, prefers each lane's explicit report-path sentinel,
 tags pane-only fallback results, and watches reviews plus top-level and inline
@@ -732,13 +987,13 @@ window's own deadline passes, the watcher emits
 the window — the event means only that the promotion epoch could not be
 confirmed in time; that path also clears the lane's tracked `PR` state as it
 tears the window down, so the very next observation — the watcher's own next
-poll, or a fresh process restarted against the same `--state-file` — sees
+poll, or a fresh process restarted against the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` — sees
 the still-promoted PR as newly observed and re-arms a fresh window on its
 own, which is what makes restarting with the same state file a genuine
 retry rather than a no-op. Keep the registry argument
 bound to the immutable kickoff snapshot across every re-arm. It only reports
 events; the orchestrator remains responsible for every action. The watcher-owned
-`lane-watch.state` is separate from the run's canonical `monitor.json`; never
+`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` is separate from the run's canonical `monitor.json`; never
 pass that JSON monitor state to `--state-file`.
 
 The watcher's own restart durability does not, by itself, make the
@@ -769,8 +1024,10 @@ appending to a worktree's `.git` path (which is a file in linked worktrees).
 `assets/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
-with `active-path`, and activate a new run by compare-and-swap from the prior
-generation while passing the kickoff-pinned registry revision; the resulting
+with `active-path`, and activate a new run by compare-and-swap using
+`--expected-predecessor <run-id|absent>` and `--expected-generation <n>`: pass
+the observed predecessor identity and generation, or `absent` and `0` when no
+pointer exists. Also pass the kickoff-pinned registry revision; the resulting
 active pointer is the run's immutable registry binding. Activation also binds
 each run ID to exactly one branch before any branch-specific pointer can write
 its canonical monitor ledger. Every `reserve` and

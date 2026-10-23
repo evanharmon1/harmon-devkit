@@ -29,6 +29,36 @@ The skills sync is the only distribution channel for this runtime: a script one
 skill uses lives in that skill's own `assets/`, and a script several skills
 share lives here. Nothing is shipped through the harmon-init template.
 
+## Owner-token caller contract
+
+Take the one-time initial reservation once before the slate's first write by running
+`node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
+without capturing its output. Read the single printed token line from that
+output. Pass it literally as `--owner-token <token>` on every later
+run-record.mjs or plan-revise.mjs write, including normal release.
+Every later `lock acquire` (scope widening or re-acquisition) passes
+`--owner-token <token>`; a tokenless re-acquire of a tokenized lock is refused.
+
+The token lives only in the session's own context.
+A restart, `/clear` or compaction loses it; recovery requires the
+operator-confirmed `lock release --force --reason`, then a fresh `lock acquire`.
+
+Never put the token in a shared path keyed by session name, and never write it
+to repository files, logs, or PR or issue text. The token is a collision guard
+between same-named sessions, not a credential. `RUN_RECORD_OWNER_TOKEN` is usable
+within one process or script only; an export does not survive separate tool
+calls. Re-acquisition requires the token and prints nothing.
+Only the token's SHA-256 digest is
+stored in the lock, status and recovery audit. An unlocked slate refuses
+run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance;
+a token-less legacy lock continues to authorize by session with a
+release/re-acquire warning.
+
+A lock held under another slate id over the same issues or milestone is refused whatever its session name.
+
+`review/assets/post-evidence.sh` is a separate write path: it uses its own
+per-file mutex and takes no slate lock.
+
 ## Assets
 
 | Asset | Used by | What it does |
@@ -37,8 +67,9 @@ share lives here. Nothing is shipped through the harmon-init template.
 | `assets/tier-inputs.mjs` | orchestrate, implement | The consumer half of tier resolution: translate an issue's labels (and, on an organization repository, its Risk/Complexity fields in place of rating labels) into `devflow-policy.mjs resolve` flags, reconciling label conflicts and refusing an ambiguous pin; `disclose` renders the PR-body tier disclosure from the reader's output. |
 | `assets/.devflow-conformance-v2.json` | `scripts/test-devflow-conformance.sh` (source tree only) | harmon-init's portable v2 policy corpus, byte-identical and blob-pinned, so the vendored reader is held to harmon-init's answers. |
 | `assets/validate-result-schemas.mjs` | review, integrate, orchestrate | Schema-check one brief, result, adjudication, run, or plan document, plus the receipt checks a raw schema cannot express. |
-| `assets/run-record.mjs` | orchestrate | The run-record writer: stage transitions, interventions (with a stable ruling snapshot and SHA-256), PR bindings, the promotion record (written by whichever session owns integration and decides promotion), and `close` (outcome plus archiving the run's orchestrator files), each through candidate → `validate-result-schemas.mjs run` → rename → readback; also the slate lock both writers take, with audited operator recovery through `lock release --force --reason`. |
-| `assets/plan-revise.mjs` | orchestrate | The mechanical half of a plan recompute for a base move (bump `base_sha`, retire done issues and their lanes, extend the digest chain), refusing with the paths named whenever the move needs orchestrator judgment. |
+| `assets/run-record.mjs` | orchestrate | The run-record writer: stage transitions, interventions (including `--kind prompt --decision approved\|denied --command TEXT [--answered-by orchestrator\|human]`, and a stable ruling snapshot and SHA-256), PR bindings, the promotion record (written by whichever session owns integration and decides promotion), and `close` (outcome plus archiving the run's orchestrator files), each through candidate → `validate-result-schemas.mjs run` → rename → readback; `promote` and `close` retire the matching active pointer after validated readback, and `prune` inspects or removes valid terminal pointers; `dev-flow-monitor.sh cancel` records an operator-confirmed absent action on an ended run; also the slate lock both writers take, with audited operator recovery through `lock release --force --reason`. |
+| `../review/assets/record-pass.sh` | review (owning orchestrator) | Chain role-envelope validation, pass receipt, stage ledger, verification-only exit, orchestrator-supplied adjudication and computed exit; forward the owner token to each shared-writer call without persisting it. |
+| `assets/plan-revise.mjs` | orchestrate | Write held-lock `genesis`, `add-issue` with lock-scope widening and resolved lane profile, dated `expand`, and `release`/`done` retirement decisions through candidate → validate → rename → canonical readback; compute intersections and refuse unresolved glob-aware collisions while preserving original fences. `base-move` retains its mechanical-only contract. Exports shared fence coverage helpers for lane provisioning. |
 | `assets/render-dev-flow.sh` → `assets/render-dev-flow.mjs` | review, integrate, retro | Render a run record into its PR-body and comment projections. |
 | `assets/dev-flow-exit.sh` → `assets/dev-flow-exit.mjs` | review, retro | Compute a confidence stage's exit verdict from the run record. |
 | `assets/lib/toml-lite.mjs` | the readers above | Restricted TOML parser. |

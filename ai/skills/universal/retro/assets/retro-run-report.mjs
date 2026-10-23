@@ -1024,6 +1024,22 @@ function stageAt(transitions, at) {
   return current
 }
 
+function promptSummary(entry) {
+  return entry.kind === 'prompt'
+    ? `; ${entry.decision}: ${entry.command}; answered by ${entry.answered_by ?? 'unspecified'}`
+    : ''
+}
+
+function promptCountsByStage(interventions, transitions) {
+  const counts = {}
+  for (const entry of interventions) {
+    if (entry.kind !== 'prompt') continue
+    const stage = stageAt(transitions, entry.at) ?? 'unknown'
+    counts[stage] = (counts[stage] ?? 0) + 1
+  }
+  return counts
+}
+
 function classProvenanceRows(counts) {
   return Object.entries(counts || {})
     .map(([key, count]) => {
@@ -1059,6 +1075,9 @@ function measure(trajectory, policy) {
   for (const transition of transitions) push(transition.stage)
   for (const round of rounds) push(round.stage)
   if (policy.present) for (const stage of ['challenge', 'review', 'integration']) push(stage)
+  for (const stage of ['challenge', 'review', 'integration']) {
+    if (trajectory.authorized_ceiling?.[stage] !== undefined) push(stage)
+  }
 
   const stages = order.map((stage) => {
     const own = rounds.filter((round) => round.stage === stage)
@@ -1068,7 +1087,13 @@ function measure(trajectory, policy) {
       .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null }))
     const stageInterventions = interventions
       .filter((entry) => stageAt(transitions, entry.at) === stage)
-      .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
+      .map((entry) => ({
+        at: entry.at,
+        kind: entry.kind,
+        stage: stageAt(transitions, entry.at),
+        note: entry.note,
+        ...(entry.kind === 'prompt' ? { decision: entry.decision, command: entry.command, answered_by: entry.answered_by ?? null } : {})
+      }))
     // Unlike challenge/review, the review skill posts no evidence marker for
     // integration passes, so local evidence can never authenticate a round,
     // pass, or finding count here. Disclose that plainly instead of a count
@@ -1087,8 +1112,13 @@ function measure(trajectory, policy) {
         stage,
         entries,
         cap,
+        ...(trajectory.authorized_ceiling?.[stage] === undefined ? {} : { authorized_ceiling: trajectory.authorized_ceiling[stage] }),
         ...(exemptCap === undefined ? {} : { exempt_cap: exemptCap }),
         integration_evidence: trajectory.integration_evidence || 'unavailable',
+        remediation_pushes: Array.isArray(trajectory.remediation_pushes)
+          ? trajectory.remediation_pushes.length
+          : transitions.filter((entry) => entry.stage === 'integration' && entry.remediation).length,
+        remediation_cap: policy.present ? policy.rounds.remediation : null,
         interventions: stageInterventions
       }
     }
@@ -1097,6 +1127,7 @@ function measure(trajectory, policy) {
       entries,
       rounds_spent: own.length,
       cap,
+      ...(trajectory.authorized_ceiling?.[stage] === undefined ? {} : { authorized_ceiling: trajectory.authorized_ceiling[stage] }),
       findings: own.reduce((total, round) => total + (round.finding_count || 0), 0),
       passes: own.reduce((total, round) => total + (round.pass_count || 0), 0),
       blocked_passes: own.reduce((total, round) => total + (round.blocked_passes || 0), 0),
@@ -1128,6 +1159,13 @@ function measure(trajectory, policy) {
   const classProvenance = classProvenanceRows(trajectory.findings_by_class_and_provenance)
   const stageCounts = trajectory.findings_by_stage_class_and_provenance
   for (const stage of stages) {
+    stage.findings_by_finder_source = trajectory.findings_by_stage_finder_source ?? null
+    stage.findings_by_finder = Object.hasOwn(trajectory, 'findings_by_stage_finder')
+      ? trajectory.findings_by_stage_finder?.[stage.stage] ?? {} : undefined
+    stage.retained_record_findings_by_finder = Object.hasOwn(trajectory, 'retained_record_findings_by_stage_finder')
+      ? trajectory.retained_record_findings_by_stage_finder === null
+        ? null : trajectory.retained_record_findings_by_stage_finder?.[stage.stage] ?? {}
+      : undefined
     stage.findings_by_class_and_provenance = stageCounts?.[stage.stage] === undefined
       ? null
       : classProvenanceRows(stageCounts[stage.stage])
@@ -1147,13 +1185,15 @@ function measure(trajectory, policy) {
 
   return {
     stages,
+    answered_prompts_by_stage: promptCountsByStage(interventions, transitions),
     class_provenance_attribution: attribution,
     findings_by_class_and_provenance: classProvenance,
     interventions: interventions.map((entry) => ({
       at: entry.at,
       kind: entry.kind,
       stage: stageAt(transitions, entry.at),
-      note: entry.note
+      note: entry.note,
+      ...(entry.kind === 'prompt' ? { decision: entry.decision, command: entry.command, answered_by: entry.answered_by ?? null } : {})
     })),
     settlements: settlements.map((entry) => {
       const parts = FINDING_ID_RE.exec(entry.finding_id)
@@ -1183,45 +1223,12 @@ function measure(trajectory, policy) {
 // Measurements the retro is asked for that today's evidence surface cannot
 // supply. Named here, with the issue that would close each, rather than
 // silently omitted — an absent section reads as "nothing to report".
-function unavailableMeasurements(measured) {
-  const gaps = []
-  // Only a gap when it actually remains one. Where exactly one stage found
-  // anything the breakdown IS rendered per stage, and declaring it missing
-  // anyway would manufacture a follow-up for a measurement the report just
-  // made — the skill carries every listed gap into improvements (cloud review
-  // round 1, confirmed P2).
-  if (measured.class_provenance_attribution.scope === 'run' &&
-      measured.stages.some((stage) => stage.findings > 0 && stage.findings_by_class_and_provenance === null)) {
-    gaps.push({
-      measurement: 'findings by class and provenance, keyed by stage',
-      reason:
-        "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, and more than one stage found something here, so no per-stage split is derivable",
-      issue: 'harmon-devkit#779'
-    })
-  }
-  gaps.push(
-    {
-      measurement: 'remediation rounds spent against the remediation cap',
-      reason:
-        'remediation is budgeted independently of integration, but it is not a stage in run.schema.json\'s stage enum and the run trajectory exposes no remediation count, so the remediation cap shown in the policy line above is disclosed and unmeasured — an integration run cannot be shown to have exhausted it',
-      issue: 'harmon-devkit#663 successors'
-    },
-    {
-      measurement: 'adjudicated-priority overrides per finding',
-      reason:
-        'the run trajectory reduces each round\'s adjudication documents to a count, dropping reviewer_priority, adjudicated_priority and override',
-      issue: 'harmon-devkit#753'
-    }
-  )
-  if (measured.settlements.every((entry) => entry.finder === null)) {
-    gaps.push({
-      measurement: 'findings by finder slug (agent-registry.json finders[].slug)',
-      reason:
-        "finder slugs reach this projection only through settled deferred findings' ids, and none of this run's settlements carries one",
-      issue: 'harmon-devkit#753'
-    })
-  }
-  return gaps
+function unavailableMeasurements() {
+  return [{
+    measurement: 'adjudicated-priority overrides per finding',
+    reason: 'the retro does not yet render the adjudication priorities and override reasons exposed by the trajectory',
+    issue: 'harmon-devkit#1382'
+  }]
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,10 +1313,13 @@ function renderMarkdown(report) {
         stage.cap === null
           ? 'no cap recorded'
           : `cap ${stage.cap}${exemptSuffix} (disclosed, unverified)`
-      l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}) — integration passes carry no authenticated evidence marker today.`)
-    } else if (stage.cap !== null || stage.rounds_spent > 0) {
+      const authorized = stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`
+      const remediationCap = stage.remediation_cap === null ? 'no cap recorded' : `cap ${stage.remediation_cap} (disclosed, unverified)`
+      l.push(`- Remediation pushes: ${stage.remediation_pushes} / ${remediationCap}`)
+      l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}${authorized}) — integration passes carry no authenticated evidence marker today.`)
+    } else if (stage.cap !== null || stage.rounds_spent > 0 || stage.authorized_ceiling !== undefined) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
-      l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}`)
+      l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}${stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)
       for (const evidence of stage.round_evidence_counts) {
         l.push(`- Round ${evidence.round} evidence: ${evidence.passes} pass(es), ${evidence.blocked_passes} blocked pass(es), ${evidence.adjudications} adjudication(s)`)
@@ -1339,9 +1349,27 @@ function renderMarkdown(report) {
       `- Interventions during this stage: ${
         stage.interventions.length === 0
           ? 'none'
-          : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)})`).join('; ')
+          : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)}${safe(promptSummary(entry))})`).join('; ')
       }`
     )
+    l.push(`- Answered approval prompts during this stage: ${report.measurements.answered_prompts_by_stage[stage.stage] ?? 0}`)
+    const finderCounts = stage.stage === 'integration' ? stage.retained_record_findings_by_finder : stage.findings_by_finder
+    if (['challenge', 'review', 'integration'].includes(stage.stage)) {
+      const source = stage.stage === 'integration'
+        ? 'retained-record evidence, not verified by GitHub'
+        : stage.findings_by_finder_source === 'retained-pass-files'
+          ? 'retained pass files for rounds with authenticated evidence; pass contents not verified by GitHub'
+          : stage.findings_by_finder_source === 'authenticated-posted-projection'
+            ? 'authenticated posted projection'
+            : 'source unavailable from this harvester'
+      const absence = finderCounts === undefined ? ' unavailable from this harvester'
+        : finderCounts === null ? ' not measured on this path — no retained run record was read' : ''
+      l.push(`- Findings by finder (${source}):${absence}`)
+      if (finderCounts !== undefined && finderCounts !== null) {
+        if (Object.keys(finderCounts).length === 0) l.push('  - No findings recorded.')
+        for (const [finder, count] of Object.entries(finderCounts)) l.push(`  - ${cell(finder)}: ${count}`)
+      }
+    }
     const attribution = report.measurements.class_provenance_attribution
     if (stage.findings > 0) {
       if (stage.findings_by_class_and_provenance !== null) {
@@ -1372,11 +1400,11 @@ function renderMarkdown(report) {
         l.push('  (this run\'s whole class/provenance aggregate, and this is its only stage with findings)')
       } else {
         l.push(
-          '- Findings by class and provenance: not derivable per stage — the trajectory aggregates them across every stage that found something (harmon-devkit#779). See the run-wide table below.'
+          '- Findings by class and provenance: not derivable per stage — unavailable from this harvester, which aggregates them across every stage that found something. See the run-wide table below.'
         )
       }
       l.push(
-        '- Adjudication overrides: not derivable — the trajectory reduces each round\'s adjudication to a boolean (harmon-devkit#753).'
+        '- Adjudication overrides: not derivable — the retro does not yet render the trajectory\'s adjudication priorities and override reasons (harmon-devkit#1382).'
       )
     }
     l.push('')
@@ -1390,7 +1418,7 @@ function renderMarkdown(report) {
     l.push('Partial verified projection only: rounds named unavailable above are excluded rather than counted from raw producer assertions.')
     l.push('')
   } else if (report.measurements.findings_by_class_and_provenance.length === 0) {
-    l.push('No findings recorded for this run.')
+    l.push('No challenge or review findings were recorded for this run; integration findings, where retained, are listed in the integration section.')
   } else if (report.measurements.class_provenance_attribution.scope === 'stage') {
     l.push(
       `Every finding in this run belongs to stage \`${safe(report.measurements.class_provenance_attribution.stage)}\`, so the table below is also that stage's — see its section above.`
@@ -1429,7 +1457,7 @@ function renderMarkdown(report) {
   }
   l.push('')
   l.push(
-    '**Adjudication overrides are not covered here.** A finding whose adjudicated priority differs from the reviewer\'s is recorded in that round\'s adjudication document, and the run trajectory reduces each round\'s adjudication to a single boolean (harmon-devkit#753). An empty section above therefore means "no policy disclosure was published", never "the orchestrator overrode nothing".'
+    '**Adjudication overrides are not covered here.** A finding whose adjudicated priority differs from the reviewer\'s is recorded in that round\'s adjudication document, and its priorities and override reason are exposed by the trajectory but not yet rendered here (harmon-devkit#1382). An empty section above therefore means "no policy disclosure was published", never "the orchestrator overrode nothing".'
   )
   l.push('')
 
@@ -1446,10 +1474,12 @@ function renderMarkdown(report) {
         : 'None recorded so far. The run has no terminal outcome yet, so this is not yet an unattended run — only one that has not needed a human up to this point.'
     )
   } else {
-    l.push('| at | kind | stage | note |')
-    l.push('| --- | --- | --- | --- |')
+    l.push(`Answered approval prompts: ${report.measurements.interventions.filter((entry) => entry.kind === 'prompt').length}`)
+    l.push('')
+    l.push('| at | kind | stage | note | decision | command | answered by |')
+    l.push('| --- | --- | --- | --- | --- | --- | --- |')
     for (const entry of report.measurements.interventions) {
-      l.push(`| ${cell(entry.at)} | ${cell(entry.kind)} | ${cell(entry.stage ?? '—')} | ${cell(entry.note)} |`)
+      l.push(`| ${cell(entry.at)} | ${cell(entry.kind)} | ${cell(entry.stage ?? '—')} | ${cell(entry.note)} | ${cell(entry.decision ?? '—')} | ${cell(entry.command ?? '—')} | ${cell(entry.answered_by ?? '—')} |`)
     }
   }
   l.push('')
@@ -1698,7 +1728,10 @@ function renderLocalUnverified(args, runId, requestedPr) {
     : 'not recorded — adjudications/ is absent')
   add('Findings and convergence', 'not measured — no authenticated adjudication evidence')
   if (record.interventions.length === 0) add('Interventions', 'none recorded')
-  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}`)
+  for (const [stage, count] of Object.entries(promptCountsByStage(record.interventions, record.stage_transitions))) {
+    add('Answered approval prompts', `${stage}: ${count}`)
+  }
+  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}${promptSummary(entry)}`)
   if (record.settlements.length === 0) add('Settlements', 'none recorded')
   for (const entry of record.settlements) {
     add('Settlement recorded locally', `${entry.finding_id}: ${entry.disposition} at ${entry.settled_at}; ${entry.reference.type} ${entry.reference.value}`)
@@ -1792,7 +1825,7 @@ function run(argv) {
       ? `Run \`${runId}\` was supplied with --run and has NOT been verified against any marker — this tool cannot say whether it exists`
       : `Run \`${runId}\` IS recorded (${runIdFrom}) but cannot be read here`
     console.error(
-      `${TOOL}: no-stats-script — ${stats.missingReason}. ${standing}. Vendor the harvester (harmon-devkit#663) or rerun with --stats-script; do NOT report the session as having no run record — this exit says nothing either way.`
+      `${TOOL}: no-stats-script — ${stats.missingReason}. ${standing}. Vendor the harvester or rerun with --stats-script; do NOT report the session as having no run record — this exit says nothing either way.`
     )
     return 12
   }
@@ -1966,7 +1999,7 @@ function run(argv) {
     trajectory: harvested.trajectory,
     policy,
     measurements,
-    unavailable: unavailableMeasurements(measurements)
+    unavailable: unavailableMeasurements()
   }
   console.log(args.json ? JSON.stringify(report, null, 2) : renderMarkdown(report))
   return 0

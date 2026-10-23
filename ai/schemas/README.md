@@ -439,6 +439,21 @@ sequence checks below run; those later checks remain script responsibilities.
   `run_id`. Unlike the checks above this one needs no external context (both
   values live in the one `run.schema.json` document), so it always runs, not
   only when extra CLI context is supplied.
+- **Filed review issue priority** — an adjudication `reference` with type
+  `issue_number` may carry `priority_ai` (`p0`–`p3`). New `file` adjudications
+  must record the value the helper reports, as the integrate/review procedures
+  require. The schema keeps it optional so retained schema-2 records without
+  this field remain valid. It records the value actually written by
+  `track-work/assets/file-review-finding.sh` through triage-apply, from the
+  adjudicated badge in lowercase (unbadged + P3 is refused before creation).
+  Other reference
+  types cannot carry it; p4 is never accepted. A split's issue reference may
+  also retain it, while older split records remain valid without it.
+  Integration `reviewer_priority` remains null: the raw badge is read from
+  the finding text by the filer, not copied into that record. The value bounds
+  and reference-type restriction are schema conditions; requiring the value on
+  new records is procedural. No new validator code is needed. Run settlement
+  references keep their existing `{type, value}` shape.
 - **Adjudication override required when priorities differ — challenge/
   review only; integration is unconditionally null** — each
   `adjudications[]` entry carries its own `reviewer_priority` (a copy of the
@@ -988,12 +1003,15 @@ decisions):
   `defer` forever in its own document; the settlement that later resolves it
   to `fix | decline | file` is a new entry in the run record instead, so
   neither document is edited to reflect the other).
-- **`interventions[].kind` is `asked | other`.** The spec's own success
-  metric draws exactly this one distinction — "any human action... except
-  answering an implementer's `blocked_question`, counted separately as
-  asked" — so the schema states only the two categories that distinction
-  needs; finer human-action taxonomy, if ever wanted, belongs to
-  `dev-flow-stats.sh` ([#663](https://github.com/evanharmon1/harmon-devkit/issues/663)), not this contract.
+- **`interventions[].kind` is `asked | other | prompt`.** `asked` answers an
+  implementer's blocked question; `other` records other human action. `prompt`
+  records an answered harness approval request, with required `decision`
+  (`approved | denied`) and `command`, and optional `answered_by`
+  (`orchestrator | human`). Every item retains `at` and `note`. `decision`,
+  `command` and `answered_by` are forbidden on `asked` and `other` entries.
+  Prompt counts are reported beside interventions by stage. Answered prompts
+  (kind `prompt`) never count against the success metric, which is unchanged;
+  `asked` is reported separately.
 - **Every `*_at` timestamp** (`produced_at`, `started_at`, `entered_at`,
   `settled_at`, `promoted_at`, evidence `marker` timestamps) uses the same
   pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$`
@@ -3132,15 +3150,24 @@ suspect for all of them alike.
 read `n/a` when no matching pass supplies them (always true for integration-
 stage findings, which carry neither field at all).
 
-**A challenge or review round above the resolved cap needs an attributable
-authorization** ([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239)).
+**A challenge or review round, or charged integration cycle, above the
+resolved cap needs an attributable authorization**
+([#1239](https://github.com/evanharmon1/harmon-devkit/issues/1239),
+[#1426](https://github.com/evanharmon1/harmon-devkit/issues/1426)).
 A cap is a ceiling the agent never raises on its own; a maintainer may still
 order one more round. `run.json`'s optional `cap_authorizations[]` records each
 such instruction as `{stage, round, actor, instruction, at}`: the stage
-(`challenge` or `review`), the round it admits, who gave it, the instruction
-verbatim, and when. An entry records a human instruction; an agent never writes
+(`challenge`, `review`, or `integration`), the round it admits, who gave it,
+the instruction verbatim, and when. An entry records a human instruction; an agent never writes
 one on its own judgement, including after the fact to make a recorded round
 fit; a maintainer may authorize a round before or after it runs.
+The orchestrator or solo session records that instruction through
+`run-record.mjs authorize-cap --slate <id> --session <id> --owner-token <token> --run-id <id>
+--stage <stage> --round <n> --actor <identity> --instruction '<verbatim>' --at <UTC>`.
+The writer uses the ordinary candidate, validate, rename and readback discipline;
+it does not authenticate the speaker, so the caller must retain the attributable
+maintainer instruction. An older merge-base engine/schema under `--closure`
+refuses unsupported authorizations; keep that fail-closed compatibility blocker.
 `validate-result-schemas.mjs run` rejects an entry with any field missing or
 blank, any other stage, and a second entry for the same `(stage, round)`.
 Whether the round really lies above the cap is not the validator's to decide,
@@ -3158,14 +3185,21 @@ refuses an unauthorized one. `policy.json`'s `rounds` are never rewritten to
 admit a round, and nothing reads a raised copy as authority. The effective
 ceiling is computed in memory and reported beside the resolved cap as the
 verdict's `authorized_ceiling`, which is absent when nothing was authorized.
+The stats trajectory carries those ceilings in an optional `authorized_ceiling`
+map keyed by stage; retro shows each stage's ceiling beside its original cap.
+Integration permission is disclosed without claiming a measured cycle count.
 
-**Integration cycles above the cap are not yet authorizable.** The
-integration cap counts charged Codex cycles rather than pass rounds, and
-admitting one above the cap would need the exit engine, the renderer and the
-integrate assets (`check-codex-cloud-review.sh reserve` and
-`readiness-gate.sh`) to agree on that count. Until they do, every one of them
-compares against the resolved integration cap, and an integration cycle above
-it is refused.
+**For integration authorizations, `round` is the charged cycle count, not
+the adjudication pass round.** Retries fold into the same cycle; exempt
+cycles and carried heads add no charged spend. The shared
+`integrationCycleAccounting` function applies that counter and the same
+contiguous authorization predicate across the exit engine, renderer,
+`check-codex-cloud-review.sh reserve` (given the run directory via `--record`),
+and `readiness-gate.sh`. All four admit an authorized charged cycle and refuse
+an unauthorized cycle above the resolved cap. The reservation adapter rejects
+the entire authorization collection if any entry is malformed or duplicates
+a `(stage, round)` pair, before spending a cycle. Integration authorization
+never enables a cap of 0 and never raises the separate exempt-cycle ceiling.
 
 Free-text fields pulled from a finding's evidence, an adjudication's reason,
 or a policy disclosure detail are reviewer- or human-authored prose this

@@ -4,7 +4,7 @@
 # This helper never writes to GitHub. The caller owns the explicit
 # `@codex review` comment between `reserve` and `attach`.
 #
-# Exit codes from `check`:
+# Exit codes from `check` and the shared freshness preflight:
 #   0  clean
 #   10 findings
 #   11 pending
@@ -33,6 +33,11 @@
 #      is required: reserve and trigger exactly as before. A normal negative
 #      answer, never an error, and every fail-closed path in `carry` lands
 #      here with its reason rather than on 2.
+#   19 stale checkout — the checkout HEAD is an ancestor of the PR base and
+#      the base contains a newer vendored integrate/dev-flow-support asset.
+#      Run from a current checkout. For `reserve`, no reservation was made
+#      and no trigger may be posted. Other subcommands refuse before reading
+#      command-specific evidence or changing persisted state.
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
 #
@@ -42,6 +47,8 @@
 # is different: `reserve`, which that contract does call, can now return it
 # where a lag used to be exit 2, which is safe for any caller that treats a
 # non-zero `reserve` as "post no trigger" (every documented recipe does).
+# 19 is the shared freshness preflight's definite stale-ancestor refusal;
+# indeterminate freshness remains exit 2, and no state or trigger is written.
 #
 # `reserve` adds one code of its own (harmon-devkit#1189):
 #   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
@@ -80,7 +87,7 @@ Usage:
   check-codex-cloud-review.sh release --state FILE --note REASON
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
                                      [--previous-head SHA] [--run-id ID]
-                                     [--integration-cap N] [--integration-exempt-cap N]
+                                     [--integration-cap N] [--integration-exempt-cap N] [--record DIR]
                                      [--review-trigger after-ci|with-push|after-ci-first] [--remediation N]
   check-codex-cloud-review.sh trigger-timing --review-trigger after-ci|with-push|after-ci-first --remediation N
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
@@ -108,6 +115,10 @@ caller: a caller free to name any SHA could otherwise skip past a fix commit
 and manufacture an exemption. `--previous-head` is therefore optional and
 purely confirmatory — supply it to have the reservation refuse rather than
 proceed if your idea of the last reviewed head disagrees with the record.
+
+--record DIR optionally supplies run.json cap_authorizations, bound to --run-id.
+Only contiguous integration authorizations admit extra charged cycles; they never
+raise the exempt ceiling or enable a cap-0 stage.
 
 --integration-cap and --integration-exempt-cap make `reserve` REFUSE a cycle
 that would exceed the ceiling it belongs to. A ceiling checked only by the
@@ -211,7 +222,9 @@ so an unstaged edit cannot influence it.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 15 quota exhausted, 16 transient read,
-2 indeterminate. Exit 15 is terminal for the HEAD, not just the cycle: no
+19 stale asset checkout, 2 indeterminate. Exit 19 is a blocker from the
+shared freshness check: update the checkout to the PR base or newer (fetch
+and fast-forward) before driving the cycle. Exit 15 is terminal for the HEAD, not just the cycle: no
 same-head reservation is accepted afterwards, so recovery is a new commit or
 an operator removing the state file (see #1115). Exit 14 means GitHub answered and
 the PR is MERGED or CLOSED: terminal for the whole shepherd stage — stop,
@@ -302,6 +315,7 @@ reap_deadline_epoch=
 finder_slug=
 previous_head=
 run_id=
+record_dir=
 # harmon-init#752: the checkout `carry` computes patch identities in. Every
 # identity is taken between two named commits, so this directory supplies the
 # object database and nothing else — the index and the working tree are never
@@ -342,7 +356,7 @@ eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --integration-cap | --integration-exempt-cap | --review-trigger | --remediation | --repo-dir)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at | --previous-head | --run-id | --record | --integration-cap | --integration-exempt-cap | --review-trigger | --remediation | --repo-dir)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -358,6 +372,7 @@ while [ "$#" -gt 0 ]; do
         --previous-head) previous_head=$2 ;;
         --run-id) run_id=$2 ;;
         --repo-dir) repo_dir=$2 ;;
+        --record) record_dir=$2 ;;
         --integration-cap) integration_cap=$2 ;;
         --integration-exempt-cap) integration_exempt_cap=$2 ;;
         --review-trigger) review_trigger=$2 ;;
@@ -417,7 +432,9 @@ valid_slug() {
     grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' <<<"$1"
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=asset-freshness.sh
+. "$SCRIPT_DIR/asset-freshness.sh"
 # shellcheck source=gh-write-broker.sh
 . "$SCRIPT_DIR/gh-write-broker.sh"
 
@@ -899,6 +916,22 @@ write_state() {
         rm -f "$temporary"
         die "cannot write $destination"
     fi
+}
+
+asset_freshness_check() {
+    local freshness_status=0
+    if check_vendored_asset_freshness "$1" "$2" "$SCRIPT_DIR" "$timeout_bin"; then
+        return 0
+    else
+        freshness_status=$?
+    fi
+    case "$freshness_status" in
+    19)
+        printf 'codex-cloud-review: %s\n' "$asset_freshness_detail" >&2
+        exit 19
+        ;;
+    *) die "$asset_freshness_detail" ;;
+    esac
 }
 
 # Every field `settle` writes is validated here, not just the pair that
@@ -2359,6 +2392,7 @@ reserve)
         die "--remediation must be a non-negative integer"
     [ -z "$review_trigger" ] || valid_review_trigger "$review_trigger" ||
         die "--review-trigger must be one of after-ci, with-push, after-ci-first"
+    asset_freshness_check "$pr" "$repo"
     # harmon-devkit#1189: right after a push GitHub routinely reports the
     # previous head for a few seconds, so a reservation taken immediately
     # refused a benign race — and a caller that masked that refusal posted the
@@ -2744,12 +2778,6 @@ reserve)
             [ -z "$integration_exempt_cap" ] ||
                 [ "$((carried_exempt + 1))" -le "$integration_exempt_cap" ] ||
                 die "this cycle is exempt but the exempt ceiling ($integration_exempt_cap) is already spent; no cycle remains to reserve"
-            carried_exempt=$((carried_exempt + 1))
-        else
-            [ -z "$integration_cap" ] ||
-                [ "$((carried_charged + 1))" -le "$integration_cap" ] ||
-                die "the integration cap ($integration_cap) is already spent; no charged cycle remains to reserve"
-            carried_charged=$((carried_charged + 1))
         fi
     else
         # Attempt 2 re-triggers the SAME cycle after an incomplete first
@@ -2795,6 +2823,19 @@ reserve)
             integration_exempt_cap=$recorded_exempt_cap
         fi
     fi
+    # One accounting function serves reserve, the exit engine, renderer and gate.
+    # Only attempt 1 adds spend; retries retain the same cumulative snapshot.
+    accounting_module="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../dev-flow-support/assets/lib" && pwd -P)/cap-authorizations.mjs"
+    accounting_args=(--cycle "$(jq -cn --argjson c "$carried_charged" --argjson e "$carried_exempt" '{cycle:($c+$e),charged:$c,exempt:$e}')")
+    [ -z "$integration_cap" ] || accounting_args+=(--cap "$integration_cap")
+    [ -z "$record_dir" ] || accounting_args+=(--run "$record_dir/run.json" --run-id "$run_id")
+    [ "$attempt" != "1" ] || accounting_args+=(--next "$charge_class")
+    cycle_accounting="$(node "$accounting_module" "${accounting_args[@]}")" ||
+        die "cannot read integration cycle accounting or authorization record"
+    [ "$(jq -r '.admitted' <<<"$cycle_accounting")" = true ] ||
+        die "the integration cap ($integration_cap) is already spent; no authorized charged cycle remains to reserve"
+    carried_charged=$(jq -r '.charged' <<<"$cycle_accounting")
+    carried_exempt=$(jq -r '.exempt' <<<"$cycle_accounting")
     if [ "$attempt" = "2" ]; then
         # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
         # that did not answer. A reviewer that answered "my code-review usage
@@ -3024,6 +3065,7 @@ release)
         die "cannot compute the release scan boundary"
     # Use the broker's classifier, with no author filter: a trigger posted by
     # another actor is also evidence that the reservation cannot be released.
+    asset_freshness_check "$state_pr" "$state_repo"
     # shellcheck source=gh-write-broker.sh
     . "$SCRIPT_DIR/gh-write-broker.sh"
     release_comments=$(run_gh api --paginate --slurp \
@@ -3056,6 +3098,7 @@ attach)
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
+    asset_freshness_check "$(jq -r '.pr' "$state_file")" "$(jq -r '.repo' "$state_file")"
     # harmon-devkit#223: every `run_gh` call below (the head re-check and the
     # trigger-comment fetch) is budgeted off `$timeout_min` via the
     # `state_reserved` arithmetic in `run_gh` itself — it is not just the
@@ -3514,6 +3557,7 @@ carry)
     carry_previous_attests=$(jq -r '.carry.attests_head // empty' "$state_file")
     carry_generation=$(jq -r '.carry.generation // 0' "$state_file")
 
+    asset_freshness_check "$state_pr" "$state_repo"
     provider_status=0
     live_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
     if [ "$provider_status" -eq 3 ]; then
@@ -3653,6 +3697,7 @@ ci-split)
     state_head=$(jq -r '.head' "$state_file")
     [ "$(jq -r '.run_id // empty' "$state_file")" = "$run_id" ] ||
         die "this cycle state does not belong to run $run_id"
+    asset_freshness_check "$state_pr" "$state_repo"
     recorded_split=$(jq -c '{charged:.charged_cycles, exempt:.exempt_cycles}' "$state_file")
     settle_ci_charge
     valid_uint_or_zero "${ci_split_charged:-}" && valid_uint_or_zero "${ci_split_exempt:-}" ||
@@ -3968,6 +4013,7 @@ check)
     # the window closes.
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
+    asset_freshness_check "$state_pr" "$state_repo"
     persist_adopted_timeout
 
     provider_status=0
@@ -5913,6 +5959,7 @@ settle)
 
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
+    asset_freshness_check "$state_pr" "$state_repo"
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
     settle_state_requested=$(jq -r '.requested_at // empty' "$state_file")

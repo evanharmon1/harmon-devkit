@@ -676,22 +676,31 @@ The v2 shape is:
   `local → economy → standard → frontier → apex` and is the only definition
   of one-rung escalation or strongest-wins tier conflicts.
 
-  Resolution precedence is normative: an explicit operator instruction from
-  an attributable channel (never repository content) overrides labels (the
-  scoped `tier:<role>:*`, `rigor:*`, and `strategy:*` overrides), which
-  override the rigor profile or configured defaults, which override the
-  built-in fallback. An unscoped `tier:<value>` label is the issue's stored
-  Tier: with `tier:pinned` and trusted provenance it is the pinned Tier, which
-  sets the implementer only and ranks above rigor; otherwise it is a cache of
-  the derived Tier, which sets the implementer only and ranks below rigor.
+  Resolution precedence for the implementer Tier is normative (harmon-init
+  ADR 2026-09-30 D5): an explicit operator tier instruction from an
+  attributable channel (never repository content) > the pinned Tier > a
+  `tier:implementer:*` label, else the profile of a rigor the operator or a
+  `rigor:*` label chose > the derived Tier > the `default_rigor` profile. An
+  operator rigor instruction selects the profile and does not displace a pin;
+  an operator who means to displace one gives a tier instruction. The other
+  four roles resolve operator tier > `tier:<role>:*` label > profile. An
+  unqualified `tier:<value>` label is the issue's stored Tier: with
+  `tier:pinned`, and the provenance of both the marker and the value
+  verified, it is the pinned Tier, which sets the implementer only and ranks
+  above a chosen rigor; otherwise it is a cache of the derived Tier, which
+  sets the implementer only and ranks below a chosen rigor and above
+  `default_rigor`. A `tier:<role>:<value>` label is the only label-form role
+  override.
   Conflicting scoped `tier:<role>:*` labels resolve strongest-wins by
   `tier_order`; more than one unqualified `tier:<value>` label (with or without
   `tier:pinned`) is ambiguous and passes no Tier. Strategy conflicts are
   ambiguous: an interactive
   resolver asks, while unattended automation falls back to `default_strategy`
-  with a warning. Labels remain advisory and never outrank an explicit
-  instruction: an interactive session requires operator confirmation before
-  using any off-default label resolution, while unattended automation acts on
+  with a warning. Labels remain advisory, and none outranks an explicit
+  instruction of the same kind (a trusted pin does outrank an operator rigor
+  instruction, as above): an interactive session requires operator
+  confirmation before using any off-default label resolution, while
+  unattended automation acts on
   one only after verifying the label's provenance end to end against
   trusted-actor configuration re-read immediately before acting, or falls back
   to defaults with a warning.
@@ -705,8 +714,13 @@ The v2 shape is:
   challenger `frontier`, reviewer `standard`, and integrator `economy`.
   Orchestrator, challenger, and reviewer are each at least as capable as
   implementer; challenger rides one stratum above reviewer at most levels
-  because design attack is the more judgment-heavy contract. `tier:adaptive`
-  was retired on 2026-10-01 and is no rung on the ladder.
+  because design attack is the more judgment-heavy contract. `adaptive` was
+  retired on 2026-10-01 and is no rung on the ladder (harmon-init ADR
+  2026-09-30 D8): a configured `adaptive` role tier, an operator `adaptive`
+  tier instruction, and an `adaptive` `[tier.matrix]` cell are refused with
+  a retired-tier error, while a leftover `tier:adaptive` or
+  `tier:<role>:adaptive` label, or a pinned `adaptive`, resolves as if absent
+  with a `tier-retired` warning.
 - `[rounds.<policy>]` is the **vertical appetite**: `challenge`, `review`,
   `integration`, `remediation`, `min_rounds`, and `wall_clock_min`. A
   challenge or review value of 0 disables that confidence stage with
@@ -889,8 +903,9 @@ the general splitting and PR-rollup obligations below remain caller-owned.
 **A solo session writes the same evidence** (harmon-devkit#1183, the #973
 decision). An interactive session with no orchestrator brief still runs its
 confidence stages inline through `task challenge` / `task review`; it reserves
-a real single-lane run with `run-record.mjs solo-init` (its own one-lane slate,
-lock, `policy.json`, kickoff `run.json` and active pointer), publishes each
+a real single-lane run by explicitly acquiring its lock with `run-record.mjs lock acquire`
+before `run-record.mjs solo-init` (its own one-lane slate,
+`policy.json`, kickoff `run.json` and active pointer), publishes each
 round's pass and adjudication with `run-record.mjs receipt` / `adjudicate`,
 materializes the exit engine's change ledger and head map from the branch's
 own commits with `run-record.mjs ledger` before the same verification-only

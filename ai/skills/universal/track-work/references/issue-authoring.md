@@ -26,13 +26,37 @@ Shorten an over-long title by rewriting and moving detail into the body, never
 by truncating or cutting characters off the end. A retitle of an issue whose
 body is empty must first copy the full original title into the body.
 
-For a proposed retitle, validate the title and guard against truncation:
+For a proposed retitle, `--title-only` is a title lint and writes no receipt.
+Before `gh issue edit --title`, run a full preflight over the proposed issue
+state: the new title, the current body saved to a file, and the current authored
+classification labels. Exclude the checker's forbidden authoring-time families,
+`needs-triage`, and the implementer-record labels; these describe derived or
+runtime state rather than the proposed authored metadata.
+Use the issue's actual authorship; this example is human-authored (for an
+agent-authored issue, use `--agent-authored` and the agent metadata contract).
 
 ```sh
-<skill-dir>/assets/check-issue-metadata.sh --title-only \
+gh issue view <n> --repo <owner/repo> --json title,body,labels > current-issue.json
+jq -rj '.body' current-issue.json > current-body.md
+label_args=()
+while IFS= read -r label; do label_args+=(--label "$label"); done < <(jq -r '
+  .labels[].name
+  | select(test("^(foreman:|rigor:|tier:|strategy:|method:|claim:|agent:|priority:|effort:|model-family:|model:|model-version:|model-effort:|needs-triage$)"; "i") | not)
+' current-issue.json)
+<skill-dir>/assets/check-issue-metadata.sh \
+  --repo <owner/repo> --repo-root <target-checkout> --owner-type <personal|organization> \
   --title '(delivery queue): Drop expired payloads' \
-  --previous-title '(delivery queue): Reject stale dispatches when queue is full'
+  --previous-title "$(jq -r '.title' current-issue.json)" \
+  --body-file current-body.md --human-authored "${label_args[@]}"
+# Continue only after the full preflight and receipt verifier accept the edit.
+<skill-dir>/assets/verify-issue-receipt.sh -- \
+  gh issue edit <n> --repo <owner/repo> --title '(delivery queue): Drop expired payloads'
+gh issue edit <n> --repo <owner/repo> --title '(delivery queue): Drop expired payloads'
 ```
+
+For an organization target, also supply its current native Issue Type and any
+required current field proposals to the preflight. If the current state violates
+the authoring contract, correct that state before attempting the edit.
 
 ## Canonical body
 
@@ -238,7 +262,8 @@ organization examples. The checker verifies `--owner-type` against the target
 repository owner rather than trusting the caller. Pass exactly one of `--agent-authored` or
 `--human-authored`; author identity has no permissive default.
 
-The checker is read-only. It exits 0 when verified, 1 for an authoring-contract
+The checker performs no GitHub writes and writes only a local receipt on
+successful full draft validation. It exits 0 when verified, 1 for an authoring-contract
 violation, and 2 for a usage error or indeterminate repository/vocabulary read.
 When `<target-checkout>/label-registry.json` exists, it is authoritative; an
 invalid or unreadable present manifest fails closed. When it is absent, the
@@ -293,11 +318,15 @@ re-reads the issue and verifies its observed labels.
      --search '<distinctive phrase>'
    ```
 
-3. Run `check-issue-metadata.sh` with the final title, body, and labels.
+3. Run `check-issue-metadata.sh` with the final title, body, and labels from the
+   caller's checkout, passing `--repo-root <target checkout>`; the receipt
+   verifier, `gh issue create --repo <target>` and harmon-init#1735 hook also run
+   from that caller checkout, where the receipt lives.
 4. Follow the authorship path in SKILL.md §5's create-and-classify recipe.
    Agent-authored drafts create with full verified classification and every
    label the preflight verified (including concerns), then
-   immediately pass all three verified ratings to `triage-apply.sh label
+   immediately pass all three verified ratings from the **target checkout**
+   (where the helper reads its manifest and Tier policy) to `triage-apply.sh label
    --repo <owner/repo> --issue <n> --impact <value> --risk <value>
    --complexity <value> --execute` with the workflow-authorized
    `TRIAGE_EXECUTE=1`. Require helper exit 0; if it fails after creation, add
@@ -306,7 +335,7 @@ re-reads the issue and verifies its observed labels.
    number. The preflight still refuses this marker on agent drafts; marking
    partly-created issues is the filing rule. Human-authored drafts create with
    only what the human supplied; never invent missing values or ratings. Whoever files an issue
-   that is not fully classified adds `needs-triage`. Run the helper only for
+   that is not fully classified adds `needs-triage` (a declared-inapplicable axis counts). Run the helper only for
    supplied proposals, omitting missing rating flags; skip it when none were
    supplied. It owns the owner-type writes, derived Tier and marker.
    For the inapplicability fallback, omit the unavailable label and add
@@ -330,3 +359,39 @@ Closing is a factual claim:
 Use `not planned` with a comment naming replacement work when an issue was
 superseded. Use `duplicate` with a comment naming the canonical issue. Never
 close as `completed` while an acceptance item remains unticked.
+
+### Local preflight receipts
+
+A full successful agent- or human-authored preflight records the canonical repo,
+exact title, SHA-256 of the validated body bytes, and sorted, deduplicated,
+trimmed create labels (including `--work-type-label`, plus `needs-triage` only
+when the validated agent inapplicability fallback or an incomplete human draft requires it). The receipt
+also records proposed labels separately. The filename hashes canonical
+UTF-8 JSON with sorted keys, compact separators and literal Unicode. Records
+live under the invoking checkout's common Git directory (cwd, regardless of the
+checker's `--repo-root` target) at
+`track-work/receipts/<key>.json`; linked worktrees share them. They are local
+records, never GitHub writes, and are not consumed on use. Discovery,
+title-only, help and failed preflights write none.
+
+Validation success still exits 0 if receipt persistence fails (for example, a
+non-git cwd or read-only `.git`). A stderr warning names the failure and explains
+that the guard will refuse the create until a writable checkout re-runs the
+preflight. When required, the checker says the create must carry
+`--label needs-triage`; include it in the create invocation.
+
+`verify-issue-receipt.sh [--repo-root PATH] [--max-age-seconds N] -- gh issue
+create ...` checks tokenized argv without executing it. Its default freshness
+window is 3600 seconds, strictly younger than the limit. Use the same body file
+bytes as preflight; inline `--body` is hashed as UTF-8 without adding a newline.
+It splits comma-separated gh labels and trims each; all proposed labels must
+match for creation. A numeric `gh issue edit` changing title/body matches each
+supplied new field and repo, ignoring labels. Label-only edits and view/list
+return 3 (not covered). Exit 0 accepts, 1 refuses with the preflight command,
+and 2 reports usage/indeterminate (including unsupported or interactive flags).
+Never treat 2 as permission. Explicit `--repo` or `GH_REPO` is required; omission
+is refused with exit 1, never resolved from origin. Global repo flags before or
+after `issue` and the create alias `new` are covered; unknown issue operations
+fail closed. The verifier reads cwd, or its own `--repo-root` when given. Only
+the full checker mints receipts internally; there is no writer CLI mode.
+The consuming posture-specific hook is tracked in harmon-init#1735.

@@ -17,6 +17,8 @@ fail() {
 
 template="ai/skills/universal/orchestrate/assets/lane-brief.md"
 rendered="$(<"$template")"
+lane_label="L-fixture"
+attempt_nonce="a1b2c3"
 
 required_placeholders=(
     '{{active-state-path}}'
@@ -103,10 +105,10 @@ for token in "${placeholders[@]}"; do
         value="$(awk '/^```json$/{capture=1;next} /^```$/{capture=0} capture' \
             ai/schemas/fixtures/brief.envelope/valid/minimal.md)"
         ;;
-    ready-sentinel) value="READY-L-fixture" ;;
-    handoff-sentinel) value="HANDOFF-L-fixture" ;;
-    blocked-sentinel) value="BLOCKED-L-fixture" ;;
-    attempt-nonce) value="a1b2c3" ;;
+    ready-sentinel) value="READY-$lane_label" ;;
+    handoff-sentinel) value="HANDOFF-$lane_label" ;;
+    blocked-sentinel) value="BLOCKED-$lane_label" ;;
+    attempt-nonce) value="$attempt_nonce" ;;
     *) value="fixture-$key" ;;
     esac
     rendered="${rendered//"$token"/"$value"}"
@@ -166,8 +168,8 @@ for rule in "${exit_rules[@]}"; do
     grep -Fq "$rule" "$rendered_file" || fail "missing exact stage-exit rule: $rule"
 done
 
-grep -Fq 'immediately before `gh pr ready`' "$rendered_file" ||
-    fail "missing immediate pre-promotion re-read rule"
+grep -Fq '`assets/promote.sh` with the existing run identity and resolved gate inputs.' "$rendered_file" ||
+    fail "missing single-command promotion rule"
 grep -Fq 'Active `run.json.started_at` plus `wall_clock_min`' "$rendered_file" ||
     fail "deadline is not sourced from the active run start"
 grep -Fq 'raw pane-history' "$rendered_file" ||

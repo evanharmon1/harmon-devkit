@@ -13,7 +13,7 @@ description: >-
   `gh project`/Projects V2 field writes, and PR bodies alike,
   and applies to issues in other repos as much as this one. Trigger it even if
   the user doesn't say the word "skill".
-allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
+allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(task guard:closing-keywords), Bash(./ai/skills/universal/track-work/assets/check-closing-keywords.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-metadata.sh:*), Bash(./ai/skills/universal/track-work/assets/verify-issue-receipt.sh:*), Bash(./ai/skills/universal/track-work/assets/check-issue-rot.sh:*), Bash(./ai/skills/universal/track-work/assets/discover-label-guidance.sh:*), Bash(./ai/skills/universal/track-work/assets/tick-criteria.sh:*), Bash(./.agents/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.agents/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.agents/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.agents/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.agents/skills/track-work/assets/tick-criteria.sh:*), Bash(./.claude/skills/track-work/assets/check-closing-keywords.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-metadata.sh:*), Bash(./.claude/skills/track-work/assets/verify-issue-receipt.sh:*), Bash(./.claude/skills/track-work/assets/check-issue-rot.sh:*), Bash(./.claude/skills/track-work/assets/discover-label-guidance.sh:*), Bash(./.claude/skills/track-work/assets/tick-criteria.sh:*)
 ---
 
 # Track Work
@@ -62,6 +62,11 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
+`assets/clear-needs-review.sh --repo OWNER/NAME --issue N` removes only the
+`needs-review` marker if present, independently of claim trust or ownership.
+It exits 0 when removed or absent, and non-zero on invalid arguments or a
+GitHub read/write failure. See [claim lifecycle](references/claim-lifecycle.md)
+for the review marker's writers and terminal cleanup ownership.
 
 ## 1. Before you describe an issue, re-read it
 
@@ -600,7 +605,7 @@ body` still shows an unticked item (`- [ ]`, or the ordered `1. [ ]` form).
 
 An issue is a durable work contract, not a transcript of the session that found
 it. Draft the title, body, and metadata together; search for duplicates in the
-target repository (§3); then run the read-only pre-create checker below before
+target repository (§3); then run the pre-create checker below before
 `gh issue create`.
 
 ### Title contract
@@ -631,6 +636,11 @@ For a proposed retitle, validate the title and guard against truncation:
   --title '(cache): Evict cold entries' \
   --previous-title '(cache): Reject stale entries when cache is cold'
 ```
+
+`--title-only` is a title lint and writes no receipt; before editing, run the full
+preflight over the proposed title, current body file and current authored
+classification labels (excluding derived and runtime labels), as in
+[the retitle recipe](references/issue-authoring.md).
 
 ### Body contract
 
@@ -952,7 +962,54 @@ attestation. A missing or invalid manifest does not grant the agent exception.
 Authorship is explicit: pass exactly one of `--agent-authored` or
 `--human-authored`; omission never defaults to the more permissive human path.
 Exit 0 is verified, 1 is a contract violation, and 2 is usage or an
-indeterminate repository/vocabulary read. The checker performs no GitHub writes.
+indeterminate repository/vocabulary read. The checker performs no GitHub writes
+and writes only a local receipt on successful full draft validation.
+
+When local persistence is available:
+
+A successful full preflight writes a local receipt; `verify-issue-receipt.sh` verifies the exact draft before `gh issue create` or a title/body edit.
+
+Validation success still exits 0 if receipt persistence fails (for example, a
+non-git cwd or read-only `.git`). A stderr warning names the failure and explains
+that the guard will refuse the create until a writable checkout re-runs the
+preflight. When required, the checker says the create must carry
+`--label needs-triage`; include it in the create invocation.
+
+The receipt lives at `<git-common-dir>/track-work/receipts/<key>.json` for
+the checkout the checker is invoked from (cwd), regardless of its `--repo-root`
+target. The verifier uses cwd, or its own `--repo-root` when supplied. It is reusable,
+and expires after 3600 seconds. Discovery, title-only, help and failing runs
+write none. Its key is SHA-256 of UTF-8 canonical JSON with sorted keys, no
+separator whitespace and literal Unicode: `{repo, title, body_sha256, labels}`.
+The repo is lowercased `owner/name`, host-qualified outside github.com;
+`body_sha256` hashes exact body bytes; labels are sorted, deduplicated and
+trimmed, including `--work-type-label`, plus `needs-triage` only when the
+validated agent inapplicability fallback or an incomplete human draft requires it on creation. The receipt
+also records the proposed label set separately. Organization field/type proposals are
+validated but are not gh argv and are not in the key.
+
+Call the verifier with an already-tokenized argument vector (never shell text):
+
+```sh
+<skill-dir>/assets/verify-issue-receipt.sh --repo-root <caller-checkout> \
+  --max-age-seconds 3600 -- gh issue create --repo <owner/repo> \
+  --title '<verified-title>' --body-file <same-draft-file> --label '<verified-labels>'
+```
+
+Repeat labels or use gh's comma-separated `--label a,b`; the verifier splits
+and trims these. Filing with `--body-file` must use the same bytes validated by
+preflight. Inline `--body` hashes the string's UTF-8 bytes as given, with no
+added newline. Explicit `--repo` or `GH_REPO` is required; omission is refused
+with exit 1, never resolved from origin. It performs no GitHub writes.
+For numeric `gh issue edit` selectors, a receipt matches the same repo and each
+new title/body value supplied; labels do not participate in edit matching.
+Unsupported or interactive argv and unresolved repositories return 2.
+Exit 0 accepts a fresh receipt; 1 refuses and names the full preflight command
+with required inputs; 3 means not covered (view/list and label-only edits);
+2 is usage or indeterminate and must never authorize a write. Unknown issue
+operations fail closed. Global `-R`/`--repo` flags and the `new` alias are covered.
+Receipt minting is internal to the full checker; there is no writer CLI mode. Receipts are a
+local preflight record, not a credential or a GitHub authorization grant.
 
 Preflight reserves the filing marker `needs-triage` for every creation recipe:
 incomplete human drafts and the inapplicability fallback need it at creation, and
@@ -968,8 +1025,11 @@ propose `needs-triage` instead of complete classification.
 
 ### Create and classify through the shared helper
 
-Creation needs the user's go-ahead under the surrounding workflow. The
-commands run from the target checkout so its manifest and policy govern.
+Creation needs the user's go-ahead under the surrounding workflow. The metadata
+checker (with `--repo-root <target checkout>`), `gh issue create --repo <target>`,
+the receipt verifier and the harmon-init#1735 hook run from the caller's checkout,
+where the receipt lives. The shared classification helper runs from the target
+checkout, because it reads that checkout's manifest and Tier policy.
 Choose the path matching the draft's authorship:
 
 - **Agent-authored:** create with the verified title, body, work type and
@@ -986,7 +1046,7 @@ Choose the path matching the draft's authorship:
   reports `human-label-missing` when it detects human work. Collector titles
   require `human` + `umbrella` for every author. Never invent missing
   classification values or ratings. Whoever files an issue that
-  is not fully classified adds `needs-triage`, including when an agent files a
+  is not fully classified adds `needs-triage` (a declared-inapplicable axis counts), including when an agent files a
   human-authored draft. If the human supplied proposals for the helper, run it
   with only those supplied values; omit missing rating flags. If none were
   supplied, skip the helper. Keep `needs-triage` on incomplete drafts.
@@ -1010,9 +1070,9 @@ issue_url="$(gh issue create --repo <owner/repo> --title '<title>' \
   --label impact:<value> --label risk:<value> --label complexity:<value> \
   --label <each-verified-concern-label>)" || exit 1
 issue_number="${issue_url##*/}"
-if ! TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
+if ! (cd <target-checkout> && TRIAGE_EXECUTE=1 <triage-skill-dir>/assets/triage-apply.sh label \
   --repo <owner/repo> --issue "$issue_number" \
-  --impact <value> --risk <value> --complexity <value> --execute; then
+  --impact <value> --risk <value> --complexity <value> --execute); then
   gh issue edit "$issue_number" --repo <owner/repo> --add-label needs-triage ||
     printf 'Could not mark issue #%s needs-triage\n' "$issue_number" >&2
   printf 'Classification failed for issue #%s; report this blocker\n' "$issue_number" >&2
@@ -1037,6 +1097,64 @@ needed, unavailable Tier label, failed field write or failed verification is an 
 the blocker to the caller, never retry `gh issue create` or report completion.
 Creation and field application are separate writes; a partial failure must
 remain visible as unfinished work on that existing issue.
+
+### File a review finding with its adjudicated Priority (AI)
+
+For an authorized review follow-up, use `assets/file-review-finding.sh` instead
+of a bare `gh issue create`. Search the target tracker for duplicates first
+(§3), then supply a complete agent-authored draft and the filer's Impact,
+Risk and Complexity, the owner-appropriate work type, every required
+classification label (including explicit `none`) and `ai-generated`. The helper
+runs the full metadata preflight and exact-draft receipt verifier before
+creating once. Pass `--repo-root` for the target checkout, whose manifest and
+Tier policy govern the filing; the helper runs there.
+
+```sh
+<track-work-dir>/assets/file-review-finding.sh \
+  --repo owner/repo --repo-root <target-checkout> --owner-type personal \
+  --title '(review): Preserve the finding' --body-file <draft-file> \
+  --source-pr <PR-URL-or-pre-PR-branch> --reviewer 'Codex cloud review' \
+  --reviewer-priority P1 --adjudicated-priority P2 \
+  --impact medium --risk low --complexity s --work-type-label bug \
+  --label area:skills --label layer:logic --label domain:agent-workflow \
+  --label ai-generated
+```
+
+Run with the surrounding workflow's authorized `TRIAGE_EXECUTE=1`; the helper
+never grants that approval. For an organization, use
+`--owner-type organization --issue-type Bug` instead of `--work-type-label`.
+Optional `--milestone` copies the current milestone when the workflow requires
+it; it does not authorize choosing a new one. The normal metadata checker
+handles vocabulary, owner-type verification, and `--inapplicable` when no
+agent-writable `none` exists. An inapplicable axis leaves the filing incomplete.
+
+Read the reviewer's badge from the finding's **own text**, passing P0–P3 or
+`unbadged`; integration records still have `reviewer_priority: null`. Pass the
+orchestrator's adjudicated badge separately. Adjudicated P0→p0, P1→p1, P2→p2,
+P3→p3: `priority_ai` is always the lowercase adjudicated priority. The helper
+refuses unbadged + P3 because an unbadged finding is adjudicated at least P2.
+Nothing maps to p4. The issue body records the source PR (or branch before publication),
+reviewer (Codex cloud review, Gemini Code Assist, Claude Review, or the local
+challenge/review round), raw badge, adjudicated badge when different, and
+Priority (AI). triage's `triage-apply.sh --priority-ai` writes Priority (AI)
+as an organization issue field or personal `priority-ai:<value>` label, plus
+the Tier and organization classification fields. On personal repositories,
+creation supplies the Impact/Risk/Complexity labels. Human Priority is never
+written. The source PR, reviewer and title must each be one line; CR/LF is
+refused before creation.
+
+Stdout is the created issue number, including after a partial failure. Require
+exit 0 **and** read the verification result before recording a completed
+filing. The helper independently re-reads classification, Tier, and Priority
+(AI); a failed apply or verification adds `needs-triage` and exits non-zero.
+Retain the existing number and report the blocker; never recreate it. A missing
+Tier matrix is incomplete filing, even when rating writes succeeded.
+For every new adjudication's `file` + `issue_number` reference, record
+`{type: issue_number, value: <number-or-owner/repo#number>, priority_ai: p2}`
+with the actual value written. For a split, retain that value on its issue
+reference too. The run settlement reference remains `{type, value}`; its schema
+has not gained `priority_ai`. Filing a P0/P1 for escalation still leaves that
+finding gating; only P2 filing settles a readiness blocker.
 
 ### Delegated creation is a self-contained contract
 

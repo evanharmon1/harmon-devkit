@@ -386,7 +386,9 @@ tasks:
       - test:plan-revise
       - test:devflow-conformance
       - test:dev-flow-monitor
+      - test:provision-lane
       - test:post-evidence
+      - test:record-pass
       - test:render-dev-flow
       - test:retro-run-report
       - test:finder-normalization
@@ -452,6 +454,16 @@ tasks:
     desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
     cmds:
       - ./ai/skills/universal/orchestrate/assets/test-dev-flow-monitor.sh
+
+  test:provision-lane:
+    desc: Provision planned lanes through real writers in fixture repositories
+    cmds:
+      - ./ai/skills/universal/orchestrate/assets/test-provision-lane.sh
+
+  test:record-pass:
+    desc: Offline local finder recording and detached checkout lifecycle tests
+    cmds:
+      - ./ai/skills/universal/review/assets/test-record-pass.sh
 
   test:post-evidence:
     desc: Offline reserve-first round-evidence publication and registration tests
@@ -696,6 +708,13 @@ tasks:
       - ./scripts/test-track-work.sh
       - ./scripts/test-claim-transaction.sh
       - ./scripts/test-release-claim.sh
+      - ./scripts/test-clear-needs-review.sh
+      - task: test:file-review-finding
+
+  test:file-review-finding:
+    desc: Unit-test review follow-up filing (offline, stubbed gh)
+    cmds:
+      - ./scripts/test-file-review-finding.sh
 
   test:triage-skill:
     desc: "Unit-test the triage skill's contract scripts (offline, stubbed gh/claude)"

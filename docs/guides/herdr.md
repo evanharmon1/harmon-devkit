@@ -330,10 +330,34 @@ neither commit nor push without a per-command escalation on every git write.
    state with `agent get` and exits 0 only for `idle` or `done` — `blocked`,
    `unknown`, or an unreadable state exits 5, and expiry is herdr's own
    non-zero exit — never followed by `; echo` or `|| true` (`--until <state>`
-   is for a state-specific wait). For multi-lane Dev Loop runs, invoke the orchestrate skill's
-   `assets/lane-watch.sh` as a Bash script in the persistent monitor primitive;
-   its state file deduplicates report-first sentinels across re-arms and it
-   continues watching review activity briefly after promotion. Never paste the
+   is for a state-specific wait). For multi-lane Dev Loop runs, use only the
+   orchestrate skill's
+   `assets/lane-watch.sh` under the harness streaming monitor (Claude Code:
+   `Monitor`), invoked as that file. The session-lifetime
+   persistent monitor primitive streams its output. Never inline its loop,
+   write a substitute, or run it as an unobserved background shell job.
+   On every watcher expiry or exit notification before a terminal outcome,
+   re-arm first, before any other tool call, with the same
+   `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work.
+   On every other wakeup, first compare the current time with each lane's last
+   observed change; read and act on any lane silent past the stall threshold
+   before other work. Keep exactly one watcher per slate. Replace a watcher
+   by letting its monitor expire on the harness's own schedule (Claude Code:
+   within 30 minutes) and re-arming. Early harness monitor-stop (Claude
+   Code: `TaskStop` on that monitor's task) requires the user's explicit
+   approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+   The state file deduplicates report-first sentinels across re-arms, and the
+   watcher continues watching review activity briefly after promotion. `PROMPT`
+   means inspect and approve or deny the request; `STALL` means read the pane
+   and act.
+   Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means
+   re-arm the watcher and investigate its exit, rather than assuming the lanes
+   are healthy. Prompt/stall episodes and heartbeat timing
+   persist across re-arms. Fallback detection derives `blocked` from a visible
+   approval prompt and otherwise `unknown`, with a `(fallback)` tag. Cloud
+   lanes receive heartbeat summaries and GitHub events without pane-derived
+   prompts or stalls.
+   Never paste the
    loop inline, because the primitive may execute it under a non-Bash login
    shell. Its PR transition grammar is `PR <lane>: #<n> draft=<bool> <STATE>
    head=<sha8>`. `done`/`idle` means *stopped*, not *succeeded*: the sentinel and the

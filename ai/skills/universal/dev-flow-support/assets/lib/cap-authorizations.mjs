@@ -9,8 +9,8 @@
 // (own-stage check, cross-stage scan and the capped-final-round exit) and
 // render-dev-flow.mjs (the cap-consistency check and the
 // `round n/cap (authorized)` projection) both call it, so the two cannot
-// disagree about which rounds are admitted. Only challenge and review rounds
-// can be authorized; integration is not supported yet.
+// disagree about which rounds are admitted. Integration uses charged cycle counts, never adjudication pass rounds.
+// Retries and carried heads retain the same cumulative spend.
 //
 // Invariants:
 //   - The resolved cap is never rewritten. The ceiling is computed in memory
@@ -33,11 +33,11 @@
 //     LOWER ceiling, never a higher one. A change to that entry schema must
 //     change this predicate with it.
 //
-// Pure functions over plain values; no imports, no top-level side effects.
+// Pure functions over plain values, plus a small CLI adapter for shell consumers.
 
 // run.schema.json's cap_authorizations[] entry, field for field.
-// stage: enum ["challenge", "review"]
-const STAGES = new Set(["challenge", "review"]);
+// stage: enum ["challenge", "review", "integration"]
+const STAGES = new Set(["challenge", "review", "integration"]);
 // at: the instant pattern the schema requires
 const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
 // required + additionalProperties: false — exactly these keys, no others
@@ -63,6 +63,28 @@ function isWellFormed(entry) {
     TIMESTAMP.test(entry.at)
   );
 }
+
+// Every reader and writer validates the whole collection, not just entries
+// that happen to authorize its requested stage. Missing is the legacy shape.
+function validateCapAuthorizations(run) {
+  if (run == null || !Object.hasOwn(run, "cap_authorizations")) return;
+  if (!Array.isArray(run.cap_authorizations)) throw new Error("cap_authorizations must be an array");
+  const seen = new Map();
+  for (const [index, entry] of run.cap_authorizations.entries()) {
+    if (!isWellFormed(entry)) throw new Error(`cap_authorizations[${index}] contains a malformed entry`);
+    const key = `${entry.stage}:${entry.round}`;
+    if (seen.has(key)) throw new Error(`cap_authorizations[${index}]: duplicates cap_authorizations[${seen.get(key)}] key (${entry.stage}, ${entry.round})`);
+    seen.set(key, index);
+  }
+}
+
+// Evidence rounds, independently of authorization entries, start at one and
+// have no holes. Multiple finder slots in one round count only once.
+function contiguousRounds(rounds) {
+  return [...new Set(rounds)].sort((a, b) => a - b).every((round, index) => round === index + 1);
+}
+
+export { validateCapAuthorizations, contiguousRounds };
 
 // The set of round numbers authorized for `stage` in a run record (run.json's
 // parsed object, or null/undefined when there is none).
@@ -94,3 +116,75 @@ function isAuthorizedOverCap(run, stage, round, cap) {
 }
 
 export { authorizedCeiling, authorizedRounds, isAuthorizedOverCap };
+
+// A codex_cycle is a cumulative snapshot, not an increment per integrator pass.
+// Re-reading it (retry/carry) spends nothing. Older producers omit both split
+// counters and charge every cycle. Only reserve supplies `next`, after its
+// existing classifier has decided whether the new cycle is charged or exempt.
+function integrationCycleAccounting(cycle, { run = null, cap, next = null } = {}) {
+  const uint = (n) => Number.isSafeInteger(n) && n >= 0;
+  let ordinal = cycle == null ? 0 : cycle.cycle;
+  const split = cycle != null && (Object.hasOwn(cycle, "charged") || Object.hasOwn(cycle, "exempt"));
+  let charged = split ? cycle.charged : ordinal;
+  let exempt = split ? cycle.exempt : 0;
+  if (!uint(ordinal) || !uint(charged) || !uint(exempt) || charged + exempt !== ordinal) {
+    throw new Error("integration cycle requires non-negative integer charged + exempt counts equal to cycle");
+  }
+  if (next !== null) {
+    if (next !== "charged" && next !== "exempt") throw new Error("next cycle must be charged or exempt");
+    ordinal += 1;
+    if (next === "charged") charged += 1;
+    else exempt += 1;
+  }
+  if (cap !== undefined && !uint(cap)) throw new Error("integration cap must be a non-negative integer");
+  const ceiling = authorizedCeiling(run, "integration", cap);
+  return {
+    cycle: ordinal, charged, exempt, ceiling,
+    authorized: isAuthorizedOverCap(run, "integration", charged, cap),
+    admitted: cap === undefined || (cap === 0 ? ordinal === 0 : charged <= ceiling),
+  };
+}
+
+export { integrationCycleAccounting };
+
+// Shell adapter. A supplied record is never silently ignored: it must be
+// readable and belong to the caller's run before any authorization is used.
+async function main(argv) {
+  const args = {};
+  for (let i = 0; i < argv.length; i += 2) {
+    const key = argv[i];
+    if (!["--run", "--run-id", "--cap", "--cycle", "--next"].includes(key) || argv[i + 1] === undefined || Object.hasOwn(args, key)) {
+      throw new Error("expected --cycle JSON [--cap N] [--run FILE --run-id ID] [--next charged|exempt]");
+    }
+    args[key] = argv[i + 1];
+  }
+  let run = null;
+  if (args["--run"]) {
+    const { readFileSync } = await import("node:fs");
+    run = JSON.parse(readFileSync(args["--run"], "utf8"));
+    if (!args["--run-id"] || run.run_id !== args["--run-id"]) throw new Error("authorization record does not match --run-id");
+    // Reserve must reject the whole collection that readiness would reject,
+    // even when one valid entry alone would authorize the requested cycle.
+    validateCapAuthorizations(run);
+  }
+  const result = integrationCycleAccounting(JSON.parse(args["--cycle"]), {
+    run, cap: args["--cap"] === undefined ? undefined : Number(args["--cap"]), next: args["--next"] ?? null,
+  });
+  console.log(JSON.stringify(result));
+}
+
+const { pathToFileURL } = await import("node:url");
+const { realpathSync } = await import("node:fs");
+const isMain = (() => {
+  try {
+    return process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
+  main(process.argv.slice(2)).catch((err) => {
+    console.error(`cap-authorizations: ${err.message}`);
+    process.exitCode = 1;
+  });
+}

@@ -114,12 +114,31 @@ addressing is restored as a filed follow-up so the defect it existed for is not
 silently dropped; and one deletion round confirms the removal, after which the
 stage exits through its ordinary conditions.
 
+File the mechanism and restored finding through
+`track-work/assets/file-review-finding.sh`, retaining the current milestone via
+`--milestone`. Supply the finding's reviewer badge from its text, the
+orchestrator's adjudicated priority, source PR (or the pre-PR branch), reviewer
+and round, and the filer's complete classification including
+Impact/Risk/Complexity. Priority (AI) follows the adjudicated badge via
+triage-apply `--priority-ai` (personal `priority-ai:<value>` label, organization
+field). `priority_ai` is the lowercase adjudicated priority; unbadged + P3 is
+refused because an unbadged finding is adjudicated at least P2. No p4 mapping
+exists. Require exit 0;
+a partially created issue number is a blocker to resolve, never a reason to
+create again. Preserve the helper's issue number and actual Priority (AI) on
+its adjudication reference as `priority_ai`. Every new `file` + `issue_number`
+adjudication must carry the actual value the helper reports; the schema keeps
+it optional for retained records. This helper also handles every
+ordinary review finding filed as follow-up work; it does not change stage
+exit rules or the gating severity of an escalated P0/P1.
+
 **Where the deletion round comes from depends on when the split is decided.**
 With cap headroom left it is an ordinary next round. Decided on the **final
-permitted round** there is none to spend: the exit computation rejects every
-round above the resolved cap, and no intervention makes one legal. There the
-stage ends `capped`, and confirming the removal is part of what the operator's
-escalation decides — never something the stage grants itself. That is what "a
+permitted round** there is none to spend without an explicit maintainer
+instruction. An intervention alone never authorizes an above-cap round: record
+the instruction with `run-record.mjs authorize-cap` as described below. Without
+it the stage ends `capped`, and confirming the removal is part of what the
+operator's escalation decides — never something the stage grants itself. That is what "a
 split changes no cap" means: it buys no round, it only changes what the
 escalation is about. Write it as
 `disposition: split` with a `reference` naming the filed issue — the
@@ -127,7 +146,7 @@ adjudication schema rejects a split that names none — and append the run-level
 half to `run.json.splits`. Then validate the pair here, before the stage
 stops: `dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --adjudication
 <each round document>`, treating a failure as a blocker. A split decided on
-the final permitted round ends the stage `capped`, which never reaches
+the final permitted round without a further maintainer authorization ends the stage `capped`, which never reaches
 integration, so this stage is the only place that check will run. Those records prove the split was decided and the
 issue filed, which is what they can decide; that the mechanism actually left
 the tree is the deletion round's own review, not a claim the record checks. A
@@ -295,6 +314,115 @@ and the receipt are yours, not the runner's. A finder failure is retried by
 its configured fallback and the substitution is recorded; exhausted coverage
 is a blocker, never a smaller round disguised as complete.
 
+## Record a local pass and prepare its checkout
+
+Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.
+
+The **owning orchestrator**, never the lane, calls the recorder with the role's
+validated envelope file; it never decodes CLI prose or invents challenger
+`attack_scenarios`. Integrator passes are outside this command's scope.
+Resolve the support directory physically, following its owner-token contract.
+For example, pass the reserved owner's token as specified there:
+
+```sh
+assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
+  --session <owner-session> --owner-token <token> --run-id <run-id> \
+  --pass <role-envelope.json> \
+  --head <captured-sha> --policy <governing-policy.toml>
+# Exit 23: stdout reports action=adjudicate and projection_path=<record>/verdict.json.
+# The orchestrator reads that projection and writes its adjudication file.
+assets/record-pass.sh --repo-root <trusted-repo> --slate <slate> \
+  --session <owner-session> --owner-token <token> --run-id <run-id> \
+  --pass <role-envelope.json> \
+  --head <captured-sha> --policy <governing-policy.toml> \
+  --adjudication <orchestrator-adjudication.json>
+```
+
+The command validates its input envelope, existing run, and supplied
+adjudication before the first write. It then chains the shared writer's
+`receipt` → wait for every configured stage/round slot in the run's
+`policy.json` to settle through either a pass receipt or a `slot_failures`
+record for that same stage and round → `ledger --stage` → verification-only
+exit. An incomplete round
+exits **24** immediately after the receipt, prints `awaiting slots: <missing slots>`
+on stdout, and leaves `verdict.json` untouched. Record the remaining passes
+before requesting verification. Only `action: adjudicate`
+authorizes publishing the supplied adjudication, followed by the computed
+exit in `verdict.json`. Every valid verification-only projection is atomically
+persisted as `verdict.json` before its action is handled, including dispatch,
+escalation, and a later final-exit failure; it is also retained in
+`verification.<stage>.json`. Failed verification (including exit 2 and reject
+diagnostics) atomically replaces `verdict.json` with a stage- and round-bound
+indeterminate verdict before exiting. For a round awaiting adjudication, a dispatch or escalation stops the
+sequence and prints its reason without writing an adjudication. A replay of
+an already adjudicated round skips that write and recomputes its exit. For partial rounds, omit
+`--adjudication`; when verification requests it, rerun with the owning
+orchestrator's file. A failed validator stops every later step, including when
+the recorder is in a pipeline (callers must retain `pipefail`). Rerun with the
+same bytes to resume: the shared writer receipts and adjudicates idempotently,
+and immutable published evidence is never replaced. Exit status is the exit
+engine's status (0, 20, 21, 22); usage, validation, and indeterminate failures
+exit 2. Awaiting an orchestrator adjudication exits **23**, with a JSON object
+on stdout containing `action: adjudicate` and `projection_path` naming the
+retained `verdict.json`; callers handle 23 as the two-phase handoff, not as a
+validator failure.
+
+| Recorder exit | Meaning |
+|---|---|
+| 0, 20, 21, 22 | Computed exit engine status |
+| 2 | Usage, validation, or indeterminate failure |
+| 23 | Awaiting orchestrator adjudication |
+| 24 | Receipt retained; awaiting configured finder slots |
+
+`--owner-token` is also accepted; authority is forwarded to every writer
+in its environment and is never persisted or printed.
+
+Use the already resolved governing policy and recorded rigor (`--rigor` may
+make it explicit). Under the merge-base rule, `--exit-engine` must name the
+trusted materialized merge-base `dev-flow-exit.mjs`, with its sibling closure;
+pass `--merge-base-policy <file>` or `--merge-base-policy-absent` as appropriate.
+Carry the same repeatable `--add-finder` / `--select-finder` flags used at
+resolution. The recorder does not establish a policy trust boundary for its
+caller. Public round evidence remains a separate, orchestrator-owned
+`assets/post-evidence.sh` publication after the computed exit.
+
+```sh
+assets/prepare-review-checkout.sh --repo-root <repo> --head <exact-sha> -- \
+  challenge --base <captured-base>
+```
+
+The companion requires the SHA locally, freshly discovers and fetches origin's
+default branch into `refs/remotes/origin/HEAD`, and compares the head's
+`scripts/codex-review.sh` plus every entry under `scripts/lib/` to that fetched
+commit (blob identity and mode, with added/deleted paths included). It refuses
+and names differing paths; a repository without the default branch's finder
+is refused cleanly. It runs the head's own script only after this identity
+proof, so the script's directory change targets the captured head and its
+libraries are the default branch's bytes. After checkout and immediately before
+execution, it also compares the physical file set and each file's unfiltered
+`git hash-object` blob id with the fetched default branch. It refuses extra,
+missing, or changed files, symlinks, and any skip-worktree or assume-unchanged
+index flags under these paths. It preserves the finder's exit
+status; it never parses or wraps its text into a pass envelope.
+
+**Sanctioned worktree exception:** this vendored command cannot depend on a
+consumer's `task worktree:new`. It allocates a unique per-run checkout under
+`<repo>/.worktrees/` with `git worktree add --detach`. For the entire run,
+hooks are disabled by appending `core.hooksPath=/dev/null` and
+`core.fsmonitor=false` to the caller's existing `GIT_CONFIG_COUNT` entries.
+The exported entries are inherited by every Git process the tool, finder, and
+its children start. The run unsets `GIT_CONFIG_PARAMETERS` so it cannot override
+these settings, and exports `GIT_NO_REPLACE_OBJECTS=1` so all Git children read
+real objects rather than replacement refs. It retains the
+on-disk byte proof and verifies the exact detached head and cleanliness
+(including ignored files). Cleanup removes only this run's checkout, and only
+after its worktree add succeeded; a failed add authorizes no removal.
+An interrupted run may leave its checkout; clean it up manually with
+`git worktree remove <path>`. Unavailable commits, dirt, or failed cleanup is a
+refusal. This is the bounded exception to `docs/conventions.md`'s worktree
+provisioning rule, not permission for an agent to provision feature branches
+by hand.
+
 ## Verify, adjudicate, publish, exit
 
 Before adjudication, run `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage
@@ -329,6 +457,8 @@ projection rather than adding fields the adjudication schema rejects. Only
 after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
+
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 The one supervising orchestrator (or owning solo session) performs run-record
 writes sequentially across `/review` and `/integrate`. Delegates return evidence
@@ -485,9 +615,42 @@ branch-controlled, and corroborating it against the record is exactly the work
 that issue exists to do. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
-reason and attribution to `run.json.interventions` as `kind: other`; refuse the
-override when no round remains. Never override an exit downward or reinterpret
+reason and attribution to `run.json.interventions` as `kind: other`. Above the
+cap, require the explicit cap authorization below instead of treating an
+intervention as authority. Never override an exit downward or reinterpret
 the script's outcome.
+
+### Maintainer-authorized rounds above the cap
+
+The supervising orchestrator (or the session owning a solo run) records an
+attributable maintainer instruction through the shared writer, never by editing
+`run.json` by hand:
+
+```sh
+node "$support_dir/run-record.mjs" authorize-cap \
+  --slate <slate-id> --session <session-id> --owner-token <token> --run-id <run-id> \
+  --stage review --round <n> --actor <maintainer-identity> \
+  --instruction '<verbatim session instruction>' --at <instruction-UTC-time>
+```
+
+One call admits one named stage and round; repeat only for rounds the maintainer
+actually authorized. The command records the instruction, not proof of its
+speaker: the caller must have that attributable session instruction. An agent
+never authorizes itself. A maintainer may authorize a round before or after it
+runs; `at` is not compared with pass receipts. The collection rejects duplicates
+and malformed entries. Every intervening over-cap round needs its own entry,
+and a cap of 0 remains disabled. Keep the original resolved caps in `policy.json`.
+
+Continue numbering in the same run. In the stage ledger show
+`round n/cap (authorized) — maintainer authorized on <date>`, citing the session
+instruction verbatim, its actor and time. Disclose the same authorized overage
+on the PR body's budget line (harmon-devkit#683), alongside any rigor override;
+never hide it by resetting a counter or raising the denominator. The ordinary
+convergence rule, findings and deterministic gates still apply. Recompute the
+exit after recording the authorization. An older merge-base engine or schema
+under `--closure` can refuse this field or over-cap evidence; that is a
+compatibility blocker, never permission to substitute the branch engine or
+remove the authorization. Report it to the orchestrator.
 
 ### Stage exit rules and sequencing
 

@@ -47,6 +47,22 @@ tree and in a consumer's flattened `.claude/skills/` one:
 A missing sibling package is a blocker, not a fallback: vendor the `universal`
 category as a unit rather than resolving a runtime path some other way.
 
+Run vendored integrate assets from the lane worktree, or from a checkout at the PR base or newer; never from a main checkout that may be behind.
+The checker and readiness gate share one bounded local comparison of the
+vendored `integrate/assets/` and `dev-flow-support/assets/` tree bytes. A
+checkout is stale only when its `HEAD` is an ancestor of the PR base and those
+bytes differ; a change followed by a revert is current, and a diverged or newer
+checkout is accepted. The check ignores `refs/replace`; a shallow checkout or
+an existing `info/grafts` file makes ancestry indeterminate. A definite stale
+refusal exits 19 from `check-codex-cloud-review.sh`; the readiness gate maps
+it to indeterminate (exit 2) on every verdict-bearing command, so a stale
+checkout is never a fail or evidence about the PR. `fingerprint` carries no
+verdict and skips freshness checking. Compare its output only with a
+fingerprint produced by the same checkout's gate bytes; a stale checkout may
+carry different fingerprint code. If the PR base commit is unavailable
+locally, fetch that commit from the PR's base repository before running the
+checker or gate. Neither script fetches automatically.
+
 **Arguments:** $ARGUMENTS
 
 **Version 2 only.** This skill and its readiness gate
@@ -76,16 +92,19 @@ inline `task challenge` / `task review` stages in a real single-lane run
 (`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
-directory unchanged, and a solo session records promotion with
-`run-record.mjs promote --slate solo-<run-id> --session <its session>
---run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh
-fingerprint output>` — `<its session>` being the session name `/claim`
-recorded on its claim comment's `session:` line and `solo-init` persisted in
+directory unchanged, and a solo session promotes through
+`assets/promote.sh --repo <repo> --pr <n> --head <head> --record <record>
+--integration-cap <cap> --remediation-cap <cap> --integrator-result <file>
+--slate solo-<run-id> --session <its session> --owner-token <token>
+--run-id <run-id>` — `<its session>` being the session name `/claim`
+recorded on its claim comment's `session:` line and `lock acquire` persisted in
 the slate lock, the same value on every write — or a non-promotion ending with
-`close --slate solo-<run-id> --session <its session> --run-id <run-id>
+`close --slate solo-<run-id> --session <its session> --owner-token <token> --run-id <run-id>
 --outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
-session>` (`/implement` § 6a step 6).
+session> --owner-token <token>` (`/implement` § 6a step 6).
+
+Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
 **One supervising writer per run.** The supervising orchestrator (or the
 owning solo session) performs run-record writes sequentially across `/review`
@@ -96,13 +115,15 @@ with another record write. The writer's mutex cannot serialize a caller that
 does not take it. Parallel record writers require routing through the shared
 `run-record.mjs` mutex and validated writer first, never a second lock.
 
-**The scripted gate applies only when a record exists.** `assets/readiness-gate.sh`
-requires `--record`, so everything below that runs it — the checker fast path,
+**The scripted gate and promote command apply only when a record exists.** `assets/readiness-gate.sh`
+and `assets/promote.sh` require `--record`, so everything below that runs them — the checker fast path,
 the integrator pass, the gate itself — is for a run that has a record. Where no
 record exists because the confidence stages never ran (or could not be
 recorded), that is not an error and not grounds to fabricate one: use
 `AGENTS.md` § Readiness gate's hand-run procedure instead, evaluating every
-condition there by hand, and say in the PR body that the run has no record.
+condition there by hand, including its promotion and readback procedure, and say
+in the PR body that the run has no record. This is the explicit no-record
+carve-out; every recorded run uses `assets/promote.sh` as its only promotion path.
 
 A consumer that has not advanced its pin still has the retired single-stage
 skill at the pin it is on, which is exactly why the pin waits for the policy;
@@ -127,16 +148,14 @@ caps are independent of any other loop caps used earlier in the dev flow.
 **Draft is the workbench; ready is the human handoff.** The normal entry from
 `/implement` is a draft PR. Keep it draft while checks, explicit bot reviews,
 fixes, and adjudication are active. A failed or indeterminate gate stays draft.
-Only step 6's complete readiness gate may promote the unchanged head with
-`gh pr ready`; ready-for-review requests human review and never authorizes a
+Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-for-review requests human review and never authorizes a
 merge.
 
 This skill may be re-entered on a non-draft PR. Treat that as an idempotent
 audit of an existing human handoff: if the unchanged head is still green, do
-not call `gh pr ready` again. If new work or a blocker appears, convert it back
+not invoke the promotion mutation again. If new work or a blocker appears, convert it back
 to draft before posting fixes or starting another review cycle — but through
-[§2](#2-watch)'s unexplained-promotion procedure, not a bare `gh pr ready
---undo`: entry is exactly where a promotion no session of yours made turns up,
+[§2](#2-watch)'s unexplained-promotion procedure, not a bare `gh pr ready --undo`: entry is exactly where a promotion no session of yours made turns up,
 so the same run-record/timeline guard, the same unaccounted-conversion
 escalation, and the same unknown-does-not-license-an-undo rule apply here. Verify `isDraft == true`. If
 that transition is unavailable, stop as blocked rather than doing active agent
@@ -1009,6 +1028,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     deferred findings settled, `mergeStateStatus` acceptable: **reconcile**.
     Accept the promotion and audit the existing handoff exactly as step 6's
     already-non-draft path prescribes; do **not** call `gh pr ready` again.
+    Only audit status `pass` on the current head may be recorded, never
+    `audit-behind`; catch up a behind head first. Record the accepted promotion
+    with `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
+    and the existing slate/session/owner/run arguments, as on exit 17.
     Reverting a promotion the gate would itself have made un-notifies nobody
     and can override a genuine human click.
   - **Indeterminate, or ordinary post-promotion drift — report, never undo.**
@@ -1016,7 +1039,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     Two kinds never license an undo:
 
     - **Anything the gate could not establish** — every `audit` exit 2,
-      whatever its condition. "I could not determine this" is not "this is
+      whatever its condition. This includes a stale checkout, shallow history,
+      or grafted history: the gate reports `asset-freshness-unknown` with exit
+      2 rather than a determinate stale failure, so this branch reports the
+      blocker and never undoes the promotion. "I could not determine this" is not "this is
       wrong", and reversing a human's handoff on it destroys a real thing over
       an unproven one — while achieving nothing about the harm the
       stay-draft rule guards, because `gh pr ready --undo` cannot unsend the
@@ -1209,7 +1235,25 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   issues endpoint first: a target whose payload identifies it as a pull
   request is exempt because pull requests never appear in
   `closingIssuesReferences`.
-- **Follow-ups still go through `track-work`.** Before filing one, **search
+- **Follow-ups still go through `track-work`.** File through
+  `track-work/assets/file-review-finding.sh`, which creates a classified
+  agent-authored issue and delegates Priority (AI) to triage-apply
+  (`--priority-ai`, personal `priority-ai:<value>` label or organization field).
+  Supply the orchestrator's adjudicated badge plus the reviewer badge read
+  from the finding text (P0–P3 or `unbadged`), source PR, reviewer, and the
+  filer's Impact/Risk/Complexity and complete classification. Integration
+  adjudication entries keep `reviewer_priority: null`; never source the raw
+  badge from that null. The helper maps adjudicated P0/P1/P2/P3 to p0/p1/p2/p3,
+  always the lowercase adjudicated priority; unbadged + P3 is refused because
+  an unbadged finding is adjudicated at least P2. It never writes p4 or human
+  Priority. Require
+  exit 0 and verified storage before recording a completed filing; on failure
+  retain its printed issue number and report the blocker rather than recreating.
+  For every new adjudication `file` + `issue_number` reference, record
+  `reference.priority_ai` with the actual value the helper reports. The schema
+  keeps it optional only for retained records. Run settlement references remain
+  `{type, value}`; do not add a key their schema does not accept.
+  Before filing one, **search
   the repo the follow-up is going into** — `track-work` §3 owns this step and
   the reasoning; the short form is
   `gh issue list --repo <target> --state all --limit 200 --search "<distinctive phrase>"`.
@@ -1226,7 +1270,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `validate-result-schemas.mjs`/`render-dev-flow.mjs` both accept.
   `--search` is eventually consistent and blind to anything filed in the last
   moments, so for your own just-created issue carry forward the number
-  `gh issue create` returned rather than re-deriving it by search; when you do
+  `track-work/assets/file-review-finding.sh` returned rather than re-deriving it by search; when you do
   need to look one up, use a plain listing
   (`gh issue list --repo <target> --state all --limit 20`, newest first)
   rather than a search.
@@ -1343,6 +1387,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   - `run_id` and `initiated_by` — the active run's identity, read from
     `--record <dir>`'s own `run.json` (the same two values §6's gate binds
     the result to before trusting it);
+  - the **run record directory** itself — the same directory §6's readiness
+    gate takes as `--record`, for the agent's reservation recipes;
   - `producer` — the `{harness, model, tier}` triple naming the harness and
     model you are dispatching it with and the tier resolved for the
     integrator role (economy by default); the agent cannot introspect this
@@ -1446,6 +1492,15 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     inventing a poller of your own. The agent absorbs the single
     reserve-retry attempt (exit `12`) internally within one dispatch, so you
     should never see `12` at this level.
+  - A checker exit `19` — whether recorded as `codex_cycle.exit_code: 19` or
+    reported with `codex_cycle: null` because a stale `reserve` (including a
+    `carry` that falls through to `reserve`) posted no trigger — is an
+    indeterminate stale-checkout blocker. With `codex_cycle: null`, the
+    integrator posts no trigger; when a cycle exists, it retains exit 19 and
+    posts no further trigger. This blocked result ends the stage like any
+    other blocked result; do not re-dispatch this pass. After updating the
+    asset checkout, the orchestrator can recover by re-entering integration.
+    This is never the remediation-cap stop below.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
     never-integrate-a-closed-PR rule), `15` (the reviewer's code-review
@@ -1489,10 +1544,11 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     different document. Treat that shape as a blocker to escalate, not as a
     cycle to re-drive; a lone 16 between two good reads is still the ordinary
     transient case.
-  - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
-    resolved **remediation** cap is spent and a finding still needs a code
-    fix (see "A resolved remediation cap of 0..." above, which is the
-    zero-cap instance of this same stop). Stop condition 2.
+  - `verdict: "escalate"` with a terminal or null `codex_cycle` for the
+    remediation-cap reason — a finding still needs a code fix and the resolved
+    cap is spent (see "A resolved remediation cap of 0..." above, which is the
+    zero-cap instance of this same stop). A checker exit 19 is the stale-
+    checkout blocker above, never this cap stop. Stop condition 2.
 
   **A badged finding outside an inline thread is settled by this skill, not
   the agent** — the agent never calls `settle` (its brief has no disposition
@@ -1747,8 +1803,15 @@ the document without it.
 
 - **`converged`** (two consecutive clean cycles) is the fixing ceiling: make
   no further remediation push for P2s. Settle every remaining finding without
-  a push — declined with evidence, or filed together in one follow-up issue —
-  reply in each affected thread, `settle` the non-inline ones, tick the
+  a push — declined with evidence, or filed together in one follow-up issue through
+  `track-work/assets/file-review-finding.sh`. For grouped filing, select the
+  finding with the most severe adjudicated priority (ties: the first in the
+  adjudication table). Pass that finding's `--reviewer`, `--reviewer-priority`
+  and `--source-pr`, and use that same adjudicated priority for
+  `--adjudicated-priority`.
+  In the draft body's `## Provenance` section, list every grouped finding's own
+  reviewer, badge and source as lines; the helper appends its canonical lines
+  after those entries. Then reply in each affected thread, `settle` the non-inline ones, tick the
   deferred entries, and go to the readiness gate. The engine enforces it as
   an invariant: while converged no P0/P1 is outstanding, so every recorded fix
   push after a cycle that closed two consecutive clean cycles is refused
@@ -1783,7 +1846,7 @@ integration` loop, and the transition that re-enters integration after the
 push records it:
 
 ```sh
-node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --run-id <run> \
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token <token> --run-id <run> \
   --stage integration --exit <how implement ended> \
   --remediation-head <pushed SHA> --remediation-findings <finding id>,<finding id>
 ```
@@ -1819,7 +1882,8 @@ reason, and infers nothing about fix pushes. An integration pass with
 findings and no adjudication is already refused (indeterminate) by the gate's
 step 6 readiness-input projection; step 9f fails when any integration
 adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
-defer — filing settles P2s only (`integration-filed-gating-finding`); it stays
+defer — use `track-work/assets/file-review-finding.sh` for filing;
+filing settles P2s only (`integration-filed-gating-finding`); it stays
 indeterminate on any engine indeterminate (`integration-exit-indeterminate`);
 it is indeterminate unless the record's latest integration pass is the gated
 result — same integration_round, codex_cycle.cycle and head
@@ -2299,8 +2363,9 @@ round. Two consequences follow rather than needing their own procedure:
   as any head move does. **The last permitted cycle is therefore reserved for
   the reconciled head**: before dispatching it, run
   `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
-  (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
-  behind, reconcile first (update-branch, or the fallback) and spend that
+  (read-only; 0 level, 1 behind, 2 could not establish, including a stale
+  checkout) and,
+  if it reports behind, reconcile first (update-branch, or the fallback) and spend that
   cycle on the merged head. Use the
   subcommand rather than a compare call of your own: ref encoding and the
   fail-closed handling of an unreadable comparison live there and are tested
@@ -2475,7 +2540,7 @@ that loops indefinitely:
 
    - `BLOCKED` is **promotable**. On a repo whose ruleset requires review
      it is the *expected* pre-promotion state, because the review it waits
-     on is exactly what `gh pr ready` requests — `reviewDecision:
+     on is exactly what promotion requests — `reviewDecision:
      REVIEW_REQUIRED` is expected for the same reason; only
      `CHANGES_REQUESTED` gates. **Never re-encode the gate as "must be
      `CLEAN`"**: that reading deadlocks precisely the repos that comply, as
@@ -2504,20 +2569,19 @@ that loops indefinitely:
      otherwise), so an edit landing mid-gate fails before promotion
      notifies anyone rather than after. Content-bearing fields
      only: the PR object's own `updated_at`, draft flag, and mergeability
-     stay out, because `gh pr ready` mutates those and would invalidate
+     stay out, because promotion mutates those and would invalidate
      every normal promotion (#227). Keep the value — it is the "before" of
      the promotion compare below. Thread `isResolved` is hashed but never
      gated: resolution is the maintainer's act, and rejection-answered
      threads legitimately stay unresolved until a human resolves them.
 
-   The pass fingerprint certifies the exact content the gate evaluated, and
-   a pass is evidence about that moment only. Run `gh pr ready` immediately
-   out of it — content landing in between shows up in the post-promotion
-   compare, but checks and mergeability sit deliberately outside the
-   fingerprint, so time is what erodes a pass. When anything has held the
-   promotion beyond moments — the permission prompt on `gh pr ready`
-   included, which can wait minutes for a human — re-run `check` and
-   promote only out of the fresh pass, never out of a remembered one.
+   The pass fingerprint certifies the exact content the gate evaluated.
+   For recorded runs, `assets/promote.sh` is the only promotion path: it runs
+   a fresh `check` internally and immediately owns the compare and readback.
+   Never join a standalone gate invocation to a bare ready command, whether
+   with a semicolon or a pipeline. Freeze the body and review content until
+   the command returns; a body edit can restart CI. An earlier diagnostic
+   pass never authorizes promotion.
 
    **Re-check the implementer record before the gate** (harmon-devkit#1262).
    The PR must carry exactly one `model-family:*`, `model:*` and
@@ -2538,9 +2602,8 @@ that loops indefinitely:
      --harness <implementer harness slug, when known>
    ```
 
-   Run it immediately before `readiness-gate.sh check`, and again whenever
-   that gate is re-run, so `gh pr ready` still follows the gate pass
-   directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
+   Run it immediately before `assets/promote.sh` (and before any diagnostic
+   `readiness-gate.sh check`), so its internal gate follows this check directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
    nonexistent values) and exit 2 (an unreadable registry or label read) both
    leave the PR draft with a blocker naming the record; never write or
    "fix" a value here from anything but the implementer's attested values,
@@ -2558,48 +2621,94 @@ that loops indefinitely:
    that cannot be established, stop blocked and leave the PR draft; reconfigure
    the automation rather than promoting speculatively.
 
-   Out of a passing gate, run `gh pr ready <n> --repo "$repo"`, then bounded-
-   fetch `state,isDraft,headRefOid` and re-read the content fingerprint with
-   `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh fingerprint --repo "$repo" --pr <n>`
-   — the same five guarded surfaces with no gate attached, which is the
-   point: `check` itself would rightly refuse the now-non-draft PR, and a
-   fetch error here is still *unknown*, not *unchanged*. Then re-read
-   `headRefOid` once more, **after** the fingerprint: the fingerprint
-   deliberately excludes the head, so a push landing between the scalar
-   fetch and the fingerprint read leaves the hash identical, and only a head
-   re-read on the far side proves the content you compared belongs to the
-   promoted head. Reconcile the
-   state even when the promotion command failed: its
-   response can be lost after GitHub accepted the mutation. Success requires
-   the verified head on both scalar reads, an open PR, `isDraft == false`,
-   and a fingerprint identical to the passing gate's.
+   Run the sibling command in the background, or under a supervisor, with a
+   timeout at or above the documented bound (including gate/runtime overhead).
+   Use the same resolved gate inputs and the run's existing owner identity:
 
-   Once success is confirmed, record it in the run record (where one is kept
-   for this run — harmon-devkit#685's `promotion.head` invariant) through
-   `run-record.mjs promote`. Bind `slate`, `session` and `run_id` to the
-   run's existing owner and session identity; copy `head` and
-   `gate_fingerprint` verbatim from the confirmed reads above, never
-   re-derive them. Set `promoted_at` to the UTC time of that confirmation,
-   no earlier than any PR binding or stage transition. With `support_dir`
-   resolved physically as at entry, run:
+   ```sh
+   "${CLAUDE_SKILL_DIR}"/assets/promote.sh \
+     --repo "$repo" --pr <n> --head "$head" --record <record_directory> \
+     --integration-cap <resolved integration cap> --remediation-cap <resolved remediation cap> \
+     --integrator-result <integrator-result.json> --codex-recheck <checker-state.json> \
+     --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id"
+   ```
+
+   Pass the applicable evidence flags as for `check` above; a cap-0 run omits
+   the checker and still supplies the integrator result. Preserve any
+   `--integration-exempt-cap`, `--codex-repo-dir` and `--allow-edited-root`
+   inputs. The command is deliberately outside this skill's allowed-tools;
+   invoke it through the normal permission mechanism. The gate stays read-only.
+
+   Before the ready mutation the command validates the existing slate lock
+   and owner token through read-only `run-record.mjs lock check` (exit 16
+   refuses without notifying anyone). Every GitHub call is bounded by
+   `timeout -k 1 60` (or `gtimeout`); the fingerprint uses the gate's five
+   individually bounded network reads. There are no read retries: after mutation
+   there are at most ten network calls (ready, scalar read, five fingerprint
+   reads, head re-read, one undo, one confirm read). Including the record
+   writer's two mutex waits of up to 15s each, the bound is
+   10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s.
+   The pre-mutation gate is bounded by its own per-read limits. Callers must
+   allow at least 640s after that gate completes and add gate/runtime overhead
+   to their tool timeout. A run killed
+   before it exits is treated as exit 14 (remote state unknown). Re-run the
+   command on resumption: if promotion landed, exit 17 routes an unrecorded
+   promotion to reconciliation, or exit 12 routes a recorded promotion to audit.
+
+   The command runs check → ready (exactly once) → scalar read → fingerprint
+   → head re-read → record. Both scalar reads require an open PR, the expected
+   head and `isDraft == false`; the fingerprint must be identical to the passing gate's.
+   The head re-read follows the fingerprint because the hash excludes the head.
+   The command will re-read the content fingerprint using
+   `readiness-gate.sh fingerprint --repo "$repo" --pr <n>`.
+   Reconcile even when the ready response failed: its response can be lost
+   after GitHub accepted the mutation. The command never retries ready.
+
+   Exit codes: **0** promoted and recorded; **10** gate failed, no ready
+   mutation; **11** indeterminate, invalid inputs or missing sibling package, no ready mutation;
+   **12** already non-draft and a promotion is recorded for the requested head,
+   no mutation; audit the current head (below);
+   **13** mismatch or writer refusal, undone and confirmed draft;
+   **14** remote state unknown after one undo; **15** ready command failed,
+   undone and confirmed draft; **16** slate owner validation refused before
+   mutation; **17** unrecorded non-draft promotion, routed to §2’s
+   unexplained-promotion procedure. When §2's reconcile branch accepts the
+   promotion (the current head independently passes `readiness-gate.sh audit`),
+   the orchestrator records it with
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
+   and the existing slate/session/owner/run arguments. Only audit status `pass`
+   on the current head may be recorded, never `audit-behind`; catch up a behind
+   head first. The event time correlates `promoted_at` with §2's timeline.
+   Otherwise it reports,
+   and the run stays open until `run-record.mjs close`. Gate diagnostics (including `remediation-capped`
+   and `integration-exit-indeterminate`) are surfaced unchanged. No second
+   unrecorded-remediation detector is introduced. Nonzero is a blocker, never
+   a handoff; the report must name that unresolved remote-state risk for 14.
+   A non-draft on a changed head or content snapshot is undone, not accepted.
+
+   The following marker documents the command's internal record call; it is
+   not a second caller-side step. `head` and `gate_fingerprint` come verbatim
+   from the confirmed reads; `promoted_at` is their UTC confirmation time.
+   With `support_dir` resolved physically, the command invokes:
 
    <!-- promotion-record-command -->
 
    ```sh
    node "$support_dir/run-record.mjs" promote \
-     --slate "$slate" --session "$session" --run-id "$run_id" \
+     --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id" \
      --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
    ```
 
-   The helper writes `promotion`, the `ready-for-review` outcome and its
+   Internally, the helper writes `promotion`, the `ready-for-review` outcome and its
    outcome-transition chain together, under the shared mutex, validating
    the candidate and canonical readback with `run --receipts` and the run's
-   adjudications. On any writer error, re-read the canonical `run.json`.
+   adjudications. On any writer error, the command will re-read the canonical `run.json`.
    Accept a lost-response success only if its `promotion.head` exactly matches
-   the confirmed head and its `promotion.gate_fingerprint` exactly matches
-   the confirmed gate fingerprint. Otherwise run
-   `gh pr ready --undo <n> --repo "$repo"` once, then bounded-fetch until
-   `isDraft == true` is confirmed and stop **blocked**, naming the writer
+   the confirmed head, its `promotion.gate_fingerprint` exactly matches
+   the confirmed gate fingerprint, and its `promotion.promoted_at` exactly
+   matches the submitted `promoted_at`. Otherwise the command runs
+   one undo internally, then one bounded read to confirm
+   `isDraft == true` and stop **blocked**, naming the writer
    error and the confirmed draft state. If the remote state cannot be
    re-established, stop indeterminate under the once-then-stop logic below;
    do not attempt a second undo or claim a handoff or confirmed draft.
@@ -2610,19 +2719,11 @@ that loops indefinitely:
    live state head or proven `carry.attests_head` to that same gated head.
    Thus a `promotion` entry can never legitimately
    name a head other than this one.
-   If the open PR is non-draft on a changed head or content snapshot, or any
-   other confirmation result cannot
-   prove that exact successful transition, run
-   `gh pr ready --undo <n> --repo "$repo"` and bounded-fetch again until the
-   current open PR is confirmed draft. A changed head or content snapshot then
-   returns to step 2; another failed transition stops blocked. If repeated reads
-   cannot establish the remote state, attempt the undo once because this session
-   initiated the transition, then stop as indeterminate without claiming either
-   a handoff or a confirmed draft—the report must name that unresolved
-   remote-state risk. Every undo in this paragraph reverses a promotion *this
-   session just attempted*, so it is governed by the once-then-stop logic here
-   and not by §2's unexplained-promotion guard; a promotion somebody else made
-   is that procedure's, not this one's.
+   For any immediate mismatch the command attempts exactly one undo, confirms
+   draft state with one bounded read, writes no promotion record and returns a
+   blocker. If remote state stays unknown after that undo, it stops
+   indeterminate with no second undo. A fresh gate is required before another
+   promotion attempt; a mismatch never becomes permission to retry ready.
    A later human request to reverse a **recorded handoff**, including after
    resume, is distinct from that failed-confirmation recovery. Reserve a
    **fresh run** with a new run id and record directory before any follow-up
@@ -2645,8 +2746,8 @@ that loops indefinitely:
    result, and `Next` with human review followed by the maintainer's merge
    decision.
 
-   If the PR was already non-draft (the gate's `pr-not-draft` failure),
-   promotion is idempotently complete
+   If the PR was already non-draft and run.json records promotion for the
+   requested head (exit 12), no mutation was performed
    and `gh pr ready` must not be called again. Audit the existing handoff on
    the current head with the same script's `audit` mode —
    `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh audit …`, the identical
@@ -2657,12 +2758,17 @@ that loops indefinitely:
    what step 2's unexplained-promotion procedure points at: where that
    procedure's first branch applies — a promotion this session did not make, on
    a head that independently passes the gate — reconciling *is* this paragraph
-   and its `audit` run,
-   and the choice between reconciling and a single undo is made there, not here.
+   and its `audit` run. For that accepted unexplained promotion, use the same
+   record step as exit 17:
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
+   with the existing slate/session/owner/run arguments. Only audit status `pass`
+   on the current head may be recorded, never `audit-behind`; catch up a behind
+   head first. An already recorded promotion needs no second record write.
+   The choice between reconciling and a single undo is made in §2, not here.
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews
    must be disabled in the external integration before the first promotion**.
-   Otherwise `gh pr ready` can start a new asynchronous review after the gate
+   Otherwise promotion can start a new asynchronous review after the gate
    that supposedly completed automated work. Three knobs carry it:
    personal **Auto review** off, the repository's **Auto code review**
    preference on **Follow personal**, and the repository's
@@ -2685,37 +2791,75 @@ that loops indefinitely:
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
-   **Release the chain-owned `claim:*` labels** as part of this stop: the labels assert an
-   agent is implementing the issue *right now*, which becomes false the
-   moment the work is handed to a human — leaving it is the misleading claim
-   state harmon-devkit#210 exists to remove. Remove them only when they are
-   currently on the issue **and** the claim comment's record says this claim
-   added them (read the record — integration is routinely a different session
-   from the one that claimed, so "I know I added it" is session memory, not
-   evidence; the record grammar is in
-   `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
-   label the record names**: its base ownership label (`claim:claude` or a
-   legacy `agent:claude-code`) and, when present, its distinct model refinement
-   (`claim:claude:opus`). Substitute those recorded values for the placeholders
-   below; do not infer either one:
+   **Release the chain-owned `claim:*` labels and, where provisioned, add
+   `needs-review`** as separate writes in this ready-for-review handoff: the
+   claim labels assert an agent is implementing the issue *right now*, which
+   becomes false when the work is handed to a human (harmon-devkit#210).
+   Remove them only when currently on the issue **and** the claim comment's
+   record says this claim added them (read the record, not session memory;
+   the grammar is in `track-work/references/claim-lifecycle.md`). Remove
+   **each exact chain-owned label the record names**: its base ownership label
+   (`claim:claude` or a legacy `agent:claude-code`) and, when present, its
+   distinct model refinement (`claim:claude:opus`). Substitute those recorded
+   values below; do not infer either one or combine these removals with a
+   review-marker write:
 
    ```sh
    gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
    gh issue edit <n> --repo "$repo" --remove-label <the model label the claim record names, when present>
    ```
 
-   If the record is missing or unreadable, leave the labels and say so in the
-   report instead of guessing. Skip a recorded label that is already absent.
-   Do **not** post a release comment — the claim
-   as a whole is still live (assignee) until the close event or
-   `/wrap` releases it; only the label's "right now" assertion has expired.
-   And the release is not one-way: if review activity later pulls integration
-   back into §5 fix rounds, **re-add the label first** (same guard — the
-   record said the claim added it), because "implementing right now" has
-   become true again and coordination checks read the label as exactly that.
-   Report the release in the ready summary naming the exact label removed, e.g.
-   `released claim:claude — ready for review, awaiting the maintainer; the close
-   event releases the rest.`
+   If the record is missing or unreadable, leave the claim labels and report
+   unverified claim-label cleanup instead of guessing. Skip recorded labels
+   already absent. Claim-label release must succeed independently of whether
+   the repository provisions `needs-review`.
+
+   Skip the review-marker add when the record identifies a label-less claim
+   (`n/a` for its base claim label). Otherwise check provisioning first:
+
+   ```sh
+   gh label list --repo "$repo" --search needs-review --json name
+   ```
+
+   Require a case-insensitive **exact** name match in that result; a search
+   hit such as `needs-review-extra` is not provisioning. Only when the label
+   exists, add it with its own command, even if recorded claim labels were
+   already absent:
+
+   ```sh
+   gh issue edit <n> --repo "$repo" --add-label needs-review
+   ```
+
+   **Never create a label.** For a label-less claim, a missing label, an
+   unverifiable provisioning lookup, or a failed add, report
+   `needs-review not added: <reason>` in the ready summary and continue the
+   handoff; a missing review marker does not block ready-for-review or undo
+   claim-label release. Re-read the issue to verify successful claim-label
+   writes and any successful review-marker add; report only marker states
+   actually verified, with the skipped/failed add's reason otherwise.
+   Do **not** post a release comment — the claim as a whole remains live
+   (assignee) until the close event or `/wrap` releases it.
+
+   If review activity later pulls integration back into §5 fix rounds, read
+   the issue and remove `needs-review` only when present (case-insensitive
+   match, using the exact live name). Restore the chain-owned claim labels
+   independently (same guard — the record said the claim added them); keep
+   each operation in its own command:
+
+   ```sh
+   gh issue edit <n> --repo "$repo" --remove-label <the exact live needs-review name, only when present>
+   gh issue edit <n> --repo "$repo" --add-label <the label the claim record names>
+   gh issue edit <n> --repo "$repo" --add-label <the model label the claim record names, when present>
+   ```
+
+   Skip only absent review-marker removal. Any applicable marker removal
+   and the claim-label restore(s) must succeed and be verified by re-reading
+   the issue before resuming fixes. "Implementing right now" has become true
+   again, and coordination checks read the claim label as exactly that.
+   Report the exact claim-label changes and the marker result in the ready
+   summary, for example `added needs-review; released claim:claude — ready
+   for review, awaiting the maintainer; the close event releases the rest`,
+   or `needs-review not added: label not provisioned; released claim:claude`.
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator

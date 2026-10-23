@@ -145,14 +145,14 @@
       }
     },
     "cap_authorizations": {
-      "description": "Optional record of maintainer instructions authorizing a challenge or review round above the resolved cap (harmon-devkit#1239). Integration authorizations are not supported yet: an integration cycle above the cap stays refused. One entry per (stage, round), each attributable: the actor who gave the instruction, the instruction verbatim, and when. An entry records a human instruction; an agent never writes one on its own judgement. ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs is the one predicate dev-flow-exit.mjs and render-dev-flow.mjs share: a round above the cap is scored only when it and every round between the cap and it are authorized here. policy.json's resolved caps are never rewritten, and a cap of 0 (a disabled stage) is never lifted. validate-result-schemas.mjs `run` rejects a duplicate (stage, round) pair; whether a round really lies above the cap is the engines' check, because this document does not carry the policy.",
+      "description": "Optional record of maintainer instructions authorizing a challenge or review round, or a charged integration cycle above the resolved cap (harmon-devkit#1239). For integration, round means the cumulative charged cycle count: retries fold into one cycle and exempt or carried heads add no charged spend. One entry per (stage, round), each attributable: the actor who gave the instruction, the instruction verbatim, and when. An entry records a human instruction through run-record.mjs authorize-cap; an agent never writes one on its own judgement. A maintainer may authorize a round before or after it runs; at is not ordered against round receipts. ai/skills/universal/dev-flow-support/assets/lib/cap-authorizations.mjs is the one predicate dev-flow-exit.mjs and render-dev-flow.mjs share: a round above the cap is scored only when it and every round between the cap and it are authorized here. policy.json's resolved caps are never rewritten, and a cap of 0 (a disabled stage) is never lifted. validate-result-schemas.mjs `run` rejects a duplicate (stage, round) pair; whether a round really lies above the cap is the engines' check, because this document does not carry the policy.",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["stage", "round", "actor", "instruction", "at"],
         "properties": {
-          "stage": { "enum": ["challenge", "review"] },
+          "stage": { "enum": ["challenge", "review", "integration"] },
           "round": {
             "description": "The round the instruction authorizes.",
             "type": "integer",
@@ -178,19 +178,28 @@
       }
     },
     "interventions": {
-      "description": "Every human touchpoint between kickoff and gh pr ready. kind distinguishes asked (answering an implementer's blocked_question, which the success metric counts separately) from other (every other human action, which the success metric counts as an intervention) — docs/glossary.md 'intervention'.",
+      "description": "Touchpoints between kickoff and gh pr ready: asked answers an implementer blocked_question; other records other human action; prompt records an answered harness approval prompt. The fields decision, command and answered_by are forbidden on asked and other entries. Answered prompts (kind prompt) never count against the success metric, which is unchanged; asked is reported separately — docs/glossary.md intervention.",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["kind", "at", "note"],
         "properties": {
-          "kind": { "enum": ["asked", "other"] },
+          "kind": { "enum": ["asked", "other", "prompt"] },
           "at": {
             "type": "string",
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
           },
-          "note": { "type": "string", "minLength": 1 }
+          "note": { "type": "string", "minLength": 1 },
+          "decision": { "enum": ["approved", "denied"] },
+          "command": { "type": "string", "minLength": 1 },
+          "answered_by": { "enum": ["orchestrator", "human"] }
+        },
+        "if": { "properties": { "kind": { "const": "prompt" } } },
+        "then": { "required": ["decision", "command"] },
+        "else": {
+          "properties": { "kind": {}, "at": {}, "note": {} },
+          "additionalProperties": false
         }
       }
     },

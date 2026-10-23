@@ -106,8 +106,11 @@ Do not use local agent-settle waits or pane sentinels for it.
 
 Watch the known branch from the plan through GitHub:
 
+The cloud lane's `:cloud` spec joins the slate's single watcher under SKILL.md's
+one-watcher rule; it is never run as a second watcher.
+
 ```sh
-bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state \
+bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state \
   --registry <kickoff-registry-snapshot> <deadline> \
   '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud'
 ```
@@ -118,7 +121,9 @@ because the watcher validates its shape but does not read it.
 The final `:cloud` selects GitHub-only observation: `BRANCH` reports pushed-head
 changes or a deduplicated `BRANCH <lane>: absent` on a 404, `PR` reports the
 matching PR and its head, and the usual post-promotion activity monitoring
-remains in force.
+remains in force. Periodic `HEARTBEAT` summaries include cloud lanes with
+branch/PR last-change age and PR state. There are no cloud `PROMPT` or `STALL`
+events because there is no local pane.
 An `absent` ref means deleted, renamed, never pushed or not visible to the token;
 check the session before acting. No local worktree, report file or Herdr
 agent read is used. A branch observation proves a push, not a passed gate: read
