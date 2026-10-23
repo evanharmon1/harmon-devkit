@@ -226,4 +226,48 @@ case "$help" in
 *) fail "settle-wait.sh --help does not separate agent-mode and checks-mode exits" ;;
 esac
 
+# ── #1519: agy posture per profile, disclosed in the existing brief text ──
+# Scope these pins to Lane launch and waits, so matching prose elsewhere
+# cannot mask a missing launch-posture subsection.
+agy_posture="$test_tmp/agy-posture.md"
+awk '
+    /^## Lane launch and waits$/ { in_launch = 1; next }
+    in_launch && /^## / { exit }
+    in_posture && /^(#|##|###) / { exit }
+    in_launch && /^### Antigravity \(agy\) lane permission posture$/ { in_posture = 1 }
+    in_posture { print }
+' "$skill" >"$agy_posture"
+contains "$agy_posture" 'Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`, or unset for dev or host (see `docs/glossary.md`)'
+contains "$agy_posture" 'With `FOREMAN_DEVCONTAINER` unset (dev or host), the orchestrator does not infer the profile from settings'
+contains "$agy_posture" 'It dispatches agy lanes only after confirming that the agy settings in effect (`~/.gemini/antigravity-cli/settings.json`) carry the template dev-profile permissions from `antigravity-settings-dev.json`'
+contains "$agy_posture" 'Otherwise it does not dispatch agy lanes, and in a dev devcontainer it reports that a rebuild is needed'
+contains "$agy_posture" '`HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled` gates installing the bot wrapper and applying the dev settings, not profile selection'
+contains "$agy_posture" "Disclose the chosen posture in the lane brief's verified-facts/rulings text"
+contains "$agy_posture" '`--dangerously-skip-permissions` belongs only to the bot posture and is never passed under dev, host or agent'
+contains "$agy_posture" '**Bot:** `FOREMAN_DEVCONTAINER=bot`. When `HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled`'
+contains "$agy_posture" 'bot-autonomy wrapper at `~/.local/bin/agy` injects `--dangerously-skip-permissions` into every agy argv except bare `agy` and the passthrough subcommands'
+contains "$agy_posture" 'Interactive pane launches with arguments receive the flag too'
+contains "$agy_posture" "Bare interactive \`agy\` uses the bot's \`always-proceed\` settings"
+contains "$agy_posture" 'the wrapper injects no flag for bare interactive `agy` or the subcommands it passes through unchanged'
+contains "$agy_posture" 'Not every bot launch carries the flag'
+contains "$agy_posture" 'A launcher that resolves `agy` another way must pass `--dangerously-skip-permissions` itself for lane runs'
+contains "$agy_posture" "**Dev:** \`FOREMAN_DEVCONTAINER\` is unset; use the template's \`.devcontainer/config/antigravity-settings-dev.json\`"
+contains "$agy_posture" "With \`HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled\`, the dev profile's post-create"
+contains "$agy_posture" 'step runs `apply-antigravity-settings.sh` to apply that file **user-global** at `~/.gemini/antigravity-cli/settings.json` inside the dev devcontainer'
+contains "$agy_posture" 'This settings posture applies to interactive agy panes; headless `agy -p` ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`)'
+contains "$agy_posture" "This posture holds only in a devcontainer built with the template's dev settings; a pre-existing container needs a rebuild before agy lanes run"
+contains "$agy_posture" "**Host:** \`FOREMAN_DEVCONTAINER\` is unset; use the user's own agy settings; the template's dev-profile settings are not applied to the host. Dispatch agy lanes only once the gate above confirms the template dev-profile permissions are in effect; otherwise dispatch none"
+contains "$agy_posture" 'Headless `agy -p` ignores settings allow-rules and auto-denies (see `docs/guides/devcontainers.md`)'
+contains "$agy_posture" '**Agent:** `FOREMAN_DEVCONTAINER=agent`; agy is refused by `.devcontainer/config/agent/harnesses.json`; do not launch an agy lane in that profile'
+contains "$agy_posture" "The maintainer's 2026-10-18 ruling keeps the existing template dev settings: this changes no lane-scoped allowlist"
+contains "$agy_posture" 'Refer to the template-owned settings file rather than copying its contents here'
+contains "$agy_posture" 'changes no live behaviour'
+contains "$agy_posture" 'The agy launch argv and lane workspace directories belong to [#1290](https://github.com/evanharmon1/harmon-devkit/issues/1290)'
+# The positive pins require the three allowed occurrences: one bot-only
+# sentence and two Bot-bullet instructions. Any extra occurrence, including
+# under a nested subheading or an unrecognized label, violates that invariant.
+flag_count="$(awk '{ count += gsub(/--dangerously-skip-permissions/, "") } END { print count + 0 }' "$agy_posture")"
+[ "$flag_count" -eq 3 ] ||
+    fail 'The skip-permissions flag must appear only in the Bot bullet and the bot-only sentence (3 occurrences)'
+
 echo "lane launch and waits: ok"
