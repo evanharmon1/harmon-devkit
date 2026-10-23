@@ -413,7 +413,7 @@ function expandLane(plan, laneName, paths, at, reason, { source, fresh = false }
         throw new Refusal(`path ${path} is covered by another live lane ${other.lane}'s effective fence`)
       }
     }
-    if (effectiveFence(lane).some((item) => pathMatches(path, item.path))) {
+    if (effectiveFence(lane).some((item) => path === item.path || (!/[*?\[]/.test(path) && pathMatches(path, item.path)))) {
       throw new Refusal(`path ${path} is already covered by receiving lane ${laneName}`)
     }
     if (fresh) lane.fence.push({ path })

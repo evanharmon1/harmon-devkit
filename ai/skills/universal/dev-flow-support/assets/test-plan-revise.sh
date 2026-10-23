@@ -609,6 +609,17 @@ for (const verdict of ['valid', 'partial']) {
 }
 console.log('  PASS: genesis preserves done issues with empty candidates and accepts the interactive fixture; live empty candidates still exit 2')
 
+// Integration r1: a requested glob is not a concrete path for coverage checks.
+const recursiveExpansion = fixture('1')
+recursiveExpansion.ok('genesis', { input: content(recursiveExpansion.plan.base_sha, [addition(1, 'src/*')]) })
+recursiveExpansion.refuse('expand', { flags: ['--lane', 'l1', '--path', 'src/a.js'] }, /already covered/)
+recursiveExpansion.refuse('expand', { flags: ['--lane', 'l1', '--path', 'src/*'] }, /already covered/)
+current = recursiveExpansion.ok('expand', { flags: ['--lane', 'l1', '--path', 'src/**'] })
+assert.deepEqual(current.lanes[0].fence, [{ path: 'src/*' }])
+assert.deepEqual(current.lanes[0].expansions, [{ path: 'src/**', at: '2026-10-22T12:00:00Z', reason: 'verified operator decision' }])
+recursiveExpansion.refuse('expand', { flags: ['--lane', 'l1', '--path', 'src/**'] }, /already covered/)
+console.log('  PASS: recursive glob expansion is accepted once; covered concrete paths and identical patterns are refused')
+
 
 
 NODE
