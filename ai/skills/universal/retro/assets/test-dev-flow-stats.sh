@@ -386,6 +386,17 @@ function writeScenario(name, db) {
     commits: { "501": [] },
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 101, evCommentId: ev.id },
   });
+  const promptsRunId = "run-answered-prompts-metric";
+  const promptFixture = JSON.parse(readFileSync("ai/schemas/fixtures/run.schema/valid/interventions-answered-prompt.json", "utf8"));
+  const promptBody = {...runBody, run_id: promptsRunId, evidence_comments: [],
+    interventions: chain(promptFixture.interventions.map(entry => ({...entry, at: "2026-09-01T00:04:00Z"})))};
+  const promptRecord = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", promptsRunId, promptBody, "2026-09-01T00:00:00Z");
+  writeScenario("answered-prompts-metric", {
+    issues: [{number: 1529, pull_request: null}],
+    comments: {"1529": [promptRecord.index, promptRecord.record]},
+    commits: {"501": []}, meta: {runId: promptsRunId},
+  });
+
 }
 
 // --- Scenario 2: chain fork — two entries claim the same prev_digest ---
@@ -4379,6 +4390,16 @@ out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --tru
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "happy: expected 1/1 unattended success"
 echo "$out" | jq -e '.per_issue[0].success == true' >/dev/null || fail "happy: per_issue success flag wrong"
 
+echo "== answered prompts remain visible beside the unchanged success metric =="
+export DFSTATS_DB="$tmp/scenarios/answered-prompts-metric.json"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.unattended_success_count == 1 and .answered_prompts_count == 3 and .per_issue[0].answered_prompts == 3 and .per_issue[0].interventions == 0' >/dev/null || fail "prompt metric JSON: $out"
+out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001)"
+grep -qF 'unattended-success: 1/1' <<<"$out" || fail "prompt metric definition changed: $out"
+grep -qF 'answered-prompts: 3' <<<"$out" || fail "prompt total absent: $out"
+grep -qF 'issue  closed  success  interventions  asked  prompts' <<<"$out" || fail "prompt column absent: $out"
+grep -qF '#1529  yes  true  0  0  3' <<<"$out" || fail "per-issue prompt count absent: $out"
+
 echo "== issue discovery tolerates >1 MiB output and projects paginated fields =="
 export DFSTATS_DB="$tmp/scenarios/large-buffer.json"
 export DFSTATS_GH_LOG="$tmp/large-buffer-discovery-gh.log"
@@ -5820,6 +5841,24 @@ const prototypeCounts = renderTrajectory({
 assert.deepEqual(prototypeCounts.findings_by_stage_finder, {
   challenge: {constructor: 1}, review: {constructor: 1}
 });
+// Prompt fields must participate in chain verification, and stage counts
+// must be visible without changing the other-only success metric.
+const { CHAIN_FIELDS, entryDigest, verifyChain, computeIssueVerdict } = await import('./ai/skills/universal/retro/assets/dev-flow-stats.mjs');
+const prompts = ['approved', 'denied', 'approved'].map(decision => ({kind: 'prompt',
+  at: '2026-10-19T00:00:30Z', note: 'approval request', decision, command: 'task verify', answered_by: 'orchestrator'}));
+const promptTrajectory = renderTrajectory({...run, state: {...run.state, interventions: prompts}});
+assert.deepEqual(promptTrajectory.answered_prompts_by_stage, {integration: 3});
+const verdict = computeIssueVerdict([{...run, state: {...run.state, outcome: 'ready-for-review', interventions: prompts}}], {});
+assert.equal(verdict.interventions, 0);
+assert.equal(verdict.asked, 0);
+assert.equal(verdict.success, true); // Prompts are reported, but the established cohort definition stays unchanged.
+assert.ok(renderTrajectoryTable(promptTrajectory).includes('answered prompts by stage: {"integration":3}'));
+const entry = {...prompts[0], seq: 0, prev_digest: 'genesis'};
+entry.digest = entryDigest(prompts[0], 'genesis');
+assert.equal(verifyChain([entry], CHAIN_FIELDS.interventions).ok, true);
+for (const [key, value] of Object.entries({decision: 'denied', command: 'other command', answered_by: 'human'})) {
+  assert.equal(verifyChain([{...entry, [key]: value}], CHAIN_FIELDS.interventions).ok, false, key);
+}
 const t = renderTrajectory(run);
 assert.equal(t.retained_record_findings_by_stage_finder, null);
 assert.equal(t.remediation_pushes.length, 1);

@@ -7,7 +7,8 @@
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
 //                               [--remediation-head SHA --remediation-findings ID,ID,...]
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
-//   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other --note TEXT [--ruling FILE] [--at TS]
+//   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
+//                               [--decision approved|denied --command TEXT [--answered-by orchestrator|human]]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote      --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
@@ -21,6 +22,8 @@
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
 //   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,N,...]
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
+//   run-record.mjs lock check   --slate ID --session ID --owner-token TOKEN
+//                               Read-only: validates the existing lock owner without acquiring or changing it.
 //   run-record.mjs lock status  --slate ID
 //
 // Writes accept --owner-token TOKEN. For acquisition, persistence and recovery,
@@ -628,11 +631,22 @@ const MUTATORS = {
     return `cap authorization (${entry.stage} round ${entry.round})`
   },
   intervention(record, args, context) {
-    if (args.kind !== 'asked' && args.kind !== 'other') throw new UsageError('--kind must be asked or other')
+    if (!['asked', 'other', 'prompt'].includes(args.kind)) throw new UsageError('--kind must be asked, other or prompt')
+    const prompt = {}
+    if (args.kind === 'prompt') {
+      if (!['approved', 'denied'].includes(args.decision)) throw new UsageError('--decision must be approved or denied')
+      if (typeof args.command !== 'string' || args.command.trim() === '') throw new UsageError('--command is required')
+      if (args['answered-by'] !== undefined && !['orchestrator', 'human'].includes(args['answered-by'])) throw new UsageError('--answered-by must be orchestrator or human')
+      prompt.decision = args.decision
+      prompt.command = args.command
+      if (args['answered-by'] !== undefined) prompt.answered_by = args['answered-by']
+    } else if (['decision', 'command', 'answered-by'].some((key) => args[key] !== undefined)) {
+      throw new UsageError('prompt fields require --kind prompt')
+    }
     if (typeof args.note !== 'string' || args.note.trim() === '') throw new UsageError('--note is required')
     guardTimestamp(record, args.at)
     const note = args.ruling === undefined ? args.note : `${args.note}${rulingSuffix(context.common, record.run_id, args.ruling)}`
-    record.interventions.push({ kind: args.kind, at: args.at, note })
+    record.interventions.push({ kind: args.kind, at: args.at, note, ...prompt })
     return `intervention (${args.kind})`
   },
   'bind-pr'(record, args) {
@@ -1551,6 +1565,7 @@ function sideEffectWrite(command, args) {
 
 const VALUE_FLAGS = new Set([
   'slate', 'session', 'owner-token', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
+  'decision', 'command', 'answered-by',
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
@@ -1607,6 +1622,12 @@ function lockCommand(sub, args) {
     return JSON.stringify(readLock(file))
   }
   const session = requireId('session', args.session)
+  if (sub === 'check') {
+    const { file } = lockPaths(root, slate)
+    if (!existsSync(file)) throw new Refusal(`slate ${slate} is unlocked`)
+    assertLockOwner(readLock(file), session, args['owner-token'])
+    return 'slate lock owner verified (read-only)'
+  }
   if (sub === 'acquire') {
     const lock = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues, create: true })
     return lock.created === true ? lock.mintedToken : null

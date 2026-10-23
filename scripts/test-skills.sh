@@ -197,6 +197,14 @@ expect_ok "breakdown applies scoped titles to every issue shape" \
 expect_ok "breakdown authors a dispatch-planning surface per issue" \
     grep -qF 'Each authored issue also carries a `## Surface` section' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+# Answered approval prompts are durable run evidence (#1529).
+expect_ok "orchestrate records answered approvals through the shipped writer" \
+    grep -qF 'run-record.mjs intervention --kind prompt --decision approved|denied --command TEXT --note TEXT' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "retro reports answered prompts beside interventions" \
+    grep -qF 'For every run, report answered approval prompts by stage beside interventions,' \
+    "$repo/ai/skills/universal/retro/SKILL.md"
+
 # Cloud dispatch is an explicit operator choice across the whole mode.
 cloud_forbidden='cloud.*by default|by default.*cloud|default to cloud|recommend.*cloud|prefer.*cloud|automatically (choose|use).*cloud|cloud lanes (are|as) (the )?default|cloud lanes are (recommended|preferred)'
 for cloud_md in \
@@ -2213,6 +2221,44 @@ expect_ok "schemas pin-moved offline makes zero upstream probes" test "$(status_
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+expect_ok "standardize catalog pins Impact options" \
+    grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Risk options" \
+    grep -qF '| Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Complexity options" \
+    grep -qF '| Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority options" \
+    grep -qF '| Priority | urgent, high, medium, low | built-in issue field | `priority:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority AI options" \
+    grep -qF '| Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Effort ladder" \
+    grep -qF '| Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Tier on every owner type" \
+    sh -c 'grep -qF "The Tier is a \`tier:*\` label on every owner type: local, economy, standard," "$1" &&
+        grep -qF "frontier, apex, derived from Risk × Complexity and human-pinnable with" "$1" &&
+        grep -qF "\`tier:pinned\`; there is no Tier issue field." "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families first half" \
+    grep -qF 'The six personal label families are `impact:*`, `risk:*`, `complexity:*`,' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families second half" \
+    grep -qF '`priority:*`, `priority-ai:*`, and `effort:*`.' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins current rigor order" \
+    grep -qF 'levels in `rigor_order` (`cursory → light → standard → thorough → deep → forensic`), the' "$STANDARDIZE_REFS/standards-catalog.md"
+
+expect_ok "update pins wanted hand-set Tiers before merge" \
+    sh -c 'sed -n "/^## 5\. Hand off/,/^## 6\./p" "$1" > "$2" &&
+        grep -qF "**Pin wanted hand-set Tiers before merge.**" "$2" &&
+        grep -qF "**before the PR merges**" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-premerge-tier.md"
+expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
+    sh -c 'grep -qF "before the update or adoption PR merges" "$1" &&
+        grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "adoption points wanted hand-set Tiers to the pre-merge pin step" \
+    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, pin each wanted Tier with \`tier:pinned\` before" "$1" &&
+        grep -qF "the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes." "$1"' sh \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
@@ -2521,11 +2567,8 @@ expect_ok "standards catalog removes Agent from the target field set" \
 expect_ok "standards catalog distinguishes current setup from older pins" \
     grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog leaves transition execution to harmon-init" \
-    python3 -c 'import pathlib, sys
-sentence = ("The complete classification-field catalog is not re-specified here; consult\n"
-            "the target\u0027s generated `docs/project-management.md` and setup scripts.")
-sys.exit(sentence not in pathlib.Path(sys.argv[1]).read_text())' \
+expect_ok "standards catalog mirrors the authoritative project-management doc" \
+    grep -qF '`docs/project-management.md` stays the source of truth this catalog mirrors.' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 CATALOG_PM_FIELDS="$TMPROOT/catalog-pm-fields.md"
 awk '
@@ -2683,7 +2726,10 @@ for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
         grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
         "$STANDARDIZE_REFS/$adr_rename_guide.md"
 done
-expect_ok "standards catalog documents model-centric suggestions" \
+expect_ok "standards catalog retires suggest labels" \
+    grep -qF '**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog does not prescribe retired advisory suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog documents model-centric claims" \
@@ -4005,7 +4051,7 @@ expect_ok "implement confirms the pushed draft head" \
 expect_ok "integration records draft state on entry" \
     grep -qF 'state,isDraft,headRepositoryOwner' "$INTEGRATE_SKILL"
 expect_ok "integration promotes only the unchanged ready head" \
-    sh -c 'grep -qF "gh pr ready <n>" "$1" &&
+    sh -c 'grep -qF "assets/promote.sh" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
         grep -qF "must not be called again" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration fails closed on a pre-promotion head mismatch" \
@@ -4013,7 +4059,7 @@ expect_ok "integration fails closed on a pre-promotion head mismatch" \
         grep -qF "Never wait out a pre-promotion" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "integration reconciles partial or raced promotion" \
     sh -c 'grep -qF "response can be lost" "$1" &&
-        grep -qF "gh pr ready --undo <n> --repo" "$1" &&
+        grep -qF "one undo internally" "$1" &&
         grep -qF "non-draft on a changed head" "$1" &&
         grep -qF "report must name that unresolved" "$1" &&
         grep -qF "remote-state risk" "$1"' sh "$INTEGRATE_SKILL"
@@ -4025,11 +4071,11 @@ expect_ok "integration re-reads canonical promotion after any writer error" \
     sh -c 'grep -qF "re-read the canonical \`run.json\`" "$1" &&
         grep -qF "Accept a lost-response success only if its \`promotion.head\` exactly matches" "$1" &&
         grep -qF "the confirmed head, its \`promotion.gate_fingerprint\` exactly matches" "$1" &&
-        grep -qF "matches the submitted \`promoted_at\`. Otherwise run" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
+        grep -qF "matches the submitted \`promoted_at\`. Otherwise the command runs" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
 expect_ok "integration undoes unrecorded promotion once and confirms draft before blocking" \
-    sh -c 'grep -qF "gh pr ready --undo <n> --repo" "$1" &&
-        grep -qF "once, then bounded-fetch until" "$1" &&
-        grep -qF "\`isDraft == true\` is confirmed and stop **blocked**, naming the writer" "$1" &&
+    sh -c 'grep -qF "one undo internally" "$1" &&
+        grep -qF "one undo internally, then one bounded read to confirm" "$1" &&
+        grep -qF "\`isDraft == true\` and stop **blocked**, naming the writer" "$1" &&
         grep -qF "error and the confirmed draft state" "$1" &&
         grep -qF "re-established, stop indeterminate under the once-then-stop logic below" "$1" &&
         grep -qF "do not attempt a second undo or claim a handoff or confirmed draft" "$1"' sh "$PROMOTION_WRITE_RECOVERY"
@@ -11925,9 +11971,9 @@ expect_ok "implement: solo exit command passes the recorded rigor (#1183 r2-1)" 
 expect_ok "implement: a solo round's head is fixed until adjudication (#1183 r2-2)" \
     grep -qF "**A round's head is fixed from its first receipt to its" "$IMPL_MD"
 expect_ok "integrate: the solo promote example carries every required argument (#1183 r2-3)" \
-    grep -qF -- '--run-id <run-id> --head <promoted headRefOid> --fingerprint <readiness-gate.sh' "$INTEGRATE_MD"
+    grep -qF -- 'assets/promote.sh --repo <repo> --pr <n> --head <head> --record <record>' "$INTEGRATE_MD"
 expect_ok "integrate: a run without a record uses AGENTS.md's hand-run readiness procedure (#1183 r2-1)" \
-    grep -qF '**The scripted gate applies only when a record exists.**' "$INTEGRATE_MD"
+    grep -qF '**The scripted gate and promote command apply only when a record exists.**' "$INTEGRATE_MD"
 expect_ok "review: the verification call reads the per-stage ledger and the shared head map (#1183 R4)" \
     grep -qF -- '--history <record>/history.<stage>.json --heads <record>/heads.json --verification-only' "$REVIEW_MD"
 expect_ok "test-inline-record.sh is wired into the Taskfile (#1183)" \
@@ -12182,7 +12228,7 @@ expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)"
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
     grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"
 expect_ok "integrate: a timestamp mismatch undoes and confirms draft (#1500)" \
-    grep -qF 'matches the submitted `promoted_at`. Otherwise run' "$INTEGRATE_MD"
+    grep -qF 'matches the submitted `promoted_at`. Otherwise the command runs' "$INTEGRATE_MD"
 
 # #1500 round 2: one canonical contract replaces the four pasted caller copies.
 expect_ok "owner-token contract pins session context and recovery (#1500)" \
@@ -12214,6 +12260,57 @@ for name in ("implement", "review", "integrate", "orchestrate"):
     assert "RUN_RECORD_OWNER_TOKEN" not in text, name
     assert "collision guard between same-named sessions" not in text, name
 PYTOKEN
+
+# #1409: recorded callers delegate the promotion mutation to one command.
+expect_ok "promote: executable sibling outside read-only gate" \
+    test -x "$repo/ai/skills/universal/integrate/assets/promote.sh"
+expect_ok "integrate: sole recorded-run promotion path" \
+    grep -qF 'every recorded run uses `assets/promote.sh` as its only promotion path.' "$INTEGRATE_MD"
+expect_ok "integrate: preserves no-record hand-run carve-out" \
+    grep -qF 'carve-out; every recorded run' "$INTEGRATE_MD"
+expect_ok "promotion callers: no bare ready instruction after gate" \
+    python3 - "$INTEGRATE_MD" "$ORCH_MD" "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md" <<'PY1409'
+import pathlib, re, sys
+pattern = re.compile(r"gh\s+pr\s+ready", re.I)
+def guarded(text):
+    # Literal exemptions only; no surrounding region can hide a new recipe.
+    for allowed in (
+        "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
+        "and `gh pr ready` must not be called again.",
+        "an `audit` pass never authorizes `gh pr ready`.",
+    ):
+        text = text.replace(allowed, "")
+    # Markdown code-span boundaries delimit command text, like line endings.
+    text = text.replace("`", "\n")
+    text = re.sub(r"gh pr ready --undo(?=\s|$)", "", text, flags=re.M)
+    return not pattern.search(text)
+for path in sys.argv[1:]:
+    text = pathlib.Path(path).read_text()
+    assert "assets/promote.sh" in text, path
+    assert guarded(text), path
+for planted in ("then run `gh pr ready <n> --repo`", "Promote with `GH PR READY`", "gh pr ready 42", "gh pr ready --undo=false 123"):
+    assert not guarded(planted), planted
+assert guarded("gh pr ready --undo 42")
+assert guarded("gh pr ready --undo")
+assert not guarded("gh pr ready --undo=false 123")
+for region in (
+    "- **Unexplained promotion — fixture**\n%s\n- Checks (under fixture)",
+    "   If the PR was already non-draft\n%s\n   When current-head Codex",
+    "%s",
+):
+    assert not guarded(region % "then run `gh pr ready 42`"), region
+integrate = pathlib.Path(sys.argv[1]).read_text()
+for required in (
+    "promotion (the current head independently passes `readiness-gate.sh audit`)",
+    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
+    "Only audit status `pass`",
+    "on the current head may be recorded, never `audit-behind`",
+    "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
+    "and the run stays open until `run-record.mjs close`",
+):
+    assert required in integrate, required
+
+PY1409
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"

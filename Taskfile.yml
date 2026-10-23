@@ -708,6 +708,7 @@ tasks:
       - ./scripts/test-track-work.sh
       - ./scripts/test-claim-transaction.sh
       - ./scripts/test-release-claim.sh
+      - ./scripts/test-clear-needs-review.sh
 
   test:triage-skill:
     desc: "Unit-test the triage skill's contract scripts (offline, stubbed gh/claude)"

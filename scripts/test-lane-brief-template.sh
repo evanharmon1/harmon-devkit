@@ -168,8 +168,8 @@ for rule in "${exit_rules[@]}"; do
     grep -Fq "$rule" "$rendered_file" || fail "missing exact stage-exit rule: $rule"
 done
 
-grep -Fq 'immediately before `gh pr ready`' "$rendered_file" ||
-    fail "missing immediate pre-promotion re-read rule"
+grep -Fq '`assets/promote.sh` with the existing run identity and resolved gate inputs.' "$rendered_file" ||
+    fail "missing single-command promotion rule"
 grep -Fq 'Active `run.json.started_at` plus `wall_clock_min`' "$rendered_file" ||
     fail "deadline is not sourced from the active run start"
 grep -Fq 'raw pane-history' "$rendered_file" ||

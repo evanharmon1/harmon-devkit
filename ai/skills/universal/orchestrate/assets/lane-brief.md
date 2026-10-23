@@ -136,7 +136,7 @@ checks that they still agree. Read them there:
   work in your own context, the shared working tree and `HEAD`, scratch
   namespacing, and what a relayed gating claim owes. It is written to be read
   standalone and names no values of its own.
-- § **"Hard rules"** — never run `gh pr ready`, never merge or cut a release,
+- § **"Hard rules"** — never promote, never merge or cut a release,
   never rewrite pushed history, never bypass a git hook, never disable a
   stop-gate. These bind this lane exactly as they bind any other dispatch;
   harmon-devkit#827, the incident behind the first of them, *was* an
@@ -346,14 +346,13 @@ Every inline review comment must be answered in its own thread before
 promotion; read the inline surface, not only summary comments. Why: milestone
 entry 19 found unanswered threads at promotion.
 
-After the final PR-body edit, the orchestrator re-reads checks,
-`mergeStateStatus`, the current-head review cycle, and unanswered-thread count
-immediately before `gh pr ready`; re-read immediately before `gh pr ready` is
-the gate, not a best-effort refresh. A body edit can restart CI. The orchestrator
-re-reads `headRefOid` immediately before promotion, fingerprints the required
-PR surfaces, runs `gh pr ready` at most once from its foreground turn, confirms
-the same head is non-draft, and re-fingerprints. A failed or indeterminate
-condition is never a pass.
+After the final PR-body edit, the orchestrator invokes integrate's
+`assets/promote.sh` with the existing run identity and resolved gate inputs.
+It is the only recorded-run promotion path: the command checks, promotes once,
+confirms the same head is non-draft, compares the fingerprint, re-reads the
+head and records promotion. Freeze body and review content during the command.
+Any failed or indeterminate condition is a blocker, never a pass. The lane
+never invokes this command; promotion remains orchestrator-owned.
 
 ## Resolved policy
 
