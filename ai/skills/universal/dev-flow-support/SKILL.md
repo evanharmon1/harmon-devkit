@@ -482,3 +482,38 @@ the two diverge.
 A consumer that *also* wants the schemas at a stable top-level path may add the
 optional `schemas:` block to its `.skills-sync.yaml`; it is not required, and
 this package does not depend on it.
+
+## Per-reviewer integration settings
+
+Keep `finders = ["codex-cloud"]` for ID-only configuration. To declare reviewer
+settings, use `[stage.integration].finder` as an array of inline tables (the
+portable TOML subset does not support array-of-tables headers). Each entry has
+an `id`; its ID joins the existing `finders` list once, preserving slot identity.
+Resolved settings live in `stages.integration.finder`; the ID list remains
+`stages.integration.finders` for existing consumers.
+
+Supported fields are `trigger` and `trigger_incremental` (nonempty comment
+bodies), `budget` (nonnegative total per PR; absent means unspecified), `gates`
+(boolean), and `carry` (`identity`, `identity-or-incremental`, or `fresh`).
+`rounds = N` means the first N rounds; `rounds = { full = [1], incremental =
+[2, 3] }` declares distinct positive rounds by mode. `completion` is a table
+with `kind` (`review`, `comment`, `reaction`, or `workflow`) and a positive
+trusted `actor_id`, plus optional nonempty `body`, `reaction`, `workflow` and
+`conclusion` strings describing the signal. These settings describe reviewer
+policy; they never establish that a review completed or authorize a trigger.
+Consumers still owe head binding, actor verification and the readiness gate.
+
+Repository settings resolve first. For a per-PR change, the trusted caller
+records the operator instruction in the run, then supplies its JSON projection
+through `--finder-overrides <file>` (library: `opts.finderOverrides`):
+`{ "run_id": "run-123", "instruction": "Operator: cap Claude at one review",
+"finders": [{ "id": "claude", "budget": 1, "gates": false }] }`.
+Only configured integration IDs may be overridden. Omitted fields inherit;
+nested `rounds` and `completion` tables replace the whole field. The resolver
+retains the instruction as `finder_overrides` for disclosure. The caller must
+verify the operator instruction and retain it in the named run before resolving;
+run IDs and instruction text alone are not proof of authority. Labels, issue
+text and PR text are never override sources. The merge-base policy/reader rule
+still applies; an older governing reader that lacks the new flag must refuse.
+Template-owned schema and registry definitions arrive through harmon-init;
+this package's independent finder fixtures do not replace those definitions.

@@ -887,6 +887,88 @@ function resolveStageArray(value, label, fallback) {
   return value;
 }
 
+// Reviewer configuration is declarative data. Consumers implement the signals;
+// this reader never posts a trigger or infers completion from untrusted text.
+const FINDER_KEYS = ["id", "trigger", "trigger_incremental", "budget", "rounds", "completion", "gates", "carry"];
+function validateFinder(entry, label) {
+  requireClosedStageTable(entry, FINDER_KEYS, label);
+  if (typeof entry.id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(entry.id)) {
+    throw new PolicyError(`${label}.id must be a finder slug`);
+  }
+  for (const key of ["trigger", "trigger_incremental"]) {
+    if (entry[key] !== undefined && (typeof entry[key] !== "string" || !entry[key].trim())) {
+      throw new PolicyError(`${label}.${key} must be a nonempty comment body`);
+    }
+  }
+  if (entry.budget !== undefined && (!Number.isSafeInteger(entry.budget) || entry.budget < 0)) {
+    throw new PolicyError(`${label}.budget must be a nonnegative integer`);
+  }
+  if (entry.gates !== undefined && typeof entry.gates !== "boolean") {
+    throw new PolicyError(`${label}.gates must be a boolean`);
+  }
+  if (entry.carry !== undefined && !["identity", "identity-or-incremental", "fresh"].includes(entry.carry)) {
+    throw new PolicyError(`${label}.carry must be identity, identity-or-incremental, or fresh`);
+  }
+  if (entry.rounds !== undefined) {
+    if (typeof entry.rounds === "number") {
+      if (!Number.isSafeInteger(entry.rounds) || entry.rounds < 1) {
+        throw new PolicyError(`${label}.rounds must be a positive first-N count`);
+      }
+    } else {
+      requireClosedStageTable(entry.rounds, ["full", "incremental"], `${label}.rounds`);
+      if (Object.keys(entry.rounds).length === 0) throw new PolicyError(`${label}.rounds must name full or incremental rounds`);
+      const seen = new Set();
+      for (const [mode, rounds] of Object.entries(entry.rounds)) {
+        if (!Array.isArray(rounds) || rounds.length === 0) throw new PolicyError(`${label}.rounds.${mode} must be a nonempty array`);
+        for (const round of rounds) {
+          if (!Number.isSafeInteger(round) || round < 1 || seen.has(round)) {
+            throw new PolicyError(`${label}.rounds must contain distinct positive round numbers`);
+          }
+          seen.add(round);
+        }
+      }
+    }
+  }
+  if (entry.completion !== undefined) {
+    requireClosedStageTable(entry.completion, ["kind", "actor_id", "body", "reaction", "workflow", "conclusion"], `${label}.completion`);
+    const c = entry.completion;
+    if (!["review", "comment", "reaction", "workflow"].includes(c.kind)) throw new PolicyError(`${label}.completion.kind must name a completion signal`);
+    if (!Number.isSafeInteger(c.actor_id) || c.actor_id < 1) throw new PolicyError(`${label}.completion.actor_id must be a positive trusted actor ID`);
+    for (const key of ["body", "reaction", "workflow", "conclusion"]) {
+      if (c[key] !== undefined && (typeof c[key] !== "string" || !c[key].trim())) throw new PolicyError(`${label}.completion.${key} must be a nonempty string`);
+    }
+  }
+  return structuredClone(entry);
+}
+
+function resolveFinderEntries(value, label) {
+  const entries = resolveStageArray(value, label, []).map((entry, i) => validateFinder(entry, `${label}[${i}]`));
+  if (new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new PolicyError(`${label} contains duplicate finder IDs`);
+  return entries;
+}
+
+// The caller supplies only an operator instruction already retained in the run.
+// Labels and issue/PR prose are never accepted as an override source.
+function applyFinderOverrides(resolved, override) {
+  if (override === undefined) return resolved;
+  requireClosedStageTable(override, ["run_id", "instruction", "finders"], "finderOverrides");
+  for (const key of ["run_id", "instruction"]) {
+    if (typeof override[key] !== "string" || !override[key].trim()) throw new PolicyError(`finderOverrides.${key} must identify the recorded operator instruction`);
+  }
+  if (!Array.isArray(override.finders) || override.finders.length === 0) throw new PolicyError("finderOverrides.finders must be a nonempty array");
+  const entries = resolveFinderEntries(override.finders, "finderOverrides.finders");
+  const stage = resolved.stages.integration;
+  const byId = new Map((stage.finder ?? []).map((entry) => [entry.id, entry]));
+  for (const entry of entries) {
+    if (!stage.finders.includes(entry.id)) throw new PolicyError(`finderOverrides references unconfigured integration finder "${entry.id}"`);
+    const merged = validateFinder({ ...byId.get(entry.id), ...entry }, `finderOverrides.${entry.id}`);
+    byId.set(entry.id, merged);
+  }
+  stage.finder = [...byId.values()];
+  resolved.finder_overrides = structuredClone(override);
+  return resolved;
+}
+
 function resolveStages(doc) {
   if (doc.stage !== undefined) {
     try {
@@ -905,10 +987,13 @@ function resolveStages(doc) {
     // so a misspelled or misplaced key is refused rather than silently
     // ignored (harmon-init#1571 ported the same rule, in the same shape).
     if (table !== undefined) {
-      const keys = stage === "integration" ? [...STAGE_KEYS, "review_trigger"] : STAGE_KEYS;
+      const keys = stage === "integration" ? [...STAGE_KEYS, "review_trigger", "finder"] : STAGE_KEYS;
       requireClosedStageTable(table, keys, `[stage.${stage}]`);
     }
-    const finders = resolveStageArray(table?.finders, `[stage.${stage}].finders`, []);
+    const finders = [...resolveStageArray(table?.finders, `[stage.${stage}].finders`, [])];
+    const entries = stage === "integration" && table?.finder !== undefined
+      ? resolveFinderEntries(table.finder, "[stage.integration].finder") : undefined;
+    for (const entry of entries ?? []) if (!finders.includes(entry.id)) finders.push(entry.id);
     // Each entry in `finders` is its own all-of primary slot (dev-flow-exit.mjs
     // keys logical-round assembly by slot name) — a duplicate slug collapses
     // two nominally distinct slots onto the same map key. Shepherd-stage
@@ -945,6 +1030,7 @@ function resolveStages(doc) {
     };
     if (stage === "integration") {
       result[stage].review_trigger = resolveReviewTrigger(table?.review_trigger);
+      if (entries !== undefined) result[stage].finder = entries;
     }
   }
   return result;
@@ -1965,6 +2051,9 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *     passed as issueTier.tier, or, with tier:pinned also present, the pinned
  *     Tier, passed as pinnedTier. One value per role: label conflicts are the
  *     consumer's to reconcile first.
+ *   - finderOverrides: { run_id, instruction, finders: [{ id, ...fields }] }
+ *     from an operator instruction already recorded in that run, never labels.
+ *     Applied after the governing repository policy; nested fields replace whole.
  *   - pinnedTier: { tier, markerTrusted, valueTrusted } — the tier:pinned
  *     marker's value and whether each half's provenance was verified.
  *   - issueTier: { risk, complexity, tier } — the issue's classification and
@@ -1981,7 +2070,7 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *     the candidate independently, then govern with the built-in fallback.
  */
 export function resolvePolicy(doc, opts = {}) {
-  return applyTierInputs(resolveGoverningPolicy(doc, opts), opts);
+  return applyFinderOverrides(applyTierInputs(resolveGoverningPolicy(doc, opts), opts), opts.finderOverrides);
 }
 
 // Validate a retained projection through the same resolver as its source.
@@ -2205,7 +2294,7 @@ const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labe
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
 const COMMAND_OPTIONS = {
   detect: new Set(["policy", "json"]),
-  resolve: new Set([...LEGACY_OPTIONS, "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+  resolve: new Set([...LEGACY_OPTIONS, "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
 };
 
 function parseArgs(argv, allowed) {
@@ -2566,6 +2655,15 @@ function cliResolve(args) {
     }
   }
 
+  let finderOverrides;
+  if (args["finder-overrides"] !== undefined) {
+    try {
+      finderOverrides = JSON.parse(readFileSync(args["finder-overrides"], "utf8"));
+    } catch (err) {
+      console.error(`devflow-policy: could not read/parse --finder-overrides: ${err.message}`);
+      return 2;
+    }
+  }
   let resolved;
   try {
     resolved = resolvePolicy(doc, {
@@ -2574,6 +2672,7 @@ function cliResolve(args) {
       mergeBaseDoc,
       mergeBasePolicyAbsent,
       ...tierInputsFromArgs(args),
+      finderOverrides,
     });
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
@@ -2845,6 +2944,17 @@ function tryDelegateToClosure(argv) {
       return 1;
     }
   }
+  if (passthrough.some((arg) => arg === "--finder-overrides" || arg.startsWith("--finder-overrides="))) {
+    try {
+      if (!readFileSync(trustedScript, "utf8").includes('"finder-overrides"')) {
+        console.error("devflow-policy: the --closure reader predates --finder-overrides; refusing to drop an operator instruction");
+        return 1;
+      }
+    } catch (err) {
+      console.error(`devflow-policy: could not inspect --closure finder override support: ${err.message}`);
+      return 1;
+    }
+  }
   // The same hazard for the tier inputs (harmon-devkit#1248): a merge-base
   // reader written before them ignores --pinned-tier/--risk/... and would
   // resolve a pinned or classified issue as unclassified, exit 0, with no
@@ -2934,6 +3044,7 @@ function main() {
   const usage =
     "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level> [--rigor-source operator|label]]\n" +
     "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
+    "       [--finder-overrides <recorded-operator-instruction.json>]\n" +
     "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
     "       [--risk <risk>] [--complexity <complexity>] [--stored-tier <tier>]\n" +
     "       [--pinned-tier <tier> [--pin-marker-trusted] [--pin-value-trusted]] [--json]";

@@ -62,11 +62,10 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
-`assets/clear-needs-review.sh --repo OWNER/NAME --issue N` removes only the
-`needs-review` marker if present, independently of claim trust or ownership.
-It exits 0 when removed or absent, and non-zero on invalid arguments or a
-GitHub read/write failure. See [claim lifecycle](references/claim-lifecycle.md)
-for the review marker's writers and terminal cleanup ownership.
+`needs-review` is a PR state meaning a requested review (agent or human)
+is not yet complete. Issue claim, release and handoff operations never add or
+remove it. A PR waiting for the maintainer to merge is `merge-ready`; the
+merge queue owns that state. See [claim lifecycle](references/claim-lifecycle.md).
 
 ## 1. Before you describe an issue, re-read it
 

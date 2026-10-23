@@ -406,6 +406,9 @@ for dir in "$fixtures_dir"/*/; do
     # policy inputs, not documents of any schema kind. scripts/
     # test-devflow-conformance.sh (task test:devflow-conformance) owns it.
     [ "$base" = "devflow-conformance" ] && continue
+    # Reviewer policy inputs are exercised by test-devflow-finders.sh,
+    # not result-envelope documents.
+    [ "$base" = "devflow-finders" ] && continue
     # brief.envelope is the rendered-Markdown corpus exercised above.
     [ "$base" = "brief.envelope" ] && continue
     kind="$(kind_for_dir "$base")"

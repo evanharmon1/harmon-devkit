@@ -2765,8 +2765,7 @@ that loops indefinitely:
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
-   **Release the chain-owned `claim:*` labels and, where provisioned, add
-   `needs-review`** as separate writes in this ready-for-review handoff: the
+   **Release the chain-owned `claim:*` labels** in this ready-for-review handoff: the
    claim labels assert an agent is implementing the issue *right now*, which
    becomes false when the work is handed to a human (harmon-devkit#210).
    Remove them only when currently on the issue **and** the claim comment's
@@ -2775,8 +2774,7 @@ that loops indefinitely:
    **each exact chain-owned label the record names**: its base ownership label
    (`claim:claude` or a legacy `agent:claude-code`) and, when present, its
    distinct model refinement (`claim:claude:opus`). Substitute those recorded
-   values below; do not infer either one or combine these removals with a
-   review-marker write:
+   values below; do not infer either one:
 
    ```sh
    gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
@@ -2785,55 +2783,27 @@ that loops indefinitely:
 
    If the record is missing or unreadable, leave the claim labels and report
    unverified claim-label cleanup instead of guessing. Skip recorded labels
-   already absent. Claim-label release must succeed independently of whether
-   the repository provisions `needs-review`.
-
-   Skip the review-marker add when the record identifies a label-less claim
-   (`n/a` for its base claim label). Otherwise check provisioning first:
-
-   ```sh
-   gh label list --repo "$repo" --search needs-review --json name
-   ```
-
-   Require a case-insensitive **exact** name match in that result; a search
-   hit such as `needs-review-extra` is not provisioning. Only when the label
-   exists, add it with its own command, even if recorded claim labels were
-   already absent:
-
-   ```sh
-   gh issue edit <n> --repo "$repo" --add-label needs-review
-   ```
-
-   **Never create a label.** For a label-less claim, a missing label, an
-   unverifiable provisioning lookup, or a failed add, report
-   `needs-review not added: <reason>` in the ready summary and continue the
-   handoff; a missing review marker does not block ready-for-review or undo
-   claim-label release. Re-read the issue to verify successful claim-label
-   writes and any successful review-marker add; report only marker states
-   actually verified, with the skipped/failed add's reason otherwise.
+   already absent. Re-read the issue to verify successful claim-label writes.
+   `needs-review` is a PR state meaning a requested review (agent or human) is
+   not yet complete. This handoff never adds or removes it on the issue. A PR
+   awaiting the human merge is `merge-ready`, which the merge queue owns.
    Do **not** post a release comment — the claim as a whole remains live
    (assignee) until the close event or `/wrap` releases it.
 
-   If review activity later pulls integration back into §5 fix rounds, read
-   the issue and remove `needs-review` only when present (case-insensitive
-   match, using the exact live name). Restore the chain-owned claim labels
-   independently (same guard — the record said the claim added them); keep
-   each operation in its own command:
+   If review activity later pulls integration back into §5 fix rounds, restore
+   the chain-owned claim labels (same guard — the record said the claim added
+   them), keeping each operation in its own command:
 
    ```sh
-   gh issue edit <n> --repo "$repo" --remove-label <the exact live needs-review name, only when present>
    gh issue edit <n> --repo "$repo" --add-label <the label the claim record names>
    gh issue edit <n> --repo "$repo" --add-label <the model label the claim record names, when present>
    ```
 
-   Skip only absent review-marker removal. Any applicable marker removal
-   and the claim-label restore(s) must succeed and be verified by re-reading
-   the issue before resuming fixes. "Implementing right now" has become true
-   again, and coordination checks read the claim label as exactly that.
-   Report the exact claim-label changes and the marker result in the ready
-   summary, for example `added needs-review; released claim:claude — ready
-   for review, awaiting the maintainer; the close event releases the rest`,
-   or `needs-review not added: label not provisioned; released claim:claude`.
+   Verify the claim-label restores by re-reading the issue before resuming
+   fixes. “Implementing right now” has become true again, and coordination
+   checks read the claim label as exactly that. Report verified claim-label
+   changes in the ready summary, for example `released claim:claude — ready
+   for review, awaiting the maintainer; the close event releases the rest`.
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator

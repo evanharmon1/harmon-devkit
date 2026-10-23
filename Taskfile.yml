@@ -385,6 +385,7 @@ tasks:
       - test:inline-record
       - test:plan-revise
       - test:devflow-conformance
+      - test:devflow-finders
       - test:dev-flow-monitor
       - test:provision-lane
       - test:post-evidence
@@ -444,6 +445,11 @@ tasks:
     desc: Behavioral test for the Dev flow v2 plan-revision writer (base moves), on fixture repositories only
     cmds:
       - ./ai/skills/universal/dev-flow-support/assets/test-plan-revise.sh
+
+  test:devflow-finders:
+    desc: Test per-reviewer policy fields and recorded operator overrides
+    cmds:
+      - ./ai/skills/universal/dev-flow-support/assets/test-devflow-finders.sh
 
   test:devflow-conformance:
     desc: Run harmon-init's vendored .devflow.toml v2 conformance corpus against the vendored policy reader (blob-pinned inputs + a pin-mutation control)
@@ -708,7 +714,6 @@ tasks:
       - ./scripts/test-track-work.sh
       - ./scripts/test-claim-transaction.sh
       - ./scripts/test-release-claim.sh
-      - ./scripts/test-clear-needs-review.sh
 
   test:triage-skill:
     desc: "Unit-test the triage skill's contract scripts (offline, stubbed gh/claude)"
