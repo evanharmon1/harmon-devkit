@@ -3613,12 +3613,14 @@ Confirm the migration is done — no live label still matches `method:*`:
 assets/migrate-label-family.sh verify method --repo <owner>/<repo>
 ```
 
-The same release also expanded `rigor:*` from three levels
+Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels
 (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/
 `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so
 it has no name-collision hazard and needs no script: `task
 setup:github-labels` below seeds it on the first run, ordinary and additive
-like everything else in this section.
+like everything else in this section. A later release replaced that historical
+order with the current `rigor_order` (`cursory → light → standard → thorough → deep → forensic`);
+see catalog §1.13. Use the selected release's current vocabulary.
 
 ```bash
 task setup:github-project      # board + Status pipeline; personal accounts also Product

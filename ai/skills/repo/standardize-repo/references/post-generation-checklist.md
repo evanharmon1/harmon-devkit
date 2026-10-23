@@ -292,8 +292,9 @@ Both owner types — the org-only follow-ups are in the next section.
       the stack slice. These labels are the source of truth: do not create
       duplicate Domain/Layer fields or an Agent field.
 
-- [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
-      families (concerns / source / workflow / `layer:` / `domain:`). Labels are
+- [ ] **[scriptable via gh]** Seed this repo's **labels** from the selected
+      `label-registry.json` vocabulary, including classification and
+      registry-derived claim/model labels (`agent-registry.json`). Labels are
       **per-repo** (there is no shared org label pool), so run it in every repo:
 
   ```bash
@@ -376,7 +377,8 @@ Both owner types — the org-only follow-ups are in the next section.
       families and `tier:*` against catalog §1.13. Follow the selected template's
       `docs/project-management.md` **Migration: what the classification retired**
       for retired `suggest:*`/`tier:adaptive` labels. Pinning a wanted hand-set Tier
-      is a pre-merge step ([mode-update §5](./mode-update.md#5-hand-off)); here
+      must happen before the update or adoption PR merges
+      ([mode-update §5](./mode-update.md#5-hand-off)); here
       verify that each carries `tier:pinned`, following **The Tier: derivation
       and pin**. Check the per-repository
       `.github/workflows/classification-reconcile.yml` template default and its

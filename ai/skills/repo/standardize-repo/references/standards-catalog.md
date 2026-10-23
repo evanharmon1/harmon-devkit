@@ -10,8 +10,9 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
-**§1.13 (project management) alone was re-verified against harmon-init v4.7.2 on
-2026-07-28; its agent-vocabulary target was re-verified against the registry and
+**§1.13 (project management) alone was re-verified against harmon-init v5.11.0 on
+2026-10-23 for the classification model (harmon-init#1444); its agent-vocabulary
+target was re-verified against the registry and
 ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
 claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
 the harmon-init v4.26.0 `template/.github/workflows/` tree on 2026-08-10** — the
@@ -1136,7 +1137,7 @@ artifacts; the prose rules are guidance, not lint):
   base taxonomy includes:
   **Concerns** (purple `5319E7`) `sec`, `a11y`, `perf`, `tech-debt`, `i18n`,
   `l10n`; **Source** (pink `EC4899`) `customer-request`, `ai-generated`;
-  **Workflow** (orange `E36209`) `needs-triage`, `needs-requirements`, `blocked`,
+  **Workflow** (orange `E36209`) derived `needs-triage`, `needs-requirements`, `blocked`,
   `waiting`, `needs-decision`, `needs-response`, `needs-communication`;
   **Layer** (blue `1D76DB`) `layer:ui`, `layer:logic`, `layer:data`,
   `layer:integration`; **Domain** (yellow `FBCA04`) `domain:auth`,
@@ -1225,7 +1226,7 @@ artifacts; the prose rules are guidance, not lint):
   `is:issue is:pr` matches nothing; leave the type unqualified.
 - **Hierarchy** — sub-issues, no Epic type: the parent holds the spec +
   milestone/project (children inherit both); leaves hold the `Task` type.
-  Current setup ships no points field; do not provision `Size` for estimates.
+  Current setup ships no `Size` field; Effort (human tasks only) is the estimate.
 
 **Org-only automation** (`github_org != author`):
 `.github/workflows/project-automation.yml` syncs `Status` from PR/CI events as the
