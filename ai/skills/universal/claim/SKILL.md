@@ -462,6 +462,20 @@ worked there. The claim's identity signal is the **`claim:*` label**; never
 write `Agent`, and never treat a `suggest:*` label as a claim (it is advice,
 not ownership).
 
+**An issue carrying `needs-review` is awaiting human review.** Report that
+state and stop for confirmation before claiming it; pulling work back from
+review is an escalation, just like an issue assigned to someone else, rather
+than a routine claim authorized by this invocation. It is a review marker,
+not ownership evidence or permission to remove another session's claim.
+The transaction itself enforces this hold at its pre-write and pre-publication
+blocker checks. Only after the operator confirms this issue's pull-back, pass
+`--approve-review-pullback` to `assets/claim-transaction.sh`. That flag waives
+only `needs-review`: human-only work, foreign ownership labels, and unproven
+assignees still block. After establishing the live claim, the transaction
+removes the review marker and verifies both its absence and the current claim;
+a failed or unverified removal returns non-zero. An approved retry can finish
+cleanup of an already-published exact record.
+
 **An existing `claim:*` label — or a legacy `agent:*` label, during the rolling
 transition — naming a *different* agent is a `blocker`.** That one is a live
 claim, and adding a second owner's label would leave the issue claiming two.
