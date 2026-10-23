@@ -153,10 +153,6 @@ Build and publish the plan in this order:
    for them, and a dependent kept without its blocker would either dangle or
    dispatch early). The dependents re-enter a later plan once a human closes
    the precondition, and the run's human-work summary names all of them.
-   An issue labelled `needs-review` (case-insensitive) is awaiting human
-   review of an open PR: before re-verifying, drop it and every slate issue
-   it blocks from `plan.issues`, waves, and lanes. The run summary names all
-   of them.
 3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
    the complete shared-path intersection for each overlapping pair, choose
    `serialize` or `split`, and record the resulting merge dependency. A split

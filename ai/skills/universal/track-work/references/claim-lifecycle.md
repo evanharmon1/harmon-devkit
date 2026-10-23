@@ -52,9 +52,8 @@ continues the handoff; it never creates the label or makes claim release depend
 on the marker. It verifies actual successful writes and records their results
 in the ready summary. The assignee and durable claim record remain live until
 ordinary release; `needs-review` supplies no claim ownership or trust evidence.
-Agent queues exclude this marker: `/orchestrate` planning drops marked issues
-and their slate dependents before re-verifying, while `/claim` reports the
-review hold and requires confirmation to claim it.
+Agent queues exclude this marker: the agent-queue predicate omits marked issues,
+and `/claim` reports the review hold and requires confirmation to claim it.
 
 Three transitions remove the review marker:
 
