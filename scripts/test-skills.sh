@@ -270,6 +270,19 @@ expect_ok "orchestrator planning refuses a second plan writer" \
 expect_ok "orchestrator planning publishes expansions as complete revisions" \
     grep -qF 'accepted expansion is a recomputation reason' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+# Plan decision writers (#1410): separate from other live lanes' pins.
+for plan_command in genesis add-issue expand release done; do
+    expect_ok "orchestrator Planning names the $plan_command writer (#1410)" \
+        grep -qF "dev-flow-support/assets/plan-revise.mjs $plan_command" \
+        "$repo/ai/skills/universal/orchestrate/SKILL.md"
+done
+expect_ok "orchestrator adds queue issues to its live slate (#1410)" \
+    grep -qF "A session adds issues to its live slate" \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "dev-flow-support documents decision writers (#1410)" \
+    grep -qF 'Write held-lock `genesis`, `add-issue`' \
+    "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+
 # Lane provisioning (#1542): keep these pins separate from other live lanes.
 expect_ok "orchestrator Lane briefs names the provisioning command" \
     grep -qF 'Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.' \
