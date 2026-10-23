@@ -197,6 +197,14 @@ expect_ok "breakdown applies scoped titles to every issue shape" \
 expect_ok "breakdown authors a dispatch-planning surface per issue" \
     grep -qF 'Each authored issue also carries a `## Surface` section' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+# Answered approval prompts are durable run evidence (#1529).
+expect_ok "orchestrate records answered approvals through the shipped writer" \
+    grep -qF 'run-record.mjs intervention --kind prompt --decision approved|denied --command TEXT --note TEXT' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "retro reports answered prompts beside interventions" \
+    grep -qF 'For every run, report answered approval prompts by stage beside interventions,' \
+    "$repo/ai/skills/universal/retro/SKILL.md"
+
 # Cloud dispatch is an explicit operator choice across the whole mode.
 cloud_forbidden='cloud.*by default|by default.*cloud|default to cloud|recommend.*cloud|prefer.*cloud|automatically (choose|use).*cloud|cloud lanes (are|as) (the )?default|cloud lanes are (recommended|preferred)'
 for cloud_md in \

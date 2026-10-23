@@ -271,6 +271,10 @@ and the recorded reason rather than reconstructing the original plan from lane
 briefs or memory. The plan for a run is the unique validated slate whose
 revision history lists that `run_id` in `lanes[]`.
 
+For every run, report answered approval prompts by stage beside interventions,
+including their decision, command and answering actor. Never describe a run with
+recorded prompts as unattended.
+
 1. `## Run evidence` — run id, issue, PR, who initiated it, outcome, promotion,
    and where the run id was discovered.
 2. `### Policy the PR discloses (unverified)` — the resolved rigor line read
@@ -317,7 +321,8 @@ revision history lists that `run_id` in `lanes[]`.
    rendered the trajectory's adjudication details (harmon-devkit#1382), so an
    empty section means "nothing was disclosed", never "nothing was
    overridden". Say which you mean in the retro.
-6. `### Interventions` — every human touchpoint, with the stage it interrupted.
+6. `### Interventions` — human touchpoints plus answered prompts (kind `prompt`),
+   with the stage each interrupted.
 7. `### Deferred findings settled` — each settled deferral with the finder slug
    recovered from its finding id (`<stage>-r<round>-<finder>-<n>`, the slugs
    `agent-registry.json` `finders[]` declares).
@@ -346,9 +351,9 @@ most of the signal:
   AGENTS.md's round-2 scaffolding checkpoint exists to catch. If the trajectory
   shows it, the improvement cites that stage, its convergence policy or skill,
   and this run id.
-- **Interventions.** Each one is a place the run could not proceed unattended,
-  and the closed-cohort success metric counts them. Ask what would have had to
-  be true for each not to happen.
+- **Interventions.** `interventions[]` holds human touchpoints plus answered
+  prompts (kind `prompt`). The success metric never counts kind `prompt`. Ask
+  what would have had to be true for each touchpoint or prompt not to happen.
 - **Integrity.** A forged-author or orphan comment is a finding about the
   evidence protocol, not a footnote.
 
