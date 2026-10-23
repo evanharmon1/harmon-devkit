@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.61.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.60.0...v0.61.0) (2026-10-23)
+
+
+### Features
+
+* **dev-flow-support:** add plan writers for genesis, added issues, expansions, release and done ([#1590](https://github.com/evanharmon1/harmon-devkit/issues/1590)) ([d99b386](https://github.com/evanharmon1/harmon-devkit/commit/d99b38688b14e30527d43b5dc7712bc36d9a0953))
+* **integrate:** file review findings as issues carrying the adjudicated badge as Priority (AI) ([#1607](https://github.com/evanharmon1/harmon-devkit/issues/1607)) ([aa1cb4a](https://github.com/evanharmon1/harmon-devkit/commit/aa1cb4a4f724e942e0aeadc425177e3d3ed570ce))
+
 ## [0.60.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.59.0...v0.60.0) (2026-10-23)
 
 
