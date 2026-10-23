@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# File one authorized review follow-up; triage-apply owns every rating write.
+# File one authorized review follow-up. triage-apply owns Priority (AI), Tier
+# and organization rating fields; personal creation supplies the three labels.
 set -euo pipefail
 
 usage() {
@@ -15,7 +16,7 @@ Supply complete agent-authored classification, including ai-generated and all
 required label axes. The metadata checker validates owner type and vocabulary.
 SOURCE names the PR URL, or the branch when the local round precedes a PR.
 Reviewer priority comes from the finding text, never integration's null record.
-Unbadged findings have a p2 floor (an adjudicated P3 writes p2).
+Priority (AI) is the lowercase adjudicated priority; unbadged + P3 is refused.
 Requires workflow authorization and TRIAGE_EXECUTE=1; never sets that approval.
 Stdout: created issue number, including on a post-create failure. Non-zero means
 unfinished filing: retain that number and resolve the blocker, never recreate.
@@ -73,6 +74,9 @@ root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" ||
     die "--repo-root must be inside a Git checkout"
 [ -n "$title" ] && [ -n "$source_pr" ] && [ -n "$reviewer" ] &&
     [ -n "$impact" ] && [ -n "$risk" ] && [ -n "$complexity" ] || die "missing required filing inputs"
+case "$source_pr$reviewer$title" in
+*$'\r'* | *$'\n'*) die "--source-pr, --reviewer and --title must not contain CR or LF" ;;
+esac
 case "$reviewer_priority" in P0 | P1 | P2 | P3 | unbadged) ;; *) die "invalid reviewer priority" ;; esac
 case "$adjudicated_priority" in
 P0) priority_ai=p0 ;;
@@ -82,7 +86,7 @@ P3) priority_ai=p3 ;;
 *) die "invalid adjudicated priority" ;;
 esac
 if [ "$reviewer_priority" = unbadged ] && [ "$priority_ai" = p3 ]; then
-    priority_ai=p2
+    die "an unbadged finding is adjudicated at least P2; unbadged + P3 is invalid"
 fi
 case "$owner_type" in
 personal)
@@ -105,7 +109,7 @@ trap 'rm -rf "$tmp"' EXIT
 cat "$body" >"$tmp/body.md"
 # Use the metadata checker's shared structure pass: fenced examples are blanked
 # and the same bounded Markdown authoring profile governs both readers.
-bash "$asset_dir/parse-issue-markdown.sh" --structure "$body" >"$tmp/structure"
+bash "$asset_dir/parse-issue-markdown.sh" --structure "$tmp/body.md" >"$tmp/structure"
 {
     if ! awk '
       match($0, /^ ? ? ?##[[:space:]]+/) {
@@ -176,7 +180,8 @@ if [ -e label-registry.json ] || [ -L label-registry.json ]; then
     registry="$asset_dir/../../label-registry-support/assets/label-registry.sh"
     tier_records="$("$registry" render label-registry.json)" || incomplete "Tier vocabulary unavailable"
     awk -F '|' '$1 == "value" && $4 == "tier" && $10 == "false" && $11 == "false" &&
-        $2 != "tier:pinned" { print $2 }' <<<"$tier_records" >"$tmp/tiers"
+        $2 != "tier:pinned" { print $2 }' <<<"$tier_records" >"$tmp/tiers" ||
+        incomplete "Tier vocabulary unavailable"
     jq -e --rawfile tiers "$tmp/tiers" '
       any(.labels[]; .name as $name | ($tiers | split("\n") | index($name)) != null)
     ' <<<"$stored" >/dev/null || incomplete "derived Tier unavailable"
@@ -186,8 +191,6 @@ else
 fi
 if [ "${#inapplicable[@]}" -eq 0 ]; then
     jq -e 'all(.labels[]; .name != "needs-triage")' <<<"$stored" >/dev/null || incomplete "needs-triage remains"
-else
-    incomplete "inapplicable axes still need classification"
 fi
 if [ "$owner_type" = organization ]; then
     native_type="$("$triage" native-type --repo "$repo" --issue "$issue")" || incomplete "native Type read failed"
@@ -206,7 +209,10 @@ if [ "$owner_type" = organization ]; then
       $v != null and $v.pageInfo.hasNextPage == false and
       (([$v.nodes[] | select((.field.name | type) == "string" and (.name | type) == "string") |
         {key: .field.name, value: (.name | ascii_downcase)}] | from_entries) as $f |
-       $f.Impact == $impact and $f.Risk == $risk and $f.Complexity == $complexity and $f["Priority (AI)"] == $priority)
+       ($impact == "" or $f.Impact == $impact) and
+       ($risk == "" or $f.Risk == $risk) and
+       ($complexity == "" or $f.Complexity == $complexity) and $f["Priority (AI)"] == $priority)
     ' <<<"$fields" >/dev/null || incomplete "stored classification/Priority (AI) mismatch"
 fi
+[ "${#inapplicable[@]}" -eq 0 ] || incomplete "inapplicable axes still need classification"
 printf 'file-review-finding: verified %s#%s with Priority (AI) %s\n' "$repo" "$issue" "$priority_ai" >&2

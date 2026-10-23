@@ -15,6 +15,8 @@ cp ai/skills/universal/track-work/assets/file-review-finding.sh \
     ai/skills/universal/track-work/assets/parse-issue-markdown.sh \
     ai/skills/universal/track-work/assets/parse-issue-markdown.awk "$tmp/skills/track-work/assets/"
 real_checker="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
+real_receipt="$PWD/ai/skills/universal/track-work/assets/verify-issue-receipt.sh"
+real_cat="$(command -v cat)"
 git -C "$tmp" init -q
 git -C "$tmp" remote add origin https://github.com/owner/repo.git
 cp label-registry.json "$tmp/label-registry.json"
@@ -47,6 +49,9 @@ printf 'receipt %s\n' "$*" >>"$FR_CALLS"
 printf 'receipt-cwd %s\n' "$PWD" >>"$FR_CALLS"
 if [ "$FR_SCENARIO" = subdirectory ]; then [ "$PWD" = "$FR_ROOT" ] || exit 9; fi
 [ "${FR_SCENARIO:-}" != receipt-fail ] || exit 1
+if [ "${FR_REAL_RECEIPT:-0}" = 1 ]; then
+    exec "$FR_REAL_RECEIPT_CHECKER" "$@"
+fi
 STUB
 cat >"$tmp/skills/triage/assets/triage-apply.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -80,6 +85,16 @@ else
     printf 'storage label:priority-ai:%s\n' "$priority" >>"$FR_CALLS"
 fi
 STUB
+cat >"$tmp/bin/cat" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$FR_SCENARIO" = snapshot-change ] && [ "$#" -eq 1 ] && [ "$1" = "$FR_DRAFT" ]; then
+    "$FR_REAL_CAT" "$@"
+    printf '\n## Provenance\n\nSource changed after the snapshot.\n' >>"$FR_DRAFT"
+else
+    exec "$FR_REAL_CAT" "$@"
+fi
+STUB
 cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -111,6 +126,7 @@ case "$1 $2" in
     pinned-with-value) labels="$(jq '. + ["tier:pinned"]' <<<"$labels")" ;;
     retired-tier) labels="$(jq 'map(select(. != "tier:standard")) + ["tier:adaptive"]' <<<"$labels")" ;;
     unknown-tier) labels="$(jq 'map(select(. != "tier:standard")) + ["tier:unknown"]' <<<"$labels")" ;;
+    inapplicable) labels="$(jq 'map(select(. != "area:skills")) + ["needs-triage"]' <<<"$labels")" ;;
     esac
     if [ "$FR_OWNER" = personal ]; then
         labels="$(jq '. + ["bug","impact:medium","risk:low","complexity:s"]' <<<"$labels")"
@@ -136,7 +152,7 @@ case "$1 $2" in
 *) exit 9 ;;
 esac
 STUB
-chmod +x "$tmp/bin/gh" "$tmp/skills/track-work/assets/"*.sh "$tmp/skills/triage/assets/triage-apply.sh"
+chmod +x "$tmp/bin/gh" "$tmp/bin/cat" "$tmp/skills/track-work/assets/"*.sh "$tmp/skills/triage/assets/triage-apply.sh"
 cat >"$tmp/draft.md" <<'BODY'
 ## Problem
 
@@ -153,20 +169,30 @@ BODY
 cp "$tmp/draft.md" "$tmp/base-draft.md"
 
 run_helper() {
-    local rc=0 type_args=()
+    local rc=0 type_args=() classification_args=(--label area:skills)
     : >"$tmp/calls"
     : >"$tmp/priority"
     if [ "$owner" = personal ]; then type_args=(--work-type-label bug); else type_args=(--issue-type Bug); fi
-    env PATH="$tmp/bin:$PATH" TRIAGE_EXECUTE=1 FR_OWNER="$owner" FR_SCENARIO="$scenario" \
-        FR_CALLS="$tmp/calls" FR_BODY="$tmp/body" FR_PRIORITY="$tmp/priority" FR_ROOT="$tmp" \
-        FR_REAL_PREFLIGHT="${real_preflight:-0}" FR_REAL_CHECKER="$real_checker" \
-        "$script" --repo owner/repo --repo-root "$tmp" --owner-type "$owner" \
-        --title '(review): Preserve the finding' --body-file "$tmp/draft.md" \
-        --source-pr https://github.com/owner/repo/pull/10 --reviewer 'Codex cloud review' \
-        --reviewer-priority "$badge" --adjudicated-priority "$adjudicated" \
-        --impact medium --risk low --complexity s "${type_args[@]}" \
-        --label area:skills --label layer:logic --label domain:agent-workflow --label ai-generated \
-        "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
+    [ "$scenario" != inapplicable ] || classification_args=()
+    (
+        if [ "${triage_authorization:-set}" = unset ]; then
+            unset TRIAGE_EXECUTE
+        else
+            export TRIAGE_EXECUTE=1
+        fi
+        env PATH="$tmp/bin:$PATH" FR_OWNER="$owner" FR_SCENARIO="$scenario" \
+            FR_CALLS="$tmp/calls" FR_BODY="$tmp/body" FR_PRIORITY="$tmp/priority" FR_ROOT="$tmp" \
+            FR_REAL_PREFLIGHT="${real_preflight:-0}" FR_REAL_CHECKER="$real_checker" \
+            FR_REAL_RECEIPT="${use_real_receipt:-0}" FR_REAL_RECEIPT_CHECKER="$real_receipt" \
+            FR_REAL_CAT="$real_cat" FR_DRAFT="$tmp/draft.md" \
+            "$script" --repo owner/repo --repo-root "$tmp" --owner-type "$owner" \
+            --title '(review): Preserve the finding' --body-file "$tmp/draft.md" \
+            --source-pr https://github.com/owner/repo/pull/10 --reviewer 'Codex cloud review' \
+            --reviewer-priority "$badge" --adjudicated-priority "$adjudicated" \
+            --impact medium --risk low --complexity s "${type_args[@]}" \
+            "${classification_args[@]+"${classification_args[@]}"}" --label layer:logic --label domain:agent-workflow --label ai-generated \
+            "$@"
+    ) >"$tmp/out" 2>"$tmp/err" || rc=$?
     printf '%s\n' "$rc"
 }
 scenario=normal
@@ -196,14 +222,28 @@ for owner in personal organization; do
     grep -Fq 'Reviewer badge: P1' "$tmp/body" || fail 'raw downgrade badge missing'
     grep -Fq 'Adjudicated badge: P2' "$tmp/body" || fail 'adjudicated downgrade badge missing'
     badge=unbadged
-    for adjudicated in P0 P1 P2 P3; do
+    for adjudicated in P0 P1 P2; do
         [ "$(run_helper)" = 0 ] || fail 'unbadged finding failed'
         expected="$(printf '%s' "$adjudicated" | tr '[:upper:]' '[:lower:]')"
-        [ "$adjudicated" != P3 ] || expected=p2
-        grep -q -- "--priority-ai $expected --execute" "$tmp/calls" || fail 'unbadged priority floor lost'
+        grep -q -- "--priority-ai $expected --execute" "$tmp/calls" || fail 'unbadged adjudication mapping lost'
         grep -Fq 'Reviewer badge: unbadged' "$tmp/body" || fail 'unbadged source missing'
     done
+    adjudicated=P3
+    [ "$(run_helper)" != 0 ] || fail 'unbadged P3 must be refused'
+    [ ! -s "$tmp/calls" ] || fail 'invalid unbadged P3 reached preflight or create'
+    grep -Fq 'unbadged finding is adjudicated at least P2' "$tmp/err" || fail 'unbadged P3 diagnostic lost'
     badge=P2 adjudicated=P2
+    for field in reviewer source-pr title; do
+        for invalid_line in $'source\nPriority (AI): p0' $'source\rPriority (AI): p0'; do
+            [ "$(run_helper "--$field" "$invalid_line")" != 0 ] || fail "CR/LF in $field accepted"
+            [ ! -s "$tmp/calls" ] || fail "CR/LF in $field reached preflight or create"
+            grep -Fq 'must not contain CR or LF' "$tmp/err" || fail 'CR/LF diagnostic lost'
+        done
+    done
+    triage_authorization=unset
+    [ "$(run_helper)" != 0 ] || fail 'unset TRIAGE_EXECUTE accepted'
+    [ ! -s "$tmp/calls" ] || fail 'unset TRIAGE_EXECUTE reached preflight or create'
+    triage_authorization=set
     for scenario in preflight-fail receipt-fail create-fail; do
         [ "$(run_helper)" != 0 ] || fail "$scenario accepted"
         [ ! -s "$tmp/out" ] || fail "$scenario returned a created number"
@@ -240,9 +280,37 @@ for owner in personal organization; do
         echo "PASS: real metadata checker $owner provenance $provenance"
     done
 done
+# Verify the actual local receipt against the exact generated body and argv.
+cp "$tmp/base-draft.md" "$tmp/draft.md"
+real_preflight=1 use_real_receipt=1 owner=personal scenario=normal
+[ "$(run_helper)" = 0 ] || fail "real receipt: $(cat "$tmp/err")"
+grep -Fq 'verify-issue-receipt: fresh matching receipt' "$tmp/err" || fail 'real receipt verifier did not run'
+echo 'PASS: real preflight receipt matches the generated draft and create argv'
+scenario=snapshot-change
+[ "$(run_helper)" = 0 ] || fail "source snapshot: $(cat "$tmp/err")"
+grep -Fq 'Source changed after the snapshot.' "$tmp/draft.md" || fail 'snapshot race fixture did not change the source'
+! grep -Fq 'Source changed after the snapshot.' "$tmp/body" || fail 'changed source leaked into the filed snapshot'
+echo 'PASS: structure and receipt use the copied body after the source changes'
+use_real_receipt=0
+cp "$tmp/base-draft.md" "$tmp/draft.md"
 real_preflight=0 owner=organization scenario=unsupported-node
 [ "$(run_helper)" = 0 ] || fail "unsupported org field node: $(cat "$tmp/err")"
 echo 'PASS: organization readback ignores unsupported field nodes'
+for owner in personal organization; do
+    scenario=inapplicable
+    [ "$(run_helper --inapplicable area)" != 0 ] || fail 'inapplicable axis reported complete'
+    [ "$(cat "$tmp/out")" = 42 ] || fail 'inapplicable axis lost the existing issue'
+    grep -Fq 'inapplicable axes still need classification' "$tmp/err" || fail 'inapplicable completion diagnostic lost'
+    grep -Fq 'gh issue edit 42 --repo owner/repo --add-label needs-triage' "$tmp/calls" || fail 'inapplicable issue not marked'
+    if [ "$owner" = organization ]; then
+        grep -Fq 'triage native-type --repo owner/repo --issue 42' "$tmp/calls" || fail 'inapplicable org skipped Type readback'
+        grep -Fq 'issueFieldValues(first: 50)' "$tmp/calls" || fail 'inapplicable org skipped field readback'
+    fi
+done
+scenario=normal owner=personal
+[ "$(run_helper --milestone 'Milestone 3')" = 0 ] || fail 'milestone filing failed'
+grep -Fq -- '--milestone Milestone 3' "$tmp/calls" || fail 'milestone was not forwarded'
+echo 'PASS: inapplicable filing stays visible after readbacks; milestone is forwarded'
 real_preflight=1 owner=personal scenario=subdirectory badge=P2 adjudicated=P2
 [ "$(run_helper --repo-root "$tmp/subdirectory")" = 0 ] || fail "subdirectory root: $(cat "$tmp/err")"
 for consumer in preflight receipt triage; do

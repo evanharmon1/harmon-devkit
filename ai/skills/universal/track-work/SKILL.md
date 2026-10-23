@@ -1131,13 +1131,17 @@ agent-writable `none` exists. An inapplicable axis leaves the filing incomplete.
 Read the reviewer's badge from the finding's **own text**, passing P0–P3 or
 `unbadged`; integration records still have `reviewer_priority: null`. Pass the
 orchestrator's adjudicated badge separately. Adjudicated P0→p0, P1→p1, P2→p2,
-P3→p3; an unbadged finding has a p2 floor (P0/P1 remain more severe). Nothing
-maps to p4. The issue body records the source PR (or branch before publication),
+P3→p3: `priority_ai` is always the lowercase adjudicated priority. The helper
+refuses unbadged + P3 because an unbadged finding is adjudicated at least P2.
+Nothing maps to p4. The issue body records the source PR (or branch before publication),
 reviewer (Codex cloud review, Gemini Code Assist, Claude Review, or the local
 challenge/review round), raw badge, adjudicated badge when different, and
-Priority (AI). The sole rating writer remains triage's `triage-apply.sh
---priority-ai`: organization issue field `Priority (AI)`, personal
-`priority-ai:<value>` label. Human Priority is never written.
+Priority (AI). triage's `triage-apply.sh --priority-ai` writes Priority (AI)
+as an organization issue field or personal `priority-ai:<value>` label, plus
+the Tier and organization classification fields. On personal repositories,
+creation supplies the Impact/Risk/Complexity labels. Human Priority is never
+written. The source PR, reviewer and title must each be one line; CR/LF is
+refused before creation.
 
 Stdout is the created issue number, including after a partial failure. Require
 exit 0 **and** read the verification result before recording a completed

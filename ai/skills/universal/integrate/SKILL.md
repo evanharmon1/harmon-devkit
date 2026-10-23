@@ -1244,7 +1244,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   filer's Impact/Risk/Complexity and complete classification. Integration
   adjudication entries keep `reviewer_priority: null`; never source the raw
   badge from that null. The helper maps adjudicated P0/P1/P2/P3 to p0/p1/p2/p3,
-  with a p2 floor for unbadged findings, never p4 or human Priority. Require
+  always the lowercase adjudicated priority; unbadged + P3 is refused because
+  an unbadged finding is adjudicated at least P2. It never writes p4 or human
+  Priority. Require
   exit 0 and verified storage before recording a completed filing; on failure
   retain its printed issue number and report the blocker rather than recreating.
   For every new adjudication `file` + `issue_number` reference, record
@@ -1802,9 +1804,14 @@ the document without it.
 - **`converged`** (two consecutive clean cycles) is the fixing ceiling: make
   no further remediation push for P2s. Settle every remaining finding without
   a push — declined with evidence, or filed together in one follow-up issue through
-  `track-work/assets/file-review-finding.sh` (use the most severe adjudicated
-  priority among the grouped findings and preserve each finding's provenance) —
-  reply in each affected thread, `settle` the non-inline ones, tick the
+  `track-work/assets/file-review-finding.sh`. For grouped filing, select the
+  finding with the most severe adjudicated priority (ties: the first in the
+  adjudication table). Pass that finding's `--reviewer`, `--reviewer-priority`
+  and `--source-pr`, and use that same adjudicated priority for
+  `--adjudicated-priority`.
+  In the draft body's `## Provenance` section, list every grouped finding's own
+  reviewer, badge and source as lines; the helper appends its canonical lines
+  after those entries. Then reply in each affected thread, `settle` the non-inline ones, tick the
   deferred entries, and go to the readiness gate. The engine enforces it as
   an invariant: while converged no P0/P1 is outstanding, so every recorded fix
   push after a cycle that closed two consecutive clean cycles is refused

@@ -445,7 +445,8 @@ sequence checks below run; those later checks remain script responsibilities.
   require. The schema keeps it optional so retained schema-2 records without
   this field remain valid. It records the value actually written by
   `track-work/assets/file-review-finding.sh` through triage-apply, from the
-  adjudicated badge (unbadged findings have a p2 floor). Other reference
+  adjudicated badge in lowercase (unbadged + P3 is refused before creation).
+  Other reference
   types cannot carry it; p4 is never accepted. A split's issue reference may
   also retain it, while older split records remain valid without it.
   Integration `reviewer_priority` remains null: the raw badge is read from

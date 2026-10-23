@@ -121,7 +121,9 @@ orchestrator's adjudicated priority, source PR (or the pre-PR branch), reviewer
 and round, and the filer's complete classification including
 Impact/Risk/Complexity. Priority (AI) follows the adjudicated badge via
 triage-apply `--priority-ai` (personal `priority-ai:<value>` label, organization
-field), with a p2 floor for unbadged findings and no p4 mapping. Require exit 0;
+field). `priority_ai` is the lowercase adjudicated priority; unbadged + P3 is
+refused because an unbadged finding is adjudicated at least P2. No p4 mapping
+exists. Require exit 0;
 a partially created issue number is a blocker to resolve, never a reason to
 create again. Preserve the helper's issue number and actual Priority (AI) on
 its adjudication reference as `priority_ai`. Every new `file` + `issue_number`
