@@ -292,8 +292,9 @@ Both owner types — the org-only follow-ups are in the next section.
       the stack slice. These labels are the source of truth: do not create
       duplicate Domain/Layer fields or an Agent field.
 
-- [ ] **[scriptable via gh]** Seed this repo's **labels** — the five starter
-      families (concerns / source / workflow / `layer:` / `domain:`). Labels are
+- [ ] **[scriptable via gh]** Seed this repo's **labels** from the selected
+      `label-registry.json` vocabulary, including classification and
+      registry-derived claim/model labels (`agent-registry.json`). Labels are
       **per-repo** (there is no shared org label pool), so run it in every repo:
 
   ```bash
@@ -359,7 +360,8 @@ Both owner types — the org-only follow-ups are in the next section.
 
 - [ ] **[manual — GitHub UI; older boards only; both owner types]** When reusing
       an older board, follow the selected template's `docs/project-management.md`
-      **Fields → Migrating a board that still has one** before removing retired
+      **Fields → Migrating a board that still has one**, including its #910
+      enumeration rule, before removing retired
       fields the selected release no longer creates: Priority/Size from
       **v5.0.1** (harmon-init#1451), Domain/Layer from **v4.31.0**
       (harmon-init#875), and Agent from **v4.23.0** (harmon-init#662). Retain
@@ -369,6 +371,22 @@ Both owner types — the org-only follow-ups are in the next section.
       `Agent` where present. Preserve wanted values and re-point affected views
       as that migration specifies; current setup is
       additive and does not remove the old fields for you.
+
+- [ ] **[scriptable inspection; `project_management: github`]** After
+      `task setup:github-labels`, verify all six personal classification label
+      families and `tier:*` against catalog §1.13. Follow the selected template's
+      `docs/project-management.md` **Migration: what the classification retired**
+      for retired `suggest:*`/`tier:adaptive` labels. Pinning a wanted hand-set Tier
+      must happen before the update or adoption PR merges
+      ([mode-update §5](./mode-update.md#5-hand-off)); here
+      verify that each carries `tier:pinned`, following **The Tier: derivation
+      and pin**. Check the per-repository
+      `.github/workflows/classification-reconcile.yml` template default and its
+      selected-template wiring. For an organization that opts in, separately
+      deploy the standalone organization-wide walk in its private
+      `.github-private` repository, following harmon-init's
+      `docs/architecture/ci-cd.md` **Organization-wide walk**. Do not require
+      this optional deployment from owners who have not opted in.
 
 ### Org repos only (`github_org != author_git_provider_username`)
 
@@ -384,7 +402,9 @@ that task is rendered for `github` **and** an org owner, so an org repo answerin
   task setup:github-issue-fields
   ```
 
-  > Adds the org's declared issue fields, including **Product**; the selected
+  > Adds **Impact**, **Risk**, **Complexity**, **Priority (AI)**, **Effort**
+  > and **Product** (Priority is GitHub's built-in issue field); validate the
+  > options against catalog §1.13. The selected
   > script is the authority for the complete current list. It does not create
   > the retired Domain/Layer/Agent fields
   > (public preview). Idempotent and additive: an existing field keeps every
@@ -405,7 +425,8 @@ that task is rendered for `github` **and** an org owner, so an org repo answerin
       If any eligible field exists, migrate it regardless of board age or the
       `project_management` answer. Follow the selected template's
       `docs/project-management.md` **Fields → Migrating a board that still has
-      one** even when that document is not generated locally: provision
+      one**, including its #910 enumeration rule,
+      even when that document is not generated locally: provision
       `domain:` and `layer:` labels in every affected repository, migrate
       Domain/Layer values to those labels, and re-point every saved view before
       deleting retired fields.

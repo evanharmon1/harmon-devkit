@@ -3126,6 +3126,17 @@ review, and then stop. Never merge to `main` directly.
 Re-import the branch ruleset via the GitHub UI only if the ruleset JSON changed
 (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
 
+**Pin wanted hand-set Tiers before merge.** This classification step cannot
+wait for §6. When the update adds or enables
+`.github/workflows/classification-reconcile.yml` and open issues carry a
+hand-set `tier:<value>` label, the operator adds `tier:pinned` to each issue
+whose Tier they want to keep **before the PR merges**. Create `tier:pinned` by
+hand first if the repository lacks it. Merging enables the reconciler, which
+rewrites an unpinned issue's Tier when Risk and Complexity are set. Follow the
+selected template's `docs/project-management.md` **The Tier: derivation and
+pin → Pin first on an existing repository**. Include this as a pre-merge item
+in the PR description.
+
 The update has one more part on two kinds of repo, and it lands **after the PR
 merges**: §6. It applies to any `project_management: github` repo, *and* to any
 **org-owned** repo whatever its `project_management` answer — `setup:github-issue-types`
@@ -3602,12 +3613,14 @@ Confirm the migration is done — no live label still matches `method:*`:
 assets/migrate-label-family.sh verify method --repo <owner>/<repo>
 ```
 
-The same release also expanded `rigor:*` from three levels
+Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels
 (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/
 `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so
 it has no name-collision hazard and needs no script: `task
 setup:github-labels` below seeds it on the first run, ordinary and additive
-like everything else in this section.
+like everything else in this section. A later release replaced that historical
+order with the current `rigor_order` (`cursory → light → standard → thorough → deep → forensic`);
+see catalog §1.13. Use the selected release's current vocabulary.
 
 ```bash
 task setup:github-project      # board + Status pipeline; personal accounts also Product
@@ -3664,11 +3677,28 @@ update can create, none of which any script closes:
   the organization's built-in Priority issue field stays). Setup no longer
   creates or reconciles them at those boundaries. Nothing reads their leftover values
   after retirement. Follow the selected template's `docs/project-management.md` **Fields → Migrating a board
-  that still has one**, including its **Priority / Size** migration
+  that still has one**, including its #910 enumeration rule and **Priority / Size** migration
   (harmon-init#1451). For Domain/Layer, provision replacement labels in every
   affected repository and migrate values to those labels. Re-point every saved
   view before an operator removes the fields. Org issue-field removal destroys
   values across the org; checking only this board is insufficient.
+
+Validate classification provisioning against catalog §1.13: after
+`task setup:github-labels`, require the six personal label families and `tier:*`
+on every owner type; after `task setup:github-issue-fields` on organizations,
+check Impact, Risk, Complexity, Priority (AI) and Effort with their full options
+(Priority is built-in). For retired `suggest:*` and `tier:adaptive` labels,
+follow the selected template's `docs/project-management.md` **Migration: what
+the classification retired** and **Migrating retired and renamed labels**;
+never provision them as routing. Pinning was a pre-merge step (§5); here only
+verify that every wanted hand-set Tier carries `tier:pinned`, following
+**The Tier: derivation and pin**.
+Check the per-repository `.github/workflows/classification-reconcile.yml`
+template default and its wiring against the selected release. The standalone
+organization-wide walk is a separate **opt-in** in the organization's private
+`.github-private` repository, following harmon-init's
+`docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public
+`.github` caller and is not required unless the owner opted in.
 
 A renamed label family (harmon-init#1047's `method:*` → `strategy:*`) is
 **not** one of these residues — it is a precondition 6b assumes you already

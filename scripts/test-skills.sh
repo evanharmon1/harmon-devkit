@@ -2208,6 +2208,44 @@ expect_ok "schemas pin-moved offline makes zero upstream probes" test "$(status_
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+expect_ok "standardize catalog pins Impact options" \
+    grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Risk options" \
+    grep -qF '| Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Complexity options" \
+    grep -qF '| Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority options" \
+    grep -qF '| Priority | urgent, high, medium, low | built-in issue field | `priority:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Priority AI options" \
+    grep -qF '| Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Effort ladder" \
+    grep -qF '| Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Tier on every owner type" \
+    sh -c 'grep -qF "The Tier is a \`tier:*\` label on every owner type: local, economy, standard," "$1" &&
+        grep -qF "frontier, apex, derived from Risk × Complexity and human-pinnable with" "$1" &&
+        grep -qF "\`tier:pinned\`; there is no Tier issue field." "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families first half" \
+    grep -qF 'The six personal label families are `impact:*`, `risk:*`, `complexity:*`,' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins personal label families second half" \
+    grep -qF '`priority:*`, `priority-ai:*`, and `effort:*`.' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins current rigor order" \
+    grep -qF 'levels in `rigor_order` (`cursory → light → standard → thorough → deep → forensic`), the' "$STANDARDIZE_REFS/standards-catalog.md"
+
+expect_ok "update pins wanted hand-set Tiers before merge" \
+    sh -c 'sed -n "/^## 5\. Hand off/,/^## 6\./p" "$1" > "$2" &&
+        grep -qF "**Pin wanted hand-set Tiers before merge.**" "$2" &&
+        grep -qF "**before the PR merges**" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-premerge-tier.md"
+expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
+    sh -c 'grep -qF "before the update or adoption PR merges" "$1" &&
+        grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "adoption points wanted hand-set Tiers to the pre-merge pin step" \
+    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, pin each wanted Tier with \`tier:pinned\` before" "$1" &&
+        grep -qF "the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes." "$1"' sh \
+    "$STANDARDIZE_REFS/mode-adopt-existing.md"
+
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
@@ -2516,11 +2554,8 @@ expect_ok "standards catalog removes Agent from the target field set" \
 expect_ok "standards catalog distinguishes current setup from older pins" \
     grep -qF 'Those rows describe current setup behavior. Older pins may still provision' \
     "$STANDARDIZE_REFS/standards-catalog.md"
-expect_ok "standards catalog leaves transition execution to harmon-init" \
-    python3 -c 'import pathlib, sys
-sentence = ("The complete classification-field catalog is not re-specified here; consult\n"
-            "the target\u0027s generated `docs/project-management.md` and setup scripts.")
-sys.exit(sentence not in pathlib.Path(sys.argv[1]).read_text())' \
+expect_ok "standards catalog mirrors the authoritative project-management doc" \
+    grep -qF '`docs/project-management.md` stays the source of truth this catalog mirrors.' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 CATALOG_PM_FIELDS="$TMPROOT/catalog-pm-fields.md"
 awk '
@@ -2678,7 +2713,10 @@ for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
         grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
         "$STANDARDIZE_REFS/$adr_rename_guide.md"
 done
-expect_ok "standards catalog documents model-centric suggestions" \
+expect_ok "standards catalog retires suggest labels" \
+    grep -qF '**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.' \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+expect_fail "standards catalog does not prescribe retired advisory suggestions" \
     grep -qF '`suggest:<family>[:<model>]` for human-authored, advisory triage' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog documents model-centric claims" \
