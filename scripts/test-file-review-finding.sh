@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Offline filing contract tests; installed siblings stand in for shared gates.
+# Offline filing tests, including the real metadata checker with stubbed network.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/skills/track-work/assets" "$tmp/skills/triage/assets" "$tmp/bin"
-cp ai/skills/universal/track-work/assets/file-review-finding.sh "$tmp/skills/track-work/assets/"
+cp ai/skills/universal/track-work/assets/file-review-finding.sh \
+    ai/skills/universal/track-work/assets/parse-issue-markdown.sh \
+    ai/skills/universal/track-work/assets/parse-issue-markdown.awk "$tmp/skills/track-work/assets/"
+real_checker="$PWD/ai/skills/universal/track-work/assets/check-issue-metadata.sh"
+git -C "$tmp" init -q
+git -C "$tmp" remote add origin https://github.com/owner/repo.git
+cp label-registry.json "$tmp/label-registry.json"
 script="$tmp/skills/track-work/assets/file-review-finding.sh"
 fail() {
     # shell-robustness: ok — always exits, so its status is never read
@@ -18,10 +24,14 @@ set -euo pipefail
 printf 'preflight %s\n' "$*" >>"$FR_CALLS"
 [ "${FR_SCENARIO:-}" != preflight-fail ] || exit 1
 case "$*" in *--agent-authored*) ;; *) exit 9 ;; esac
+args=("$@")
 while [ "$#" -gt 0 ]; do
     if [ "$1" = --body-file ]; then cp "$2" "$FR_BODY"; fi
     shift
 done
+if [ "${FR_REAL_PREFLIGHT:-0}" = 1 ]; then
+    exec "$FR_REAL_CHECKER" "${args[@]}"
+fi
 STUB
 cat >"$tmp/skills/track-work/assets/verify-issue-receipt.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -60,6 +70,15 @@ cat >"$tmp/bin/gh" <<'STUB'
 set -euo pipefail
 printf 'gh %s\n' "$*" >>"$FR_CALLS"
 case "$1 $2" in
+'api repos/owner/repo')
+    if [ "$FR_OWNER" = personal ]; then echo User; else echo Organization; fi
+    ;;
+'api repos/owner/repo/contents/') echo '[]' ;;
+'api orgs/owner/issue-types') printf '%s\n' Bug Task Feature ;;
+'label list')
+    printf '%s\n' bug area:skills layer:logic domain:agent-workflow ai-generated needs-triage \
+        impact:medium risk:low complexity:s priority-ai:p0 priority-ai:p1 priority-ai:p2 priority-ai:p3 tier:standard
+    ;;
 'issue create')
     [ "${FR_SCENARIO:-}" != create-fail ] || exit 7
     printf '%s\n' 'https://github.com/owner/repo/issues/42'
@@ -79,18 +98,38 @@ case "$1 $2" in
     jq '{labels: map({name:.})}' <<<"$labels"
     ;;
 'api graphql')
+    if [[ "$*" == *'issueFields(first:'* ]]; then
+        printf '%s\n' '[{"id":"FI","name":"Impact","options":[{"id":"I1","name":"medium"}]},{"id":"FR","name":"Risk","options":[{"id":"R1","name":"low"}]},{"id":"FC","name":"Complexity","options":[{"id":"C1","name":"s"}]}]'
+        exit 0
+    fi
     priority="$(cat "$FR_PRIORITY")"
     if [ "${FR_SCENARIO:-}" = wrong-priority ]; then priority=p4; fi
     jq -n --arg p "$priority" '{data:{repository:{issue:{issueFieldValues:{
       pageInfo:{hasNextPage:false},nodes:[
         {field:{name:"Impact"},name:"Medium"},{field:{name:"Risk"},name:"Low"},
-        {field:{name:"Complexity"},name:"S"},{field:{name:"Priority (AI)"},name:$p}]}}}}}'
+        {field:{name:"Complexity"},name:"S"},{field:{name:"Priority (AI)"},name:$p}]}}}}}' |
+        if [ "${FR_SCENARIO:-}" = unsupported-node ]; then
+            jq '.data.repository.issue.issueFieldValues.nodes += [{}, {field:{name:"Text field"},name:null}]'
+        else cat; fi
     ;;
 *) exit 9 ;;
 esac
 STUB
 chmod +x "$tmp/bin/gh" "$tmp/skills/track-work/assets/"*.sh "$tmp/skills/triage/assets/triage-apply.sh"
-printf '## Problem\n\nRetain the defect and its design constraints.\n' >"$tmp/draft.md"
+cat >"$tmp/draft.md" <<'BODY'
+## Problem
+
+Retain the defect and its design constraints.
+
+```markdown
+## Provenance
+```
+
+## Acceptance criteria
+
+- [ ] [CI] The regression has a verified follow-up
+BODY
+cp "$tmp/draft.md" "$tmp/base-draft.md"
 
 run_helper() {
     local rc=0 type_args=()
@@ -99,6 +138,7 @@ run_helper() {
     if [ "$owner" = personal ]; then type_args=(--work-type-label bug); else type_args=(--issue-type Bug); fi
     env PATH="$tmp/bin:$PATH" TRIAGE_EXECUTE=1 FR_OWNER="$owner" FR_SCENARIO="$scenario" \
         FR_CALLS="$tmp/calls" FR_BODY="$tmp/body" FR_PRIORITY="$tmp/priority" \
+        FR_REAL_PREFLIGHT="${real_preflight:-0}" FR_REAL_CHECKER="$real_checker" \
         "$script" --repo owner/repo --repo-root "$tmp" --owner-type "$owner" \
         --title '(review): Preserve the finding' --body-file "$tmp/draft.md" \
         --source-pr https://github.com/owner/repo/pull/10 --reviewer 'Codex cloud review' \
@@ -163,4 +203,23 @@ for owner in personal organization; do
     [ "$(run_helper)" != 0 ] || fail 'p4 adjudication accepted'
     [ ! -s "$tmp/calls" ] || fail 'invalid adjudication reached a dependency'
 done
+# Exercise the helper's exact preflight argv and generated body against the
+# real checker. Only GitHub/network and the post-preflight writer are stubbed;
+# all receipts remain in the throwaway target checkout.
+real_preflight=1 scenario=normal badge=P2 adjudicated=P2
+for owner in personal organization; do
+    for provenance in absent present; do
+        cp "$tmp/base-draft.md" "$tmp/draft.md"
+        if [ "$provenance" = present ]; then
+            # A fenced heading must not be mistaken for the real heading.
+            printf '\n## pRoVeNaNcE ###\n\nExisting provenance.\n' >>"$tmp/draft.md"
+        fi
+        [ "$(run_helper)" = 0 ] || fail "real metadata checker: $owner provenance $provenance: $(cat "$tmp/err")"
+        grep -Fq 'Source PR:' "$tmp/body" || fail 'real preflight lost provenance'
+        echo "PASS: real metadata checker $owner provenance $provenance"
+    done
+done
+real_preflight=0 owner=organization scenario=unsupported-node
+[ "$(run_helper)" = 0 ] || fail "unsupported org field node: $(cat "$tmp/err")"
+echo 'PASS: organization readback ignores unsupported field nodes'
 printf 'ALL PASS: review filing mapping, provenance, owner storage, and failure propagation\n'

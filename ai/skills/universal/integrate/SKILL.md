@@ -1247,8 +1247,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   with a p2 floor for unbadged findings, never p4 or human Priority. Require
   exit 0 and verified storage before recording a completed filing; on failure
   retain its printed issue number and report the blocker rather than recreating.
-  Record the actual value written as `reference.priority_ai` on adjudication
-  `file` + `issue_number` references. Run settlement references remain
+  For every new adjudication `file` + `issue_number` reference, record
+  `reference.priority_ai` with the actual value the helper reports. The schema
+  keeps it optional only for retained records. Run settlement references remain
   `{type, value}`; do not add a key their schema does not accept.
   Before filing one, **search
   the repo the follow-up is going into** — `track-work` §3 owns this step and

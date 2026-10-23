@@ -124,7 +124,9 @@ triage-apply `--priority-ai` (personal `priority-ai:<value>` label, organization
 field), with a p2 floor for unbadged findings and no p4 mapping. Require exit 0;
 a partially created issue number is a blocker to resolve, never a reason to
 create again. Preserve the helper's issue number and actual Priority (AI) on
-its adjudication reference as `priority_ai`. This helper also handles every
+its adjudication reference as `priority_ai`. Every new `file` + `issue_number`
+adjudication must carry the actual value the helper reports; the schema keeps
+it optional for retained records. This helper also handles every
 ordinary review finding filed as follow-up work; it does not change stage
 exit rules or the gating severity of an escalated P0/P1.
 

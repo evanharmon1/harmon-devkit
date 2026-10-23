@@ -74,23 +74,6 @@
           }
         }
       },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "disposition": { "const": "file" },
-              "reference": {
-                "properties": { "type": { "const": "issue_number" } },
-                "required": ["type"]
-              }
-            },
-            "required": ["disposition", "reference"]
-          },
-          "then": {
-            "properties": { "reference": { "required": ["priority_ai"] } }
-          }
-        }
-      ],
       "required": [
         "finding_id",
         "reviewer_priority",
@@ -156,12 +139,15 @@
           "enum": ["confirmed", "plausible", "false-positive"]
         },
         "reference": {
-          "description": "Evidence decided at adjudication time. Optional for fix/decline/file, required for split. A file disposition with an issue_number reference requires priority_ai: the p0-p3 value actually written by track-work/assets/file-review-finding.sh. priority_ai is permitted only on issue_number references. Integration reviewer_priority stays null; the raw badge comes from the finding text. Deferred outcomes remain in run.schema.json settlements, whose reference shape is unchanged.",
+          "description": "Evidence decided at adjudication time. Optional for fix/decline/file, required for split. New file dispositions with an issue_number reference record priority_ai: the p0-p3 value actually written by track-work/assets/file-review-finding.sh. It is optional in the schema so retained schema-2 records remain valid. priority_ai is permitted only on issue_number references. Integration reviewer_priority stays null; the raw badge comes from the finding text. Deferred outcomes remain in run.schema.json settlements, whose reference shape is unchanged.",
           "type": "object",
           "additionalProperties": false,
           "required": ["type", "value"],
-          "if": { "required": ["priority_ai"] },
-          "then": { "properties": { "type": { "const": "issue_number" } } },
+          "if": { "properties": { "type": { "const": "issue_number" } } },
+          "else": {
+            "additionalProperties": false,
+            "properties": { "type": {}, "value": {} }
+          },
           "properties": {
             "type": { "enum": ["sha", "comment_id", "issue_number"] },
             "value": { "type": "string", "minLength": 1 },

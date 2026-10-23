@@ -1145,7 +1145,7 @@ filing. The helper independently re-reads classification, Tier, and Priority
 (AI); a failed apply or verification adds `needs-triage` and exits non-zero.
 Retain the existing number and report the blocker; never recreate it. A missing
 Tier matrix is incomplete filing, even when rating writes succeeded.
-For an adjudication's `file` + `issue_number` reference, record
+For every new adjudication's `file` + `issue_number` reference, record
 `{type: issue_number, value: <number-or-owner/repo#number>, priority_ai: p2}`
 with the actual value written. For a split, retain that value on its issue
 reference too. The run settlement reference remains `{type, value}`; its schema

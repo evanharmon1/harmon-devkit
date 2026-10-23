@@ -101,8 +101,22 @@ cd "$root"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/file-review-finding.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 cat "$body" >"$tmp/body.md"
+# Use the metadata checker's shared structure pass: fenced examples are blanked
+# and the same bounded Markdown authoring profile governs both readers.
+bash "$asset_dir/parse-issue-markdown.sh" --structure "$body" >"$tmp/structure"
 {
-    printf '\n\n## Review provenance\n\nSource PR: %s\nReviewer: %s\nReviewer badge: %s\n' \
+    if ! awk '
+      match($0, /^ ? ? ?##[[:space:]]+/) {
+        text = substr($0, RSTART + RLENGTH)
+        sub(/[[:space:]]+#+[[:space:]]*$/, "", text)
+        sub(/[[:space:]]+$/, "", text)
+        if (tolower(text) == "provenance") found = 1
+      }
+      END { exit !found }
+    ' "$tmp/structure"; then
+        printf '\n\n## Provenance\n'
+    fi
+    printf '\nSource PR: %s\nReviewer: %s\nReviewer badge: %s\n' \
         "$source_pr" "$reviewer" "$reviewer_priority"
     if [ "$reviewer_priority" != "$adjudicated_priority" ]; then
         printf 'Adjudicated badge: %s\n' "$adjudicated_priority"
@@ -117,7 +131,11 @@ if [ "$owner_type" = personal ]; then
 else
     metadata+=(--issue-type "$issue_type" --impact "$impact" --risk "$risk" --complexity "$complexity")
 fi
-for label in "${labels[@]+"${labels[@]}"}"; do metadata+=(--label "$label"); done
+for label in "${labels[@]+"${labels[@]}"}"; do
+    # --work-type-label already supplies this label to the checker.
+    if [ "$owner_type" = personal ] && [ "$label" = "$work_type" ]; then continue; fi
+    metadata+=(--label "$label")
+done
 for axis in "${inapplicable[@]+"${inapplicable[@]}"}"; do metadata+=(--inapplicable "$axis"); done
 "$asset_dir/check-issue-metadata.sh" "${metadata[@]}" >&2
 
@@ -172,7 +190,8 @@ if [ "$owner_type" = organization ]; then
     jq -e --arg impact "$impact" --arg risk "$risk" --arg complexity "$complexity" --arg priority "$priority_ai" '
       .data.repository.issue.issueFieldValues as $v |
       $v != null and $v.pageInfo.hasNextPage == false and
-      (([$v.nodes[] | {key: .field.name, value: (.name | ascii_downcase)}] | from_entries) as $f |
+      (([$v.nodes[] | select((.field.name | type) == "string" and (.name | type) == "string") |
+        {key: .field.name, value: (.name | ascii_downcase)}] | from_entries) as $f |
        $f.Impact == $impact and $f.Risk == $risk and $f.Complexity == $complexity and $f["Priority (AI)"] == $priority)
     ' <<<"$fields" >/dev/null || incomplete "stored classification/Priority (AI) mismatch"
 fi

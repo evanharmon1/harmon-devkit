@@ -13,11 +13,7 @@
       "reason": "real but out of scope",
       "evidence": "tracked as a follow-up",
       "override": null,
-      "reference": {
-        "type": "issue_number",
-        "value": "0",
-        "priority_ai": "p2"
-      }
+      "reference": { "type": "issue_number", "value": "0" }
     }
   ]
 }
