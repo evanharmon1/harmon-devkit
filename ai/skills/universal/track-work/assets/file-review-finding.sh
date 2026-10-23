@@ -69,6 +69,8 @@ while [ "$#" -gt 0 ]; do
 done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "expected --repo OWNER/REPO"
 [ -d "$root" ] && [ -f "$body" ] || die "readable --repo-root and --body-file required"
+root="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" ||
+    die "--repo-root must be inside a Git checkout"
 [ -n "$title" ] && [ -n "$source_pr" ] && [ -n "$reviewer" ] &&
     [ -n "$impact" ] && [ -n "$risk" ] && [ -n "$complexity" ] || die "missing required filing inputs"
 case "$reviewer_priority" in P0 | P1 | P2 | P3 | unbadged) ;; *) die "invalid reviewer priority" ;; esac
@@ -168,8 +170,20 @@ for label in "${labels[@]+"${labels[@]}"}" "priority-ai:$priority_ai"; do
     jq -e --arg label "$label" 'any(.labels[]; .name == $label)' <<<"$stored" >/dev/null ||
         incomplete "missing label $label"
 done
-jq -e 'any(.labels[]; .name | test("^tier:[^:]+$"))' <<<"$stored" >/dev/null ||
-    incomplete "derived Tier unavailable"
+# A pin is a modifier, not a Tier. Reuse the validated registry vocabulary
+# when present; repositories without a manifest retain the unqualified fallback.
+if [ -e label-registry.json ] || [ -L label-registry.json ]; then
+    registry="$asset_dir/../../label-registry-support/assets/label-registry.sh"
+    tier_records="$("$registry" render label-registry.json)" || incomplete "Tier vocabulary unavailable"
+    awk -F '|' '$1 == "value" && $4 == "tier" && $10 == "false" && $11 == "false" &&
+        $2 != "tier:pinned" { print $2 }' <<<"$tier_records" >"$tmp/tiers"
+    jq -e --rawfile tiers "$tmp/tiers" '
+      any(.labels[]; .name as $name | ($tiers | split("\n") | index($name)) != null)
+    ' <<<"$stored" >/dev/null || incomplete "derived Tier unavailable"
+else
+    jq -e 'any(.labels[]; .name | test("^tier:[^:]+$") and . != "tier:pinned")' \
+        <<<"$stored" >/dev/null || incomplete "derived Tier unavailable"
+fi
 if [ "${#inapplicable[@]}" -eq 0 ]; then
     jq -e 'all(.labels[]; .name != "needs-triage")' <<<"$stored" >/dev/null || incomplete "needs-triage remains"
 else

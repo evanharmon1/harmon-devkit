@@ -3,8 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp="$(mktemp -d)"
+tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/skills/track-work/assets" "$tmp/skills/triage/assets" "$tmp/bin"
+mkdir -p "$tmp/skills/track-work/assets" "$tmp/skills/triage/assets" \
+    "$tmp/skills/label-registry-support/assets" "$tmp/bin" "$tmp/subdirectory"
+cp ai/skills/universal/label-registry-support/assets/label-registry.sh \
+    "$tmp/skills/label-registry-support/assets/"
+printf '# top-level fixture policy\n' >"$tmp/.devflow.toml"
+printf '# incorrect subdirectory policy\n' >"$tmp/subdirectory/.devflow.toml"
 cp ai/skills/universal/track-work/assets/file-review-finding.sh \
     ai/skills/universal/track-work/assets/parse-issue-markdown.sh \
     ai/skills/universal/track-work/assets/parse-issue-markdown.awk "$tmp/skills/track-work/assets/"
@@ -22,6 +28,7 @@ cat >"$tmp/skills/track-work/assets/check-issue-metadata.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'preflight %s\n' "$*" >>"$FR_CALLS"
+printf 'preflight-cwd %s\n' "$PWD" >>"$FR_CALLS"
 [ "${FR_SCENARIO:-}" != preflight-fail ] || exit 1
 case "$*" in *--agent-authored*) ;; *) exit 9 ;; esac
 args=("$@")
@@ -37,12 +44,20 @@ cat >"$tmp/skills/track-work/assets/verify-issue-receipt.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'receipt %s\n' "$*" >>"$FR_CALLS"
+printf 'receipt-cwd %s\n' "$PWD" >>"$FR_CALLS"
+if [ "$FR_SCENARIO" = subdirectory ]; then [ "$PWD" = "$FR_ROOT" ] || exit 9; fi
 [ "${FR_SCENARIO:-}" != receipt-fail ] || exit 1
 STUB
 cat >"$tmp/skills/triage/assets/triage-apply.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'triage %s\n' "$*" >>"$FR_CALLS"
+printf 'triage-cwd %s\n' "$PWD" >>"$FR_CALLS"
+if [ "$FR_SCENARIO" = subdirectory ]; then
+    [ "$PWD" = "$FR_ROOT" ] || exit 9
+    grep -Fxq '# top-level fixture policy' .devflow.toml || exit 9
+    printf 'triage-policy top-level\n' >>"$FR_CALLS"
+fi
 if [ "$1" = native-type ]; then
     echo '{"state":"set","name":"Bug"}'
     exit 0
@@ -91,6 +106,12 @@ case "$1 $2" in
     priority="$(cat "$FR_PRIORITY")"
     if [ "${FR_SCENARIO:-}" = wrong-priority ]; then priority=p4; fi
     labels='["area:skills","layer:logic","domain:agent-workflow","ai-generated","tier:standard"]'
+    case "$FR_SCENARIO" in
+    pinned-only) labels="$(jq 'map(select(. != "tier:standard")) + ["tier:pinned"]' <<<"$labels")" ;;
+    pinned-with-value) labels="$(jq '. + ["tier:pinned"]' <<<"$labels")" ;;
+    retired-tier) labels="$(jq 'map(select(. != "tier:standard")) + ["tier:adaptive"]' <<<"$labels")" ;;
+    unknown-tier) labels="$(jq 'map(select(. != "tier:standard")) + ["tier:unknown"]' <<<"$labels")" ;;
+    esac
     if [ "$FR_OWNER" = personal ]; then
         labels="$(jq '. + ["bug","impact:medium","risk:low","complexity:s"]' <<<"$labels")"
         labels="$(jq --arg p "priority-ai:$priority" '. + [$p]' <<<"$labels")"
@@ -137,7 +158,7 @@ run_helper() {
     : >"$tmp/priority"
     if [ "$owner" = personal ]; then type_args=(--work-type-label bug); else type_args=(--issue-type Bug); fi
     env PATH="$tmp/bin:$PATH" TRIAGE_EXECUTE=1 FR_OWNER="$owner" FR_SCENARIO="$scenario" \
-        FR_CALLS="$tmp/calls" FR_BODY="$tmp/body" FR_PRIORITY="$tmp/priority" \
+        FR_CALLS="$tmp/calls" FR_BODY="$tmp/body" FR_PRIORITY="$tmp/priority" FR_ROOT="$tmp" \
         FR_REAL_PREFLIGHT="${real_preflight:-0}" FR_REAL_CHECKER="$real_checker" \
         "$script" --repo owner/repo --repo-root "$tmp" --owner-type "$owner" \
         --title '(review): Preserve the finding' --body-file "$tmp/draft.md" \
@@ -222,4 +243,37 @@ done
 real_preflight=0 owner=organization scenario=unsupported-node
 [ "$(run_helper)" = 0 ] || fail "unsupported org field node: $(cat "$tmp/err")"
 echo 'PASS: organization readback ignores unsupported field nodes'
+real_preflight=1 owner=personal scenario=subdirectory badge=P2 adjudicated=P2
+[ "$(run_helper --repo-root "$tmp/subdirectory")" = 0 ] || fail "subdirectory root: $(cat "$tmp/err")"
+for consumer in preflight receipt triage; do
+    grep -Fxq "$consumer-cwd $tmp" "$tmp/calls" || fail "$consumer did not observe top-level cwd"
+done
+grep -Fxq 'triage-policy top-level' "$tmp/calls" || fail 'triage used a subdirectory policy'
+echo 'PASS: subdirectory root uses the top-level checker, receipt, triage and policy'
+real_preflight=0
+for owner in personal organization; do
+    for scenario in pinned-only retired-tier unknown-tier; do
+        [ "$(run_helper)" != 0 ] || fail "$scenario must not count as an actual Tier"
+        grep -Fq 'derived Tier unavailable' "$tmp/err" || fail 'missing Tier diagnostic lost'
+        [ "$(cat "$tmp/out")" = 42 ] || fail 'missing Tier lost the existing issue number'
+        grep -Fq 'gh issue edit 42 --repo owner/repo --add-label needs-triage' "$tmp/calls" || fail 'missing Tier not marked incomplete'
+    done
+    scenario=pinned-with-value
+    [ "$(run_helper)" = 0 ] || fail "pin plus Tier must verify: $(cat "$tmp/err")"
+done
+echo 'PASS: pinned-only is incomplete; pinned plus an active Tier verifies'
+# The no-manifest fallback still distinguishes the pin from the Tier value.
+mv "$tmp/label-registry.json" "$tmp/label-registry.backup.json"
+scenario=pinned-only
+[ "$(run_helper)" != 0 ] || fail 'fallback counted tier:pinned as an actual Tier'
+scenario=pinned-with-value
+[ "$(run_helper)" = 0 ] || fail 'fallback rejected pin plus Tier'
+mv "$tmp/label-registry.backup.json" "$tmp/label-registry.json"
+scenario=normal
+# --repo-root must point outside the fixture checkout for this refusal case.
+nonrepo="$(mktemp -d)"
+[ "$(run_helper --repo-root "$nonrepo")" != 0 ] || fail 'non-checkout root accepted'
+rmdir "$nonrepo"
+grep -Fq -- '--repo-root must be inside a Git checkout' "$tmp/err" || fail 'non-checkout diagnostic lost'
+[ ! -s "$tmp/calls" ] || fail 'non-checkout reached a dependency'
 printf 'ALL PASS: review filing mapping, provenance, owner storage, and failure propagation\n'
