@@ -54,7 +54,7 @@ These terms define the [adopted PR lifecycle model](decisions/2026-10-23-pr-life
 | Promoted | Open PR with `isDraft = false`; an agent promotes only out of a passing handoff check and may demote. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Merged | PR merged by a human. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Closed | PR closed by a human. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
-| Working | Draft PR whose issue carries `claim:<harness>`; an agent owes implementation, review rounds, fixes, CI or catch-up on a draft. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
+| Working | Draft PR whose issue carries `claim:<harness>`; an agent owes implementation, review rounds, fixes, CI or catch-up on a draft; orchestrator upkeep (catching up and re-checking a parked draft or the queue head) is not Working and does not re-add the claim. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Needs review | Draft or promoted PR labelled `needs-review`; a requested agent or human review is incomplete. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Parked | Draft labelled `parked`; passed the handoff check earlier and waits in the merge queue without being kept current. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Blocked | Draft labelled `blocked`; needs a human decision or input named in a comment. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |

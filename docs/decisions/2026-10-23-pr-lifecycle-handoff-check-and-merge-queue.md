@@ -126,8 +126,8 @@ Working remains draft-only.
 Each reviewer is a finder in `.devflow.toml [stage.integration]`, with trigger
 text, per-PR budget and covered rounds, completion signal, whether it gates,
 and carry behaviour. Defaults are overridable per repository and per PR.
-Per-PR overrides come only from an operator instruction recorded in the run,
-never from a label. Template defaults:
+Per-PR overrides come only from an operator instruction recorded in the run;
+no label family carries them for now. Template defaults:
 
 | Reviewer | Budget and coverage |
 |---|---|
@@ -184,7 +184,8 @@ This ADR records the accepted model; implementation is split across:
 - [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): the
   `devflow-policy.mjs` reader, finder fields and per-repository then per-PR
   override resolution, plus the skills’ `needs-review` wiring. Per-PR overrides
-  come only from an operator instruction recorded in the run, never from a label.
+  come only from an operator instruction recorded in the run; no label family
+  carries them for now.
 - [#1605](https://github.com/evanharmon1/harmon-devkit/issues/1605): handoff check
   reads check runs through the GitHub App installation token.
 - [harmon-init#1786](https://github.com/evanharmon1/harmon-init/issues/1786):
