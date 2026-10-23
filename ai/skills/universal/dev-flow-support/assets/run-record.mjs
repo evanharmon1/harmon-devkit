@@ -22,6 +22,8 @@
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
 //   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,N,...]
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
+//   run-record.mjs lock check   --slate ID --session ID --owner-token TOKEN
+//                               Read-only: validates the existing lock owner without acquiring or changing it.
 //   run-record.mjs lock status  --slate ID
 //
 // Writes accept --owner-token TOKEN. For acquisition, persistence and recovery,
@@ -1620,6 +1622,12 @@ function lockCommand(sub, args) {
     return JSON.stringify(readLock(file))
   }
   const session = requireId('session', args.session)
+  if (sub === 'check') {
+    const { file } = lockPaths(root, slate)
+    if (!existsSync(file)) throw new Refusal(`slate ${slate} is unlocked`)
+    assertLockOwner(readLock(file), session, args['owner-token'])
+    return 'slate lock owner verified (read-only)'
+  }
   if (sub === 'acquire') {
     const lock = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues, create: true })
     return lock.created === true ? lock.mintedToken : null
