@@ -9,6 +9,7 @@
   [foreman milestone "Dev flow v2"](https://github.com/ponderousdev/foreman/milestone/5),
   [docs/product/domain.md § Lifecycles](../docs/product/domain.md),
   [docs/glossary.md](../docs/glossary.md),
+  [PR lifecycle, handoff check and merge queue ADR](../docs/decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md),
   [docs/decisions/0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md),
   [harmon-init decision record 0009](https://github.com/evanharmon1/harmon-init/pull/1114)
   (beside 0006/0007; PR #1114).
