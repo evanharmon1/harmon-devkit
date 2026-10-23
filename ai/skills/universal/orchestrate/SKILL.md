@@ -192,7 +192,13 @@ Build and publish the plan in this order:
    --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
    milestone-backed slate (the milestone exists only in the lock). A second
    orchestrator naming the same work is refused here, before it can publish a
-   plan or dispatch anything. Then write the closed record and validate it with
+   plan or dispatch anything. Publish revision 0 with
+   `dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id>
+   --session <session> --owner-token <token> --input <plan-input.json> --reason "initial slate"`.
+   The input is the complete plan content from step 5; overlap entries supply
+   the chosen resolution and merge dependency, while the writer computes their
+   complete shared paths. Genesis requires the already-held lock and refuses
+   any issue outside its reservation; it never acquires a new lock. Validate with
    `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
    a graph/projection mismatch, an ownership error, or a cap violation. Both
@@ -220,7 +226,49 @@ Build and publish the plan in this order:
    that sequence. It refuses, naming the paths or issues, whenever the move
    needs judgment: the new commits touch a live lane's fence or candidate
    files, or a done issue releases a dependent. Fence expansions, overlap
-   choices and wave changes stay yours; write them as a complete revision.
+   choices and wave changes stay yours; supply those decisions to the writers
+   below. Every writer extends the digest chain and runs the same candidate,
+   validate, rename and canonical-readback sequence. Original fences of existing
+   runs never change; only dated expansions grow.
+
+**Keep the session's live slate.** A session adds issues to its live slate as
+its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
+<issue.json>` rather than creating a slate per issue. All revision commands
+also require `--slate`, `--session`, `--owner-token` and `--reason`. The input is
+`{issue, lane, profile: {lane, policy}, overlaps?: [...], waves?: [...]}`:
+the new issue and lane, its complete resolved profile, resolutions and merge
+dependencies for its overlaps with live lanes, and optional complete wave
+placement. The writer computes pairwise intersections, stores the profile in
+`plan.lane_profiles`, and widens the held lock through its existing owner-checked
+acquire path before publication. Existing reservations remain held.
+
+Use `dev-flow-support/assets/plan-revise.mjs expand --lane <lane> --path <path>`
+for one authorized expansion. It stamps `{path, at, reason}` itself and refuses
+a timestamp earlier than the last revision or a path covered by any other live
+lane's effective fence, including globs and lanes in other waves. The optional
+`--at` timestamp is for reproducible operator input, never backdating.
+
+After verifying an external merge, use
+`dev-flow-support/assets/plan-revise.mjs done --issue <n> --reason <evidence>`
+to retain the verified issue as done while retiring its lane without requiring
+a base move. For a path handoff use
+`dev-flow-support/assets/plan-revise.mjs release --issue <finished-issue>
+--lane <receiver> --path <path>... --reason <evidence>` instead. Both retire the
+source and apply supplied release decisions in ONE revision. Their optional
+`--input` file is `{releases?: [{lane, paths}], addition?: <add-issue input>,
+waves?: [...]}`. Existing receivers gain dated expansions; a receiver first
+introduced by `addition` gets the paths in its original fence. A previously
+planned receiver always keeps its original fence, even before dispatch. Released
+paths must belong to the finished lane and must not remain covered by another
+live lane. Supply complete `waves` when a merge changes placement; the writer
+updates lane wave assignments and validates the resulting graph.
+
+Candidate overlaps and effective fences are checked with glob-aware coverage
+across all live lanes, not just one wave. An unresolved collision is refused.
+The schema records exact candidate-file intersections: when a glob-only
+intersection cannot be represented, the writer refuses and asks for a shared
+candidate entry plus the operator's resolution. It never invents fence scope or
+overlap decisions. `base-move` keeps its mechanical-only refusal contract.
 
 ## Durable orchestrator state
 
