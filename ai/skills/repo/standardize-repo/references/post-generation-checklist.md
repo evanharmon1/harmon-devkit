@@ -375,8 +375,10 @@ Both owner types — the org-only follow-ups are in the next section.
       `task setup:github-labels`, verify all six personal classification label
       families and `tier:*` against catalog §1.13. Follow the selected template's
       `docs/project-management.md` **Migration: what the classification retired**
-      for retired `suggest:*`/`tier:adaptive` labels and preserving a hand-set
-      Tier with a pin before the reconciler's first write. Check the per-repository
+      for retired `suggest:*`/`tier:adaptive` labels. Pinning a wanted hand-set Tier
+      is a pre-merge step ([mode-update §5](./mode-update.md#5-hand-off)); here
+      verify that each carries `tier:pinned`, following **The Tier: derivation
+      and pin**. Check the per-repository
       `.github/workflows/classification-reconcile.yml` template default and its
       selected-template wiring. For an organization that opts in, separately
       deploy the standalone organization-wide walk in its private

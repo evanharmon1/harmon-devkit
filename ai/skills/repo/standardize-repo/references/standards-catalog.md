@@ -580,8 +580,8 @@ label (colour `006B75`, description `Claimed by Claude`, verbatim from
 `agent-registry.json`) when the repo lacks it — repo-level label provisioning
 is the one write that can survive a refusal, since creation precedes the apply
 that may then fail. The prefix test is deliberate: it also catches `claim:claude:opus`,
-`claim:gpt`, and legacy `agent:*`, while `suggest:*` is never matched — that is
-advice, not ownership. An event with no issue or PR number runs unclaimed.
+`claim:gpt`, and legacy `agent:*`, while retired `suggest:*` is never matched
+as ownership. An event with no issue or PR number runs unclaimed.
 Release is an `if: always()` step gated on this run having acquired the claim;
 it deletes the label, treats a 404 as success, retries once, and otherwise
 turns the job red rather than reporting a release over a surviving marker. The
@@ -1205,8 +1205,12 @@ artifacts; the prose rules are guidance, not lint):
   `.github/workflows/close-milestone-on-release.yml` closes the matching milestone
   on release publish — **[copier]** when `use_release_please` + `github`.
 - **Views** (Board / Triage / Agent queue / Planning / Mine) are **UI-only** —
-  Projects V2 has no view API. The Agent queue view keys on `Status: Agent Queue`
-  and may filter by `suggest:*`; it never depends on an `Agent` field. **[manual]**.
+  Projects V2 has no view API. The saved Agent queue view approximates the
+  Agent queue predicate; the selected template's `docs/project-management.md`
+  **Views → Agent queue** entry is authoritative. It never filters on a retired
+  `suggest:*` label and never depends on an `Agent` field. Re-point a saved view
+  that still does as **Migration: what the classification retired** says.
+  **[manual]**.
 - **Auto-add** — the project's built-in **"Auto-add to project"** workflow
   (Settings → Workflows, filter `is:open`) puts every issue/PR on the board, for
   both owner types. UI-only, no API. **[manual]**. Three limits bound the "every

@@ -3126,6 +3126,17 @@ review, and then stop. Never merge to `main` directly.
 Re-import the branch ruleset via the GitHub UI only if the ruleset JSON changed
 (see [`post-generation-checklist.md`](./post-generation-checklist.md)).
 
+**Pin wanted hand-set Tiers before merge.** This classification step cannot
+wait for §6. When the update adds or enables
+`.github/workflows/classification-reconcile.yml` and open issues carry a
+hand-set `tier:<value>` label, the operator adds `tier:pinned` to each issue
+whose Tier they want to keep **before the PR merges**. Create `tier:pinned` by
+hand first if the repository lacks it. Merging enables the reconciler, which
+rewrites an unpinned issue's Tier when Risk and Complexity are set. Follow the
+selected template's `docs/project-management.md` **The Tier: derivation and
+pin → Pin first on an existing repository**. Include this as a pre-merge item
+in the PR description.
+
 The update has one more part on two kinds of repo, and it lands **after the PR
 merges**: §6. It applies to any `project_management: github` repo, *and* to any
 **org-owned** repo whatever its `project_management` answer — `setup:github-issue-types`
@@ -3677,8 +3688,9 @@ check Impact, Risk, Complexity, Priority (AI) and Effort with their full options
 (Priority is built-in). For retired `suggest:*` and `tier:adaptive` labels,
 follow the selected template's `docs/project-management.md` **Migration: what
 the classification retired** and **Migrating retired and renamed labels**;
-never provision them as routing. Pin any wanted hand-set Tier before the
-reconciler's first write, as **The Tier (derivation and pin)** specifies.
+never provision them as routing. Pinning was a pre-merge step (§5); here only
+verify that every wanted hand-set Tier carries `tier:pinned`, following
+**The Tier: derivation and pin**.
 Check the per-repository `.github/workflows/classification-reconcile.yml`
 template default and its wiring against the selected release. The standalone
 organization-wide walk is a separate **opt-in** in the organization's private
