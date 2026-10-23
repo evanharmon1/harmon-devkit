@@ -45,7 +45,7 @@ Agent states are shown with labels; the Working claim label is on the issue:
 
 | State | GitHub | Label | Meaning |
 |---|---|---|---|
-| Working | draft | `claim:<harness>` on the issue | An agent owes implementation, review rounds, fixes, CI or catch-up on a draft. |
+| Working | draft | `claim:<harness>` on the issue | An agent owes implementation, review rounds, fixes, CI or catch-up on a draft; orchestrator upkeep is excluded. |
 | Needs review | draft or promoted | `needs-review` | A requested review is incomplete, usually from an agent reviewer, sometimes a human. |
 | Parked | draft | `parked` | Passed the handoff check earlier and waits in the merge queue; deliberately not kept current. |
 | Blocked | draft | `blocked` | Needs a human decision or input named in a comment. |
@@ -97,10 +97,14 @@ This supersedes the wording in
 [#1591](https://github.com/evanharmon1/harmon-devkit/issues/1591) and
 [harmon-init#1781](https://github.com/evanharmon1/harmon-init/issues/1781)
 that promoted PRs further back stay behind the base: those PRs stay drafts.
+This also retires [#1592](https://github.com/evanharmon1/harmon-devkit/issues/1592)’s
+issue-side `needs-review` marking in favour of the review-outstanding meaning.
 
 A lane retires when its PR passes the handoff check, whether parked or
-merge-ready. The orchestrator owns parked drafts, catches them up and re-checks
-them when they reach the queue head, and owns and watches every PR until it
+merge-ready; release the issue’s `claim:<harness>` label at that point. The
+orchestrator owns parked drafts, catches them up and re-checks them when they
+reach the queue head. That parked-draft or queue-head upkeep is not Working and
+does not re-add the claim. The orchestrator owns and watches every PR until it
 merges or closes, for as long as it is open. There is no fixed 15-minute
 post-promotion window: time passing cannot prove a review finished. Keep
 [#969](https://github.com/evanharmon1/harmon-devkit/issues/969)'s rule to lead
@@ -112,15 +116,18 @@ A late finding needing a code change sends the PR back to draft by default.
 A finding declined or filed without a code change is settled in place. A base
 move gets a catch-up as queue-head upkeep, not Working-state work: the PR
 stays promoted, with `merge-ready` removed only while the handoff check re-runs.
-Return to draft only if the new head owes a review. Remove the prohibition on
-restarting work on a promoted PR, and re-add the claim label on the issue only
-when the PR goes back to draft. Working remains draft-only.
+Return to draft only if the new head owes a review. Work may restart on a PR
+that was promoted: return it to draft first. The issue’s claim label returns
+only when work resumes on a draft; orchestrator upkeep does not re-add it.
+Working remains draft-only.
 
 ### Reviewer coverage and carry
 
 Each reviewer is a finder in `.devflow.toml [stage.integration]`, with trigger
 text, per-PR budget and covered rounds, completion signal, whether it gates,
-and carry behaviour. Template defaults, overridable per repository and per PR:
+and carry behaviour. Defaults are overridable per repository and per PR.
+Per-PR overrides come only from an operator instruction recorded in the run,
+never from a label. Template defaults:
 
 | Reviewer | Budget and coverage |
 |---|---|
@@ -176,7 +183,8 @@ This ADR records the accepted model; implementation is split across:
   and lane retirement after passing the handoff check.
 - [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): the
   `devflow-policy.mjs` reader, finder fields and per-repository then per-PR
-  override resolution, plus the skills’ `needs-review` wiring.
+  override resolution, plus the skills’ `needs-review` wiring. Per-PR overrides
+  come only from an operator instruction recorded in the run, never from a label.
 - [#1605](https://github.com/evanharmon1/harmon-devkit/issues/1605): handoff check
   reads check runs through the GitHub App installation token.
 - [harmon-init#1786](https://github.com/evanharmon1/harmon-init/issues/1786):
