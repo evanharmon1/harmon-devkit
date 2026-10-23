@@ -8,6 +8,7 @@ mkdir -p "$tmp/skills/track-work/assets" "$tmp/skills/triage/assets" "$tmp/bin"
 cp ai/skills/universal/track-work/assets/file-review-finding.sh "$tmp/skills/track-work/assets/"
 script="$tmp/skills/track-work/assets/file-review-finding.sh"
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
