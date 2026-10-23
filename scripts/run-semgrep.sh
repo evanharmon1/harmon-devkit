@@ -97,7 +97,9 @@ configure_uv_dir "UV_CACHE_DIR" "${UV_CACHE_DIR:-}" "$(default_uv_cache_dir)" "c
 
 # Semgrep defaults to the current directory when no target is provided. Do not
 # append one here: callers can scope local scans with `task security:sast -- <path>`.
-exec uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
+# Semgrep 1.180 miscalculates an unlimited stack limit on Python 3.15,
+# preventing native scanner threads from starting. Keep its interpreter on 3.14.
+exec uvx --python 3.14 --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
     --config p/default \
     --metrics=off \
     --error \
