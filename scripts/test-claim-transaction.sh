@@ -73,15 +73,6 @@ api)
 issue)
     case "${2:-}" in
     view)
-        if [ -n "${CLAIM_MUTATE_REVIEW_ON_VIEW:-}" ]; then
-            count=0
-            [ ! -f "$CLAIM_ISSUE_READ_COUNT" ] || count="$(cat "$CLAIM_ISSUE_READ_COUNT")"
-            count=$((count + 1))
-            printf '%s\n' "$count" >"$CLAIM_ISSUE_READ_COUNT"
-            if [ "$count" -eq "$CLAIM_MUTATE_REVIEW_ON_VIEW" ]; then
-                write_issue '.labels += [{name:$value}]' needs-review
-            fi
-        fi
         cat "$CLAIM_ISSUE_FILE"
         ;;
     edit)
@@ -112,9 +103,7 @@ issue)
                 shift 2
                 ;;
             --remove-label)
-                if [ "${CLAIM_IGNORE_REVIEW_REMOVAL:-false}" != true ]; then
-                    write_issue '.labels = [.labels[] | select(.name != $value)]' "$2"
-                fi
+                write_issue '.labels = [.labels[] | select(.name != $value)]' "$2"
                 shift 2
                 ;;
             *) shift ;;
@@ -168,7 +157,6 @@ comments_fail_flag="$tmp/comments.fail"
 timeline_fail_flag="$tmp/timeline.fail"
 timeline_read_count="$tmp/timeline.read-count"
 comments_read_count="$tmp/comments.read-count"
-issue_read_count="$tmp/issue.read-count"
 log="$tmp/actions.log"
 record="$tmp/record.md"
 err="$tmp/err"
@@ -182,7 +170,6 @@ scenario() {
     rm -f "$timeline_fail_flag"
     rm -f "$timeline_read_count"
     rm -f "$comments_read_count"
-    rm -f "$issue_read_count"
 }
 
 make_record() {
@@ -236,9 +223,6 @@ run_claim() {
         CLAIM_CONCURRENT_LOGIN="${RUN_CONCURRENT_LOGIN:-collaborator}" \
         CLAIM_CLOSE_AFTER_COMMENT="${RUN_CLOSE_AFTER_COMMENT:-false}" \
         CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH="${CLAIM_FAIL_EDIT_AFTER_APPLY_MATCH:-}" \
-        CLAIM_ISSUE_READ_COUNT="$issue_read_count" \
-        CLAIM_MUTATE_REVIEW_ON_VIEW="${RUN_MUTATE_REVIEW_ON_VIEW:-}" \
-        CLAIM_IGNORE_REVIEW_REMOVAL="${RUN_IGNORE_REVIEW_REMOVAL:-false}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" "$@" \

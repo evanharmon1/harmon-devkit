@@ -163,7 +163,7 @@ finders = ["codex-adversarial"]
 finders = ["codex-verification"]
 [stage.integration]
 finder = [
-  { id = "codex-cloud", trigger = "codex review", rounds = 5, completion = { kind = "comment", actor_id = 199175422 }, gates = true, carry = "identity" },
+  { id = "codex-cloud", trigger = "codex review", rounds = 5, completion = { kind = "comment", actor_id = 199175422, body = "Reviewed commit:" }, gates = true, carry = "identity" },
   { id = "claude", trigger = "claude review", budget = 2, rounds = 2, completion = { kind = "review", actor_id = 1001 }, gates = false, carry = "identity" },
   { id = "greptile", trigger = "greptile review", budget = 1, rounds = 1, completion = { kind = "review", actor_id = 1002 }, gates = false, carry = "fresh" },
   { id = "coderabbit-cloud", trigger = "coderabbit full", trigger_incremental = "coderabbit incremental", budget = 3, rounds = { full = [1], incremental = [2, 3] }, completion = { kind = "reaction", actor_id = 1003, reaction = "+1" }, gates = true, carry = "identity-or-incremental" },

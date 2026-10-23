@@ -58,6 +58,7 @@ import { lstatSync, readFileSync, existsSync, realpathSync, statSync } from "nod
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { parseToml, TomlError } from "./lib/toml-lite.mjs";
 
@@ -890,7 +891,7 @@ function resolveStageArray(value, label, fallback) {
 // Reviewer configuration is declarative data. Consumers implement the signals;
 // this reader never posts a trigger or infers completion from untrusted text.
 const FINDER_KEYS = ["id", "trigger", "trigger_incremental", "budget", "rounds", "completion", "gates", "carry"];
-function validateFinder(entry, label) {
+function validateFinder(entry, label, partial = false) {
   requireClosedStageTable(entry, FINDER_KEYS, label);
   if (typeof entry.id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(entry.id)) {
     throw new PolicyError(`${label}.id must be a finder slug`);
@@ -930,34 +931,59 @@ function validateFinder(entry, label) {
     }
   }
   if (entry.completion !== undefined) {
-    requireClosedStageTable(entry.completion, ["kind", "actor_id", "body", "reaction", "workflow", "conclusion"], `${label}.completion`);
     const c = entry.completion;
-    if (!["review", "comment", "reaction", "workflow"].includes(c.kind)) throw new PolicyError(`${label}.completion.kind must name a completion signal`);
+    const fields = {
+      review: ["kind", "actor_id"],
+      comment: ["kind", "actor_id", "body"],
+      reaction: ["kind", "actor_id", "reaction"],
+      workflow: ["kind", "actor_id", "workflow", "conclusion"],
+    };
+    if (!c || typeof c !== "object" || Array.isArray(c) || !Object.hasOwn(fields, c.kind)) throw new PolicyError(`${label}.completion.kind must name a completion signal`);
+    requireClosedStageTable(c, fields[c.kind], `${label}.completion.${c.kind}`);
+    for (const key of fields[c.kind]) {
+      if (!Object.hasOwn(c, key)) throw new PolicyError(`${label}.completion.${c.kind} requires ${key}`);
+    }
     if (!Number.isSafeInteger(c.actor_id) || c.actor_id < 1) throw new PolicyError(`${label}.completion.actor_id must be a positive trusted actor ID`);
     for (const key of ["body", "reaction", "workflow", "conclusion"]) {
       if (c[key] !== undefined && (typeof c[key] !== "string" || !c[key].trim())) throw new PolicyError(`${label}.completion.${key} must be a nonempty string`);
     }
   }
+  if (!partial) {
+    if (entry.gates === true && entry.budget === 0) throw new PolicyError(`${label}: gates=true contradicts budget=0`);
+    if ((entry.rounds?.incremental !== undefined || entry.carry === "identity-or-incremental") && !entry.trigger_incremental) {
+      throw new PolicyError(`${label}: incremental rounds/carry requires trigger_incremental`);
+    }
+    const roundCount = typeof entry.rounds === "number" ? entry.rounds
+      : Object.values(entry.rounds ?? {}).reduce((count, rounds) => count + rounds.length, 0);
+    // An explicitly disabled advisory reviewer keeps its schedule as data.
+    if (entry.budget !== undefined && !(entry.gates === false && entry.budget === 0) && entry.budget < roundCount) {
+      throw new PolicyError(`${label}: budget is below the declared rounds`);
+    }
+  }
   return structuredClone(entry);
 }
 
-function resolveFinderEntries(value, label) {
-  const entries = resolveStageArray(value, label, []).map((entry, i) => validateFinder(entry, `${label}[${i}]`));
+function resolveFinderEntries(value, label, partial = false) {
+  const entries = resolveStageArray(value, label, []).map((entry, i) => validateFinder(entry, `${label}[${i}]`, partial));
   if (new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new PolicyError(`${label} contains duplicate finder IDs`);
   return entries;
 }
 
 // The caller supplies only an operator instruction already retained in the run.
 // Labels and issue/PR prose are never accepted as an override source.
-function applyFinderOverrides(resolved, override) {
+function applyFinderOverrides(resolved, override, runId) {
   if (override === undefined) return resolved;
   requireClosedStageTable(override, ["run_id", "instruction", "finders"], "finderOverrides");
   for (const key of ["run_id", "instruction"]) {
     if (typeof override[key] !== "string" || !override[key].trim()) throw new PolicyError(`finderOverrides.${key} must identify the recorded operator instruction`);
   }
+  if (typeof runId !== "string" || !runId.trim() || override.run_id !== runId) {
+    throw new PolicyError("finderOverrides.run_id must match the run_id being resolved");
+  }
   if (!Array.isArray(override.finders) || override.finders.length === 0) throw new PolicyError("finderOverrides.finders must be a nonempty array");
-  const entries = resolveFinderEntries(override.finders, "finderOverrides.finders");
+  const entries = resolveFinderEntries(override.finders, "finderOverrides.finders", true);
   const stage = resolved.stages.integration;
+  resolved.finder_repository ??= structuredClone(stage.finder ?? []);
   const byId = new Map((stage.finder ?? []).map((entry) => [entry.id, entry]));
   for (const entry of entries) {
     if (!stage.finders.includes(entry.id)) throw new PolicyError(`finderOverrides references unconfigured integration finder "${entry.id}"`);
@@ -965,8 +991,35 @@ function applyFinderOverrides(resolved, override) {
     byId.set(entry.id, merged);
   }
   stage.finder = [...byId.values()];
-  resolved.finder_overrides = structuredClone(override);
+  resolved.run_id = runId;
+  resolved.finder_overrides = { ...structuredClone(override), instruction_sha256: instructionDigest(override.instruction) };
   return resolved;
+}
+
+function instructionDigest(instruction) {
+  return createHash("sha256").update(instruction, "utf8").digest("hex");
+}
+
+// Replay the retained repository settings and disclosed override: no effective
+// setting may differ without appearing in the instruction's field projection.
+function validateFinderDisclosure(policy) {
+  const stage = policy.stages.integration;
+  if (stage?.finder === undefined && policy.finder_overrides === undefined && policy.finder_repository === undefined) return;
+  if (!Array.isArray(policy.finder_repository)) throw new PolicyError("resolved policy is missing finder_repository");
+  const baseline = resolveFinderEntries(policy.finder_repository, "finder_repository");
+  const replay = { stages: { integration: { ...structuredClone(stage), finder: baseline } } };
+  const disclosure = policy.finder_overrides;
+  if (disclosure !== undefined) {
+    requireClosedStageTable(disclosure, ["run_id", "instruction", "instruction_sha256", "finders"], "finder_overrides");
+    const { instruction_sha256, ...input } = disclosure;
+    applyFinderOverrides(replay, input, policy.run_id);
+    if (instruction_sha256 !== replay.finder_overrides.instruction_sha256) {
+      throw new PolicyError("finder_overrides.instruction_sha256 does not match the instruction");
+    }
+  }
+  if (!isDeepStrictEqual(stage.finder, replay.stages.integration.finder)) {
+    throw new PolicyError("finder_overrides must disclose every difference from finder_repository");
+  }
 }
 
 function resolveStages(doc) {
@@ -2051,6 +2104,7 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *     passed as issueTier.tier, or, with tier:pinned also present, the pinned
  *     Tier, passed as pinnedTier. One value per role: label conflicts are the
  *     consumer's to reconcile first.
+ *   - runId: the run being resolved, required with finderOverrides.
  *   - finderOverrides: { run_id, instruction, finders: [{ id, ...fields }] }
  *     from an operator instruction already recorded in that run, never labels.
  *     Applied after the governing repository policy; nested fields replace whole.
@@ -2070,18 +2124,21 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *     the candidate independently, then govern with the built-in fallback.
  */
 export function resolvePolicy(doc, opts = {}) {
-  return applyFinderOverrides(applyTierInputs(resolveGoverningPolicy(doc, opts), opts), opts.finderOverrides);
+  const resolved = applyTierInputs(resolveGoverningPolicy(doc, opts), opts);
+  if (resolved.stages.integration.finder !== undefined) resolved.finder_repository = structuredClone(resolved.stages.integration.finder);
+  return applyFinderOverrides(resolved, opts.finderOverrides, opts.runId);
 }
 
 // Validate a retained projection through the same resolver as its source.
-// Reconstruct only the selected tables; provenance/disclosure metadata is
-// retained by the caller, never interpreted as execution configuration here.
+// Reconstruct the selected tables and replay finder disclosures against their
+// retained repository baseline; effective settings cannot hide an override.
 export function validateResolvedPolicy(policy) {
   for (const key of ["rigor", "rounds", "breadth", "spend", "gates", "convergence", "tier_order", "roles", "stages", "strategy"]) {
     if (!policy || !Object.hasOwn(policy, key) || policy[key] === null) {
       throw new PolicyError(`resolved policy is missing ${key}`);
     }
   }
+  validateFinderDisclosure(policy);
   const { rigor, rounds, breadth, spend, convergence, strategy } = policy;
   const profile = { rounds: rounds.policy, breadth: breadth.policy, tier_escalation: rigor.tier_escalation };
   if (spend.policy !== null) profile.spend = spend.policy;
@@ -2294,7 +2351,7 @@ const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labe
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
 const COMMAND_OPTIONS = {
   detect: new Set(["policy", "json"]),
-  resolve: new Set([...LEGACY_OPTIONS, "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+  resolve: new Set([...LEGACY_OPTIONS, "run-id", "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
 };
 
 function parseArgs(argv, allowed) {
@@ -2672,7 +2729,6 @@ function cliResolve(args) {
       mergeBaseDoc,
       mergeBasePolicyAbsent,
       ...tierInputsFromArgs(args),
-      finderOverrides,
     });
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
@@ -2738,6 +2794,13 @@ function cliResolve(args) {
   if (selectionResult.error) {
     console.error(`devflow-policy: ${selectionResult.error}`);
     return 2;
+  }
+  try {
+    applyFinderOverrides(resolved, finderOverrides, args["run-id"]);
+  } catch (err) {
+    if (!(err instanceof PolicyError)) throw err;
+    console.error(`devflow-policy: ${err.message}`);
+    return 1;
   }
   // Added finders are checked against the registry — existence, surface,
   // and stage affinity — because an added slug the registry does not know
@@ -3044,7 +3107,7 @@ function main() {
   const usage =
     "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level> [--rigor-source operator|label]]\n" +
     "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
-    "       [--finder-overrides <recorded-operator-instruction.json>]\n" +
+    "       [--finder-overrides <recorded-operator-instruction.json> --run-id <run-id>]\n" +
     "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
     "       [--risk <risk>] [--complexity <complexity>] [--stored-tier <tier>]\n" +
     "       [--pinned-tier <tier> [--pin-marker-trusted] [--pin-value-trusted]] [--json]";

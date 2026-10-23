@@ -498,19 +498,31 @@ bodies), `budget` (nonnegative total per PR; absent means unspecified), `gates`
 `rounds = N` means the first N rounds; `rounds = { full = [1], incremental =
 [2, 3] }` declares distinct positive rounds by mode. `completion` is a table
 with `kind` (`review`, `comment`, `reaction`, or `workflow`) and a positive
-trusted `actor_id`, plus optional nonempty `body`, `reaction`, `workflow` and
-`conclusion` strings describing the signal. These settings describe reviewer
+trusted `actor_id`. A review permits only those two fields; a comment also
+requires `body`, a reaction requires `reaction`, and a workflow requires
+`workflow` and `conclusion`. Fields from another kind are refused. All signal
+strings must be nonempty. A gating reviewer cannot have budget zero. Declared
+rounds must fit the budget; an advisory reviewer explicitly disabled with
+`gates = false, budget = 0` may retain its schedule. Incremental rounds or
+`carry = "identity-or-incremental"` require `trigger_incremental`. These settings describe reviewer
 policy; they never establish that a review completed or authorize a trigger.
 Consumers still owe head binding, actor verification and the readiness gate.
 
 Repository settings resolve first. For a per-PR change, the trusted caller
 records the operator instruction in the run, then supplies its JSON projection
-through `--finder-overrides <file>` (library: `opts.finderOverrides`):
+through `--finder-overrides <file>` and `--run-id <run-id>` (library:
+`opts.finderOverrides` and `opts.runId`):
 `{ "run_id": "run-123", "instruction": "Operator: cap Claude at one review",
-"finders": [{ "id": "claude", "budget": 1, "gates": false }] }`.
-Only configured integration IDs may be overridden. Omitted fields inherit;
+"finders": [{ "id": "claude", "budget": 1, "rounds": 1, "gates": false }] }`.
+The instruction's `run_id` must match the run being resolved. Integration IDs
+configured by the repository or added with `--add-finder` may be overridden;
+additions resolve before overrides. Omitted fields inherit;
 nested `rounds` and `completion` tables replace the whole field. The resolver
-retains the instruction as `finder_overrides` for disclosure. The caller must
+retains the instruction and its `instruction_sha256` as `finder_overrides`,
+and the repository settings as `finder_repository`. `validateResolvedPolicy`
+replays that baseline and the disclosed override, refusing any effective setting
+difference not covered by the disclosure or any instruction digest mismatch.
+The resolved `run_id` also binds the retained instruction. The caller must
 verify the operator instruction and retain it in the named run before resolving;
 run IDs and instruction text alone are not proof of authority. Labels, issue
 text and PR text are never override sources. The merge-base policy/reader rule

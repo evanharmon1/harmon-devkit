@@ -9,7 +9,7 @@
     },
     {
       "id": "claude",
-      "budget": 1,
+      "budget": 3,
       "gates": true
     },
     {
@@ -19,12 +19,12 @@
     },
     {
       "id": "coderabbit-cloud",
-      "budget": 3,
+      "budget": 4,
       "gates": false
     },
     {
       "id": "gemini",
-      "budget": 4,
+      "budget": 5,
       "gates": true
     }
   ]
