@@ -1235,7 +1235,25 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   issues endpoint first: a target whose payload identifies it as a pull
   request is exempt because pull requests never appear in
   `closingIssuesReferences`.
-- **Follow-ups still go through `track-work`.** Before filing one, **search
+- **Follow-ups still go through `track-work`.** File through
+  `track-work/assets/file-review-finding.sh`, which creates a classified
+  agent-authored issue and delegates Priority (AI) to triage-apply
+  (`--priority-ai`, personal `priority-ai:<value>` label or organization field).
+  Supply the orchestrator's adjudicated badge plus the reviewer badge read
+  from the finding text (P0–P3 or `unbadged`), source PR, reviewer, and the
+  filer's Impact/Risk/Complexity and complete classification. Integration
+  adjudication entries keep `reviewer_priority: null`; never source the raw
+  badge from that null. The helper maps adjudicated P0/P1/P2/P3 to p0/p1/p2/p3,
+  always the lowercase adjudicated priority; unbadged + P3 is refused because
+  an unbadged finding is adjudicated at least P2. It never writes p4 or human
+  Priority. Require
+  exit 0 and verified storage before recording a completed filing; on failure
+  retain its printed issue number and report the blocker rather than recreating.
+  For every new adjudication `file` + `issue_number` reference, record
+  `reference.priority_ai` with the actual value the helper reports. The schema
+  keeps it optional only for retained records. Run settlement references remain
+  `{type, value}`; do not add a key their schema does not accept.
+  Before filing one, **search
   the repo the follow-up is going into** — `track-work` §3 owns this step and
   the reasoning; the short form is
   `gh issue list --repo <target> --state all --limit 200 --search "<distinctive phrase>"`.
@@ -1252,7 +1270,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `validate-result-schemas.mjs`/`render-dev-flow.mjs` both accept.
   `--search` is eventually consistent and blind to anything filed in the last
   moments, so for your own just-created issue carry forward the number
-  `gh issue create` returned rather than re-deriving it by search; when you do
+  `track-work/assets/file-review-finding.sh` returned rather than re-deriving it by search; when you do
   need to look one up, use a plain listing
   (`gh issue list --repo <target> --state all --limit 20`, newest first)
   rather than a search.
@@ -1785,8 +1803,15 @@ the document without it.
 
 - **`converged`** (two consecutive clean cycles) is the fixing ceiling: make
   no further remediation push for P2s. Settle every remaining finding without
-  a push — declined with evidence, or filed together in one follow-up issue —
-  reply in each affected thread, `settle` the non-inline ones, tick the
+  a push — declined with evidence, or filed together in one follow-up issue through
+  `track-work/assets/file-review-finding.sh`. For grouped filing, select the
+  finding with the most severe adjudicated priority (ties: the first in the
+  adjudication table). Pass that finding's `--reviewer`, `--reviewer-priority`
+  and `--source-pr`, and use that same adjudicated priority for
+  `--adjudicated-priority`.
+  In the draft body's `## Provenance` section, list every grouped finding's own
+  reviewer, badge and source as lines; the helper appends its canonical lines
+  after those entries. Then reply in each affected thread, `settle` the non-inline ones, tick the
   deferred entries, and go to the readiness gate. The engine enforces it as
   an invariant: while converged no P0/P1 is outstanding, so every recorded fix
   push after a cycle that closed two consecutive clean cycles is refused
@@ -1857,7 +1882,8 @@ reason, and infers nothing about fix pushes. An integration pass with
 findings and no adjudication is already refused (indeterminate) by the gate's
 step 6 readiness-input projection; step 9f fails when any integration
 adjudication entry holds an adjudicated P0 or P1 whose disposition is file or
-defer — filing settles P2s only (`integration-filed-gating-finding`); it stays
+defer — use `track-work/assets/file-review-finding.sh` for filing;
+filing settles P2s only (`integration-filed-gating-finding`); it stays
 indeterminate on any engine indeterminate (`integration-exit-indeterminate`);
 it is indeterminate unless the record's latest integration pass is the gated
 result — same integration_round, codex_cycle.cycle and head
