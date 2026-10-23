@@ -143,6 +143,17 @@ try {
   const cli = spawnSync(process.execPath, args, {encoding: 'utf8'});
   assert.equal(cli.status, 0, cli.stderr || cli.stdout);
   assert.deepEqual(JSON.parse(cli.stdout).stages.integration.finder, pr.stages.integration.finder);
+  const text = spawnSync(process.execPath, args.filter((arg) => arg !== '--json'), {encoding: 'utf8'});
+  assert.equal(text.status, 0, text.stderr || text.stdout);
+  const disclosures = text.stdout.split('disclosures (for the PR body):\n')[1];
+  assert.ok(disclosures, 'text mode must include PR-body disclosures for finder overrides');
+  for (const entry of override.finders) {
+    const line = disclosures.split('\n').find((line) => line.includes(`finder ${entry.id} per-PR override:`));
+    assert.ok(line, `text disclosure must name finder ${entry.id}`);
+    assert.ok(line.includes(`"budget":${entry.budget}`), 'text disclosure must include the changed budget');
+    assert.ok(line.includes(`"gates":${entry.gates}`), 'text disclosure must include the changed gating field');
+    assert.ok(line.includes(`instruction_sha256=${pr.finder_overrides.instruction_sha256}`), 'text disclosure must include the instruction digest');
+  }
   // An operator can configure a reviewer added to this run before overrides.
   registry.finders.push({slug: 'extra-reviewer', surface: 'pr-cloud', stages: ['integration']});
   writeFileSync(`${scratch}/registry.json`, JSON.stringify(registry));

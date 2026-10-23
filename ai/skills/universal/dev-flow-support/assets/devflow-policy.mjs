@@ -2129,9 +2129,10 @@ export function resolvePolicy(doc, opts = {}) {
   return applyFinderOverrides(resolved, opts.finderOverrides, opts.runId);
 }
 
-// Validate a retained projection through the same resolver as its source.
-// Reconstruct the selected tables and replay finder disclosures against their
-// retained repository baseline; effective settings cannot hide an override.
+// Validate the retained projection's internal consistency, including replay of
+// its disclosures against its retained repository baseline. Resolution checks
+// override run IDs against the caller-supplied ID only; binding the projection
+// to the actual recorded run is the caller's responsibility.
 export function validateResolvedPolicy(policy) {
   for (const key of ["rigor", "rounds", "breadth", "spend", "gates", "convergence", "tier_order", "roles", "stages", "strategy"]) {
     if (!policy || !Object.hasOwn(policy, key) || policy[key] === null) {
@@ -2884,7 +2885,8 @@ function cliResolve(args) {
         `${resolved.issue_tier.status !== "absent" ? ` · issue tier: ${resolved.issue_tier.status}${resolved.issue_tier.tier ? ` ${resolved.issue_tier.tier}` : ""}` : ""}` +
         `${resolved.pin.status !== "absent" ? ` · pin: ${resolved.pin.status}` : ""}`,
     );
-    if (resolved.disclosures.length > 0) {
+    const finderOverrides = resolved.finder_overrides?.finders ?? [];
+    if (resolved.disclosures.length > 0 || finderOverrides.length > 0) {
       console.log("disclosures (for the PR body):");
       for (const d of resolved.disclosures) {
         console.log(
@@ -2892,6 +2894,13 @@ function cliResolve(args) {
             ? `  - ${d.role} tier ${d.tier} is below the implementer's ${d.implementer_tier} (${d.implementer_source})`
             : `  - ${d.role} tier ${d.tier} is off-profile (profile ${d.profile_tier}; source ${d.source})`,
         );
+      }
+      for (const entry of finderOverrides) {
+        const baseline = resolved.finder_repository.find((finder) => finder.id === entry.id);
+        const changes = Object.fromEntries(Object.entries(entry).filter(
+          ([key, value]) => key !== "id" && !isDeepStrictEqual(baseline?.[key], value),
+        ));
+        console.log(`  - finder ${entry.id} per-PR override: changed fields=${JSON.stringify(changes)}; instruction_sha256=${resolved.finder_overrides.instruction_sha256}`);
       }
     }
     if (warnings.length > 0) {

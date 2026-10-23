@@ -514,7 +514,7 @@ through `--finder-overrides <file>` and `--run-id <run-id>` (library:
 `opts.finderOverrides` and `opts.runId`):
 `{ "run_id": "run-123", "instruction": "Operator: cap Claude at one review",
 "finders": [{ "id": "claude", "budget": 1, "rounds": 1, "gates": false }] }`.
-The instruction's `run_id` must match the run being resolved. Integration IDs
+The reader checks the instruction's `run_id` against the run ID the caller passes. Integration IDs
 configured by the repository or added with `--add-finder` may be overridden;
 additions resolve before overrides. Omitted fields inherit;
 nested `rounds` and `completion` tables replace the whole field. The resolver
@@ -522,8 +522,11 @@ retains the instruction and its `instruction_sha256` as `finder_overrides`,
 and the repository settings as `finder_repository`. `validateResolvedPolicy`
 replays that baseline and the disclosed override, refusing any effective setting
 difference not covered by the disclosure or any instruction digest mismatch.
-The resolved `run_id` also binds the retained instruction. The caller must
-verify the operator instruction and retain it in the named run before resolving;
+These checks establish that the projection is internally consistent with its
+disclosure and matches the caller-supplied run ID; they do not bind it to a
+recorded run. Binding the projection to that recorded run is the caller's job:
+the caller must validate the projection, compare `policy.run_id` with the actual
+run ID, verify the operator instruction and retain it in that run before use;
 run IDs and instruction text alone are not proof of authority. Labels, issue
 text and PR text are never override sources. The merge-base policy/reader rule
 still applies; an older governing reader that lacks the new flag must refuse.
