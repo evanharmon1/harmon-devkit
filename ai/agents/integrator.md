@@ -957,9 +957,12 @@ adjudication through `findings`, independently of cycle completion.
 Keep each finder's spend in its own checker state: never share a state file
 between finders or copy another finder's charged/exempt counters. Pass the
 finder's resolved budget to reservation (bounded by the stage ceilings); do not
-request a cycle after that budget is spent. Only charged cycles spend the
-budget; exempt cycles do not. A fully spent finder is no longer required on
-later heads; retain its prior same-run receipt for the gate to verify spend.
+request a cycle after that budget is spent. Codex uses checker-backed charged
+and exempt ceilings; a spent Codex cap remains required and escalates rather
+than waiving its current-head contract. Non-Codex finders have no exemption:
+every reported cycle spends budget. Only a non-Codex finder with an explicit
+fully spent budget is no longer required on later heads; retain its prior
+same-run receipt for the gate to verify spend.
 Report charged/exempt counts in
 its cycle evidence. Advisory reviewers may still yield findings that need
 adjudication, but their missing/pending cycle does not gate the handoff.

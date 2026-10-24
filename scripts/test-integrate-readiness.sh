@@ -195,6 +195,14 @@ repos/*/rules/branches/*)
     fi
     exit 0
     ;;
+repos/*/branches/*/protection/required_status_checks)
+    if [ -f "$GH_FIXTURES/classic-checks.json" ]; then
+        cat "$GH_FIXTURES/classic-checks.json"
+    else
+        printf '%s\n' '{"contexts":[],"checks":[]}'
+    fi
+    exit 0
+    ;;
 repos/*/contents/agent-registry.json*) file=registry.b64 ;;
 user) file=user.json ;;
 graphql)
@@ -625,7 +633,7 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/top.pages.json"
     printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
-    rm -f "${fixtures}/threads.pages.json" "${fixtures}/rules.pages.json"
+    rm -f "${fixtures}/threads.pages.json" "${fixtures}/rules.pages.json" "${fixtures}/classic-checks.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/fail-closing-references"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
@@ -1670,6 +1678,10 @@ assert_skill "the fast-forward to the recorded OID, not the configured upstream"
     "never the configured upstream"
 assert_skill "the fork without maintainer edits stopping rather than falling back" \
     "stop and ask for maintainer edits"
+assert_skill "thread fingerprint prose permits agent-last settlement" \
+    "Thread \`isResolved\` remains hashed. Settlement follows §2: resolved, or the agent spoke last."
+assert_skill "ready-claim prose permits an unresolved thread when the agent spoke last" \
+    "A rejection reply with no later reviewer activity settles an unresolved thread."
 assert_skill "a promoted PR caught up only on the maintainer's request" \
     "A promoted PR is caught up on the maintainer's request or as authorized"
 assert_skill "the exhausted-remediation blocked stop" \
@@ -2873,10 +2885,45 @@ for absent_rules in '[[]]' '[[{"type":"pull_request","parameters":{}}]]'; do
     run_gate
     assert_gate 1 fail checks-failing
 done
-# An explicit empty required-check rule narrows the set to none.
+# REPRO-J: an empty context list is no requirement and cannot narrow red CI.
 printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]]' >"${fixtures}/rules.pages.json"
 run_gate
-assert_gate 0 pass ready
+assert_gate 1 fail checks-failing
+
+echo "==> #1602 r2: union ruleset and classic requirements (REPRO-I)"
+write_defaults
+printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]]' >"${fixtures}/rules.pages.json"
+printf '%s\n' '{"contexts":["security"]}' >"${fixtures}/classic-checks.json"
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"security","status":"completed","conclusion":"failure"}]}]' >"${fixtures}/check-runs.pages.json"
+run_gate
+assert_gate 1 fail checks-failing
+# A successful classic read narrows optional failures only after both
+# sources are known; absent/error responses must never infer no protection.
+printf '%s\n' '{"contexts":[]}' >"${fixtures}/classic-checks.json"
+for classic_error in 403 404 500 malformed; do
+    if [ "$classic_error" = malformed ]; then
+        rm -f "${fixtures}/fail-endpoint"
+        printf '%s\n' '{}' >"${fixtures}/classic-checks.json"
+    else
+        printf '%s\n' 'protection/required_status_checks' >"${fixtures}/fail-endpoint"
+        printf '%s\n' "HTTP $classic_error" >"${fixtures}/fail-diagnostic"
+    fi
+    run_gate
+    assert_gate 1 fail checks-failing
+done
+# Broadening on a classic read error must retain known-but-missing ruleset
+# requirements, not replace them with only the checks that happened to run.
+printf '%s\n' 'protection/required_status_checks' >"${fixtures}/fail-endpoint"
+printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"never-ran"}]}}]]' >"${fixtures}/rules.pages.json"
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"success"}]}]' >"${fixtures}/check-runs.pages.json"
+run_gate
+assert_gate 2 indeterminate checks-missing
+rm -f "${fixtures}/fail-diagnostic" "${fixtures}/fail-endpoint"
+printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]]' >"${fixtures}/rules.pages.json"
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"security","status":"completed","conclusion":"failure"}]}]' >"${fixtures}/check-runs.pages.json"
+printf '%s\n' '{"contexts":["security"],"checks":[{"context":"security","app_id":42}]}' >"${fixtures}/classic-checks.json"
+run_gate
+assert_gate 2 indeterminate checks-missing
 
 echo "==> #1602: a required finder never driven fails coverage; explicit advisory finders do not gate"
 for finder_mode in legacy required advisory disabled; do
@@ -2889,6 +2936,29 @@ for finder_mode in legacy required advisory disabled; do
     esac
     write_finder_policy '["codex-cloud","coderabbit-cloud"]' "$entry"
     coverage_result="$(write_integrator_result coverage "$(codex_cycle_json 0)")"
+    if [ "$finder_mode" = advisory ]; then
+        # REPRO-E: the old producer instruction put EVERY driven finder in
+        # finder_cycles, making an otherwise clean pass schema-invalid when
+        # an advisory review was still pending. Pin the producer correction
+        # as well as the gate: omission alone also passed before that fix.
+        finder_instructions="$(sed -n '/^### Per-finder cycles/,/^### /p' \
+            "${repo_root}/ai/agents/integrator.md" | tr '\n' ' ')"
+        [[ "$finder_instructions" = *'Keep non-gating (`gates=false` or `budget=0`) finder activity, including pending reviews, outside `finder_cycles` and `codex_cycle`'* ]] ||
+            fail "integrator must exclude advisory pending cycles from gating result fields (REPRO-E)"
+        jq --arg head "$head_sha" '.payload.finder_cycles =
+            [{finder:"coderabbit-cloud",head:$head,cycle:1,attempt:1,exit_code:11}]' \
+            "$coverage_result" >"${fixtures}/advisory-pending-in-envelope.json"
+        if node "$validator" envelope "${fixtures}/advisory-pending-in-envelope.json" \
+            >"${fixtures}/advisory-validation.log" 2>&1; then
+            fail "pending finder in a clean envelope unexpectedly validated"
+        fi
+        grep -Fq 'exit_code is 11' "${fixtures}/advisory-validation.log" ||
+            fail "advisory fixture failed for a reason other than pending-cycle verdict"
+        # Follow the corrected producer instruction: the pending cycle stays
+        # outside the immutable envelope. Validate that result before gating.
+        node "$validator" envelope "$coverage_result" >/dev/null ||
+            fail "clean result excluding advisory activity did not validate"
+    fi
     run_gate_recheck_clean --integrator-result "$coverage_result" --integration-cap 2
     case "$finder_mode" in
     legacy | required) assert_gate 1 fail finder-missing ;;
@@ -2907,13 +2977,13 @@ jq '.payload.finder_cycles[0] |= (.cycle=2 | .charged=2)' "${fixtures}/coverage.
 run_gate_recheck_clean --integrator-result "${fixtures}/coverage-capped.json" --integration-cap 2
 assert_gate 1 fail finder-capped
 
-echo "==> #1602 r1: exempt cycles do not spend a finder's charged budget"
+echo "==> #1602 r2: every non-Codex cycle spends its budget"
 write_defaults
 write_finder_policy '["codex-cloud","coderabbit-cloud"]' '[{"id":"coderabbit-cloud","budget":1}]'
 coverage_result="$(write_integrator_result coverage "$(codex_cycle_json 0)")"
-jq '.payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:2,charged:1,exempt:1,attempt:1,exit_code:0,accepted:{surface:"review",id:"2",reviewed_commit:.head}}]' "$coverage_result" >"${fixtures}/coverage.json"
+jq '.payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:10,charged:1,exempt:9,attempt:1,exit_code:0,accepted:{surface:"review",id:"2",reviewed_commit:.head}}]' "$coverage_result" >"${fixtures}/coverage.json"
 run_gate_recheck_clean --integrator-result "${fixtures}/coverage.json" --integration-cap 2
-assert_gate 0 pass ready
+assert_gate 1 fail finder-capped
 
 echo "==> #1602 r1: fully spent finders are not required again on later heads"
 write_defaults
@@ -2926,15 +2996,26 @@ cp "${fixtures}/later-spend.json" "${record_dir}/passes/integration-r2-coderabbi
 run_gate --integrator-result "${fixtures}/later-spend.json" --integration-cap 2
 assert_gate 0 pass ready
 
-echo "==> #1602 r1: a pending advisory finder is reported outside the gating envelope"
-write_defaults
-write_finder_policy '["codex-cloud","coderabbit-cloud"]' '[{"id":"coderabbit-cloud","gates":false}]'
-# Per integrator.md's contract the dispatch report holds advisory activity;
-# finder_cycles and codex_cycle contain gating evidence only.
-printf '%s\n' '{"finder":"coderabbit-cloud","exit_code":11}' >"${fixtures}/advisory-dispatch-report.json"
-coverage_result="$(write_integrator_result advisory-pending "$(codex_cycle_json 0)")"
-run_gate_recheck_clean --integrator-result "$coverage_result" --integration-cap 2
-assert_gate 0 pass ready
+echo "==> #1602 r2: prior spend never removes Codex or an implicit non-Codex requirement (REPRO-G)"
+for prior_finder in codex-cloud coderabbit-cloud; do
+    write_defaults
+    write_finder_policy "[\"$prior_finder\"]" '[]'
+    if [ "$prior_finder" = codex-cloud ]; then
+        prior_result="$(write_integrator_result spent-codex "$(codex_cycle_json 0 "$stale_head_sha")" "$stale_head_sha")"
+        cp "$prior_result" "${record_dir}/passes/integration-r1-codex-cloud.json"
+    else
+        prior_result="$(write_integrator_result spent-implicit null)"
+        jq --arg old "$stale_head_sha" '.head=$old | .payload.finder_cycles = [{finder:"coderabbit-cloud",head:$old,cycle:1,attempt:1,exit_code:0,accepted:{surface:"review",id:"2",reviewed_commit:$old}}]' "$prior_result" >"${record_dir}/passes/integration-r1-coderabbit-cloud.json"
+    fi
+    current_result="$(write_integrator_result still-required null)"
+    jq '.payload.integration_round=2' "$current_result" >"${fixtures}/still-required.json"
+    cp "${fixtures}/still-required.json" "${record_dir}/passes/integration-r2-current.json"
+    run_gate --integrator-result "${fixtures}/still-required.json" --integration-cap 1
+    case "$prior_finder" in
+    codex-cloud) assert_gate 2 indeterminate codex-cap-mismatch ;;
+    *) assert_gate 1 fail finder-missing ;;
+    esac
+done
 
 echo "==> an unanswered inline thread fails as threads-unanswered"
 write_defaults
@@ -5146,6 +5227,11 @@ cp "${fixtures}/promoted-original-result.json" "${record_dir}/passes/integration
 record_before="$(cat "${record_dir}/passes/integration-r1-codex-cloud.json")"
 run_promoted --integrator-result "${fixtures}/promoted-original-result.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
 assert_gate 0 pass promoted
+# REPRO-H: the same identity survives A -> B -> C; from_head now names B.
+jq '.carry.from_head="3333333333333333333333333333333333333333" | .carry.generation=2' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_promoted --integrator-result "${fixtures}/promoted-original-result.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 0 pass promoted
 export RECHECK_FAKE_EXIT=10
 run_promoted --integrator-result "${fixtures}/promoted-original-result.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
 assert_gate 1 fail codex-not-clean
@@ -5160,6 +5246,20 @@ printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion"
 jq --arg old "$stale_head_sha" '.promotion.head=$old' "${record_dir}/run.json" >"${fixtures}/run-promoted.json"
 mv "${fixtures}/run-promoted.json" "${record_dir}/run.json"
 run_promoted --integrator-result "$carried_result" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 2 indeterminate promotion-head-mismatch
+# Promotion may itself have used a carry from the reviewed head. Its
+# immutable receipt binds that intermediate head to the same identity.
+promoted_intermediate=4444444444444444444444444444444444444444
+write_promoted_record "$promoted_intermediate"
+jq --arg promoted "$promoted_intermediate" '.head=$promoted |
+  .payload.codex_cycle.head=$promoted |
+  .payload.codex_cycle.carried.attests_head=$promoted' "$carried_result" >"${fixtures}/promoted-carried-receipt.json"
+cp "${fixtures}/promoted-carried-receipt.json" "${record_dir}/passes/integration-r1-codex-cloud.json"
+run_promoted --integrator-result "${fixtures}/promoted-carried-receipt.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 0 pass promoted
+jq '.carry.change_id="1111111111111111111111111111111111111111"' "$recheck_state" >"${recheck_state}.next"
+mv "${recheck_state}.next" "$recheck_state"
+run_promoted --integrator-result "${fixtures}/promoted-carried-receipt.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
 assert_gate 2 indeterminate promotion-head-mismatch
 gate="$saved_gate"
 

@@ -150,8 +150,9 @@ caps are independent of any other loop caps used earlier in the dev flow.
 fixes, and adjudication are active. A failed or indeterminate gate stays draft.
 Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-for-review requests human review and never authorizes a
 merge. In the readiness conditions below, "checks" means required status
-contexts from the effective base-branch rules. Without an explicit required-check
-rule, every reported check gates (including classic-only protection). Report non-required failures;
+contexts from the union of rulesets and classic branch protection. With no
+required contexts, or if classic protection cannot be read, every reported
+check gates. Report non-required failures;
 they do not gate the handoff.
 
 This skill may be re-entered on a non-draft PR. Treat that as an idempotent
@@ -1198,9 +1199,12 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `finder_cycles:[]`, preserve failing run IDs, and report the checks-read
   blocker (see #1502); promotion still requires the readiness gate's complete evidence.
   Only **required** checks gate: read the `required_status_checks` rule from
-  `GET repos/{repo}/rules/branches/{base}` (repo read access). If that read
-  contains no `required_status_checks` rule (including classic-only protection),
-  gate every reported check; only an explicit rule narrows the set. The latest run
+  `GET repos/{repo}/rules/branches/{base}` (repo read access), unioned with
+  `GET repos/{repo}/branches/{base}/protection/required_status_checks`
+  (classic protection; Administration read). If classic protection cannot be
+  read, including a 403 or ambiguous 404, or the union has no required
+  contexts, gate every reported check. Only a known, nonempty union narrows
+  the set. The latest run
   of each required context on the exact head must have concluded successfully;
   skipped/neutral is non-failing. A pending or missing required check, an empty
   check list, or a failed rules/checks read is indeterminate. Non-required
@@ -2417,8 +2421,10 @@ and apply each required finder's carry rule. Keep it promoted only when no
 finder owes a fresh review; otherwise reserve a fresh follow-up run and
 return it to draft before requesting that review. The old promoted run remains
 terminal. A changed promoted head passes only with a checker-proven identical-change
-carry whose `from_head` is the recorded promotion head, and all other live
-conditions passing on the new head. Reuse the immutable promoted integrator
+carry proving the current and promoted heads have the same reviewed change
+identity, through any number of catch-ups, and all other live conditions
+passing on the new head. `from_head` names only the latest hop, never the
+promotion's identity. Reuse the immutable promoted integrator
 receipt; the gate projects its Codex carry in memory and binds the original
 receipt to the terminal record. Claim and delivery-label restoration use §6's
 fresh-run follow-up text beginning "A later human request to reverse a
@@ -2533,9 +2539,11 @@ that loops indefinitely:
    "current". The script evaluates every mechanical condition of this stop,
    in order, fail-closed: PR `OPEN` and still draft; the live head equal to
    `--head` (checked again after all evidence is read); only **required** checks gate: read the `required_status_checks` rule from
-   `GET repos/{repo}/rules/branches/{base}` (repo read access). If that read
-   contains no `required_status_checks` rule (including classic-only protection),
-   gate every reported check; only an explicit rule narrows the set. The latest run
+   `GET repos/{repo}/rules/branches/{base}` (repo read access), unioned with
+   `GET repos/{repo}/branches/{base}/protection/required_status_checks`
+   (classic protection; Administration read). A classic read error (including
+   403 or ambiguous 404), or an empty union, gates every reported check.
+   Only a known, nonempty union narrows the set. The latest run
    of each required context on the exact head must have concluded successfully;
    skipped/neutral is non-failing. A pending or missing required check, an empty
    check list, or a failed rules/checks read is indeterminate. Non-required
@@ -2600,9 +2608,10 @@ that loops indefinitely:
      only: the PR object's own `updated_at`, draft flag, and mergeability
      stay out, because promotion mutates those and would invalidate
      every normal promotion (#227). Keep the value — it is the "before" of
-     the promotion compare below. Thread `isResolved` is both gated and hashed. Resolution is the
-     reviewer's or maintainer's act; an answered rejection still blocks until
-     its thread is resolved.
+     the promotion compare below. Thread `isResolved` remains hashed. Settlement
+     follows §2: resolved, or the agent spoke last. Under the conservative
+     rule, reviewer activity after the agent's reply still needs a new reply
+     even when resolved; an unanswered root always blocks.
 
    The pass fingerprint certifies the exact content the gate evaluated.
    For recorded runs, `assets/promote.sh` is the only promotion path: it runs
@@ -2827,8 +2836,9 @@ that loops indefinitely:
    `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the
    maintainer/required approval" — say that, and
    list required approvals still owed. Every review thread must have an agent
-   reply and be resolved before this ready claim; a rejection reply alone
-   does not resolve its thread. Project status is a manual,
+   reply and be settled before this ready claim: resolved, or the agent spoke
+   last under §2's conservative rule. A rejection reply with no later reviewer
+   activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
    **Release the chain-owned `claim:*` labels and, where provisioned, add
    `needs-review`** as separate writes in this ready-for-review handoff: the

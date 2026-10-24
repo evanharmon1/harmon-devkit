@@ -998,10 +998,11 @@ assert_closing_linkage "$scalars" "initial snapshot"
 # Required contexts come from the effective branch rules, including inherited
 # rulesets. Missing or pending required checks are indeterminate. Other checks
 # are reported, never used to turn a handoff red. Without an explicit
-# required_status_checks rule, every reported check gates (classic fallback).
+# required context, or when classic protection cannot be read, every reported
+# check gates. Narrowing requires the union of both sources to be known.
 checks_summary='{"optional_failing":[]}'
 evaluate_checks() {
-    local rules_pages required_checks explicit_required_rule
+    local rules_pages required_checks explicit_required_rule classic_checks classic_payload
     local encoded_rule_base
     encoded_rule_base="$(jq -rn --arg s "$(jq -r '.baseRefName' <<<"$scalars")" '$s | @uri')"
     rules_pages="$(run_gh api --paginate --slurp "repos/$repo/rules/branches/$encoded_rule_base")" ||
@@ -1016,7 +1017,29 @@ evaluate_checks() {
           then {context, app:(.integration_id // null)} else error("invalid required context") end
       ] | unique' <<<"$rules_pages" 2>/dev/null)" ||
         indeterminate checks-indeterminate "effective required status checks are malformed"
-    explicit_required_rule="$(jq 'any(.[][]; .type == "required_status_checks")' <<<"$rules_pages")"
+    # Rulesets and classic protection can coexist. An unreadable classic
+    # policy (including an ambiguous 404) cannot prove a check optional.
+    classic_checks=null
+    if classic_payload="$(run_gh api "repos/$repo/branches/$encoded_rule_base/protection/required_status_checks")"; then
+        classic_checks="$(jq -ce '
+          if (.contexts | type) != "array" or ((.checks // []) | type) != "array"
+          then error("invalid classic contexts") else
+            [(.checks // [])[] | {context, app:(.app_id // null)}] as $checks |
+            ($checks + [.contexts[] | . as $context |
+              select(any($checks[]; .context == $context) | not) | {context:.,app:null}]) |
+            if all(.[]; (.context | type == "string" and length > 0) and
+                (.app == null or (.app | type == "number" and floor == .)))
+            then unique else error("invalid classic context") end
+          end' <<<"$classic_payload" 2>/dev/null)" || classic_checks=null
+    fi
+    required_checks="$(jq -cn \
+        --slurpfile rules <(printf '%s' "$required_checks") \
+        --slurpfile classic <(printf '%s' "$classic_checks") \
+        '$rules[0] + ($classic[0] // []) | unique')"
+    explicit_required_rule=false
+    if [ "$classic_checks" != null ] && [ "$required_checks" != '[]' ]; then
+        explicit_required_rule=true
+    fi
     check_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
         indeterminate fetch-failed "cannot fetch check runs for the head"
@@ -1257,7 +1280,7 @@ evaluate_checks() {
           ([$required[] | . as $req |
             [($by_name[$req.context] // [])[] | select(matches($req))] as $found |
             if ($found | length) == 0 then {name:$req.context,state:"missing"}
-            else $found[] end] | if $explicit_required_rule then . else $all end) as $gating |
+            else $found[] end] + (if $explicit_required_rule then [] else $all end)) as $gating |
           {total:($all | length),
            failing:[$gating[] | select(.state == "failing") | .name] | unique,
            pending:[$gating[] | select(.state == "pending") | .name] | unique,
@@ -1548,8 +1571,9 @@ required_finders="$(jq -ce --argjson cap "$integration_cap" '
     fi
     indeterminate finder-indeterminate "cannot determine required finders from the resolved policy"
 }
-# Only validated same-run receipts can prove prior spend. A fully spent
-# finder is not requested again on later heads; its findings still owe the
+# Only validated same-run receipts can prove prior spend. Only a non-Codex
+# finder with an explicit spent budget becomes optional on later heads.
+# Codex's current-head contract never drops out through spend; findings owe the
 # ordinary settlement checks. Advisory cycles belong in the dispatch report,
 # outside finder_cycles, whose schema intentionally aggregates gating verdicts.
 prior_finder_spend="$(
@@ -1567,8 +1591,8 @@ prior_finder_spend="$(
     done | jq -sc '.'
 )" || indeterminate finder-indeterminate "cannot read prior finder spend"
 required_finders="$(jq -c --argjson prior "$prior_finder_spend" '
-  map(. as $limits | select(any($prior[];
-    .finder == $limits.id and (.charged // .cycle) >= $limits.budget) | not))
+  map(. as $limits | select(.id == "codex-cloud" or (.explicit_budget | not) or
+    (any($prior[]; .finder == $limits.id and .cycle >= $limits.budget) | not)))
 ' <<<"$required_finders")" || indeterminate finder-indeterminate "cannot apply prior finder budgets"
 codex_required="$(jq 'any(.[]; .id == "codex-cloud")' <<<"$required_finders")"
 if [ -z "$integrator_result" ]; then
@@ -1690,9 +1714,22 @@ record_promotion_head="$(jq -r '.promotion.head // ""' "$run_json" 2>/dev/null)"
     indeterminate malformed-data "run.json's promotion could not be read"
 promotion_carried=0
 if [ -n "$record_promotion_head" ] && [ "$record_promotion_head" != "$head" ]; then
+    promotion_receipt=null
+    if [ -n "$integrator_result" ]; then
+        promotion_receipt="$(jq -c '{head,cycle:.payload.codex_cycle}' "$integrator_result")"
+    fi
+    # Identity is transitive through the reviewed head, not a hop counter:
+    # check proves current == reviewed; the immutable promoted receipt proves
+    # promoted == reviewed when promotion itself used an earlier carry.
     if [ "$command_name" = promoted ] && [ -n "$codex_recheck_state" ] &&
-        jq -e --arg from "$record_promotion_head" --arg head "$head" '
-          .carry.from_head == $from and .carry.attests_head == $head
+        jq -e --arg promoted "$record_promotion_head" --arg head "$head" \
+            --argjson receipt "$promotion_receipt" '
+          .carry.attests_head == $head and
+          (.head == $promoted or
+           ($receipt.head == $promoted and
+            $receipt.cycle.carried.attests_head == $promoted and
+            $receipt.cycle.carried.origin_head == .head and
+            $receipt.cycle.carried.change_id == .carry.change_id))
         ' "$codex_recheck_state" >/dev/null 2>&1; then
         recheck_codex_freshness
         promotion_carried=1
@@ -1988,10 +2025,12 @@ while IFS= read -r finder_required; do
     0) ;;
     *) exit_condition finder "$fc_exit" "required finder $fc_slug" ;;
     esac
-    # Each checker state owns this finder's charged/exempt counters. The
-    # result carries those counters; legacy results charged every cycle.
+    # Only Codex has checker-backed exemptions. Every non-Codex cycle spends
+    # its budget, irrespective of its self-reported charged/exempt split.
     jq -e --argjson limits "$finder_required" '
-      (if $limits.explicit_budget then (.charged // .cycle) <= $limits.budget else true end) and
+      (if $limits.id != "codex-cloud" then .cycle <= $limits.budget
+       elif $limits.explicit_budget then (.charged // .cycle) <= $limits.budget
+       else true end) and
       (if $limits.carry == "fresh" then .carried == null else true end) and
       .cycle == ((.charged // .cycle) + (.exempt // 0))
     ' <<<"$fc_cycle" >/dev/null ||
