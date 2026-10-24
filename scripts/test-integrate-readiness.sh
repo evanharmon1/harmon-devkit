@@ -195,6 +195,7 @@ repos/*/issues/[0-9]*)
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/actions/runs*) file=workflow-runs.pages.json ;;
+repos/*/git/ref/heads/*) file=live-base.json ;;
 repos/*/compare/*) file=compare.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
@@ -202,13 +203,15 @@ esac
 # The gate re-reads several surfaces before its verdict (checks twice, and
 # every fingerprint surface once evaluated + once fresh); a second-<fixture>
 # file, when present, is what the LATER fetches of that fixture see.
-if [ -f "$GH_FIXTURES/second-$file" ]; then
+if [ -f "$GH_FIXTURES/second-$file" ] || [ -f "$GH_FIXTURES/third-$file" ]; then
     count_file="$GH_FIXTURES/count-$file"
     count=0
     [ ! -f "$count_file" ] || count="$(cat "$count_file")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$count_file"
-    if [ "$count" -ge 2 ]; then
+    if [ "$count" -ge 3 ] && [ -f "$GH_FIXTURES/third-$file" ]; then
+        file="third-$file"
+    elif [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/second-$file" ]; then
         file="second-$file"
     fi
 fi
@@ -576,6 +579,7 @@ write_defaults() {
     # Head level with its base by default. `behind_by` is the TRUTH check the
     # gate uses; mergeStateStatus above is only the cache.
     jq -cn '{behind_by:0,ahead_by:1,status:"ahead",base_commit:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/compare.json"
+    jq -cn '{object:{sha:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}}' >"${fixtures}/live-base.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
     jq -cn '{number:380}' >"${fixtures}/issue.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
@@ -589,7 +593,7 @@ write_defaults() {
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
     rm -f "${fixtures}/second-closing-view.json"
     rm -f "${fixtures}"/issue-*.json
-    rm -f "${fixtures}"/count-* "${fixtures}"/second-*
+    rm -f "${fixtures}"/count-* "${fixtures}"/second-* "${fixtures}"/third-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
     write_default_record
@@ -1878,11 +1882,8 @@ echo "==> the base branch ADVANCING after the compare invalidates the count"
 # Name and head unchanged, tip moved: comparing names alone reported `level`
 # off a stale count (review round 5).
 write_defaults
-jq -cn --arg head "$head_sha" \
-    '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"cafecafecafecafecafecafecafecafecafecafe"}' \
-    >"${fixtures}/pr-view-third.json"
+jq -cn '{object:{sha:"cafecafecafecafecafecafecafecafecafecafe"}}' \
+    >"${fixtures}/third-live-base.json"
 run_gate
 assert_gate 1 fail behind-base
 
@@ -1896,11 +1897,8 @@ jq -cn --arg head "$head_sha" \
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
       headRefName:"feature-branch",baseRefName:"main",baseRefOid:"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}' \
     >"${fixtures}/pr-view.json"
-jq -cn --arg head "$head_sha" \
-    '{state:"OPEN",isDraft:false,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch",baseRefName:"main",baseRefOid:"cafecafecafecafecafecafecafecafecafecafe"}' \
-    >"${fixtures}/pr-view-third.json"
+jq -cn '{object:{sha:"cafecafecafecafecafecafecafecafecafecafe"}}' \
+    >"${fixtures}/third-live-base.json"
 run_gate_audit
 [ "$gate_rc" -eq 1 ] || fail "audit base-tip race exited $gate_rc: $gate_out"
 grep -Fq 'behind-base' <<<"$gate_out" ||
@@ -2007,6 +2005,74 @@ grep -Fq 'behind-base-unknown' <<<"$preflight_out" ||
     fail "behind preflight did not report behind-base-unknown: $preflight_out"
 write_defaults
 
+# harmon-devkit#1611: cached PR baseRefOid may remain old while the live
+# branch and PR identity are stable. It must not manufacture a concurrency race.
+run_base_preflight() {
+    set +e
+    preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+        --repo example/repo --pr 493 2>&1)"
+    preflight_rc=$?
+    set -e
+    check_watchdog "$preflight_rc" run_base_preflight "$preflight_out"
+}
+
+echo "==> cached PR base SHA does not override a stable live branch"
+for distance in 0 4; do
+    write_defaults
+    jq '.baseRefOid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+        "${fixtures}/pr-view.json" >"${fixtures}/pr-view.next"
+    mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
+    jq --argjson distance "$distance" '.behind_by = $distance' \
+        "${fixtures}/compare.json" >"${fixtures}/compare.next"
+    mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+    run_base_preflight
+    if [ "$distance" -eq 0 ]; then
+        [ "$preflight_rc" -eq 0 ] || fail "old cached base blocked level preflight: $preflight_out"
+        grep -Fq '"behind_by":0' <<<"$preflight_out" || fail "level preflight lost count: $preflight_out"
+        # The final gate had the same stale-cache comparison as preflight.
+        run_gate
+        assert_gate 0 pass ready
+    else
+        [ "$preflight_rc" -eq 1 ] || fail "old cached base blocked determinate behind: $preflight_out"
+        grep -Fq '4 commit(s) behind' <<<"$preflight_out" || fail "behind count lost: $preflight_out"
+    fi
+done
+
+echo "==> live base movement, retargets and unreadable tips remain indeterminate"
+for race in live-base compare-base retarget unreadable-base malformed-base; do
+    write_defaults
+    case "$race" in
+    live-base)
+        jq -cn '{object:{sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}' \
+            >"${fixtures}/second-live-base.json"
+        ;;
+    compare-base)
+        jq '.base_commit.sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+            "${fixtures}/compare.json" >"${fixtures}/compare.next"
+        mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+        ;;
+    retarget)
+        jq '.baseRefName = "release/2.0"' "${fixtures}/pr-view.json" \
+            >"${fixtures}/pr-view-second.json"
+        ;;
+    unreadable-base) printf '%s\n' 'git/ref/heads' >"${fixtures}/fail-endpoint" ;;
+    malformed-base) jq -cn '{object:{sha:"not-a-sha"}}' >"${fixtures}/live-base.json" ;;
+    esac
+    run_base_preflight
+    [ "$preflight_rc" -eq 2 ] || fail "$race preflight accepted an unbound comparison: $preflight_out"
+    grep -Fq 'behind-base-unknown' <<<"$preflight_out" || fail "$race lost indeterminate token: $preflight_out"
+done
+
+echo "==> malformed behind counts cannot produce a determinate verdict"
+for count in -1 0.5 null; do
+    write_defaults
+    jq --argjson count "$count" '.behind_by = $count' \
+        "${fixtures}/compare.json" >"${fixtures}/compare.next"
+    mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+    run_base_preflight
+    [ "$preflight_rc" -eq 2 ] || fail "malformed count $count accepted: $preflight_out"
+done
+
 echo "==> a URL-significant base ref is encoded, and a slash is left literal"
 # `release#1` interpolated raw would truncate the endpoint at the fragment and
 # silently compare against `release` — the wrong branch, answered confidently.
@@ -2022,6 +2088,9 @@ run_gate
 assert_gate 0 pass ready
 grep -Fq 'compare/release%231/rc...' "$log" ||
     fail "compare endpoint did not encode the base ref: $(grep -F compare/ "$log" | head -1)"
+
+grep -Fq 'git/ref/heads/release%231/rc' "$log" ||
+    fail "live base endpoint did not encode the base ref"
 
 echo "==> a cache-only BEHIND (graph says 0) is indeterminate, not a merge to do"
 # Merging a base the head is already level with creates no commit, so there is
@@ -5385,6 +5454,7 @@ mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
 jq --arg base "$fresh_support_base" '.base_commit.sha = $base' \
     "${fixtures}/compare.json" >"${fixtures}/compare.next"
 mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+jq -cn --arg base "$fresh_support_base" '{object:{sha:$base}}' >"${fixtures}/live-base.json"
 printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
 set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
@@ -5406,6 +5476,7 @@ mv "${fixtures}/pr-view.next" "${fixtures}/pr-view.json"
 jq --arg base "$fresh_support_base" '.base_commit.sha = $base' \
     "${fixtures}/compare.json" >"${fixtures}/compare.next"
 mv "${fixtures}/compare.next" "${fixtures}/compare.json"
+jq -cn --arg base "$fresh_support_base" '{object:{sha:$base}}' >"${fixtures}/live-base.json"
 printf '%s\n' "$fresh_support_base" >"${fixtures}/asset-base"
 set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
