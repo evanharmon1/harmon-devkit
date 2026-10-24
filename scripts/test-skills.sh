@@ -8671,6 +8671,9 @@ expect_ok "diff-template returns to a clean baseline after the sweep cases" \
 # thing standing between its contents and stdout.
 DT_BAD_EXCLUDES="$TMPROOT/diff-template-bad-excludes-dir"
 mkdir -p "$DT_BAD_EXCLUDES"
+# Empty overlay directories can have size zero and look like empty exclude
+# files to Git. A child makes this a real invalid-directory error on tmpfs too.
+: >"$DT_BAD_EXCLUDES/child"
 printf '%s\n' '{ "editor.tabSize": 4, "token": "vscode-probe-leak-sentinel" }' \
     >"$DT_TARGET/.vscode/settings.json"
 git -C "$DT_TARGET" config core.excludesFile "$DT_BAD_EXCLUDES"
