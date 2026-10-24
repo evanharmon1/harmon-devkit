@@ -51,6 +51,24 @@ const d = JSON.parse(fs.readFileSync(p, 'utf8'));
 const a = process.argv.slice(2);
 const endpoint = a.find((arg)=>arg.startsWith('repos/'));
 const emit = (value) => { console.log(JSON.stringify(a.includes('--slurp') ? [value] : value)); process.exit(0); };
+if (d.integration) {
+  if (a[0] === 'pr' && a[1] === 'view') {
+    if (a.includes('--jq')) { console.log(d.assetBase); process.exit(0); }
+    emit({state:'OPEN',isDraft:true,headRefOid:d.head,headRefName:'integration-e2e',
+      baseRefName:'main',baseRefOid:d.base,reviewDecision:'REVIEW_REQUIRED',
+      mergeStateStatus:'CLEAN',body:d.prBody,closingIssuesReferences:[]});
+  }
+  if (endpoint?.includes('commits?path=agent-registry.json')) emit([{sha:d.registryRevision}]);
+  if (endpoint?.includes('contents/agent-registry.json')) emit({encoding:'base64',content:Buffer.from(JSON.stringify(d.registry)).toString('base64')});
+  if (a.includes('graphql')) emit({data:{repository:{pullRequest:{reviewThreads:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}}});
+  if (endpoint === 'repos/example/repo/pulls/493') emit({number:493,title:'fix: integration fixture',
+    body:d.prBody,head:{sha:d.head},user:{id:12345,login:d.login}});
+  if (endpoint?.includes('/pulls/493/comments') || endpoint?.includes('/pulls/493/reviews') || endpoint?.includes('/issues/493/comments')) emit([]);
+  if (endpoint?.includes('/check-runs')) emit({total_count:1,check_runs:[{name:'verify',status:'completed',conclusion:'success'}]});
+  if (endpoint?.includes('/statuses')) emit([]);
+  if (endpoint?.includes('/actions/runs')) emit({total_count:0,workflow_runs:[]});
+  if (endpoint?.includes('/compare/')) emit({status:'ahead',ahead_by:1,behind_by:0,base_commit:{sha:d.base}});
+}
 if(endpoint === 'repos/example/repo') emit({default_branch:'main'});
 if(endpoint === 'repos/example/repo/issues/1') emit({number:1});
 if(endpoint?.includes('commits?path=agent-registry.json')) emit([{sha:d.head}]);
@@ -67,7 +85,7 @@ if (a.includes('-F')) {
   d.posts++;
   if (!fs.existsSync(d.monitor) || !JSON.parse(fs.readFileSync(d.monitor)).actions.length) process.exit(9);
   const body = fs.readFileSync(a[a.indexOf('-F')+1].slice(6),'utf8');
-  d.comments.push({id:200,user:{id:12345,login:d.login},body,created_at:'2026-08-20T09:01:00Z',updated_at:'2026-08-20T09:01:00Z'});
+  d.comments.push({id:200,user:{id:12345,login:d.login},body,created_at:d.integration ? new Date().toISOString() : '2026-08-20T09:01:00Z',updated_at:d.integration ? new Date().toISOString() : '2026-08-20T09:01:00Z'});
   fs.writeFileSync(p,JSON.stringify(d));
   if (d.ambiguous) process.exit(1);
   console.log(JSON.stringify(d.comments.at(-1))); process.exit(0);
@@ -365,4 +383,125 @@ const consumer=join(tmp,'consumer'); mkdirSync(consumer);
 for(const name of ['review','orchestrate','dev-flow-support']) cpSync(join(assets,'../..',name),join(consumer,name),{recursive:true});
 reset(); invoke(0,'',join(consumer,'review/assets/post-evidence.sh'));
 console.log('PASS: helper runs with only flattened vendored sibling packages');
+// Exercise the actual supported integration lifecycle, rather than adding a
+// pass receipt or evidence marker to a fixture by hand. The cap-zero policy
+// keeps this publication/readiness test independent of a paid review service;
+// non-null cycle authentication has its own transport-stub regressions.
+const fixtureWriter = (args, token, expected=0) => {
+  const result=spawnSync('node',[runWriter,...args,'--session','test-session',...(token ? ['--owner-token',token] : [])],
+    {env,cwd:repo,encoding:'utf8'});
+  assert.equal(result.status,expected,result.stderr || result.stdout);
+  return result;
+};
+fixtureWriter(['close','--slate','test-slate','--run-id',runID,'--outcome','abandoned','--exit','publication fixture complete'],ownerToken);
+fixtureWriter(['lock','release','--slate','test-slate'],ownerToken);
+const sourceRoot=join(assets,'../../../../..');
+const registry=read(join(sourceRoot,'agent-registry.json'));
+registry.trusted_orchestrator_actor_ids=[12345];
+put(join(repo,'agent-registry.json'),registry);
+const policyText=readFileSync(join(repo,'.devflow.toml'),'utf8').replace(
+  /(\[rounds\.standard\]\n)([\s\S]*?)(?=\n\[|$)/,
+  (_,heading,table)=>heading+table.replace(/^(challenge|review|integration)\s*=\s*\d+/gm,'$1 = 0'));
+writeFileSync(join(repo,'.devflow.toml'),policyText);
+command('git',['-C',repo,'add','agent-registry.json','.devflow.toml']);
+command('git',['-C',repo,'commit','-qm','test: cap-zero fixture policy']);
+const integrationBase=command('git',['-C',repo,'rev-parse','HEAD']);
+command('git',['-C',repo,'update-ref','refs/remotes/origin/main',integrationBase]);
+command('git',['-C',repo,'switch','-qc','integration-e2e']);
+command('git',['-C',repo,'commit','--allow-empty','-qm','test: integration change']);
+const integrationHead=command('git',['-C',repo,'rev-parse','HEAD']);
+const resolved=spawnSync('node',[join(sourceRoot,'ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs'),
+  'resolve','--policy',join(repo,'.devflow.toml'),'--registry',join(repo,'agent-registry.json'),
+  '--taskfile-dir',sourceRoot,'--json'],{env,cwd:repo,encoding:'utf8'});
+assert.equal(resolved.status,0,resolved.stderr || resolved.stdout);
+const resolvedFile=join(tmp,'integration-policy.json');
+writeFileSync(resolvedFile,resolved.stdout);
+assert.equal(JSON.parse(resolved.stdout).rounds.integration,0);
+const integrationID='run-1-integration-e2e';
+const integrationSlate=`solo-${integrationID}`;
+const integrationToken=fixtureWriter(['lock','acquire','--slate',integrationSlate,'--issues','1']).stdout.trim();
+fixtureWriter(['solo-init','--run-id',integrationID,'--issue','1','--title','Integration evidence fixture',
+  '--url','https://github.com/example/repo/issues/1','--branch','integration-e2e','--base',integrationBase,
+  '--policy',resolvedFile,'--actor-id','12345','--strategy-source','default_strategy'],integrationToken);
+const integrationDir=join(repo,'.git/dev-flow-v2/runs',integrationID);
+const integrationRun=join(integrationDir,'run.json');
+const iw=(args)=>fixtureWriter([...args,'--slate',integrationSlate,'--run-id',integrationID],integrationToken);
+iw(['transition','--stage','claim']);
+iw(['transition','--stage','implement','--exit','claimed']);
+iw(['transition','--stage','verify','--exit','implemented']);
+iw(['transition','--stage','security','--exit','disabled confidence stages under fixture policy']);
+iw(['transition','--stage','integration','--exit','security clean']);
+iw(['bind-pr','--number','493','--url','https://github.com/example/repo/pull/493']);
+const integrationActive=command('bash',[monitor,'active-path','--branch','integration-e2e','--repo-root',repo]);
+command('bash',[monitor,'activate','--active-state',integrationActive,'--run-id',integrationID,'--branch','integration-e2e',
+  '--expected-predecessor','absent','--expected-generation','0','--registry-revision',integrationBase,
+  '--writer','feature-owner','--repo-root',repo]);
+const integrationState=command('bash',[monitor,'state-path','--run-id',integrationID,'--repo-root',repo]);
+const produced=new Date().toISOString();
+const integrator={schema:2,role:'integrator',status:'completed',head:integrationHead,produced_at:produced,
+  producer:{harness:'codex-cli',model:'fixture-model',tier:'economy'},run:{run_id:integrationID,initiated_by:'human'},
+  payload:{checks:[{name:'verify',bucket:'pass',run_id:'1',required:true}],codex_cycle:null,integration_round:1,
+    findings:[],unanswered_thread_roots:[],settled_at:produced,verdict:'clean',applied_dispositions:[]}};
+const integrationSource=join(tmp,'integration-source.json');
+put(integrationSource,integrator);
+iw(['receipt','--pass',integrationSource]);
+const integrationPass=join(integrationDir,'passes/integration-r1-integrator.json');
+const integrationAdjudication=join(tmp,'integration-adjudication.json');
+put(integrationAdjudication,{schema:2,run_id:integrationID,stage:'integration',round:1,reviewed_head:integrationHead,adjudications:[]});
+iw(['adjudicate','--file',integrationAdjudication]);
+assert.deepEqual(read(integrationRun).receipts.at(-1),{kind:'pass',file:'integration-r1-integrator'});
+assert.equal(readFileSync(integrationPass,'utf8'),readFileSync(integrationSource,'utf8'));
+
+// Fault injection recreates the real legacy recovery shape: immutable pass
+// and adjudication exist, but the previous runtime could not receipt an
+// integrator. The supported writer must recover without rewriting either.
+const orphanRecord=read(integrationRun);
+orphanRecord.receipts=orphanRecord.receipts.filter((entry)=>entry.file!=='integration-r1-integrator');
+put(integrationRun,orphanRecord);
+const actualAdjudication=join(integrationDir,'adjudications/integration-r1.json');
+const producerBytes=readFileSync(integrationPass);
+const adjudicationBytes=readFileSync(actualAdjudication);
+iw(['receipt','--pass',integrationSource]);
+assert.deepEqual(readFileSync(integrationPass),producerBytes);
+assert.deepEqual(readFileSync(actualAdjudication),adjudicationBytes);
+assert.equal(read(integrationRun).receipts.filter((entry)=>entry.file==='integration-r1-integrator').length,1);
+
+const integrationMarker={run_id:integrationID,stage:'integration',round:1,sequence:1,destination:'issue'};
+const integrationMarkerFile=join(tmp,'integration-marker.json');
+const integrationBodyFile=join(tmp,'integration-summary.md');
+put(integrationMarkerFile,integrationMarker);
+writeFileSync(integrationBodyFile,`Integration evidence\n\n\`\`\`json\n${JSON.stringify({run_id:integrationID,stage:'integration',round:1,
+  reviewed_head:integrationHead,passes:[integrator],adjudication:read(actualAdjudication)})}\n\`\`\`\n`);
+const prBody='Integration fixture.\n\n## Deferred findings\n\nNone.\n';
+put(data,{integration:true,monitor:integrationState,head:integrationHead,base:integrationBase,
+  assetBase:command('git',['-C',sourceRoot,'rev-parse','HEAD']),registryRevision:integrationBase,registry,
+  prBody,posts:0,comments:[],login:'writer'});
+const readiness=join(assets,'../../integrate/assets/readiness-gate.sh');
+const gateArgs=['check','--repo','example/repo','--pr','493','--head',integrationHead,'--record',integrationDir,
+  '--integrator-result',integrationPass,'--integration-cap','0','--remediation-cap','4'];
+const beforePublication=spawnSync('bash',[readiness,...gateArgs],{env,cwd:repo,encoding:'utf8'});
+assert.equal(beforePublication.status,1,beforePublication.stderr || beforePublication.stdout);
+assert.equal(JSON.parse(beforePublication.stdout).condition,'evidence-marker-missing');
+const publishArgs=['--repo','example/repo','--repo-root',repo,'--run',integrationRun,'--branch','integration-e2e',
+  '--generation','1','--active-state',integrationActive,'--head',integrationHead,'--actor-id','12345',
+  '--role','integrator','--finder','integrator','--issue','1','--marker-file',integrationMarkerFile,
+  '--body-file',integrationBodyFile,'--scratch-dir',tmp];
+invoke(0,'',join(assets,'post-evidence.sh'),publishArgs);
+assert.equal(read(data).posts,1);
+assert.equal(read(integrationRun).evidence_registrations.length,1);
+assert.deepEqual(read(integrationRun).evidence_comments[0].marker,integrationMarker);
+const posted=read(data).comments[0].body;
+assert.equal(read(integrationRun).evidence_comments[0].digest,`sha256:${sha(posted)}`);
+const afterPublication=spawnSync('bash',[readiness,...gateArgs],{env,cwd:repo,encoding:'utf8'});
+assert.equal(afterPublication.status,0,afterPublication.stderr || afterPublication.stdout);
+const ready=JSON.parse(afterPublication.stdout);
+assert.equal(ready.condition,'ready');
+assert.ok(ready.fingerprint);
+iw(['promote','--head',integrationHead,'--fingerprint',ready.fingerprint]);
+const terminal=spawnSync('node',[join(assets,'../../dev-flow-support/assets/validate-result-schemas.mjs'),
+  'run',integrationRun,'--receipts',integrationRun,'--adjudication',actualAdjudication],{env,encoding:'utf8'});
+assert.equal(terminal.status,0,terminal.stderr);
+assert.equal(read(integrationRun).outcome,'ready-for-review');
+fixtureWriter(['lock','release','--slate',integrationSlate],integrationToken);
+console.log('PASS: supported integrator receipt/adjudication and orphan recovery preserve bytes; authenticated issue publication unblocks actual readiness and terminal validation');
 JS
