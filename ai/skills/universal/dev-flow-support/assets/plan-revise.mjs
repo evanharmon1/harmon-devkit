@@ -384,6 +384,16 @@ function placeWaves(plan, waves) {
   }
 }
 
+// One predecessor relation: file merge ordering and issue prerequisites.
+function planPredecessors(plan) {
+  const predecessors = new Map((plan.issues ?? []).map((issue) => [issue.number, new Set(issue.blocked_by ?? [])]))
+  for (const overlap of plan.overlaps ?? []) {
+    const edge = overlap.merge_dependency
+    if (edge) predecessors.get(edge.after)?.add(edge.before)
+  }
+  return predecessors
+}
+
 function retireIssue(plan, number, verdict = 'done') {
   const issue = plan.issues.find((entry) => entry.number === number)
   if (!issue || issue.verdict === 'done') throw new Refusal(`issue #${number} is not live in this slate`)
@@ -391,14 +401,14 @@ function retireIssue(plan, number, verdict = 'done') {
   const lanes = new Set(plan.lanes.filter((lane) => lane.issue === number).map((lane) => lane.lane))
   plan.lanes = plan.lanes.filter((lane) => lane.issue !== number)
   if (plan.lane_profiles) plan.lane_profiles = plan.lane_profiles.filter((entry) => !lanes.has(entry.lane))
-  const remap = new Map()
-  plan.waves = plan.waves.map((wave) => ({ ...wave, issues: wave.issues.filter((n) => n !== number) }))
-    .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number).map((wave, index) => {
-      remap.set(wave.number, index + 1)
-      return { ...wave, number: index + 1 }
-    })
-  for (const lane of plan.lanes) lane.wave = remap.get(lane.wave)
   if (verdict === 'done') {
+    const remap = new Map()
+    plan.waves = plan.waves.map((wave) => ({ ...wave, issues: wave.issues.filter((n) => n !== number) }))
+      .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number).map((wave, index) => {
+        remap.set(wave.number, index + 1)
+        return { ...wave, number: index + 1 }
+      })
+    for (const lane of plan.lanes) lane.wave = remap.get(lane.wave)
     plan.overlaps = plan.overlaps.filter((entry) => entry.issue_a !== number && entry.issue_b !== number)
     if (plan.merge_queue !== undefined) plan.merge_queue = plan.merge_queue.filter((entry) => entry.issue !== number)
   }
@@ -410,13 +420,13 @@ function retireIssue(plan, number, verdict = 'done') {
 function queueWaitingHandoffs(plan) {
   const queue = plan.merge_queue ?? []
   const issueByNumber = new Map(plan.issues.map((issue) => [issue.number, issue]))
+  const predecessorByIssue = planPredecessors(plan)
   let added
   do {
     added = false
     for (const issue of plan.issues) {
       if (issue.verdict !== 'handed-off' || queue.some((entry) => entry.issue === issue.number)) continue
-      const predecessors = plan.overlaps.filter((entry) => entry.merge_dependency.after === issue.number)
-        .map((entry) => entry.merge_dependency.before)
+      const predecessors = [...predecessorByIssue.get(issue.number)]
       if (predecessors.some((number) => issueByNumber.get(number)?.verdict !== 'done' && !queue.some((entry) => entry.issue === number))) continue
       if (!Number.isInteger(issue.pr) || issue.pr < 1) throw new Refusal(`handed-off issue #${issue.number} needs its PR binding`)
       queue.push({ issue: issue.number, pr: issue.pr })

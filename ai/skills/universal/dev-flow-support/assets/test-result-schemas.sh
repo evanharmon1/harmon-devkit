@@ -465,6 +465,8 @@ for regression in \
     plan/invalid/queue-eligible-handoff-omitted.json \
     plan/invalid/waiting-handoff-missing-pr.json \
     plan/invalid/queue-pr-binding-mismatch.json \
+    plan/invalid/blocked-by-queue-reversed.json \
+    plan/invalid/handed-off-blocker-no-wave.json \
     plan/invalid/duplicate-waiting-handoff-pr.json \
     plan/invalid/rewritten-run-fence.json \
     plan/invalid/removed-run-expansion.json \

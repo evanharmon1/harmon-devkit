@@ -142,8 +142,8 @@
     {
       "seq": 1,
       "prev_digest": "51af3ebe85608aba7490956d6c19d6843b6f7572b744a73fe026c5f1bf352e4e",
-      "at": "2026-10-24T14:00:00Z",
-      "reason": "handoff keeps merge dependencies",
+      "at": "2026-10-24T20:00:00Z",
+      "reason": "blocked_by prerequisite ordering",
       "plan": {
         "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
         "policy": {
@@ -186,8 +186,7 @@
             "url": "https://github.com/example/repo/issues/935",
             "verdict": "handed-off",
             "candidate_files": [
-              "orchestrate/SKILL.md",
-              "plan.schema.json"
+              "first.txt"
             ],
             "blocked_by": []
           },
@@ -197,8 +196,7 @@
             "url": "https://github.com/example/repo/issues/936",
             "verdict": "handed-off",
             "candidate_files": [
-              "orchestrate/SKILL.md",
-              "lane-brief.md"
+              "second.txt"
             ],
             "blocked_by": [
               935
@@ -213,31 +211,18 @@
             "blocked_by": []
           }
         ],
-        "overlaps": [
-          {
-            "issue_a": 935,
-            "issue_b": 936,
-            "paths": [
-              "orchestrate/SKILL.md"
-            ],
-            "resolution": "serialize",
-            "merge_dependency": {
-              "before": 935,
-              "after": 936
-            }
-          }
-        ],
+        "overlaps": [],
         "waves": [
           {
             "number": 1,
             "issues": [
-              935
+              936
             ]
           },
           {
             "number": 2,
             "issues": [
-              936
+              935
             ]
           }
         ],
@@ -253,7 +238,7 @@
           }
         ]
       },
-      "digest": "7b16ff3662c9eeebeb4f8c7c9eea910caee7cd6aeda04219c0a6692d2c8aca5c"
+      "digest": "3c326a5b208c4e9a6ff27ba0fe2a7bc5302232acfed45f1752da32c3c8aa3c61"
     }
   ]
 }

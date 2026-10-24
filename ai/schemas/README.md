@@ -25,11 +25,12 @@ Plan content optionally includes `merge_queue`, an ordered array of
 `{ "issue": <positive issue number>, "pr": <positive PR number> }` pairs.
 Each entry names a `handed-off` slate issue; issue and PR numbers are unique,
 and queued pairs obey every recorded `merge_dependency` when both endpoints
-are queued. A `handed-off` issue has retired its wave and lane while its PR
-remains open, retaining overlaps for queue ordering until `done`. Older plans
+are queued. A `handed-off` issue has retired its lane and may retain its wave
+for prerequisite ordering while its PR remains open, retaining overlaps for queue ordering until `done`. Older plans
 may omit the queue. Each revision is checked on its own, including its chain
 digest; queue and verdict transitions across revisions are not constrained.
-A queued issue requires every merge predecessor to be done or queued ahead.
+A queued issue requires every predecessor to be done or queued ahead. The
+predecessor relation combines `merge_dependency` and `blocked_by` edges.
 A handed-off issue waits outside the queue only while a predecessor is live
 and unqueued; its optional issue `pr` field retains the binding while waiting.
 
