@@ -220,7 +220,7 @@ runs:
       shell: bash
       run: |
         # renovate: datasource=npm depName=snyk
-        SNYK_VERSION=1.1308.1
+        SNYK_VERSION=1.1308.2
         # Same reuse-only-on-exact-match reasoning, and the same "|| true"
         # abort-under-set-e reasoning, as gitleaks above.
         installed_snyk_version=
