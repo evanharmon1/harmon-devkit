@@ -117,15 +117,17 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   if (!bound) errors.push('$result.payload.codex_cycle: checker state repo/PR is not bound to the run’s trusted PR binding')
   try {
     const profile = trustedCodexProfile(state.repo, state.pr)
-    if (state?.finder) {
-      if (stable(state.finder) !== stable(profile)) errors.push('$result.payload.codex_cycle: checker state finder does not exactly match the trusted codex-cloud registry profile')
-    } else if (
+    if (
       profile.actor_id !== LEGACY_CODEX_PROFILE.actor_id ||
       profile.actor_login !== LEGACY_CODEX_PROFILE.actor_login ||
       !profile.surfaces?.includes('comment') ||
-      !profile.surfaces?.includes('review') ||
-      stable(profile) !== stable(LEGACY_CODEX_PROFILE)
+      !profile.surfaces?.includes('review')
     ) {
+      errors.push('$result.payload.codex_cycle: trusted codex-cloud registry profile must require the fixed Codex actor and comment/review terminal surfaces')
+    }
+    if (state?.finder) {
+      if (stable(state.finder) !== stable(profile)) errors.push('$result.payload.codex_cycle: checker state finder does not exactly match the trusted codex-cloud registry profile')
+    } else if (stable(profile) !== stable(LEGACY_CODEX_PROFILE)) {
       errors.push('$result.payload.codex_cycle: legacy checker defaults do not exactly match the trusted codex-cloud registry profile')
     }
   } catch (error) {

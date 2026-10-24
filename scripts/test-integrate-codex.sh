@@ -9561,6 +9561,25 @@ auth_validate "$auth_receipt"
     fail "legacy null finder accepted a changed same-actor trusted profile: $auth_out"
 base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
 
+# Every cycle requires the fixed Codex identity and both comment and review
+# terminal surfaces. Construct the declared finder with the actual reserve
+# path, so its profile exactly matches the altered trusted registry; this
+# exercises the common condition rather than the declared-profile mismatch.
+cp "$state" "$auth_dir/legacy-profile-state.json"
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) = ["review"]' \
+    "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --finder codex-cloud >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'trusted codex-cloud registry profile must require the fixed Codex actor and comment/review terminal surfaces' <<<"$auth_out" ||
+    fail "declared finder accepted a trusted profile without the comment surface: $auth_out"
+cp "$auth_dir/legacy-profile-state.json" "$state"
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+
 # Registry-reserved cycles must keep the exact trusted actor and surface
 # profile. A state that substitutes a different actor or terminal surface is
 # refused before it can reinterpret the review evidence.
