@@ -142,8 +142,8 @@
     {
       "seq": 1,
       "prev_digest": "51af3ebe85608aba7490956d6c19d6843b6f7572b744a73fe026c5f1bf352e4e",
-      "at": "2026-10-24T14:00:00Z",
-      "reason": "handoff keeps merge dependencies",
+      "at": "2026-10-24T16:30:00Z",
+      "reason": "queue predecessor invariant",
       "plan": {
         "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
         "policy": {
@@ -184,7 +184,7 @@
             "number": 935,
             "title": "Add planning",
             "url": "https://github.com/example/repo/issues/935",
-            "verdict": "handed-off",
+            "verdict": "valid",
             "candidate_files": [
               "orchestrate/SKILL.md",
               "plan.schema.json"
@@ -202,7 +202,8 @@
             ],
             "blocked_by": [
               935
-            ]
+            ],
+            "pr": 1936
           },
           {
             "number": 937,
@@ -227,10 +228,33 @@
             }
           }
         ],
-        "waves": [],
-        "lanes": []
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              935
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "planning",
+            "issue": 935,
+            "wave": 1,
+            "branch": "935-plan",
+            "run_id": "run-935-plan",
+            "fence": [
+              {
+                "path": "orchestrate/SKILL.md",
+                "note": "Planning section only"
+              },
+              "plan.schema.json"
+            ],
+            "expansions": []
+          }
+        ]
       },
-      "digest": "4ed3a4f424049565b02b51fe903f1d2a4b6aa9e4664e996b39323b44476a9708"
+      "digest": "f94a3904b62a2c37a8a8f3a02c192ec0824c5973fa84c487fbddc886bf66c8a8"
     }
   ]
 }

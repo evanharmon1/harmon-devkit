@@ -163,7 +163,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
   const unknown = done.filter((number) => !known.has(number))
   if (unknown.length > 0) throw new Refusal(`--done names issue(s) not in the plan: ${unknown.join(', ')}`)
 
-  const live = plan.issues.filter((issue) => issue.verdict !== 'done' && !doneSet.has(issue.number))
+  const live = plan.issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
   const refusals = []
   for (const issue of live) {
     for (const blocker of issue.blocked_by ?? []) {
@@ -172,7 +172,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
   }
   for (const overlap of plan.overlaps) {
     const dependency = overlap.merge_dependency
-    if (dependency && doneSet.has(dependency.before) && !doneSet.has(dependency.after)) {
+    if (dependency && doneSet.has(dependency.before) && live.some((issue) => issue.number === dependency.after)) {
       refusals.push(`done issue #${dependency.before} releases dependent #${dependency.after} (merge dependency)`)
     }
   }
@@ -222,6 +222,8 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
     plan.lane_profiles = plan.lane_profiles.filter((entry) => lanes.has(entry.lane))
   }
   plan.overlaps = plan.overlaps.filter((overlap) => !doneSet.has(overlap.issue_a) && !doneSet.has(overlap.issue_b))
+  if (plan.merge_queue !== undefined) plan.merge_queue = plan.merge_queue.filter((entry) => !doneSet.has(entry.issue))
+  queueWaitingHandoffs(plan)
   return plan
 }
 
@@ -402,6 +404,29 @@ function retireIssue(plan, number, verdict = 'done') {
   }
 }
 
+// Every queued issue has each merge predecessor done or queued ahead of it.
+// A waiting handoff retains its PR on the issue until its predecessors allow
+// insertion. Repeated passes release chains without guessing a merge order.
+function queueWaitingHandoffs(plan) {
+  const queue = plan.merge_queue ?? []
+  const issueByNumber = new Map(plan.issues.map((issue) => [issue.number, issue]))
+  let added
+  do {
+    added = false
+    for (const issue of plan.issues) {
+      if (issue.verdict !== 'handed-off' || queue.some((entry) => entry.issue === issue.number)) continue
+      const predecessors = plan.overlaps.filter((entry) => entry.merge_dependency.after === issue.number)
+        .map((entry) => entry.merge_dependency.before)
+      if (predecessors.some((number) => issueByNumber.get(number)?.verdict !== 'done' && !queue.some((entry) => entry.issue === number))) continue
+      if (!Number.isInteger(issue.pr) || issue.pr < 1) throw new Refusal(`handed-off issue #${issue.number} needs its PR binding`)
+      const position = Math.max(0, ...predecessors.map((number) => queue.findIndex((entry) => entry.issue === number) + 1))
+      queue.splice(position, 0, { issue: issue.number, pr: issue.pr })
+      added = true
+    }
+  } while (added)
+  if (plan.merge_queue !== undefined || queue.length) plan.merge_queue = queue
+}
+
 function expandLane(plan, laneName, paths, at, reason, { source, fresh = false } = {}) {
   const lane = plan.lanes.find((entry) => entry.lane === laneName)
   if (!lane) throw new Refusal(`unknown receiving live lane ${laneName}`)
@@ -470,8 +495,12 @@ function decisionWrite(command, args) {
       if (!Number.isInteger(number) || number < 1) throw new UsageError('--issue must be a positive issue number')
       if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
       if (!plan.lanes.some((lane) => lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
+      if ((plan.merge_queue ?? []).some((entry) => entry.pr === pr) ||
+          plan.issues.some((issue) => issue.verdict === 'handed-off' && issue.pr === pr)) {
+        throw new Refusal(`duplicate PR ${pr}`)
+      }
       retireIssue(plan, number, 'handed-off')
-      plan.merge_queue = [...(plan.merge_queue ?? []), { issue: number, pr }]
+      plan.issues.find((issue) => issue.number === number).pr = pr
     } else if (command === 'queue-order') {
       fields(input, ['issues'], 'queue-order input')
       const queue = plan.merge_queue ?? []
@@ -508,6 +537,7 @@ function decisionWrite(command, args) {
       decisions = [...plan.overlaps, ...(input.addition?.overlaps ?? [])]
     }
     computeOverlaps(plan, decisions)
+    if (['handoff', 'done', 'release'].includes(command)) queueWaitingHandoffs(plan)
     const seq = document.revisions.length
     const prev_digest = last?.digest ?? 'genesis'
     const entry = { seq, prev_digest, at, reason: args.reason, plan }

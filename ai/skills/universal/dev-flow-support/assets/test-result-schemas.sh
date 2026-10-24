@@ -461,6 +461,9 @@ for regression in \
     plan/invalid/queue-non-handed-off.json \
     plan/invalid/queue-duplicate-issue.json \
     plan/invalid/queue-reversed-dependency.json \
+    plan/invalid/queue-live-unqueued-predecessor.json \
+    plan/invalid/queue-eligible-handoff-omitted.json \
+    plan/invalid/waiting-handoff-missing-pr.json \
     plan/invalid/rewritten-run-fence.json \
     plan/invalid/removed-run-expansion.json \
     plan/invalid/reversed-split-wave-dependency.json \
@@ -565,6 +568,15 @@ function runMutation(kind, pattern, name = null) {
     console.error(`FAIL: plan ${kind} mutation did not produce ${JSON.stringify(expected)}: ${output.trim()}`)
     failures += 1
   }
+}
+
+// A duplicate must not invent a second dependency-order failure (challenge r1).
+const duplicateFixture = path.join(path.dirname(fixtureFile), '../invalid/queue-duplicate-issue.json')
+const duplicateResult = spawnSync(process.execPath, [validator, 'plan', duplicateFixture], { encoding: 'utf8' })
+const duplicateErrors = duplicateResult.stderr.trim().split('\n').filter((line) => line.startsWith('FAIL:'))
+if (duplicateResult.status !== 1 || duplicateErrors.length !== 1 || !duplicateErrors[0].endsWith('duplicate issue 935')) {
+  console.error(`FAIL: duplicate issue fixture must fail for its stated reason only: ${duplicateResult.stderr}`)
+  failures += 1
 }
 
 for (const entry of required) runMutation('required', entry.parent, entry.name)

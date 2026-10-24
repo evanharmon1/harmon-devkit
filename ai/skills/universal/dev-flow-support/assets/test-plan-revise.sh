@@ -666,6 +666,59 @@ assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 10
 assert.deepEqual(current.overlaps, [])
 console.log('  PASS: handoff preserves overlaps and retires lanes; queue-order validates a permutation and dependencies; base-move preserves the queue; done removes queued issues')
 
+// R1 invariant: successors may finish first, retaining a PR outside the queue.
+const waiting = fixture('1,2,3')
+const waitingPlan = content(waiting.plan.base_sha, [addition(1, 'shared.txt'), addition(2, 'shared.txt'), addition(3, 'shared.txt')])
+waitingPlan.overlaps = [[1, 2], [2, 3]].map(([before, after]) => ({ issue_a: before, issue_b: after,
+  paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before, after } }))
+// All pairwise candidate intersections must be recorded, including 1 -> 3.
+waitingPlan.overlaps.push({ issue_a: 1, issue_b: 3, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 3 } })
+waiting.ok('genesis', { input: waitingPlan })
+current = waiting.ok('handoff', { flags: ['--issue', '3', '--pr', '103'] })
+assert.deepEqual(current.merge_queue ?? [], [])
+assert.equal(current.issues[2].verdict, 'handed-off')
+assert.equal(current.issues[2].pr, 103)
+assert.equal(current.lanes.some((lane) => lane.issue === 3), false)
+waiting.refuse('handoff', { flags: ['--issue', '2', '--pr', '103'] }, /duplicate PR/)
+current = waiting.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+assert.deepEqual(current.merge_queue ?? [], [])
+current = waiting.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }, { issue: 2, pr: 102 }, { issue: 3, pr: 103 }])
+// done also releases waiting handoffs without requiring a second handoff call.
+const completedBefore = fixture('1,2')
+const pairPlan = content(completedBefore.plan.base_sha, [addition(1, 'shared.txt'), addition(2, 'shared.txt')])
+pairPlan.overlaps = [waitingPlan.overlaps[0]]
+completedBefore.ok('genesis', { input: pairPlan })
+completedBefore.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+current = completedBefore.ok('done', { flags: ['--issue', '1'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+// R2/R3: merging the overlapping head must not pin the slate's old base.
+function mergedBase(f) {
+  writeFileSync(join(f.repo, 'shared.txt'), 'merged head content\n')
+  execFileSync('git', ['add', 'shared.txt'], { cwd: f.repo })
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'merged head'], { cwd: f.repo })
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.repo, encoding: 'utf8' }).trim()
+}
+const mergedAfterDone = mergedBase(completedBefore)
+current = completedBefore.ok('base-move', { flags: ['--new-base', mergedAfterDone] })
+assert.equal(current.base_sha, mergedAfterDone)
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+const combined = fixture('1,2')
+combined.ok('genesis', { input: { ...pairPlan, base_sha: combined.plan.base_sha } })
+combined.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+combined.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+const mergedCombined = mergedBase(combined)
+current = combined.ok('base-move', { flags: ['--new-base', mergedCombined, '--done', '1'] })
+assert.equal(current.issues[0].verdict, 'done')
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+const completeWaiting = fixture('1,2')
+completeWaiting.ok('genesis', { input: { ...pairPlan, base_sha: completeWaiting.plan.base_sha } })
+completeWaiting.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+current = completeWaiting.ok('base-move', { flags: ['--new-base', mergedBase(completeWaiting), '--done', '1'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+console.log('  PASS: reverse handoff order releases dependency chains; done and base-move release waiting handoffs and advance past overlapping queued files')
+
+
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"

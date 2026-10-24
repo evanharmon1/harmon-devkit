@@ -2588,14 +2588,31 @@ function checkPlanCoherence(document, errors) {
   for (const pr of duplicates(queue.map((entry) => entry.pr))) {
     errors.push(`$plan.merge_queue: duplicate PR ${pr}`)
   }
-  const queuePosition = new Map(queue.map((entry, index) => [entry.issue, index]))
+  const queuePosition = new Map()
+  queue.forEach((entry, index) => { if (!queuePosition.has(entry.issue)) queuePosition.set(entry.issue, index) })
   for (const [index, entry] of queue.entries()) {
     if (issueByNumber.get(entry.issue)?.verdict !== 'handed-off') {
       errors.push(`$plan.merge_queue[${index}].issue: issue ${entry.issue} must be a handed-off slate issue`)
     }
+    const binding = issueByNumber.get(entry.issue)?.pr
+    if (binding !== undefined && binding !== entry.pr) errors.push(`$plan.merge_queue[${index}].pr: must match issue PR binding`)
+  }
+  for (const issue of issues.filter((entry) => entry.verdict === 'handed-off' && !queuePosition.has(entry.number))) {
+    const waiting = overlaps.some((entry) => entry.merge_dependency.after === issue.number &&
+      issueByNumber.get(entry.merge_dependency.before)?.verdict !== 'done' && !queuePosition.has(entry.merge_dependency.before))
+    if (!waiting) errors.push(`$plan.issues: handed-off issue ${issue.number} must be queued unless waiting for a live unqueued predecessor`)
+    if (issue.pr === undefined) errors.push(`$plan.issues: waiting handed-off issue ${issue.number} requires a PR binding`)
+  }
+  const handoffBindings = issues.filter((issue) => issue.verdict === 'handed-off')
+    .map((issue) => issue.pr ?? queue.find((entry) => entry.issue === issue.number)?.pr).filter((pr) => pr !== undefined)
+  for (const pr of duplicates(handoffBindings)) {
+    if (!duplicates(queue.map((entry) => entry.pr)).includes(pr)) errors.push(`$plan.issues: duplicate handoff PR ${pr}`)
   }
   for (const overlap of overlaps) {
     const dependency = overlap.merge_dependency
+    if (dependency && queuePosition.has(dependency.after) && issueByNumber.get(dependency.before)?.verdict !== 'done' && !queuePosition.has(dependency.before)) {
+      errors.push(`$plan.merge_queue: queued issue ${dependency.after} has live unqueued predecessor ${dependency.before}`)
+    }
     if (dependency && queuePosition.has(dependency.before) && queuePosition.has(dependency.after) &&
         queuePosition.get(dependency.before) >= queuePosition.get(dependency.after)) {
       errors.push(`$plan.merge_queue: merge dependency requires issue ${dependency.before} before ${dependency.after}`)

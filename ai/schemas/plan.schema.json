@@ -70,6 +70,7 @@
               "title": { "type": "string", "minLength": 1 },
               "url": { "type": "string", "minLength": 1 },
               "verdict": { "enum": ["valid", "partial", "handed-off", "done"] },
+              "pr": { "type": "integer", "minimum": 1, "$comment": "Durable handoff PR binding, including while waiting outside merge_queue." },
               "candidate_files": { "type": "array", "items": { "$ref": "#/$defs/canonicalPath" } },
               "blocked_by": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
             },
