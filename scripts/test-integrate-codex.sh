@@ -9510,9 +9510,9 @@ jq --arg run "$auth_run" --arg head "$head_sha" \
     }
 ' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
 
-# The validator invokes the production checker. Its asset freshness guard
-# properly anchors at the production checkout, while the state itself remains
-# the hermetic fixture cycle built above.
+# Asset freshness resolves the physical checker checkout, independently of
+# --codex-repo-dir. The validator invokes the production checker, so use that
+# checkout's real HEAD while authenticating this hermetic cycle.
 git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
 
 auth_validate() {
@@ -9566,14 +9566,17 @@ base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
 # path, so its profile exactly matches the altered trusted registry; this
 # exercises the common condition rather than the declared-profile mismatch.
 cp "$state" "$auth_dir/legacy-profile-state.json"
-jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) = ["review"]' \
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) = ["reaction", "review"]' \
     "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
 rm -f "$state" "${state%.json}.spend.json"
+# This reserve uses the copied fixture checker, then validation switches back.
+git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --finder codex-cloud >/dev/null
+    --head "$head_sha" --attempt 1 --finder codex-cloud --run-id "$auth_run" >/dev/null
 jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
 auth_validate "$auth_receipt"
 [ "$auth_rc" -eq 1 ] && grep -Fq 'trusted codex-cloud registry profile must require the fixed Codex actor and comment/review terminal surfaces' <<<"$auth_out" ||
     fail "declared finder accepted a trusted profile without the comment surface: $auth_out"
