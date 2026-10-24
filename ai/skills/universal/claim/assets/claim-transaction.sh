@@ -10,12 +10,13 @@ usage() {
     cat >&2 <<'EOF'
 Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
        --claim-label LABEL|none [--allow-label-less] [--model-label LABEL|none]
-       [--family SLUG] [--runtime-environment VALUE]
+       [--family SLUG] [--runtime-environment VALUE] [--approve-review-pullback]
        --registry-snapshot FILE|none
 
 Exit: 0 = record committed
       2 = usage, invalid record, or pre-write state could not be verified
       6 = publication/marker state is indeterminate; markers remain visible
+          Includes committed claims with failed/unverified needs-review cleanup; retry same record with --approve-review-pullback.
 EOF
     exit 2
 }
@@ -29,6 +30,7 @@ family=""
 runtime_environment=""
 registry_snapshot=""
 allow_label_less=0
+approve_review_pullback=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -53,6 +55,10 @@ while [ "$#" -gt 0 ]; do
         ;;
     --allow-label-less)
         allow_label_less=1
+        shift
+        ;;
+    --approve-review-pullback)
+        approve_review_pullback=1
         shift
         ;;
     --model-label)
@@ -628,6 +634,10 @@ claim_blockers_absent() {
         # claimable; GitHub label names compare case-insensitively.
         normalized_label="$(printf '%s' "$live_label" | tr '[:upper:]' '[:lower:]')"
         [ "$normalized_label" != human ] || return 1
+        if [ "$normalized_label" = needs-review ] && [ "$approve_review_pullback" -eq 0 ]; then
+            echo "claim transaction: needs-review requires explicit --approve-review-pullback confirmation" >&2
+            return 1
+        fi
     done < <(jq -r '.labels[]?.name' "$snapshot")
 }
 
@@ -782,11 +792,32 @@ current_record_is_live() {
         ' "$predecessor_output" >/dev/null &&
         claim_is_live "$issue_output"
 }
+# The review hold is cleared only after the exact record is a live claim.
+# A failed cleanup leaves that record visible so an approved retry can finish it.
+complete_review_pullback() {
+    local snapshot="$1" review_label
+    [ "$approve_review_pullback" -eq 1 ] || return 0
+    review_label="$(jq -r '[.labels[]? | select((.name | ascii_downcase) == "needs-review") | .name][0] // empty' \
+        "$snapshot")" || return 1
+    [ -n "$review_label" ] || return 0
+    if ! gh issue edit "$issue" --repo "$repo" --remove-label "$review_label"; then
+        echo "claim transaction: needs-review removal failed; the live claim remains visible for recovery" >&2
+        return 1
+    fi
+    if ! current_record_is_live "$tmp/issue-after-pullback.json" "$tmp/comments-after-pullback.json" \
+        "$tmp/predecessor-after-pullback.json" "$tmp/timeline-after-pullback.json" ||
+        ! jq -e 'all(.labels[]?; (.name | ascii_downcase) != "needs-review")' \
+            "$tmp/issue-after-pullback.json" >/dev/null; then
+        echo "claim transaction: needs-review removal or the current live claim could not be verified" >&2
+        return 1
+    fi
+}
 if [ "$resume_exact" -eq 1 ]; then
     claim_is_live "$tmp/issue-before.json" || {
         echo "claim transaction: exact current record lacks an OPEN issue or its required live markers" >&2
         exit 6
     }
+    complete_review_pullback "$tmp/issue-before.json" || exit 6
     exit 0
 fi
 {
@@ -956,6 +987,7 @@ if ! current_record_is_live "$tmp/issue-after-publication.json" "$tmp/comments-c
     fi
     exit 6
 fi
+complete_review_pullback "$tmp/issue-after-publication.json" || exit 6
 [ "$comment_command_succeeded" -eq 1 ] ||
     echo "claim transaction: comment command failed but reconciliation confirmed the exact current record committed" >&2
 exit 0

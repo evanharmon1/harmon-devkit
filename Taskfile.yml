@@ -714,6 +714,7 @@ tasks:
       - ./scripts/test-track-work.sh
       - ./scripts/test-claim-transaction.sh
       - ./scripts/test-release-claim.sh
+      - ./scripts/test-clear-needs-review.sh
       - task: test:file-review-finding
 
   test:file-review-finding:

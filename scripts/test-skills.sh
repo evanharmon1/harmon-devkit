@@ -283,18 +283,9 @@ expect_ok "dev-flow-support documents decision writers (#1410)" \
     grep -qF 'Write held-lock `genesis`, `add-issue`' \
     "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
 
-# Reviewer policy and PR-state meaning (#1604): own block, separate from lane pins.
-for skill in claim integrate track-work; do
-    expect_ok "$skill declares agent-owed review work (#1604 ruling 54)" \
-        grep -qF '`needs-review` is a PR state: an agent still owes review work' "$repo/ai/skills/universal/$skill/SKILL.md"
-done
+# Reviewer policy (#1604): independent of the review-marker lifecycle (#1608).
 expect_ok "reviewer settings document recorded operator overrides (#1604)" \
     grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
-expect_ok "claim no longer exposes review pull-back approval (#1604)" \
-    sh -c '! grep -qF -- "--approve-review-pullback" "$1"' sh \
-    "$repo/ai/skills/universal/claim/assets/claim-transaction.sh"
-expect_ok "issue review cleanup helper is retired (#1604)" \
-    test ! -e "$repo/ai/skills/universal/track-work/assets/clear-needs-review.sh"
 
 # Lane provisioning (#1542): keep these pins separate from other live lanes.
 expect_ok "orchestrator Lane briefs names the provisioning command" \

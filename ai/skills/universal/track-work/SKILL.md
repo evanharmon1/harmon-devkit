@@ -62,13 +62,11 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
-`needs-review` is a PR state: an agent still owes review work on the delivery
-PR (review triggers, responses, fixes, adjudications). When the agent owes
-none of that, the label comes off, even if a human still has to look at or
-merge the PR. A PR waiting on a human is `merge-ready` or `parked`, never
-`needs-review`, and the label never sits together with either.
-Issue claim, release and handoff operations never add or remove it. The merge
-queue owns `merge-ready` and `parked`. See [claim lifecycle](references/claim-lifecycle.md).
+`assets/clear-needs-review.sh --repo OWNER/NAME --issue N` removes only the
+`needs-review` marker if present, independently of claim trust or ownership.
+It exits 0 when removed or absent, and non-zero on invalid arguments or a
+GitHub read/write failure. See [claim lifecycle](references/claim-lifecycle.md)
+for the review marker's writers and terminal cleanup ownership.
 
 ## 1. Before you describe an issue, re-read it
 
