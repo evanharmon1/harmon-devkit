@@ -9557,10 +9557,10 @@ jq '.finder = {
       trigger_mechanism:"review-comment", trigger_body:"@codex review",
       reviewer_login:"impostor", surfaces:["reaction"],
       head_binding:"reviewed-commit-line", verdict_mode:"clean-sentence",
-      clean_verdict:"Didn't find any major issues.", actionable_pattern:"P[0-9]+",
+      clean_verdict:"clean", actionable_pattern:"P[0-9]+",
       severity_marker:"P", metadata_line:"Reviewed commit:",
       about_summary:"About Codex", heading:"Codex Review",
-      carrier_sentence:"Didn't find any major issues.", success_reaction:"+1",
+      carrier_sentence:"clean", success_reaction:"+1",
       pending_reaction:"eyes"
     }' "$state" >"$auth_dir/tampered-profile-state.json"
 auth_validate "$auth_receipt" "$auth_dir/tampered-profile-state.json"
@@ -9578,10 +9578,10 @@ jq '.finder = {
       trigger_mechanism:"review-comment", trigger_body:"@codex review",
       reviewer_login:"impostor", surfaces:["reaction"],
       head_binding:"reviewed-commit-line", verdict_mode:"clean-sentence",
-      clean_verdict:"Didn't find any major issues.", actionable_pattern:"P[0-9]+",
+      clean_verdict:"clean", actionable_pattern:"P[0-9]+",
       severity_marker:"P", metadata_line:"Reviewed commit:",
       about_summary:"About Codex", heading:"Codex Review",
-      carrier_sentence:"Didn't find any major issues.", success_reaction:"+1",
+      carrier_sentence:"clean", success_reaction:"+1",
       pending_reaction:"eyes"
     }' "$state" >"$auth_dir/replacement-state.json"
 jq -cn --argjson trusted "$actor_id" --arg trusted_login "$actor_login" \
