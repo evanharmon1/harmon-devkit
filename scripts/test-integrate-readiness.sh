@@ -5520,11 +5520,12 @@ STUB
     chmod +x "$promote_assets/"*.sh "$promote_fixture/bin/"*
     export PATH="$promote_fixture/bin:$PATH"
     promote_call() {
+        local run_id="${1:-run-promote}" record="${2:-$PROMOTE_RECORD}"
         "$watchdog_bin" "$watchdog_sec" "$promote_assets/promote.sh" \
-            --repo example/repo --pr 493 --head "$PROMOTE_HEAD" --record "$PROMOTE_RECORD" \
+            --repo example/repo --pr 493 --head "$PROMOTE_HEAD" --record "$record" \
             --integration-cap 5 --remediation-cap 5 --codex-recheck checker.json \
             --integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir "$PWD" \
-            --slate s-promote --session alice --owner-token fixture-token --run-id run-promote
+            --slate s-promote --session alice --owner-token fixture-token --run-id "$run_id"
     }
     promotion_case() {
         local label=$1 expected=$2 rc=0
@@ -5558,6 +5559,24 @@ STUB
         if [ "$case_name" = remediation ]; then
             [[ "$promotion_output" = *remediation-capped* ]] || fail 'gate remediation token lost'
         fi
+    done
+    dotted_run_id='run-promote.v2'
+    dotted_record="$promote_fixture/repo/.git/dev-flow-v2/runs/$dotted_run_id"
+    mkdir -p "$dotted_record"
+    printf '{"run_id":"%s"}\n' "$dotted_run_id" >"$dotted_record/run.json"
+    export PROMOTE_CASE=fail
+    : >"$PROMOTE_LOG"
+    dotted_rc=0
+    dotted_output="$(promote_call "$dotted_run_id" "$dotted_record" 2>&1)" || dotted_rc=$?
+    [ "$dotted_rc" -eq 10 ] || fail "dotted run id did not reach the ordinary gate: $dotted_output"
+    grep -q '^check ' "$PROMOTE_LOG" || fail 'dotted run id did not invoke the readiness gate'
+    for unsafe_run_id in . ..; do
+        : >"$PROMOTE_LOG"
+        unsafe_rc=0
+        unsafe_output="$(promote_call "$unsafe_run_id" "$PROMOTE_RECORD" 2>&1)" || unsafe_rc=$?
+        [ "$unsafe_rc" -eq 11 ] || fail "unsafe run id $unsafe_run_id was not refused: $unsafe_output"
+        [[ "$unsafe_output" = *'Usage: promote.sh'* ]] || fail "unsafe run id $unsafe_run_id did not report usage: $unsafe_output"
+        [ ! -s "$PROMOTE_LOG" ] || fail "unsafe run id $unsafe_run_id reached the readiness gate"
     done
     for case_name in success retirement-warning lost-response; do
         promotion_case "$case_name" 0
