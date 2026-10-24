@@ -110,8 +110,9 @@ integrator envelope with `run-record.mjs receipt`; an envelope with a non-null
 `--codex-state <state> --codex-repo-dir <checkout>`. The writer re-runs the
 read-only checker and binds its live result to the run's recorded PR before it
 accepts the immutable pass. A null cycle is admitted only when the retained
-policy disables integration review; a diagnostic pending report is never a
-receipt.
+policy disables integration review, so it supplies the retained run/policy
+context but no invented checker state or checkout. A diagnostic pending report
+is never a receipt.
 
 Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 

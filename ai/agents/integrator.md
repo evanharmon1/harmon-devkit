@@ -1265,6 +1265,13 @@ node "$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope "$out_file"
 A nonzero exit means fix the document and re-validate — never report an
 unvalidated result, and never loosen the check to get past it.
 
+Your report is diagnostic evidence, not an immutable receipt. The supervising
+session admits only a completed envelope through `run-record.mjs receipt`.
+For a non-null `codex_cycle`, that admission also supplies the retained checker
+state and checkout so it can re-check live GitHub evidence. For a cap-zero/null
+cycle, the retained run policy is the required proof that no checker state
+exists; never create placeholder state merely to satisfy a command shape.
+
 ## 8. Never
 
 Decide a finding's disposition. Call `settle`. Post reply text you composed

@@ -106,7 +106,10 @@
 //   --receipt                    Require every context flag applicable to
 //                                 this invocation's <kind> (envelope kinds:
 //                                 --run-id/--initiated-by; challenger,
-//                                 reviewer, and integrator: also --known-ids;
+//                                 reviewer: also --known-ids; integrator:
+//                                 also --known-ids and --integrator-record,
+//                                 plus --codex-state/--codex-repo-dir only
+//                                 when its cycle is non-null;
 //                                 adjudication: --pass and
 //                                 --known-adjudicated; run: --adjudication)
 //                                 — a missing one is a
@@ -624,13 +627,23 @@ const CONTEXT_FLAGS = {
 // unrecognised role (a garbage or missing `role` on an envelope-kind
 // instance) falls back to the universal envelope baseline (--run-id only)
 // rather than guessing at extras it cannot confirm apply.
-function applicableContextSpecs(kind, role) {
-  if (kind === 'envelope') return CONTEXT_FLAGS[role] ?? [RUN_ID_FLAG]
-  return CONTEXT_FLAGS[kind] ?? []
+function applicableContextSpecs(kind, role, instance) {
+  const effectiveRole = kind === 'envelope' ? role : kind
+  const specs = CONTEXT_FLAGS[effectiveRole] ?? (kind === 'envelope' ? [RUN_ID_FLAG] : [])
+  // A cap-zero/null-cycle integrator receipt has no checker state to
+  // authenticate. It is still strict evidence: --integrator-record supplies
+  // the retained policy that proves the waiver, alongside the ordinary run
+  // and finding context. Requiring a made-up --codex-state would either
+  // encourage a fabricated file or make legitimate cap-zero receipts
+  // impossible to record.
+  if (effectiveRole === 'integrator' && instance?.payload?.codex_cycle === null) {
+    return specs.filter((spec) => spec.flag !== '--codex-repo-dir' && spec.flag !== '--codex-state')
+  }
+  return specs
 }
 
-function skippedContextFlags(kind, role, options) {
-  return applicableContextSpecs(kind, role)
+function skippedContextFlags(kind, role, options, instance) {
+  return applicableContextSpecs(kind, role, instance)
     .filter((spec) => !spec.given(options))
     .map((spec) => spec.flag)
 }
@@ -639,9 +652,9 @@ function skippedContextFlags(kind, role, options) {
 // to this invocation must actually be given; a missing one is a usage
 // error (exit 2), matching how --run-id given without --initiated-by is
 // already treated as a usage error rather than a guaranteed rejection.
-function checkReceiptRequirements(kind, role, options) {
+function checkReceiptRequirements(kind, role, options, instance) {
   if (!options.receipt) return
-  const missing = skippedContextFlags(kind, role, options)
+  const missing = skippedContextFlags(kind, role, options, instance)
   if (missing.length === 0) return
   for (const flag of missing) {
     console.error(`validate-result-schemas: --receipt requires ${flag} for kind ${kind}`)
@@ -3661,7 +3674,7 @@ function main() {
   }
   const instance = loadJson(file)
   const role = kind === 'envelope' ? instance.role : kind
-  checkReceiptRequirements(kind, role, options)
+  checkReceiptRequirements(kind, role, options, instance)
 
   if (kind === 'adjudication') {
     const errors = validateAdjudicationInstance(instance)
@@ -3670,7 +3683,7 @@ function main() {
       if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, options, errors)
       checkAdjudicationUniqueAcrossRun(instance, options, errors)
     }
-    const skipped = skippedContextFlags(kind, role, options)
+    const skipped = skippedContextFlags(kind, role, options, instance)
     const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
     report(errors, `adjudication record OK${suffix}`)
     return
@@ -3722,7 +3735,7 @@ function main() {
       }
     }
     checkTimestampRealness(instance, errors, '$run')
-    const skipped = skippedContextFlags(kind, role, options)
+    const skipped = skippedContextFlags(kind, role, options, instance)
     const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
     report(errors, `run record OK${suffix}`)
     return
@@ -3738,7 +3751,7 @@ function main() {
   }
 
   const errors = validateEnvelopeInstance(instance, kind, options)
-  const skipped = skippedContextFlags(kind, role, options)
+  const skipped = skippedContextFlags(kind, role, options, instance)
   const skippedPart = skipped.length > 0 ? `, context skipped: ${skipped.join(', ')}` : ''
   report(errors, `${kind} result OK (role=${instance.role ?? 'n/a'}, status=${instance.status ?? 'n/a'}${skippedPart})`)
 }

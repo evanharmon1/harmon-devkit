@@ -38,8 +38,12 @@ function codexRequired(record, policy) {
     .filter((entry) => entry?.stage === 'integration')
     .flatMap((entry) => entry?.effective ?? [])
     .map((entry) => typeof entry === 'string' ? entry : entry?.finder)
-  const configured = selections.length > 0 ? selections : (policy?.stages?.integration?.finders ?? [])
-  return configured.includes('codex-cloud')
+  // A selection extends the resolved stage configuration; it never replaces
+  // it.  Keep this identical to run-record.mjs's resolvedSlots() rule: a
+  // later selected finder must not turn a configured codex-cloud requirement
+  // into permission to publish a null cycle.
+  const configured = policy?.stages?.integration?.finders ?? []
+  return [...configured, ...selections].includes('codex-cloud')
 }
 
 function trustedCodexProfile(repo, pr) {

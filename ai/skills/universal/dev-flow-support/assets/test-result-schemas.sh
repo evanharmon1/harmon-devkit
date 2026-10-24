@@ -1854,6 +1854,53 @@ run_context_case \
     "--receipt requires --codex-repo-dir" \
     --receipt --run-id "run-4001-verdict-clean" --initiated-by human --known-ids "$empty_ids_file"
 
+# A cap-zero/null cycle has no live checker state to authenticate. It must
+# still supply the retained run record, whose adjacent policy is the evidence
+# that Codex was disabled; requiring a dummy state file would turn the strict
+# boundary into an invitation to fabricate one. Conversely, an effective
+# selection only ADDS finders to the policy's configured set: selecting another
+# finder may not silently waive configured codex-cloud.
+null_cycle_receipt="$test_tmp/null-cycle-integrator-receipt.json"
+cp "$fixtures_dir/result.integrator.schema/valid/codex-cycle-null.json" "$null_cycle_receipt"
+receipt_context_dir="$test_tmp/null-cycle-receipt-context"
+mkdir -p "$receipt_context_dir"
+null_cycle_record="$receipt_context_dir/run.json"
+cat >"$null_cycle_record" <<'JSON'
+{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["other-finder"]}]}
+JSON
+cat >"$receipt_context_dir/policy.json" <<'JSON'
+{"rounds":{"integration":0},"stages":{"integration":{"finders":["codex-cloud"]}}}
+JSON
+accept_context_case \
+    "a strict cap-zero/null integrator receipt authenticates its retained policy without checker state" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+jq '.rounds.integration = 1' "$receipt_context_dir/policy.json" >"$receipt_context_dir/policy.next.json"
+mv "$receipt_context_dir/policy.next.json" "$receipt_context_dir/policy.json"
+run_context_case \
+    "an added integration finder cannot waive configured codex-cloud for a null receipt" \
+    integrator "$null_cycle_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+rm "$receipt_context_dir/policy.json"
+run_context_case \
+    "a strict null-cycle receipt refuses an absent retained policy" \
+    integrator "$null_cycle_receipt" \
+    "cannot read the recorded resolved policy" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+printf '{not json\n' >"$receipt_context_dir/policy.json"
+run_context_case \
+    "a strict null-cycle receipt refuses a malformed retained policy" \
+    integrator "$null_cycle_receipt" \
+    "cannot read the recorded resolved policy" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
 run_context_case \
     "an integrator finding id colliding with --known-ids is rejected" \
     integrator \
