@@ -12290,7 +12290,6 @@ def guarded(text):
     for allowed in (
         "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
         "and `gh pr ready` must not be called again.",
-        "an `audit` pass never authorizes `gh pr ready`.",
     ):
         text = text.replace(allowed, "")
     # Markdown code-span boundaries delimit command text, like line endings.
@@ -12314,14 +12313,16 @@ for region in (
     assert not guarded(region % "then run `gh pr ready 42`"), region
 integrate = pathlib.Path(sys.argv[1]).read_text()
 for required in (
-    "promotion (the current head independently passes `readiness-gate.sh audit`)",
+    "promotion (the current head independently passes `readiness-gate.sh promoted`)",
     "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
-    "Only audit status `pass`",
-    "on the current head may be recorded, never `audit-behind`",
+    "Only promoted status `pass`",
+    "on the current head may be recorded; a behind head fails",
     "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
     "and the run stays open until `run-record.mjs close`",
 ):
     assert required in integrate, required
+assert "readiness-gate.sh audit" not in integrate
+assert "audit-behind" not in integrate
 
 PY1409
 

@@ -934,11 +934,26 @@ make on its behalf.
 
 ### Per-finder cycles (#804)
 
-When your brief lists configured finders beyond `codex-cloud` (each with a
-registry slug from `agent-registry.json`), drive one cycle per finder in
-addition to the `codex_cycle` above. The `codex_cycle` field remains the
+Derive required finders from the brief's resolved policy, not from the cycles
+already driven. A finder in `stages.integration.finders` is required unless its
+resolved `stages.integration.finder[]` entry says `gates=false` or `budget=0`;
+unspecified values require it, including legacy ids-only policies. A cap-0
+integration stage opens no cycles. Drive a completed, settled current-head
+cycle for every required finder; a missing cycle is blocked evidence, never
+an implicit clean result. Non-Codex carry remains unsupported by the result
+schema; Codex carry must satisfy its resolved carry rule (`fresh` forbids it).
+When required finders extend beyond `codex-cloud` (registry slugs from
+`agent-registry.json`), drive one cycle per required finder in addition to
+the `codex_cycle` above. The `codex_cycle` field remains the
 canonical backward-compatible record for the codex-cloud finder specifically;
 `finder_cycles` (§7) carries every finder including codex-cloud.
+
+Keep each finder's spend in its own checker state: never share a state file
+between finders or copy another finder's charged/exempt counters. Pass the
+finder's resolved budget to reservation (bounded by the stage ceilings); do not
+request a cycle after that budget is spent. Report charged/exempt counts in
+its cycle evidence. Advisory reviewers may still yield findings that need
+adjudication, but their missing/pending cycle does not gate the handoff.
 
 Use the same checker with `--finder SLUG` — it resolves the finder's actor id,
 surfaces, and verdict mode from the trusted registry rather than needing

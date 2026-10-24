@@ -17,7 +17,7 @@
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
 #       --record DIR --integration-cap N
 #       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
-#   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
+#   readiness-gate.sh promoted --repo OWNER/REPO --pr N --head SHA
 #       --record DIR --integration-cap N
 #       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
@@ -28,11 +28,11 @@
 # fingerprint is double-read: computed over the exact content the conditions
 # judged, then re-fetched fresh and required identical (`content-moved`
 # otherwise), so a mid-gate edit fails before promotion notifies anyone.
-# `audit` is the same evaluation with the draft requirement inverted (its
+# `promoted` is the same evaluation with the draft requirement inverted (its
 # target must be non-draft — it judges an existing promotion): it answers
 # "does this head independently pass everything else" for a PR somebody
 # already promoted — §2's unexplained-promotion reconcile branch and §6's
-# already-non-draft audit run it instead of hand-rolling the evidence — and
+# already-non-draft promoted run it instead of hand-rolling the evidence — and
 # its pass never authorizes promotion. A passing `check` is promote.sh's
 # precondition; promote.sh is the only promotion path.
 # `fingerprint` recomputes the same five-surface content fingerprint with no
@@ -54,20 +54,22 @@
 # pre-existing, `finder-not-clean` among them while its two sibling finder
 # tokens were listed):
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
-#   checks-failing, checks-pending                          (fail)
+#   checks-failing                                         (fail)
 #   changes-requested, merge-state-dirty                    (fail)
 #   behind-base, base-retargeted                              (fail)
 #   threads-unanswered, threads-new-follow-up,
-#   threads-edited-since-reply                              (fail)
+#   threads-edited-since-reply, threads-unresolved          (fail)
 #   deferred-unsettled, closing-linkage-missing,
 #   content-moved                                            (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
 #   codex-quota-exhausted, finder-quota-exhausted             (fail)
-#   finder-not-clean, finder-pr-not-open,                   (fail)
+#   finder-not-clean, finder-pr-not-open, finder-missing,
+#   finder-capped,                                         (fail)
 #   integrator-not-clean, unresolved-integrator-findings,   (fail)
 #   evidence-marker-missing, remediation-capped,            (fail)
 #   integration-filed-gating-finding                         (fail)
-#   checks-indeterminate, merge-state-unknown, fetch-failed,
+#   checks-indeterminate, checks-pending, checks-missing,
+#   merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, codex-transient-read, finder-transient-read,
 #   finder-indeterminate, promotion-head-mismatch,
@@ -89,11 +91,9 @@
 # re-poll. Callers keyed to the old token should treat `behind-base` as its
 # fail replacement and `merge-state-stale` as a retry.
 #
-# `audit` emits the same set with one addition of its own — `pr-draft` (fail),
-# for a PR that is no longer promoted — and without `pr-not-draft`, which is
-# the same requirement in the opposite direction. That token is deliberately
-# NOT in the `check` list above: the two subcommands differ by exactly this
-# one condition.
+# `promoted` emits the same set with one addition of its own — `pr-draft` (fail),
+# for a PR that is no longer promoted — and without `pr-not-draft`. Both
+# modes require behind_by == 0; the former audit-behind pass is retired.
 #
 # `codex-transient-read` exists because of harmon-devkit#508: the checker's
 # exit 16 says an evidence READ failed, which is not evidence that the cycle
@@ -106,17 +106,14 @@
 # attempt, so waiting for the reset changes nothing. Recovery is a new commit
 # or an operator removing the cycle state file; the route is carried in #1115.
 #
-# Two readiness conditions are deliberately NOT verified here, because no
-# API answers them — the caller must hold them as prose prerequisites:
+# Required automation that reacts only to ready_for_review remains a caller
+# prerequisite: promotion cannot wait for an automation it starts. Required
+# status contexts, including ones that never registered, ARE checked against
+# GET repos/{repo}/rules/branches/{base} on every evaluation.
+# The remaining automation prerequisite is:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its
 #     result exists);
-#   - a required context that NEVER REGISTERED on this head. The checks
-#     condition judges every check GitHub reports for the commit; a required
-#     workflow that failed to trigger appears in no list, and the only state
-#     that encodes it — merge-blockedness — must stay promotable (BLOCKED is
-#     the expected pre-review state). "Every required workflow actually ran"
-#     is §6's automation-coverage condition, held by the caller.
 # Nor does a pass certify adjudication QUALITY: the gate re-checks the
 # mechanical surfaces (reply linkage, deferred ticks, review decision) and
 # freezes the rest into the fingerprint, but a top-level finding posted after
@@ -173,7 +170,7 @@ Usage:
       --remediation-cap N [--integration-exempt-cap N]
       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
       [--allow-edited-root ID]...
-  readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
+  readiness-gate.sh promoted --repo OWNER/REPO --pr N --head SHA
       --record DIR --integration-cap N
       --remediation-cap N [--integration-exempt-cap N]
       [--integrator-result FILE] [--codex-recheck STATE_FILE] [--codex-repo-dir DIR]
@@ -182,7 +179,7 @@ Usage:
   readiness-gate.sh behind --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
-audit is the same evaluation with the draft requirement inverted (the PR
+promoted is the same evaluation with the draft requirement inverted (the PR
 must be non-draft), for judging a PR somebody already promoted — its pass
 never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
@@ -396,12 +393,12 @@ valid_uint "$pr" || die "invalid PR number: $pr"
 [ -z "$remediation_cap" ] || valid_uint_or_zero "$remediation_cap" ||
     die "--remediation-cap must be a non-negative integer"
 
-# check gates promotion, so the PR must still be draft; audit answers the
+# check gates promotion, so the PR must still be draft; promoted answers the
 # reconcile question for a PR somebody already promoted, so it drops exactly
 # that one requirement and nothing else.
 require_draft=1
 case "$command_name" in
-check | audit)
+check | promoted)
     [ "$command_name" = check ] || require_draft=0
     [ -n "$head" ] || usage
     valid_sha "$head" || die "--head must be a full 40-hex commit"
@@ -438,7 +435,10 @@ emit() {
         --arg condition "$2" \
         --arg detail "$3" \
         --arg head "${head:-}" \
-        '{status:$status,condition:$condition,detail:$detail,head:$head}'
+        --slurpfile checks_sf <(printf '%s' "${checks_summary:-null}") \
+        '{status:$status,condition:$condition,detail:$detail,head:$head,
+          reportable_checks:{failing:($checks_sf[0].optional_failing // [] | .[0:20]),
+                             total:($checks_sf[0].optional_failing // [] | length)}}'
 }
 
 fail_condition() {
@@ -753,12 +753,19 @@ fetch_fingerprint_surfaces() {
         fp_inline="$(run_gh api --paginate --slurp repos/"$repo"/pulls/"$pr"/comments)" ||
             indeterminate fetch-failed "cannot fetch inline review comments"
     fi
+    if [ -z "$fp_threads" ]; then
+        fetch_review_threads
+    fi
+}
+
+fetch_review_threads() {
+    local owner="${repo%/*}" name="${repo#*/}"
     fp_threads="$(run_gh api graphql --paginate --slurp \
         -F owner="$owner" -F name="$name" -F pr="$pr" -f query='
       query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
         repository(owner:$owner,name:$name){ pullRequest(number:$pr){
           reviewThreads(first:100,after:$endCursor){
-            pageInfo{hasNextPage endCursor} nodes{id isResolved}}}}}')" ||
+            pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}')" ||
         indeterminate fetch-failed "cannot fetch review-thread resolution"
 }
 
@@ -917,7 +924,7 @@ if [ "$command_name" = fingerprint ]; then
     exit 0
 fi
 
-# ------------------------------ check / audit ------------------------------
+# ------------------------------ check / promoted ------------------------------
 
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
@@ -941,17 +948,17 @@ head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$scalars")
 pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no state"
 [ "$pr_state" = "OPEN" ] ||
-    fail_condition pr-not-open "PR state is $pr_state — only an open PR can be gated or audited"
+    fail_condition pr-not-open "PR state is $pr_state — only an open PR can be gated or re-checked"
 
 if [ "$require_draft" = 1 ]; then
     jq -e '.isDraft == true' <<<"$scalars" >/dev/null ||
-        fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; run audit, do not re-promote"
+        fail_condition pr-not-draft "PR is not a draft — promotion is idempotently complete or someone else promoted; run promoted, do not re-promote"
 else
-    # Audit judges an existing promotion, so its target must actually be
+    # Promoted judges an existing promotion, so its target must actually be
     # promoted: a PR converted back to draft since the caller observed it
     # has no standing handoff to accept.
     jq -e '.isDraft == false' <<<"$scalars" >/dev/null ||
-        fail_condition pr-draft "the PR is a draft — there is no promotion to audit; check is the gate for promoting one"
+        fail_condition pr-draft "the PR is a draft — there is no promotion to promoted; check is the gate for promoting one"
 fi
 
 live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
@@ -988,12 +995,26 @@ assert_closing_linkage "$scalars" "initial snapshot"
 # checks are deliberately not part of the content fingerprint, so nothing
 # after promotion would catch it either.
 #
-# What this judges is every check GitHub REPORTS for the commit. A required
-# context that never registered at all is invisible to any list read (only
-# merge-blocked-ness encodes it, and BLOCKED must stay promotable), so
-# "every required workflow actually ran" remains the §6 automation-coverage
-# condition the caller holds — see the header.
+# Required contexts come from the effective branch rules, including inherited
+# rulesets. Missing or pending required checks are indeterminate. Other checks
+# are reported, never used to turn a handoff red.
+checks_summary='{"optional_failing":[]}'
 evaluate_checks() {
+    local rules_pages required_checks
+    local encoded_rule_base
+    encoded_rule_base="$(jq -rn --arg s "$(jq -r '.baseRefName' <<<"$scalars")" '$s | @uri')"
+    rules_pages="$(run_gh api --paginate --slurp "repos/$repo/rules/branches/$encoded_rule_base")" ||
+        indeterminate checks-indeterminate "cannot read effective required status checks for the PR base"
+    required_checks="$(jq -ce '
+      [ .[] | if type == "array" then .[] else error("rules page is not an array") end
+        | select(.type == "required_status_checks")
+        | .parameters.required_status_checks
+        | if type == "array" then .[] else error("missing required_status_checks") end
+        | if (.context | type == "string" and length > 0) and
+             (.integration_id == null or (.integration_id | type == "number" and floor == .))
+          then {context, app:(.integration_id // null)} else error("invalid required context") end
+      ] | unique' <<<"$rules_pages" 2>/dev/null)" ||
+        indeterminate checks-indeterminate "effective required status checks are malformed"
     check_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
         indeterminate fetch-failed "cannot fetch check runs for the head"
@@ -1207,9 +1228,10 @@ evaluate_checks() {
     # carries the payload; the fd does. $runs/$statuses are bound below so the
     # classification program itself is unchanged.
     checks_summary="$(jq -cn \
+        --slurpfile required_sf <(printf '%s' "$required_checks") \
         --slurpfile runs_sf <(printf '%s' "$check_runs") \
         --slurpfile statuses_sf <(printf '%s' "$statuses") '
-          $runs_sf[0] as $runs | $statuses_sf[0] as $statuses |
+          $required_sf[0] as $required |
           def run_state:
             if .status != "completed" then "pending"
             elif (.conclusion == "success" or .conclusion == "neutral"
@@ -1219,13 +1241,27 @@ evaluate_checks() {
             if .state == "success" then "ok"
             elif .state == "pending" then "pending"
             else "failing" end;
-          ($runs | map({name:(.name // "unnamed check"), state:run_state})) +
-          ($statuses | map({name:(.context // "unnamed status"),
-                            state:status_state}))
-          | {total:length,
-             failing:[.[] | select(.state == "failing") | .name],
-             pending:[.[] | select(.state == "pending") | .name]}')" ||
-        indeterminate malformed-data "check states could not be classified"
+          (($runs_sf[0] | map({name:(.name // "unnamed check"),
+                              app:(.app.id // null), state:run_state})) +
+          ($statuses_sf[0] | map({name:(.context // "unnamed status"),
+                                  app:null, state:status_state}))) as $all |
+          def matches($req): .name == $req.context and
+            ($req.app == null or $req.app == -1 or .app == $req.app);
+          # Index by context so large histories do not multiply every rule
+          # by every check. Preserve independent workflow/app identities.
+          ($all | group_by(.name) | map({key:.[0].name,value:.}) | from_entries) as $by_name |
+          ($required | group_by(.context) | map({key:.[0].context,value:.}) | from_entries) as $required_by_name |
+          [$required[] | . as $req |
+            [($by_name[$req.context] // [])[] | select(matches($req))] as $found |
+            if ($found | length) == 0 then {name:$req.context,state:"missing"}
+            else $found[] end] as $gating |
+          {total:($all | length),
+           failing:[$gating[] | select(.state == "failing") | .name] | unique,
+           pending:[$gating[] | select(.state == "pending") | .name] | unique,
+           missing:[$gating[] | select(.state == "missing") | .name] | unique,
+           optional_failing:[$all[] | select(.state == "failing") |
+              . as $row | select(any(($required_by_name[$row.name] // [])[]; . as $req | $row | matches($req)) | not) | .name] | unique}
+        ')" || indeterminate malformed-data "check states could not be classified"
     [ "$(jq -r '.total' <<<"$checks_summary")" -gt 0 ] ||
         indeterminate checks-indeterminate "GitHub reports no checks for this head — populated asynchronously, so re-poll; if the repo truly has no CI, that is a human call, not a pass"
     # Bound the name lists the detail carries: with thousands of failing
@@ -1244,7 +1280,10 @@ evaluate_checks() {
         then (.[0:20] | join(", ")) + " … and \(length - 20) more"
         else join(", ") end' <<<"$checks_summary")"
     [ -z "$pending_checks" ] ||
-        fail_condition checks-pending "checks not yet concluded: $pending_checks"
+        indeterminate checks-pending "required checks not yet concluded: $pending_checks"
+    missing_checks="$(jq -r '.missing | .[0:20] | join(", ")' <<<"$checks_summary")"
+    [ -z "$missing_checks" ] ||
+        indeterminate checks-missing "required checks have no result on this head: $missing_checks"
 }
 evaluate_checks
 
@@ -1265,24 +1304,10 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 # `behind-base` and follows one recipe. `merge-state-behind` stays after it as
 # the cache backstop; reaching it now means the cache says BEHIND while the
 # graph says 0, which is cache lag in the other direction.
-# CHECK only. `audit` judges a promotion that already happened, and the base is
-# not this repository's to hold still — a PR drifting behind after a correct
-# promotion is ordinary, and the remedy is the maintainer's "Update branch".
-# Failing audit on it would route a valid human handoff into §2's undo branch
-# and reverse it, which is exactly what this skill's one-way-door rule forbids.
+# Both draft promotion and a live promoted re-check require a level head.
 establish_behind "$scalars" "before evaluating"
-if [ "$require_draft" = 1 ]; then
-    [ "$behind_by" -eq 0 ] ||
-        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}; then CI, and carry or one fresh current-head cycle"
-fi
-# AUDIT needs a THIRD answer, because the two obvious ones are both wrong.
-# Failing routes §2's unexplained-promotion flow to its undo path and reverses
-# a valid handoff over ordinary drift (review round 1). Passing silently lets
-# that flow complete the ready stop for a PR that IS behind (review round 2).
-# So audit passes — no undo — but says so in the verdict, and the caller
-# reports the drift to the maintainer instead of acting on it.
-audit_behind=0
-[ "$require_draft" = 1 ] || [ "$behind_by" -eq 0 ] || audit_behind="$behind_by"
+[ "$behind_by" -eq 0 ] ||
+    fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}; then CI, and carry or one fresh current-head cycle"
 
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
@@ -1291,13 +1316,6 @@ BEHIND)
     # The graph reported 0 just above, so a cache still reading BEHIND is lag,
     # not work: failing it would send the caller to merge a base it is level
     # with, which creates no commit and reproduces the blocker forever.
-    # Unknown-for-now in BOTH modes — the audit-mode exemption this once
-    # carried existed only because §2 undid on any non-pass, and §2 now never
-    # undoes on an indeterminate.
-    # A LAG claim, so only when the graph disagrees. Where audit is genuinely
-    # behind, both signals agree, re-polling can never resolve it, and a
-    # permanent indeterminate would block the `audit-behind` drift verdict
-    # this mode exists to produce.
     [ "$behind_by" -ne 0 ] ||
         indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
@@ -1368,7 +1386,21 @@ fp_inline="$(run_gh api --paginate --slurp repos/"$repo"/pulls/"$pr"/comments)" 
 #
 # An unrecognised self-report shape keeps today's behaviour (it blocks), which
 # is a false block rather than a false pass.
+fetch_review_threads
+thread_resolution="$(jq -ce '
+  if type != "array" or length == 0 then error("missing thread pages") else . end |
+  [ .[] | .data.repository.pullRequest.reviewThreads |
+    if (.nodes | type) != "array" then error("missing reviewThreads nodes") else .nodes[] end |
+    if (.id | type) != "string" or (.isResolved | type) != "boolean" or
+       (.comments.nodes | type) != "array" or (.comments.nodes | length) != 1 or
+       (.comments.nodes[0].databaseId | type) != "number"
+    then error("thread has no resolution/root identity")
+    else {root:.comments.nodes[0].databaseId, resolved:.isResolved} end
+  ] | if (group_by(.root) | any(.[]; length != 1)) then error("duplicate thread root") else . end
+' <<<"$fp_threads" 2>/dev/null)" ||
+    indeterminate malformed-data "review threads have no reliable resolution/root mapping"
 threads_needing_attention="$(jq -c --arg me "$me" \
+    --slurpfile resolution_sf <(printf '%s' "$thread_resolution") \
     --argjson bot "$codex_actor_id" 'add // []
     | def is_bot_self_report:
         ((.user.id? == $bot) and
@@ -1421,15 +1453,29 @@ threads_needing_attention="$(jq -c --arg me "$me" \
       | ([$t[] | select(.user.login != $me and $mine != null
                         and .updated_at >= $mine and .created_at < $mine)
                | .updated_at] | max) as $edit
-      | { root: ($t[0].in_reply_to_id // $t[0].id), path: $t[0].path,
+      | ($t[0].in_reply_to_id // $t[0].id) as $root
+      | ([$resolution_sf[0][] | select(.root == $root)]) as $resolution
+      | { root: $root, path: $t[0].path,
           state: (if   $mine == null then "unanswered"
+                  elif ($resolution | length) != 1 then "unknown-resolution"
+                  elif $resolution[0].resolved then null
                   elif $new  != null then "new-follow-up"
                   elif $edit != null then "edited-since-reply"
-                  else null end),
+                  else "unresolved" end),
           at: ($new // $edit) })
     | map(select(.state != null))' <<<"$fp_inline")" ||
     indeterminate malformed-data "inline comments could not be classified"
 
+missing_inline_roots="$(jq -nr \
+    --slurpfile resolution <(printf '%s' "$thread_resolution") \
+    --slurpfile inline <(printf '%s' "$fp_inline") '
+      ($inline[0] | add // [] | map(.in_reply_to_id // .id)) as $roots |
+      [$resolution[0][] | .root | select(. as $root | $roots | index($root) | not)] | join(", ")')" ||
+    indeterminate malformed-data "cannot correlate REST comments with GraphQL threads"
+[ -z "$missing_inline_roots" ] ||
+    fail_condition threads-unanswered "review threads have no agent reply in the inline surface — roots: $missing_inline_roots"
+[ "$(jq '[.[] | select(.state == "unknown-resolution")] | length' <<<"$threads_needing_attention")" -eq 0 ] ||
+    indeterminate malformed-data "an inline root has no GraphQL review-thread mapping"
 unanswered_roots="$(jq -r \
     '[.[] | select(.state == "unanswered") | .root] | join(", ")' \
     <<<"$threads_needing_attention")"
@@ -1450,10 +1496,14 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
 [ -z "$edited_roots" ] ||
     fail_condition threads-edited-since-reply "reviewer edits after your reply — re-read and answer, or clear each root explicitly with --allow-edited-root: $edited_roots"
 
-# 8. The remaining fingerprint surfaces (reviews, top-level comments, thread
-# resolution). Thread isResolved is hashed but never gated: resolution is the
-# maintainer's act, and rejection-answered threads legitimately stay
-# unresolved until a human resolves them.
+# Resolution is a separate condition from replying. Even a thread on which
+# the agent has the last word stays open until the reviewer/maintainer resolves
+# it. --allow-edited-root cannot waive an unresolved thread.
+unresolved_roots="$(jq -r '[.[] | .root] | join(", ")' <<<"$threads_needing_attention")"
+[ -z "$unresolved_roots" ] ||
+    fail_condition threads-unresolved "review threads are unresolved — roots: $unresolved_roots"
+# 8. Capture remaining fingerprint surfaces; retain exactly the thread state
+# evaluated above. compute_fingerprint still hashes only {id,r} per thread.
 fetch_fingerprint_surfaces
 
 # 9. The current-head Codex cloud-review cycle — from a schema-valid
@@ -1478,6 +1528,31 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
     indeterminate malformed-data "run.json carries no run_id"
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
+# The resolved policy is the coverage obligation, never the set of finders
+# the integrator happened to run. Legacy ids default to gating; explicit
+# gates=false or budget=0 opts a finder out. A cap-0 stage never opens.
+required_finders="$(jq -ce --argjson cap "$integration_cap" '
+  .stages.integration as $stage |
+  if ($stage.finders | type) != "array" or
+     any($stage.finders[]; type != "string") or
+     (($stage.finder // []) | type) != "array"
+  then error("invalid integration finder policy") else
+    [$stage.finders[] | . as $id |
+      [($stage.finder // [])[] | select(.id == $id)] as $entries |
+      if ($entries | length) > 1 then error("duplicate resolved finder") else
+        ($entries[0] // {}) as $entry |
+        select($cap > 0 and $entry.gates != false and $entry.budget != 0) |
+        {id:$id, budget:($entry.budget // $cap), explicit_budget:($entry.budget != null), carry:($entry.carry // "identity")} |
+        if (.budget | type == "number" and . > 0 and floor == .)
+        then . else error("invalid finder limits") end
+      end] | unique_by(.id)
+  end' "$record_dir/policy.json" 2>/dev/null)" || {
+    if [ -z "$integrator_result" ]; then
+        indeterminate checker-fast-path-unavailable "cannot determine required finders from the resolved policy — dispatch an integrator"
+    fi
+    indeterminate finder-indeterminate "cannot determine required finders from the resolved policy"
+}
+codex_required="$(jq 'any(.[]; .id == "codex-cloud")' <<<"$required_finders")"
 if [ -z "$integrator_result" ]; then
     jq -e '.stage_transitions[-1].stage == "integration" and
       ([.finder_selection[]? | select(.stage == "integration")] | length == 0)' \
@@ -1499,8 +1574,10 @@ if [ -z "$integrator_result" ]; then
         [ "$checker_stage" != integration ] ||
             indeterminate checker-fast-path-unavailable "the record holds an integration adjudication; dispatch an integrator and supply --integrator-result"
     done
-    jq -e '.stages.integration.finders == ["codex-cloud"]' \
-        "$record_dir/policy.json" >/dev/null 2>&1 ||
+    [ "$integration_cap" -gt 0 ] ||
+        indeterminate codex-cap-mismatch "checker-only evidence cannot waive a cap-0 cycle; supply an integrator result"
+    jq -e 'map(.id) == ["codex-cloud"]' \
+        <<<"$required_finders" >/dev/null 2>&1 ||
         indeterminate checker-fast-path-unavailable "resolved integration finders are not proven to be codex-cloud alone; dispatch an integrator and supply --integrator-result"
     # Closed allowlist: do not parse finding prose or exempt the caller.
     # Empty review bodies carry no prose; every top-level comment counts.
@@ -1594,12 +1671,12 @@ fi
 # already proven — the envelope head against the gated head just below, and
 # accepted.reviewed_commit against the envelope head by the validator's own
 # receipt pass above. The third, run.json's own recorded promotion.head, was
-# bound to nothing at all: `audit` judges an already-promoted PR, so its
+# bound to nothing at all: `promoted` judges an already-promoted PR, so its
 # record carries a promotion entry, and nothing compared that entry's head
 # against the head being judged. A record whose promotion names an older
 # commit is either a promotion of a different head or a record that has
 # fallen behind its PR — either way the gate is not judging what was
-# actually promoted, and `audit`'s verdict would be about the wrong commit.
+# actually promoted, and `promoted`'s verdict would be about the wrong commit.
 #
 # `check` runs before promotion, so a non-null promotion there is itself
 # inconsistent — but only when it disagrees with this head: a re-run of
@@ -1854,49 +1931,54 @@ if [ "$codex_cycle" != null ]; then
     0) [ -z "$integrator_result" ] || recheck_codex_freshness ;;
     *) exit_condition codex "$codex_exit" "the current-head Codex cycle" ;;
     esac
-elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
+elif [ "$codex_required" = true ]; then
     # harmon-devkit#685: a positive cap requires a cycle to have been
     # attempted — a null codex_cycle under a resolved cap above 0 means the
     # dispatched pass never ran one, whatever its verdict claims.
     indeterminate codex-cap-mismatch "codex_cycle is null but --integration-cap is $integration_cap (a positive cap requires a cycle)"
 fi
-# codex_cycle == null with --integration-cap 0 (the only way past the elif
-# above, now that the flag is required rather than advisory) means the Codex
-# condition is genuinely waived for this pass; that is a statement about
-# codex_cycle specifically, not about the pass as a whole.
+# A null cycle is admissible only when the stage is disabled or codex-cloud
+# is not a required finder. All other readiness obligations still apply.
+
+# 8b. Require a terminal result for EVERY required finder, including one
+# that was never driven. codex_cycle remains its canonical legacy entry.
+# Non-Codex carry is deliberately outside the result schema's contract.
+finder_cycles='[]'
+if [ -n "$integrator_result" ]; then
+    finder_cycles="$(jq -c '.payload.finder_cycles // []' "$integrator_result")" ||
+        indeterminate finder-indeterminate "cannot read finder cycle evidence"
+fi
+while IFS= read -r finder_required; do
+    fc_slug="$(jq -r '.id' <<<"$finder_required")"
+    if [ "$fc_slug" = codex-cloud ]; then
+        fc_cycle="$codex_cycle"
+    else
+        fc_cycle="$(jq -ce --arg id "$fc_slug" '
+          [.[] | select(.finder == $id)] |
+          if length == 1 then .[0] else null end' <<<"$finder_cycles")" ||
+            fail_condition finder-missing "required finder $fc_slug has no unique current-head cycle — request it and settle its findings"
+    fi
+    [ "$fc_cycle" != null ] ||
+        fail_condition finder-missing "required finder $fc_slug has no current-head cycle"
+    [ "$(jq -r '.head' <<<"$fc_cycle")" = "$head" ] ||
+        indeterminate finder-indeterminate "required finder $fc_slug reviewed a different head"
+    fc_exit="$(jq -r '.exit_code' <<<"$fc_cycle")"
+    case "$fc_exit" in
+    0) ;;
+    *) exit_condition finder "$fc_exit" "required finder $fc_slug" ;;
+    esac
+    # Each checker state owns this finder's charged/exempt counters. The
+    # result carries those counters; legacy results charged every cycle.
+    jq -e --argjson limits "$finder_required" '
+      (if $limits.explicit_budget then .cycle <= $limits.budget else true end) and
+      (if $limits.carry == "fresh" then .carried == null else true end) and
+      .cycle == ((.charged // .cycle) + (.exempt // 0))
+    ' <<<"$fc_cycle" >/dev/null ||
+        fail_condition finder-capped "required finder $fc_slug exceeded its resolved budget, has inconsistent spend, or requires a fresh review"
+done < <(jq -c '.[]' <<<"$required_finders")
 
 applied_dispositions='[]'
 if [ -n "$integrator_result" ]; then
-    # 8b. Per-finder cloud conditions (#804). finder_cycles[] carries every
-    # configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud,
-    # etc.) that the integrator drove. Each entry must be terminal-clean
-    # (exit_code 0) for the correct head. The codex-cloud entry is redundant
-    # with codex_cycle above and is not re-checked; non-codex finders are
-    # checked here.
-    finder_cycles="$(jq -c '.payload.finder_cycles // []' "$integrator_result" 2>/dev/null)" || true
-    finder_cycles_len="$(jq -r 'length' <<<"$finder_cycles" 2>/dev/null)" || finder_cycles_len=0
-    if [ "$finder_cycles_len" -gt 0 ]; then
-        for fc_idx in $(seq 0 $((finder_cycles_len - 1))); do
-            fc_slug="$(jq -r ".[$fc_idx].finder // \"unknown\"" <<<"$finder_cycles")"
-            [ "$fc_slug" = "codex-cloud" ] && continue
-            fc_head="$(jq -r ".[$fc_idx].head // empty" <<<"$finder_cycles" 2>/dev/null)" ||
-                indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
-            [ "$fc_head" = "$head" ] ||
-                indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
-            # harmon-init#752: a `carried` claim on a non-codex finder used to be
-            # refused here. Integration cycle 3 (finding
-            # `integration-r3-codex-cloud-2`) moved that rule into the result
-            # schema, which the validation at step 8 above enforces before this
-            # loop runs — so the shape cannot reach this point.
-            fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
-                indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
-            case "$fc_exit" in
-            0) ;; # terminal-clean — condition passes
-            *) exit_condition finder "$fc_exit" "finder_cycles[$fc_idx] ($fc_slug)" ;;
-            esac
-        done
-    fi
-
     # 9a. The pass's own findings[] is unconditional evidence, independent of
     # codex_cycle — a null or clean codex_cycle says nothing about a NEW
     # top-level human finding the integrator surfaced this same pass (review
@@ -2230,7 +2312,7 @@ if [ "$require_draft" = 1 ]; then
         fail_condition pr-not-draft "the PR was promoted while the gate was reading it"
 else
     jq -e '.isDraft == false' <<<"$recheck" >/dev/null ||
-        fail_condition pr-draft "the PR returned to draft while the audit was reading it — the promotion under audit no longer stands"
+        fail_condition pr-draft "the PR returned to draft during the promoted re-check — the promotion no longer stands"
 fi
 jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was reading it"
@@ -2243,9 +2325,6 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
 # exists to stop making.
 # A retarget mid-gate invalidates every condition already evaluated against
 # the old base, so stop rather than re-deriving against a moving target.
-# Both modes re-establish the relation; only check mode FAILS on it. Audit
-# that skipped this went on to emit a plain clean `audit` for a PR that drifted
-# behind during the run, which is the silent pass review round 2 rejected.
 recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
     indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
 # BOTH modes: evidence gathered against the old base says nothing about a new
@@ -2254,15 +2333,8 @@ recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")"
 [ "$recheck_base" = "$behind_base_ref" ] ||
     fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
 establish_behind "$recheck" "immediately before the verdict"
-if [ "$require_draft" = 1 ]; then
-    [ "$behind_by" -eq 0 ] ||
-        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — ${behind_remedy}; then re-run"
-else
-    # Assign, never merely set: a retarget to a level base (or a rewritten
-    # base) between the two comparisons would otherwise leave the earlier
-    # nonzero count standing and report drift that no longer exists.
-    audit_behind="$behind_by"
-fi
+[ "$behind_by" -eq 0 ] ||
+    fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — ${behind_remedy}; then re-run"
 
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
@@ -2368,12 +2440,9 @@ esac
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
     verdict_detail="every mechanically checkable readiness condition holds"
-elif [ "$audit_behind" -ne 0 ]; then
-    verdict_condition=audit-behind
-    verdict_detail="every mechanically checkable condition except the draft requirement holds, but the head is ${audit_behind} commit(s) behind ${behind_base_ref} — ordinary post-promotion drift: REPORT it to the maintainer, never undo the promotion over it"
 else
-    verdict_condition=audit
-    verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
+    verdict_condition=promoted
+    verdict_detail="every mechanically checkable condition except the draft requirement holds; this re-checks an existing promotion and never authorizes gh pr ready"
 fi
 # The checker-only verdict attests these exact checked bytes. A newer
 # reservation or state edit invalidates it, even when the PR head is unchanged.
@@ -2389,7 +2458,10 @@ jq -cn \
     --arg checker_state "$codex_recheck_state" \
     --arg integrator_result "$integrator_result" \
     --argjson cycle "$codex_cycle" \
-    '{status:"pass",condition:$condition,head:$head,fingerprint:$fingerprint,
+    --slurpfile checks_sf <(printf '%s' "$checks_summary") \
+    '{reportable_checks:{failing:($checks_sf[0].optional_failing | .[0:20]),
+                         total:($checks_sf[0].optional_failing | length)},
+      status:"pass",condition:$condition,head:$head,fingerprint:$fingerprint,
       detail:$detail}
      + {cycle_evidence:(if $integrator_result != "" then
           {kind:"integrator-result",path:$integrator_result}

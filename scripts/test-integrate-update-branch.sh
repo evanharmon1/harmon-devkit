@@ -349,7 +349,7 @@ echo "==> a PR that is ready for review is refused unless the maintainer asked"
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
 run_default
-expect "non-draft without the flag" 15 "maintainer's request"
+expect "non-draft without the flag" 15 "catch-up requires"
 no_put "non-draft without the flag"
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
@@ -358,6 +358,13 @@ run_default --maintainer-requested
 expect "non-draft with the flag" 0 ""
 [ "$out" = "$new_sha" ] || fail "non-draft with the flag printed '$out'"
 grep -qF -- '--method PUT' "$log" || fail "non-draft with the flag sent no PUT: $(cat "$log")"
+reset
+pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
+pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
+run_default --queue-head-upkeep
+expect "orchestrator queue-head upkeep" 0 ""
+[ "$out" = "$new_sha" ] || fail "queue-head upkeep printed '$out'"
+grep -qF -- '--method PUT' "$log" || fail "queue-head upkeep sent no PUT"
 reset
 jq -c 'del(.isDraft)' "${fixtures}/pr-1.json" >"${fixtures}/p" && mv "${fixtures}/p" "${fixtures}/pr-1.json"
 run_default
@@ -546,7 +553,7 @@ case "$skill_flat" in
 *'assets/update-branch.sh:*)'*) fail "SKILL.md pre-approves update-branch.sh in allowed-tools" ;;
 esac
 for needle in \
-    'through the same helper with `--maintainer-requested`' \
+    'Use the same helper with `--maintainer-requested`' \
     '(`assets/update-branch.sh`, a GitHub write that moves the head)' \
     'assets/update-branch.sh --repo <repo> --pr <n>' \
     '**Settle before catching up.** When a cycle or carry attests the current head' \
