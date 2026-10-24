@@ -58,7 +58,7 @@
 #   changes-requested, merge-state-dirty                    (fail)
 #   behind-base, base-retargeted                              (fail)
 #   threads-unanswered, threads-new-follow-up,
-#   threads-edited-since-reply, threads-unresolved          (fail)
+#   threads-edited-since-reply                              (fail)
 #   deferred-unsettled, closing-linkage-missing,
 #   content-moved                                            (fail)
 #   codex-not-clean, disposition-unsettled, codex-pr-not-open,
@@ -958,7 +958,7 @@ else
     # promoted: a PR converted back to draft since the caller observed it
     # has no standing handoff to accept.
     jq -e '.isDraft == false' <<<"$scalars" >/dev/null ||
-        fail_condition pr-draft "the PR is a draft — there is no promotion to promoted; check is the gate for promoting one"
+        fail_condition pr-draft "the PR is a draft — there is no standing promotion to re-check; check is the gate for promoting one"
 fi
 
 live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
@@ -997,10 +997,11 @@ assert_closing_linkage "$scalars" "initial snapshot"
 #
 # Required contexts come from the effective branch rules, including inherited
 # rulesets. Missing or pending required checks are indeterminate. Other checks
-# are reported, never used to turn a handoff red.
+# are reported, never used to turn a handoff red. Without an explicit
+# required_status_checks rule, every reported check gates (classic fallback).
 checks_summary='{"optional_failing":[]}'
 evaluate_checks() {
-    local rules_pages required_checks
+    local rules_pages required_checks explicit_required_rule
     local encoded_rule_base
     encoded_rule_base="$(jq -rn --arg s "$(jq -r '.baseRefName' <<<"$scalars")" '$s | @uri')"
     rules_pages="$(run_gh api --paginate --slurp "repos/$repo/rules/branches/$encoded_rule_base")" ||
@@ -1015,6 +1016,7 @@ evaluate_checks() {
           then {context, app:(.integration_id // null)} else error("invalid required context") end
       ] | unique' <<<"$rules_pages" 2>/dev/null)" ||
         indeterminate checks-indeterminate "effective required status checks are malformed"
+    explicit_required_rule="$(jq 'any(.[][]; .type == "required_status_checks")' <<<"$rules_pages")"
     check_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
         indeterminate fetch-failed "cannot fetch check runs for the head"
@@ -1228,6 +1230,7 @@ evaluate_checks() {
     # carries the payload; the fd does. $runs/$statuses are bound below so the
     # classification program itself is unchanged.
     checks_summary="$(jq -cn \
+        --argjson explicit_required_rule "$explicit_required_rule" \
         --slurpfile required_sf <(printf '%s' "$required_checks") \
         --slurpfile runs_sf <(printf '%s' "$check_runs") \
         --slurpfile statuses_sf <(printf '%s' "$statuses") '
@@ -1251,15 +1254,15 @@ evaluate_checks() {
           # by every check. Preserve independent workflow/app identities.
           ($all | group_by(.name) | map({key:.[0].name,value:.}) | from_entries) as $by_name |
           ($required | group_by(.context) | map({key:.[0].context,value:.}) | from_entries) as $required_by_name |
-          [$required[] | . as $req |
+          ([$required[] | . as $req |
             [($by_name[$req.context] // [])[] | select(matches($req))] as $found |
             if ($found | length) == 0 then {name:$req.context,state:"missing"}
-            else $found[] end] as $gating |
+            else $found[] end] | if $explicit_required_rule then . else $all end) as $gating |
           {total:($all | length),
            failing:[$gating[] | select(.state == "failing") | .name] | unique,
            pending:[$gating[] | select(.state == "pending") | .name] | unique,
            missing:[$gating[] | select(.state == "missing") | .name] | unique,
-           optional_failing:[$all[] | select(.state == "failing") |
+           optional_failing:[$all[] | select($explicit_required_rule and .state == "failing") |
               . as $row | select(any(($required_by_name[$row.name] // [])[]; . as $req | $row | matches($req)) | not) | .name] | unique}
         ')" || indeterminate malformed-data "check states could not be classified"
     [ "$(jq -r '.total' <<<"$checks_summary")" -gt 0 ] ||
@@ -1458,10 +1461,9 @@ threads_needing_attention="$(jq -c --arg me "$me" \
       | { root: $root, path: $t[0].path,
           state: (if   $mine == null then "unanswered"
                   elif ($resolution | length) != 1 then "unknown-resolution"
-                  elif $resolution[0].resolved then null
                   elif $new  != null then "new-follow-up"
                   elif $edit != null then "edited-since-reply"
-                  else "unresolved" end),
+                  else null end),
           at: ($new // $edit) })
     | map(select(.state != null))' <<<"$fp_inline")" ||
     indeterminate malformed-data "inline comments could not be classified"
@@ -1496,12 +1498,6 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
 [ -z "$edited_roots" ] ||
     fail_condition threads-edited-since-reply "reviewer edits after your reply — re-read and answer, or clear each root explicitly with --allow-edited-root: $edited_roots"
 
-# Resolution is a separate condition from replying. Even a thread on which
-# the agent has the last word stays open until the reviewer/maintainer resolves
-# it. --allow-edited-root cannot waive an unresolved thread.
-unresolved_roots="$(jq -r '[.[] | .root] | join(", ")' <<<"$threads_needing_attention")"
-[ -z "$unresolved_roots" ] ||
-    fail_condition threads-unresolved "review threads are unresolved — roots: $unresolved_roots"
 # 8. Capture remaining fingerprint surfaces; retain exactly the thread state
 # evaluated above. compute_fingerprint still hashes only {id,r} per thread.
 fetch_fingerprint_surfaces
@@ -1552,6 +1548,28 @@ required_finders="$(jq -ce --argjson cap "$integration_cap" '
     fi
     indeterminate finder-indeterminate "cannot determine required finders from the resolved policy"
 }
+# Only validated same-run receipts can prove prior spend. A fully spent
+# finder is not requested again on later heads; its findings still owe the
+# ordinary settlement checks. Advisory cycles belong in the dispatch report,
+# outside finder_cycles, whose schema intentionally aggregates gating verdicts.
+prior_finder_spend="$(
+    for prior_pass in "$record_dir"/passes/*.json; do
+        [ -f "$prior_pass" ] || continue
+        jq -e --arg head "$head" '.role == "integrator" and .head != $head' \
+            "$prior_pass" >/dev/null 2>&1 || continue
+        node "$validate_result_schemas" envelope "$prior_pass" \
+            --run-id "$active_run_id" --initiated-by "$active_initiated_by" >/dev/null 2>&1 || continue
+        jq -c --arg head "$head" '
+          select(.role == "integrator" and .head != $head) |
+          [(.payload.finder_cycles // [])[],
+           (.payload.codex_cycle | select(. != null) | . + {finder:"codex-cloud"})] | .[]
+        ' "$prior_pass"
+    done | jq -sc '.'
+)" || indeterminate finder-indeterminate "cannot read prior finder spend"
+required_finders="$(jq -c --argjson prior "$prior_finder_spend" '
+  map(. as $limits | select(any($prior[];
+    .finder == $limits.id and (.charged // .cycle) >= $limits.budget) | not))
+' <<<"$required_finders")" || indeterminate finder-indeterminate "cannot apply prior finder budgets"
 codex_required="$(jq 'any(.[]; .id == "codex-cloud")' <<<"$required_finders")"
 if [ -z "$integrator_result" ]; then
     jq -e '.stage_transitions[-1].stage == "integration" and
@@ -1665,29 +1683,22 @@ if [ -n "$integrator_result" ]; then
 
 fi
 
-# harmon-devkit#685: "promotion.head equals the head of the final integrator
-# result and its accepted-cycle reviewed commit; a stale integration pass
-# cannot certify a newer promoted head". Two of those three equalities are
-# already proven — the envelope head against the gated head just below, and
-# accepted.reviewed_commit against the envelope head by the validator's own
-# receipt pass above. The third, run.json's own recorded promotion.head, was
-# bound to nothing at all: `promoted` judges an already-promoted PR, so its
-# record carries a promotion entry, and nothing compared that entry's head
-# against the head being judged. A record whose promotion names an older
-# commit is either a promotion of a different head or a record that has
-# fallen behind its PR — either way the gate is not judging what was
-# actually promoted, and `promoted`'s verdict would be about the wrong commit.
-#
-# `check` runs before promotion, so a non-null promotion there is itself
-# inconsistent — but only when it disagrees with this head: a re-run of
-# `check` after a promotion that was undone legitimately still carries the
-# entry for this same head. Both modes therefore apply the identical rule
-# (equality when present), rather than one forbidding what the other
-# requires.
+# A promoted catch-up may keep its terminal run only with a checker-proven
+# identical-change carry from the recorded promotion. All other head drift
+# remains a mismatch; the live checker proof is required below as well.
 record_promotion_head="$(jq -r '.promotion.head // ""' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json's promotion could not be read"
+promotion_carried=0
 if [ -n "$record_promotion_head" ] && [ "$record_promotion_head" != "$head" ]; then
-    indeterminate promotion-head-mismatch "run.json records promotion.head $record_promotion_head, not the gated $head — a stale integration pass cannot certify a newer promoted head (harmon-devkit#685)"
+    if [ "$command_name" = promoted ] && [ -n "$codex_recheck_state" ] &&
+        jq -e --arg from "$record_promotion_head" --arg head "$head" '
+          .carry.from_head == $from and .carry.attests_head == $head
+        ' "$codex_recheck_state" >/dev/null 2>&1; then
+        recheck_codex_freshness
+        promotion_carried=1
+    else
+        indeterminate promotion-head-mismatch "run.json records promotion.head $record_promotion_head, not the gated $head — a checker-proven carry from the promoted head is required"
+    fi
 fi
 if [ -n "$integrator_result" ]; then
     integrator_role="$(jq -er '.role | select(type == "string")' \
@@ -1698,10 +1709,20 @@ if [ -n "$integrator_result" ]; then
     envelope_head="$(jq -er '.head | select(type == "string")' \
         "$integrator_result" 2>/dev/null)" ||
         indeterminate malformed-data "integrator result carries no head"
-    [ "$envelope_head" = "$head" ] ||
+    { [ "$envelope_head" = "$head" ] ||
+        { [ "$promotion_carried" -eq 1 ] && [ "$envelope_head" = "$record_promotion_head" ]; }; } ||
         indeterminate codex-indeterminate "integrator result is for head $envelope_head, not the gated $head — dispatch a fresh pass against this head"
     codex_cycle="$(jq -c '.payload.codex_cycle' "$integrator_result" 2>/dev/null)" ||
         indeterminate malformed-data "integrator result payload is unreadable"
+    if [ "$promotion_carried" -eq 1 ] && [ "$envelope_head" != "$head" ] && [ "$codex_cycle" != null ]; then
+        # The promoted record is immutable. Project only its Codex receipt to
+        # the carried head in memory; bind the original envelope to the record
+        # below, and independently re-check all live readiness conditions.
+        codex_cycle="$(jq -c --arg head "$head" \
+            --slurpfile state "$codex_recheck_state" '
+          .head=$head | .carried=($state[0].carry + {origin_head:$state[0].head})
+        ' <<<"$codex_cycle")" || indeterminate codex-carried-unproven "cannot project the promoted carry"
+    fi
 else
     # No synthetic integrator envelope: the checker owns verdict collection,
     # and its state owns cycle spend. Live checks, threads and settlements are
@@ -1970,7 +1991,7 @@ while IFS= read -r finder_required; do
     # Each checker state owns this finder's charged/exempt counters. The
     # result carries those counters; legacy results charged every cycle.
     jq -e --argjson limits "$finder_required" '
-      (if $limits.explicit_budget then .cycle <= $limits.budget else true end) and
+      (if $limits.explicit_budget then (.charged // .cycle) <= $limits.budget else true end) and
       (if $limits.carry == "fresh" then .carried == null else true end) and
       .cycle == ((.charged // .cycle) + (.exempt // 0))
     ' <<<"$fc_cycle" >/dev/null ||

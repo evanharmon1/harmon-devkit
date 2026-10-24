@@ -36,7 +36,7 @@
 #
 # Usage:
 #   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-#       [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep]
+#       [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep REASON]
 #       [--wait SECONDS] [--interval SECONDS]
 #
 #   Callers should pass --state and run a final checker `check` before this
@@ -52,8 +52,8 @@
 #
 #   The catch-up runs at the readiness gate, on a draft. A PR that is no
 #   longer a draft needs an explicit authorization: --maintainer-requested
-#   records the maintainer's request; --queue-head-upkeep records the
-#   orchestrator's authorization to maintain the current merge-queue head
+#   asserts the maintainer's request; --queue-head-upkeep REASON prints the
+#   supplied reason for the orchestrator's current merge-queue-head upkeep
 #   (ruling 53). The caller verifies that this PR is the queue head before
 #   using that flag; it is not blanket permission to update other ready PRs.
 #   The check runs again on every re-read after the request, so a promotion
@@ -109,7 +109,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-      [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep]
+      [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep REASON]
       [--wait SECONDS] [--interval SECONDS]
 
 Catches a behind PR up to its base with GitHub update-branch in merge mode,
@@ -164,6 +164,7 @@ wait_sec=180
 interval_sec=5
 maintainer_requested=0
 queue_head_upkeep=0
+queue_head_reason=
 checker_states=()
 
 [ "$#" -gt 0 ] || usage
@@ -193,8 +194,11 @@ while [ "$#" -gt 0 ]; do
         shift
         ;;
     --queue-head-upkeep)
+        [ "$#" -ge 2 ] || refuse "--queue-head-upkeep requires a reason"
+        [[ "$2" != --* ]] && [[ "$2" =~ [^[:space:]] ]] || refuse "--queue-head-upkeep requires a reason"
         queue_head_upkeep=1
-        shift
+        queue_head_reason=$2
+        shift 2
         ;;
     -h | --help) usage ;;
     *) refuse "unrecognised argument: $1" ;;
@@ -207,6 +211,10 @@ valid_sha "$head" || refuse "--head must be a 40-hex commit SHA"
 [ -n "$base" ] || refuse "--base is required (the baseRefName the gate captured)"
 valid_uint "$wait_sec" || refuse "--wait must be a non-negative integer"
 valid_uint "$interval_sec" || refuse "--interval must be a non-negative integer"
+
+if [ "$queue_head_upkeep" -eq 1 ]; then
+    printf 'update-branch: queue-head-upkeep: %s\n' "$queue_head_reason" >&2
+fi
 
 # State is an ordering guard, not a replacement for check's live evidence
 # scan. Only a cycle or carry for the captured head needs a clean verdict;

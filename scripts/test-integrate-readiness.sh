@@ -199,7 +199,11 @@ repos/*/contents/agent-registry.json*) file=registry.b64 ;;
 user) file=user.json ;;
 graphql)
     if [ -f "$GH_FIXTURES/threads.pages.json" ]; then
-        cat "$GH_FIXTURES/threads.pages.json"
+        if [[ "$*" = *--paginate* ]]; then
+            cat "$GH_FIXTURES/threads.pages.json"
+        else
+            jq '.[0:1]' "$GH_FIXTURES/threads.pages.json"
+        fi
     else
         # Review-thread IDs and root database IDs are separate API surfaces.
         # Default fixtures leave threads unresolved; cases resolve explicitly.
@@ -1776,7 +1780,7 @@ grep -Fq '1 commit(s) behind' <<<"$gate_out" || fail "behind distance missing: $
 # then is `merge-state-stale` an honest claim, and it is indeterminate in both
 # modes — safe because SKILL.md §2 never undoes on an exit 2. (Where the graph
 # also says behind, the two signals agree, re-polling can never resolve it,
-# and promoted must reach `promoted-behind` instead — covered separately.)
+# and promoted must reach `behind-base` instead — covered separately.)
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
@@ -1829,7 +1833,7 @@ run_gate
 assert_gate 1 fail changes-requested
 
 echo "==> promoted re-establishes drift that appears DURING the run"
-# Level at the start, behind by the verdict: promoted must still say promoted-behind
+# Level at the start, behind by the verdict: promoted must still say behind-base
 # rather than emitting a plain clean verdict the caller reports as ready.
 write_defaults
 jq -cn --arg head "$head_sha" \
@@ -1928,7 +1932,7 @@ run_gate_promoted
 grep -Fq 'behind-base' <<<"$gate_out" ||
     fail "promoted base-tip race did not emit behind-base: $gate_out"
 
-echo "==> a genuinely behind promoted reaches promoted-behind, not a permanent stale"
+echo "==> a genuinely behind promoted reaches behind-base, not a permanent stale"
 # Both signals agree here, so `merge-state-stale` would be a false lag claim
 # AND a permanent indeterminate — re-polling cannot resolve real drift, and it
 # would block the drift verdict promoted mode exists to produce (Codex, cycle 2).
@@ -2861,6 +2865,19 @@ printf '%s\n' 'rules/branches/' >"${fixtures}/fail-endpoint"
 run_gate
 assert_gate 2 indeterminate checks-indeterminate
 
+echo "==> #1602 r1: absent rules and classic-only protection fail closed on red CI"
+for absent_rules in '[[]]' '[[{"type":"pull_request","parameters":{}}]]'; do
+    write_defaults
+    printf '%s\n' "$absent_rules" >"${fixtures}/rules.pages.json"
+    printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"failure"}]}]' >"${fixtures}/check-runs.pages.json"
+    run_gate
+    assert_gate 1 fail checks-failing
+done
+# An explicit empty required-check rule narrows the set to none.
+printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]]' >"${fixtures}/rules.pages.json"
+run_gate
+assert_gate 0 pass ready
+
 echo "==> #1602: a required finder never driven fails coverage; explicit advisory finders do not gate"
 for finder_mode in legacy required advisory disabled; do
     write_defaults
@@ -2890,6 +2907,35 @@ jq '.payload.finder_cycles[0] |= (.cycle=2 | .charged=2)' "${fixtures}/coverage.
 run_gate_recheck_clean --integrator-result "${fixtures}/coverage-capped.json" --integration-cap 2
 assert_gate 1 fail finder-capped
 
+echo "==> #1602 r1: exempt cycles do not spend a finder's charged budget"
+write_defaults
+write_finder_policy '["codex-cloud","coderabbit-cloud"]' '[{"id":"coderabbit-cloud","budget":1}]'
+coverage_result="$(write_integrator_result coverage "$(codex_cycle_json 0)")"
+jq '.payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:2,charged:1,exempt:1,attempt:1,exit_code:0,accepted:{surface:"review",id:"2",reviewed_commit:.head}}]' "$coverage_result" >"${fixtures}/coverage.json"
+run_gate_recheck_clean --integrator-result "${fixtures}/coverage.json" --integration-cap 2
+assert_gate 0 pass ready
+
+echo "==> #1602 r1: fully spent finders are not required again on later heads"
+write_defaults
+write_finder_policy '["coderabbit-cloud"]' '[{"id":"coderabbit-cloud","budget":1}]'
+prior_result="$(write_integrator_result prior-spend null)"
+jq --arg old "$stale_head_sha" '.head=$old | .payload.finder_cycles = [{finder:"coderabbit-cloud",head:$old,cycle:1,charged:1,exempt:0,attempt:1,exit_code:0,accepted:{surface:"review",id:"2",reviewed_commit:$old}}]' "$prior_result" >"${record_dir}/passes/integration-r1-coderabbit-cloud.json"
+current_result="$(write_integrator_result later-spend null)"
+jq '.payload.integration_round=2' "$current_result" >"${fixtures}/later-spend.json"
+cp "${fixtures}/later-spend.json" "${record_dir}/passes/integration-r2-coderabbit-cloud.json"
+run_gate --integrator-result "${fixtures}/later-spend.json" --integration-cap 2
+assert_gate 0 pass ready
+
+echo "==> #1602 r1: a pending advisory finder is reported outside the gating envelope"
+write_defaults
+write_finder_policy '["codex-cloud","coderabbit-cloud"]' '[{"id":"coderabbit-cloud","gates":false}]'
+# Per integrator.md's contract the dispatch report holds advisory activity;
+# finder_cycles and codex_cycle contain gating evidence only.
+printf '%s\n' '{"finder":"coderabbit-cloud","exit_code":11}' >"${fixtures}/advisory-dispatch-report.json"
+coverage_result="$(write_integrator_result advisory-pending "$(codex_cycle_json 0)")"
+run_gate_recheck_clean --integrator-result "$coverage_result" --integration-cap 2
+assert_gate 0 pass ready
+
 echo "==> an unanswered inline thread fails as threads-unanswered"
 write_defaults
 jq -cn '[[{id:900,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:null,
@@ -2910,7 +2956,7 @@ jq -cn '[[
      created_at:"2026-08-01T01:00:00Z",updated_at:"2026-08-01T01:00:00Z",
      body:"fixed in abc"}]]' >"${fixtures}/inline.pages.json"
 run_gate
-assert_gate 1 fail threads-unresolved
+assert_gate 0 pass ready
 printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
 run_gate
 assert_gate 0 pass ready
@@ -2927,15 +2973,56 @@ jq -cn '[[
      body:"follow-up"}]]' >"${fixtures}/inline.pages.json"
 run_gate
 assert_gate 1 fail threads-new-follow-up
-# Acknowledging a reply does not owe the agent another reply once resolved.
+# A later acknowledgement is reviewer activity even when the thread is resolved.
 jq '.[0][-1].body = "Thanks, this addresses my concern."' "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
 mv "${fixtures}/ack.json" "${fixtures}/inline.pages.json"
 printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
 run_gate
+assert_gate 1 fail threads-new-follow-up
+# One final agent reply settles the acknowledgement without relying on a
+# resolution timestamp that GraphQL does not provide.
+jq '.[0] += [{id:903,user:{login:"pr-author"},path:"f.sh",in_reply_to_id:900,
+  created_at:"2026-08-01T03:00:00Z",updated_at:"2026-08-01T03:00:00Z",body:"acknowledged"}]' \
+    "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
+mv "${fixtures}/ack.json" "${fixtures}/inline.pages.json"
+run_gate
 assert_gate 0 pass ready
+jq '.[0] |= map(select(.id != 903))' "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
+mv "${fixtures}/ack.json" "${fixtures}/inline.pages.json"
 printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
 run_gate
 assert_gate 1 fail threads-new-follow-up
+
+echo "==> #1602 r1: resolved threads do not hide a later reviewer finding (REPRO-C)"
+printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
+jq '.[0][-1].body = "P1: the guard still passes on an empty list"' "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
+mv "${fixtures}/ack.json" "${fixtures}/inline.pages.json"
+run_gate
+assert_gate 1 fail threads-new-follow-up
+
+echo "==> #1602 r1: GraphQL-only, missing, duplicate and multi-page root mappings"
+for mapping in graphql-only unknown unknown-flag duplicate pages; do
+    write_defaults
+    if [ "$mapping" != graphql-only ]; then
+        jq -cn '[[{id:900,user:{login:"reviewer"},path:"f.sh",created_at:"2026-08-01T00:00:00Z",updated_at:"2026-08-01T00:00:00Z",body:"finding"},
+          {id:901,user:{login:"pr-author"},in_reply_to_id:900,path:"f.sh",created_at:"2026-08-01T01:00:00Z",updated_at:"2026-08-01T01:00:00Z",body:"fixed"}]]' >"${fixtures}/inline.pages.json"
+    fi
+    jq -cn --arg mode "$mapping" '
+      {id:"T900",isResolved:false,comments:{nodes:[{databaseId:900}]}} as $thread |
+      def page($nodes;$more): {data:{repository:{pullRequest:{reviewThreads:{nodes:$nodes,pageInfo:{hasNextPage:$more,endCursor:(if $more then "next" else null end)}}}}}};
+      if $mode == "unknown" then [page([];false)]
+      elif $mode == "unknown-flag" then [page([($thread | .isResolved=null)];false)]
+      elif $mode == "duplicate" then [page([$thread];true),page([$thread];false)]
+      elif $mode == "pages" then [page([];true),page([$thread];false)]
+      else [page([$thread];false)] end' >"${fixtures}/threads.pages.json"
+    run_gate
+    case "$mapping" in
+    graphql-only) assert_gate 1 fail threads-unanswered ;;
+    unknown | unknown-flag) assert_gate 2 indeterminate malformed-data ;;
+    duplicate) assert_gate 2 indeterminate malformed-data ;;
+    pages) assert_gate 0 pass ready ;;
+    esac
+done
 
 # --------------------------------------------------------------------------
 # harmon-devkit#675: the #665 thread, verbatim. Root 3886138416 is a badged P1
@@ -2971,7 +3058,7 @@ self_fix_thread "### Summary
 * Committed the change on \`codex/name-review-trigger-broker\` as \`77379cf\`.
 * A pull request could not be created because the required tool is unavailable."
 run_gate
-assert_gate 1 fail threads-unresolved
+assert_gate 0 pass ready
 
 echo "==> challenge-r1-codex-adversarial-1: an unbadged bot follow-up with the heading but NO self-work marker blocks"
 # The reproduced hole: the first predicate accepted a bare `### Summary`
@@ -3007,7 +3094,7 @@ for marker in \
 
 * $marker"
     run_gate
-    assert_gate 1 fail threads-unresolved
+    assert_gate 0 pass ready
 done
 
 echo "==> review-r1-codex-verification-2: a finder_cycles exit-16 uses the finder-prefixed token too"
@@ -3354,7 +3441,7 @@ echo "==> --allow-edited-root never waives thread resolution"
 write_defaults
 edited_thread
 run_gate --allow-edited-root 900
-assert_gate 1 fail threads-unresolved
+assert_gate 0 pass ready
 
 echo "==> --allow-edited-root never clears an unanswered thread"
 write_defaults
@@ -4279,7 +4366,7 @@ unset RECHECK_FAKE_EXIT
 gate="$saved_gate"
 assert_gate 1 fail codex-not-clean
 
-echo "==> challenge-r3-codex-adversarial-1: a promoted promoted with recorded Codex exit 19 is indeterminate"
+echo "==> challenge-r3-codex-adversarial-1: a promoted PR with recorded Codex exit 19 is indeterminate"
 write_defaults
 write_promoted_record "$head_sha"
 write_promoted_pr_view
@@ -4287,9 +4374,9 @@ stale_codex_result="$(write_integrator_result promoted-codex-asset-stale "$(code
 run_promoted --integrator-result "$stale_codex_result" --integration-cap 1
 assert_gate 2 indeterminate codex-asset-freshness-unknown
 [[ "$gate_out" != *'"status":"fail"'* ]] ||
-    fail "a stale recorded Codex result must never fail a promoted promoted: $gate_out"
+    fail "a stale recorded Codex result must never fail a promoted PR: $gate_out"
 
-echo "==> challenge-r3-codex-adversarial-1: a promoted promoted with recorded finder exit 19 is indeterminate"
+echo "==> challenge-r3-codex-adversarial-1: a promoted PR with recorded finder exit 19 is indeterminate"
 write_defaults
 write_promoted_record "$head_sha"
 write_promoted_pr_view
@@ -4303,7 +4390,7 @@ unset RECHECK_FAKE_EXIT
 gate="$saved_gate"
 assert_gate 2 indeterminate finder-asset-freshness-unknown
 [[ "$gate_out" != *'"status":"fail"'* ]] ||
-    fail "a stale recorded finder result must never fail a promoted promoted: $gate_out"
+    fail "a stale recorded finder result must never fail a promoted PR: $gate_out"
 
 echo "==> #685(6): promoted passes when run.json's promotion.head IS the gated head"
 write_defaults
@@ -5036,6 +5123,45 @@ carried_result="$(write_integrator_result carried-ok "$(carried_cycle_json "$car
 run_gate_recheck_clean --integrator-result "$carried_result" \
     --integration-cap 2 --integration-exempt-cap 2
 assert_gate 0 pass ready
+
+echo "==> #1602 r1: carry=fresh forbids a carried Codex review"
+write_finder_policy '["codex-cloud"]' '[{"id":"codex-cloud","carry":"fresh"}]'
+run_gate_recheck_clean --integrator-result "$carried_result" --integration-cap 2 --integration-exempt-cap 2
+assert_gate 1 fail finder-capped
+
+echo "==> #1602 r1: promoted catch-up requires a live carry from the promoted head"
+write_finder_policy '["codex-cloud"]' '[]'
+write_promoted_record "$carried_origin"
+jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/promoted-view.json"
+mv "${fixtures}/promoted-view.json" "${fixtures}/pr-view.json"
+saved_gate="$gate"
+gate="$recheck_gate"
+run_promoted --integrator-result "$carried_result" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 0 pass promoted
+# A terminal promoted record retains the OLD pass. Prove that no record
+# rewrite or new integration pass is needed for the carry-only re-check.
+jq --arg old "$carried_origin" '.head=$old | .payload.codex_cycle.head=$old |
+  del(.payload.codex_cycle.carried)' "$carried_result" >"${fixtures}/promoted-original-result.json"
+cp "${fixtures}/promoted-original-result.json" "${record_dir}/passes/integration-r1-codex-cloud.json"
+record_before="$(cat "${record_dir}/passes/integration-r1-codex-cloud.json")"
+run_promoted --integrator-result "${fixtures}/promoted-original-result.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 0 pass promoted
+export RECHECK_FAKE_EXIT=10
+run_promoted --integrator-result "${fixtures}/promoted-original-result.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 1 fail codex-not-clean
+unset RECHECK_FAKE_EXIT
+[ "$(cat "${record_dir}/passes/integration-r1-codex-cloud.json")" = "$record_before" ] || fail "promoted carry mutated the terminal receipt"
+cp "$carried_result" "${record_dir}/passes/integration-r1-codex-cloud.json"
+# All other conditions still gate on the new head.
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"failure"}]}]' >"${fixtures}/check-runs.pages.json"
+run_promoted --integrator-result "$carried_result" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 1 fail checks-failing
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"success"}]}]' >"${fixtures}/check-runs.pages.json"
+jq --arg old "$stale_head_sha" '.promotion.head=$old' "${record_dir}/run.json" >"${fixtures}/run-promoted.json"
+mv "${fixtures}/run-promoted.json" "${record_dir}/run.json"
+run_promoted --integrator-result "$carried_result" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
+assert_gate 2 indeterminate promotion-head-mismatch
+gate="$saved_gate"
 
 echo "==> a carried verdict with no --codex-recheck state is codex-carried-unproven"
 # The advisory flag stops being advisory for exactly this shape: with no

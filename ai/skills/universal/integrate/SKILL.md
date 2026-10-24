@@ -150,7 +150,8 @@ caps are independent of any other loop caps used earlier in the dev flow.
 fixes, and adjudication are active. A failed or indeterminate gate stays draft.
 Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-for-review requests human review and never authorizes a
 merge. In the readiness conditions below, "checks" means required status
-contexts from the effective base-branch rules. Report non-required failures;
+contexts from the effective base-branch rules. Without an explicit required-check
+rule, every reported check gates (including classic-only protection). Report non-required failures;
 they do not gate the handoff.
 
 This skill may be re-entered on a non-draft PR. Treat that as an idempotent
@@ -172,8 +173,9 @@ including reversing your own recorded promotion with a single
 `gh pr ready --undo`. Confirm `isDraft == true` and continue the follow-up work
 under that fresh run; the promoted run stays terminal as the record of the
 first handoff and accepts no later writes. Remove `merge-ready` and restore the
-chain-owned claim label through §6's existing pull-back/claim procedure (owned
-by the handoff wiring change); do not invent a second claim writer. A finding
+chain-owned claim label through §6's fresh-run follow-up text beginning
+"A later human request to reverse a **recorded handoff**" (handoff wiring);
+do not invent a second claim writer. A finding
 settled without a code change is adjudicated and answered in place. Every
 maintainer-facing ready claim, promotion, or application of `merge-ready`
 requires a fresh handoff check on the current head; a recorded pass is not a
@@ -1196,7 +1198,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `finder_cycles:[]`, preserve failing run IDs, and report the checks-read
   blocker (see #1502); promotion still requires the readiness gate's complete evidence.
   Only **required** checks gate: read the `required_status_checks` rule from
-  `GET repos/{repo}/rules/branches/{base}` (repo read access). The latest run
+  `GET repos/{repo}/rules/branches/{base}` (repo read access). If that read
+  contains no `required_status_checks` rule (including classic-only protection),
+  gate every reported check; only an explicit rule narrows the set. The latest run
   of each required context on the exact head must have concluded successfully;
   skipped/neutral is non-failing. A pending or missing required check, an empty
   check list, or a failed rules/checks read is indeterminate. Non-required
@@ -1309,12 +1313,16 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   a new comment or an edit to an existing one — postdates the last reply.
   Adjudicate every listed root (§3) and answer it (§4) through that same root
   ID; the agent re-lists it on the next dispatch until a reply actually
-  clears it or the reviewer resolves it after an agent reply. Thread
+  clears it. Under #1601's ADR and #1602, a thread settles when resolved
+  or when the agent spoke last, after the reviewer's last activity. Thread
   `isResolved` is read via GraphQL and linked to the REST root through
-  `comments(first:1){nodes{databaseId}}`. Resolution never substitutes for the
-  agent's own reply. Under ruling 57 an unresolved thread fails the handoff
-  check even when the agent has the last word; a resolved acknowledgement
-  after that reply passes without an extra reply to the acknowledgement.
+  `comments(first:1){nodes{databaseId}}`; resolution never substitutes for the
+  agent's reply. The orchestrator's challenge-round-1 correction requires a
+  conservative check because this API has no approved resolution timestamp:
+  any reviewer comment or edit after the agent's last reply unsettles the
+  thread regardless of `isResolved`. An acknowledgement followed by resolution
+  therefore needs one final agent reply. An unresolved thread with the agent
+  speaking last passes. Ruling 57 supplies no thread rule.
 - **Choose the cycle-evidence path before collection.** When the
   orchestrator has already driven the current-head Codex cycle through the
   vendored checker, it may pass that state directly to §6's executable gate
@@ -2400,15 +2408,21 @@ round. Two consequences follow rather than needing their own procedure:
 
 **A promoted PR is caught up on the maintainer's request or as authorized
 merge-queue-head upkeep.** Use the same helper with `--maintainer-requested`
-for a direct request, or `--queue-head-upkeep` for the supervising orchestrator's
+for a direct request, or `--queue-head-upkeep "<reason>"` for the supervising orchestrator's
 current queue head (ruling 53). Verify queue-head ownership before using the
-latter flag; it authorizes no other promoted PR. Without either authorization
+latter flag; it authorizes no other promoted PR. The helper requires and echoes
+the reason on stderr; it does not verify queue membership. Without either authorization
 the helper refuses with exit 15. Update the queue head in place, re-run CI,
 and apply each required finder's carry rule. Keep it promoted only when no
 finder owes a fresh review; otherwise reserve a fresh follow-up run and
 return it to draft before requesting that review. The old promoted run remains
-terminal. Claim and delivery-label restoration use §6's existing pull-back
-procedure, not a new writer here.
+terminal. A changed promoted head passes only with a checker-proven identical-change
+carry whose `from_head` is the recorded promotion head, and all other live
+conditions passing on the new head. Reuse the immutable promoted integrator
+receipt; the gate projects its Codex carry in memory and binds the original
+receipt to the terminal record. Claim and delivery-label restoration use §6's
+fresh-run follow-up text beginning "A later human request to reverse a
+**recorded handoff**", not a new writer here.
 
 **A PR the gate can establish is behind is never reported ready** — under any
 cap, at any round, however clean everything else is. Both draft `check` and
@@ -2519,7 +2533,9 @@ that loops indefinitely:
    "current". The script evaluates every mechanical condition of this stop,
    in order, fail-closed: PR `OPEN` and still draft; the live head equal to
    `--head` (checked again after all evidence is read); only **required** checks gate: read the `required_status_checks` rule from
-   `GET repos/{repo}/rules/branches/{base}` (repo read access). The latest run
+   `GET repos/{repo}/rules/branches/{base}` (repo read access). If that read
+   contains no `required_status_checks` rule (including classic-only protection),
+   gate every reported check; only an explicit rule narrows the set. The latest run
    of each required context on the exact head must have concluded successfully;
    skipped/neutral is non-failing. A pending or missing required check, an empty
    check list, or a failed rules/checks read is indeterminate. Non-required
@@ -2534,10 +2550,11 @@ that loops indefinitely:
    none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
    PR body ticked **and** carrying its outcome (a bare `- [x]` settles
    nothing); §2's reply-linkage predicate over the inline threads, run
-   fresh rather than recalled — `unanswered` always fails. After an agent
-   reply, a resolved thread passes even if the reviewer acknowledged it last;
-   every unresolved thread fails. `--allow-edited-root <root>` may explain an
-   edit that needs no further reply, but never waives thread resolution;
+   fresh rather than recalled — `unanswered` always fails. An agent reply
+   after the last reviewer activity settles an unresolved thread. A reviewer
+   comment or edit after that reply fails even when `isResolved` is true;
+   an acknowledgement followed by resolution needs a final agent reply.
+   `--allow-edited-root <root>` may explain an edit that needs no further reply;
    and, where Codex cloud review is enabled, the sibling
    `check-codex-cloud-review.sh check` reporting this exact head
    terminal-clean. Exit 0 is the only pass. Exit 1 names the first failed
@@ -2668,7 +2685,7 @@ that loops indefinitely:
    to their tool timeout. A run killed
    before it exits is treated as exit 14 (remote state unknown). Re-run the
    command on resumption: if promotion landed, exit 17 routes an unrecorded
-   promotion to reconciliation, or exit 12 routes a recorded promotion to audit.
+   promotion to reconciliation, or exit 12 routes a recorded promotion to `promoted`.
 
    The command runs check → promotion precheck → ready (exactly once) → scalar
    read → fingerprint → head re-read → record. Both scalar reads require an
@@ -2683,7 +2700,7 @@ that loops indefinitely:
    Exit codes: **0** promoted and recorded; **10** gate failed, no ready
    mutation; **11** indeterminate, invalid inputs or missing sibling package, no ready mutation;
    **12** already non-draft and a promotion is recorded for the requested head,
-   no mutation; audit the current head (below);
+   no mutation; re-check the current head with `promoted` (below);
    **13** mismatch or writer refusal, undone and confirmed draft;
    **14** remote state unknown after one undo; **15** ready command failed,
    undone and confirmed draft; **16** full promotion precheck refused before
@@ -2749,7 +2766,7 @@ that loops indefinitely:
    **fresh run** with a new run id and record directory before any follow-up
    write, including the single own-mutation undo; confirm draft state and
    remove `merge-ready`, restore the chain-owned claim label through the
-   existing pull-back procedure below, and continue under the fresh run. The promoted run stays
+   fresh-run follow-up coordination text below ("If review activity later pulls integration back into §5 fix rounds"), and continue under the fresh run. The promoted run stays
    terminal as the record of the first handoff and accepts no later writes.
    This confirmation is the final lifecycle transition of that run; perform
    its coordination cleanup and preserve its immutable promotion record.

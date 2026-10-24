@@ -946,12 +946,21 @@ When required finders extend beyond `codex-cloud` (registry slugs from
 `agent-registry.json`), drive one cycle per required finder in addition to
 the `codex_cycle` above. The `codex_cycle` field remains the
 canonical backward-compatible record for the codex-cloud finder specifically;
-`finder_cycles` (§7) carries every finder including codex-cloud.
+`finder_cycles` (§7) carries gating finders actually driven, including
+codex-cloud. Keep non-gating (`gates=false` or `budget=0`) finder activity,
+including pending reviews, outside `finder_cycles` and `codex_cycle`: report it
+in the dispatch report beside the envelope. Those fields aggregate gating
+verdicts in the existing validator; advisory pending activity must not change
+the envelope's verdict. Findings from advisory reviewers still require
+adjudication through `findings`, independently of cycle completion.
 
 Keep each finder's spend in its own checker state: never share a state file
 between finders or copy another finder's charged/exempt counters. Pass the
 finder's resolved budget to reservation (bounded by the stage ceilings); do not
-request a cycle after that budget is spent. Report charged/exempt counts in
+request a cycle after that budget is spent. Only charged cycles spend the
+budget; exempt cycles do not. A fully spent finder is no longer required on
+later heads; retain its prior same-run receipt for the gate to verify spend.
+Report charged/exempt counts in
 its cycle evidence. Advisory reviewers may still yield findings that need
 adjudication, but their missing/pending cycle does not gate the handoff.
 

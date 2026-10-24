@@ -361,10 +361,20 @@ grep -qF -- '--method PUT' "$log" || fail "non-draft with the flag sent no PUT: 
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
 pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
-run_default --queue-head-upkeep
-expect "orchestrator queue-head upkeep" 0 ""
+run_default --queue-head-upkeep "queue head authorized under ruling 53"
+expect "orchestrator queue-head upkeep" 0 "queue head authorized under ruling 53"
 [ "$out" = "$new_sha" ] || fail "queue-head upkeep printed '$out'"
 grep -qF -- '--method PUT' "$log" || fail "queue-head upkeep sent no PUT"
+for missing_reason in missing blank flag; do
+    reset
+    case "$missing_reason" in
+    missing) run_default --queue-head-upkeep ;;
+    blank) run_default --queue-head-upkeep "   " ;;
+    flag) run_default --queue-head-upkeep --maintainer-requested ;;
+    esac
+    expect "queue-head upkeep $missing_reason reason" 2 "requires a reason"
+    no_put "queue-head upkeep $missing_reason reason"
+done
 reset
 jq -c 'del(.isDraft)' "${fixtures}/pr-1.json" >"${fixtures}/p" && mv "${fixtures}/p" "${fixtures}/pr-1.json"
 run_default

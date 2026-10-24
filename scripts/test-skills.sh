@@ -4056,6 +4056,9 @@ PYTEST
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$INTEGRATOR_AGENT"
+expect_ok "integrator: advisory pending cycles stay outside gating evidence (#1602 r1-3)" \
+    sh -c 'grep -qF "outside \`finder_cycles\` and \`codex_cycle\`" "$1" &&
+        grep -qF "advisory pending activity must not change" "$1"' sh "$INTEGRATOR_AGENT"
 expect_ok "implement creates the normal PR as a draft" \
     grep -qF 'gh pr create --draft --repo "$repo"' "$IMPLEMENT_SKILL"
 expect_ok "implement confirms the pushed draft head" \
