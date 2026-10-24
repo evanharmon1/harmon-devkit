@@ -10,7 +10,7 @@
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
 //                               [--decision approved|denied --command TEXT [--answered-by orchestrator|human]]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
-//   run-record.mjs promote      --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
+//   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
 //   run-record.mjs prune        [--dry-run] [--repo-root DIR]
 //   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
@@ -301,8 +301,10 @@ export function validateFile(kind, file, label) {
   if (failure !== null) throw new Refusal(`${label} failed \`${kind}\` validation:\n${failure}`)
 }
 
-// writeValidated — the candidate, validate, rename, readback sequence.
-export function writeValidated(kind, canonical, document) {
+// validatedCandidate writes a candidate beside its canonical record and proves
+// it through the same strict validator used by every replacement. Its caller
+// either renames it (a writer) or removes it (a read-only precheck).
+function validatedCandidate(kind, canonical, document) {
   const candidate = `${canonical}.candidate.${process.pid}.${randomBytes(4).toString('hex')}`
   writeFileSync(candidate, `${JSON.stringify(document, null, 2)}\n`)
   const failure = runValidator(kind, candidate)
@@ -310,10 +312,29 @@ export function writeValidated(kind, canonical, document) {
     unlinkSync(candidate)
     throw new Refusal(`candidate refused by \`${kind}\` validation; ${canonical} is unchanged:\n${failure}`)
   }
+  return candidate
+}
+
+// writeValidated — the candidate, validate, rename, readback sequence.
+export function writeValidated(kind, canonical, document) {
+  const candidate = validatedCandidate(kind, canonical, document)
   renameSync(candidate, canonical)
   const readback = runValidator(kind, canonical)
   if (readback !== null) {
     throw new Refusal(`BLOCKER: ${canonical} failed readback validation after rename:\n${readback}`)
+  }
+}
+
+function validateCandidate(kind, canonical, document) {
+  const candidate = validatedCandidate(kind, canonical, document)
+  try {
+    return null
+  } finally {
+    try {
+      unlinkSync(candidate)
+    } catch {
+      // A successful read-only precheck never leaves its candidate behind.
+    }
   }
 }
 
@@ -384,11 +405,8 @@ export function assertRunOwner(root, slate, runId) {
 // the current revision still writes and closes.
 export function bindRunToSlate(root, slate, runId) {
   const ownerFile = join(root, 'runs', runId, 'owner-slate')
+  assertRunCanBindToSlate(root, slate, runId)
   if (readRunOwner(root, runId) === null) {
-    const revisions = readValidatedPlan(root, slate)?.revisions ?? []
-    if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
-      throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
-    }
     mkdirSync(dirname(ownerFile), { recursive: true })
     const temporary = `${ownerFile}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`
     writeFileSync(temporary, `${slate}\n`)
@@ -401,6 +419,22 @@ export function bindRunToSlate(root, slate, runId) {
     }
   }
   assertRunOwner(root, slate, runId)
+}
+
+// assertRunCanBindToSlate is bindRunToSlate without its one durable write.
+// Promotion's --check mode uses it after lock ownership has been proven: a
+// prospective first binding must be in a validated plan, but checking it must
+// never create owner-slate. The writer still calls bindRunToSlate before its
+// real mutation, so a successful check cannot authorize a later write.
+function assertRunCanBindToSlate(root, slate, runId) {
+  if (readRunOwner(root, runId) !== null) {
+    assertRunOwner(root, slate, runId)
+    return
+  }
+  const revisions = readValidatedPlan(root, slate)?.revisions ?? []
+  if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
+    throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
+  }
 }
 
 function normalizeScope({ milestone, issues }) {
@@ -438,57 +472,70 @@ function assertLockOwner(held, session, ownerToken) {
 // recorded from --milestone (the plan schema carries none) and never changes
 // once recorded. Every acquisition that records a new or changed scope is
 // checked against every other session's lock.
-export function acquireSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
+function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
   const { dir, file, registry } = lockPaths(root, slate)
-  mkdirSync(dir, { recursive: true })
   const plan = currentPlan(root, slate)
   const planned = plan === null ? null : normalizeScope({ issues: plan.issues.map((issue) => issue.number) }).issues
   const outside = (reserved) => (planned ?? []).filter((n) => !reserved.includes(n))
+  const held = existsSync(file) ? readLock(file) : null
+  if (held === null && !create) {
+    throw new Refusal(`slate ${slate} is unlocked; run lock acquire with --slate, --session and --issues first`)
+  }
+  if (held !== null) assertLockOwner(held, session, ownerToken)
+  if (held !== null && milestone !== undefined && held.milestone !== null && held.milestone !== milestone) {
+    throw new Refusal(`slate ${slate} is locked for milestone ${held.milestone}, not ${milestone}`)
+  }
+  // The reservation is taken before the plan is published (--issues), and
+  // the canonical plan must stay inside it; a slate with no lock yet falls
+  // back to the plan's own issue set.
+  const scope = normalizeScope({
+    milestone: held?.milestone ?? milestone,
+    issues: issues !== undefined ? issues : (held?.issues ?? planned),
+  })
+  const unreserved = outside(scope.issues)
+  if (unreserved.length > 0) {
+    throw new Refusal(
+      `slate ${slate}'s plan names issue(s) ${unreserved.join(', ')} outside the reserved scope (${scope.issues.join(',')}); reserve them with \`lock acquire --issues\` before publishing the plan`,
+    )
+  }
+  if (scope.milestone === null && scope.issues.length === 0) {
+    throw new Refusal(
+      `slate ${slate} has no lock yet and no scope to record: pass --milestone and/or --issues, or write its plan.json first`,
+    )
+  }
+  if (held !== null && canonicalJson(scope) === canonicalJson({ milestone: held.milestone ?? null, issues: held.issues })) {
+    return { dir, file, registry, held, scope, changed: false }
+  }
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json') || name === `${slate}.json`) continue
+    const other = readLock(join(dir, name))
+    if (scope.milestone !== null && other.milestone === scope.milestone) {
+      throw new Refusal(
+        `milestone ${scope.milestone} is already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
+      )
+    }
+    const shared = scope.issues.filter((n) => other.issues.includes(n))
+    if (shared.length > 0) {
+      throw new Refusal(
+        `issue(s) ${shared.join(', ')} are already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
+      )
+    }
+  }
+  return { dir, file, registry, held, scope, changed: true }
+}
+
+function checkSlateLock(args) {
+  const { dir, registry } = lockPaths(args.root, args.slate)
+  if (!existsSync(dir)) return validateSlateLock(args)
+  return withMutex(registry, () => validateSlateLock(args))
+}
+
+export function acquireSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
+  const { dir, file, registry } = lockPaths(root, slate)
+  mkdirSync(dir, { recursive: true })
   return withMutex(registry, () => {
-    const held = existsSync(file) ? readLock(file) : null
-    if (held === null && !create) {
-      throw new Refusal(`slate ${slate} is unlocked; run lock acquire with --slate, --session and --issues first`)
-    }
-    if (held !== null) assertLockOwner(held, session, ownerToken)
-    if (held !== null && milestone !== undefined && held.milestone !== null && held.milestone !== milestone) {
-      throw new Refusal(`slate ${slate} is locked for milestone ${held.milestone}, not ${milestone}`)
-    }
-    // The reservation is taken before the plan is published (--issues), and
-    // the canonical plan must stay inside it; a slate with no lock yet falls
-    // back to the plan's own issue set.
-    const scope = normalizeScope({
-      milestone: held?.milestone ?? milestone,
-      issues: issues !== undefined ? issues : (held?.issues ?? planned),
-    })
-    const unreserved = outside(scope.issues)
-    if (unreserved.length > 0) {
-      throw new Refusal(
-        `slate ${slate}'s plan names issue(s) ${unreserved.join(', ')} outside the reserved scope (${scope.issues.join(',')}); reserve them with \`lock acquire --issues\` before publishing the plan`,
-      )
-    }
-    if (scope.milestone === null && scope.issues.length === 0) {
-      throw new Refusal(
-        `slate ${slate} has no lock yet and no scope to record: pass --milestone and/or --issues, or write its plan.json first`,
-      )
-    }
-    if (held !== null && canonicalJson(scope) === canonicalJson({ milestone: held.milestone ?? null, issues: held.issues })) {
-      return held
-    }
-    for (const name of readdirSync(dir)) {
-      if (!name.endsWith('.json') || name === `${slate}.json`) continue
-      const other = readLock(join(dir, name))
-      if (scope.milestone !== null && other.milestone === scope.milestone) {
-        throw new Refusal(
-          `milestone ${scope.milestone} is already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
-        )
-      }
-      const shared = scope.issues.filter((n) => other.issues.includes(n))
-      if (shared.length > 0) {
-        throw new Refusal(
-          `issue(s) ${shared.join(', ')} are already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
-        )
-      }
-    }
+    const { held, scope, changed } = validateSlateLock({ root, slate, session, ownerToken, milestone, issues, create })
+    if (!changed) return held
     const mintedToken = held === null ? randomBytes(32).toString('hex') : null
     const lock = { schema: 1, slate_id: slate, session, ...scope, acquired_at: held?.acquired_at ?? resolveAt(undefined),
       ...(held === null ? { owner_token_digest: createHash('sha256').update(mintedToken).digest('hex') }
@@ -718,15 +765,20 @@ export function archiveOrchestratorFiles(root, slate, runId) {
   return entries
 }
 
-function recordWrite(command, args) {
+function recordMutation(command, args, { check = false } = {}) {
   const { common, root } = stateRoot()
   const slate = requireId('slate', args.slate)
   const session = requireId('session', args.session)
   const runId = requireId('run-id', args['run-id'])
   args.at = resolveAt(args.at)
   assertRunOwner(root, slate, runId)
-  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
-  bindRunToSlate(root, slate, runId)
+  if (check) {
+    checkSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
+    assertRunCanBindToSlate(root, slate, runId)
+  } else {
+    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
+    bindRunToSlate(root, slate, runId)
+  }
   const canonical = join(root, 'runs', runId, 'run.json')
   const summary = withMutex(canonical, () => {
     const record = readJson(canonical, 'run record')
@@ -735,11 +787,14 @@ function recordWrite(command, args) {
       throw new Refusal(`${canonical} has no stage_transitions`)
     }
     validateFile('run', canonical, `existing ${canonical}`)
-    const result = MUTATORS[command](record, args, { common })
+    const candidate = check ? structuredClone(record) : record
+    const result = MUTATORS[command](candidate, args, { common })
     if (result === null) return null
-    writeValidated('run', canonical, record)
+    if (check) validateCandidate('run', canonical, candidate)
+    else writeValidated('run', canonical, candidate)
     return result
   })
+  if (check) return `checked ${summary === null ? 'no change (already recorded)' : summary} (read-only)`
   const retirement = command === 'promote' || command === 'close' ? retireActivePointer(runId) : null
   if (command === 'close') {
     const moved = archiveOrchestratorFiles(root, slate, runId)
@@ -1670,11 +1725,15 @@ function main(argv) {
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
   if (command === 'lane-init') return laneInit(parseFlags(rest))
+  if (command === 'promote') {
+    const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
+    return recordMutation(command, args, { check: args.check === true })
+  }
   if (Object.hasOwn(SIDE_EFFECTS, command ?? '')) return sideEffectWrite(command, parseFlags(rest))
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
     throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|prune [--dry-run] [--repo-root DIR]|solo-init|lane-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
-  return recordWrite(command, parseScopeFlags(parseFlags(rest)))
+  return recordMutation(command, parseScopeFlags(parseFlags(rest)))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
