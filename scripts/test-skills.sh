@@ -12309,9 +12309,14 @@ for region in (
 ):
     assert not guarded(region % "then run `gh pr ready 42`"), region
 integrate = pathlib.Path(sys.argv[1]).read_text()
+reconciled_promotion = '`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`'
+assert integrate.count(reconciled_promotion) == 3, integrate.count(reconciled_promotion)
+assert '--at <the ready_for_review event time>' not in integrate
+integrate_flat = " ".join(integrate.split())
+assert integrate_flat.count("Omit `--at` so the writer records reconciliation time; the `--exit` retains the original event ID and time for attribution.") == 3
 for required in (
     "promotion (the current head independently passes `readiness-gate.sh audit`)",
-    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
+    reconciled_promotion,
     "Only audit status `pass`",
     "on the current head may be recorded, never `audit-behind`",
     "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
