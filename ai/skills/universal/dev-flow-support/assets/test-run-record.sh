@@ -115,7 +115,7 @@ write_plan() {
     local slate="$1"
     shift
     mkdir -p "$state/slates/$slate"
-    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" node --input-type=module -e '
+    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" PLAN_REVIEWER_TIER="${PLAN_REVIEWER_TIER:-frontier}" node --input-type=module -e '
       const { chainDigest } = await import(process.env.PLAN_WRITER)
       const entries = process.env.PLAN_LANES.split(" ").map((pair) => pair.split(":"))
       const policy = {
@@ -123,7 +123,7 @@ write_plan() {
         caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
         breadth: { max_agent_runs: 20, max_parallel_agents: 1 },
         strategy: "plan", strategy_source: "default",
-        role_tiers: { orchestrator: "apex", implementer: "frontier", challenger: "apex", reviewer: "frontier", integrator: "economy" },
+        role_tiers: { orchestrator: "apex", implementer: "frontier", challenger: "apex", reviewer: process.env.PLAN_REVIEWER_TIER, integrator: "economy" },
         operator_pins: [],
       }
       const plan = {
@@ -785,7 +785,7 @@ pass "legacy locks accept a supplied token with a warning; explicit recovery min
 # Planned-lane initialization uses the same receipt-aware writer as later
 # interventions; it must never adopt or overwrite an existing record.
 acquire planned-lane alice --issues 333
-write_plan planned-lane 333:run-planned-lane
+PLAN_REVIEWER_TIER=economy write_plan planned-lane 333:run-planned-lane
 node --input-type=module - "$asset_dir" "$state/slates/planned-lane/plan.json" >"$tmp/lane-policy.json" <<'NODE'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -793,7 +793,15 @@ const [assets, planFile] = process.argv.slice(2)
 process.argv[1] = assets
 const { resolvePolicy } = await import(`${assets}/devflow-policy.mjs`)
 const { parseToml } = await import(`${assets}/lib/toml-lite.mjs`)
-const full = resolvePolicy(parseToml(readFileSync(resolve(assets, '../../../../../.devflow.toml'), 'utf8')))
+const full = resolvePolicy(parseToml(readFileSync(resolve(assets, '../../../../../.devflow.toml'), 'utf8')), {
+  rigor: 'deep',
+  tierOverrides: { implementer: 'frontier' },
+  tierLabels: { reviewer: 'economy' },
+})
+if (!full.disclosures.some(({ code }) => code === 'off-profile-tier') ||
+    !full.disclosures.some(({ code }) => code === 'role-tier-floor')) {
+  throw new Error('policy reader did not emit both structured disclosure variants')
+}
 const profile = JSON.parse(readFileSync(planFile)).revisions.at(-1).plan.policy
 full.rigor = { ...full.rigor, level: profile.rigor, source: profile.rigor_source }
 full.rounds = { ...full.rounds, ...profile.caps, integration_exempt: profile.caps.integration }
@@ -838,6 +846,8 @@ jq -n --arg event evt-lane-init --arg head "$deferred_head" \
 planned_record="$state/runs/run-planned-lane/run.json"
 jq -e '.schema == 2 and .receipts == [] and .stage_transitions[0].stage == "kickoff"' \
     "$planned_record" >/dev/null || fail "lane-init omitted receipt-complete kickoff state"
+[ "$(jq -c '.disclosures' "$state/runs/run-planned-lane/policy.json")" = "$(jq -c '.disclosures' "$tmp/lane-policy.json")" ] ||
+    fail "lane-init changed the policy reader's disclosures projection"
 [ "$(cat "$state/runs/run-planned-lane/owner-slate")" = planned-lane ] || fail "lane-init omitted slate binding"
 (cd "$repo" && node "$writer" intervention --slate planned-lane --session alice \
     --owner-token "$(token_for planned-lane)" --run-id run-planned-lane --kind asked \
