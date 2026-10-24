@@ -110,6 +110,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
     if [[ "$*" == *baseRefOid* ]]; then
+        if [ -f "$GH_FIXTURES/fail-base-read-once" ]; then
+            rm -f "$GH_FIXTURES/fail-base-read-once"
+            exit 94
+        fi
         cat "$GH_FIXTURES/base-head"
         exit 0
     fi
@@ -430,6 +434,7 @@ write_defaults() {
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
+    rm -f "${fixtures}/fail-base-read-once"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
     rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
@@ -9403,8 +9408,31 @@ jq -e '.phase == "reserved" and .head == $head' \
     --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
     fail "current checker checkout did not reserve successfully"
 
-echo "==> stale checker check and carry refuse without changing state"
+echo "==> check treats a failed base-SHA read as transient and proceeds on the next poll"
 saved_state=$state
+state="${test_tmp}/freshness-transient-check.json"
+head_sha=$freshness_support_base
+new_cycle
+: >"${fixtures}/fail-base-read-once"
+run_check "$request_time"
+assert_status 16 transient-read
+[[ "$check_out" == *"cannot read PR base SHA"* ]] ||
+    fail "transient base-SHA read did not preserve its diagnostic: $check_out"
+run_check "$request_time"
+assert_status 11 pending
+
+echo "==> check keeps malformed base-SHA data indeterminate"
+new_cycle
+printf '%s\n' 'not-a-sha' >"${fixtures}/base-head"
+run_check "$request_time"
+[ "$check_rc" -eq 2 ] ||
+    fail "malformed base-SHA data should remain exit 2, got $check_rc: $check_out"
+[[ "$check_out" == *"asset freshness indeterminate"* &&
+    "$check_out" == *"PR base SHA"*"is malformed"* ]] ||
+    fail "malformed base-SHA data did not keep its indeterminate diagnostic: $check_out"
+state=$saved_state
+
+echo "==> stale checker check and carry refuse without changing state"
 state="${test_tmp}/freshness-clean-cycle.json"
 git checkout -q "$freshness_support_base"
 head_sha=$freshness_support_base

@@ -920,6 +920,7 @@ write_state() {
 
 asset_freshness_check() {
     local freshness_status=0
+    local freshness_context=${3:-}
     if check_vendored_asset_freshness "$1" "$2" "$SCRIPT_DIR" "$timeout_bin"; then
         return 0
     else
@@ -929,6 +930,12 @@ asset_freshness_check() {
     19)
         printf 'codex-cloud-review: %s\n' "$asset_freshness_detail" >&2
         exit 19
+        ;;
+    16)
+        if [ "$freshness_context" = check ]; then
+            transient_read_failure "$asset_freshness_detail"
+        fi
+        die "$asset_freshness_detail"
         ;;
     *) die "$asset_freshness_detail" ;;
     esac
@@ -4013,7 +4020,7 @@ check)
     # the window closes.
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
-    asset_freshness_check "$state_pr" "$state_repo"
+    asset_freshness_check "$state_pr" "$state_repo" check
     persist_adopted_timeout
 
     provider_status=0

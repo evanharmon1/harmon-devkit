@@ -10,6 +10,7 @@
 # check_vendored_asset_freshness PR REPO SCRIPT_DIR TIMEOUT_BIN returns:
 #   0  checkout is not an ancestor of the base, or the relevant asset bytes match
 #   2  indeterminate; details are stored in asset_freshness_detail
+#   16 the remote base-SHA read failed; the caller decides whether to retry
 #   19 checkout is an ancestor and the relevant asset bytes differ
 
 asset_freshness_helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -48,8 +49,8 @@ check_vendored_asset_freshness() {
     }
     base_sha=$(run_gh pr view "$target_pr" --repo "$target_repo" \
         --json baseRefOid --jq .baseRefOid 2>/dev/null) || {
-        asset_freshness_detail="asset freshness indeterminate: cannot read PR base SHA for $target_repo#$target_pr (checkout HEAD $checkout_head)"
-        return 2
+        asset_freshness_detail="asset freshness base-SHA read failed: cannot read PR base SHA for $target_repo#$target_pr (checkout HEAD $checkout_head)"
+        return 16
     }
     [[ "$base_sha" =~ ^[0-9a-fA-F]{40}$ ]] || {
         asset_freshness_detail="asset freshness indeterminate: PR base SHA for $target_repo#$target_pr is malformed (checkout HEAD $checkout_head)"
