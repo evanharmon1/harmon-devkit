@@ -719,6 +719,37 @@ assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
 console.log('  PASS: reverse handoff order releases dependency chains; done and base-move release waiting handoffs and advance past overlapping queued files')
 
 
+// Challenge r2: independent handoffs are FIFO; a later handoff preserves an
+// operator's queue-order instead of displacing its selected head.
+const fifo = fixture('1,2,3,4')
+fifo.ok('genesis', { input: content(fifo.plan.base_sha, [addition(1), addition(2), addition(3), addition(4)]) })
+for (const number of [1, 2, 3]) {
+  current = fifo.ok('handoff', { flags: ['--issue', String(number), '--pr', String(100 + number)] })
+  assert.deepEqual(current.merge_queue.map((entry) => entry.issue), [1, 2, 3].slice(0, number))
+}
+fifo.ok('queue-order', { input: { issues: [2, 1, 3] } })
+current = fifo.ok('handoff', { flags: ['--issue', '4', '--pr', '104'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }, { issue: 1, pr: 101 }, { issue: 3, pr: 103 }, { issue: 4, pr: 104 }])
+// M3: issue iteration visits successors before predecessors, so more than one
+// pass is required to release this 3 -> 2 -> 1 chain.
+const reverse = fixture('1,2,3')
+const reversePlan = structuredClone(waitingPlan)
+reversePlan.base_sha = reverse.plan.base_sha
+for (const overlap of reversePlan.overlaps) {
+  const { before, after } = overlap.merge_dependency
+  overlap.merge_dependency = { before: after, after: before }
+}
+for (const wave of reversePlan.waves) wave.number = 4 - wave.number
+for (const lane of reversePlan.lanes) lane.wave = 4 - lane.wave
+reverse.ok('genesis', { input: reversePlan })
+for (const number of [1, 2]) {
+  current = reverse.ok('handoff', { flags: ['--issue', String(number), '--pr', String(100 + number)] })
+  assert.deepEqual(current.merge_queue ?? [], [])
+}
+current = reverse.ok('handoff', { flags: ['--issue', '3', '--pr', '103'] })
+assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 102 }, { issue: 1, pr: 101 }])
+console.log('  PASS: FIFO handoffs preserve operator queue order; reverse-numbered dependency chains require repeat passes')
+
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"

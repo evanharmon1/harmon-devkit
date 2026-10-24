@@ -406,7 +406,7 @@ function retireIssue(plan, number, verdict = 'done') {
 
 // Every queued issue has each merge predecessor done or queued ahead of it.
 // A waiting handoff retains its PR on the issue until its predecessors allow
-// insertion. Repeated passes release chains without guessing a merge order.
+// appending. Repeated passes release chains while preserving existing queue order.
 function queueWaitingHandoffs(plan) {
   const queue = plan.merge_queue ?? []
   const issueByNumber = new Map(plan.issues.map((issue) => [issue.number, issue]))
@@ -419,8 +419,7 @@ function queueWaitingHandoffs(plan) {
         .map((entry) => entry.merge_dependency.before)
       if (predecessors.some((number) => issueByNumber.get(number)?.verdict !== 'done' && !queue.some((entry) => entry.issue === number))) continue
       if (!Number.isInteger(issue.pr) || issue.pr < 1) throw new Refusal(`handed-off issue #${issue.number} needs its PR binding`)
-      const position = Math.max(0, ...predecessors.map((number) => queue.findIndex((entry) => entry.issue === number) + 1))
-      queue.splice(position, 0, { issue: issue.number, pr: issue.pr })
+      queue.push({ issue: issue.number, pr: issue.pr })
       added = true
     }
   } while (added)
