@@ -622,6 +622,50 @@ console.log('  PASS: recursive glob expansion is accepted once; covered concrete
 
 
 
+// Handoff retires dispatch ownership but preserves merge-order evidence.
+const queued = fixture('1,2,3')
+const queuePlan = content(queued.plan.base_sha, [addition(1, 'shared.txt'), addition(2, 'shared.txt'), addition(3)])
+queuePlan.overlaps = [{ issue_a: 1, issue_b: 2, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }]
+queued.ok('genesis', { input: queuePlan })
+queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'], ownerToken: 'wrong' }, /owner token does not match/)
+queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '0'] }, /positive PR number/, 2)
+queued.refuse('handoff', { flags: ['--issue', '99', '--pr', '101'] }, /no live source lane/)
+current = queued.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.equal(current.issues[0].verdict, 'handed-off')
+assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }])
+assert.deepEqual(current.overlaps, queuePlan.overlaps)
+assert.deepEqual(current.lanes.map((lane) => [lane.issue, lane.wave]), [[2, 1], [3, 2]])
+assert.deepEqual(current.lane_profiles.map((entry) => entry.lane), ['l2', 'l3'])
+assert.deepEqual(current.waves, [{ number: 1, issues: [2] }, { number: 2, issues: [3] }])
+queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /no live source lane/)
+queued.refuse('handoff', { flags: ['--issue', '2', '--pr', '101'] }, /duplicate PR/)
+current = queued.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+assert.deepEqual(current.overlaps, queuePlan.overlaps)
+current = queued.ok('handoff', { flags: ['--issue', '3', '--pr', '103'] })
+assert.deepEqual(current.lanes, [])
+assert.deepEqual(current.waves, [])
+assert.deepEqual(current.lane_profiles, [])
+queued.refuse('queue-order', { input: { issues: [2, 1, 3] } }, /merge dependency requires issue 1 before 2/)
+for (const issues of [[1, 2], [1, 2, 2], [1, 2, 99], ['1', 2, 3]]) {
+  queued.refuse('queue-order', { input: { issues } }, /permutation/)
+}
+queued.refuse('queue-order', { input: { issues: [1, 2, 3] }, ownerToken: 'wrong' }, /owner token does not match/)
+current = queued.ok('queue-order', { input: { issues: [3, 1, 2] } })
+assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 1, pr: 101 }, { issue: 2, pr: 102 }])
+const queueBeforeMove = structuredClone(current.merge_queue)
+execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'new base'], { cwd: queued.repo })
+const newBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: queued.repo, encoding: 'utf8' }).trim()
+current = queued.ok('base-move', { flags: ['--new-base', newBase] })
+assert.equal(current.base_sha, newBase)
+assert.deepEqual(current.merge_queue, queueBeforeMove)
+assert.deepEqual(current.overlaps, queuePlan.overlaps)
+queued.refuse('done', { flags: ['--issue', '1'], input: { releases: [{ lane: 'l2', paths: ['shared.txt'] }] } }, /no source fence/)
+current = queued.ok('done', { flags: ['--issue', '1'] })
+assert.equal(current.issues[0].verdict, 'done')
+assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 102 }])
+assert.deepEqual(current.overlaps, [])
+console.log('  PASS: handoff preserves overlaps and retires lanes; queue-order validates a permutation and dependencies; base-move preserves the queue; done removes queued issues')
+
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"

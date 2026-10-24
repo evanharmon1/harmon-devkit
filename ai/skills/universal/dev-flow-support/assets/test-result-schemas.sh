@@ -456,6 +456,11 @@ echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixt
 # records after first appearing, and split dependencies follow wave order.
 for regression in \
     plan/valid/recomputed.json \
+    plan/valid/merge-queue.json \
+    plan/valid/handed-off-without-queue.json \
+    plan/invalid/queue-non-handed-off.json \
+    plan/invalid/queue-duplicate-issue.json \
+    plan/invalid/queue-reversed-dependency.json \
     plan/invalid/rewritten-run-fence.json \
     plan/invalid/removed-run-expansion.json \
     plan/invalid/reversed-split-wave-dependency.json \
@@ -473,14 +478,15 @@ node --input-type=module - "$schemas_dir/plan.schema.json" \
     "$fixtures_dir/plan/valid/interactive.json" \
     "$fixtures_dir/plan/valid/recomputed.json" \
     "$fixtures_dir/plan/valid/lane-profiles.json" \
+    "$fixtures_dir/plan/valid/merge-queue.json" \
     "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
-const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null

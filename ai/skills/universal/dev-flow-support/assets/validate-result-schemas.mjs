@@ -2429,7 +2429,7 @@ function checkPlanCoherence(document, errors) {
     }
   }
 
-  const expectedIssues = issues.filter((issue) => issue.verdict !== 'done').map((issue) => issue.number)
+  const expectedIssues = issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict)).map((issue) => issue.number)
   const waveNumbers = waves.map((wave) => wave.number)
   for (const number of duplicates(waveNumbers)) errors.push(`$plan.waves: duplicate wave number ${number}`)
   const sortedWaveNumbers = [...new Set(waveNumbers)].sort((a, b) => a - b)
@@ -2444,7 +2444,7 @@ function checkPlanCoherence(document, errors) {
     for (const issueNumber of wave.issues || []) {
       const issue = issueByNumber.get(issueNumber)
       if (!issue) errors.push(`$plan.waves[${index}].issues: unknown issue ${issueNumber}`)
-      else if (issue.verdict === 'done') errors.push(`$plan.waves[${index}].issues: done issue ${issueNumber} must not be dispatched`)
+      else if (['done', 'handed-off'].includes(issue.verdict)) errors.push(`$plan.waves[${index}].issues: ${issue.verdict} issue ${issueNumber} must not be dispatched`)
       if (waveByIssue.has(issueNumber)) errors.push(`$plan.waves: issue ${issueNumber} appears in more than one wave`)
       waveByIssue.set(issueNumber, wave.number)
     }
@@ -2474,7 +2474,7 @@ function checkPlanCoherence(document, errors) {
   for (const [index, lane] of lanes.entries()) {
     const issue = issueByNumber.get(lane.issue)
     if (!issue) errors.push(`$plan.lanes[${index}].issue: unknown issue ${lane.issue}`)
-    else if (issue.verdict === 'done') errors.push(`$plan.lanes[${index}].issue: done issue ${lane.issue} must not have a lane`)
+    else if (['done', 'handed-off'].includes(issue.verdict)) errors.push(`$plan.lanes[${index}].issue: ${issue.verdict} issue ${lane.issue} must not have a lane`)
     if (laneByIssue.has(lane.issue)) errors.push(`$plan.lanes: issue ${lane.issue} has more than one lane`)
     laneByIssue.set(lane.issue, lane)
     const plannedWave = waveByIssue.get(lane.issue)
@@ -2579,6 +2579,27 @@ function checkPlanCoherence(document, errors) {
   }
   for (const key of expectedOverlaps.keys()) {
     if (!seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: missing candidate-file overlap pair ${key}`)
+  }
+
+  const queue = Array.isArray(document.merge_queue) ? document.merge_queue : []
+  for (const number of duplicates(queue.map((entry) => entry.issue))) {
+    errors.push(`$plan.merge_queue: duplicate issue ${number}`)
+  }
+  for (const pr of duplicates(queue.map((entry) => entry.pr))) {
+    errors.push(`$plan.merge_queue: duplicate PR ${pr}`)
+  }
+  const queuePosition = new Map(queue.map((entry, index) => [entry.issue, index]))
+  for (const [index, entry] of queue.entries()) {
+    if (issueByNumber.get(entry.issue)?.verdict !== 'handed-off') {
+      errors.push(`$plan.merge_queue[${index}].issue: issue ${entry.issue} must be a handed-off slate issue`)
+    }
+  }
+  for (const overlap of overlaps) {
+    const dependency = overlap.merge_dependency
+    if (dependency && queuePosition.has(dependency.before) && queuePosition.has(dependency.after) &&
+        queuePosition.get(dependency.before) >= queuePosition.get(dependency.after)) {
+      errors.push(`$plan.merge_queue: merge dependency requires issue ${dependency.before} before ${dependency.after}`)
+    }
   }
 
   const mergeSuccessors = new Map(issues.map((issue) => [issue.number, []]))

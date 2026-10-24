@@ -21,6 +21,14 @@ reference them.
 | `run.schema.json` | The run record: the only home of mutable run state (stage transitions, interventions, outcome, settlements, promotion). **Standalone.** | orchestrator |
 | `plan.schema.json` | The closed dispatch plan for a slate: policy and dispatcher cap, re-verified issues, complete pairwise overlaps, waves, lane fences, later fence expansions, and digest-chained recomputations. **Standalone.** | orchestrator |
 
+Plan content optionally includes `merge_queue`, an ordered array of
+`{ "issue": <positive issue number>, "pr": <positive PR number> }` pairs.
+Each entry names a `handed-off` slate issue; issue and PR numbers are unique,
+and queued pairs obey every recorded `merge_dependency` when both endpoints
+are queued. A `handed-off` issue has retired its wave and lane while its PR
+remains open, retaining overlaps for queue ordering until `done`. Older plans
+may omit the queue. All revisions are checked, including their chain digests.
+
 The orchestrator is not a role that returns a result — its `agent-registry.json`
 `roles[]` entry (#635) carries `result_schema: null`, the same way it carries no
 agent file under `ai/agents/` (see the spec's "Roles and authority" table) — so
