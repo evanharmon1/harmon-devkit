@@ -3,7 +3,8 @@
 // writer: schema validation is the admission boundary, while later readers
 // validate retained immutable bytes without re-querying an overwritten cycle.
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -68,8 +69,16 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     errors.push('$result.payload.codex_cycle: non-null cycles require --codex-state and --codex-repo-dir for read-only live authentication')
     return errors
   }
+  let stateText
   let state
-  try { state = JSON.parse(readFileSync(stateFile, 'utf8')) } catch (error) {
+  try {
+    // The check must consume the exact state the admission code validated.
+    // A checker-state writer uses atomic replacement, so opening the original
+    // pathname again after this read could mix trusted counters and bindings
+    // from one generation with fresh evidence parsed under another finder.
+    stateText = readFileSync(stateFile, 'utf8')
+    state = JSON.parse(stateText)
+  } catch (error) {
     errors.push(`$result.payload.codex_cycle: cannot read checker state ${stateFile}: ${error.message}`)
     return errors
   }
@@ -92,9 +101,17 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
   let checkedResult
-  try { checkedResult = checkerResult(stateFile, repoDir, record.run_id) } catch (error) {
+  let snapshotDir
+  try {
+    snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-receipt-'))
+    const snapshot = join(snapshotDir, 'state.json')
+    writeFileSync(snapshot, stateText, { encoding: 'utf8', mode: 0o600 })
+    checkedResult = checkerResult(snapshot, repoDir, record.run_id)
+  } catch (error) {
     errors.push(`$result.payload.codex_cycle: live checker authentication failed: ${error.message}`)
     return errors
+  } finally {
+    if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true })
   }
   const checked = checkedResult.output
   const carried = state?.carry ?? null

@@ -9460,5 +9460,168 @@ cmp -s "$carry_state" "${carry_state}.before" ||
     fail "stale carry changed its state file"
 state=$saved_state
 
+# The receipt boundary must authenticate an integrator's claimed terminal
+# Codex result against a FRESH run of this real checker, not against caller
+# supplied accepted JSON.  Reuse this suite's GitHub transport stub and actual
+# reserve/attach/check state so these assertions cover the production parser,
+# all review surfaces, and its current-head binding together.
+echo "==> strict integrator receipts authenticate against the real checker state"
+auth_validator="${repo_root}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
+auth_dir="${test_tmp}/integrator-receipt-auth"
+mkdir -p "$auth_dir"
+auth_ids="$auth_dir/known-ids.json"
+auth_record="$auth_dir/run.json"
+auth_policy="$auth_dir/policy.json"
+auth_receipt="$auth_dir/receipt.json"
+printf '[]\n' >"$auth_ids"
+auth_run='run-1159-checker-auth'
+
+new_cycle
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9001,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
+mv "${state}.with-run" "$state"
+jq -n --arg run "$auth_run" \
+    '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
+    >"$auth_record"
+jq -n '{rounds:{integration:1},stages:{integration:{finders:["codex-cloud"]}}}' >"$auth_policy"
+jq --arg run "$auth_run" --arg head "$head_sha" \
+    --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '
+  .run = {run_id:$run,initiated_by:"human"}
+  | .head = $head
+  | .payload.integration_round = 1
+  | .payload.codex_cycle = {
+      head:$head,
+      cycle:($cycle.charged_cycles + $cycle.exempt_cycles),
+      charged:$cycle.charged_cycles,
+      exempt:$cycle.exempt_cycles,
+      attempt:$checked.attempt,
+      trigger_comment_id:($cycle.trigger_comment_id | tostring),
+      exit_code:0,
+      accepted:$checked.accepted
+    }
+' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+
+# The validator invokes the production checker. Its asset freshness guard
+# properly anchors at the production checkout, while the state itself remains
+# the hermetic fixture cycle built above.
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+
+auth_validate() {
+    auth_state="${2:-$state}"
+    set +e
+    auth_out="$(node "$auth_validator" integrator "$1" --receipt \
+        --run-id "$auth_run" --initiated-by human --known-ids "$auth_ids" \
+        --integrator-record "$auth_record" --codex-state "$auth_state" \
+        --codex-repo-dir "$test_repo" 2>&1)"
+    auth_rc=$?
+    set -e
+}
+
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 0 ] || fail "authentic clean receipt was rejected: $auth_out"
+
+jq '.payload.codex_cycle.accepted.id = "999999999"' "$auth_receipt" >"$auth_dir/accepted-id.json"
+auth_validate "$auth_dir/accepted-id.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the freshly checked accepted evidence' <<<"$auth_out" ||
+    fail "altered accepted ID was not refused by the fresh checker: $auth_out"
+
+jq '.payload.codex_cycle.charged = 9' "$auth_receipt" >"$auth_dir/counters.json"
+auth_validate "$auth_dir/counters.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'counters do not match checker state' <<<"$auth_out" ||
+    fail "altered checker counters were not refused: $auth_out"
+
+jq '.pr_bindings[0].number = 494' "$auth_record" >"$auth_dir/wrong-pr.json"
+mv "$auth_dir/wrong-pr.json" "$auth_record"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'not bound to the run' <<<"$auth_out" ||
+    fail "wrong trusted PR binding was not refused: $auth_out"
+jq -n --arg run "$auth_run" \
+    '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
+    >"$auth_record"
+
+# Registry-reserved cycles must keep the exact trusted actor and surface
+# profile. A state that substitutes a different actor or terminal surface is
+# refused before it can reinterpret the review evidence.
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+jq '.finder = {
+      slug:"codex-cloud", actor_id:"5150", actor_login:"impostor",
+      trigger_mechanism:"review-comment", trigger_body:"@codex review",
+      reviewer_login:"impostor", surfaces:["reaction"],
+      head_binding:"reviewed-commit-line", verdict_mode:"clean-sentence",
+      clean_verdict:"Didn't find any major issues.", actionable_pattern:"P[0-9]+",
+      severity_marker:"P", metadata_line:"Reviewed commit:",
+      about_summary:"About Codex", heading:"Codex Review",
+      carrier_sentence:"Didn't find any major issues.", success_reaction:"+1",
+      pending_reaction:"eyes"
+    }' "$state" >"$auth_dir/tampered-profile-state.json"
+auth_validate "$auth_receipt" "$auth_dir/tampered-profile-state.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not exactly match the trusted codex-cloud registry profile' <<<"$auth_out" ||
+    fail "tampered finder actor/surfaces were not refused: $auth_out"
+
+# The validator snapshots state before invoking the checker. The background
+# replacement waits until the child checker has entered its freshness read,
+# which is necessarily after the validator opened the original state path.
+# The replacement would make a non-snapshot checker accept reaction 9002 under
+# a forged finder while retaining the original cycle's counters and binding.
+cp "$state" "$auth_dir/legacy-state.json"
+jq '.finder = {
+      slug:"codex-cloud", actor_id:"5150", actor_login:"impostor",
+      trigger_mechanism:"review-comment", trigger_body:"@codex review",
+      reviewer_login:"impostor", surfaces:["reaction"],
+      head_binding:"reviewed-commit-line", verdict_mode:"clean-sentence",
+      clean_verdict:"Didn't find any major issues.", actionable_pattern:"P[0-9]+",
+      severity_marker:"P", metadata_line:"Reviewed commit:",
+      about_summary:"About Codex", heading:"Codex Review",
+      carrier_sentence:"Didn't find any major issues.", success_reaction:"+1",
+      pending_reaction:"eyes"
+    }' "$state" >"$auth_dir/replacement-state.json"
+jq -cn --argjson trusted "$actor_id" --arg trusted_login "$actor_login" \
+    --argjson impostor "$outsider_id" '
+      [[{id:9001,user:{id:$trusted,login:$trusted_login,type:"Bot"},content:"+1",created_at:"2026-07-31T08:00:00Z"},
+        {id:9002,user:{id:$impostor,login:"impostor",type:"User"},content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+jq '.payload.codex_cycle.accepted.id = "9002"' "$auth_receipt" >"$auth_dir/replaced-state-receipt.json"
+: >"$log"
+: >"${fixtures}/slow-pr"
+printf '%s\n' 1 >"${fixtures}/slow-sec"
+(
+    for _ in $(seq 1 200); do
+        if grep -Fq 'pr view 493' "$log"; then
+            cp "$auth_dir/replacement-state.json" "${state}.replacement"
+            mv "${state}.replacement" "$state"
+            exit 0
+        fi
+        sleep 0.01
+    done
+    exit 1
+) &
+auth_race_pid=$!
+auth_validate "$auth_dir/replaced-state-receipt.json"
+wait "$auth_race_pid" || fail 'state replacement did not observe the checker freshness read'
+rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the freshly checked accepted evidence' <<<"$auth_out" ||
+    fail "state replacement mixed checker generations instead of using its snapshot: $auth_out"
+cp "$auth_dir/legacy-state.json" "$state"
+
+# A later same-head finding invalidates an earlier clean observation. The
+# receipt still claims the old clean exit, but the actual checker now returns
+# findings against the exact same state and head.
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" --arg head "$head_sha" \
+    '[[{id:9010,user:{id:$id,login:$login,type:"Bot"},
+        created_at:"2026-07-31T08:01:00Z",
+        body:("**P1** Same-head finding\\n\\n**Reviewed commit:** `" + ($head[0:10]) + "`")}]]' \
+    >"${fixtures}/comments.pages.json"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "a late same-head finding did not invalidate the clean receipt: $auth_out"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+
+echo "==> real-checker receipt authentication refuses altered accepted IDs, counters, PR bindings and late findings"
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
