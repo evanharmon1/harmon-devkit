@@ -42,8 +42,12 @@ release invariant costs no new secret.
 
 ## Review marker: `needs-review`
 
-`needs-review` is a PR state: a requested review (agent or human) is not yet
-complete. It supplies no issue ownership or trust evidence. Issue claiming,
+`needs-review` is a PR state: an agent still owes review work on the delivery
+PR (review triggers, responses, fixes, adjudications). When the agent owes
+none of that, the label comes off, even if a human still has to look at or
+merge the PR. A PR waiting on a human is `merge-ready` or `parked`, never
+`needs-review`, and the label never sits together with either.
+It supplies no issue ownership or trust evidence. Issue claiming,
 release, ready-for-review handoff and terminal cleanup never add or remove it;
 the old issue-side “awaits human review” marking is retired. Claiming an issue
 with a stale marker neither requires pull-back approval nor clears that marker.

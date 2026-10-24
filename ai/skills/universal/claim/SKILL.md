@@ -462,10 +462,13 @@ worked there. The claim's identity signal is the **`claim:*` label**; never
 write `Agent`, and never treat a `suggest:*` label as a claim (it is advice,
 not ownership).
 
-**`needs-review` is a PR state:** a requested review (agent or human) is
-not yet complete. It supplies no issue ownership evidence and imposes no
-claim hold. Claiming leaves any stale issue-side marker untouched; the retired
-issue-side “awaits human review” marking and pull-back approval flag are no
+`needs-review` is a PR state: an agent still owes review work on the delivery
+PR (review triggers, responses, fixes, adjudications). When the agent owes
+none of that, the label comes off, even if a human still has to look at or
+merge the PR. A PR waiting on a human is `merge-ready` or `parked`, never
+`needs-review`, and the label never sits together with either. It supplies no
+issue ownership evidence and imposes no claim hold. Claiming leaves any stale
+issue-side marker untouched; the retired issue-side “awaits human review” marking and pull-back approval flag are no
 longer part of the claim transaction.
 
 **An existing `claim:*` label — or a legacy `agent:*` label, during the rolling

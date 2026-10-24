@@ -62,10 +62,13 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
-`needs-review` is a PR state meaning a requested review (agent or human)
-is not yet complete. Issue claim, release and handoff operations never add or
-remove it. A PR waiting for the maintainer to merge is `merge-ready`; the
-merge queue owns that state. See [claim lifecycle](references/claim-lifecycle.md).
+`needs-review` is a PR state: an agent still owes review work on the delivery
+PR (review triggers, responses, fixes, adjudications). When the agent owes
+none of that, the label comes off, even if a human still has to look at or
+merge the PR. A PR waiting on a human is `merge-ready` or `parked`, never
+`needs-review`, and the label never sits together with either.
+Issue claim, release and handoff operations never add or remove it. The merge
+queue owns `merge-ready` and `parked`. See [claim lifecycle](references/claim-lifecycle.md).
 
 ## 1. Before you describe an issue, re-read it
 

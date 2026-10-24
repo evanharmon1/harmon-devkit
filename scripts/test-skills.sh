@@ -285,8 +285,8 @@ expect_ok "dev-flow-support documents decision writers (#1410)" \
 
 # Reviewer policy and PR-state meaning (#1604): own block, separate from lane pins.
 for skill in claim integrate track-work; do
-    expect_ok "$skill declares needs-review as a PR state (#1604)" \
-        grep -qF '`needs-review` is a PR state' "$repo/ai/skills/universal/$skill/SKILL.md"
+    expect_ok "$skill declares agent-owed review work (#1604 ruling 54)" \
+        grep -qF '`needs-review` is a PR state: an agent still owes review work' "$repo/ai/skills/universal/$skill/SKILL.md"
 done
 expect_ok "reviewer settings document recorded operator overrides (#1604)" \
     grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"

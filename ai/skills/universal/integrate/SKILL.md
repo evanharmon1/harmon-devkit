@@ -2810,9 +2810,13 @@ that loops indefinitely:
    If the record is missing or unreadable, leave the claim labels and report
    unverified claim-label cleanup instead of guessing. Skip recorded labels
    already absent. Re-read the issue to verify successful claim-label writes.
-   `needs-review` is a PR state meaning a requested review (agent or human) is
-   not yet complete. This handoff never adds or removes it on the issue. A PR
-   awaiting the human merge is `merge-ready`, which the merge queue owns.
+   `needs-review` is a PR state: an agent still owes review work on the delivery
+   PR (review triggers, responses, fixes, adjudications). When the agent owes
+   none of that, the label comes off, even if a human still has to look at or
+   merge the PR. A PR waiting on a human is `merge-ready` or `parked`, never
+   `needs-review`, and the label never sits together with either.
+   This handoff never adds or removes it on the issue. The merge queue owns
+   `merge-ready` and `parked`.
    Do **not** post a release comment — the claim as a whole remains live
    (assignee) until the close event or `/wrap` releases it.
 
