@@ -1,0 +1,31 @@
+{
+  "run_id": "fixture-run",
+  "instruction": "Operator: use these reviewer settings for this PR",
+  "finders": [
+    {
+      "id": "codex-cloud",
+      "budget": 0,
+      "gates": false
+    },
+    {
+      "id": "claude",
+      "budget": 3,
+      "gates": true
+    },
+    {
+      "id": "greptile",
+      "budget": 2,
+      "gates": true
+    },
+    {
+      "id": "coderabbit-cloud",
+      "budget": 4,
+      "gates": false
+    },
+    {
+      "id": "gemini",
+      "budget": 5,
+      "gates": true
+    }
+  ]
+}

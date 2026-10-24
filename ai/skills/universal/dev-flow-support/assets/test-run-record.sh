@@ -298,6 +298,13 @@ expect_refused "run owned by another slate" "run run-a is owned by slate s1, not
     bash -c "cd '$repo' && node '$writer' intervention --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --kind other --note x --at 2026-01-01T00:03:30Z"
 cmp -s "$run" "$tmp/run-a.json" || fail "a refused foreign-slate write changed run.json"
 [ ! -e "$state/locks/s6.json" ] || fail "a refused foreign-ownership write left slate s6 locked"
+cp -R "$state" "$tmp/state-before-foreign-promote-check"
+expect_refused "promotion foreign owner" "run run-a is owned by slate s1, not s6" \
+    bash -c "cd '$repo' && node '$writer' promote --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:03:30Z"
+expect_refused "promotion precheck foreign owner" "run run-a is owned by slate s1, not s6" \
+    bash -c "cd '$repo' && node '$writer' promote --check --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:03:30Z"
+diff -r "$state" "$tmp/state-before-foreign-promote-check" >/dev/null ||
+    fail "a foreign-owner promotion precheck changed durable state"
 pass "a second slate cannot write a run another slate owns, and the refusal takes no lock"
 
 [ -z "$(find "$state/runs" -name 'owner-slate.tmp.*')" ] || fail "an owner-slate temp file was left behind"
@@ -328,6 +335,13 @@ acquire s10 carol
 expect_refused "refused bind with a pre-existing lock" "run run-u is not a lane in any revision of slate s10's plan" \
     bash -c "cd '$repo' && node '$writer' transition --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --stage claim --exit k --at 2026-01-01T00:01:00Z"
 [ -e "$state/locks/s10.json" ] || fail "a refused bind released a lock it did not create"
+cp -R "$state" "$tmp/state-before-unplanned-promote-check"
+expect_refused "promotion outside plan" "run run-u is not a lane in any revision of slate s10's plan" \
+    bash -c "cd '$repo' && node '$writer' promote --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:01:00Z"
+expect_refused "promotion precheck outside plan" "run run-u is not a lane in any revision of slate s10's plan" \
+    bash -c "cd '$repo' && node '$writer' promote --check --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:01:00Z"
+diff -r "$state" "$tmp/state-before-unplanned-promote-check" >/dev/null ||
+    fail "an outside-plan promotion precheck changed durable state"
 (cd "$repo" && node "$writer" lock release --slate s10 --session carol --owner-token "$(token_for s10)") >/dev/null
 pass "writes require explicit acquisition and a refused bind preserves the held lock"
 
@@ -426,6 +440,86 @@ expect_refused "promotion before a later PR binding" "before PR binding #46" \
 cmp -s "$run" "$tmp/before-promotion.json" || fail "a promotion before a later binding changed the record"
 pass "promotion cannot predate the initial or a later PR binding"
 
+# --check exercises the exact promotion candidate without leaving an owner,
+# lock, candidate, record, or active-pointer side effect behind.
+cp "$state/locks/s1.json" "$tmp/lock-before-scope-precheck.json"
+jq '.issues = [11, 12]' "$state/locks/s1.json" >"$tmp/lock-narrow.json"
+mv "$tmp/lock-narrow.json" "$state/locks/s1.json"
+cp -R "$state" "$tmp/state-before-scope-precheck"
+rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z \
+    --issues 11,12,13,14 >/dev/null
+diff -r "$state" "$tmp/state-before-scope-precheck" >/dev/null ||
+    fail "an accepted scope-change promotion precheck changed durable state"
+cp "$tmp/lock-before-scope-precheck.json" "$state/locks/s1.json"
+cp -R "$state" "$tmp/state-before-promote-check"
+rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z >/dev/null
+diff -r "$state" "$tmp/state-before-promote-check" >/dev/null ||
+    fail "a successful promotion precheck changed durable state"
+no_candidates "successful promotion precheck"
+expect_refused "precheck promotion before a later PR binding" "before PR binding #46" \
+    rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:09:00Z
+diff -r "$state" "$tmp/state-before-promote-check" >/dev/null ||
+    fail "a refused promotion precheck changed durable state"
+no_candidates "refused chronology promotion precheck"
+cp -R "$state" "$tmp/state-before-unsettled-promote-check"
+expect_refused "precheck promotion over an unsettled deferred finding" "has no settlement" \
+    rr alice promote --check --run-id run-c --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+diff -r "$state" "$tmp/state-before-unsettled-promote-check" >/dev/null ||
+    fail "an unsettled promotion precheck changed durable state"
+no_candidates "refused unsettled promotion precheck"
+promotion_parity() {
+    local label="$1" expected="$2" pattern="$3"
+    shift 3
+    local normal check normal_rc=0 check_rc=0
+    cp -R "$state" "$tmp/state-before-$label"
+    normal="$(rr alice promote --run-id run-a "$@" 2>&1)" || normal_rc=$?
+    check="$(rr alice promote --check --run-id run-a "$@" 2>&1)" || check_rc=$?
+    [ "$normal_rc" -eq "$expected" ] || fail "$label: promote exit $normal_rc, expected $expected: $normal"
+    [ "$check_rc" -eq "$expected" ] || fail "$label: promote --check exit $check_rc, expected $expected: $check"
+    grep -qF -- "$pattern" <<<"$normal" || fail "$label: promote omitted $pattern: $normal"
+    grep -qF -- "$pattern" <<<"$check" || fail "$label: promote --check omitted $pattern: $check"
+    diff -r "$state" "$tmp/state-before-$label" >/dev/null || fail "$label changed durable state"
+    no_candidates "$label promotion precheck"
+}
+promotion_parity invalid-head 2 '--head must be a 40-hex SHA' --head nope --fingerprint fp --at 2026-01-01T00:10:00Z
+promotion_parity missing-fingerprint 2 '--fingerprint is required' --head "$head_sha" --at 2026-01-01T00:10:00Z
+promotion_parity invalid-at 2 '--at must be a UTC timestamp' --head "$head_sha" --fingerprint fp --at nope
+promotion_parity wrong-token 1 'owner token does not match' --owner-token wrong --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+cp "$run" "$tmp/run-before-invalid-schema.json"
+jq '.schema = 99' "$run" >"$tmp/run-invalid-schema.json"
+mv "$tmp/run-invalid-schema.json" "$run"
+promotion_parity invalid-existing-schema 1 'failed `run` validation' --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+cp "$tmp/run-before-invalid-schema.json" "$run"
+pass "promotion precheck validates the same candidate and leaves durable state byte-identical"
+
+# A non-ENOENT candidate-cleanup failure must refuse the actual read-only
+# promote command. Preload node:fs before the ESM writer imports it so the
+# fixture is deterministic and does not need a permission-racing process.
+cleanup_preload="$tmp/deny-candidate-unlink.cjs"
+printf '%s\n' \
+    'const fs = require("node:fs")' \
+    'const { syncBuiltinESMExports } = require("node:module")' \
+    'const unlinkSync = fs.unlinkSync' \
+    'fs.unlinkSync = (file, ...args) => {' \
+    '  if (String(file).includes(".candidate.")) {' \
+    '    const error = new Error("injected candidate cleanup failure")' \
+    '    error.code = "EACCES"' \
+    '    throw error' \
+    '  }' \
+    '  return unlinkSync(file, ...args)' \
+    '}' \
+    'syncBuiltinESMExports()' >"$cleanup_preload"
+cp -R "$state" "$tmp/state-before-cleanup-failure-precheck"
+expect_refused "precheck candidate cleanup failure" "EACCES" \
+    bash -c "cd '$repo' && RUN_RECORD_OWNER_TOKEN='$(token_for s1)' node --require '$cleanup_preload' '$writer' promote --check --slate s1 --session alice --run-id run-a --head '$head_sha' --fingerprint fp --at 2026-01-01T00:10:00Z"
+candidate_count="$(find "$state" -name '*.candidate.*' -type f | wc -l | tr -d ' ')"
+[ "$candidate_count" = 1 ] || fail "cleanup-failure precheck left $candidate_count candidates, expected 1"
+find "$state" -name '*.candidate.*' -type f -delete
+diff -r "$state" "$tmp/state-before-cleanup-failure-precheck" >/dev/null ||
+    fail "a cleanup-failure promotion precheck changed durable state"
+no_candidates "refused cleanup-failure promotion precheck"
+pass "promotion precheck propagates non-ENOENT candidate cleanup failures"
+
 # Execute the command actually documented in integrate's promotion step,
 # rather than a second hand-maintained version of that recipe. The fixture
 # confirms that equal promotion/binding times are allowed.
@@ -452,6 +546,13 @@ expect_refused "pr binding after promotion" "run already ended with outcome read
     rr alice bind-pr --run-id run-a --number 43 --url https://example.test/pr/43 --at 2026-01-01T00:11:00Z
 expect_refused "transition after promotion" "run already ended" \
     rr alice transition --run-id run-a --stage implement --at 2026-01-01T00:11:00Z
+cp -R "$state" "$tmp/state-before-ended-promote-check"
+expect_refused "promotion after promotion" "run already ended with outcome ready-for-review" \
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:11:00Z
+expect_refused "promotion precheck after promotion" "run already ended with outcome ready-for-review" \
+    rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:11:00Z
+diff -r "$state" "$tmp/state-before-ended-promote-check" >/dev/null ||
+    fail "an ended-run promotion precheck changed durable state"
 pass "every entry dated after the promotion is refused"
 
 expect_refused "backfill after promotion" "run already ended with outcome ready-for-review" \

@@ -283,6 +283,10 @@ expect_ok "dev-flow-support documents decision writers (#1410)" \
     grep -qF 'Write held-lock `genesis`, `add-issue`' \
     "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
 
+# Reviewer policy (#1604): independent of the review-marker lifecycle (#1608).
+expect_ok "reviewer settings document recorded operator overrides (#1604)" \
+    grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+
 # Lane provisioning (#1542): keep these pins separate from other live lanes.
 expect_ok "orchestrator Lane briefs names the provisioning command" \
     grep -qF 'Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.' \

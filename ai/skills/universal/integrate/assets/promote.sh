@@ -6,7 +6,7 @@
 # 12 already non-draft and a promotion is recorded for the requested head;
 # no mutation, caller audits the current head. 13 mismatch/writer refusal, undone;
 # 14 remote state unknown after one undo; 15 ready command failed, undone.
-# 16 owner-check refused before mutation; 17 unrecorded non-draft promotion
+# 16 promotion precheck refused before mutation; 17 unrecorded non-draft promotion
 # (no mutation; caller uses unexplained-promotion reconciliation).
 # After mutation: at most ten network reads/writes (fingerprint contributes five):
 # 10 × 60s + 10 × 1s kill grace + two writer mutex waits × 15s = 640s.
@@ -133,9 +133,14 @@ undo() {
     echo "BLOCKER: $reason; remote state indeterminate after one undo; no second undo" >&2
     exit 14
 }
-if ! node "$support_dir/run-record.mjs" lock check \
-    --slate "$slate" --session "$session" --owner-token "$owner_token"; then
-    echo 'BLOCKER: slate lock owner check refused; no promotion attempted' >&2
+# Rehearse the exact writer mutation before notifying reviewers. The real
+# writer repeats every check after the remote mutation; this read-only check
+# is only a pre-mutation refusal boundary.
+promoted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 11
+if ! node "$support_dir/run-record.mjs" promote --check \
+    --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
+    --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"; then
+    echo 'BLOCKER: promotion precheck refused; no promotion attempted' >&2
     exit 16
 fi
 ready_rc=0
@@ -162,7 +167,6 @@ if [ "$ready_rc" -ne 0 ]; then
     undo_code=15
     undo
 fi
-promoted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || undo
 if ! node "$support_dir/run-record.mjs" promote \
     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
     --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"; then

@@ -2639,9 +2639,12 @@ that loops indefinitely:
    inputs. The command is deliberately outside this skill's allowed-tools;
    invoke it through the normal permission mechanism. The gate stays read-only.
 
-   Before the ready mutation the command validates the existing slate lock
-   and owner token through read-only `run-record.mjs lock check` (exit 16
-   refuses without notifying anyone). Every GitHub call is bounded by
+   Before the ready mutation the command rehearses the full promotion-candidate
+   validation through read-only `run-record.mjs promote --check`, using the
+   captured slate, session, owner token, run, head, gate fingerprint, and
+   `promoted_at`. This durable-write-free precheck exercises the same writer
+   validation that the real promotion repeats after remote confirmation; exit
+   16 is its refusal boundary, before notifying anyone. Every GitHub call is bounded by
    `timeout -k 1 60` (or `gtimeout`); the fingerprint uses the gate's five
    individually bounded network reads. There are no read retries: after mutation
    there are at most ten network calls (ready, scalar read, five fingerprint
@@ -2655,9 +2658,10 @@ that loops indefinitely:
    command on resumption: if promotion landed, exit 17 routes an unrecorded
    promotion to reconciliation, or exit 12 routes a recorded promotion to audit.
 
-   The command runs check → ready (exactly once) → scalar read → fingerprint
-   → head re-read → record. Both scalar reads require an open PR, the expected
-   head and `isDraft == false`; the fingerprint must be identical to the passing gate's.
+   The command runs check → promotion precheck → ready (exactly once) → scalar
+   read → fingerprint → head re-read → record. Both scalar reads require an
+   open PR, the expected head and `isDraft == false`; the fingerprint must be
+   identical to the passing gate's.
    The head re-read follows the fingerprint because the hash excludes the head.
    The command will re-read the content fingerprint using
    `readiness-gate.sh fingerprint --repo "$repo" --pr <n>`.
@@ -2670,7 +2674,7 @@ that loops indefinitely:
    no mutation; audit the current head (below);
    **13** mismatch or writer refusal, undone and confirmed draft;
    **14** remote state unknown after one undo; **15** ready command failed,
-   undone and confirmed draft; **16** slate owner validation refused before
+   undone and confirmed draft; **16** full promotion precheck refused before
    mutation; **17** unrecorded non-draft promotion, routed to §2’s
    unexplained-promotion procedure. When §2's reconcile branch accepts the
    promotion (the current head independently passes `readiness-gate.sh audit`),
@@ -2688,8 +2692,10 @@ that loops indefinitely:
 
    The following marker documents the command's internal record call; it is
    not a second caller-side step. `head` and `gate_fingerprint` come verbatim
-   from the confirmed reads; `promoted_at` is their UTC confirmation time.
-   With `support_dir` resolved physically, the command invokes:
+   from the confirmed reads. `promoted_at` is captured before the writer
+   precheck, then passed unchanged to the real writer after remote
+   confirmation; it is not the confirmation time. With `support_dir` resolved
+   physically, the command invokes:
 
    <!-- promotion-record-command -->
 

@@ -5500,9 +5500,9 @@ STUB
 import { appendFileSync, writeFileSync } from 'node:fs'
 const a = process.argv.slice(2)
 const value = key => a[a.indexOf(key) + 1]
-if (a[0] === 'lock' && a[1] === 'check') {
-  appendFileSync(process.env.PROMOTE_LOG, 'owner check\n')
-  process.exit(process.env.PROMOTE_CASE === 'stale-token' ? 1 : 0)
+if (a[0] === 'promote' && a.includes('--check')) {
+  appendFileSync(process.env.PROMOTE_LOG, 'promotion precheck\n')
+  process.exit(['stale-token', 'foreign-owned', 'ended-run'].includes(process.env.PROMOTE_CASE) ? 1 : 0)
 }
 appendFileSync(process.env.PROMOTE_LOG, `record ${a[0]}\n`)
 if (process.env.PROMOTE_CASE === 'writer-refused') process.exit(1)
@@ -5568,7 +5568,7 @@ STUB
     # Exact order includes the head read AFTER the content fingerprint.
     sed -E 's/^(check|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
         "$PROMOTE_LOG" >"$promote_fixture/order"
-    printf 'check\nowner check\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
+    printf 'check\npromotion precheck\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
     cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
     grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
     for case_name in transient-read still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
@@ -5592,6 +5592,12 @@ STUB
 
     promotion_case stale-token 16
     ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'stale token notified reviewers'
+    ! grep -q '^pr ready --undo ' "$PROMOTE_LOG" || fail 'stale token attempted undo without mutation'
+    for case_name in foreign-owned ended-run; do
+        promotion_case "$case_name" 16
+        ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail "promote $case_name notified reviewers"
+        ! grep -q '^pr ready --undo ' "$PROMOTE_LOG" || fail "promote $case_name attempted undo without mutation"
+    done
     # Simulate interruption after ready by starting a subsequent call against
     # a non-draft PR with no record: it must route to reconciliation, not 12.
     promotion_case already 17
@@ -5678,6 +5684,22 @@ JS
     [ "$stale_rc" -eq 16 ] || fail "real stale owner must refuse pre-mutation: $stale_output"
     ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'real stale owner reached ready'
     cmp -s "$state/locks/s-promote.json" "$promote_fixture/lock.before" || fail 'refused owner check wrote lock'
+    cp -R "$state" "$promote_fixture/state-before-precheck"
+    node "$real_writer" promote --check --slate s-promote --session alice --owner-token "$token" \
+        --run-id run-promote --head "$PROMOTE_HEAD" --fingerprint fp --at 2026-01-01T00:03:00Z >/dev/null
+    diff -r "$state" "$promote_fixture/state-before-precheck" >/dev/null ||
+        fail 'successful promotion precheck changed durable state'
+    cp "$PROMOTE_RECORD/owner-slate" "$promote_fixture/owner-before-foreign-precheck"
+    printf 'other-slate\n' >"$PROMOTE_RECORD/owner-slate"
+    : >"$PROMOTE_LOG"
+    foreign_rc=0
+    foreign_output="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || foreign_rc=$?
+    [ "$foreign_rc" -eq 16 ] || fail "real foreign owner must refuse pre-mutation: $foreign_output"
+    ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'real foreign owner reached ready'
+    ! grep -q '^pr ready --undo ' "$PROMOTE_LOG" || fail 'real foreign owner attempted undo'
+    cp "$promote_fixture/owner-before-foreign-precheck" "$PROMOTE_RECORD/owner-slate"
     export PROMOTE_CASE=success
     printf 'draft\n' >"$PROMOTE_STATE"
     rm -f "$PROMOTE_STATE.count"
@@ -5692,6 +5714,18 @@ JS
         "$PROMOTE_RECORD/run.json" >/dev/null || fail 'real promote omitted promotion/outcome/chain'
     node "$validator" run "$PROMOTE_RECORD/run.json" --receipts "$PROMOTE_RECORD/run.json" --no-adjudications >/dev/null ||
         fail 'real promote produced invalid run record'
+    # A valid ended record is refused by the real precheck before either GitHub
+    # mutation, even when the gate still reports a draft PR as ready.
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count"
+    : >"$PROMOTE_LOG"
+    ended_rc=0
+    ended_output="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || ended_rc=$?
+    [ "$ended_rc" -eq 16 ] || fail "real ended run must refuse pre-mutation: $ended_output"
+    ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'real ended run reached ready'
+    ! grep -q '^pr ready --undo ' "$PROMOTE_LOG" || fail 'real ended run attempted undo'
 )
 
 echo "integration readiness gate + gh-ro + gh-write-broker + promote: PASS"
