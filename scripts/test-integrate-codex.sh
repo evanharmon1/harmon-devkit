@@ -9526,6 +9526,9 @@ auth_validate() {
     set -e
 }
 
+# Finder-null legacy state is authenticated against the current trusted
+# profile, so seed its real registry before the genuine default assertion.
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
 auth_validate "$auth_receipt"
 [ "$auth_rc" -eq 0 ] || fail "authentic clean receipt was rejected: $auth_out"
 
@@ -9548,10 +9551,19 @@ jq -n --arg run "$auth_run" \
     '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
     >"$auth_record"
 
+# Legacy finder-null state is valid only while the trusted Codex profile
+# remains byte-for-byte the checker’s fixed defaults. The actor may remain
+# real while a narrowed terminal-surface set changes the evidence meaning.
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) = ["review"]' \
+    "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'legacy checker defaults do not exactly match the trusted codex-cloud registry profile' <<<"$auth_out" ||
+    fail "legacy null finder accepted a changed same-actor trusted profile: $auth_out"
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+
 # Registry-reserved cycles must keep the exact trusted actor and surface
 # profile. A state that substitutes a different actor or terminal surface is
 # refused before it can reinterpret the review evidence.
-base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
 jq '.finder = {
       slug:"codex-cloud", actor_id:"5150", actor_login:"impostor",
       trigger_mechanism:"review-comment", trigger_body:"@codex review",

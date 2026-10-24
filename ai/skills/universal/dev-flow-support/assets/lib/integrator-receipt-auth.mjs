@@ -12,6 +12,31 @@ const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
 const TRUSTED_REGISTRY = join(ASSET_DIR, '../../../integrate/assets/trusted-registry.sh')
 
+// Fixed defaults of check-codex-cloud-review.sh before finder profiles were
+// persisted in state. A finder-null legacy cycle is admissible only when the
+// current trusted codex-cloud profile is exactly this classifier; otherwise a
+// newer registry could silently change what the legacy checker accepted.
+const LEGACY_CODEX_PROFILE = {
+  slug: 'codex-cloud',
+  actor_id: '199175422',
+  actor_login: 'chatgpt-codex-connector[bot]',
+  trigger_mechanism: 'review-comment',
+  trigger_body: '@codex review',
+  reviewer_login: null,
+  surfaces: ['reaction', 'comment', 'review', 'inline'],
+  head_binding: 'reviewed-commit-line',
+  verdict_mode: 'clean-sentence',
+  clean_verdict: "codex review: didn't find any major issues.",
+  actionable_pattern: null,
+  severity_marker: '\\bp[0-9]+\\b',
+  metadata_line: '^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$',
+  about_summary: 'about codex',
+  heading: '^#{1,6}[^a-z0-9]*codex review$',
+  carrier_sentence: 'here are some automated review suggestions for this pull request.',
+  success_reaction: '+1',
+  pending_reaction: 'eyes'
+}
+
 function stable(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
@@ -90,13 +115,21 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
       url.pathname.replace(/^\/+|\/+$/g, '') === `${state?.repo}/pull/${state?.pr}`
   } catch { /* malformed binding cannot authenticate a cycle */ }
   if (!bound) errors.push('$result.payload.codex_cycle: checker state repo/PR is not bound to the run’s trusted PR binding')
-  if (state?.finder) {
-    try {
-      const profile = trustedCodexProfile(state.repo, state.pr)
+  try {
+    const profile = trustedCodexProfile(state.repo, state.pr)
+    if (state?.finder) {
       if (stable(state.finder) !== stable(profile)) errors.push('$result.payload.codex_cycle: checker state finder does not exactly match the trusted codex-cloud registry profile')
-    } catch (error) {
-      errors.push(`$result.payload.codex_cycle: cannot resolve the trusted codex-cloud registry profile: ${error.stderr || error.message}`)
+    } else if (
+      profile.actor_id !== LEGACY_CODEX_PROFILE.actor_id ||
+      profile.actor_login !== LEGACY_CODEX_PROFILE.actor_login ||
+      !profile.surfaces?.includes('comment') ||
+      !profile.surfaces?.includes('review') ||
+      stable(profile) !== stable(LEGACY_CODEX_PROFILE)
+    ) {
+      errors.push('$result.payload.codex_cycle: legacy checker defaults do not exactly match the trusted codex-cloud registry profile')
     }
+  } catch (error) {
+    errors.push(`$result.payload.codex_cycle: cannot resolve the trusted codex-cloud registry profile: ${error.stderr || error.message}`)
   }
   if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
