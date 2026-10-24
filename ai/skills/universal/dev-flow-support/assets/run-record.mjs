@@ -18,6 +18,7 @@
 //                               [--operator-pin TEXT]... [--registry-revision SHA] [--at TS]
 //   run-record.mjs lane-init    --slate ID --session ID --lane ID --policy FILE [--at TS]
 //   run-record.mjs receipt      --slate ID --session ID --run-id ID --pass FILE
+//                               [--codex-state FILE --codex-repo-dir DIR]
 //   run-record.mjs adjudicate   --slate ID --session ID --run-id ID --file FILE
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
 //   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,N,...]
@@ -97,6 +98,7 @@ import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
+import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -1421,6 +1423,54 @@ function admitPass(record, envelope, runDir) {
   return `${stage}-r${round}-${slot}`
 }
 
+// admitIntegratorPass — integration has one durable coordinator result per
+// pass, rather than one finder slot per confidence round.  Keep it on the
+// same immutable receipt path as confidence evidence: it must describe the
+// active integration stage, the next unadjudicated integration round, and
+// the branch head at the instant the result was captured.  The literal slot
+// name is intentional: it is the stable producer coordinate used by the
+// integration exit reader and by evidence publication, not a caller choice.
+function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = false } = {}) {
+  const stage = 'integration'
+  const round = envelope.payload?.integration_round
+  const slot = 'integrator'
+  const refuse = (reason) => {
+    throw new Refusal(`pass ${stage}-r${round}-${slot} is not admissible: ${reason}`)
+  }
+  if (envelope.role !== 'integrator') refuse(`it is a ${JSON.stringify(envelope.role)} result, not an integrator result`)
+  if (!Number.isSafeInteger(round) || round < 1) refuse('it names no positive integration_round')
+  if (envelope.status !== 'completed') refuse(`its status is ${JSON.stringify(envelope.status)}, not "completed"`)
+  const resolution = readJson(join(runDir, 'policy.json'), 'run policy projection')
+  const order = Array.isArray(resolution?.tier_order) ? resolution.tier_order : null
+  const resolvedTier = resolution?.roles?.integrator?.tier
+  if (order !== null && typeof resolvedTier === 'string' && order.includes(resolvedTier) &&
+      !(order.indexOf(envelope.producer?.tier) >= order.indexOf(resolvedTier))) {
+    refuse(`its producer tier ${JSON.stringify(envelope.producer?.tier)} is below the run's resolved integrator tier ${resolvedTier}`)
+  }
+  const active = record.stage_transitions.at(-1)
+  if (active.stage !== stage) refuse(`the run's active stage is ${active.stage}`)
+  // Recovery is deliberately narrower than ordinary sequencing: only an
+  // already-published byte-identical r1 beside its r1 adjudication can lack
+  // the pass receipt after a crash. Every other admission predicate below
+  // still applies, including current stage/head/tier/time and live auth.
+  const next = adoptOrphan ? 1 : Math.max(0, ...adjudicatedRounds(runDir, stage)) + 1
+  if (round !== next) refuse(`the next unadjudicated integration round is ${next}`)
+  const { branch, head } = branchHead(runDir)
+  if (envelope.head !== head) refuse(`it reviewed ${envelope.head}, not ${branch}'s head ${head}`)
+  if (typeof envelope.produced_at !== 'string' || !TIMESTAMP.test(envelope.produced_at) ||
+      isBefore(envelope.produced_at, active.entered_at) || Date.now() < Date.parse(envelope.produced_at)) {
+    refuse(`produced_at ${JSON.stringify(envelope.produced_at)} is outside the stage's span (${active.entered_at} to now)`)
+  }
+  const authErrors = authenticateIntegratorReceipt(envelope, {
+    record,
+    policy: resolution,
+    stateFile: args['codex-state'],
+    repoDir: args['codex-repo-dir']
+  })
+  if (authErrors.length) refuse(authErrors.join('; '))
+  return `${stage}-r${round}-${slot}`
+}
+
 // ledgerEntries — the change ledger for one fix: how the commits between two
 // reviewed heads changed each file (new-side added lines, old-side deleted
 // lines, and the rename source), in the shape dev-flow-exit.mjs verifies
@@ -1457,13 +1507,16 @@ function ledgerEntries(round, from, to) {
 }
 
 const SIDE_EFFECTS = {
-  receipt(record, args, { runDir }) {
+  receipt(record, args, { runDir, canonical: runPath }) {
     if (typeof args.pass !== 'string' || args.pass === '') throw new UsageError('--pass is required')
     guardTimestamp(record, resolveAt(undefined))
     const envelope = readJson(args.pass, 'pass')
     const bytes = readFileSync(args.pass)
-    const slot = envelope?.payload?.slot ?? envelope?.payload?.finder
-    const name = `${envelope?.payload?.stage}-r${envelope?.payload?.round}-${slot}`
+    const integrator = envelope?.role === 'integrator'
+    const slot = integrator ? 'integrator' : envelope?.payload?.slot ?? envelope?.payload?.finder
+    const stage = integrator ? 'integration' : envelope?.payload?.stage
+    const round = integrator ? envelope?.payload?.integration_round : envelope?.payload?.round
+    const name = `${stage}-r${round}-${slot}`
     // The name becomes a path: validate it before any path is built.
     if (typeof slot !== 'string' || !SAFE_ID.test(slot) || !SAFE_ID.test(name)) {
       throw new Refusal(`pass ${JSON.stringify(name)} is not admissible: its stage, round and slot do not form a safe file name`)
@@ -1475,17 +1528,26 @@ const SIDE_EFFECTS = {
       }
       return null
     }
-    admitPass(record, envelope, runDir)
+    const orphan = integrator && existsSync(canonical) && readFileSync(canonical).equals(bytes)
+    if (integrator) {
+      // A crash may have published immutable bytes before its receipt write.
+      // Adopt only the exact existing integration-r1 bytes, after the same
+      // fresh admission checks; never rewrite an orphan or skip a later round.
+      const adoptOrphan = orphan && round === 1 && adjudicatedRounds(runDir, 'integration').includes(1)
+      admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan })
+    }
+    else admitPass(record, envelope, runDir)
     const knownIds = receiptedPassNames(record).flatMap((file) => {
       const path = join(runDir, 'passes', `${file}.json`)
       if (!existsSync(path)) throw new Refusal(`run.json receipts pass ${file}, but ${path} does not exist`)
       return (readJson(path, 'receipted pass').payload?.findings ?? []).map((finding) => finding.id)
     })
     const failure = withJsonTemp(runDir, knownIds, (known) =>
-      runValidatorWith(['envelope', args.pass, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt']),
+      runValidatorWith(['envelope', args.pass, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt',
+        ...(integrator ? ['--integrator-record', runPath, '--codex-state', args['codex-state'] ?? '', '--codex-repo-dir', args['codex-repo-dir'] ?? ''] : [])]),
     )
     if (failure !== null) throw new Refusal(`pass ${args.pass} failed receipt validation; nothing was published:\n${failure}`)
-    publishExclusive(canonical, bytes, 'pass')
+    if (!orphan) publishExclusive(canonical, bytes, 'pass')
     record.receipts = [...(record.receipts ?? []), { kind: 'pass', file: name }]
     return { write: true, summary: `pass receipt ${name}` }
   },
@@ -1496,8 +1558,8 @@ const SIDE_EFFECTS = {
     const bytes = readFileSync(args.file)
     if (document?.run_id !== record.run_id) throw new Refusal(`adjudication names run ${JSON.stringify(document?.run_id)}, not ${record.run_id}`)
     const { stage, round } = document
-    if (!CONFIDENCE_STAGES.has(stage) || !Number.isSafeInteger(round) || round < 1) {
-      throw new Refusal('adjudication names no confidence stage and positive round')
+    if ((!CONFIDENCE_STAGES.has(stage) && stage !== 'integration') || !Number.isSafeInteger(round) || round < 1) {
+      throw new Refusal('adjudication names no confidence stage or integration stage and positive round')
     }
     const name = `${stage}-r${round}`
     const target = join(runDir, 'adjudications', `${name}.json`)
@@ -1511,7 +1573,8 @@ const SIDE_EFFECTS = {
       .filter((file) => file.startsWith(`${name}-`))
       .map((file) => join(runDir, 'passes', `${file}.json`))
     if (passes.length === 0) throw new Refusal(`round ${name} has no receipted pass to adjudicate`)
-    const missing = [...resolvedSlots(record, runDir, stage)].filter((slot) => !receiptedPassNames(record).includes(`${name}-${slot}`))
+    const requiredSlots = stage === 'integration' ? ['integrator'] : [...resolvedSlots(record, runDir, stage)]
+    const missing = requiredSlots.filter((slot) => !receiptedPassNames(record).includes(`${name}-${slot}`))
     if (missing.length > 0) throw new Refusal(`round ${name} is incomplete: no receipted pass for slot(s) ${missing.join(', ')}`)
     const directory = join(runDir, 'adjudications')
     const known = existsSync(directory)
@@ -1626,7 +1689,7 @@ const VALUE_FLAGS = new Set([
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
-  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane',
+  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 

@@ -89,7 +89,7 @@ migration visible; a stage that finds another way to finish hides it.
 orchestrated run's record comes from `/review` and its role agents; an
 ordinary interactive session's comes from `/implement` § 6a, which records the
 inline `task challenge` / `task review` stages in a real single-lane run
-(`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
+  (`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
 directory unchanged, and a solo session promotes through
@@ -103,6 +103,15 @@ the slate lock, the same value on every write — or a non-promotion ending with
 --outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
 session> --owner-token <token>` (`/implement` § 6a step 6).
+
+**Persist integration evidence through the writer.** Receipt each completed
+integrator envelope with `run-record.mjs receipt`; an envelope with a non-null
+`codex_cycle` also supplies the checker state and checkout via
+`--codex-state <state> --codex-repo-dir <checkout>`. The writer re-runs the
+read-only checker and binds its live result to the run's recorded PR before it
+accepts the immutable pass. A null cycle is admitted only when the retained
+policy disables integration review; a diagnostic pending report is never a
+receipt.
 
 Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 

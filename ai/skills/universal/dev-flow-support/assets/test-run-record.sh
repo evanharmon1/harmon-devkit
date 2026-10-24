@@ -804,6 +804,52 @@ rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
 (cd "$repo" && node "$writer" lock release --slate s13 --session alice --owner-token "$(token_for s13)") >/dev/null
 pass "a remediation push is recorded on the integration re-entry, and refused anywhere else"
 
+# Integration results use the same immutable writer as confidence passes, but
+# their coordinates are payload.integration_round plus the stable integrator
+# producer name.  This covers a recovery where a producer and an empty
+# adjudication already exist on disk: identical bytes are adopted only after
+# the fresh stage/head/time/schema checks, and a changed replay is refused.
+new_run run-integrator
+write_plan s-integrator 21:run-integrator
+acquire s-integrator alice
+ri() { (cd "$repo" && node "$writer" transition --slate s-integrator --session alice --owner-token "$(token_for s-integrator)" --run-id run-integrator "$@"); }
+rri() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" "$@" --slate s-integrator --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    ri --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+integration_branch="fixture-run-integrator"
+git -C "$repo" branch "$integration_branch" HEAD
+mkdir -p "$state/runs/run-integrator/passes" "$state/runs/run-integrator/adjudications"
+printf '{"branch":"%s"}\n' "$integration_branch" >"$state/runs/run-integrator/branch.json"
+printf '{"roles":{"integrator":{"tier":"economy"}},"rounds":{"integration":0}}\n' >"$state/runs/run-integrator/policy.json"
+integration_head="$(git -C "$repo" rev-parse "$integration_branch")"
+integration_pass="$tmp/integration-r1-integrator.json"
+jq --arg head "$integration_head" '
+  .run = {run_id:"run-integrator",initiated_by:"human"}
+  | .head = $head
+  | .produced_at = "2026-10-01T00:00:00Z"
+  | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$integration_pass"
+jq '.payload.checks[0].bucket = "pending" | .payload.verdict = "pending" | del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-pending.json"
+expect_refused "integrator receipt with pending checks" "pending checks cannot be admitted as an integrator receipt" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-pending.json"
+rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
+[ -f "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
+    fail "integrator receipt was not published under its stable coordinates"
+rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
+jq '.producer.model = "different-producer-bytes"' "$integration_pass" >"$tmp/integration-replay-changed.json"
+expect_refused "integrator receipt changed replay" "already receipted with different content" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-replay-changed.json"
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' \
+    >"$tmp/integration-r1-adjudication.json"
+rri adjudicate --run-id run-integrator --file "$tmp/integration-r1-adjudication.json" >/dev/null
+[ -f "$state/runs/run-integrator/adjudications/integration-r1.json" ] ||
+    fail "integration adjudication was not published with its receipted pass"
+(cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
+pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"
+
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane
 new_run run-d

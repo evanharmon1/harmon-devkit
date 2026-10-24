@@ -1839,6 +1839,21 @@ usage_error_case \
     "--receipt on an integrator result without --known-ids or --run-id is a usage error" \
     integrator "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" --receipt
 
+# A schema-valid pending report is useful while an integrator is waiting for
+# CI, but receipt mode is the durable admission boundary.  Keep the bare
+# validator permissive for that truthful diagnostic and refuse its promotion
+# to immutable evidence only when every receipt context flag is present.
+pending_integrator_receipt="$test_tmp/pending-integrator-receipt.json"
+jq '.payload.checks[0].bucket = "pending" | .payload.verdict = "pending" | .payload.codex_cycle.exit_code = 11 | del(.payload.codex_cycle.accepted, .payload.applied_dispositions)' \
+    "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" >"$pending_integrator_receipt"
+node "$validator" integrator "$pending_integrator_receipt" >/dev/null ||
+    fail "a pending integrator diagnostic should remain schema-valid outside receipt mode"
+run_context_case \
+    "a strict integrator receipt requires live authentication context" \
+    integrator "$pending_integrator_receipt" \
+    "--receipt requires --codex-repo-dir" \
+    --receipt --run-id "run-4001-verdict-clean" --initiated-by human --known-ids "$empty_ids_file"
+
 run_context_case \
     "an integrator finding id colliding with --known-ids is rejected" \
     integrator \

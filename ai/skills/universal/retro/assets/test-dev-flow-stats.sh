@@ -4703,16 +4703,20 @@ mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.j
 # confidence-stage engine snapshot carries only that stage's own
 # adjudications; passes and run.json are unaffected), so this integration-
 # only record is back to its original expectation below.
-echo "== the exit-engine trajectory does not synthesize integration rounds, and discloses integration as not measured from local evidence =="
+echo "== authenticated integration receipts are measured without synthesizing confidence rounds =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null || fail "receipted integration finder counts missing: $out"
-echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
-    fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
+echo "$out" | jq -e '
+  .rounds == [] and
+  .integration_evidence == {measurement:"authenticated-receipt-backed",passes:1,findings_by_finder:{human:1}} and
+  (has("integration_passes") | not)
+' >/dev/null ||
+    fail "integration envelope coordinates: harvester did not measure authenticated receipt-backed integration evidence: $out"
 out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
-grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
-    fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
+grep -Fq 'integration: 1 authenticated receipt-backed pass(es)' <<<"$out_table" ||
+    fail "integration envelope coordinates: the table renderer did not measure authenticated integration evidence: $out_table"
 
 echo "== retained-record remediation cap is distinct from the integration cap =="
 cap_fixture="$tmp/remediation-cap"

@@ -153,6 +153,7 @@ import process from 'node:process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator, canonicalJson } from './lib/json-schema-subset.mjs'
+import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -182,7 +183,8 @@ function usage() {
     'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
+      '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] ' +
+      '[--integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>]'
   )
 }
 
@@ -439,7 +441,11 @@ function parseArgs(argv) {
     adjudications: [],
     receipt: false,
     noAdjudications: false,
-    receiptsRecord: null
+    receiptsRecord: null,
+    integratorRecord: null,
+    integratorRecordFile: null,
+    codexState: null,
+    codexRepoDir: null
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
@@ -545,6 +551,16 @@ function parseArgs(argv) {
         options.receiptsRecord = record
         break
       }
+      case '--integrator-record':
+        options.integratorRecordFile = rest[(i += 1)]
+        options.integratorRecord = loadJson(options.integratorRecordFile)
+        break
+      case '--codex-state':
+        options.codexState = rest[(i += 1)]
+        break
+      case '--codex-repo-dir':
+        options.codexRepoDir = rest[(i += 1)]
+        break
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
         usage()
@@ -588,7 +604,12 @@ const CONTEXT_FLAGS = {
   implementer: [RUN_ID_FLAG],
   challenger: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   reviewer: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
-  integrator: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
+  integrator: [
+    { flag: '--codex-repo-dir', given: (o) => o.codexRepoDir !== null },
+    { flag: '--codex-state', given: (o) => o.codexState !== null },
+    { flag: '--integrator-record', given: (o) => o.integratorRecord !== null },
+    { flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG
+  ],
   adjudication: [
     { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
     { flag: '--pass', given: (o) => o.passes.length > 0 },
@@ -1436,6 +1457,37 @@ function checkIntegratorCleanVerdict(payload, errors) {
   }
 }
 
+// A pending check is useful diagnostic data in an in-flight integrator
+// report, but it cannot become an immutable pass receipt: a later reader
+// would otherwise mistake an incomplete CI observation for settled evidence.
+// Keep this at the receipt boundary so schema-only fixture and diagnostic
+// validation can still represent the truthful pending state.
+function checkIntegratorReceiptChecks(payload, options, errors) {
+  if (!options.receipt || !Array.isArray(payload.checks)) return
+  const pending = payload.checks.filter((check) => check?.bucket === 'pending')
+  if (pending.length > 0) {
+    errors.push(`$result.payload.checks: pending checks cannot be admitted as an integrator receipt (${pending.map((check) => check.name ?? '?').join(', ')})`)
+  }
+}
+
+function checkIntegratorReceiptAuthentication(envelope, options, errors) {
+  // Bare validation remains useful for historical retained envelopes. Strict
+  // receipt mode requires explicit live context (CONTEXT_FLAGS above).
+  if (!options.receipt || !options.integratorRecord) return
+  const policyFile = path.join(path.dirname(options.integratorRecordFile), 'policy.json')
+  let policy
+  try { policy = JSON.parse(fs.readFileSync(policyFile, 'utf8')) } catch {
+    errors.push(`$result.payload.codex_cycle: cannot read the recorded resolved policy ${policyFile}`)
+    return
+  }
+  errors.push(...authenticateIntegratorReceipt(envelope, {
+    record: options.integratorRecord,
+    policy,
+    stateFile: options.codexState,
+    repoDir: options.codexRepoDir
+  }))
+}
+
 // validateEnvelopeInstance INSTANCE KIND OPTIONS — the full envelope +
 // payload + receipt-validation pipeline, shared by the top-level `<kind>
 // <file>` invocation and by --pass's own pre-validation of the reviewer
@@ -1472,6 +1524,8 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkAppliedDispositionsIntegrationRound(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
+          checkIntegratorReceiptChecks(instance.payload, options, errors)
+          checkIntegratorReceiptAuthentication(instance, options, errors)
           checkIntegratorFindingIds(instance, options, errors)
           checkIntegratorSettledAtAgreement(instance, errors)
         }
