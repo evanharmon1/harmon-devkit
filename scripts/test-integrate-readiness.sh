@@ -5575,6 +5575,7 @@ STUB
         unsafe_rc=0
         unsafe_output="$(promote_call "$unsafe_run_id" "$PROMOTE_RECORD" 2>&1)" || unsafe_rc=$?
         [ "$unsafe_rc" -eq 11 ] || fail "unsafe run id $unsafe_run_id was not refused: $unsafe_output"
+        [[ "$unsafe_output" = *'Usage: promote.sh'* ]] || fail "unsafe run id $unsafe_run_id did not report usage: $unsafe_output"
         [ ! -s "$PROMOTE_LOG" ] || fail "unsafe run id $unsafe_run_id reached the readiness gate"
     done
     for case_name in success retirement-warning lost-response; do
