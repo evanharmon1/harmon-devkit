@@ -9477,6 +9477,10 @@ printf '[]\n' >"$auth_ids"
 auth_run='run-1159-checker-auth'
 
 new_cycle
+# The first clean observation uses this suite's copied checker, whose asset
+# freshness anchor is the fixture checkout. The production checker used below
+# has its own source-checkout anchor and is set separately before auth_validate.
+git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
 jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
     '[[{id:9001,user:{id:$id,login:$login,type:"User"},
         content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
