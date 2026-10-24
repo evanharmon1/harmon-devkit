@@ -46,10 +46,16 @@ Agent states are shown with labels; the Working claim label is on the issue:
 | State | GitHub | Label | Meaning |
 |---|---|---|---|
 | Working | draft | `claim:<harness>` on the issue | An agent owes implementation, review rounds, fixes, CI or catch-up on a draft; orchestrator upkeep is excluded. |
-| Needs review | draft or promoted | `needs-review` | A requested review is incomplete, usually from an agent reviewer, sometimes a human. |
+| Needs review | draft or promoted | `needs-review` | An agent still owes review work on the delivery PR: review triggers, responses, fixes or adjudications. The label comes off when none remains, even if a human still has to look at or merge the PR; it never coexists with `merge-ready` or `parked`. |
 | Parked | draft | `parked` | Passed the handoff check earlier and waits in the merge queue; deliberately not kept current. |
 | Blocked | draft | `blocked` | Needs a human decision or input named in a comment. |
 | Merge-ready | promoted | `merge-ready` | Queue head whose handoff check passes now; the maintainer is asked to merge it. |
+
+`needs-review` means an agent still owes review work on the delivery PR (review
+triggers, responses, fixes, adjudications). When the agent owes none of that,
+the label comes off, even if a human still has to look at or merge the PR. A PR
+waiting on a human is `merge-ready` or `parked`, never `needs-review`, and the
+label never sits together with either.
 
 **Handoff** is promoting out of a passing handoff check, then applying
 `merge-ready`; it is an act, not another state. “Ready to merge” means the
@@ -98,7 +104,8 @@ This supersedes the wording in
 [harmon-init#1781](https://github.com/evanharmon1/harmon-init/issues/1781)
 that promoted PRs further back stay behind the base: those PRs stay drafts.
 This also retires [#1592](https://github.com/evanharmon1/harmon-devkit/issues/1592)’s
-issue-side `needs-review` marking in favour of the review-outstanding meaning.
+issue-side `needs-review` marking in favour of the agent-owed review-work
+meaning; waiting for a human alone does not retain `needs-review`.
 
 A lane retires when its PR passes the handoff check, whether parked or
 merge-ready; release the issue’s `claim:<harness>` label at that point. The
@@ -183,13 +190,19 @@ This ADR records the accepted model; implementation is split across:
   and lane retirement after passing the handoff check.
 - [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): the
   `devflow-policy.mjs` reader, finder fields and per-repository then per-PR
-  override resolution, plus the skills’ `needs-review` wiring. Per-PR overrides
+  override resolution, plus the skills’ text defining `needs-review` as review
+  work an agent still owes, excluding waiting on a human. Per-PR overrides
   come only from an operator instruction recorded in the run; no label family
   carries them for now.
+- [#1608](https://github.com/evanharmon1/harmon-devkit/issues/1608): the
+  `needs-review` add/remove wiring for the agent-owed meaning, after #1604.
 - [#1605](https://github.com/evanharmon1/harmon-devkit/issues/1605): handoff check
   reads check runs through the GitHub App installation token.
 - [harmon-init#1786](https://github.com/evanharmon1/harmon-init/issues/1786):
-  `AGENTS.md` template and root twin implement the policy.
+  `AGENTS.md` template and root twin implement the policy;
+  [harmon-init#1795](https://github.com/evanharmon1/harmon-init/issues/1795)
+  follows up to align the `AGENTS.md` twins and Codex review guide with the
+  amendments.
 - [harmon-init#1787](https://github.com/evanharmon1/harmon-init/issues/1787):
   `.devflow.toml.jinja` reviewer entries gated on Copier answers,
   `use_claude_review`, the `.devflow.schema.json` finder fields,
