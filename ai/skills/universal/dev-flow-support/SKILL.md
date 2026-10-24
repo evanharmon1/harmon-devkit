@@ -482,3 +482,53 @@ the two diverge.
 A consumer that *also* wants the schemas at a stable top-level path may add the
 optional `schemas:` block to its `.skills-sync.yaml`; it is not required, and
 this package does not depend on it.
+
+## Per-reviewer integration settings
+
+Keep `finders = ["codex-cloud"]` for ID-only configuration. To declare reviewer
+settings, use `[stage.integration].finder` as an array of inline tables (the
+portable TOML subset does not support array-of-tables headers). Each entry has
+an `id`; its ID joins the existing `finders` list once, preserving slot identity.
+Resolved settings live in `stages.integration.finder`; the ID list remains
+`stages.integration.finders` for existing consumers.
+
+Supported fields are `trigger` and `trigger_incremental` (nonempty comment
+bodies), `budget` (nonnegative total per PR; absent means unspecified), `gates`
+(boolean), and `carry` (`identity`, `identity-or-incremental`, or `fresh`).
+`rounds = N` means the first N rounds; `rounds = { full = [1], incremental =
+[2, 3] }` declares distinct positive rounds by mode. `completion` is a table
+with `kind` (`review`, `comment`, `reaction`, or `workflow`) and a positive
+trusted `actor_id`. A review permits only those two fields; a comment also
+requires `body`, a reaction requires `reaction`, and a workflow requires
+`workflow` and `conclusion`. Fields from another kind are refused. All signal
+strings must be nonempty. A gating reviewer cannot have budget zero. Declared
+rounds must fit the budget; an advisory reviewer explicitly disabled with
+`gates = false, budget = 0` may retain its schedule. Incremental rounds or
+`carry = "identity-or-incremental"` require `trigger_incremental`. These settings describe reviewer
+policy; they never establish that a review completed or authorize a trigger.
+Consumers still owe head binding, actor verification and the readiness gate.
+
+Repository settings resolve first. For a per-PR change, the trusted caller
+records the operator instruction in the run, then supplies its JSON projection
+through `--finder-overrides <file>` and `--run-id <run-id>` (library:
+`opts.finderOverrides` and `opts.runId`):
+`{ "run_id": "run-123", "instruction": "Operator: cap Claude at one review",
+"finders": [{ "id": "claude", "budget": 1, "rounds": 1, "gates": false }] }`.
+The reader checks the instruction's `run_id` against the run ID the caller passes. Integration IDs
+configured by the repository or added with `--add-finder` may be overridden;
+additions resolve before overrides. Omitted fields inherit;
+nested `rounds` and `completion` tables replace the whole field. The resolver
+retains the instruction and its `instruction_sha256` as `finder_overrides`,
+and the repository settings as `finder_repository`. `validateResolvedPolicy`
+replays that baseline and the disclosed override, refusing any effective setting
+difference not covered by the disclosure or any instruction digest mismatch.
+These checks establish that the projection is internally consistent with its
+disclosure and matches the caller-supplied run ID; they do not bind it to a
+recorded run. Binding the projection to that recorded run is the caller's job:
+the caller must validate the projection, compare `policy.run_id` with the actual
+run ID, verify the operator instruction and retain it in that run before use;
+run IDs and instruction text alone are not proof of authority. Labels, issue
+text and PR text are never override sources. The merge-base policy/reader rule
+still applies; an older governing reader that lacks the new flag must refuse.
+Template-owned schema and registry definitions arrive through harmon-init;
+this package's independent finder fixtures do not replace those definitions.
