@@ -41,12 +41,14 @@ GitHub states are facts: **Draft** is open with `isDraft = true`;
 passing handoff check and retain the right to demote. **Merged** and **Closed**
 are always human acts.
 
-Agent states are shown with labels; the Working claim label is on the issue:
+Agent states are shown with labels; the Working claim label is on the issue,
+and `needs-review` is on both the issue and its delivery PR, applied and removed
+together with the same agent-owed meaning:
 
 | State | GitHub | Label | Meaning |
 |---|---|---|---|
 | Working | draft | `claim:<harness>` on the issue | An agent owes implementation, review rounds, fixes, CI or catch-up on a draft; orchestrator upkeep is excluded. |
-| Needs review | draft or promoted | `needs-review` | An agent still owes review work on the delivery PR: review triggers, responses, fixes or adjudications. The label comes off when none remains, even if a human still has to look at or merge the PR; it never coexists with `merge-ready` or `parked`. |
+| Needs review | draft or promoted | `needs-review` on both issue and delivery PR | An agent still owes review work on the delivery PR: review triggers, responses, fixes or adjudications. The label comes off when none remains, even if a human still has to look at or merge the PR; it never coexists with `merge-ready` or `parked`. |
 | Parked | draft | `parked` | Passed the handoff check earlier and waits in the merge queue; deliberately not kept current. |
 | Blocked | draft | `blocked` | Needs a human decision or input named in a comment. |
 | Merge-ready | promoted | `merge-ready` | Queue head whose handoff check passes now; the maintainer is asked to merge it. |
@@ -55,7 +57,8 @@ Agent states are shown with labels; the Working claim label is on the issue:
 triggers, responses, fixes, adjudications). When the agent owes none of that,
 the label comes off, even if a human still has to look at or merge the PR. A PR
 waiting on a human is `merge-ready` or `parked`, never `needs-review`, and the
-label never sits together with either.
+label never sits together with either. Apply and remove `needs-review` on both
+the issue and its delivery PR together, with that same meaning on each.
 
 **Handoff** is promoting out of a passing handoff check, then applying
 `merge-ready`; it is an act, not another state. “Ready to merge” means the
@@ -103,9 +106,11 @@ This supersedes the wording in
 [#1591](https://github.com/evanharmon1/harmon-devkit/issues/1591) and
 [harmon-init#1781](https://github.com/evanharmon1/harmon-init/issues/1781)
 that promoted PRs further back stay behind the base: those PRs stay drafts.
-This also retires [#1592](https://github.com/evanharmon1/harmon-devkit/issues/1592)’s
-issue-side `needs-review` marking in favour of the agent-owed review-work
-meaning; waiting for a human alone does not retain `needs-review`.
+[#1608](https://github.com/evanharmon1/harmon-devkit/issues/1608) replaces
+[#1592](https://github.com/evanharmon1/harmon-devkit/issues/1592)’s handoff-time
+`needs-review` marking together with an Agent-queue exclusion of issues that
+have an open delivery PR. The predicate lands through harmon-init#1787 together
+with that handoff change, so handed-off issues stay out of the Agent queue.
 
 A lane retires when its PR passes the handoff check, whether parked or
 merge-ready; release the issue’s `claim:<harness>` label at that point. The
@@ -190,12 +195,14 @@ This ADR records the accepted model; implementation is split across:
   and lane retirement after passing the handoff check.
 - [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): the
   `devflow-policy.mjs` reader, finder fields and per-repository then per-PR
-  override resolution, plus the skills’ text defining `needs-review` as review
-  work an agent still owes, excluding waiting on a human. Per-PR overrides
+  override resolution; it ships the reader only. Per-PR overrides
   come only from an operator instruction recorded in the run; no label family
   carries them for now.
 - [#1608](https://github.com/evanharmon1/harmon-devkit/issues/1608): the
-  `needs-review` add/remove wiring for the agent-owed meaning, after #1604.
+  `needs-review` add/remove wiring on both the issue and delivery PR for the
+  agent-owed meaning, after #1604. It replaces #1592’s handoff-time marking
+  together with the Agent-queue exclusion of issues with an open delivery PR;
+  harmon-init#1787 carries the template predicate and docs.
 - [#1605](https://github.com/evanharmon1/harmon-devkit/issues/1605): handoff check
   reads check runs through the GitHub App installation token.
 - [harmon-init#1786](https://github.com/evanharmon1/harmon-init/issues/1786):
