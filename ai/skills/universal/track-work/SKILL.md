@@ -1098,6 +1098,64 @@ the blocker to the caller, never retry `gh issue create` or report completion.
 Creation and field application are separate writes; a partial failure must
 remain visible as unfinished work on that existing issue.
 
+### File a review finding with its adjudicated Priority (AI)
+
+For an authorized review follow-up, use `assets/file-review-finding.sh` instead
+of a bare `gh issue create`. Search the target tracker for duplicates first
+(§3), then supply a complete agent-authored draft and the filer's Impact,
+Risk and Complexity, the owner-appropriate work type, every required
+classification label (including explicit `none`) and `ai-generated`. The helper
+runs the full metadata preflight and exact-draft receipt verifier before
+creating once. Pass `--repo-root` for the target checkout, whose manifest and
+Tier policy govern the filing; the helper runs there.
+
+```sh
+<track-work-dir>/assets/file-review-finding.sh \
+  --repo owner/repo --repo-root <target-checkout> --owner-type personal \
+  --title '(review): Preserve the finding' --body-file <draft-file> \
+  --source-pr <PR-URL-or-pre-PR-branch> --reviewer 'Codex cloud review' \
+  --reviewer-priority P1 --adjudicated-priority P2 \
+  --impact medium --risk low --complexity s --work-type-label bug \
+  --label area:skills --label layer:logic --label domain:agent-workflow \
+  --label ai-generated
+```
+
+Run with the surrounding workflow's authorized `TRIAGE_EXECUTE=1`; the helper
+never grants that approval. For an organization, use
+`--owner-type organization --issue-type Bug` instead of `--work-type-label`.
+Optional `--milestone` copies the current milestone when the workflow requires
+it; it does not authorize choosing a new one. The normal metadata checker
+handles vocabulary, owner-type verification, and `--inapplicable` when no
+agent-writable `none` exists. An inapplicable axis leaves the filing incomplete.
+
+Read the reviewer's badge from the finding's **own text**, passing P0–P3 or
+`unbadged`; integration records still have `reviewer_priority: null`. Pass the
+orchestrator's adjudicated badge separately. Adjudicated P0→p0, P1→p1, P2→p2,
+P3→p3: `priority_ai` is always the lowercase adjudicated priority. The helper
+refuses unbadged + P3 because an unbadged finding is adjudicated at least P2.
+Nothing maps to p4. The issue body records the source PR (or branch before publication),
+reviewer (Codex cloud review, Gemini Code Assist, Claude Review, or the local
+challenge/review round), raw badge, adjudicated badge when different, and
+Priority (AI). triage's `triage-apply.sh --priority-ai` writes Priority (AI)
+as an organization issue field or personal `priority-ai:<value>` label, plus
+the Tier and organization classification fields. On personal repositories,
+creation supplies the Impact/Risk/Complexity labels. Human Priority is never
+written. The source PR, reviewer and title must each be one line; CR/LF is
+refused before creation.
+
+Stdout is the created issue number, including after a partial failure. Require
+exit 0 **and** read the verification result before recording a completed
+filing. The helper independently re-reads classification, Tier, and Priority
+(AI); a failed apply or verification adds `needs-triage` and exits non-zero.
+Retain the existing number and report the blocker; never recreate it. A missing
+Tier matrix is incomplete filing, even when rating writes succeeded.
+For every new adjudication's `file` + `issue_number` reference, record
+`{type: issue_number, value: <number-or-owner/repo#number>, priority_ai: p2}`
+with the actual value written. For a split, retain that value on its issue
+reference too. The run settlement reference remains `{type, value}`; its schema
+has not gained `priority_ai`. Filing a P0/P1 for escalation still leaves that
+finding gating; only P2 filing settles a readiness blocker.
+
 ### Delegated creation is a self-contained contract
 
 A brief delegating issue creation must carry the **target repository**, the
