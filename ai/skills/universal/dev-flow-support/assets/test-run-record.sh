@@ -460,6 +460,13 @@ expect_refused "precheck promotion before a later PR binding" "before PR binding
     rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:09:00Z
 diff -r "$state" "$tmp/state-before-promote-check" >/dev/null ||
     fail "a refused promotion precheck changed durable state"
+no_candidates "refused chronology promotion precheck"
+cp -R "$state" "$tmp/state-before-unsettled-promote-check"
+expect_refused "precheck promotion over an unsettled deferred finding" "has no settlement" \
+    rr alice promote --check --run-id run-c --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+diff -r "$state" "$tmp/state-before-unsettled-promote-check" >/dev/null ||
+    fail "an unsettled promotion precheck changed durable state"
+no_candidates "refused unsettled promotion precheck"
 promotion_parity() {
     local label="$1" expected="$2" pattern="$3"
     shift 3
@@ -472,6 +479,7 @@ promotion_parity() {
     grep -qF -- "$pattern" <<<"$normal" || fail "$label: promote omitted $pattern: $normal"
     grep -qF -- "$pattern" <<<"$check" || fail "$label: promote --check omitted $pattern: $check"
     diff -r "$state" "$tmp/state-before-$label" >/dev/null || fail "$label changed durable state"
+    no_candidates "$label promotion precheck"
 }
 promotion_parity invalid-head 2 '--head must be a 40-hex SHA' --head nope --fingerprint fp --at 2026-01-01T00:10:00Z
 promotion_parity missing-fingerprint 2 '--fingerprint is required' --head "$head_sha" --at 2026-01-01T00:10:00Z
@@ -483,6 +491,34 @@ mv "$tmp/run-invalid-schema.json" "$run"
 promotion_parity invalid-existing-schema 1 'failed `run` validation' --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
 cp "$tmp/run-before-invalid-schema.json" "$run"
 pass "promotion precheck validates the same candidate and leaves durable state byte-identical"
+
+# A non-ENOENT candidate-cleanup failure must refuse the actual read-only
+# promote command. Preload node:fs before the ESM writer imports it so the
+# fixture is deterministic and does not need a permission-racing process.
+cleanup_preload="$tmp/deny-candidate-unlink.cjs"
+printf '%s\n' \
+    'const fs = require("node:fs")' \
+    'const { syncBuiltinESMExports } = require("node:module")' \
+    'const unlinkSync = fs.unlinkSync' \
+    'fs.unlinkSync = (file, ...args) => {' \
+    '  if (String(file).includes(".candidate.")) {' \
+    '    const error = new Error("injected candidate cleanup failure")' \
+    '    error.code = "EACCES"' \
+    '    throw error' \
+    '  }' \
+    '  return unlinkSync(file, ...args)' \
+    '}' \
+    'syncBuiltinESMExports()' >"$cleanup_preload"
+cp -R "$state" "$tmp/state-before-cleanup-failure-precheck"
+expect_refused "precheck candidate cleanup failure" "EACCES" \
+    bash -c "cd '$repo' && RUN_RECORD_OWNER_TOKEN='$(token_for s1)' node --require '$cleanup_preload' '$writer' promote --check --slate s1 --session alice --run-id run-a --head '$head_sha' --fingerprint fp --at 2026-01-01T00:10:00Z"
+candidate_count="$(find "$state" -name '*.candidate.*' -type f | wc -l | tr -d ' ')"
+[ "$candidate_count" = 1 ] || fail "cleanup-failure precheck left $candidate_count candidates, expected 1"
+find "$state" -name '*.candidate.*' -type f -delete
+diff -r "$state" "$tmp/state-before-cleanup-failure-precheck" >/dev/null ||
+    fail "a cleanup-failure promotion precheck changed durable state"
+no_candidates "refused cleanup-failure promotion precheck"
+pass "promotion precheck propagates non-ENOENT candidate cleanup failures"
 
 # Execute the command actually documented in integrate's promotion step,
 # rather than a second hand-maintained version of that recipe. The fixture

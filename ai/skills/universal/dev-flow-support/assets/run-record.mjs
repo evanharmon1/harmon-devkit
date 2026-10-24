@@ -332,8 +332,10 @@ function validateCandidate(kind, canonical, document) {
   } finally {
     try {
       unlinkSync(candidate)
-    } catch {
-      // A successful read-only precheck never leaves its candidate behind.
+    } catch (error) {
+      // Another validator may have removed a candidate concurrently. Every
+      // other cleanup failure means the read-only precheck did not complete.
+      if (error?.code !== 'ENOENT') throw error
     }
   }
 }
