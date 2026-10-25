@@ -456,6 +456,18 @@ echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixt
 # records after first appearing, and split dependencies follow wave order.
 for regression in \
     plan/valid/recomputed.json \
+    plan/valid/merge-queue.json \
+    plan/valid/handed-off-without-queue.json \
+    plan/invalid/queue-non-handed-off.json \
+    plan/invalid/queue-duplicate-issue.json \
+    plan/invalid/queue-reversed-dependency.json \
+    plan/invalid/queue-live-unqueued-predecessor.json \
+    plan/invalid/queue-eligible-handoff-omitted.json \
+    plan/invalid/waiting-handoff-missing-pr.json \
+    plan/invalid/queue-pr-binding-mismatch.json \
+    plan/invalid/blocked-by-queue-reversed.json \
+    plan/invalid/handed-off-blocker-no-wave.json \
+    plan/invalid/duplicate-waiting-handoff-pr.json \
     plan/invalid/rewritten-run-fence.json \
     plan/invalid/removed-run-expansion.json \
     plan/invalid/reversed-split-wave-dependency.json \
@@ -473,14 +485,15 @@ node --input-type=module - "$schemas_dir/plan.schema.json" \
     "$fixtures_dir/plan/valid/interactive.json" \
     "$fixtures_dir/plan/valid/recomputed.json" \
     "$fixtures_dir/plan/valid/lane-profiles.json" \
+    "$fixtures_dir/plan/valid/merge-queue.json" \
     "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
-const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null
@@ -557,6 +570,26 @@ function runMutation(kind, pattern, name = null) {
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
   if (result.status === 0 || !output.includes(expected)) {
     console.error(`FAIL: plan ${kind} mutation did not produce ${JSON.stringify(expected)}: ${output.trim()}`)
+    failures += 1
+  }
+}
+
+// A duplicate must not invent a second dependency-order failure (challenge r1).
+const duplicateFixture = path.join(path.dirname(fixtureFile), '../invalid/queue-duplicate-issue.json')
+const duplicateResult = spawnSync(process.execPath, [validator, 'plan', duplicateFixture], { encoding: 'utf8' })
+const duplicateErrors = duplicateResult.stderr.trim().split('\n').filter((line) => line.startsWith('FAIL:'))
+if (duplicateResult.status !== 1 || duplicateErrors.length !== 1 || !duplicateErrors[0].endsWith('duplicate issue 935')) {
+  console.error(`FAIL: duplicate issue fixture must fail for its stated reason only: ${duplicateResult.stderr}`)
+  failures += 1
+}
+
+// File merge-order errors retain their own diagnostic, without an extra
+// blocked_by-wave message for a dependency that is not a blocked_by edge.
+for (const name of ['reversed-split-wave-dependency', 'cyclic-merge-dependencies', 'split-fence-overlap']) {
+  const file = path.join(path.dirname(fixtureFile), `../invalid/${name}.json`)
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  if (result.status !== 1 || /: blocker [0-9]+ must be in an earlier wave/.test(result.stderr)) {
+    console.error(`FAIL: ${name} gained a blocked_by diagnostic: ${result.stderr}`)
     failures += 1
   }
 }

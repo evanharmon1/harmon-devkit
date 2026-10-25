@@ -283,6 +283,12 @@ expect_ok "dev-flow-support documents decision writers (#1410)" \
     grep -qF 'Write held-lock `genesis`, `add-issue`' \
     "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
 
+for plan_command in handoff queue-order; do
+    expect_ok "dev-flow-support documents the $plan_command writer (#1625)" \
+        grep -qF "\`$plan_command" \
+        "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+done
+
 # Reviewer policy (#1604): independent of the review-marker lifecycle (#1608).
 expect_ok "reviewer settings document recorded operator overrides (#1604)" \
     grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
