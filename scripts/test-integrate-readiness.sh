@@ -3256,6 +3256,7 @@ section = Path(sys.argv[1]).read_text().split("## 5. Find what still needs a rep
 marker = "# Agent-posture thread-resolution fallback, after §7 assembly."
 assert marker in section, "missing executable agent-posture fallback"
 command = section.split(marker, 1)[1].split("```", 1)[0]
+clean_original = json.loads(Path(sys.argv[3]).read_text())
 for path in map(Path, sys.argv[3:]):
     original = json.loads(path.read_text())
     # Preserve each finder cycle as well as the Codex cycle.
@@ -3282,6 +3283,20 @@ for path in map(Path, sys.argv[3:]):
         assert "applied_dispositions" not in after
         validated = subprocess.run(["node", sys.argv[2], "envelope", str(path)], capture_output=True, text=True)
         assert validated.returncode == 0, validated.stdout + validated.stderr
+for invalid_comments in [json.dumps([dict(id=900, body="flat page")]), "{", None]:
+    path = Path(sys.argv[3])
+    path.write_text(json.dumps(clean_original))
+    env = dict(os.environ, out_file=str(path), thread_blocker_id="integration-r1-human-100")
+    env.pop("comments", None)
+    if invalid_comments is not None:
+        env["comments"] = invalid_comments
+    # No errexit: the fallback itself must stop a caller from continuing.
+    result = subprocess.run(["bash", "-c", command + "\nprintf 'fallback continued\\n'\n"],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode != 0, "errored fallback returned success"
+    assert "fallback continued" not in result.stdout, "errored fallback fell through"
+    assert not path.exists(), "errored fallback left its earlier clean result"
+    assert not Path(str(path) + ".thread-blocked").exists(), "errored fallback left a temporary result"
 PY_AGENT
 
 echo "==> #1602 r1: GraphQL-only, missing, duplicate and multi-page root mappings"

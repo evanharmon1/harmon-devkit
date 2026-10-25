@@ -112,7 +112,8 @@
 # the union of ruleset and classic protection requirements on every evaluation.
 # Definitive 404s (Branch not protected / Required status checks not enabled)
 # mean no classic requirement; other classic read errors gate every reported check.
-# Only rulesets containing known required_status_checks rules may narrow checks.
+# Narrow only when every ruleset rule is required_status_checks or on the
+# known-no-check list below.
 # The remaining automation prerequisite is:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its

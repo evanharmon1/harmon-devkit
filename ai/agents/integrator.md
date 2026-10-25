@@ -1069,11 +1069,17 @@ jq --argjson comments "$comments" --arg id "$thread_blocker_id" '
   .payload.verdict |= (if . == "clean" or . == "pending" then "findings" else . end) |
   del(.payload.applied_dispositions)
 ' "$out_file" >"$out_file.thread-blocked" &&
-  mv "$out_file.thread-blocked" "$out_file"
+  mv "$out_file.thread-blocked" "$out_file" || {
+    rm -f -- "$out_file" "$out_file.thread-blocked"
+    echo 'thread state unknown — no result emitted' >&2
+    exit 1
+  }
 ```
 
 Even with no inline roots, the read failure remains explicit and blocks a
-clean result. Validate the full envelope as §7 requires. Run the following
+clean result. A fallback error removes the unvalidated result and exits
+nonzero; never validate or report the earlier clean file. Validate the full
+envelope as §7 requires. Run the following
 resolution query only from the dev or bot posture, never through either
 GET-only wrapper.
 
