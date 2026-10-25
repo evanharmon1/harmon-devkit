@@ -5,8 +5,10 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { validateResolvedPolicy } from '../devflow-policy.mjs'
+import { authorityForEnvelope } from './integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
@@ -212,8 +214,6 @@ function trustedCodexProfile(repo, pr) {
   }
 }
 
-function isSha(value) { return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) }
-function isTimestamp(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) }
 function isPositiveInteger(value) { return Number.isSafeInteger(value) && value > 0 }
 
 function ghJson(args) {
@@ -222,104 +222,34 @@ function ghJson(args) {
   }).trim())
 }
 
-function priorClosedCycleTriggerCeiling(record, recordDir, state) {
-  if (!recordDir) return null
-  const currentCycle = Number(state?.charged_cycles) + Number(state?.exempt_cycles)
-  if (!Number.isSafeInteger(currentCycle) || currentCycle < 1) return null
-  const ids = []
-  for (const receipt of record?.receipts ?? []) {
-    if (receipt?.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? '')) continue
-    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
-    const trigger = Number(pass?.payload?.codex_cycle?.trigger_comment_id)
-    const passCycle = Number(pass?.payload?.codex_cycle?.cycle)
-    if (pass?.run?.run_id === record?.run_id && passAttestsCheckerCycle(pass, state) &&
-      Number.isSafeInteger(passCycle) && passCycle < currentCycle && isPositiveInteger(trigger)) {
-      ids.push(trigger)
-    }
+// Owner captures carry the full cycle tuple. Legacy evidence predates that
+// capture and cannot reconstruct writable floors, counters, or retry history.
+function conservativeLegacyState(state) {
+  if (state?.carry || Number(state?.charged_cycles) !== 1 || Number(state?.exempt_cycles) !== 0 || Number(state?.attempt) !== 1) {
+    throw new Error('legacy review evidence cannot prove non-initial cycle counters or carry provenance')
   }
-  return ids.length === 0 ? null : Math.max(...ids)
+  return { ...state, first_trigger_comment_id: 1, requires_full_window: true, timeout_min: 15 }
 }
 
-// The checker state is writable by the integrator, so it may describe a
-// narrower review window than the evidence it asks the checker to classify.
-// Rebuild only the review-comment tuple from GitHub's immutable actor/comment
-// data and the recorded receipt chain, then let the unchanged checker consume
-// that conservative snapshot.  The state head remains the reviewed origin on
-// a carry; the later attested head has no trigger history of its own.
-export function authenticatedReviewCommentSnapshot(state, profile, trustedActorIds, record, recordDir) {
-  const mechanism = state?.finder?.trigger_mechanism ?? profile.trigger_mechanism
-  if (mechanism !== 'review-comment') return { state, independentlyProvesTwoAttempts: false }
-  const triggerId = Number(state?.trigger_comment_id)
-  if (!isPositiveInteger(triggerId) || !isSha(state?.head)) throw new Error('review-comment state has no usable origin head or trigger id')
-  const expectedBody = state?.finder?.trigger_body ?? profile.trigger_body
-  if (typeof expectedBody !== 'string' || expectedBody.length === 0) throw new Error('review-comment state has no trusted trigger body')
-  const repo = state.repo
-  const pr = Number(state.pr)
-  if (typeof repo !== 'string' || !isPositiveInteger(pr)) throw new Error('review-comment state has invalid repository binding')
-  const actorIds = new Set(trustedActorIds)
-  if (actorIds.size === 0) throw new Error('trusted registry has no orchestrator actors for review trigger authentication')
-  const trigger = ghJson(['api', `repos/${repo}/issues/comments/${triggerId}`])
-  const isExactTrigger = (comment) =>
-    Number(comment?.id) === triggerId &&
-    typeof comment?.body === 'string' && comment.body.trim() === expectedBody &&
-    typeof comment?.issue_url === 'string' && comment.issue_url.endsWith(`/issues/${pr}`) &&
-    isTimestamp(comment?.created_at) && actorIds.has(comment?.user?.id)
-  if (!isExactTrigger(trigger)) throw new Error('checker trigger is not an exact trusted orchestrator review request')
+function headFromReviewedCommit(body, repo, head) {
+  const match = /^\*\*reviewed commit:\*\*\s*`([0-9a-f]{7,40})`\s*$/im.exec(body ?? '')
+  if (!match) throw new Error('legacy terminal source does not explicitly name a reviewed commit')
+  const commit = ghJson(['api', `repos/${repo}/commits/${match[1]}`])
+  if (commit?.sha !== head) throw new Error('legacy terminal source names a different immutable commit')
+}
 
-  const commit = ghJson(['api', `repos/${repo}/commits/${state.head}`])
-  const dates = [commit?.commit?.author?.date, commit?.commit?.committer?.date]
-  if (!dates.every(isTimestamp)) throw new Error('origin commit has no canonical timestamps')
-  const checkSuitePages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/commits/${state.head}/check-suites?per_page=100`])
-  const suites = (Array.isArray(checkSuitePages) ? checkSuitePages : []).flatMap((page) => Array.isArray(page?.check_suites) ? page.check_suites : [])
-  const suiteDates = suites.map((suite) => suite?.created_at).filter(isTimestamp)
-  if (suiteDates.length === 0) throw new Error('origin head has no readable check-suite timestamp')
-  const lowerTime = [...dates, ...suiteDates].sort()[0]
-
-  const commentPages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments?per_page=100`])
-  const comments = (Array.isArray(commentPages) ? commentPages : []).flat()
-  const candidates = comments.filter((comment) =>
-    isPositiveInteger(comment?.id) &&
-    typeof comment?.body === 'string' && comment.body.trim() === expectedBody &&
-    typeof comment?.issue_url === 'string' && comment.issue_url.endsWith(`/issues/${pr}`) &&
-    isTimestamp(comment?.created_at) && actorIds.has(comment?.user?.id) &&
-    comment.created_at >= lowerTime,
-  )
-  if (!candidates.some((comment) => comment.id === triggerId)) throw new Error('checker trigger cannot be bound to its reviewed origin head')
-  const firstTriggerId = Math.min(...candidates.map((comment) => comment.id))
-  const recordedFirst = Number(state.first_trigger_comment_id ?? state.trigger_comment_id)
-  if (recordedFirst !== firstTriggerId) throw new Error('checker first-trigger boundary does not match live trusted trigger history')
-  // The documented default is 15 minutes, while an explicit profile may use
-  // the supported 10-minute minimum.  A writable state can ask for more wait,
-  // never less than that contractual floor.
-  const persistedTimeout = state.timeout_min === null || state.timeout_min === undefined ? 15 : Number(state.timeout_min)
-  if (!isPositiveInteger(persistedTimeout)) throw new Error('checker state has an invalid timeout_min')
-  const isLaterTrustedTrigger = triggerId > firstTriggerId
-  const snapshot = {
-    ...state,
-    trigger_comment_id: triggerId,
-    requested_at: trigger.created_at,
-    first_trigger_comment_id: firstTriggerId,
-    // Honour an existing full-window obligation and conservatively add one
-    // where live history proves an earlier trusted request.  Do not infer the
-    // retry ordinal: separate cycles can legitimately start at attempt 1.
-    requires_full_window: state.requires_full_window === true || isLaterTrustedTrigger,
-    timeout_min: Math.max(10, persistedTimeout)
+function verifyLegacyTerminal(accepted, state, head) {
+  if (!['comment', 'review'].includes(accepted?.surface) || !isPositiveInteger(Number(accepted?.id))) {
+    throw new Error('legacy reaction-only evidence cannot bootstrap a review cycle')
   }
-  // A completed earlier cycle is not this cycle's first attempt.  Its receipt
-  // establishes that boundary only for exit-13's two-attempt proof; it must
-  // never alter the checker's trusted first-trigger history or exclude an
-  // idempotently re-read current-cycle trigger from the snapshot.
-  const closedCeiling = priorClosedCycleTriggerCeiling(record, recordDir, state)
-  const attemptCandidates = closedCeiling === null
-    ? candidates
-    : candidates.filter((comment) => comment.id > closedCeiling)
-  const first = attemptCandidates.reduce((earliest, comment) =>
-    earliest === null || comment.id < earliest.id ? comment : earliest, null)
-  const independentlyProvesTwoAttempts =
-    snapshot.attempt === 2 &&
-    first !== null && triggerId > first.id &&
-    Date.parse(trigger.created_at) - Date.parse(first.created_at) >= snapshot.timeout_min * 60_000
-  return { state: snapshot, independentlyProvesTwoAttempts }
+  const endpoint = accepted.surface === 'comment'
+    ? `repos/${state.repo}/issues/comments/${accepted.id}`
+    : `repos/${state.repo}/pulls/${state.pr}/reviews/${accepted.id}`
+  const source = ghJson(['api', endpoint])
+  if (Number(source?.id) !== Number(accepted.id) || Number(source?.user?.id) !== Number(LEGACY_CODEX_PROFILE.actor_id)) {
+    throw new Error('legacy terminal source identity is not the trusted Codex actor')
+  }
+  headFromReviewedCommit(source.body, state.repo, head)
 }
 
 // Returns diagnostics rather than throwing so validate-result-schemas can
@@ -331,6 +261,10 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
   if (cycle === null) {
+    try { validateResolvedPolicy(policy) } catch (error) {
+      errors.push(`$result.payload.codex_cycle: recorded resolved policy is incomplete or invalid: ${error.message}`)
+      return errors
+    }
     if (codexRequired(record, policy) && !completedAfterCiFailure(envelope, record, policy)) {
       errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request')
     }
@@ -353,17 +287,25 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     errors.push(`$result.payload.codex_cycle: cannot read checker state ${stateFile}: ${error.message}`)
     return errors
   }
+  let authority = null
+  try {
+    if (recordDir) authority = authorityForEnvelope(record, envelope, { common: resolve(recordDir, '../../..'), runId: record.run_id })
+  } catch (error) {
+    errors.push(`$result.payload.codex_cycle: retained owner authority is invalid: ${error.message}`)
+    return errors
+  }
+  const authoritativeState = authority?.authority.snapshot ?? conservativeLegacyState(state)
   const binding = record?.pr_bindings?.at(-1)
   let bound = false
   try {
     const url = new URL(binding?.url)
-    bound = Number(binding?.number) === Number(state?.pr) &&
-      url.pathname.replace(/^\/+|\/+$/g, '') === `${state?.repo}/pull/${state?.pr}`
+    bound = Number(binding?.number) === Number(authoritativeState?.pr) &&
+      url.pathname.replace(/^\/+|\/+$/g, '') === `${authoritativeState?.repo}/pull/${authoritativeState?.pr}`
   } catch { /* malformed binding cannot authenticate a cycle */ }
   if (!bound) errors.push('$result.payload.codex_cycle: checker state repo/PR is not bound to the run’s trusted PR binding')
   let trusted
   try {
-    trusted = trustedCodexProfile(state.repo, state.pr)
+    trusted = trustedCodexProfile(authoritativeState.repo, authoritativeState.pr)
     const profile = trusted.profile
     if (
       profile.actor_id !== LEGACY_CODEX_PROFILE.actor_id ||
@@ -373,8 +315,8 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     ) {
       errors.push('$result.payload.codex_cycle: trusted codex-cloud registry profile must require the fixed Codex actor and comment/review terminal surfaces')
     }
-    if (state?.finder) {
-      if (stable(state.finder) !== stable(profile)) errors.push('$result.payload.codex_cycle: checker state finder does not exactly match the trusted codex-cloud registry profile')
+    if (authoritativeState?.finder) {
+      if (stable(authoritativeState.finder) !== stable(profile)) errors.push('$result.payload.codex_cycle: checker state finder does not exactly match the trusted codex-cloud registry profile')
     } else if (stable(profile) !== stable(LEGACY_CODEX_PROFILE)) {
       errors.push('$result.payload.codex_cycle: legacy checker defaults do not exactly match the trusted codex-cloud registry profile')
     }
@@ -387,11 +329,10 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   try {
     snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-receipt-'))
     const snapshot = join(snapshotDir, 'state.json')
-    const authentication = authenticatedReviewCommentSnapshot(state, trusted.profile, trusted.trustedOrchestratorActorIds, record, recordDir)
-    const authenticatedState = authentication.state
+    const authenticatedState = authoritativeState
     writeFileSync(snapshot, JSON.stringify({ ...authenticatedState, settled: trustedSettlements(authenticatedState, record, recordDir) }), { encoding: 'utf8', mode: 0o600 })
     checkedResult = checkerResult(snapshot, repoDir, record.run_id)
-    checkedResult.independentlyProvesTwoAttempts = authentication.independentlyProvesTwoAttempts
+    checkedResult.independentlyProvesTwoAttempts = Boolean(authority)
   } catch (error) {
     errors.push(`$result.payload.codex_cycle: live checker authentication failed: ${error.message}`)
     return errors
@@ -399,9 +340,9 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true })
   }
   const checked = checkedResult.output
-  const carried = state?.carry ?? null
-  const attested = carried?.attests_head ?? state?.head
-  const cycleTotal = Number(state?.charged_cycles) + Number(state?.exempt_cycles)
+  const carried = authoritativeState?.carry ?? null
+  const attested = carried?.attests_head ?? authoritativeState?.head
+  const cycleTotal = Number(authoritativeState?.charged_cycles) + Number(authoritativeState?.exempt_cycles)
   if (attested !== envelope.head || cycle.head !== envelope.head) errors.push('$result.payload.codex_cycle: live checker state does not attest the envelope head')
   if (cycle.exit_code !== checkedResult.exit) errors.push('$result.payload.codex_cycle.exit_code: does not match the live checker process exit')
   // Exit 13 is terminal only after a separate trusted request establishes the
@@ -418,14 +359,19 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     // single-counter contract: all cycles were charged and none exempt.
     const reportedCharged = hasCharged ? cycle.charged : cycle.cycle
     const reportedExempt = hasExempt ? cycle.exempt : 0
-    if (cycle.cycle !== cycleTotal || reportedCharged !== state?.charged_cycles || reportedExempt !== state?.exempt_cycles) {
+    if (cycle.cycle !== cycleTotal || reportedCharged !== authoritativeState?.charged_cycles || reportedExempt !== authoritativeState?.exempt_cycles) {
       errors.push('$result.payload.codex_cycle: cycle, charged, and exempt counters do not match checker state')
     }
   }
-  if (cycle.attempt !== checked.attempt || id(cycle.trigger_comment_id) !== id(state?.trigger_comment_id)) errors.push('$result.payload.codex_cycle: attempt or trigger_comment_id does not match checker state')
+  if (cycle.attempt !== checked.attempt || id(cycle.trigger_comment_id) !== id(authoritativeState?.trigger_comment_id)) errors.push('$result.payload.codex_cycle: attempt or trigger_comment_id does not match checker state')
   if (stable(cycle.accepted ?? null) !== stable(checked.accepted ?? null)) errors.push('$result.payload.codex_cycle.accepted: does not match the freshly checked accepted evidence')
+  if (!authority) {
+    try { verifyLegacyTerminal(checked.accepted, authoritativeState, envelope.head) } catch (error) {
+      errors.push(`$result.payload.codex_cycle: ${error.message}`)
+    }
+  }
   if (stable(cycle.carried ? { ...cycle.carried, origin_head: undefined } : null) !== stable(carried)) errors.push('$result.payload.codex_cycle.carried: does not match checker state')
-  if (cycle.carried && cycle.carried.origin_head !== state?.head) errors.push('$result.payload.codex_cycle.carried.origin_head: does not match the checker cycle head')
+  if (cycle.carried && cycle.carried.origin_head !== authoritativeState?.head) errors.push('$result.payload.codex_cycle.carried.origin_head: does not match the checker cycle head')
   if (!cycle.carried && carried?.attests_head === envelope.head) errors.push('$result.payload.codex_cycle: omits the checker’s carried-forward provenance')
   return errors
 }

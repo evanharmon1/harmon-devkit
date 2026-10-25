@@ -23,6 +23,17 @@ fixtures_dir="ai/schemas/fixtures"
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 
+# Receipt waivers must be governed by the same complete projection a run
+# retains. Generate test variants through the production resolver so a partial
+# fixture cannot accidentally imply review-off.
+resolve_receipt_policy() {
+    local destination="$1" integration="$2" trigger="${3:-after-ci}" source="$test_tmp/receipt-policy.toml"
+    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+        .devflow.toml >"$source"
+    node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$source" --registry agent-registry.json \
+        --taskfile-dir . --json >"$destination"
+}
+
 fail() {
     # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
@@ -1868,17 +1879,14 @@ null_cycle_record="$receipt_context_dir/run.json"
 cat >"$null_cycle_record" <<'JSON'
 {"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["other-finder"]}]}
 JSON
-cat >"$receipt_context_dir/policy.json" <<'JSON'
-{"rounds":{"integration":0},"stages":{"integration":{"finders":["codex-cloud"]}}}
-JSON
+resolve_receipt_policy "$receipt_context_dir/policy.json" 0
 accept_context_case \
     "a strict cap-zero/null integrator receipt authenticates its retained policy without checker state" \
     integrator "$null_cycle_receipt" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
 
-jq '.rounds.integration = 1' "$receipt_context_dir/policy.json" >"$receipt_context_dir/policy.next.json"
-mv "$receipt_context_dir/policy.next.json" "$receipt_context_dir/policy.json"
+resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci
 run_context_case \
     "an added integration finder cannot waive configured codex-cloud for a null receipt" \
     integrator "$null_cycle_receipt" \
@@ -1897,17 +1905,13 @@ jq '
   | .payload.findings = [{id:"integration-r1-human-1",body:"required build failed",source_id:"1004"}]
   | del(.payload.applied_dispositions)
 ' "$null_cycle_receipt" >"$after_ci_failure_receipt"
-jq '.rounds.integration = 1 | .stages.integration.review_trigger = "after-ci"' \
-    "$receipt_context_dir/policy.json" >"$receipt_context_dir/policy.next.json"
-mv "$receipt_context_dir/policy.next.json" "$receipt_context_dir/policy.json"
+resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci
 accept_context_case \
     "a strict after-ci required-check failure may complete without a Codex cycle" \
     integrator "$after_ci_failure_receipt" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
-jq '.stages.integration.review_trigger = "after-ci-first" | .rounds.integration = 1' \
-    "$receipt_context_dir/policy.json" >"$receipt_context_dir/policy.next.json"
-mv "$receipt_context_dir/policy.next.json" "$receipt_context_dir/policy.json"
+resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci-first
 accept_context_case \
     "after-ci-first admits a failed first integration head without a review cycle" \
     integrator "$after_ci_failure_receipt" \

@@ -421,7 +421,15 @@ and a failure re-run to green is moved back to charged. Never adjust a
 counter by your own reading of CI. Report the counters `reserve` and `check`
 leave in state, as always.
 
-Otherwise, persist state under the git directory so a resumed dispatch — this
+### Owner-only control-transition reference
+
+The coordinator owns every `reserve`, `carry`, broker trigger/attach, release,
+and authority capture described in this reference. It performs and captures
+those transitions before dispatching this role. The dispatched integrator must
+not execute the recipes below: it receives the retained cycle, polls it, and
+reports the resulting observation. A missing capture is a blocker.
+
+The owner persists state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
 attempt already did rather than duplicating a trigger:
 
@@ -642,7 +650,7 @@ Three cases, mutually exclusive:
   echo "RESERVED <head>"
   ```
 
-  **2. Post and attach through one literal broker call**, only after step 1
+  **2. Owner posts and attaches through one literal broker call**, only after step 1
   printed `RESERVED <head>`:
 
   ```bash

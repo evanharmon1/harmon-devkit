@@ -77,6 +77,17 @@ new_run() {
 # Capture acquisition stdout; never recover tokens from status or the lock file.
 token_for() { cat "$tmp/token-$1" 2>/dev/null || true; }
 pointer_for_run() { "$monitor" active-path --branch "fixture-$1" --repo-root "$repo"; }
+
+# Null-cycle admission consumes a complete resolved projection. Build fixture
+# projections through the production reader rather than hand-authoring a
+# partial object that can accidentally turn review off.
+resolve_fixture_policy() {
+    local destination="$1" integration="$2" trigger="${3:-after-ci}" source="$tmp/resolved-policy.toml"
+    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+        "$asset_dir/../../../../../.devflow.toml" >"$source"
+    node "$asset_dir/devflow-policy.mjs" resolve --policy "$source" --registry "$asset_dir/../../../../../agent-registry.json" \
+        --taskfile-dir "$asset_dir/../../../../../" --json >"$destination"
+}
 acquire() {
     local slate="$1" session="$2"
     shift 2
@@ -821,7 +832,7 @@ integration_branch="fixture-run-integrator"
 git -C "$repo" branch "$integration_branch" HEAD
 mkdir -p "$state/runs/run-integrator/passes" "$state/runs/run-integrator/adjudications"
 printf '{"branch":"%s"}\n' "$integration_branch" >"$state/runs/run-integrator/branch.json"
-printf '{"roles":{"integrator":{"tier":"economy"}},"rounds":{"integration":0}}\n' >"$state/runs/run-integrator/policy.json"
+resolve_fixture_policy "$state/runs/run-integrator/policy.json" 0
 integration_head="$(git -C "$repo" rev-parse "$integration_branch")"
 integration_pass="$tmp/integration-r1-integrator.json"
 jq --arg head "$integration_head" '
@@ -859,6 +870,45 @@ jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"i
 rri adjudicate --run-id run-integrator --file "$tmp/integration-r1-adjudication.json" >/dev/null
 [ -f "$state/runs/run-integrator/adjudications/integration-r1.json" ] ||
     fail "integration adjudication was not published with its receipted pass"
+
+# The public owner-only capture command must retain a complete reserve/attach
+# chain as immutable rulings; receipt authentication reads those bytes rather
+# than mutable checker state. Stub only the live observations this command owns.
+capture_bin="$tmp/capture-bin"
+mkdir -p "$capture_bin"
+cat >"$capture_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'pr view 493 --repo example/repo --json state,isDraft,headRefOid'*)
+    printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
+  *'repos/example/repo/issues/comments/200'*)
+    printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":12345}}' ;;
+  *'api user'*) printf '%s\n' '{"id":12345}' ;;
+  *) printf 'unexpected gh command: %s\n' "$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$capture_bin/gh"
+capture_state="$tmp/capture-state.json"
+jq -n --arg head "$integration_head" '{repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,reserved_at:"2026-10-01T00:06:00Z"}' >"$capture_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$capture_state" >"$capture_state.next"
+mv "$capture_state.next" "$capture_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
+# A replay after a crash observes the same transition. It adopts the retained
+# capture without appending another authority that would make receipt lookup
+# ambiguous.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind attach --at 2026-10-01T00:08:00Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  if (retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN }).length !== 2) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
+pass "owner capture command retains reserve/attach authority as immutable rulings"
 (cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
 pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"
 
@@ -878,7 +928,7 @@ after_ci_branch="fixture-run-integrator-after-ci-failure"
 git -C "$repo" branch "$after_ci_branch" HEAD
 mkdir -p "$state/runs/run-integrator-after-ci-failure/passes" "$state/runs/run-integrator-after-ci-failure/adjudications"
 printf '{"branch":"%s"}\n' "$after_ci_branch" >"$state/runs/run-integrator-after-ci-failure/branch.json"
-printf '{"roles":{"integrator":{"tier":"economy"}},"rounds":{"integration":1},"stages":{"integration":{"finders":["codex-cloud"],"review_trigger":"after-ci"}}}\n' >"$state/runs/run-integrator-after-ci-failure/policy.json"
+resolve_fixture_policy "$state/runs/run-integrator-after-ci-failure/policy.json" 1 after-ci
 after_ci_head="$(git -C "$repo" rev-parse "$after_ci_branch")"
 after_ci_pass="$tmp/integration-r1-after-ci-failure.json"
 jq --arg head "$after_ci_head" '

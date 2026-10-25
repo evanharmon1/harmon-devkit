@@ -9467,7 +9467,7 @@ state=$saved_state
 # all review surfaces, and its current-head binding together.
 echo "==> strict integrator receipts authenticate against the real checker state"
 auth_validator="${repo_root}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
-auth_dir="${test_tmp}/integrator-receipt-auth"
+auth_dir="${test_repo}/.git/dev-flow-v2/runs/run-1159-checker-auth"
 mkdir -p "$auth_dir"
 auth_ids="$auth_dir/known-ids.json"
 auth_record="$auth_dir/run.json"
@@ -9475,15 +9475,6 @@ auth_policy="$auth_dir/policy.json"
 auth_receipt="$auth_dir/receipt.json"
 printf '[]\n' >"$auth_ids"
 auth_run='run-1159-checker-auth'
-
-# Receipt admission needs origin-visible check-suite history even though the
-# checker itself may authenticate its regular fixture through the commit-date
-# fallback.  Keep that history local to the receipt cases: new_cycle resets it
-# to the deliberate zero-suite default used by the rest of this test file.
-seed_auth_check_suite() {
-    jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:59:00Z"}]}]' \
-        >"${fixtures}/check-suites.pages.json"
-}
 
 # new_cycle calls write_defaults, which derives the PR/head fixture from this
 # global. Its copied checker therefore needs the actual fixture checkout HEAD;
@@ -9496,11 +9487,10 @@ jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
     >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
-seed_auth_check_suite
 jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
 mv "${state}.with-run" "$state"
 jq -n --arg run "$auth_run" \
-    '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
+    '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[]}' \
     >"$auth_record"
 jq -n '{rounds:{integration:1},stages:{integration:{finders:["codex-cloud"]}}}' >"$auth_policy"
 jq --arg run "$auth_run" --arg head "$head_sha" \
@@ -9519,6 +9509,26 @@ jq --arg run "$auth_run" --arg head "$head_sha" \
       accepted:$checked.accepted
     }
 ' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+
+# The writer retains the parent-owned reserve and attach observations as
+# immutable rulings. Receipt admission must use this chain rather than timing
+# a mutable checker file or requiring a check-suite timestamp.
+mkdir -p "$auth_dir/rulings"
+auth_reserve="$auth_dir/reserve.json"
+jq '{schema:1,kind:"reserve",captured_at:"2026-07-31T08:00:00Z",previous_authority_digest:null,
+     snapshot:(. | .phase="reserved" | .trigger_comment_id=null)}' "$state" >"$auth_reserve"
+auth_reserve_digest="$(shasum -a 256 "$auth_reserve" | awk '{print $1}')"
+mv "$auth_reserve" "$auth_dir/rulings/$auth_reserve_digest"
+auth_attach="$auth_dir/attach.json"
+jq --arg previous "$auth_reserve_digest" '{schema:1,kind:"attach",captured_at:"2026-07-31T08:01:00Z",
+     previous_authority_digest:$previous,snapshot:.}' "$state" >"$auth_attach"
+auth_attach_digest="$(shasum -a 256 "$auth_attach" | awk '{print $1}')"
+mv "$auth_attach" "$auth_dir/rulings/$auth_attach_digest"
+jq --arg reserve "integration-review-authority v1 reserve sha256=$auth_reserve_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_reserve_digest sha256=$auth_reserve_digest]" \
+    --arg attach "integration-review-authority v1 attach sha256=$auth_attach_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_attach_digest sha256=$auth_attach_digest]" \
+    '.interventions=[{kind:"other",at:"2026-07-31T08:00:00Z",note:$reserve},{kind:"other",at:"2026-07-31T08:01:00Z",note:$attach}]' \
+    "$auth_record" >"$auth_dir/run.next.json"
+mv "$auth_dir/run.next.json" "$auth_record"
 
 # Asset freshness resolves the physical checker checkout, independently of
 # --codex-repo-dir. The validator invokes the production checker, so use that
@@ -9548,9 +9558,7 @@ auth_validate() {
 # Finder-null legacy state is authenticated against the current trusted
 # profile, so seed its real registry before the genuine default assertion.
 base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
-# Receipt authentication independently binds the trigger window to immutable
-# origin metadata.  The checker itself permits the legacy commit-date fallback,
-# but receipt admission deliberately requires a server-side check-suite time.
+# The authority capture, not suite timestamps, binds this cycle to its request.
 jq -cn --argjson trigger "$(cat "${fixtures}/trigger.json")" '[[$trigger]]' \
     >"${fixtures}/comments.pages.json"
 auth_validate "$auth_receipt"
@@ -9560,8 +9568,7 @@ auth_validate "$auth_receipt"
 # able to raise the first-trigger boundary and hide an older unbound review.
 jq '.first_trigger_comment_id = "999999999"' "$state" >"$auth_dir/old-first-trigger-state.json"
 auth_validate "$auth_receipt" "$auth_dir/old-first-trigger-state.json"
-[ "$auth_rc" -eq 1 ] && grep -Fq 'first-trigger boundary does not match live trusted trigger history' <<<"$auth_out" ||
-    fail "an unbound first-trigger boundary was not refused: $auth_out"
+[ "$auth_rc" -eq 0 ] || fail "owner capture should ignore a mutable first-trigger floor: $auth_out"
 
 jq '.payload.codex_cycle.accepted.id = "999999999"' "$auth_receipt" >"$auth_dir/accepted-id.json"
 auth_validate "$auth_dir/accepted-id.json"
@@ -9705,7 +9712,6 @@ run_settle --surface comment --id 77 --disposition declined --note "declined in 
 [ "$settle_rc" -eq 0 ] || fail "the supported settlement writer refused the authentication fixture: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
-seed_auth_check_suite
 jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
 mv "${state}.with-run" "$state"
 jq -n --arg run "$auth_run" \

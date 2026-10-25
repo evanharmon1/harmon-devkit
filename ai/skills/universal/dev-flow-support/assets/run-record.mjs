@@ -9,6 +9,8 @@
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
 //                               [--decision approved|denied --command TEXT [--answered-by orchestrator|human]]
+//   run-record.mjs integration-review-capture --slate ID --session ID --run-id ID --state FILE
+//                               --authority-kind reserve|attach|carry [--repo-dir DIR] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
@@ -99,11 +101,13 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
+import { authorityIdentity, authorityNote, retainedAuthorities, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
 const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/
 const SAFE_ID = /^[A-Za-z0-9._-]+$/
+const INTEGRATION_CHECKER = join(ASSET_DIR, '../../integrate/assets/check-codex-cloud-review.sh')
 
 export class Refusal extends Error {}
 export class UsageError extends Error {}
@@ -699,6 +703,26 @@ const MUTATORS = {
     const note = args.ruling === undefined ? args.note : `${args.note}${rulingSuffix(context.common, record.run_id, args.ruling)}`
     record.interventions.push({ kind: args.kind, at: args.at, note, ...prompt })
     return `intervention (${args.kind})`
+  },
+  'integration-review-capture'(record, args, context) {
+    guardTimestamp(record, args.at)
+    const authority = readJson(args.authority, 'integration review authority')
+    if (authority?.kind !== args['authority-kind']) throw new Refusal('integration review authority kind does not match --authority-kind')
+    const prior = retainedAuthorities(record, { common: context.common, runId: record.run_id })
+    const identical = prior.filter((entry) => authorityIdentity(entry.authority) === authorityIdentity(authority))
+    if (identical.length > 0) {
+      if (identical.length === 1 && sameAuthoritySnapshot(identical[0].authority, authority)) return null
+      throw new Refusal('integration review authority conflicts with a retained transition capture')
+    }
+    try { validateAuthority(authority, prior) } catch (error) {
+      throw new Refusal(`integration review authority is invalid: ${error.message}`)
+    }
+    const digest = sha256File(args.authority)
+    const note = `${authorityNote(args['authority-kind'], digest)}${rulingSuffix(context.common, record.run_id, args.authority)}`
+    const existing = record.interventions.find((entry) => entry.note === note)
+    if (existing) return null
+    record.interventions.push({ kind: 'other', at: args.at, note })
+    return `integration review authority (${args['authority-kind']})`
   },
   'bind-pr'(record, args) {
     const number = Number(args.number)
@@ -1683,6 +1707,106 @@ function sideEffectWrite(command, args) {
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
+function readCaptureState(file) {
+  const state = readJson(file, '--state')
+  if (!state || typeof state !== 'object') throw new Refusal('--state is not a checker-state object')
+  return state
+}
+
+function ghJson(args) {
+  try {
+    return JSON.parse(execFileSync('gh', args, { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }))
+  } catch (error) {
+    throw new Refusal(`cannot observe integration review authority: ${(error.stderr || error.message).trim()}`)
+  }
+}
+
+// Observe the transition outside run.json's mutex.  The caller owns the slate
+// token and invokes this immediately after reserve/attach/carry; the retained
+// ruling, not this mutable source file, is later receipt authority.
+function observeAuthority(kind, state, repoDir) {
+  const expectedHead = state?.carry?.attests_head ?? state?.head
+  const pr = ghJson(['pr', 'view', String(state?.pr), '--repo', state?.repo ?? '', '--json', 'state,isDraft,headRefOid'])
+  if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== expectedHead) {
+    throw new Refusal('integration review authority must observe an open draft on the captured head')
+  }
+  if (kind === 'attach') {
+    const trigger = ghJson(['api', `repos/${state.repo}/issues/comments/${state.trigger_comment_id}`])
+    const actor = ghJson(['api', 'user'])
+    const body = state?.finder?.trigger_body ?? '@codex review'
+    if (Number(trigger?.id) !== Number(state.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
+      typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
+      typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${state.pr}`) ||
+      typeof trigger?.created_at !== 'string' || typeof state?.reserved_at !== 'string' || trigger.created_at < state.reserved_at) {
+      throw new Refusal('attached trigger is not the exact post-reservation owner request')
+    }
+    if (Number(state.attempt) === 2) {
+      const firstId = Number(state.first_trigger_comment_id)
+      const timeoutMin = Number(state.timeout_min ?? 15)
+      if (!Number.isSafeInteger(firstId) || firstId < 1 || !Number.isSafeInteger(timeoutMin) || timeoutMin < 10) {
+        throw new Refusal('retry authority has no valid first-request or full-window control')
+      }
+      const first = ghJson(['api', `repos/${state.repo}/issues/comments/${firstId}`])
+      const waited = Date.parse(trigger.created_at) - Date.parse(first?.created_at)
+      if (first?.id !== firstId || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
+        throw new Refusal('retry authority did not observe two owner requests separated by the full review window')
+      }
+    }
+  }
+  if (kind === 'carry') {
+    if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
+    try {
+      execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', state.__capture_state_path, '--repo-dir', repoDir, '--read-only'], {
+        encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      throw new Refusal(`carry authority canonical proof did not re-derive: ${(error.stderr || error.stdout || error.message).trim()}`)
+    }
+  }
+}
+
+function captureIntegrationReviewAuthority(args) {
+  const { common, root } = stateRoot()
+  const slate = requireId('slate', args.slate)
+  const session = requireId('session', args.session)
+  const runId = requireId('run-id', args['run-id'])
+  const kind = args['authority-kind']
+  if (!['reserve', 'attach', 'carry'].includes(kind)) throw new UsageError('--authority-kind must be reserve, attach or carry')
+  if (typeof args.state !== 'string' || args.state === '') throw new UsageError('--state is required')
+  args.at = resolveAt(args.at)
+  refuseGrafts()
+  assertRunOwner(root, slate, runId)
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+  bindRunToSlate(root, slate, runId)
+  const runDir = join(root, 'runs', runId)
+  const canonical = join(runDir, 'run.json')
+  const source = readCaptureState(args.state)
+  const priorRecord = readJson(canonical, 'run record')
+  const previousAuthorityDigest = retainedAuthorities(priorRecord, { common, runId }).at(-1)?.digest ?? null
+  // Keep the state pathname private to this observation; it is deleted from
+  // the retained JSON before the ruling is published.
+  const state = structuredClone(source)
+  state.__capture_state_path = args.state
+  observeAuthority(kind, state, args['repo-dir'])
+  delete state.__capture_state_path
+  const temporary = join(mkdtempSync(join(tmpdir(), 'integration-authority-')), 'authority.json')
+  try {
+    writeFileSync(temporary, `${JSON.stringify({ schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }, null, 2)}\n`, { mode: 0o600 })
+    args.authority = temporary
+    const summary = withMutex(canonical, () => {
+      const record = readJson(canonical, 'run record')
+      validateFile('run', canonical, `existing ${canonical}`)
+      const result = MUTATORS['integration-review-capture'](record, args, { common })
+      if (result === null) return null
+      writeValidated('run', canonical, record)
+      return result
+    })
+    return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
+  } finally {
+    rmSync(dirname(temporary), { recursive: true, force: true })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -1693,7 +1817,7 @@ const VALUE_FLAGS = new Set([
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
-  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir',
+  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'repo-dir',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 
@@ -1794,6 +1918,7 @@ function main(argv) {
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
   if (command === 'lane-init') return laneInit(parseFlags(rest))
+  if (command === 'integration-review-capture') return captureIntegrationReviewAuthority(parseFlags(rest))
   if (command === 'promote') {
     const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
     return recordMutation(command, args, { check: args.check === true })

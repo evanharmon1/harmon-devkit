@@ -1330,6 +1330,20 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
+  **The run owner drives and captures cycle authority before dispatch.**
+  Immediately after each owner-driven `reserve`, broker `attach`, or `carry`, the
+  coordinator calls `run-record.mjs integration-review-capture` with its owner
+  token, run/slate/session, the checker state, and `--authority-kind reserve|attach|carry`
+  (plus `--repo-dir` for carry). That command observes the open draft and exact
+  head, verifies the owner-posted attachment or re-derives carry, then retains
+  the complete checker control snapshot as an immutable ruling linked to the
+  preceding capture. It does no network work under the run mutex. If a crash or
+  concurrent state change prevents that capture, retry the owner transition or
+  leave the receipt blocked; do not admit an integrator result from mutable
+  state. The dispatch brief gives the integrator this captured cycle only for
+  polling and reporting. This applies to every
+  trigger order (`after-ci`, `with-push`, and `after-ci-first`), including
+  status-only CI and no-suite heads; timestamps do not bind a review to a head.
   Checker-only evidence is a **clean-run fast path**: the active stage must
   be integration, with no run-level integration `finder_selection`;
   the record holds no integrator pass; it holds no integration adjudication;
