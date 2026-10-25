@@ -302,6 +302,13 @@ grants+=(
     "Bash(\"$skill_dir/assets/groom-report.sh\":*)"
 )
 if [ -n "$triage_dir" ]; then
+    # The audit worker is allowed to run the sibling scanner.  Bind that
+    # scanner to this audit's canonical repository and run directory before
+    # granting it: triage-scan.sh deliberately treats an unset binding as an
+    # unbounded standalone invocation, so the Bash grant alone is insufficient
+    # to keep a model from selecting another repository or output path.
+    export TRIAGE_SCRATCH="$run_dir"
+    export TRIAGE_REPO="$repo"
     grants+=(
         "Bash($triage_dir/assets/triage-scan.sh:*)"
         "Bash(\"$triage_dir/assets/triage-scan.sh\":*)"
