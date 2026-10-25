@@ -8708,7 +8708,7 @@ ci_cycle() {
     [ -z "${3:-}" ] || ci_exempt_flag="$ci_exempt_flag --remediation $3"
     # shellcheck disable=SC2086 # optional flag pairs, deliberately split
     "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-        --attempt 1 --run-id run-a --integration-cap 4 $ci_exempt_flag \
+        --attempt 1 --run-id "${4:-run-a}" --integration-cap 4 $ci_exempt_flag \
         --review-trigger "$1" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -9807,6 +9807,46 @@ auth_validate "$auth_receipt"
     fail "an edited source was accepted by an old retained pass: $auth_out"
 
 echo "==> real-checker receipt authentication refuses altered accepted IDs, counters, PR bindings and late findings"
+
+# Receipt admission reads the current CI-settled split, while request controls
+# remain the owner snapshot captured before CI completed.  Exercise both a
+# direct with-push cycle and after-ci-first after remediation (also with-push).
+auth_ci_split_case() {
+    local trigger="$1" remediation="$2" label="$3" reserve digest attach_digest
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+    ci_cycle "$trigger" 4 "$remediation" "$auth_run"
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+    git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+    reserve="$auth_dir/ci-${label}-reserve.json"
+    jq '{schema:1,kind:"reserve",captured_at:"2026-07-31T08:00:00Z",previous_authority_digest:null,snapshot:(. | .phase="reserved" | .trigger_comment_id=null)}' "$state" >"$reserve"
+    digest="$(shasum -a 256 "$reserve" | awk '{print $1}')"
+    mv "$reserve" "$auth_dir/rulings/$digest"
+    jq --arg previous "$digest" '{schema:1,kind:"attach",captured_at:"2026-07-31T08:01:00Z",previous_authority_digest:$previous,snapshot:.}' "$state" >"$auth_dir/ci-${label}-attach.json"
+    attach_digest="$(shasum -a 256 "$auth_dir/ci-${label}-attach.json" | awk '{print $1}')"
+    mv "$auth_dir/ci-${label}-attach.json" "$auth_dir/rulings/$attach_digest"
+    jq -n --arg run "$auth_run" --arg r "integration-review-authority v1 reserve sha256=$digest [ruling dev-flow-v2/runs/$auth_run/rulings/$digest sha256=$digest]" --arg a "integration-review-authority v1 attach sha256=$attach_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$attach_digest sha256=$attach_digest]" '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[{kind:"other",note:$r},{kind:"other",note:$a}]}' >"$auth_record"
+    ci_runs "$ci_failed"
+    run_ci_check "$auth_run"
+    git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+    jq --arg run "$auth_run" --arg head "$head_sha" --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '.run={run_id:$run,initiated_by:"human"}|.head=$head|.payload.integration_round=1|.payload.codex_cycle={head:$head,cycle:($cycle.charged_cycles+$cycle.exempt_cycles),charged:$cycle.charged_cycles,exempt:$cycle.exempt_cycles,attempt:$checked.attempt,trigger_comment_id:($cycle.trigger_comment_id|tostring),exit_code:0,accepted:$checked.accepted}' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+    jq '.payload.verdict="findings" | .payload.findings=[{id:"integration-r1-ci-1",body:"required CI failed",source_id:"ci-11"}] | .payload.checks[0].bucket="fail"' "$auth_receipt" >"${auth_receipt}.next" && mv "${auth_receipt}.next" "$auth_receipt"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 0 ] || fail "$label: CI-failed truthful 0/1 receipt was rejected: $auth_out"
+    jq '.payload.codex_cycle.charged=1|.payload.codex_cycle.exempt=0' "$auth_receipt" >"$auth_dir/ci-${label}-forged.json"
+    auth_validate "$auth_dir/ci-${label}-forged.json"
+    [ "$auth_rc" -eq 1 ] && grep -Fq 'counters do not match checker state' <<<"$auth_out" || fail "$label: forged frozen split was accepted"
+    git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+    ci_runs "$(ci_run 11 7 completed success '.run_attempt=2')"
+    run_ci_check "$auth_run"
+    git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 1 ] || fail "$label: stale exempt split survived green rerun"
+    jq --arg run "$auth_run" --arg head "$head_sha" --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '.run={run_id:$run,initiated_by:"human"}|.head=$head|.payload.integration_round=1|.payload.codex_cycle={head:$head,cycle:($cycle.charged_cycles+$cycle.exempt_cycles),charged:$cycle.charged_cycles,exempt:$cycle.exempt_cycles,attempt:$checked.attempt,trigger_comment_id:($cycle.trigger_comment_id|tostring),exit_code:0,accepted:$checked.accepted}' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 0 ] || fail "$label: truthful green 1/0 receipt was rejected: $auth_out"
+}
+auth_ci_split_case with-push '' with-push
+auth_ci_split_case after-ci-first 1 after-ci-first-remediation
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
