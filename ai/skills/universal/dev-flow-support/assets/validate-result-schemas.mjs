@@ -2583,7 +2583,7 @@ function checkPlanCoherence(document, errors) {
     if (dependency && (overlap.resolution === 'serialize' || overlap.resolution === 'split')) {
       const beforeWave = waveByIssue.get(dependency.before)
       const afterWave = waveByIssue.get(dependency.after)
-      if (beforeWave !== undefined && afterWave !== undefined && beforeWave >= afterWave) {
+      if (afterWave !== undefined && issueByNumber.get(dependency.before)?.verdict !== 'done' && (beforeWave === undefined || beforeWave >= afterWave)) {
         errors.push(`$plan.overlaps[${index}].merge_dependency: must use increasing waves`)
       }
     }
