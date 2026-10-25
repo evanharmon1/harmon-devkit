@@ -1465,6 +1465,12 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     wait, re-dispatch. Handing it to §6's gate under a positive cap is
     `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any
     non-clean verdict outright.
+  - A completed `findings` or `escalate` result with `codex_cycle: null` at a
+    positive cap is admissible only for the effective `after-ci` timing when a
+    required check reached terminal `fail` or `cancel` before any review
+    request. Preserve its CI findings for adjudication; it is never a clean
+    waiver. Pending checks and permission-fallback results stay in the prior
+    blocked/pending paths.
   - `codex_cycle: null` with verdict `clean` or `findings` (cap 0), or
     `codex_cycle.exit_code` `0`/`10` — terminal for this pass. A `10` (or
     any human finding the agent also surfaced) feeds `findings[]` into §3;

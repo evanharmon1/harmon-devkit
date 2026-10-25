@@ -1465,7 +1465,8 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
     record,
     policy: resolution,
     stateFile: args['codex-state'],
-    repoDir: args['codex-repo-dir']
+    repoDir: args['codex-repo-dir'],
+    recordDir: runDir
   })
   if (authErrors.length) refuse(authErrors.join('; '))
   return `${stage}-r${round}-${slot}`

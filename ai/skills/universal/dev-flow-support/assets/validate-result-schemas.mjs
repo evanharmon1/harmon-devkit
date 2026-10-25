@@ -1497,7 +1497,8 @@ function checkIntegratorReceiptAuthentication(envelope, options, errors) {
     record: options.integratorRecord,
     policy,
     stateFile: options.codexState,
-    repoDir: options.codexRepoDir
+    repoDir: options.codexRepoDir,
+    recordDir: path.dirname(options.integratorRecordFile)
   }))
 }
 

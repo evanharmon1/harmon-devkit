@@ -3,7 +3,7 @@
 // writer: schema validation is the admission boundary, while later readers
 // validate retained immutable bytes without re-querying an overwritten cycle.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -72,22 +72,140 @@ function codexRequired(record, policy) {
   return [...configured, ...selections].includes('codex-cloud')
 }
 
+function effectiveReviewOrder(record, policy) {
+  const trigger = policy?.stages?.integration?.review_trigger ?? 'after-ci'
+  if (trigger !== 'after-ci-first') return trigger
+  const integrationEntries = (record?.stage_transitions ?? [])
+    .filter((transition) => transition?.stage === 'integration')
+    .length
+  const remediationCount = Math.max(0, integrationEntries - 1)
+  return remediationCount === 0 ? 'after-ci' : 'with-push'
+}
+
+function completedAfterCiFailure(envelope, record, policy) {
+  const payload = envelope?.payload
+  if (envelope?.status !== 'completed') return false
+  if (!['findings', 'escalate'].includes(payload?.verdict)) return false
+  if (!Array.isArray(payload?.checks) || payload.checks.some((check) => check?.bucket === 'pending')) return false
+  if (!payload.checks.some((check) => check?.required === true && ['fail', 'cancel'].includes(check?.bucket))) return false
+  return effectiveReviewOrder(record, policy) === 'after-ci'
+}
+
+function cksum(value) {
+  return execFileSync('cksum', [], { input: value, encoding: 'utf8' }).trim().replaceAll(' ', '-')
+}
+
+function readJson(file) {
+  try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null }
+}
+
+function expectedSettlement(disposition) {
+  return disposition === 'declined'
+    ? { disposition: 'decline', referenceType: 'comment_id' }
+    : disposition === 'filed'
+      ? { disposition: 'file', referenceType: 'issue_number' }
+      : null
+}
+
+function hasReference(entry, type) {
+  return entry?.reference?.type === type && typeof entry.reference.value === 'string' && entry.reference.value.length > 0
+}
+
+// A checker state belongs to the integrator and can be replaced after it was
+// written.  It therefore supplies a live observation, never the authority to
+// erase a finding.  Retained pass/adjudication/run bytes are the independent
+// authority for every local non-thread settlement the checker is allowed to
+// honour.  The checker still verifies the live source timestamp and body after
+// this filter; a stale entry simply becomes inert rather than poisoning a
+// later independently clean observation.
+function trustedSettlements(state, record, recordDir) {
+  if (!Array.isArray(state?.settled) || state.settled.length === 0 || !recordDir) return []
+  const receiptNames = new Set(
+    (record?.receipts ?? [])
+      .filter((receipt) => receipt?.kind === 'pass' && /^integration-r[1-9][0-9]*-integrator$/.test(receipt?.file ?? ''))
+      .map((receipt) => receipt.file)
+  )
+  const passes = [...receiptNames]
+    .map((name) => ({ name, pass: readJson(join(recordDir, 'passes', `${name}.json`)) }))
+    .filter(({ pass }) => pass?.run?.run_id === record?.run_id && pass?.head === state?.head)
+  const adjudicationDir = join(recordDir, 'adjudications')
+  if (!existsSync(adjudicationDir)) return []
+  const settlements = new Map((record?.settlements ?? []).map((entry) => [entry?.finding_id, entry]))
+  return state.settled.filter((settled) => {
+    const expected = expectedSettlement(settled?.disposition)
+    if (!expected || typeof settled?.id !== 'number' || typeof settled?.content_fingerprint !== 'string') return false
+    const fingerprint = settled.content_fingerprint.split('|').at(-1)
+    for (const { name, pass } of passes) {
+      const round = Number(/^integration-r([1-9][0-9]*)-integrator$/.exec(name)?.[1])
+      const document = readJson(join(adjudicationDir, `integration-r${round}.json`))
+      if (
+        !Number.isSafeInteger(round) ||
+        document?.run_id !== record?.run_id ||
+        document?.stage !== 'integration' ||
+        document?.round !== round ||
+        document?.reviewed_head !== pass.head
+      ) continue
+      for (const finding of pass?.payload?.findings ?? []) {
+        if (finding?.source_id !== String(settled.id) || typeof finding?.body !== 'string') continue
+        if (cksum(JSON.stringify(finding.body)) !== fingerprint) continue
+        const adjudication = (document.adjudications ?? []).find((entry) => entry?.finding_id === finding.id)
+        if (
+          adjudication?.disposition === expected.disposition &&
+          (expected.disposition === 'decline' || hasReference(adjudication, expected.referenceType))
+        ) return true
+        const settlement = settlements.get(finding.id)
+        if (adjudication?.disposition === 'defer' && settlement?.disposition === expected.disposition && hasReference(settlement, expected.referenceType)) return true
+      }
+    }
+    return false
+  })
+}
+
 function trustedCodexProfile(repo, pr) {
-  const script = 'source "$1"; d=$(mktemp -d -t integrator-profile-XXXXXX) || exit; ' +
-    'resolve_trusted_registry "$2" "$3" "$d/registry.json" && ' +
-    'resolve_finder_profile "$d/registry.json" codex-cloud "$d/profile.json" && ' +
-    "jq -c '{slug:.slug,actor_id:(.trusted_actor_id|tostring),actor_login:.trusted_actor_login,trigger_mechanism:.collection.trigger.mechanism,trigger_body:.collection.trigger.body,reviewer_login:.collection.trigger.reviewer_login,surfaces:.collection.terminal_signals.surfaces,head_binding:.collection.terminal_signals.head_binding,verdict_mode:.collection.terminal_signals.verdict_mode,clean_verdict:.collection.terminal_signals.clean_verdict,actionable_pattern:.collection.terminal_signals.actionable_pattern,severity_marker:.collection.terminal_signals.severity_marker,metadata_line:.collection.terminal_signals.metadata_line,about_summary:.collection.terminal_signals.about_summary,heading:.collection.terminal_signals.heading,carrier_sentence:.collection.terminal_signals.carrier_sentence,success_reaction:.collection.terminal_signals.success_reaction,pending_reaction:.collection.terminal_signals.pending_reaction}' \"$d/profile.json\"; rc=$?; rm -rf \"$d\"; exit $rc"
-  return JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, repo, String(pr)], { encoding: 'utf8' }).trim())
+  // Resolve the two network leaves directly so each has a deadline.  A timeout
+  // around a shell wrapper can leave its `gh` child retaining the wrapper's
+  // pipes; profile extraction below remains the trusted-registry helper's
+  // existing local parser.
+  const options = { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }
+  const base = execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'baseRefOid', '--jq', '.baseRefOid'], options).trim()
+  if (!/^[0-9a-f]{40}$/.test(base)) throw new Error(`trusted-registry: ${repo}#${pr} baseRefOid is not a 40-hex SHA`)
+  const encoded = execFileSync('gh', ['api', `repos/${repo}/contents/agent-registry.json?ref=${base}`, '--jq', '.content'], options).trim()
+  if (!encoded) throw new Error(`trusted-registry: agent-registry.json is empty at ${base} in ${repo}`)
+  const directory = mkdtempSync(join(tmpdir(), 'integrator-profile-'))
+  try {
+    const registry = join(directory, 'registry.json')
+    const profile = join(directory, 'profile.json')
+    const decoded = Buffer.from(encoded, 'base64')
+    if (decoded.length === 0) throw new Error(`trusted-registry: decoded registry at ${base} is empty`)
+    writeFileSync(registry, decoded, { mode: 0o600 })
+    // Keep resolve_trusted_registry's structural preflight: the extractor
+    // below deliberately assumes a finder array, and its iteration alone
+    // would otherwise accept a malformed registry shape.
+    execFileSync('jq', ['-e', 'type == "object" and (.finders | type) == "array"', registry], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const script = 'source "$1"; resolve_finder_profile "$2" codex-cloud "$3" && ' +
+      "jq -c '{slug:.slug,actor_id:(.trusted_actor_id|tostring),actor_login:.trusted_actor_login,trigger_mechanism:.collection.trigger.mechanism,trigger_body:.collection.trigger.body,reviewer_login:.collection.trigger.reviewer_login,surfaces:.collection.terminal_signals.surfaces,head_binding:.collection.terminal_signals.head_binding,verdict_mode:.collection.terminal_signals.verdict_mode,clean_verdict:.collection.terminal_signals.clean_verdict,actionable_pattern:.collection.terminal_signals.actionable_pattern,severity_marker:.collection.terminal_signals.severity_marker,metadata_line:.collection.terminal_signals.metadata_line,about_summary:.collection.terminal_signals.about_summary,heading:.collection.terminal_signals.heading,carrier_sentence:.collection.terminal_signals.carrier_sentence,success_reaction:.collection.terminal_signals.success_reaction,pending_reaction:.collection.terminal_signals.pending_reaction}' \"$3\""
+    return JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, registry, profile], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
+    }).trim())
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 }
 
 // Returns diagnostics rather than throwing so validate-result-schemas can
 // aggregate them with ordinary schema failures. `record` is the run.json
 // source of truth and `policy` is its adjacent resolved projection.
-export function authenticateIntegratorReceipt(envelope, { record, policy, stateFile, repoDir }) {
+export function authenticateIntegratorReceipt(envelope, { record, policy, stateFile, repoDir, recordDir }) {
   const errors = []
   const cycle = envelope?.payload?.codex_cycle
+  if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
+  if (errors.length) return errors
   if (cycle === null) {
-    if (codexRequired(record, policy)) errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex')
+    if (codexRequired(record, policy) && !completedAfterCiFailure(envelope, record, policy)) {
+      errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request')
+    }
     return errors
   }
   if (!stateFile || !repoDir) {
@@ -133,14 +251,13 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   } catch (error) {
     errors.push(`$result.payload.codex_cycle: cannot resolve the trusted codex-cloud registry profile: ${error.stderr || error.message}`)
   }
-  if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
   let checkedResult
   let snapshotDir
   try {
     snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-receipt-'))
     const snapshot = join(snapshotDir, 'state.json')
-    writeFileSync(snapshot, stateText, { encoding: 'utf8', mode: 0o600 })
+    writeFileSync(snapshot, JSON.stringify({ ...state, settled: trustedSettlements(state, record, recordDir) }), { encoding: 'utf8', mode: 0o600 })
     checkedResult = checkerResult(snapshot, repoDir, record.run_id)
   } catch (error) {
     errors.push(`$result.payload.codex_cycle: live checker authentication failed: ${error.message}`)

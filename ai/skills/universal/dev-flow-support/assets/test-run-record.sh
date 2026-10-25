@@ -850,6 +850,50 @@ rri adjudicate --run-id run-integrator --file "$tmp/integration-r1-adjudication.
 (cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
 pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"
 
+# A completed after-ci integration observation with a terminal required-check
+# failure has no Codex cycle to authenticate.  Exercise the actual record
+# writer for the narrowly permitted non-clean receipt and its adjudication;
+# this is not a clean/cap-zero waiver.
+new_run run-integrator-after-ci-failure
+write_plan s-integrator-failed 22:run-integrator-after-ci-failure
+acquire s-integrator-failed alice
+rif() { (cd "$repo" && node "$writer" transition --slate s-integrator-failed --session alice --owner-token "$(token_for s-integrator-failed)" --run-id run-integrator-after-ci-failure "$@"); }
+rrif() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator-failed)" node "$writer" "$@" --slate s-integrator-failed --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    rif --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+after_ci_branch="fixture-run-integrator-after-ci-failure"
+git -C "$repo" branch "$after_ci_branch" HEAD
+mkdir -p "$state/runs/run-integrator-after-ci-failure/passes" "$state/runs/run-integrator-after-ci-failure/adjudications"
+printf '{"branch":"%s"}\n' "$after_ci_branch" >"$state/runs/run-integrator-after-ci-failure/branch.json"
+printf '{"roles":{"integrator":{"tier":"economy"}},"rounds":{"integration":1},"stages":{"integration":{"finders":["codex-cloud"],"review_trigger":"after-ci"}}}\n' >"$state/runs/run-integrator-after-ci-failure/policy.json"
+after_ci_head="$(git -C "$repo" rev-parse "$after_ci_branch")"
+after_ci_pass="$tmp/integration-r1-after-ci-failure.json"
+jq --arg head "$after_ci_head" '
+  .run = {run_id:"run-integrator-after-ci-failure",initiated_by:"human"}
+  | .head = $head
+  | .produced_at = "2026-10-01T00:00:00Z"
+  | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+  | .payload.checks[0].bucket = "fail"
+  | .payload.verdict = "findings"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"required build failed",source_id:"1004"}]
+  | del(.payload.applied_dispositions)
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$after_ci_pass"
+rrif receipt --run-id run-integrator-after-ci-failure --pass "$after_ci_pass" >/dev/null
+after_ci_adjudication="$tmp/integration-r1-after-ci-failure-adjudication.json"
+jq -n --arg head "$after_ci_head" '
+  {schema:2,run_id:"run-integrator-after-ci-failure",stage:"integration",round:1,reviewed_head:$head,
+   adjudications:[{finding_id:"integration-r1-human-1",reviewer_priority:null,adjudicated_priority:"P2",
+     disposition:"decline",reason:"the required check failure is retained for escalation",evidence:"receipt records the terminal required CI failure",override:null}]}
+' >"$after_ci_adjudication"
+rrif adjudicate --run-id run-integrator-after-ci-failure --file "$after_ci_adjudication" >/dev/null
+[ -f "$state/runs/run-integrator-after-ci-failure/passes/integration-r1-integrator.json" ] &&
+    [ -f "$state/runs/run-integrator-after-ci-failure/adjudications/integration-r1.json" ] ||
+    fail "the after-ci failure receipt/adjudication was not published by the supported writer"
+(cd "$repo" && node "$writer" lock release --slate s-integrator-failed --session alice --owner-token "$(token_for s-integrator-failed)") >/dev/null
+pass "the supported writer retains a completed after-ci required-CI failure receipt and adjudication"
+
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane
 new_run run-d

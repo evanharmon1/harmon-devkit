@@ -9659,6 +9659,100 @@ auth_validate "$auth_receipt"
     fail "a late same-head finding did not invalidate the clean receipt: $auth_out"
 printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
 
+echo "==> receipt authentication accepts only independently retained non-thread settlements"
+# `settle` is the supported checker-state writer.  Its local entry is useful
+# only after the immutable integration pass records the same source/body and
+# the retained orchestration record documents the matching disposition.  This
+# keeps the regression on the real checker with its stubbed GitHub transport;
+# it does not manufacture a state entry by editing JSON.
+new_cycle
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+write_badged_comment 77
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined --note "declined in the retained adjudication"
+[ "$settle_rc" -eq 0 ] || fail "the supported settlement writer refused the authentication fixture: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
+mv "${state}.with-run" "$state"
+jq -n --arg run "$auth_run" \
+    '{run_id:$run,receipts:[{kind:"pass",file:"integration-r1-integrator"}],settlements:[],pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
+    >"$auth_record"
+mkdir -p "$auth_dir/passes" "$auth_dir/adjudications"
+jq -n --arg run "$auth_run" --arg head "$head_sha" --arg body "$(jq -r '.body' "${fixtures}/comment-77.json")" \
+    '{schema:2,role:"integrator",status:"completed",head:$head,run:{run_id:$run,initiated_by:"human"},payload:{findings:[{id:"integration-r1-codex-cloud-1",body:$body,source_id:"77"}]}}' \
+    >"$auth_dir/passes/integration-r1-integrator.json"
+jq -n --arg run "$auth_run" \
+    --arg head "$head_sha" \
+    '{schema:2,run_id:$run,stage:"integration",round:1,reviewed_head:$head,adjudications:[{finding_id:"integration-r1-codex-cloud-1",disposition:"decline"}]}' \
+    >"$auth_dir/adjudications/integration-r1.json"
+jq --arg run "$auth_run" --arg head "$head_sha" --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '
+  .run = {run_id:$run,initiated_by:"human"}
+  | .head = $head
+  | .payload.integration_round = 1
+  | .payload.codex_cycle = {
+      head:$head,
+      cycle:($cycle.charged_cycles + $cycle.exempt_cycles),
+      charged:$cycle.charged_cycles,
+      exempt:$cycle.exempt_cycles,
+      attempt:$checked.attempt,
+      trigger_comment_id:($cycle.trigger_comment_id | tostring),
+      exit_code:0,
+      accepted:$checked.accepted
+    }
+' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+
+# Removing the retained authority leaves the exact same live settlement and
+# source finding.  The checker must surface it again rather than letting the
+# caller-writable state decide that it is declined.
+jq 'del(.receipts)' "$auth_record" >"$auth_dir/forged-record.json"
+mv "$auth_dir/forged-record.json" "$auth_record"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "a forged local settlement was accepted without retained authority: $auth_out"
+
+# The same supported settlement is accepted when its receipted source and
+# adjudication are retained independently of checker state.
+jq -n --arg run "$auth_run" \
+    '{run_id:$run,receipts:[{kind:"pass",file:"integration-r1-integrator"}],settlements:[],pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
+    >"$auth_record"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 0 ] || fail "a receipted/adjudicated settlement was rejected: $auth_out"
+
+# The matching file name alone is not authority: its stage, round and reviewed
+# head must bind it to the exact receipted integration pass.
+for field in stage round reviewed_head; do
+    case "$field" in
+    stage) jq '.stage = "review"' "$auth_dir/adjudications/integration-r1.json" ;;
+    round) jq '.round = 2' "$auth_dir/adjudications/integration-r1.json" ;;
+    reviewed_head) jq '.reviewed_head = "0000000000000000000000000000000000000000"' "$auth_dir/adjudications/integration-r1.json" ;;
+    esac >"$auth_dir/adjudications/integration-r1.next.json"
+    mv "$auth_dir/adjudications/integration-r1.next.json" "$auth_dir/adjudications/integration-r1.json"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+        fail "a $field-mismatched adjudication was accepted: $auth_out"
+    jq -n --arg run "$auth_run" --arg head "$head_sha" \
+        '{schema:2,run_id:$run,stage:"integration",round:1,reviewed_head:$head,adjudications:[{finding_id:"integration-r1-codex-cloud-1",disposition:"decline"}]}' \
+        >"$auth_dir/adjudications/integration-r1.json"
+done
+
+# A source edited after its pass is a different finding.  Re-settle it through
+# the supported writer so the live fingerprint is current, then prove the old
+# retained body cannot authorize the new checker-state entry.
+jq '.body += "\n\nEdited after adjudication" | .updated_at = "2026-07-31T08:00:45Z"' \
+    "${fixtures}/comment-77.json" >"${fixtures}/comment-77.next"
+mv "${fixtures}/comment-77.next" "${fixtures}/comment-77.json"
+jq -c '[[.]]' "${fixtures}/comment-77.json" >"${fixtures}/comments.pages.json"
+git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+run_settle --surface comment --id 77 --disposition declined --note "new text needs independent adjudication"
+[ "$settle_rc" -eq 0 ] || fail "the supported writer could not settle the edited fixture: $settle_out"
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "an edited source was accepted by an old retained pass: $auth_out"
+
 echo "==> real-checker receipt authentication refuses altered accepted IDs, counters, PR bindings and late findings"
 
 # Last line on purpose: every case above must have run for this to print.

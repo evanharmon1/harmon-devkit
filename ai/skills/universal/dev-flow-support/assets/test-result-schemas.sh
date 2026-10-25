@@ -1886,6 +1886,63 @@ run_context_case \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
 
+# `after-ci` does not request a review when required CI has already reached a
+# terminal failure.  That completed non-clean observation is admissible as a
+# receipt so the ordinary adjudication path can retain it; pending and
+# permission-fallback shapes remain non-terminal and cannot use this carve-out.
+after_ci_failure_receipt="$test_tmp/after-ci-failure-integrator-receipt.json"
+jq '
+  .payload.verdict = "findings"
+  | .payload.checks[0].bucket = "fail"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"required build failed",source_id:"1004"}]
+  | del(.payload.applied_dispositions)
+' "$null_cycle_receipt" >"$after_ci_failure_receipt"
+jq '.rounds.integration = 1 | .stages.integration.review_trigger = "after-ci"' \
+    "$receipt_context_dir/policy.json" >"$receipt_context_dir/policy.next.json"
+mv "$receipt_context_dir/policy.next.json" "$receipt_context_dir/policy.json"
+accept_context_case \
+    "a strict after-ci required-check failure may complete without a Codex cycle" \
+    integrator "$after_ci_failure_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+jq '.stages.integration.review_trigger = "after-ci-first" | .rounds.integration = 1' \
+    "$receipt_context_dir/policy.json" >"$receipt_context_dir/policy.next.json"
+mv "$receipt_context_dir/policy.next.json" "$receipt_context_dir/policy.json"
+accept_context_case \
+    "after-ci-first admits a failed first integration head without a review cycle" \
+    integrator "$after_ci_failure_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+jq '.stage_transitions = [{stage:"integration"},{stage:"implement"},{stage:"integration"}]' \
+    "$null_cycle_record" >"$receipt_context_dir/run.next.json"
+mv "$receipt_context_dir/run.next.json" "$null_cycle_record"
+run_context_case \
+    "after-ci-first refuses a failed remediated head even when legacy re-entry has no remediation object" \
+    integrator "$after_ci_failure_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+jq 'del(.stage_transitions)' "$null_cycle_record" >"$receipt_context_dir/run.next.json"
+mv "$receipt_context_dir/run.next.json" "$null_cycle_record"
+jq '.payload.checks[0].bucket = "pending"' "$after_ci_failure_receipt" >"$test_tmp/pending-after-ci-receipt.json"
+run_context_case \
+    "a pending after-ci receipt cannot use the failed-check null-cycle admission" \
+    integrator "$test_tmp/pending-after-ci-receipt.json" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+# Identity is checked before every null-cycle return, including cap zero.
+foreign_null_cycle_record="$test_tmp/foreign-null-cycle-run.json"
+printf '%s\n' '{"run_id":"foreign-run"}' >"$foreign_null_cycle_record"
+cp "$receipt_context_dir/policy.json" "$test_tmp/policy.json"
+run_context_case \
+    "a null-cycle receipt refuses a retained record for another run before evaluating its waiver" \
+    integrator "$null_cycle_receipt" \
+    "integrator authentication record does not name this envelope run" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$foreign_null_cycle_record"
+
 rm "$receipt_context_dir/policy.json"
 run_context_case \
     "a strict null-cycle receipt refuses an absent retained policy" \
