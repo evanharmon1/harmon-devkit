@@ -9476,6 +9476,15 @@ auth_receipt="$auth_dir/receipt.json"
 printf '[]\n' >"$auth_ids"
 auth_run='run-1159-checker-auth'
 
+# Receipt admission needs origin-visible check-suite history even though the
+# checker itself may authenticate its regular fixture through the commit-date
+# fallback.  Keep that history local to the receipt cases: new_cycle resets it
+# to the deliberate zero-suite default used by the rest of this test file.
+seed_auth_check_suite() {
+    jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:59:00Z"}]}]' \
+        >"${fixtures}/check-suites.pages.json"
+}
+
 # new_cycle calls write_defaults, which derives the PR/head fixture from this
 # global. Its copied checker therefore needs the actual fixture checkout HEAD;
 # the production checker’s different source-checkout anchor is set below.
@@ -9487,6 +9496,7 @@ jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
     >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+seed_auth_check_suite
 jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
 mv "${state}.with-run" "$state"
 jq -n --arg run "$auth_run" \
@@ -9541,8 +9551,6 @@ base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
 # Receipt authentication independently binds the trigger window to immutable
 # origin metadata.  The checker itself permits the legacy commit-date fallback,
 # but receipt admission deliberately requires a server-side check-suite time.
-jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:59:00Z"}]}]' \
-    >"${fixtures}/check-suites.pages.json"
 jq -cn --argjson trigger "$(cat "${fixtures}/trigger.json")" '[[$trigger]]' \
     >"${fixtures}/comments.pages.json"
 auth_validate "$auth_receipt"
@@ -9697,6 +9705,7 @@ run_settle --surface comment --id 77 --disposition declined --note "declined in 
 [ "$settle_rc" -eq 0 ] || fail "the supported settlement writer refused the authentication fixture: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+seed_auth_check_suite
 jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
 mv "${state}.with-run" "$state"
 jq -n --arg run "$auth_run" \
