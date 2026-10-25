@@ -2864,6 +2864,20 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       }
     }
 
+    // A receipt proves that this local artifact is immutable, but it does not
+    // prove that the run published the corresponding integration round.  Keep
+    // every retained receipt in the raw record projection while measuring the
+    // authenticated metric only where the same trusted marker names its
+    // integration-round coordinate.
+    const authenticatedIntegrationRounds = new Set(
+      visibleMarkers
+        .filter(({ marker }) => marker.stage === "integration" && marker.round !== null)
+        .map(({ marker }) => marker.round),
+    );
+    const authenticatedIntegratorPasses = retainedIntegratorPasses.filter(
+      (pass) => authenticatedIntegrationRounds.has(pass?.payload?.integration_round),
+    );
+
     return {
       status: "ok",
       runId,
@@ -2878,6 +2892,8 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       remediationCap: recordedRounds?.remediation ?? null,
       retainedIntegrationFinderCounts: integrationFinderCounts(retainedIntegratorPasses),
       retainedIntegrationPassCount: retainedIntegratorPasses.length,
+      authenticatedIntegrationFinderCounts: integrationFinderCounts(authenticatedIntegratorPasses),
+      authenticatedIntegrationPassCount: authenticatedIntegratorPasses.length,
       localRecordCurrentState: Boolean(asOf),
       trajectoryDiagnostics: diagnostics,
       authorizedCeilings,
@@ -3462,11 +3478,11 @@ function renderTrajectory(run) {
     // marker and immutable receipt chain that retained the pass above exists.
     // Keep the legacy/missing-record spelling for records without that proof;
     // an empty finding count is evidence only when it names a retained pass.
-    integration_evidence: (run.retainedIntegrationPassCount ?? 0) > 0
+    integration_evidence: (run.authenticatedIntegrationPassCount ?? 0) > 0
       ? {
           measurement: "authenticated-receipt-backed",
-          passes: run.retainedIntegrationPassCount,
-          findings_by_finder: run.retainedIntegrationFinderCounts,
+          passes: run.authenticatedIntegrationPassCount,
+          findings_by_finder: run.authenticatedIntegrationFinderCounts,
         }
       : "not-measured",
     // Renamed from the misleading untrusted_comments — shepherd round 2,

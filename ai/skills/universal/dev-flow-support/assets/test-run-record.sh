@@ -831,10 +831,22 @@ jq --arg head "$integration_head" '
   | .payload.settled_at = "2026-10-01T00:00:00Z"
   | .payload.codex_cycle = null
 ' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$integration_pass"
-jq '.payload.checks[0].bucket = "pending" | .payload.verdict = "pending" | del(.payload.applied_dispositions)' \
+jq '.payload.checks[0].bucket = "pending"' \
     "$integration_pass" >"$tmp/integration-pending.json"
 expect_refused "integrator receipt with pending checks" "pending checks cannot be admitted as an integrator receipt" \
     rri receipt --run-id run-integrator --pass "$tmp/integration-pending.json"
+jq '.payload.checks[0].bucket = "pass" | .payload.verdict = "pending" |
+    .payload.codex_cycle = {head:.head,cycle:1,attempt:1,trigger_comment_id:"1001",exit_code:11} |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-pending-review.json"
+expect_refused "integrator receipt with a pending review after CI settled" "pending review verdict or checker cycle cannot be admitted as an integrator receipt" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-pending-review.json"
+jq '.payload.checks[0].bucket = "pass" | .payload.verdict = "pending" |
+    .payload.codex_cycle = {head:.head,cycle:1,attempt:2,trigger_comment_id:"1001",exit_code:12} |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-retrying-review.json"
+expect_refused "integrator receipt while a review retry is pending" "pending review verdict or checker cycle cannot be admitted as an integrator receipt" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-retrying-review.json"
 rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
 [ -f "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
     fail "integrator receipt was not published under its stable coordinates"

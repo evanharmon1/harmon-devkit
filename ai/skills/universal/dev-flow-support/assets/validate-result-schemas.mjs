@@ -1481,12 +1481,26 @@ function checkIntegratorReceiptChecks(payload, options, errors) {
   if (pending.length > 0) {
     errors.push(`$result.payload.checks: pending checks cannot be admitted as an integrator receipt (${pending.map((check) => check.name ?? '?').join(', ')})`)
   }
+  // A receipt is immutable evidence of a completed integration round.  A
+  // pending verdict is an in-flight diagnostic even when CI itself has
+  // settled.  Checker exits 11 and 12 respectively mean still waiting and
+  // retrying, so neither can reserve an immutable completed round.  Preserve
+  // those diagnostics outside receipt mode; only refuse promoting them to
+  // durable evidence here.
+  if (payload.verdict === 'pending' || [11, 12].includes(payload.codex_cycle?.exit_code)) {
+    errors.push('$result.payload: a pending review verdict or checker cycle cannot be admitted as an integrator receipt')
+  }
 }
 
 function checkIntegratorReceiptAuthentication(envelope, options, errors) {
   // Bare validation remains useful for historical retained envelopes. Strict
   // receipt mode requires explicit live context (CONTEXT_FLAGS above).
   if (!options.receipt || !options.integratorRecord) return
+  // Do not issue a live authentication query for a receipt that the local,
+  // immutable-terminality rule has already refused.  Apart from avoiding an
+  // irrelevant network read, this keeps the durable admission failure about
+  // the incomplete round rather than about unavailable live checker context.
+  if (envelope?.payload?.verdict === 'pending' || [11, 12].includes(envelope?.payload?.codex_cycle?.exit_code)) return
   const policyFile = path.join(path.dirname(options.integratorRecordFile), 'policy.json')
   let policy
   try { policy = JSON.parse(fs.readFileSync(policyFile, 'utf8')) } catch {

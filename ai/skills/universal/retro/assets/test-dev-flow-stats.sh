@@ -3090,7 +3090,7 @@ function writeScenario(name, db) {
       stage_transitions: lifecycleTo("integration", at),
       interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
       evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "integration", destination: "issue", round: 1, sequence: 1 } }],
-      receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }], promotion: null,
+      receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }, { kind: "pass", file: "integration-r2" }], promotion: null,
     };
     const runDir = path.join("${tmp}", "local-records", runId);
     mkdirSync(path.join(runDir, "passes"), { recursive: true });
@@ -3100,6 +3100,11 @@ function writeScenario(name, db) {
     envelope.run.run_id = runId;
     writeFileSync(path.join(runDir, "passes", "integration-r1.json"), JSON.stringify(envelope, null, 2));
     writeFileSync(path.join(runDir, "adjudications", "integration-r1.json"), JSON.stringify({ schema: 2, run_id: runId, stage: "integration", round: 1, reviewed_head: envelope.head, adjudications: [] }, null, 2));
+    const unmarked = structuredClone(envelope);
+    unmarked.payload.integration_round = 2;
+    unmarked.payload.findings[0].id = "integration-r2-human-1";
+    writeFileSync(path.join(runDir, "passes", "integration-r2.json"), JSON.stringify(unmarked, null, 2));
+    writeFileSync(path.join(runDir, "adjudications", "integration-r2.json"), JSON.stringify({ schema: 2, run_id: runId, stage: "integration", round: 2, reviewed_head: unmarked.head, adjudications: [] }, null, 2));
     writeScenario("integration-envelope", { issues: [{ number: 200, pull_request: null }], comments: { "200": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
 
@@ -4707,13 +4712,21 @@ echo "== authenticated integration receipts are measured without synthesizing co
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null || fail "receipted integration finder counts missing: $out"
+echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:2}}' >/dev/null || fail "receipted integration finder counts missing: $out"
 echo "$out" | jq -e '
   .rounds == [] and
   .integration_evidence == {measurement:"authenticated-receipt-backed",passes:1,findings_by_finder:{human:1}} and
   (has("integration_passes") | not)
 ' >/dev/null ||
     fail "integration envelope coordinates: harvester did not measure authenticated receipt-backed integration evidence: $out"
+# Keep the two-retained/one-published case above self-contained.  The
+# remaining legacy fixture mutations exercise one receipt at a time and must
+# not inherit the intentionally unmarked round 2.
+rm -f "$tmp/local-records/$run_id/passes/integration-r2.json" \
+    "$tmp/local-records/$run_id/adjudications/integration-r2.json"
+jq ' .receipts |= map(select(.file != "integration-r2")) ' "$tmp/local-records/$run_id/run.json" \
+    >"$tmp/local-records/$run_id/run.next.json"
+mv "$tmp/local-records/$run_id/run.next.json" "$tmp/local-records/$run_id/run.json"
 out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
 grep -Fq 'integration: 1 authenticated receipt-backed pass(es)' <<<"$out_table" ||
     fail "integration envelope coordinates: the table renderer did not measure authenticated integration evidence: $out_table"
@@ -4757,6 +4770,7 @@ for mutation in wrong-run object-findings; do
     [ "$rc" -eq 0 ] || fail "$mutation integrator must be nonfatal, got $rc: $out"
     echo "$out" | jq -e '
       .retained_record_findings_by_stage_finder == {integration:{}} and
+      .integration_evidence == "not-measured" and
       any(.trajectory_diagnostics[]; .pass == "integration-r1" and .level == "reject")
     ' >/dev/null || fail "$mutation integrator counted or omitted diagnostic: $out"
 done

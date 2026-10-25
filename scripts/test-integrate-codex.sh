@@ -9517,6 +9517,15 @@ git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
 
 auth_validate() {
     auth_state="${2:-$state}"
+    # The checker fixture frequently replaces top-level comment pages for the
+    # assertion it is about to make.  GitHub history still contains the
+    # original trusted trigger, which receipt authentication must see while it
+    # reconstructs the window.  Retain it without changing any fixture's
+    # bot-evidence page or its intended assertion.
+    jq --argjson trigger "$(cat "${fixtures}/trigger.json")" '
+      if any(.[][]?; .id == $trigger.id) then . else [[$trigger]] + . end
+    ' "${fixtures}/comments.pages.json" >"${fixtures}/comments.pages.next.json"
+    mv "${fixtures}/comments.pages.next.json" "${fixtures}/comments.pages.json"
     set +e
     auth_out="$(node "$auth_validator" integrator "$1" --receipt \
         --run-id "$auth_run" --initiated-by human --known-ids "$auth_ids" \
@@ -9529,8 +9538,22 @@ auth_validate() {
 # Finder-null legacy state is authenticated against the current trusted
 # profile, so seed its real registry before the genuine default assertion.
 base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+# Receipt authentication independently binds the trigger window to immutable
+# origin metadata.  The checker itself permits the legacy commit-date fallback,
+# but receipt admission deliberately requires a server-side check-suite time.
+jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:59:00Z"}]}]' \
+    >"${fixtures}/check-suites.pages.json"
+jq -cn --argjson trigger "$(cat "${fixtures}/trigger.json")" '[[$trigger]]' \
+    >"${fixtures}/comments.pages.json"
 auth_validate "$auth_receipt"
 [ "$auth_rc" -eq 0 ] || fail "authentic clean receipt was rejected: $auth_out"
+
+# The live exact trigger alone is insufficient: a writable state must not be
+# able to raise the first-trigger boundary and hide an older unbound review.
+jq '.first_trigger_comment_id = "999999999"' "$state" >"$auth_dir/old-first-trigger-state.json"
+auth_validate "$auth_receipt" "$auth_dir/old-first-trigger-state.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'first-trigger boundary does not match live trusted trigger history' <<<"$auth_out" ||
+    fail "an unbound first-trigger boundary was not refused: $auth_out"
 
 jq '.payload.codex_cycle.accepted.id = "999999999"' "$auth_receipt" >"$auth_dir/accepted-id.json"
 auth_validate "$auth_dir/accepted-id.json"

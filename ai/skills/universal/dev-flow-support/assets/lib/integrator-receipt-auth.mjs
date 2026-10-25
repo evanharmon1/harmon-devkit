@@ -111,6 +111,19 @@ function hasReference(entry, type) {
   return entry?.reference?.type === type && typeof entry.reference.value === 'string' && entry.reference.value.length > 0
 }
 
+// A carry keeps the checker cycle anchored at the original reviewed head,
+// while a retained integration pass names the later head it attests.  The
+// carry object is the immutable link between those two identities; comparing
+// only pass.head to state.head would discard a legitimate settlement that a
+// later live check must still honour.
+export function passAttestsCheckerCycle(pass, state) {
+  if (pass?.head === state?.head) return true
+  const carried = pass?.payload?.codex_cycle?.carried
+  if (!carried) return false
+  return carried.origin_head === state.head &&
+    carried.attests_head === pass.head
+}
+
 // A checker state belongs to the integrator and can be replaced after it was
 // written.  It therefore supplies a live observation, never the authority to
 // erase a finding.  Retained pass/adjudication/run bytes are the independent
@@ -127,7 +140,7 @@ function trustedSettlements(state, record, recordDir) {
   )
   const passes = [...receiptNames]
     .map((name) => ({ name, pass: readJson(join(recordDir, 'passes', `${name}.json`)) }))
-    .filter(({ pass }) => pass?.run?.run_id === record?.run_id && pass?.head === state?.head)
+    .filter(({ pass }) => pass?.run?.run_id === record?.run_id && passAttestsCheckerCycle(pass, state))
   const adjudicationDir = join(recordDir, 'adjudications')
   if (!existsSync(adjudicationDir)) return []
   const settlements = new Map((record?.settlements ?? []).map((entry) => [entry?.finding_id, entry]))
@@ -186,12 +199,127 @@ function trustedCodexProfile(repo, pr) {
     })
     const script = 'source "$1"; resolve_finder_profile "$2" codex-cloud "$3" && ' +
       "jq -c '{slug:.slug,actor_id:(.trusted_actor_id|tostring),actor_login:.trusted_actor_login,trigger_mechanism:.collection.trigger.mechanism,trigger_body:.collection.trigger.body,reviewer_login:.collection.trigger.reviewer_login,surfaces:.collection.terminal_signals.surfaces,head_binding:.collection.terminal_signals.head_binding,verdict_mode:.collection.terminal_signals.verdict_mode,clean_verdict:.collection.terminal_signals.clean_verdict,actionable_pattern:.collection.terminal_signals.actionable_pattern,severity_marker:.collection.terminal_signals.severity_marker,metadata_line:.collection.terminal_signals.metadata_line,about_summary:.collection.terminal_signals.about_summary,heading:.collection.terminal_signals.heading,carrier_sentence:.collection.terminal_signals.carrier_sentence,success_reaction:.collection.terminal_signals.success_reaction,pending_reaction:.collection.terminal_signals.pending_reaction}' \"$3\""
-    return JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, registry, profile], {
+    const codexProfile = JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, registry, profile], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
     }).trim())
+    const trustedOrchestratorActorIds = JSON.parse(execFileSync('jq', ['-c',
+      '(.trusted_orchestrator_actor_ids // []) | if type == "array" and all(.[]; type == "number" and . > 0) then . else error("invalid trusted orchestrator actors") end', registry], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
+    }).trim())
+    return { profile: codexProfile, trustedOrchestratorActorIds }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+}
+
+function isSha(value) { return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) }
+function isTimestamp(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) }
+function isPositiveInteger(value) { return Number.isSafeInteger(value) && value > 0 }
+
+function ghJson(args) {
+  return JSON.parse(execFileSync('gh', args, {
+    encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe']
+  }).trim())
+}
+
+function priorClosedCycleTriggerCeiling(record, recordDir, state) {
+  if (!recordDir) return null
+  const currentCycle = Number(state?.charged_cycles) + Number(state?.exempt_cycles)
+  if (!Number.isSafeInteger(currentCycle) || currentCycle < 1) return null
+  const ids = []
+  for (const receipt of record?.receipts ?? []) {
+    if (receipt?.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? '')) continue
+    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
+    const trigger = Number(pass?.payload?.codex_cycle?.trigger_comment_id)
+    const passCycle = Number(pass?.payload?.codex_cycle?.cycle)
+    if (pass?.run?.run_id === record?.run_id && passAttestsCheckerCycle(pass, state) &&
+      Number.isSafeInteger(passCycle) && passCycle < currentCycle && isPositiveInteger(trigger)) {
+      ids.push(trigger)
+    }
+  }
+  return ids.length === 0 ? null : Math.max(...ids)
+}
+
+// The checker state is writable by the integrator, so it may describe a
+// narrower review window than the evidence it asks the checker to classify.
+// Rebuild only the review-comment tuple from GitHub's immutable actor/comment
+// data and the recorded receipt chain, then let the unchanged checker consume
+// that conservative snapshot.  The state head remains the reviewed origin on
+// a carry; the later attested head has no trigger history of its own.
+export function authenticatedReviewCommentSnapshot(state, profile, trustedActorIds, record, recordDir) {
+  const mechanism = state?.finder?.trigger_mechanism ?? profile.trigger_mechanism
+  if (mechanism !== 'review-comment') return { state, independentlyProvesTwoAttempts: false }
+  const triggerId = Number(state?.trigger_comment_id)
+  if (!isPositiveInteger(triggerId) || !isSha(state?.head)) throw new Error('review-comment state has no usable origin head or trigger id')
+  const expectedBody = state?.finder?.trigger_body ?? profile.trigger_body
+  if (typeof expectedBody !== 'string' || expectedBody.length === 0) throw new Error('review-comment state has no trusted trigger body')
+  const repo = state.repo
+  const pr = Number(state.pr)
+  if (typeof repo !== 'string' || !isPositiveInteger(pr)) throw new Error('review-comment state has invalid repository binding')
+  const actorIds = new Set(trustedActorIds)
+  if (actorIds.size === 0) throw new Error('trusted registry has no orchestrator actors for review trigger authentication')
+  const trigger = ghJson(['api', `repos/${repo}/issues/comments/${triggerId}`])
+  const isExactTrigger = (comment) =>
+    Number(comment?.id) === triggerId &&
+    typeof comment?.body === 'string' && comment.body.trim() === expectedBody &&
+    typeof comment?.issue_url === 'string' && comment.issue_url.endsWith(`/issues/${pr}`) &&
+    isTimestamp(comment?.created_at) && actorIds.has(comment?.user?.id)
+  if (!isExactTrigger(trigger)) throw new Error('checker trigger is not an exact trusted orchestrator review request')
+
+  const commit = ghJson(['api', `repos/${repo}/commits/${state.head}`])
+  const dates = [commit?.commit?.author?.date, commit?.commit?.committer?.date]
+  if (!dates.every(isTimestamp)) throw new Error('origin commit has no canonical timestamps')
+  const checkSuitePages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/commits/${state.head}/check-suites?per_page=100`])
+  const suites = (Array.isArray(checkSuitePages) ? checkSuitePages : []).flatMap((page) => Array.isArray(page?.check_suites) ? page.check_suites : [])
+  const suiteDates = suites.map((suite) => suite?.created_at).filter(isTimestamp)
+  if (suiteDates.length === 0) throw new Error('origin head has no readable check-suite timestamp')
+  const lowerTime = [...dates, ...suiteDates].sort()[0]
+
+  const commentPages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr}/comments?per_page=100`])
+  const comments = (Array.isArray(commentPages) ? commentPages : []).flat()
+  const candidates = comments.filter((comment) =>
+    isPositiveInteger(comment?.id) &&
+    typeof comment?.body === 'string' && comment.body.trim() === expectedBody &&
+    typeof comment?.issue_url === 'string' && comment.issue_url.endsWith(`/issues/${pr}`) &&
+    isTimestamp(comment?.created_at) && actorIds.has(comment?.user?.id) &&
+    comment.created_at >= lowerTime,
+  )
+  if (!candidates.some((comment) => comment.id === triggerId)) throw new Error('checker trigger cannot be bound to its reviewed origin head')
+  const firstTriggerId = Math.min(...candidates.map((comment) => comment.id))
+  const recordedFirst = Number(state.first_trigger_comment_id ?? state.trigger_comment_id)
+  if (recordedFirst !== firstTriggerId) throw new Error('checker first-trigger boundary does not match live trusted trigger history')
+  // The documented default is 15 minutes, while an explicit profile may use
+  // the supported 10-minute minimum.  A writable state can ask for more wait,
+  // never less than that contractual floor.
+  const persistedTimeout = state.timeout_min === null || state.timeout_min === undefined ? 15 : Number(state.timeout_min)
+  if (!isPositiveInteger(persistedTimeout)) throw new Error('checker state has an invalid timeout_min')
+  const isLaterTrustedTrigger = triggerId > firstTriggerId
+  const snapshot = {
+    ...state,
+    trigger_comment_id: triggerId,
+    requested_at: trigger.created_at,
+    first_trigger_comment_id: firstTriggerId,
+    // Honour an existing full-window obligation and conservatively add one
+    // where live history proves an earlier trusted request.  Do not infer the
+    // retry ordinal: separate cycles can legitimately start at attempt 1.
+    requires_full_window: state.requires_full_window === true || isLaterTrustedTrigger,
+    timeout_min: Math.max(10, persistedTimeout)
+  }
+  // A completed earlier cycle is not this cycle's first attempt.  Its receipt
+  // establishes that boundary only for exit-13's two-attempt proof; it must
+  // never alter the checker's trusted first-trigger history or exclude an
+  // idempotently re-read current-cycle trigger from the snapshot.
+  const closedCeiling = priorClosedCycleTriggerCeiling(record, recordDir, state)
+  const attemptCandidates = closedCeiling === null
+    ? candidates
+    : candidates.filter((comment) => comment.id > closedCeiling)
+  const first = attemptCandidates.reduce((earliest, comment) =>
+    earliest === null || comment.id < earliest.id ? comment : earliest, null)
+  const independentlyProvesTwoAttempts =
+    snapshot.attempt === 2 &&
+    first !== null && triggerId > first.id &&
+    Date.parse(trigger.created_at) - Date.parse(first.created_at) >= snapshot.timeout_min * 60_000
+  return { state: snapshot, independentlyProvesTwoAttempts }
 }
 
 // Returns diagnostics rather than throwing so validate-result-schemas can
@@ -233,8 +361,10 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
       url.pathname.replace(/^\/+|\/+$/g, '') === `${state?.repo}/pull/${state?.pr}`
   } catch { /* malformed binding cannot authenticate a cycle */ }
   if (!bound) errors.push('$result.payload.codex_cycle: checker state repo/PR is not bound to the run’s trusted PR binding')
+  let trusted
   try {
-    const profile = trustedCodexProfile(state.repo, state.pr)
+    trusted = trustedCodexProfile(state.repo, state.pr)
+    const profile = trusted.profile
     if (
       profile.actor_id !== LEGACY_CODEX_PROFILE.actor_id ||
       profile.actor_login !== LEGACY_CODEX_PROFILE.actor_login ||
@@ -257,8 +387,11 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   try {
     snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-receipt-'))
     const snapshot = join(snapshotDir, 'state.json')
-    writeFileSync(snapshot, JSON.stringify({ ...state, settled: trustedSettlements(state, record, recordDir) }), { encoding: 'utf8', mode: 0o600 })
+    const authentication = authenticatedReviewCommentSnapshot(state, trusted.profile, trusted.trustedOrchestratorActorIds, record, recordDir)
+    const authenticatedState = authentication.state
+    writeFileSync(snapshot, JSON.stringify({ ...authenticatedState, settled: trustedSettlements(authenticatedState, record, recordDir) }), { encoding: 'utf8', mode: 0o600 })
     checkedResult = checkerResult(snapshot, repoDir, record.run_id)
+    checkedResult.independentlyProvesTwoAttempts = authentication.independentlyProvesTwoAttempts
   } catch (error) {
     errors.push(`$result.payload.codex_cycle: live checker authentication failed: ${error.message}`)
     return errors
@@ -271,7 +404,24 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   const cycleTotal = Number(state?.charged_cycles) + Number(state?.exempt_cycles)
   if (attested !== envelope.head || cycle.head !== envelope.head) errors.push('$result.payload.codex_cycle: live checker state does not attest the envelope head')
   if (cycle.exit_code !== checkedResult.exit) errors.push('$result.payload.codex_cycle.exit_code: does not match the live checker process exit')
-  if (cycle.cycle !== cycleTotal || cycle.charged !== state?.charged_cycles || cycle.exempt !== state?.exempt_cycles) errors.push('$result.payload.codex_cycle: cycle, charged, and exempt counters do not match checker state')
+  // Exit 13 is terminal only after a separate trusted request establishes the
+  // first full window.  The checker state's ordinal alone remains writable.
+  if (checkedResult.exit === 13 && !checkedResult.independentlyProvesTwoAttempts) {
+    errors.push('$result.payload.codex_cycle: terminal escalation needs two trusted same-origin requests separated by the full review window')
+  }
+  const hasCharged = Object.hasOwn(cycle, 'charged')
+  const hasExempt = Object.hasOwn(cycle, 'exempt')
+  if (hasCharged !== hasExempt) {
+    errors.push('$result.payload.codex_cycle: charged and exempt counters must be supplied together')
+  } else {
+    // Older producers reported only the cycle ordinal.  That is the original
+    // single-counter contract: all cycles were charged and none exempt.
+    const reportedCharged = hasCharged ? cycle.charged : cycle.cycle
+    const reportedExempt = hasExempt ? cycle.exempt : 0
+    if (cycle.cycle !== cycleTotal || reportedCharged !== state?.charged_cycles || reportedExempt !== state?.exempt_cycles) {
+      errors.push('$result.payload.codex_cycle: cycle, charged, and exempt counters do not match checker state')
+    }
+  }
   if (cycle.attempt !== checked.attempt || id(cycle.trigger_comment_id) !== id(state?.trigger_comment_id)) errors.push('$result.payload.codex_cycle: attempt or trigger_comment_id does not match checker state')
   if (stable(cycle.accepted ?? null) !== stable(checked.accepted ?? null)) errors.push('$result.payload.codex_cycle.accepted: does not match the freshly checked accepted evidence')
   if (stable(cycle.carried ? { ...cycle.carried, origin_head: undefined } : null) !== stable(carried)) errors.push('$result.payload.codex_cycle.carried: does not match checker state')

@@ -1440,6 +1440,9 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
   if (envelope.role !== 'integrator') refuse(`it is a ${JSON.stringify(envelope.role)} result, not an integrator result`)
   if (!Number.isSafeInteger(round) || round < 1) refuse('it names no positive integration_round')
   if (envelope.status !== 'completed') refuse(`its status is ${JSON.stringify(envelope.status)}, not "completed"`)
+  if (envelope.payload?.verdict === 'pending' || [11, 12].includes(envelope.payload?.codex_cycle?.exit_code)) {
+    refuse('a pending review verdict or checker cycle cannot be admitted as an integrator receipt')
+  }
   const resolution = readJson(join(runDir, 'policy.json'), 'run policy projection')
   const order = Array.isArray(resolution?.tier_order) ? resolution.tier_order : null
   const resolvedTier = resolution?.roles?.integrator?.tier
