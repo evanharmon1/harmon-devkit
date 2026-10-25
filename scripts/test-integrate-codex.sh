@@ -2402,6 +2402,61 @@ for suite_status in 403 404 500 network malformed bad-shape; do
     fi
 done
 
+echo "==> denied suites retain a live trusted same-head retry anchor"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+"$helper" attach --state "$state" --trigger-id 123 >/dev/null
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+jq -e '.phase == "reserved" and .attempt == 2 and
+    .previous_trigger_comment_id == 123 and .first_trigger_comment_id == 123' \
+    "$state" >/dev/null || fail 'same-head retry did not carry its first trigger'
+cp "$state" "${test_tmp}/same-head-retry-reserved.json"
+jq '.id = 200 | .created_at = "2026-07-31T08:20:00Z"' \
+    "${fixtures}/trigger.json" >"${fixtures}/trigger.next"
+mv "${fixtures}/trigger.next" "${fixtures}/trigger.json"
+jq -cn --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:123,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:00:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"},
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+printf '%s\n' 'gh: Resource inaccessible (HTTP 403)' >"${fixtures}/check-suites-error"
+"$helper" attach --state "$state" --trigger-id 200 >/dev/null
+jq -e '.phase == "attached" and .first_trigger_comment_id == 123 and
+    .previous_trigger_comment_id == 123 and .requires_full_window == true and
+    .boundary_source == "unavailable"' "$state" >/dev/null ||
+    fail 'denied suites did not accept the authenticated same-head retry'
+
+# A carried id is not authority by itself: the exact persisted first trigger
+# must still be a live request by a trusted orchestrator.  This keeps a
+# hand-edited state from turning arbitrary historical comments into current
+# head evidence while preserving the retry above.
+cp "${test_tmp}/same-head-retry-reserved.json" "$state"
+jq -cn --argjson outsider "$outsider_id" --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:123,user:{id:$outsider,login:"outsider"},body:"@codex review",
+       created_at:"2026-07-31T08:00:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"},
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+cp "$state" "${test_tmp}/same-head-retry-before-refusal.json"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted an untrusted persisted same-head trigger'
+fi
+grep -qF 'persisted same-head trigger is not a live trusted review request' \
+    "${test_tmp}/suites.out" ||
+    fail "same-head trust refusal was not actionable: $(cat "${test_tmp}/suites.out")"
+cmp "$state" "${test_tmp}/same-head-retry-before-refusal.json" ||
+    fail 'same-head trust refusal changed the reserved state'
+
 echo "==> denied suites exclude previous-head history and refuse unknown boundaries"
 new_cycle
 printf '%s\n' "$new_live_head" >"${fixtures}/head"

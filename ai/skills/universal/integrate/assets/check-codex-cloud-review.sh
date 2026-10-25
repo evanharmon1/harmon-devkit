@@ -3111,6 +3111,7 @@ attach)
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
     state_head=$(jq -r '.head' "$state_file")
+    state_attempt=$(jq -r '.attempt' "$state_file")
     state_reserved=$(jq -r '.reserved_at' "$state_file")
     valid_time "$state_reserved" || die "state has an invalid reservation time"
     # The liveness re-check runs before the attached fast path below: a
@@ -3323,12 +3324,34 @@ attach)
           )]
         ') || die "cannot classify prior review triggers"
 
+    same_head_retry_anchor=
     if [ "$boundary_source" = unavailable ] &&
         [ "$(jq 'length' <<<"$prior_trigger_candidates")" -gt 0 ]; then
         previous_head_anchor=$(jq -r '.previous_head_trigger_comment_id // empty' "$state_file")
-        valid_uint "$previous_head_anchor" && [ "$previous_head_anchor" -lt "$trigger_id" ] ||
-            die "check-suite boundary unavailable and earlier triggers lack a previous-head anchor; restore verified previous-head state or grant Checks: read before retrying attach"
-        prior_trigger_candidates=$(jq -c --argjson anchor "$previous_head_anchor" 'map(select(.id > $anchor))' <<<"$prior_trigger_candidates")
+        if valid_uint "$previous_head_anchor" && [ "$previous_head_anchor" -lt "$trigger_id" ]; then
+            prior_trigger_candidates=$(jq -c --argjson anchor "$previous_head_anchor" 'map(select(.id > $anchor))' <<<"$prior_trigger_candidates")
+        else
+            # A second attempt has an authenticated, same-head predecessor in
+            # its own state: reserve only reaches this shape by replacing an
+            # attached attempt 1 on the same head, and carries both ids.  A
+            # reconstruction has neither fact, so it must still prove the
+            # earlier comments are after a previous-head anchor rather than
+            # treating arbitrary PR history as current-head evidence.
+            same_head_retry_anchor=$(jq -r '.first_trigger_comment_id // empty' "$state_file")
+            same_head_retry_previous=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
+            valid_uint "$same_head_retry_anchor" &&
+                valid_uint "$same_head_retry_previous" &&
+                [ "$state_attempt" = 2 ] &&
+                [ "$same_head_retry_anchor" -le "$same_head_retry_previous" ] &&
+                [ "$same_head_retry_previous" -lt "$trigger_id" ] ||
+                die "check-suite boundary unavailable and earlier triggers lack a previous-head anchor; restore verified previous-head state or grant Checks: read before retrying attach"
+            # Comment ids are monotonic on the PR.  The carried first trigger
+            # is therefore a lower bound for the same-head retry, provided
+            # the live comment below authenticates that exact id.  Keeping the
+            # anchor itself lets the trust check reject a hand-edited state
+            # that points at an untrusted or missing comment.
+            prior_trigger_candidates=$(jq -c --argjson anchor "$same_head_retry_anchor" 'map(select(.id >= $anchor))' <<<"$prior_trigger_candidates")
+        fi
     fi
 
     # With no reconstruction evidence the only same-head trigger in view is the
@@ -3350,6 +3373,19 @@ attach)
             rm -rf "$trigger_registry_dir"
             die "cannot authenticate a pre-existing trigger against the trusted actor set"
         }
+
+        if [ -n "$same_head_retry_anchor" ]; then
+            jq -e --argjson anchor "$same_head_retry_anchor" \
+                --argjson candidates "$prior_trigger_candidates" \
+                --slurpfile registry "$trigger_registry_dir/registry.json" '
+                  ($registry[0].trusted_orchestrator_actor_ids // []) as $trusted |
+                  any($candidates[];
+                    .id == $anchor and (.user.id as $id | $trusted | index($id) != null))
+                ' <<<"$prior_trigger_candidates" >/dev/null || {
+                rm -rf "$trigger_registry_dir"
+                die "check-suite boundary unavailable and persisted same-head trigger is not a live trusted review request"
+            }
+        fi
 
         if [ "$requested_at" \< "$state_reserved" ]; then
             trigger_author_id=$(printf '%s' "$comment" |
