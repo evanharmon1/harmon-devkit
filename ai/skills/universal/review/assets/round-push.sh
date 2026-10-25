@@ -517,85 +517,87 @@ require_closure_base_is_full_sha() {
     esac
 }
 
-# Matches one repository-relative path against a segment-aware
-# docs_only_paths glob: `*` and `?` match only within one path segment, while
-# a complete `**` segment matches zero or more segments. This lets
-# `**/*.md` include root Markdown and nested Markdown, while `*.md` stays at
-# the root and patterns such as `docs/**` still include nested docs files.
+# Matches a repository-relative path against docs_only_paths using the
+# anchored glob-to-regex rules from harmon-init's ci-changes-classify.sh.
 docs_glob_match() {
-    _docs_glob_match "$1" "$2" 0
+    local regex
+
+    regex="$(_docs_glob_regex "$1")" || return 1
+    [[ "$2" =~ $regex ]]
 }
 
-_docs_glob_match() {
-    local pattern=$1 path=$2 depth=$3
-    local pattern_has_next pattern_segment pattern_rest
-    local path_has_next path_segment path_rest candidate
-
-    [ "$depth" -le 8 ] || return 1
+_docs_glob_regex() {
+    local pattern=$1 regex='^' character index=0
 
     case "$pattern" in
-    */*)
-        pattern_has_next=1
-        pattern_segment=${pattern%%/*}
-        pattern_rest=${pattern#*/}
-        ;;
-    *)
-        pattern_has_next=0
-        pattern_segment=$pattern
-        pattern_rest=
-        ;;
+    '' | *[!A-Za-z0-9_.*?/-]*) return 1 ;;
     esac
 
-    case "$path" in
-    */*)
-        path_has_next=1
-        path_segment=${path%%/*}
-        path_rest=${path#*/}
-        ;;
-    *)
-        path_has_next=0
-        path_segment=$path
-        path_rest=
-        ;;
-    esac
-
-    if [ "$pattern_segment" = "**" ]; then
-        if [ "$pattern_has_next" -eq 0 ]; then
-            [ -n "$path" ]
-            return $?
+    while [ "$index" -lt "${#pattern}" ]; do
+        if [ "${pattern:index:3}" = '**/' ]; then
+            regex+='(.*/)?'
+            index=$((index + 3))
+            continue
+        fi
+        if [ "${pattern:index:2}" = '**' ]; then
+            regex+='.*'
+            index=$((index + 2))
+            continue
         fi
 
-        candidate=$path
-        while :; do
-            _docs_glob_match "$pattern_rest" "$candidate" $((depth + 1)) && return 0
-            [ -n "$candidate" ] || break
-            case "$candidate" in
-            */*) candidate=${candidate#*/} ;;
-            *) candidate= ;;
-            esac
-        done
-        return 1
-    fi
+        character=${pattern:index:1}
+        case "$character" in
+        '*') regex+='[^/]*' ;;
+        '?') regex+='[^/]' ;;
+        '.') regex+='\.' ;;
+        *) regex+=${character} ;;
+        esac
+        index=$((index + 1))
+    done
 
-    # shellcheck disable=SC2254  # unquoted on purpose: glob match
-    case "$path_segment" in
-    $pattern_segment) ;;
-    *) return 1 ;;
-    esac
-
-    if [ "$pattern_has_next" -eq 1 ] && [ "$path_has_next" -eq 1 ]; then
-        _docs_glob_match "$pattern_rest" "$path_rest" "$depth"
-        return $?
-    fi
-    [ "$pattern_has_next" -eq "$path_has_next" ]
+    regex+='$'
+    printf '%s\n' "$regex"
 }
 
 # Reads docs_only_paths (one pattern per line) from FILE and echoes "docs" or
 # "code" for the changed paths listed in PATHS_FILE. An empty PATHS_FILE stays
 # docs-only for the push broker: no file changed, so there is nothing outside
 # the allowlist that needs the full code gate.
+# It mirrors CI's glob syntax and rejects unsupported patterns, but does not
+# mirror CI's always-full-run paths (they are code here anyway) or its full run
+# on rename, delete, symlink, and mode changes.
 classify_diff() {
     local patterns_file=$1 paths_file=$2 path matched pattern
+
+    # CI validates the entire allowlist before examining the diff. Validate
+    # the resolved JSON too, so an embedded newline cannot split one invalid
+    # pattern into apparently valid lines in patterns_file. Check codepoints
+    # rather than an anchored regex because jq's `$` also accepts before a
+    # final newline.
+    if ! jq -e '
+        def allowed:
+            . == 42 or . == 63 or
+            (. >= 45 and . <= 57) or
+            (. >= 65 and . <= 90) or
+            . == 95 or
+            (. >= 97 and . <= 122);
+        if (.gates.docs_only_paths | type) != "array"
+            or (.gates.docs_only_paths | length) == 0 then
+            false
+        else
+            all(
+                .gates.docs_only_paths[];
+                if type == "string" and length > 0 then
+                    all(explode[]; allowed)
+                else
+                    false
+                end
+            )
+        end
+    ' <<<"$resolved_json" >/dev/null 2>&1; then
+        echo code
+        return 0
+    fi
 
     while IFS= read -r path; do
         [ -n "$path" ] || continue

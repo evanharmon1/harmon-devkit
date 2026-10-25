@@ -621,7 +621,7 @@ assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "a root-level .md file must still match **/*.md: $out"
 
-echo "  -> shared docs_only_paths uses segment-aware wildcards and keeps empty diffs docs-only"
+echo "  -> shared docs_only_paths table and empty diffs stay docs-only"
 root="$(new_fixture segment-aware-path-table)"
 cd "${root}/work"
 awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"docs/**\", \"specs/**\", \"*.md\"]"); print}' \
@@ -658,6 +658,44 @@ terraform/README.md|code
 .claude/skills/x/x.md|code
 docs/a/b.md|docs
 |docs
+EOF
+
+echo "  -> trailing-slash globstars fail closed, embedded globstar follows CI, and unsupported characters fail closed"
+case_index=0
+while IFS='|' read -r pattern path expected; do
+    case_index=$((case_index + 1))
+    root="$(new_fixture "ci-glob-case-${case_index}")"
+    cd "${root}/work"
+    awk -v p="$pattern" '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"" p "\"]"); print}' \
+        "${root}/work/.devflow.toml" >"${test_tmp}/ci-glob-case-${case_index}-devflow.toml"
+    mv "${test_tmp}/ci-glob-case-${case_index}-devflow.toml" "${root}/work/.devflow.toml"
+    git_q "${root}/work" add -A
+    git_q "${root}/work" commit -m "test: pin CI glob case ${case_index}"
+    mark_base "${root}/work"
+    merge_base=$mark_base_tag
+    merge_base_sha=$mark_base_sha
+    mkdir -p "${root}/work/$(dirname "$path")"
+    path_sha="$(commit_on "${root}/work" "test: classify ${path}" "$path" "fixture path")"
+    run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$path_sha" "${policy_args[@]}" --json
+    assert_rc 0
+    printf '%s' "$out" | grep -F "\"diff_class\": \"${expected}\"" >/dev/null ||
+        fail "CI glob '${pattern}' classified '${path}' as the wrong class (expected ${expected}): $out"
+    if [ "$expected" = docs ]; then
+        expected_target=fixture-check
+    else
+        expected_target=fixture-verify
+    fi
+    printf '%s' "$out" | grep -F "\"required_target\": \"${expected_target}\"" >/dev/null ||
+        fail "CI glob '${pattern}' selected the wrong round gate for '${path}' (expected ${expected_target}): $out"
+done <<'EOF'
+docs/**/|src/x.sh|code
+docs/**/|docs/x/y.sh|code
+**/|src/x.sh|code
+**/|docs/x/y.sh|code
+docs/**/|docs/run.sh|code
+**/|src/run.sh|code
+**.md|src/a.md|docs
+docs/[ab].md|docs/a.md|code
 EOF
 
 echo "  -> a question-mark wildcard cannot cross a path segment"
