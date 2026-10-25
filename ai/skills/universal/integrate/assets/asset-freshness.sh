@@ -22,7 +22,7 @@ asset_freshness_detail=
 check_vendored_asset_freshness() {
     local target_pr=$1 target_repo=$2 script_dir=$3 timeout_bin=$4
     local checkout_root checkout_head base_sha support_dir integrate_path support_path grafts_path
-    local base_sha_status base_sha_error base_sha_status_detail
+    local base_sha_status base_sha_error base_sha_status_detail base_sha_stderr_file
     local probe probe_status
 
     asset_freshness_detail=
@@ -50,12 +50,19 @@ check_vendored_asset_freshness() {
         asset_freshness_detail="asset freshness indeterminate: cannot resolve checkout HEAD in $checkout_root"
         return 2
     }
+    base_sha_stderr_file=$(mktemp "${TMPDIR:-/tmp}/asset-freshness.XXXXXX") || {
+        asset_freshness_detail="asset freshness indeterminate: cannot create a temporary file to capture gh stderr"
+        return 2
+    }
     if base_sha=$(run_gh pr view "$target_pr" --repo "$target_repo" \
-        --json baseRefOid --jq .baseRefOid 2>&1); then
-        :
+        --json baseRefOid --jq .baseRefOid 2>"$base_sha_stderr_file"); then
+        rm -f "$base_sha_stderr_file" || :
+        base_sha_stderr_file=
     else
         base_sha_status=$?
-        base_sha_error=$base_sha
+        base_sha_error=$(cat "$base_sha_stderr_file" 2>/dev/null || true)
+        rm -f "$base_sha_stderr_file" || :
+        base_sha_stderr_file=
         if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+([0-9]{3}) ]]; then
             base_sha_status_detail="HTTP ${BASH_REMATCH[1]}"
         elif [[ "$base_sha_error" == *"Could not resolve to a PullRequest"* ]]; then
@@ -69,6 +76,12 @@ check_vendored_asset_freshness() {
         124 | 137) return 16 ;;
         4) return 2 ;;
         esac
+        if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+429 ]] ||
+            { [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+403 ]] &&
+                grep -Ei 'rate limit' <<<"$base_sha_error" >/dev/null; } ||
+            grep -Ei 'API rate limit exceeded' <<<"$base_sha_error" >/dev/null; then
+            return 16
+        fi
         if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+5[0-9][0-9] ]] ||
             grep -Ei \
                 '(dial tcp|connection (refused|reset|timed out|closed)|network is unreachable|no such host|temporary failure in name resolution|TLS handshake timeout|i/o timeout|context deadline exceeded|unexpected EOF)' \

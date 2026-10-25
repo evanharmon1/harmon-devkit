@@ -122,6 +122,18 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
                     echo 'HTTP 403: Resource not accessible by integration' >&2
                     exit 1
                     ;;
+                http403ratelimit)
+                    echo 'HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes.' >&2
+                    exit 1
+                    ;;
+                http429)
+                    echo 'HTTP 429: Too Many Requests' >&2
+                    exit 1
+                    ;;
+                graphqlratelimit)
+                    echo 'GraphQL: API rate limit exceeded for user ID 1.' >&2
+                    exit 1
+                    ;;
                 auth4)
                     echo 'To get started with GitHub CLI, please run:  gh auth login' >&2
                     exit 4
@@ -140,6 +152,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
                     exit 94
                     ;;
             esac
+        fi
+        if [ -n "${GH_DEBUG:-}" ]; then
+            echo 'GH_DEBUG: GET https://api.github.com/repos/example/repo/pulls/493' >&2
         fi
         cat "$GH_FIXTURES/base-head"
         exit 0
@@ -9435,6 +9450,19 @@ jq -e '.phase == "reserved" and .head == $head' \
     --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
     fail "current checker checkout did not reserve successfully"
 
+echo "==> a successful base-SHA read ignores GH_DEBUG stderr"
+freshness_debug_state="${test_tmp}/freshness-debug-base.json"
+head_sha=$freshness_support_base
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+GH_DEBUG=api "$helper" reserve --state "$freshness_debug_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 \
+    >"${test_tmp}/freshness-debug-base.out" 2>&1 ||
+    fail "successful base-SHA read with GH_DEBUG stderr should reserve successfully: $(cat "${test_tmp}/freshness-debug-base.out")"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_debug_state" >/dev/null ||
+    fail "GH_DEBUG stderr contaminated the successful base-SHA read"
+
 echo "==> check treats a failed base-SHA read as transient and proceeds on the next poll"
 saved_state=$state
 state="${test_tmp}/freshness-transient-check.json"
@@ -9449,14 +9477,14 @@ run_check "$request_time"
 assert_status 11 pending
 
 echo "==> check distinguishes permanent and transient base-SHA read failures"
-for base_read_error in http404 http403 auth4 timeout124 http502 network; do
+for base_read_error in http404 http403 http403ratelimit http429 graphqlratelimit auth4 timeout124 http502 network; do
     new_cycle
     printf '%s\n' "$base_read_error" >"${fixtures}/base-read-error"
     : >"${fixtures}/fail-base-read-once"
     run_check "$request_time"
     case "$base_read_error" in
     http404 | http403 | auth4) expected_freshness_rc=2 ;;
-    timeout124 | http502 | network) expected_freshness_rc=16 ;;
+    http403ratelimit | http429 | graphqlratelimit | timeout124 | http502 | network) expected_freshness_rc=16 ;;
     esac
     [ "$check_rc" -eq "$expected_freshness_rc" ] ||
         fail "$base_read_error base-SHA failure should exit $expected_freshness_rc, got $check_rc: $check_out"
@@ -9468,6 +9496,18 @@ for base_read_error in http404 http403 auth4 timeout124 http502 network; do
     http403)
         [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"Resource not accessible"* ]] ||
             fail "403 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    http403ratelimit)
+        [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"secondary rate limit"* ]] ||
+            fail "403 secondary-rate-limit diagnostic lost its status: $check_out"
+        ;;
+    http429)
+        [[ "$check_out" == *"HTTP 429"* && "$check_out" == *"Too Many Requests"* ]] ||
+            fail "429 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    graphqlratelimit)
+        [[ "$check_out" == *"API rate limit exceeded"* ]] ||
+            fail "GraphQL rate-limit diagnostic lost its detail: $check_out"
         ;;
     auth4)
         [[ "$check_out" == *"gh exit 4"* && "$check_out" == *"gh auth login"* ]] ||
