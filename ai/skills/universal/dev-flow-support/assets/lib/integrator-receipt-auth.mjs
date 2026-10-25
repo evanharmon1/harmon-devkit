@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from '../devflow-policy.mjs'
-import { authorityForEnvelope } from './integrator-review-authority.mjs'
+import { authorityForEnvelope, conservativeLegacyControls } from './integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
@@ -235,10 +235,11 @@ function ghJson(args) {
 // Owner captures carry the full cycle tuple. Legacy evidence predates that
 // capture and cannot reconstruct writable floors, counters, or retry history.
 function conservativeLegacyState(state) {
-  if (state?.carry || Number(state?.charged_cycles) !== 1 || Number(state?.exempt_cycles) !== 0 || Number(state?.attempt) !== 1) {
-    throw new Error('legacy review evidence cannot prove non-initial cycle counters or carry provenance')
-  }
-  return { ...state, first_trigger_comment_id: 1, requires_full_window: true, timeout_min: 15 }
+  // Share the same pure conservative projection that carry later combines
+  // with its separate admitted-receipt authorization.
+  // The live state remains evidence for the canonical checker, but it cannot
+  // choose its own request controls during old-r1 compatibility recovery.
+  return { ...state, ...conservativeLegacyControls(state) }
 }
 
 function headFromReviewedCommit(body, repo, head) {

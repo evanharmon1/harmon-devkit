@@ -902,15 +902,43 @@ case "$*" in
 esac
 EOF
 chmod +x "$capture_bin/gh"
+cat >"$capture_bin/date" <<'EOF'
+#!/usr/bin/env bash
+# The retry reserve must create its own canonical reservation timestamp before
+# the fixture's second owner request.  Keep that clock local to the checker
+# invocation; source.reserved_at is deliberately unrelated and untrusted.
+case "$*" in
+  '-u +%s')
+    if [ -n "${CAPTURE_EPOCH:-}" ]; then printf '%s\n' "$CAPTURE_EPOCH"; else exec /bin/date "$@"; fi
+    ;;
+  '-u +%Y-%m-%dT%H:%M:%SZ')
+    if [ -n "${CAPTURE_NOW:-}" ]; then printf '%s\n' "$CAPTURE_NOW"; else exec /bin/date "$@"; fi
+    ;;
+  *) exec /bin/date "$@" ;;
+esac
+EOF
+chmod +x "$capture_bin/date"
 base64 <"$asset_dir/../../../../../agent-registry.json" >"$capture_bin/registry.b64"
 capture_state="$tmp/capture-state.json"
 capture_base="$(git -C "$asset_dir/../../../../../" rev-parse HEAD)"
+capture_finder="$(jq -c '
+  .finders[] | select(.slug == "codex-cloud") | {
+    slug, actor_id:(.trusted_actor_id|tostring), actor_login:.trusted_actor_login,
+    trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+    reviewer_login:.collection.trigger.reviewer_login, surfaces:.collection.terminal_signals.surfaces,
+    head_binding:.collection.terminal_signals.head_binding, verdict_mode:.collection.terminal_signals.verdict_mode,
+    clean_verdict:.collection.terminal_signals.clean_verdict, actionable_pattern:.collection.terminal_signals.actionable_pattern,
+    severity_marker:.collection.terminal_signals.severity_marker, metadata_line:.collection.terminal_signals.metadata_line,
+    about_summary:.collection.terminal_signals.about_summary, heading:.collection.terminal_signals.heading,
+    carrier_sentence:.collection.terminal_signals.carrier_sentence, success_reaction:.collection.terminal_signals.success_reaction,
+    pending_reaction:.collection.terminal_signals.pending_reaction
+  }' "$asset_dir/../../../../../agent-registry.json")"
 # The production checker resolves the trusted finder registry at the captured
 # asset base.  Make that immutable source commit available in this isolated
 # fixture repository before exercising the canonical retry reconstruction.
 git -C "$repo" fetch -q "$asset_dir/../../../../../" "$capture_base"
-jq -n --arg head "$integration_head" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
-  charged_cycles:1,exempt_cycles:0,attempt:1,timeout_min:10,reserved_at:"2026-10-01T00:06:00Z"}' >"$capture_state"
+jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$capture_state"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
 # The capture input is still the integrator-owned mutable state file.  Rewrite
@@ -938,7 +966,7 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
   const attached = retained.find((entry) => entry.kind === "attach")?.authority.snapshot;
   if (!attached || attached.carry !== undefined || attached.run_id !== undefined ||
       attached.reserved_at !== "2026-10-01T00:06:00Z" || attached.timeout_min === 1 ||
-      attached.finder?.slug === "foreign") process.exit(1);
+      attached.finder?.slug !== "codex-cloud") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
 pass "owner capture derives attach authority from its retained reservation, not rewritten checker state"
 
@@ -949,8 +977,9 @@ pass "owner capture derives attach authority from its retained reservation, not 
 retry_state="$tmp/capture-retry-state.json"
 jq -n --arg head "$integration_head" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
   charged_cycles:1,exempt_cycles:0,attempt:2,first_trigger_comment_id:200,
-  requires_full_window:true,timeout_min:10,reserved_at:"2026-10-01T00:20:00Z"}' >"$retry_state"
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+  requires_full_window:true,timeout_min:10,reserved_at:"2000-01-01T00:00:00Z"}' >"$retry_state"
+retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind reserve --at 2026-10-01T00:20:30Z) >/dev/null
 jq '.phase="attached" | .trigger_comment_id="201"' "$retry_state" >"$retry_state.next"
 mv "$retry_state.next" "$retry_state"
@@ -962,8 +991,9 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
   const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
   const retry = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
     .find((entry) => entry.kind === "attach" && entry.authority.snapshot.attempt === 2)?.authority.snapshot;
-  if (!retry || retry.trigger_comment_id !== 201 || retry.first_trigger_comment_id !== 200) process.exit(1);
-' "$asset_dir/lib/integrator-review-authority.mjs" || fail "owner retry capture did not retain attempt 2 and its first request"
+  if (!retry || retry.trigger_comment_id !== 201 || retry.first_trigger_comment_id !== 200 ||
+      retry.reserved_at !== "2026-10-01T00:20:00Z" || retry.finder?.slug !== "codex-cloud") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "owner retry capture did not retain canonical attempt-2 controls"
 pass "diagnostic retry evidence cannot be receipted before owner-captured attempt 2"
 (cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
 pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"

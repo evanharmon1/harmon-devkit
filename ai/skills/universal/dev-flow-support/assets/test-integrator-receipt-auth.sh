@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const { passAttestsCheckerCycle } = await import(pathToFileURL(process.env.ASSET).href)
-const { authorityForEnvelope, authorityNote, digestBytes, retainedAuthorities, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
+const { admittedLegacyCarryOrigin, authorityForEnvelope, authorityNote, digestBytes, retainedAuthorities, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
 const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
 const runId = 'run', runRoot = join(common, 'dev-flow-v2', 'runs', runId)
@@ -80,6 +80,18 @@ const legacyCarry = { schema: 1, kind: 'carry', captured_at: '2026-01-01T00:00:0
   snapshot: { ...legacyState, carry: { from_head: h1, attests_head: h2 } } }
 const legacyOptions = { common, runId: legacyRun }
 assert.doesNotThrow(() => validateAuthority(legacyCarry, [], legacyRecord, legacyOptions))
+const recoveredLegacy = admittedLegacyCarryOrigin(legacyRecord, {
+  ...legacyState,
+  first_trigger_comment_id: 999999999,
+  timeout_min: 1,
+  finder: { slug: 'forged' },
+  carry: { from_head: h1, attests_head: h2 },
+}, legacyOptions)
+assert.deepEqual(recoveredLegacy, {
+  repo: 'example/repo', pr: 1, head: h1, charged_cycles: 1, exempt_cycles: 0,
+  attempt: 1, trigger_comment_id: 200, run_id: legacyRun, finder: null,
+  first_trigger_comment_id: 1, requires_full_window: true, timeout_min: 15,
+})
 assert.throws(() => validateAuthority({ ...legacyCarry, snapshot: { ...legacyCarry.snapshot, carry: { from_head: h2, attests_head: h3 } } }, [], legacyRecord, legacyOptions), /origin or immediate predecessor/)
 assert.throws(() => validateAuthority(legacyCarry, [], { ...legacyRecord, receipts: [] }, legacyOptions), /origin or immediate predecessor/)
 writeFileSync(join(legacyRoot, 'passes', 'integration-r1-integrator.json'), `${JSON.stringify({ ...legacyPass, head: h2 })}\n`)

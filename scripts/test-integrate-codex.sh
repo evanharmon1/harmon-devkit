@@ -9568,6 +9568,18 @@ jq -cn --argjson trigger "$(cat "${fixtures}/trigger.json")" '[[$trigger]]' \
 auth_validate "$auth_receipt"
 [ "$auth_rc" -eq 0 ] || fail "authentic clean receipt was rejected: $auth_out"
 
+# An initial legacy origin has no capture, but its conservative first-trigger
+# boundary is still the one a first carry must replay.  A late unbound badge
+# therefore remains a live finding; a mutable state cannot raise that boundary
+# to hide it before the carry proof is re-derived.
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:899,user:{id:$id,login:$login,type:"Bot"},created_at:"2026-07-31T08:01:00Z",
+        body:"**P1** Legacy origin unbound finding"}]]' >"${fixtures}/comments.pages.json"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "legacy conservative controls hid a late unbound badge: $auth_out"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+
 # The live exact trigger alone is insufficient: a writable state must not be
 # able to raise the first-trigger boundary and hide an older unbound review.
 jq '.first_trigger_comment_id = "999999999"' "$state" >"$auth_dir/old-first-trigger-state.json"

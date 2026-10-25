@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
-import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { admittedLegacyCarryOrigin, authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -1725,6 +1725,13 @@ function ghJson(args) {
 // token and invokes this immediately after reserve/attach/carry; the retained
 // ruling, not this mutable source file, is later receipt authority.
 function rederiveRetryReservation(source, record, context) {
+  // An idempotent owner replay keeps the reservation capture the owner already
+  // retained.  Re-running reserve would create a new timestamp and turn a
+  // prior request into a different freshness boundary.
+  try {
+    const retained = retainedReservation(record, source, { common: context.common, runId: record.run_id })
+    if (Number(retained.attempt) === 2) return retained
+  } catch {}
   let origin
   try { origin = retainedCycleOrigin(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
     throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
@@ -1737,20 +1744,46 @@ function rederiveRetryReservation(source, record, context) {
       '--repo', origin.repo, '--pr', String(origin.pr), '--head', origin.head,
       '--attempt', '2', '--timeout-min', String(origin.timeout_min)]
     if (origin.run_id) args.push('--run-id', origin.run_id)
+    if (typeof origin.finder?.slug === 'string' && origin.finder.slug !== '') args.push('--finder', origin.finder.slug)
     if (origin.review_trigger) args.push('--review-trigger', origin.review_trigger)
     if (origin.integration_exempt_cap != null) args.push('--integration-exempt-cap', String(origin.integration_exempt_cap))
     execFileSync('bash', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
-    const reserved = JSON.parse(readFileSync(scratchState, 'utf8'))
-    // The canonical replay decides whether the original first window permits
-    // attempt 2.  Its scratch reservation is necessarily later than the real
-    // owner reservation, so preserve only that already-observed transition
-    // timestamp for the subsequent exact-trigger freshness check; it is never
-    // a first-window or receipt control.
-    if (typeof source.reserved_at === 'string') reserved.reserved_at = source.reserved_at
-    return reserved
+    return JSON.parse(readFileSync(scratchState, 'utf8'))
   } catch (error) {
     throw new Refusal(`retry reservation did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
   } finally { rmSync(scratch, { recursive: true, force: true }) }
+}
+
+function legacyCarryPredecessor(source, record, context) {
+  const origin = admittedLegacyCarryOrigin(record, source, { common: context.common, runId: record.run_id })
+  const trigger = ghJson(['api', `repos/${origin.repo}/issues/comments/${origin.trigger_comment_id}`])
+  if (Number(trigger?.id) !== origin.trigger_comment_id || typeof trigger?.created_at !== 'string' ||
+      typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${origin.pr}`)) {
+    throw new Refusal('legacy origin receipt trigger is no longer a valid PR request observation')
+  }
+  // Only current checker observations remain writable here.  The received
+  // request controls above come from the admitted receipt and the live
+  // immutable trigger, never from the mutable legacy checker snapshot.
+  return {
+    version: source.version,
+    ...origin,
+    phase: 'attached',
+    reserved_at: trigger.created_at,
+    requested_at: trigger.created_at,
+    previous_head_trigger_comment_id: null,
+    previous_trigger_comment_id: null,
+    settled: source.settled ?? [],
+    charge: source.charge,
+    charge_reason: source.charge_reason,
+    base_sha: source.base_sha,
+    review_trigger: source.review_trigger,
+    review_order: source.review_order,
+    integration_exempt_cap: source.integration_exempt_cap,
+    ci_exempt: source.ci_exempt,
+    last_reviewed_head: source.last_reviewed_head,
+    last_reviewed_base_sha: source.last_reviewed_base_sha,
+    last_reviewed_verdict: source.last_reviewed_verdict,
+  }
 }
 
 function rederiveCarry(source, repoDir, record, context) {
@@ -1760,8 +1793,13 @@ function rederiveCarry(source, repoDir, record, context) {
   let predecessor
   try { predecessor = retainedCarryPredecessor(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
     // The strictly authenticated legacy r1 is the one non-capture origin.
-    // validateAuthority proves that narrow recovery path after observation.
-    if ((retainedAuthorities(record, { common: context.common, runId: record.run_id }).length === 0)) predecessor = source
+    // Its conservative tuple is reconstructed from the immutable receipt and
+    // a fresh trigger observation; no raw checker request controls survive.
+    if ((retainedAuthorities(record, { common: context.common, runId: record.run_id }).length === 0)) {
+      try { predecessor = legacyCarryPredecessor(source, record, context) } catch (legacyError) {
+        throw new Refusal(`carry authority has no immutable predecessor controls: ${legacyError.message}`)
+      }
+    }
     else throw new Refusal(`carry authority has no immutable predecessor controls: ${error.message}`)
   }
   const scratch = mkdtempSync(join(tmpdir(), 'integration-carry-'))

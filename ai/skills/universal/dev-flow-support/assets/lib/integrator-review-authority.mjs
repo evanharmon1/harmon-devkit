@@ -103,6 +103,15 @@ function cycleIdentity(state) {
   }
 }
 
+// Mutable retry reports do not select a finder.  They only locate the one
+// retained origin for this run/PR/head/cycle; that retained attachment still
+// carries the exact finder profile that canonical reserve must replay.
+function cycleLocator(state) {
+  const locator = cycleIdentity(state)
+  delete locator.finder
+  return locator
+}
+
 // Request controls belong to an owner-created cycle, not the integrator's
 // mutable checker file.  CI's charged/exempt split is deliberately absent:
 // the canonical checker recomputes it from current CI evidence at admission.
@@ -121,6 +130,7 @@ function reservationControls(state) {
   return {
     ...cycleIdentity(state),
     attempt: state?.attempt,
+    reserved_at: state?.reserved_at ?? null,
     timeout_min: state?.timeout_min ?? null,
   }
 }
@@ -133,7 +143,7 @@ function matchingReserve(prior, state) {
 function matchingOriginAttach(prior, state) {
   const matches = prior.filter((entry) => entry.kind === 'attach' &&
     Number(entry.authority.snapshot.attempt) === 1 &&
-    stable(cycleIdentity(entry.authority.snapshot)) === stable(cycleIdentity(state)))
+    stable(cycleLocator(entry.authority.snapshot)) === stable(cycleLocator(state)))
   if (matches.length !== 1) return null
   return matches[0]
 }
@@ -177,6 +187,43 @@ function validLegacyOriginReceipt(record, state, { common, runId }) {
     const url = new URL(binding?.url)
     return url.pathname.replace(/^\/+|\/+$/g, '') === `${state.repo}/pull/${state.pr}`
   } catch { return false }
+}
+
+// Legacy r1 predates owner captures.  Its initial, live admission still
+// validates the checker itself, so keep this projection pure and usable
+// before a receipt exists.  A carry adds receipt authentication below.
+export function conservativeLegacyControls(state, { allowCarry = false } = {}) {
+  if ((!allowCarry && state?.carry) || Number(state?.charged_cycles) !== 1 ||
+      Number(state?.exempt_cycles) !== 0 || Number(state?.attempt) !== 1) {
+    throw new Error('legacy review evidence cannot prove non-initial cycle counters or carry provenance')
+  }
+  return { first_trigger_comment_id: 1, requires_full_window: true, timeout_min: 15 }
+}
+
+// An admitted legacy receipt is the one non-capture carry origin.  It may
+// seed only the first carry and replaces every legacy request control with the
+// conservative compatibility projection.
+export function admittedLegacyCarryOrigin(record, state, options) {
+  // Capture receives the claimed carry proof in the mutable source.  The
+  // receipt authenticates the original cycle while the canonical carry
+  // transition below replaces that proof; it must not make the original r1
+  // impossible to recover merely because a first carry is being requested.
+  const controls = conservativeLegacyControls(state, { allowCarry: true })
+  if (!validLegacyOriginReceipt(record, state, options)) {
+    throw new Error('no admitted clean legacy origin receipt matches this review cycle')
+  }
+  return {
+    repo: state.repo,
+    pr: state.pr,
+    head: state.head,
+    charged_cycles: 1,
+    exempt_cycles: 0,
+    attempt: 1,
+    trigger_comment_id: Number(state.trigger_comment_id),
+    run_id: options.runId,
+    finder: null,
+    ...controls,
+  }
 }
 
 export function retainedReservation(record, state, options) {
