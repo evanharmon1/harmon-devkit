@@ -112,6 +112,7 @@
 # the union of ruleset and classic protection requirements on every evaluation.
 # Definitive 404s (Branch not protected / Required status checks not enabled)
 # mean no classic requirement; other classic read errors gate every reported check.
+# Ruleset workflows or code_scanning rules also require every reported check.
 # The remaining automation prerequisite is:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its
@@ -1001,11 +1002,12 @@ assert_closing_linkage "$scalars" "initial snapshot"
 # rulesets. Missing or pending required checks are indeterminate. Other checks
 # are reported, never used to turn a handoff red. Without an explicit
 # required context, or when classic protection cannot be read, every reported
-# check gates. Narrowing requires the union of both sources to be known.
+# check gates. Ruleset workflows/code_scanning rules also gate every reported
+# check: their requirements cannot be narrowed to named status contexts.
 checks_summary='{"optional_failing":[]}'
 evaluate_checks() {
     local rules_pages required_checks explicit_required_rule classic_checks classic_payload
-    local encoded_rule_base
+    local encoded_rule_base rules_require_all
     encoded_rule_base="$(jq -rn --arg s "$(jq -r '.baseRefName' <<<"$scalars")" '$s | @uri')"
     rules_pages="$(run_gh api --paginate --slurp "repos/$repo/rules/branches/$encoded_rule_base")" ||
         indeterminate checks-indeterminate "cannot read effective required status checks for the PR base"
@@ -1019,6 +1021,7 @@ evaluate_checks() {
           then {context, app:(.integration_id // null)} else error("invalid required context") end
       ] | unique' <<<"$rules_pages" 2>/dev/null)" ||
         indeterminate checks-indeterminate "effective required status checks are malformed"
+    rules_require_all="$(jq -r 'any(.[][]; .type == "workflows" or .type == "code_scanning")' <<<"$rules_pages")"
     # Rulesets and classic protection can coexist. An unreadable classic
     # policy (including an ambiguous 404) cannot prove a check optional.
     classic_checks=null
@@ -1048,7 +1051,7 @@ evaluate_checks() {
         --slurpfile classic <(printf '%s' "$classic_checks") \
         '$rules[0] + ($classic[0] // []) | unique')"
     explicit_required_rule=false
-    if [ "$classic_checks" != null ] && [ "$required_checks" != '[]' ]; then
+    if [ "$classic_checks" != null ] && [ "$required_checks" != '[]' ] && [ "$rules_require_all" = false ]; then
         explicit_required_rule=true
     fi
     check_runs_pages="$(run_gh api --paginate --slurp \
@@ -1392,8 +1395,8 @@ if [ "$unsettled_count" -gt 0 ]; then
     fail_condition deferred-unsettled "$unsettled_count deferred finding(s) not yet settled, e.g.: $first_unsettled"
 fi
 
-# 7. Unanswered inline threads, by reply linkage, never by timestamp — the
-# predicate is SKILL.md §2's, verbatim. Guard the identity lookup as carefully
+# 7. Resolved threads are settled; unresolved threads require the agent to
+# speak last (SKILL.md §2). Guard the identity lookup as carefully
 # as the fetch: if `gh api user` fails while the comments endpoint works,
 # every comment classifies as reviewer activity — loud, but wrong.
 me="$(run_gh api user | jq -er '.login | select(type == "string" and . != "")')" ||
@@ -1409,8 +1412,8 @@ fp_inline="$(run_gh api --paginate --slurp repos/"$repo"/pulls/"$pr"/comments)" 
 # follow-up, and treating it as one blocked the gate until a human replied a
 # second time to a machine.
 #
-# So an unbadged self-report from the pinned actor is INFORMATIONAL and does
-# not raise `threads-new-follow-up`. Two deliberate limits:
+# In an unresolved thread, an unbadged self-report from the pinned actor is
+# INFORMATIONAL and does not raise `threads-new-follow-up`. Two deliberate limits:
 #
 #   - it is scoped to the FOLLOW-UP computation only. A thread with no reply
 #     from you at all is still `unanswered`, and an edit after your reply is
@@ -1493,8 +1496,9 @@ threads_needing_attention="$(jq -c --arg me "$me" \
       | ($t[0].in_reply_to_id // $t[0].id) as $root
       | ([$resolution_sf[0][] | select(.root == $root)]) as $resolution
       | { root: $root, path: $t[0].path,
-          state: (if   $mine == null then "unanswered"
-                  elif ($resolution | length) != 1 then "unknown-resolution"
+          state: (if   ($resolution | length) != 1 then "unknown-resolution"
+                  elif $resolution[0].resolved then null
+                  elif $mine == null then "unanswered"
                   elif $new  != null then "new-follow-up"
                   elif $edit != null then "edited-since-reply"
                   else null end),
@@ -1506,7 +1510,8 @@ missing_inline_roots="$(jq -nr \
     --slurpfile resolution <(printf '%s' "$thread_resolution") \
     --slurpfile inline <(printf '%s' "$fp_inline") '
       ($inline[0] | add // [] | map(.in_reply_to_id // .id)) as $roots |
-      [$resolution[0][] | .root | select(. as $root | $roots | index($root) | not)] | join(", ")')" ||
+      [$resolution[0][] | select(.resolved | not) | .root
+       | select(. as $root | $roots | index($root) | not)] | join(", ")')" ||
     indeterminate malformed-data "cannot correlate REST comments with GraphQL threads"
 [ -z "$missing_inline_roots" ] ||
     fail_condition threads-unanswered "review threads have no agent reply in the inline surface — roots: $missing_inline_roots"

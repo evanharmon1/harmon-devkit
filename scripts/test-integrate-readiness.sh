@@ -2913,6 +2913,41 @@ for classic_none in 'Branch not protected' 'Required status checks not enabled';
     assert_gate 0 pass promoted
 done
 
+echo "==> #1602 r4: workflow and code-scanning rules gate every check (REPRO-N/N2/O)"
+for required_source in workflows-none workflows-empty code_scanning; do
+    write_defaults
+    case "$required_source" in
+    workflows-*)
+        rule_type=workflows
+        required_name='org-required / lint'
+        ;;
+    code_scanning)
+        rule_type=code_scanning
+        required_name=CodeQL
+        ;;
+    esac
+    jq -cn --arg type "$rule_type" '[[
+      {type:"required_status_checks",parameters:{required_status_checks:[{context:"build"}]}},
+      {type:$type,parameters:(if $type == "workflows" then
+        {do_not_enforce_on_create:false,workflows:[{path:".github/workflows/org-required.yml",repository_id:99,ref:"refs/heads/main"}]}
+        else {code_scanning_tools:[{tool:"CodeQL",security_alerts_threshold:"high_or_higher",alerts_threshold:"errors"}]} end)}
+    ]]' >"${fixtures}/rules.pages.json"
+    jq -cn --arg name "$required_name" '[{check_runs:[
+      {name:"build",status:"completed",conclusion:"success"},
+      {name:$name,status:"completed",conclusion:"failure"}
+    ]}]' >"${fixtures}/check-runs.pages.json"
+    if [ "$required_source" = workflows-none ]; then
+        printf '%s\n' 'protection/required_status_checks' >"${fixtures}/fail-endpoint"
+        printf '%s\n' 'gh: Branch not protected (HTTP 404)' >"${fixtures}/fail-diagnostic"
+    fi
+    run_gate
+    assert_gate 1 fail checks-failing
+    jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+    mv "${fixtures}/p" "${fixtures}/pr-view.json"
+    run_promoted
+    assert_gate 1 fail checks-failing
+done
+
 echo "==> #1602 r2: union ruleset and classic requirements (REPRO-I)"
 write_defaults
 printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]]' >"${fixtures}/rules.pages.json"
@@ -3061,6 +3096,14 @@ run_gate
 assert_gate 1 fail threads-unanswered
 grep -Fq '900' <<<"$gate_out" ||
     fail "threads-unanswered did not name the root: $gate_out"
+# Ruling 61: resolution settles even a thread with no agent reply.
+printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
+run_gate
+assert_gate 0 pass ready
+jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+mv "${fixtures}/p" "${fixtures}/pr-view.json"
+run_promoted
+assert_gate 0 pass promoted
 
 echo "==> an answered thread passes; a reviewer follow-up after the reply fails"
 write_defaults
@@ -3089,14 +3132,22 @@ jq -cn '[[
      body:"follow-up"}]]' >"${fixtures}/inline.pages.json"
 run_gate
 assert_gate 1 fail threads-new-follow-up
-# A later acknowledgement is reviewer activity even when the thread is resolved.
+# Ruling 61: a resolved acknowledgement passes; reopening makes it block.
 jq '.[0][-1].body = "Thanks, this addresses my concern."' "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
 mv "${fixtures}/ack.json" "${fixtures}/inline.pages.json"
 printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
 run_gate
+assert_gate 0 pass ready
+jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+mv "${fixtures}/p" "${fixtures}/pr-view.json"
+run_promoted
+assert_gate 0 pass promoted
+printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
+run_promoted
 assert_gate 1 fail threads-new-follow-up
-# One final agent reply settles the acknowledgement without relying on a
-# resolution timestamp that GraphQL does not provide.
+jq '.isDraft=true' "${fixtures}/pr-view.json" >"${fixtures}/p"
+mv "${fixtures}/p" "${fixtures}/pr-view.json"
+# With the thread unresolved, one final agent reply settles it.
 jq '.[0] += [{id:903,user:{login:"pr-author"},path:"f.sh",in_reply_to_id:900,
   created_at:"2026-08-01T03:00:00Z",updated_at:"2026-08-01T03:00:00Z",body:"acknowledged"}]' \
     "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
@@ -3109,17 +3160,62 @@ printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
 run_gate
 assert_gate 1 fail threads-new-follow-up
 
-echo "==> #1602 r1: resolved threads do not hide a later reviewer finding (REPRO-C)"
+echo "==> #1602 r4: resolution settles REPRO-C; reopening exposes the finding"
 printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
 jq '.[0][-1].body = "P1: the guard still passes on an empty list"' "${fixtures}/inline.pages.json" >"${fixtures}/ack.json"
 mv "${fixtures}/ack.json" "${fixtures}/inline.pages.json"
 run_gate
+assert_gate 0 pass ready
+jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+mv "${fixtures}/p" "${fixtures}/pr-view.json"
+run_promoted
+assert_gate 0 pass promoted
+printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
+run_promoted
 assert_gate 1 fail threads-new-follow-up
 
+echo "==> #1602 r4: integrator producer follows resolved-or-agent-last settlement"
+python3 - "${repo_root}/ai/agents/integrator.md" <<'PY'
+from pathlib import Path
+import json
+import os
+import subprocess
+import sys
+
+section = Path(sys.argv[1]).read_text().split("## 5. Find what still needs a reply", 1)[1]
+start = 'jq -c --arg me "$me"'
+end = '<<<"$comments"'
+command = start + section.split(start, 1)[1].split(end, 1)[0] + end
+root = dict(id=900, user={"login": "reviewer"}, created_at="2026-08-01T00:00:00Z",
+            updated_at="2026-08-01T00:00:00Z", body="finding")
+reply = dict(id=901, in_reply_to_id=900, user={"login": "pr-author"},
+             created_at="2026-08-01T01:00:00Z", updated_at="2026-08-01T01:00:00Z", body="fixed")
+ack = dict(id=902, in_reply_to_id=900, user={"login": "reviewer"},
+           created_at="2026-08-01T02:00:00Z", updated_at="2026-08-01T02:00:00Z", body="Thanks")
+for resolved, comments, expected in [
+    (True, [root, reply, ack], []),
+    (False, [root, reply, ack], [900]),
+    (False, [root, reply], []),
+    (True, [root], []),
+    (False, [root], [900]),
+]:
+    env = dict(os.environ, me="pr-author", comments=json.dumps([comments]),
+               thread_resolution=json.dumps([dict(root=900, resolved=resolved)]))
+    result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    actual = [json.loads(line) for line in result.stdout.splitlines()]
+    assert actual == expected, ("integrator producer thread settlement", resolved, actual, expected)
+for invalid in [[], [dict(root=900, resolved=False)] * 2]:
+    env = dict(os.environ, me="pr-author", comments=json.dumps([[root, reply]]),
+               thread_resolution=json.dumps(invalid))
+    result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True)
+    assert result.returncode != 0, "integrator producer accepted unknown resolution"
+PY
+
 echo "==> #1602 r1: GraphQL-only, missing, duplicate and multi-page root mappings"
-for mapping in graphql-only unknown unknown-flag duplicate pages; do
+for mapping in graphql-only resolved-only unknown unknown-flag duplicate pages; do
     write_defaults
-    if [ "$mapping" != graphql-only ]; then
+    if [ "$mapping" != graphql-only ] && [ "$mapping" != resolved-only ]; then
         jq -cn '[[{id:900,user:{login:"reviewer"},path:"f.sh",created_at:"2026-08-01T00:00:00Z",updated_at:"2026-08-01T00:00:00Z",body:"finding"},
           {id:901,user:{login:"pr-author"},in_reply_to_id:900,path:"f.sh",created_at:"2026-08-01T01:00:00Z",updated_at:"2026-08-01T01:00:00Z",body:"fixed"}]]' >"${fixtures}/inline.pages.json"
     fi
@@ -3127,6 +3223,7 @@ for mapping in graphql-only unknown unknown-flag duplicate pages; do
       {id:"T900",isResolved:false,comments:{nodes:[{databaseId:900}]}} as $thread |
       def page($nodes;$more): {data:{repository:{pullRequest:{reviewThreads:{nodes:$nodes,pageInfo:{hasNextPage:$more,endCursor:(if $more then "next" else null end)}}}}}};
       if $mode == "unknown" then [page([];false)]
+      elif $mode == "resolved-only" then [page([($thread | .isResolved=true)];false)]
       elif $mode == "unknown-flag" then [page([($thread | .isResolved=null)];false)]
       elif $mode == "duplicate" then [page([$thread];true),page([$thread];false)]
       elif $mode == "pages" then [page([];true),page([$thread];false)]
@@ -3136,7 +3233,7 @@ for mapping in graphql-only unknown unknown-flag duplicate pages; do
     graphql-only) assert_gate 1 fail threads-unanswered ;;
     unknown | unknown-flag) assert_gate 2 indeterminate malformed-data ;;
     duplicate) assert_gate 2 indeterminate malformed-data ;;
-    pages) assert_gate 0 pass ready ;;
+    pages | resolved-only) assert_gate 0 pass ready ;;
     esac
 done
 
@@ -3551,6 +3648,16 @@ echo "==> an edit after the reply fails distinctly as threads-edited-since-reply
 write_defaults
 edited_thread
 run_gate
+assert_gate 1 fail threads-edited-since-reply
+printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
+run_gate
+assert_gate 0 pass ready
+jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+mv "${fixtures}/p" "${fixtures}/pr-view.json"
+run_promoted
+assert_gate 0 pass promoted
+printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
+run_promoted
 assert_gate 1 fail threads-edited-since-reply
 
 echo "==> --allow-edited-root never waives thread resolution"

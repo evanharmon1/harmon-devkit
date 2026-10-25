@@ -1035,26 +1035,56 @@ from its own `check_out`, the same way `codex_cycle` is built for codex-cloud.
 
 ## 5. Find what still needs a reply
 
-Fetch inline review comments and classify by reply linkage — a thread with no
-reply from this PR's own account since the newest reviewer activity in it,
+Fetch review-thread resolution and inline comments. A resolved thread is
+settled regardless of its last comment (maintainer ruling 61). For unresolved
+threads, classify by reply linkage — a thread with no reply from this PR's
+own account since the newest reviewer activity in it,
 **including an edit to an existing comment**, is unanswered. Compare
 `updated_at` as well as `created_at`: an edited comment keeps its original
 `created_at`, so checking only that field lets a reviewer rewrite a finding
 after your reply and have it stay hidden behind it:
 
+**Agent-posture GraphQL reads:** The agent posture has no GraphQL read
+path. Run this step from the dev or bot posture, or skip it and report
+unresolved review-thread resolution as unverified. Do not route this query
+through either GET-only wrapper.
+
 ```sh
+thread_pages="$(gh api graphql --paginate --slurp \
+    -F owner="${repo%/*}" -F name="${repo#*/}" -F pr="$pr" -f query='
+  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
+    repository(owner:$owner,name:$name){pullRequest(number:$pr){
+      reviewThreads(first:100,after:$endCursor){
+        pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{databaseId}}}}}}}')" \
+    || { echo 'thread-resolution fetch failed — unknown'; exit 1; }
+thread_resolution="$(jq -ce '
+  if type != "array" or length == 0 then error("missing thread pages") else . end |
+  [.[] | .data.repository.pullRequest.reviewThreads |
+    if (.nodes | type) != "array" then error("missing thread nodes") else .nodes[] end |
+    if (.isResolved | type) != "boolean" or (.comments.nodes | type) != "array" or
+       (.comments.nodes | length) != 1 or
+       (.comments.nodes[0].databaseId | type) != "number"
+    then error("invalid thread resolution")
+    else {root:.comments.nodes[0].databaseId,resolved:.isResolved} end] |
+  if (group_by(.root) | any(.[]; length != 1)) then error("duplicate root") else . end
+  ' <<<"$thread_pages")" || { echo 'thread resolution malformed — unknown'; exit 1; }
 me="$("$skill_dir"/assets/gh-ro.sh user --jq .login)" || { echo 'identity lookup failed — unknown'; exit 1; }
 comments="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
     || { echo 'comment fetch failed — unknown'; exit 1; }
-jq -c --arg me "$me" 'add
+jq -c --arg me "$me" --argjson resolution "$thread_resolution" 'add
     | group_by(.in_reply_to_id // .id)
     | map(. as $t
+        | ($t[0].in_reply_to_id // $t[0].id) as $root
+        | [$resolution[] | select(.root == $root)] as $resolved
+        | if ($resolved | length) != 1 then error("missing thread resolution")
+          else select($resolved[0].resolved | not) end
         | ([$t[] | select(.user.login == $me and .in_reply_to_id != null) | .created_at] | max) as $mine
         | ([$t[] | select(.user.login != $me
                           and ($mine == null or .created_at >= $mine or .updated_at >= $mine))
                  | (.updated_at // .created_at)] | max) as $new
-        | { root: ($t[0].in_reply_to_id // $t[0].id), unanswered: ($mine == null or $new != null) })
-    | map(select(.unanswered)) | .[].root' <<<"$comments"
+        | { root: $root, unanswered: ($mine == null or $new != null) })
+    | map(select(.unanswered)) | .[].root' <<<"$comments" \
+    || { echo 'thread classification failed — unknown'; exit 1; }
 ```
 
 Ties break toward `unanswered` (`>=`, not `>`): GitHub serializes these
@@ -1069,12 +1099,15 @@ only replies (`in_reply_to_id != null`), never root comments, matters because
 you typically run as the PR author's own account: without that clause, a note
 you left on your own thread would count as your own answer to it.
 
-This flags both "never replied" and "replied, but something changed since" —
+For unresolved threads, this flags both "never replied" and "replied, but something changed since" —
 it does not distinguish a substantive follow-up from an edit that turned out
 to be a typo fix. That distinction is the orchestrator's to make (it can read
 the thread and decide a reply is unnecessary, recording why); your job is to
 under-report nothing, not to filter for materiality. Every root ID this
 prints is an entry for `unanswered_thread_roots` (§7).
+A reviewer who objects after resolution must reopen the thread; a fresh
+resolution read then restores this reply requirement. Never infer resolution
+from acknowledgement text or silently substitute an empty resolution list.
 Also carry forward, as `findings`, anything substantive your reads turned up
 that the orchestrator has not already seen: a non-clean Codex verdict's
 badged findings, each entry in §3's `$failed_required` (a CI failure needing
