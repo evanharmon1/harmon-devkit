@@ -517,61 +517,83 @@ require_closure_base_is_full_sha() {
     esac
 }
 
-# Matches a single repo-root-relative PATH against one docs_only_paths glob
-# PATTERN. Plain case/fnmatch semantics already treat a bare `*` (and so a
-# redundant `**`) as "any remainder including further slashes", which is
-# exactly "one or more directories" for a `**/` segment — the case that
-# needs help is "zero directories", since the LITERAL `/` immediately after
-# `**` in the pattern text requires an actual `/` in the input at that
-# point, which a direct-child path doesn't have (`**/*.md` must still match
-# root-level `AGENTS.md`; `docs/**/*.md` must still match the direct child
-# `docs/readme.md`, not only `docs/sub/readme.md`).
-#
-# A single left-to-right "collapse every `**/` to zero" pass (this
-# function's own earlier design) cannot represent a pattern where DIFFERENT
-# occurrences need DIFFERENT resolutions — Codex cloud review, confirmed:
-# `docs/**/api/**/*.md` matching `docs/v1/api/readme.md` needs the FIRST
-# `**/` to consume a real directory (`v1/`) while the SECOND collapses to
-# zero, and collapsing either or both to zero alone never produces that.
-# _docs_glob_resolve instead branches at each occurrence, trying BOTH (1)
-# zero directories (drop the `**/`) and (2) one-or-more (freeze it — replace
-# with a sentinel byte no real pattern contains, so the next call scans past
-# it to any FURTHER occurrence instead of re-deciding this one) before
-# finally restoring every frozen occurrence to a literal `**/` for one
-# direct match, where bare `*`'s own slash-crossing handles "however many"
-# on its own. Depth is bounded by the number of `**/` occurrences actually
-# decided (one per call), so a real pattern's handful of globs costs at
-# most a few branches.
+# Matches one repository-relative path against a segment-aware
+# docs_only_paths glob: `*` and `?` match only within one path segment, while
+# a complete `**` segment matches zero or more segments. This lets
+# `**/*.md` include root Markdown and nested Markdown, while `*.md` stays at
+# the root and patterns such as `docs/**` still include nested docs files.
 docs_glob_match() {
-    _docs_glob_resolve "$1" "$2" 0
+    _docs_glob_match "$1" "$2" 0
 }
 
-_docs_glob_frozen=$'\x01'
+_docs_glob_match() {
+    local pattern=$1 path=$2 depth=$3
+    local pattern_has_next pattern_segment pattern_rest
+    local path_has_next path_segment path_rest candidate
 
-_docs_glob_resolve() {
-    local pattern=$1 path=$2 depth=$3 before after final
     [ "$depth" -le 8 ] || return 1
+
     case "$pattern" in
-    *'**/'*)
-        before=${pattern%%'**/'*}
-        after=${pattern#*'**/'}
-        _docs_glob_resolve "${before}${after}" "$path" $((depth + 1)) && return 0
-        _docs_glob_resolve "${before}${_docs_glob_frozen}${after}" "$path" $((depth + 1))
-        return $?
+    */*)
+        pattern_has_next=1
+        pattern_segment=${pattern%%/*}
+        pattern_rest=${pattern#*/}
+        ;;
+    *)
+        pattern_has_next=0
+        pattern_segment=$pattern
+        pattern_rest=
         ;;
     esac
-    final=${pattern//$_docs_glob_frozen/'**/'}
-    # shellcheck disable=SC2254  # unquoted on purpose: glob match
+
     case "$path" in
-    $final) return 0 ;;
+    */*)
+        path_has_next=1
+        path_segment=${path%%/*}
+        path_rest=${path#*/}
+        ;;
+    *)
+        path_has_next=0
+        path_segment=$path
+        path_rest=
+        ;;
     esac
-    return 1
+
+    if [ "$pattern_segment" = "**" ]; then
+        if [ "$pattern_has_next" -eq 0 ]; then
+            [ -n "$path" ]
+            return $?
+        fi
+
+        candidate=$path
+        while :; do
+            _docs_glob_match "$pattern_rest" "$candidate" $((depth + 1)) && return 0
+            [ -n "$candidate" ] || break
+            case "$candidate" in
+            */*) candidate=${candidate#*/} ;;
+            *) candidate= ;;
+            esac
+        done
+        return 1
+    fi
+
+    # shellcheck disable=SC2254  # unquoted on purpose: glob match
+    case "$path_segment" in
+    $pattern_segment) ;;
+    *) return 1 ;;
+    esac
+
+    if [ "$pattern_has_next" -eq 1 ] && [ "$path_has_next" -eq 1 ]; then
+        _docs_glob_match "$pattern_rest" "$path_rest" "$depth"
+        return $?
+    fi
+    [ "$pattern_has_next" -eq "$path_has_next" ]
 }
 
 # Reads docs_only_paths (one pattern per line) from FILE and echoes "docs" or
-# "code" for the changed paths listed in PATHS_FILE. Empty PATHS_FILE (no
-# changed paths at all) is vacuously docs: nothing changed outside the
-# allowlist because nothing changed.
+# "code" for the changed paths listed in PATHS_FILE. An empty PATHS_FILE stays
+# docs-only for the push broker: no file changed, so there is nothing outside
+# the allowlist that needs the full code gate.
 classify_diff() {
     local patterns_file=$1 paths_file=$2 path matched pattern
 

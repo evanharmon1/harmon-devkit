@@ -621,6 +621,63 @@ assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "a root-level .md file must still match **/*.md: $out"
 
+echo "  -> shared docs_only_paths uses segment-aware wildcards and keeps empty diffs docs-only"
+root="$(new_fixture segment-aware-path-table)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"docs/**\", \"specs/**\", \"*.md\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/segment-aware-path-table-devflow.toml"
+mv "${test_tmp}/segment-aware-path-table-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: pin shared docs_only_paths policy"
+while IFS='|' read -r path expected; do
+    mark_base "${root}/work"
+    merge_base=$mark_base_tag
+    merge_base_sha=$mark_base_sha
+    if [ -n "$path" ]; then
+        mkdir -p "${root}/work/$(dirname "$path")"
+        path_sha="$(commit_on "${root}/work" "test: classify ${path}" "$path" "fixture path")"
+    else
+        path_sha=$merge_base_sha
+    fi
+    run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$path_sha" "${policy_args[@]}" --json
+    assert_rc 0
+    printf '%s' "$out" | grep -F "\"diff_class\": \"${expected}\"" >/dev/null ||
+        fail "docs_only_paths classified '${path:-an empty diff}' as the wrong class (expected $expected): $out"
+    if [ "$expected" = docs ]; then
+        expected_target=fixture-check
+    else
+        expected_target=fixture-verify
+    fi
+    printf '%s' "$out" | grep -F "\"required_target\": \"${expected_target}\"" >/dev/null ||
+        fail "docs_only_paths selected the wrong round gate for '${path:-an empty diff}' (expected $expected_target): $out"
+done <<'EOF'
+README.md|docs
+src/pages/about.md|code
+src/content/posts/p.md|code
+terraform/README.md|code
+.claude/skills/x/x.md|code
+docs/a/b.md|docs
+|docs
+EOF
+
+echo "  -> a question-mark wildcard cannot cross a path segment"
+root="$(new_fixture question-mark-segment)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"src/a?b\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/question-mark-segment-devflow.toml"
+mv "${test_tmp}/question-mark-segment-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: question mark policy stays in one segment"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/src/a"
+question_mark_sha="$(commit_on "${root}/work" "test: a question mark cannot match a slash" src/a/b "fixture path")"
+run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$question_mark_sha" "${policy_args[@]}" --json
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+    fail "the '?' in src/a?b must not match the slash in src/a/b: $out"
+
 echo "  -> an embedded globstar in docs_only_paths matches a zero-directory direct child"
 root="$(new_fixture embedded-globstar)"
 cd "${root}/work"
