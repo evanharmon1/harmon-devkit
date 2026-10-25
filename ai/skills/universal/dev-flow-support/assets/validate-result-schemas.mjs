@@ -2534,7 +2534,7 @@ function checkPlanCoherence(document, errors) {
   }
   for (const issue of issues) {
     const issueWave = waveByIssue.get(issue.number)
-    for (const blocker of predecessorByIssue.get(issue.number)) {
+    for (const blocker of issue.blocked_by || []) {
       const blockerIssue = issueByNumber.get(blocker)
       const blockerWave = waveByIssue.get(blocker)
       if (issueWave !== undefined && blockerIssue?.verdict !== 'done' && (blockerWave === undefined || blockerWave >= issueWave)) {

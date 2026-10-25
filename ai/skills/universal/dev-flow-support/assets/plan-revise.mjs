@@ -27,13 +27,16 @@
 //
 // Appends one revision for a default-branch move: `base_sha` becomes the new
 // base, every `--done` issue keeps its verified record as `verdict: "done"`
-// (orchestrate § Planning step 2: never erase a verdict) and leaves every
-// dispatch structure — waves, lanes, lane_profiles, overlaps — and a wave the
-// removal empties is dropped with the later waves renumbered in order. The
+// (orchestrate § Planning step 2: never erase a verdict) and is removed from
+// waves, lanes, lane_profiles, overlaps and merge_queue.
+// Waiting handed-off successors are queued when their predecessors complete.
+// An emptied wave is dropped, with later waves renumbered in order. The
 // revision is chained (seq, prev_digest, digest over the canonical
 // {seq, plan, at, reason, prev_digest}) and published through the candidate,
 // `validate-result-schemas.mjs plan`, rename, readback sequence.
 //
+// Handed-off issues are excluded from the live set below: their candidate
+// paths do not block a base move, and eligible waiting handoffs queue mechanically.
 // Everything that is orchestrator judgment is refused, naming what needs it,
 // rather than written:
 //   - the commits between the old and new base touch a live lane's effective
@@ -41,7 +44,7 @@
 //     may need a rebase, a fence change, or a re-verification;
 //   - a done issue releases a dependent — a live issue lists it in
 //     `blocked_by`, or an overlap's merge dependency names it as `before` —
-//     because releasing it is a wave/queue decision;
+//     because releasing a live dispatch dependent needs a wave decision;
 //   - a live fence or candidate pattern has a component combining a bracket
 //     class with `*`/`?`, or holding a backslash — such a pattern is never
 //     interpreted here, so any move needs judgment;

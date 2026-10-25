@@ -583,6 +583,17 @@ if (duplicateResult.status !== 1 || duplicateErrors.length !== 1 || !duplicateEr
   failures += 1
 }
 
+// File merge-order errors retain their own diagnostic, without an extra
+// blocked_by-wave message for a dependency that is not a blocked_by edge.
+for (const name of ['reversed-split-wave-dependency', 'cyclic-merge-dependencies', 'split-fence-overlap']) {
+  const file = path.join(path.dirname(fixtureFile), `../invalid/${name}.json`)
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  if (result.status !== 1 || /: blocker [0-9]+ must be in an earlier wave/.test(result.stderr)) {
+    console.error(`FAIL: ${name} gained a blocked_by diagnostic: ${result.stderr}`)
+    failures += 1
+  }
+}
+
 for (const entry of required) runMutation('required', entry.parent, entry.name)
 for (const enumPath of enums) runMutation('enum', enumPath)
 if (failures > 0) process.exit(1)
