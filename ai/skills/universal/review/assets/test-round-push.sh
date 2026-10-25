@@ -695,8 +695,52 @@ docs/**/|docs/x/y.sh|code
 docs/**/|docs/run.sh|code
 **/|src/run.sh|code
 **.md|src/a.md|docs
+*.md|READMExmd|code
+**/*.md|src/runxmd|code
 docs/[ab].md|docs/a.md|code
+**/*.md|scripts/x.md|code
+**/*.md|.github/workflows/README.md|code
+**/*.md|.github/actions/setup.md|code
+**|Taskfile.yml|code
+**|Taskfile.yaml|code
+**|.devflow.toml|code
 EOF
+
+echo "  -> every invalid docs_only_paths entry rejects the whole allowlist"
+root="$(new_fixture whole-allowlist-mixed)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"docs/**\", \"docs/[ab].md\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/whole-allowlist-mixed-devflow.toml"
+mv "${test_tmp}/whole-allowlist-mixed-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: pin a mixed docs_only_paths allowlist"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/docs"
+mixed_allowlist_sha="$(commit_on "${root}/work" "test: classify docs/a.md" docs/a.md "docs content")"
+run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$mixed_allowlist_sha" "${policy_args[@]}" --json
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+    fail "one invalid docs_only_paths entry must reject the whole allowlist even when another entry matches docs/a.md: $out"
+
+echo "  -> an embedded newline makes the entire docs_only_paths allowlist invalid"
+root="$(new_fixture whole-allowlist-newline)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"docs/**\", \"docs/a\\nb\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/whole-allowlist-newline-devflow.toml"
+mv "${test_tmp}/whole-allowlist-newline-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: pin a newline in docs_only_paths"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/docs"
+newline_allowlist_sha="$(commit_on "${root}/work" "test: classify docs/a.md" docs/a.md "docs content")"
+run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$newline_allowlist_sha" "${policy_args[@]}" --json
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+    fail "an embedded newline in any docs_only_paths entry must reject the whole allowlist: $out"
 
 echo "  -> a question-mark wildcard cannot cross a path segment"
 root="$(new_fixture question-mark-segment)"

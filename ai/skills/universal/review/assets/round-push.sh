@@ -563,9 +563,13 @@ _docs_glob_regex() {
 # "code" for the changed paths listed in PATHS_FILE. An empty PATHS_FILE stays
 # docs-only for the push broker: no file changed, so there is nothing outside
 # the allowlist that needs the full code gate.
-# It mirrors CI's glob syntax and rejects unsupported patterns, but does not
-# mirror CI's always-full-run paths (they are code here anyway) or its full run
-# on rename, delete, symlink, and mode changes.
+# It mirrors CI's glob translation, fails closed when any allowlist entry is
+# invalid, and classifies .github/actions/*, .github/workflows/*, Taskfile.yml,
+# Taskfile.yaml, scripts/*, and .devflow.toml as code before allowlist matching.
+# It does not mirror CI's full run for an empty diff (above: an empty paths
+# file stays docs-only because nothing changed), or its full run on rename,
+# delete, symlink, and mode changes because PATHS_FILE contains paths but not
+# change status.
 classify_diff() {
     local patterns_file=$1 paths_file=$2 path matched pattern
 
@@ -601,6 +605,12 @@ classify_diff() {
 
     while IFS= read -r path; do
         [ -n "$path" ] || continue
+        case "$path" in
+        .github/actions/* | .github/workflows/* | Taskfile.yml | Taskfile.yaml | scripts/* | .devflow.toml)
+            echo code
+            return 0
+            ;;
+        esac
         matched=0
         while IFS= read -r pattern; do
             [ -n "$pattern" ] || continue
