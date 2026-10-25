@@ -60,6 +60,16 @@ function checkerResult(stateFile, repoDir, runId) {
   }
 }
 
+function settledCharge(stateFile, repoDir, runId) {
+  try {
+    return JSON.parse(execFileSync('bash', [CHECKER, 'ci-split', '--state', stateFile,
+      '--run-id', runId, '--repo-dir', repoDir],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim())
+  } catch (error) {
+    throw new Error((error.stderr || error.stdout || error.message).trim())
+  }
+}
+
 function codexRequired(record, policy) {
   if (policy?.rounds?.integration === 0) return false
   const selections = (record.finder_selection ?? [])
@@ -329,9 +339,13 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   try {
     snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-receipt-'))
     const snapshot = join(snapshotDir, 'state.json')
-    const authenticatedState = authoritativeState
-    writeFileSync(snapshot, JSON.stringify({ ...authenticatedState, settled: trustedSettlements(authenticatedState, record, recordDir) }), { encoding: 'utf8', mode: 0o600 })
+    // The retained authority supplies request controls; current state supplies
+    // only settlement candidates, each independently tied back to receipted
+    // passes and adjudications by trustedSettlements.
+    const authenticatedState = { ...authoritativeState, settled: trustedSettlements(state, record, recordDir) }
+    writeFileSync(snapshot, JSON.stringify(authenticatedState), { encoding: 'utf8', mode: 0o600 })
     checkedResult = checkerResult(snapshot, repoDir, record.run_id)
+    checkedResult.settledCharge = settledCharge(snapshot, repoDir, record.run_id)
     checkedResult.independentlyProvesTwoAttempts = Boolean(authority)
   } catch (error) {
     errors.push(`$result.payload.codex_cycle: live checker authentication failed: ${error.message}`)
@@ -359,8 +373,9 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     // single-counter contract: all cycles were charged and none exempt.
     const reportedCharged = hasCharged ? cycle.charged : cycle.cycle
     const reportedExempt = hasExempt ? cycle.exempt : 0
-    if (cycle.cycle !== cycleTotal || reportedCharged !== authoritativeState?.charged_cycles || reportedExempt !== authoritativeState?.exempt_cycles) {
-      errors.push('$result.payload.codex_cycle: cycle, charged, and exempt counters do not match checker state')
+    const settled = checkedResult.settledCharge?.settled
+    if (cycle.cycle !== cycleTotal || reportedCharged !== settled?.charged || reportedExempt !== settled?.exempt) {
+      errors.push('$result.payload.codex_cycle: cycle, charged, and exempt counters do not match checker state (canonical CI-settled split)')
     }
   }
   if (cycle.attempt !== checked.attempt || id(cycle.trigger_comment_id) !== id(authoritativeState?.trigger_comment_id)) errors.push('$result.payload.codex_cycle: attempt or trigger_comment_id does not match checker state')

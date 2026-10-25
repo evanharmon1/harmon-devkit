@@ -386,7 +386,7 @@ the reservation untouched and report the draft-flip blocker. It releases only an
 after the age check and live comment scan with the 10-minute skew margin; attached
 triggers, matching live comments and unreadable evidence refuse recovery. The
 same order binds every per-finder trigger (#804) — its fresh cycle, its
-attempt-2 retry, and its reconcile path alike.
+owner-run attempt-2 retry, and its reconcile path alike.
 
 **Wait-then-release and resume:** report the mismatch and the old reserved head,
 then wait only until `reserved_at + 600 s` before running release once. Bound
@@ -1464,6 +1464,14 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
   Branch on the validated result:
 
+  - A report-only `completed`/`pending` result carrying
+    `codex_cycle.exit_code: 12` is consumed by the owner before any receipt,
+    adjudication, evidence publication, or stage transition. The owner verifies
+    the first window, reserves and broker-attaches attempt 2, captures that
+    authority, and re-dispatches the same integration round. It spends neither
+    another cycle nor a remediation round. A second timeout is exit 13 and
+    follows the ordinary terminal path below.
+
   - **`status: "blocked"` is terminal for the stage**, regardless of verdict,
     cycle presence or review timing. Surface the integrator's §9 blocker
     report (for the permission fallback, the token cannot read the checks
@@ -1520,8 +1528,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     terminal Codex result. Waiting is never a round (see "Round accounting"
     above): re-dispatch the agent after a bounded wait rather than
     inventing a poller of your own. The agent absorbs the single
-    reserve-retry attempt (exit `12`) internally within one dispatch, so you
-    should never see `12` at this level.
+    reserve-retry attempt (exit `12`) through the owner-only transition: the
+    owner observes the first full window, reserves and broker-attaches attempt
+    2, records its authority, then re-dispatches. A delegate never creates
+    owner-controlled retry evidence.
   - A checker exit `19` — whether recorded as `codex_cycle.exit_code: 19` or
     reported with `codex_cycle: null` because a stale `reserve` (including a
     `carry` that falls through to `reserve`) posted no trigger — is an

@@ -48,7 +48,8 @@ function authorityPath(common, runId, path, digest) {
 // machine suffix so callers cannot turn arbitrary ruling prose into authority.
 const NOTE = /^integration-review-authority v1 (reserve|attach|carry) sha256=([0-9a-f]{64}) \[ruling ([^\]]+) sha256=([0-9a-f]{64})\]$/
 
-export function retainedAuthorities(record, { common, runId }) {
+export function retainedAuthorities(record, options) {
+  const { common, runId } = options
   const entries = []
   for (const intervention of record?.interventions ?? []) {
     const match = NOTE.exec(intervention?.note ?? '')
@@ -60,7 +61,7 @@ export function retainedAuthorities(record, { common, runId }) {
     const authority = readJson(file)
     if (authority?.schema !== 1 || authority?.kind !== match[1] || !validState(authority.snapshot)) continue
     try {
-      validateAuthority(authority, entries)
+      validateAuthority(authority, entries, record, options)
     } catch { continue }
     entries.push({ kind: match[1], digest: match[2], authority, intervention })
   }
@@ -88,7 +89,62 @@ export function sameAuthoritySnapshot(left, right) {
   return stable(left?.snapshot) === stable(right?.snapshot)
 }
 
-export function validateAuthority(authority, prior = []) {
+// Attachment is produced by the canonical checker from this retained state.
+// These fields identify the request control tuple after that transition.  The
+// checker alone may change requires_full_window as it reconstructs the trigger.
+function reservationControls(state) {
+  return {
+    run_id: state?.run_id ?? null,
+    repo: state?.repo,
+    pr: state?.pr,
+    head: state?.head,
+    charged_cycles: state?.charged_cycles,
+    exempt_cycles: state?.exempt_cycles,
+    attempt: state?.attempt,
+    finder: state?.finder ?? null,
+    reserved_at: state?.reserved_at ?? null,
+    timeout_min: state?.timeout_min ?? null,
+  }
+}
+
+function matchingReserve(prior, state) {
+  return prior.find((entry) => entry.kind === 'reserve' &&
+    authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(state)) ?? null
+}
+
+function validLegacyOriginReceipt(record, state, { common, runId }) {
+  // This is deliberately a receipt lookup, not a second checker.  The writer
+  // admitted these immutable bytes under the legacy live-authentication path.
+  const receipt = (record?.receipts ?? []).filter((entry) =>
+    entry?.kind === 'pass' && entry?.file === 'integration-r1-integrator')
+  if (receipt.length !== 1) return false
+  const pass = readJson(join(common, 'dev-flow-v2', 'runs', runId, 'passes', 'integration-r1-integrator.json'))
+  const cycle = pass?.payload?.codex_cycle
+  const binding = record?.pr_bindings?.at(-1)
+  if (pass?.run?.run_id !== record?.run_id || pass?.role !== 'integrator' ||
+      pass?.status !== 'completed' || pass?.payload?.integration_round !== 1 ||
+      pass?.payload?.verdict !== 'clean' || pass?.head !== state?.head ||
+      !cycle || cycle?.head !== state?.head || cycle?.exit_code !== 0 ||
+      Number(cycle?.cycle) !== Number(state?.charged_cycles) + Number(state?.exempt_cycles) ||
+      Number(cycle?.attempt) !== Number(state?.attempt) ||
+      String(cycle?.trigger_comment_id) !== String(state?.trigger_comment_id) ||
+      !['comment', 'review'].includes(cycle?.accepted?.surface) ||
+      cycle?.accepted?.reviewed_commit !== state?.head ||
+      Number(binding?.number) !== Number(state?.pr)) return false
+  try {
+    const url = new URL(binding?.url)
+    return url.pathname.replace(/^\/+|\/+$/g, '') === `${state.repo}/pull/${state.pr}`
+  } catch { return false }
+}
+
+export function retainedReservation(record, state, options) {
+  const prior = retainedAuthorities(record, options)
+  const reserve = matchingReserve(prior, state)
+  if (!reserve) throw new Error('attach authority has no retained matching reserve authority')
+  return reserve.authority.snapshot
+}
+
+export function validateAuthority(authority, prior = [], record = null, options = null) {
   const { kind, snapshot } = authority ?? {}
   if (!['reserve', 'attach', 'carry'].includes(kind)) throw new Error('unknown integration review authority kind')
   if (!validState(snapshot)) throw new Error('authority snapshot has no complete checker control tuple')
@@ -105,10 +161,15 @@ export function validateAuthority(authority, prior = []) {
     if (snapshot.phase !== 'attached' || !POSITIVE.test(String(snapshot.trigger_comment_id ?? ''))) {
       throw new Error('attach authority must snapshot an attached trigger')
     }
-    const coordinate = authorityCoordinate(snapshot)
-    if (!prior.some((entry) => entry.kind === 'reserve' && authorityCoordinate(entry.authority.snapshot) === coordinate)) {
-      throw new Error('attach authority has no retained matching reserve authority')
-    }
+    const reserve = matchingReserve(prior, snapshot)
+    if (!reserve || snapshot.carry != null ||
+        stable(reservationControls(reserve.authority.snapshot)) !== stable(reservationControls(snapshot)))
+      throw new Error('attach authority does not preserve the retained reservation controls')
+    const priorFirst = reserve.authority.snapshot.first_trigger_comment_id
+    if (priorFirst != null && Number(snapshot.first_trigger_comment_id) !== Number(priorFirst))
+      throw new Error('attach authority rewrites the retained first-request identity')
+    if (Number(snapshot.attempt) === 2 && !POSITIVE.test(String(snapshot.first_trigger_comment_id ?? '')))
+      throw new Error('retry attach authority has no retained first-request identity')
     return
   }
   const carry = snapshot.carry
@@ -122,7 +183,11 @@ export function validateAuthority(authority, prior = []) {
     return ['attach', 'carry'].includes(entry.kind) &&
       (carry.from_head === origin ? state.head === origin : attested === carry.from_head)
   })
-  if (!predecessor) {
+  // An already admitted clean legacy r1 is the one non-capture origin.  It
+  // can seed only the first carry; every later carry remains capture chained.
+  const legacyOrigin = prior.length === 0 && carry.from_head === origin &&
+    record && options && validLegacyOriginReceipt(record, snapshot, options)
+  if (!predecessor && !legacyOrigin) {
     throw new Error('carry authority has no retained origin or immediate predecessor authority')
   }
 }

@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
-import { authorityIdentity, authorityNote, retainedAuthorities, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { authorityIdentity, authorityNote, retainedAuthorities, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -714,7 +714,7 @@ const MUTATORS = {
       if (identical.length === 1 && sameAuthoritySnapshot(identical[0].authority, authority)) return null
       throw new Refusal('integration review authority conflicts with a retained transition capture')
     }
-    try { validateAuthority(authority, prior) } catch (error) {
+    try { validateAuthority(authority, prior, record, { common: context.common, runId: record.run_id }) } catch (error) {
       throw new Refusal(`integration review authority is invalid: ${error.message}`)
     }
     const digest = sha256File(args.authority)
@@ -1724,45 +1724,78 @@ function ghJson(args) {
 // Observe the transition outside run.json's mutex.  The caller owns the slate
 // token and invokes this immediately after reserve/attach/carry; the retained
 // ruling, not this mutable source file, is later receipt authority.
-function observeAuthority(kind, state, repoDir) {
-  const expectedHead = state?.carry?.attests_head ?? state?.head
-  const pr = ghJson(['pr', 'view', String(state?.pr), '--repo', state?.repo ?? '', '--json', 'state,isDraft,headRefOid'])
-  if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== expectedHead) {
-    throw new Refusal('integration review authority must observe an open draft on the captured head')
-  }
+function observeAuthority(kind, source, repoDir, record, context, sourcePath) {
   if (kind === 'attach') {
-    const trigger = ghJson(['api', `repos/${state.repo}/issues/comments/${state.trigger_comment_id}`])
+    let reservation
+    try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
+      throw new Refusal(`attached trigger has no immutable reservation controls: ${error.message}`)
+    }
+    // The retained reservation, rather than the mutable checker file, binds
+    // this transition to its original PR and head before reconstruction.
+    const pr = ghJson(['pr', 'view', String(reservation.pr), '--repo', reservation.repo, '--json', 'state,isDraft,headRefOid'])
+    if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== reservation.head) {
+      throw new Refusal('integration review authority must observe an open draft on the retained reservation head')
+    }
+    const scratch = mkdtempSync(join(tmpdir(), 'integration-attach-'))
+    let attached
+    try {
+      const scratchState = join(scratch, 'state.json')
+      writeFileSync(scratchState, `${JSON.stringify(reservation)}\n`, { mode: 0o600 })
+      attached = JSON.parse(execFileSync('bash', [INTEGRATION_CHECKER, 'attach', '--state', scratchState,
+        '--trigger-id', String(source.trigger_comment_id)], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }))
+    } catch (error) {
+      throw new Refusal(`attached trigger did not complete the canonical retained-reservation transition: ${(error.stderr || error.stdout || error.message).trim()}`)
+    } finally { rmSync(scratch, { recursive: true, force: true }) }
+    // Retain the canonical transition itself.  Merging into source would let
+    // source-only keys (for example injected carry provenance) survive.
+    const trigger = ghJson(['api', `repos/${reservation.repo}/issues/comments/${attached.trigger_comment_id}`])
     const actor = ghJson(['api', 'user'])
-    const body = state?.finder?.trigger_body ?? '@codex review'
-    if (Number(trigger?.id) !== Number(state.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
+    const body = reservation?.finder?.trigger_body ?? '@codex review'
+    if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
       typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
-      typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${state.pr}`) ||
-      typeof trigger?.created_at !== 'string' || typeof state?.reserved_at !== 'string' || trigger.created_at < state.reserved_at) {
+      typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
+      typeof trigger?.created_at !== 'string' || typeof reservation?.reserved_at !== 'string' || trigger.created_at < reservation.reserved_at) {
       throw new Refusal('attached trigger is not the exact post-reservation owner request')
     }
-    if (Number(state.attempt) === 2) {
-      const firstId = Number(state.first_trigger_comment_id)
-      const timeoutMin = Number(state.timeout_min ?? 15)
+    if (Number(attached.attempt) === 2) {
+      const firstId = Number(reservation.first_trigger_comment_id)
+      const timeoutMin = Number(reservation.timeout_min ?? 15)
       if (!Number.isSafeInteger(firstId) || firstId < 1 || !Number.isSafeInteger(timeoutMin) || timeoutMin < 10) {
         throw new Refusal('retry authority has no valid first-request or full-window control')
       }
-      const first = ghJson(['api', `repos/${state.repo}/issues/comments/${firstId}`])
+      const first = ghJson(['api', `repos/${reservation.repo}/issues/comments/${firstId}`])
       const waited = Date.parse(trigger.created_at) - Date.parse(first?.created_at)
       if (first?.id !== firstId || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
         throw new Refusal('retry authority did not observe two owner requests separated by the full review window')
       }
     }
+    return attached
+  }
+  const expectedHead = source?.carry?.attests_head ?? source?.head
+  const pr = ghJson(['pr', 'view', String(source?.pr), '--repo', source?.repo ?? '', '--json', 'state,isDraft,headRefOid'])
+  if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== expectedHead) {
+    throw new Refusal('integration review authority must observe an open draft on the captured head')
   }
   if (kind === 'carry') {
     if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
+    let exit = 0, output = ''
     try {
-      execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', state.__capture_state_path, '--repo-dir', repoDir, '--read-only'], {
+      output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', sourcePath,
+        '--actor-id', '199175422', '--repo-dir', repoDir, '--read-only'], {
         encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch (error) {
-      throw new Refusal(`carry authority canonical proof did not re-derive: ${(error.stderr || error.stdout || error.message).trim()}`)
+      exit = error.status
+      output = `${error.stdout ?? ''}`
+      if (exit !== 10) throw new Refusal(`carry authority canonical proof did not re-derive: ${(error.stderr || output || error.message).trim()}`)
     }
+    try { JSON.parse(output.trim()) } catch {
+      throw new Refusal('carry authority canonical proof returned no machine-readable observation')
+    }
+    // Exit 10 proves the carry and preserves its current finding for ordinary
+    // receipt/adjudication.  It is never interpreted here as a clean verdict.
   }
+  return source
 }
 
 function captureIntegrationReviewAuthority(args) {
@@ -1783,12 +1816,8 @@ function captureIntegrationReviewAuthority(args) {
   const source = readCaptureState(args.state)
   const priorRecord = readJson(canonical, 'run record')
   const previousAuthorityDigest = retainedAuthorities(priorRecord, { common, runId }).at(-1)?.digest ?? null
-  // Keep the state pathname private to this observation; it is deleted from
-  // the retained JSON before the ruling is published.
-  const state = structuredClone(source)
-  state.__capture_state_path = args.state
-  observeAuthority(kind, state, args['repo-dir'])
-  delete state.__capture_state_path
+  const state = observeAuthority(kind, structuredClone(source), args['repo-dir'], priorRecord,
+    { common, runId }, args.state)
   const temporary = join(mkdtempSync(join(tmpdir(), 'integration-authority-')), 'authority.json')
   try {
     writeFileSync(temporary, `${JSON.stringify({ schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }, null, 2)}\n`, { mode: 0o600 })

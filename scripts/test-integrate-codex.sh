@@ -9714,9 +9714,26 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
 mv "${state}.with-run" "$state"
+# Rebuild the owner captures for this new settlement cycle.  Earlier tests
+# deliberately exercise legacy finder-null admission, but receipt settlement
+# must use the CURRENT retained controls so a mutable state cannot supply its
+# own counters, request origin, or carry provenance.
+auth_settle_reserve="$auth_dir/settlement-reserve.json"
+jq '{schema:1,kind:"reserve",captured_at:"2026-07-31T08:00:00Z",previous_authority_digest:null,
+     snapshot:(. | .phase="reserved" | .trigger_comment_id=null)}' "$state" >"$auth_settle_reserve"
+auth_settle_reserve_digest="$(shasum -a 256 "$auth_settle_reserve" | awk '{print $1}')"
+mv "$auth_settle_reserve" "$auth_dir/rulings/$auth_settle_reserve_digest"
+auth_settle_attach="$auth_dir/settlement-attach.json"
+jq --arg previous "$auth_settle_reserve_digest" '{schema:1,kind:"attach",captured_at:"2026-07-31T08:01:00Z",
+     previous_authority_digest:$previous,snapshot:.}' "$state" >"$auth_settle_attach"
+auth_settle_attach_digest="$(shasum -a 256 "$auth_settle_attach" | awk '{print $1}')"
+mv "$auth_settle_attach" "$auth_dir/rulings/$auth_settle_attach_digest"
 jq -n --arg run "$auth_run" \
-    '{run_id:$run,receipts:[{kind:"pass",file:"integration-r1-integrator"}],settlements:[],pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
-    >"$auth_record"
+    --arg reserve "integration-review-authority v1 reserve sha256=$auth_settle_reserve_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_settle_reserve_digest sha256=$auth_settle_reserve_digest]" \
+    --arg attach "integration-review-authority v1 attach sha256=$auth_settle_attach_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_settle_attach_digest sha256=$auth_settle_attach_digest]" \
+    '{run_id:$run,receipts:[{kind:"pass",file:"integration-r1-integrator"}],settlements:[],pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[{kind:"other",at:"2026-07-31T08:00:00Z",note:$reserve},{kind:"other",at:"2026-07-31T08:01:00Z",note:$attach}]}' \
+    >"$auth_dir/settlement-record.json"
+cp "$auth_dir/settlement-record.json" "$auth_record"
 mkdir -p "$auth_dir/passes" "$auth_dir/adjudications"
 jq -n --arg run "$auth_run" --arg head "$head_sha" --arg body "$(jq -r '.body' "${fixtures}/comment-77.json")" \
     '{schema:2,role:"integrator",status:"completed",head:$head,run:{run_id:$run,initiated_by:"human"},payload:{findings:[{id:"integration-r1-codex-cloud-1",body:$body,source_id:"77"}]}}' \
@@ -9753,9 +9770,7 @@ auth_validate "$auth_receipt"
 
 # The same supported settlement is accepted when its receipted source and
 # adjudication are retained independently of checker state.
-jq -n --arg run "$auth_run" \
-    '{run_id:$run,receipts:[{kind:"pass",file:"integration-r1-integrator"}],settlements:[],pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
-    >"$auth_record"
+cp "$auth_dir/settlement-record.json" "$auth_record"
 auth_validate "$auth_receipt"
 [ "$auth_rc" -eq 0 ] || fail "a receipted/adjudicated settlement was rejected: $auth_out"
 

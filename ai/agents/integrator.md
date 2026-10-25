@@ -746,8 +746,8 @@ check_out="$("$helper" check --state "$state" --actor-id 199175422 \
 ```
 
 Run this exact pair — **both lines, every time** — immediately before
-reading `$check_exit` below, including on attempt 2's repeat of this same
-snippet. `check_exit=0` first is load-bearing, not a default: a lone
+reading `$check_exit` below. An exit 12 returns to the owner; its attempt-2
+re-dispatch starts this pair afresh. `check_exit=0` first is load-bearing, not a default: a lone
 `check_exit=${check_exit:-0}` only fills in an *unset* variable, so if
 attempt 1 left `check_exit=12` (retry) and attempt 2's `check` then
 succeeds, `||` never fires and the stale `12` from attempt 1 survives
@@ -765,11 +765,12 @@ and the PR base. Stop; the orchestrator updates the checkout and
 re-dispatches. Do not trigger another review. The integrator never fetches,
 fast-forwards, or switches worktrees to recover. Keep the checker's detail in
 the report, not in `codex_cycle`.
-On **12 (retry)**, repeat the
-two-call reserve/read → literal broker trigger (including attach) procedure
-above, including step 1's assignments, then `check`, once more with `--attempt 2` against the **same** state
-and head — this is the one bounded retry your brief expects; do not retry a
-second time.
+On **12 (retry)**, return the retry observation without reserving, posting, or
+attaching anything. The run owner alone observes the full first window,
+reserves attempt 2 against the same state and head, posts through the broker,
+captures the new authority, then re-dispatches an integrator to poll it. This
+is the one bounded retry; a delegate never receives the owner token or creates
+uncaptured retry evidence.
 On **13 (escalate)**, **14**, **15**, or **2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.
@@ -988,8 +989,9 @@ any of them"); this section's `check` loop runs after all of them are out.
 
 **Every finder trigger runs the §4 order: reservation held → the
 `state,isDraft,headRefOid` read → trigger → attach.** That holds for the
-fresh cycle above, for its attempt-2 retry on exit 12 (re-run the same
-sequence with `--attempt 2`), and for a finder's zero-candidate reconcile
+fresh cycle above, for a run-owner attempt-2 retry on exit 12 (the owner
+re-runs the same sequence with `--attempt 2` before re-dispatching this role),
+and for a finder's zero-candidate reconcile
 path, whose reservation already exists and so enters at the read. The
 `reserve` exit codes mean what they mean for codex-cloud — 18 is re-run once
 and a second 18 is a blocker, any other non-zero posts no trigger — and any
