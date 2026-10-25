@@ -27,7 +27,9 @@
 #      from 12/13, which mean the reviewer's window elapsed with no verdict:
 #      nothing here says anything about the reviewer, so the caller retries
 #      the READ rather than the reviewer cycle, and a gate maps it to
-#      indeterminate-with-reason rather than to a not-clean failure.
+#      indeterminate-with-reason rather than to a not-clean failure. During
+#      `check`, a transient base-SHA freshness read failure also exits 16;
+#      permanent base-SHA failures and failures under other subcommands exit 2.
 #   17 not carried — `carry` only (harmon-init#752). The previously reviewed
 #      clean verdict could not be shown to attest this head, so a fresh cycle
 #      is required: reserve and trigger exactly as before. A normal negative
@@ -48,7 +50,8 @@
 # where a lag used to be exit 2, which is safe for any caller that treats a
 # non-zero `reserve` as "post no trigger" (every documented recipe does).
 # 19 is the shared freshness preflight's definite stale-ancestor refusal;
-# indeterminate freshness remains exit 2, and no state or trigger is written.
+# a transient base-SHA read during `check` exits 16, while other indeterminate
+# freshness remains exit 2; no state or trigger is written.
 #
 # `reserve` adds one code of its own (harmon-devkit#1189):
 #   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
@@ -920,6 +923,7 @@ write_state() {
 
 asset_freshness_check() {
     local freshness_status=0
+    local freshness_context=${3:-}
     if check_vendored_asset_freshness "$1" "$2" "$SCRIPT_DIR" "$timeout_bin"; then
         return 0
     else
@@ -929,6 +933,12 @@ asset_freshness_check() {
     19)
         printf 'codex-cloud-review: %s\n' "$asset_freshness_detail" >&2
         exit 19
+        ;;
+    16)
+        if [ "$freshness_context" = check ]; then
+            transient_read_failure "$asset_freshness_detail"
+        fi
+        die "$asset_freshness_detail"
         ;;
     *) die "$asset_freshness_detail" ;;
     esac
@@ -4013,7 +4023,7 @@ check)
     # the window closes.
     persisted_timeout_min=$(jq -r '.timeout_min // empty' "$state_file")
     resolve_timeout_min "$persisted_timeout_min"
-    asset_freshness_check "$state_pr" "$state_repo"
+    asset_freshness_check "$state_pr" "$state_repo" check
     persist_adopted_timeout
 
     provider_status=0

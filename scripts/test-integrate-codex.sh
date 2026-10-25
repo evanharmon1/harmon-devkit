@@ -110,6 +110,56 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
     if [[ "$*" == *baseRefOid* ]]; then
+        if [ -f "$GH_FIXTURES/fail-base-read-once" ]; then
+            rm -f "$GH_FIXTURES/fail-base-read-once"
+            base_read_error="$(cat "$GH_FIXTURES/base-read-error" 2>/dev/null || echo timeout124)"
+            case "$base_read_error" in
+                http404)
+                    echo 'GraphQL: Could not resolve to a PullRequest with the number of 493. (repository.pullRequest)' >&2
+                    exit 1
+                    ;;
+                http403)
+                    echo 'HTTP 403: Resource not accessible by integration' >&2
+                    exit 1
+                    ;;
+                http403ratelimit)
+                    echo 'HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes.' >&2
+                    exit 1
+                    ;;
+                http429)
+                    echo 'HTTP 429: Too Many Requests' >&2
+                    exit 1
+                    ;;
+                graphqlratelimit)
+                    echo 'GraphQL: API rate limit exceeded for user ID 1.' >&2
+                    exit 1
+                    ;;
+                graphqlratelimitalready)
+                    echo 'GraphQL: API rate limit already exceeded' >&2
+                    exit 1
+                    ;;
+                auth4)
+                    echo 'To get started with GitHub CLI, please run:  gh auth login' >&2
+                    exit 4
+                    ;;
+                timeout124) exit 124 ;;
+                http502)
+                    echo 'HTTP 502: Bad Gateway' >&2
+                    exit 1
+                    ;;
+                network)
+                    echo 'Post https://api.github.com/graphql: dial tcp: connection refused' >&2
+                    exit 1
+                    ;;
+                *)
+                    echo "unexpected base read failure fixture: $base_read_error" >&2
+                    exit 94
+                    ;;
+            esac
+        fi
+        if [ -n "${GH_DEBUG:-}" ]; then
+            echo 'GH_DEBUG: GET https://api.github.com/repos/example/repo/pulls/493' >&2
+        fi
         cat "$GH_FIXTURES/base-head"
         exit 0
     fi
@@ -430,6 +480,7 @@ write_defaults() {
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
+    rm -f "${fixtures}/fail-base-read-once"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
     rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
@@ -9403,8 +9454,119 @@ jq -e '.phase == "reserved" and .head == $head' \
     --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
     fail "current checker checkout did not reserve successfully"
 
-echo "==> stale checker check and carry refuse without changing state"
+echo "==> a successful base-SHA read ignores GH_DEBUG stderr"
+freshness_debug_state="${test_tmp}/freshness-debug-base.json"
+head_sha=$freshness_support_base
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+GH_DEBUG=api "$helper" reserve --state "$freshness_debug_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 \
+    >"${test_tmp}/freshness-debug-base.out" 2>&1 ||
+    fail "successful base-SHA read with GH_DEBUG stderr should reserve successfully: $(cat "${test_tmp}/freshness-debug-base.out")"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_debug_state" >/dev/null ||
+    fail "GH_DEBUG stderr contaminated the successful base-SHA read"
+
+echo "==> check treats a failed base-SHA read as transient and proceeds on the next poll"
 saved_state=$state
+state="${test_tmp}/freshness-transient-check.json"
+head_sha=$freshness_support_base
+new_cycle
+: >"${fixtures}/fail-base-read-once"
+run_check "$request_time"
+assert_status 16 transient-read
+[[ "$check_out" == *"cannot read PR base SHA"* ]] ||
+    fail "transient base-SHA read did not preserve its diagnostic: $check_out"
+run_check "$request_time"
+assert_status 11 pending
+
+echo "==> check distinguishes permanent and transient base-SHA read failures"
+for base_read_error in http404 http403 http403ratelimit http429 graphqlratelimit graphqlratelimitalready auth4 timeout124 http502 network; do
+    new_cycle
+    printf '%s\n' "$base_read_error" >"${fixtures}/base-read-error"
+    : >"${fixtures}/fail-base-read-once"
+    run_check "$request_time"
+    case "$base_read_error" in
+    http404 | http403 | auth4) expected_freshness_rc=2 ;;
+    http403ratelimit | http429 | graphqlratelimit | graphqlratelimitalready | timeout124 | http502 | network) expected_freshness_rc=16 ;;
+    esac
+    [ "$check_rc" -eq "$expected_freshness_rc" ] ||
+        fail "$base_read_error base-SHA failure should exit $expected_freshness_rc, got $check_rc: $check_out"
+    case "$base_read_error" in
+    http404)
+        [[ "$check_out" == *"HTTP 404"* && "$check_out" == *"Could not resolve to a PullRequest"* ]] ||
+            fail "404 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    http403)
+        [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"Resource not accessible"* ]] ||
+            fail "403 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    http403ratelimit)
+        [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"secondary rate limit"* ]] ||
+            fail "403 secondary-rate-limit diagnostic lost its status: $check_out"
+        ;;
+    http429)
+        [[ "$check_out" == *"HTTP 429"* && "$check_out" == *"Too Many Requests"* ]] ||
+            fail "429 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    graphqlratelimit)
+        [[ "$check_out" == *"API rate limit exceeded"* ]] ||
+            fail "GraphQL rate-limit diagnostic lost its detail: $check_out"
+        ;;
+    graphqlratelimitalready)
+        [[ "$check_out" == *"API rate limit already exceeded"* ]] ||
+            fail "GraphQL already-exceeded rate-limit diagnostic lost its detail: $check_out"
+        ;;
+    auth4)
+        [[ "$check_out" == *"gh exit 4"* && "$check_out" == *"gh auth login"* ]] ||
+            fail "gh auth base-SHA diagnostic lost its exit status: $check_out"
+        ;;
+    timeout124)
+        [[ "$check_out" == *"gh exit 124"* ]] ||
+            fail "timeout base-SHA diagnostic lost its exit status: $check_out"
+        ;;
+    http502)
+        [[ "$check_out" == *"HTTP 502"* && "$check_out" == *"Bad Gateway"* ]] ||
+            fail "502 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    network)
+        [[ "$check_out" == *"connection refused"* ]] ||
+            fail "network base-SHA diagnostic lost its connection detail: $check_out"
+        ;;
+    esac
+done
+rm -f "${fixtures}/base-read-error"
+
+echo "==> a transient base-SHA read failure under reserve remains indeterminate"
+freshness_reserve_failure_state="${test_tmp}/freshness-transient-reserve.json"
+printf '%s\n' http502 >"${fixtures}/base-read-error"
+: >"${fixtures}/fail-base-read-once"
+set +e
+freshness_reserve_failure_out=$("$helper" reserve \
+    --state "$freshness_reserve_failure_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)
+freshness_reserve_failure_rc=$?
+set -e
+[ "$freshness_reserve_failure_rc" -eq 2 ] ||
+    fail "transient base-SHA failure under reserve should exit 2, got $freshness_reserve_failure_rc: $freshness_reserve_failure_out"
+[ ! -e "$freshness_reserve_failure_state" ] ||
+    fail "reserve wrote state after a transient base-SHA failure"
+[[ "$freshness_reserve_failure_out" == *"HTTP 502"* ]] ||
+    fail "reserve failure did not preserve the transient read diagnostic: $freshness_reserve_failure_out"
+rm -f "${fixtures}/base-read-error"
+
+echo "==> check keeps malformed base-SHA data indeterminate"
+new_cycle
+printf '%s\n' 'not-a-sha' >"${fixtures}/base-head"
+run_check "$request_time"
+[ "$check_rc" -eq 2 ] ||
+    fail "malformed base-SHA data should remain exit 2, got $check_rc: $check_out"
+[[ "$check_out" == *"asset freshness indeterminate"* &&
+    "$check_out" == *"PR base SHA"*"is malformed"* ]] ||
+    fail "malformed base-SHA data did not keep its indeterminate diagnostic: $check_out"
+state=$saved_state
+
+echo "==> stale checker check and carry refuse without changing state"
 state="${test_tmp}/freshness-clean-cycle.json"
 git checkout -q "$freshness_support_base"
 head_sha=$freshness_support_base
