@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.63.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.62.1...v0.63.0) (2026-10-25)
+
+
+### Features
+
+* **dev-flow-support:** add the plan merge queue and the handed-off issue state ([#1639](https://github.com/evanharmon1/harmon-devkit/issues/1639)) ([91b6747](https://github.com/evanharmon1/harmon-devkit/commit/91b67471d6c4789c69b22c095ae5486500ae179c))
+
+## [0.62.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.62.0...v0.62.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **integrate:** align promotion IDs and reconciliation timestamps ([#1629](https://github.com/evanharmon1/harmon-devkit/issues/1629)) ([689a841](https://github.com/evanharmon1/harmon-devkit/commit/689a84151546c92ed037ba9f60f50d748c7bbba4))
+
 ## [0.62.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.61.0...v0.62.0) (2026-10-24)
 
 
