@@ -2913,10 +2913,14 @@ for classic_none in 'Branch not protected' 'Required status checks not enabled';
     assert_gate 0 pass promoted
 done
 
-echo "==> #1602 r4: workflow and code-scanning rules gate every check (REPRO-N/N2/O)"
-for required_source in workflows-none workflows-empty code_scanning required_deployments future_required_check; do
+echo "==> #1602 review r2: narrow only when every rule is understood (criterion 33)"
+for required_source in advisory workflows-none workflows-empty code_scanning required_deployments future_required_check; do
     write_defaults
     case "$required_source" in
+    advisory)
+        rule_type=none
+        required_name=advisory
+        ;;
     workflows-*)
         rule_type=workflows
         required_name='org-required / lint'
@@ -2931,12 +2935,15 @@ for required_source in workflows-none workflows-empty code_scanning required_dep
         ;;
     esac
     jq -cn --arg type "$rule_type" '[[
+      {type:"deletion"},{type:"non_fast_forward"},{type:"creation"},
+      {type:"required_linear_history"},
+      {type:"pull_request",parameters:{required_approving_review_count:1}},
       {type:"required_status_checks",parameters:{required_status_checks:[{context:"build"}]}},
-      {type:$type,parameters:(if $type == "workflows" then
+      (if $type == "none" then empty else {type:$type,parameters:(if $type == "workflows" then
         {do_not_enforce_on_create:false,workflows:[{path:".github/workflows/org-required.yml",repository_id:99,ref:"refs/heads/main"}]}
         elif $type == "code_scanning" then {code_scanning_tools:[{tool:"CodeQL",security_alerts_threshold:"high_or_higher",alerts_threshold:"errors"}]}
         elif $type == "required_deployments" then {required_deployment_environments:["production"]}
-        else {} end)}
+        else {} end)} end)
     ]]' >"${fixtures}/rules.pages.json"
     jq -cn --arg name "$required_name" '[{check_runs:[
       {name:"build",status:"completed",conclusion:"success"},
@@ -2947,11 +2954,21 @@ for required_source in workflows-none workflows-empty code_scanning required_dep
         printf '%s\n' 'gh: Branch not protected (HTTP 404)' >"${fixtures}/fail-diagnostic"
     fi
     run_gate
-    assert_gate 1 fail checks-failing
+    if [ "$required_source" = advisory ]; then
+        assert_gate 0 pass ready
+        jq -e '.reportable_checks.failing == ["advisory"]' <<<"$gate_out" >/dev/null ||
+            fail "realistic ruleset did not report its advisory failure"
+    else
+        assert_gate 1 fail checks-failing
+    fi
     jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
     mv "${fixtures}/p" "${fixtures}/pr-view.json"
     run_promoted
-    assert_gate 1 fail checks-failing
+    if [ "$required_source" = advisory ]; then
+        assert_gate 0 pass promoted
+    else
+        assert_gate 1 fail checks-failing
+    fi
 done
 
 echo "==> #1602 r2: union ruleset and classic requirements (REPRO-I)"
@@ -3102,21 +3119,17 @@ run_gate
 assert_gate 1 fail threads-unanswered
 grep -Fq '900' <<<"$gate_out" ||
     fail "threads-unanswered did not name the root: $gate_out"
-# Ruling 61a: neither a bot nor a maintainer can waive the agent reply.
-for resolver in reviewer-bot maintainer; do
-    jq -cn --arg resolver "$resolver" '[{data:{repository:{pullRequest:{reviewThreads:{
-      nodes:[{id:"T900",isResolved:true,resolvedBy:{login:$resolver},comments:{nodes:[{databaseId:900}]}}],
-      pageInfo:{hasNextPage:false,endCursor:null}
-    }}}}}]' >"${fixtures}/threads.pages.json"
-    jq '.isDraft=true' "${fixtures}/pr-view.json" >"${fixtures}/p"
-    mv "${fixtures}/p" "${fixtures}/pr-view.json"
-    run_gate
-    assert_gate 1 fail threads-unanswered
-    jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
-    mv "${fixtures}/p" "${fixtures}/pr-view.json"
-    run_promoted
-    assert_gate 1 fail threads-unanswered
-done
+# Ruling 61a: resolution cannot waive the agent reply.
+jq -cn '[{data:{repository:{pullRequest:{reviewThreads:{
+  nodes:[{id:"T900",isResolved:true,comments:{nodes:[{databaseId:900}]}}],
+  pageInfo:{hasNextPage:false,endCursor:null}
+}}}}}]' >"${fixtures}/threads.pages.json"
+run_gate
+assert_gate 1 fail threads-unanswered
+jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+mv "${fixtures}/p" "${fixtures}/pr-view.json"
+run_promoted
+assert_gate 1 fail threads-unanswered
 
 echo "==> an answered thread passes; a reviewer follow-up after the reply fails"
 write_defaults
@@ -3223,10 +3236,53 @@ for invalid in [[], [dict(root=900, resolved=False)] * 2]:
                thread_resolution=json.dumps(invalid))
     result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True)
     assert result.returncode != 0, "integrator producer accepted unknown resolution"
-flat = " ".join(section.split())
-assert 'return `status: blocked` with `payload.verdict: pending`' in flat, \
-    "agent posture must report a blocker when GraphQL is unavailable"
 PY
+
+echo "==> #1602 review r2: agent-posture fallback validates and preserves cycle evidence"
+write_defaults
+agent_clean="$(write_integrator_result agent-clean "$(codex_cycle_json 0)")"
+agent_pending="$(write_integrator_result agent-pending "$(codex_cycle_json 11)")"
+agent_escalate="$(write_integrator_result agent-escalate "$(codex_cycle_json 13)")"
+agent_disabled="$(write_integrator_result agent-disabled null)"
+python3 - "${repo_root}/ai/agents/integrator.md" "$validator" \
+    "$agent_clean" "$agent_pending" "$agent_escalate" "$agent_disabled" <<'PY_AGENT'
+from pathlib import Path
+import json
+import os
+import subprocess
+import sys
+
+section = Path(sys.argv[1]).read_text().split("## 5. Find what still needs a reply", 1)[1]
+marker = "# Agent-posture thread-resolution fallback, after §7 assembly."
+assert marker in section, "missing executable agent-posture fallback"
+command = section.split(marker, 1)[1].split("```", 1)[0]
+for path in map(Path, sys.argv[3:]):
+    original = json.loads(path.read_text())
+    # Preserve each finder cycle as well as the Codex cycle.
+    if original["payload"]["codex_cycle"] is not None:
+        finder = dict(original["payload"]["codex_cycle"], finder="gemini-cloud")
+        original["payload"]["finder_cycles"] = [finder]
+    for comments in [[], [dict(id=900, body="finding"), dict(id=901, in_reply_to_id=900, body="reply")]]:
+        original["payload"]["unanswered_thread_roots"] = ["800"] if comments else []
+        path.write_text(json.dumps(original))
+        env = dict(os.environ, comments=json.dumps([comments]), out_file=str(path),
+                   thread_blocker_id="integration-r1-human-100")
+        result = subprocess.run(["bash", "-e", "-c", command], env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        actual = json.loads(path.read_text())
+        assert actual["status"] == "blocked"
+        before, after = original["payload"], actual["payload"]
+        assert after["codex_cycle"] == before["codex_cycle"]
+        assert after.get("finder_cycles") == before.get("finder_cycles")
+        assert after["checks"] == before["checks"]
+        assert after["findings"][:-1] == before["findings"]
+        assert after["findings"][-1]["source_id"] == "thread-resolution-unavailable"
+        assert after["unanswered_thread_roots"] == (["800", "900"] if comments else [])
+        assert after["verdict"] == ("escalate" if before["verdict"] == "escalate" else "findings")
+        assert "applied_dispositions" not in after
+        validated = subprocess.run(["node", sys.argv[2], "envelope", str(path)], capture_output=True, text=True)
+        assert validated.returncode == 0, validated.stdout + validated.stderr
+PY_AGENT
 
 echo "==> #1602 r1: GraphQL-only, missing, duplicate and multi-page root mappings"
 for mapping in graphql-only resolved-only unknown unknown-flag duplicate pages; do

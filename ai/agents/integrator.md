@@ -1046,10 +1046,36 @@ own account since the newest reviewer activity in it,
 after your reply and have it stay hidden behind it:
 
 **Agent-posture GraphQL reads:** The agent posture has no GraphQL read
-path. In that posture, return `status: blocked` with `payload.verdict: pending`
-and a blocker explaining that thread resolution cannot be verified. Never
-report a clean pass or omit unanswered roots by skipping this read. Run the
-query only from the dev or bot posture, never through either GET-only wrapper.
+path. Preserve every collected cycle and its accepted evidence. Fetch all
+inline comments through the GET-only wrapper and conservatively report every
+root as unanswered. After §7's normal assembly, apply this fallback before
+validation: block the result and append the factual resolution-read failure
+as an operational finding, using a local source marker. Assign
+`thread_blocker_id` an unused `integration-r<integration_round>-human-<n>` ID.
+Keep an existing escalation; otherwise the new outstanding evidence makes
+the verdict `findings`, including when a collected cycle is clean. Do not use
+`payload.blocker` for this diagnostic: that field describes a draft-flip
+blocker. Never discard cycle data to manufacture a `pending` result.
+
+```sh
+# Agent-posture thread-resolution fallback, after §7 assembly.
+jq --argjson comments "$comments" --arg id "$thread_blocker_id" '
+  .status = "blocked" |
+  .payload.unanswered_thread_roots |=
+    (. + [$comments[][] | (.in_reply_to_id // .id) | tostring] | unique) |
+  .payload.findings += [{id:$id,
+    body:"Review-thread resolution cannot be verified: agent posture has no GraphQL read path.",
+    source_id:"thread-resolution-unavailable"}] |
+  .payload.verdict |= (if . == "clean" or . == "pending" then "findings" else . end) |
+  del(.payload.applied_dispositions)
+' "$out_file" >"$out_file.thread-blocked" &&
+  mv "$out_file.thread-blocked" "$out_file"
+```
+
+Even with no inline roots, the read failure remains explicit and blocks a
+clean result. Validate the full envelope as §7 requires. Run the following
+resolution query only from the dev or bot posture, never through either
+GET-only wrapper.
 
 ```sh
 thread_pages="$(gh api graphql --paginate --slurp \

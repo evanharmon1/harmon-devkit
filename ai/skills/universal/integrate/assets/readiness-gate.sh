@@ -1002,8 +1002,12 @@ assert_closing_linkage "$scalars" "initial snapshot"
 # rulesets. Missing or pending required checks are indeterminate. Other checks
 # are reported, never used to turn a handoff red. Without an explicit
 # required context, or when classic protection cannot be read, every reported
-# check gates. Only required_status_checks rules are understood well enough
-# to narrow: every other rule type requires every reported check.
+# check gates. Narrow only when every ruleset rule is a status-check rule or
+# is known to add no check requirement. Check-bearing and unknown types broaden.
+known_no_check_rules='["deletion","non_fast_forward","creation","update",
+    "required_linear_history","required_signatures","pull_request",
+    "commit_message_pattern","commit_author_email_pattern",
+    "committer_email_pattern","branch_name_pattern","tag_name_pattern"]'
 checks_summary='{"optional_failing":[]}'
 evaluate_checks() {
     local rules_pages required_checks explicit_required_rule classic_checks classic_payload
@@ -1021,7 +1025,9 @@ evaluate_checks() {
           then {context, app:(.integration_id // null)} else error("invalid required context") end
       ] | unique' <<<"$rules_pages" 2>/dev/null)" ||
         indeterminate checks-indeterminate "effective required status checks are malformed"
-    rules_known="$(jq -r 'all(.[][]; .type == "required_status_checks")' <<<"$rules_pages")"
+    rules_known="$(jq -r --argjson no_checks "$known_no_check_rules" '
+      all(.[][]; .type == "required_status_checks" or
+        (.type as $type | any($no_checks[]; . == $type)))' <<<"$rules_pages")"
     # Rulesets and classic protection can coexist. An unreadable classic
     # policy (including an ambiguous 404) cannot prove a check optional.
     classic_checks=null

@@ -152,9 +152,10 @@ Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-
 merge. In the readiness conditions below, "checks" means required status
 contexts from the union of rulesets and classic branch protection. With no
 required contexts, or if classic protection cannot be read, every reported
-check gates. Only the supported `required_status_checks` rule type permits
-narrowing; any other rule type gates every reported check, including
-`workflows`, `code_scanning`, `required_deployments` and unknown types.
+check gates. Narrow only when every ruleset rule is `required_status_checks`
+or a type known to add no check requirement (the single list in
+`readiness-gate.sh`). Check-bearing types (`workflows`, `code_scanning`,
+`required_deployments`) and unknown types gate every reported check.
 Report non-required failures;
 they do not gate the handoff.
 
@@ -1208,9 +1209,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `GET repos/{repo}/branches/{base}/protection/required_status_checks`
   (classic protection; Administration read). If classic protection cannot be
   read, including a 403 or ambiguous 404, or the union has no required
-  contexts, gate every reported check. Only rulesets whose rules are all
-  `required_status_checks` permit narrowing to a known, nonempty union.
-  Every other rule type gates every reported check. The latest run
+  contexts, gate every reported check. Narrow to a known, nonempty union only
+  when every ruleset rule is `required_status_checks` or is known to add no
+  check requirement (the single list in `readiness-gate.sh`). Check-bearing
+  and unknown types gate every reported check. The latest run
   of each required context on the exact head must have concluded successfully;
   skipped/neutral is non-failing. A pending or missing required check, an empty
   check list, or a failed rules/checks read is indeterminate. Non-required
@@ -2549,8 +2551,10 @@ that loops indefinitely:
    `GET repos/{repo}/branches/{base}/protection/required_status_checks`
    (classic protection; Administration read). A classic read error (including
    403 or ambiguous 404), or an empty union, gates every reported check.
-   Only rulesets whose rules are all `required_status_checks` permit narrowing
-   to a known, nonempty union. Every other rule type gates every reported check. The latest run
+   Narrow to a known, nonempty union only when every ruleset rule is
+   `required_status_checks` or is known to add no check requirement (the single
+   list in `readiness-gate.sh`). Check-bearing and unknown types gate every
+   reported check. The latest run
    of each required context on the exact head must have concluded successfully;
    skipped/neutral is non-failing. A pending or missing required check, an empty
    check list, or a failed rules/checks read is indeterminate. Non-required
