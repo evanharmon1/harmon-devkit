@@ -77,9 +77,7 @@ check_vendored_asset_freshness() {
         4) return 2 ;;
         esac
         if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+429 ]] ||
-            { [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+403 ]] &&
-                grep -Ei 'rate limit' <<<"$base_sha_error" >/dev/null; } ||
-            grep -Ei 'API rate limit exceeded' <<<"$base_sha_error" >/dev/null; then
+            grep -Ei 'rate limit' <<<"$base_sha_error" >/dev/null; then
             return 16
         fi
         if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+5[0-9][0-9] ]] ||

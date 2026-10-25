@@ -134,6 +134,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
                     echo 'GraphQL: API rate limit exceeded for user ID 1.' >&2
                     exit 1
                     ;;
+                graphqlratelimitalready)
+                    echo 'GraphQL: API rate limit already exceeded' >&2
+                    exit 1
+                    ;;
                 auth4)
                     echo 'To get started with GitHub CLI, please run:  gh auth login' >&2
                     exit 4
@@ -9477,14 +9481,14 @@ run_check "$request_time"
 assert_status 11 pending
 
 echo "==> check distinguishes permanent and transient base-SHA read failures"
-for base_read_error in http404 http403 http403ratelimit http429 graphqlratelimit auth4 timeout124 http502 network; do
+for base_read_error in http404 http403 http403ratelimit http429 graphqlratelimit graphqlratelimitalready auth4 timeout124 http502 network; do
     new_cycle
     printf '%s\n' "$base_read_error" >"${fixtures}/base-read-error"
     : >"${fixtures}/fail-base-read-once"
     run_check "$request_time"
     case "$base_read_error" in
     http404 | http403 | auth4) expected_freshness_rc=2 ;;
-    http403ratelimit | http429 | graphqlratelimit | timeout124 | http502 | network) expected_freshness_rc=16 ;;
+    http403ratelimit | http429 | graphqlratelimit | graphqlratelimitalready | timeout124 | http502 | network) expected_freshness_rc=16 ;;
     esac
     [ "$check_rc" -eq "$expected_freshness_rc" ] ||
         fail "$base_read_error base-SHA failure should exit $expected_freshness_rc, got $check_rc: $check_out"
@@ -9508,6 +9512,10 @@ for base_read_error in http404 http403 http403ratelimit http429 graphqlratelimit
     graphqlratelimit)
         [[ "$check_out" == *"API rate limit exceeded"* ]] ||
             fail "GraphQL rate-limit diagnostic lost its detail: $check_out"
+        ;;
+    graphqlratelimitalready)
+        [[ "$check_out" == *"API rate limit already exceeded"* ]] ||
+            fail "GraphQL already-exceeded rate-limit diagnostic lost its detail: $check_out"
         ;;
     auth4)
         [[ "$check_out" == *"gh exit 4"* && "$check_out" == *"gh auth login"* ]] ||

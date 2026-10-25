@@ -50,7 +50,8 @@
 # where a lag used to be exit 2, which is safe for any caller that treats a
 # non-zero `reserve` as "post no trigger" (every documented recipe does).
 # 19 is the shared freshness preflight's definite stale-ancestor refusal;
-# indeterminate freshness remains exit 2, and no state or trigger is written.
+# a transient base-SHA read during `check` exits 16, while other indeterminate
+# freshness remains exit 2; no state or trigger is written.
 #
 # `reserve` adds one code of its own (harmon-devkit#1189):
 #   18 head lagging — after waiting CODEX_RESERVE_HEAD_WAIT_SEC (default 30,
