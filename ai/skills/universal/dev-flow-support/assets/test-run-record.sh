@@ -885,25 +885,32 @@ case "$*" in
     printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
   *'pr view 493 --repo example/repo --json headRefOid,state'*)
     printf '{"state":"OPEN","headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
+  *'contents/agent-registry.json?ref='*)
+    cat "$(dirname "$0")/registry.b64" ;;
   *'repos/example/repo/issues/comments/200'*)
-    printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":12345}}' ;;
+    printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'repos/example/repo/issues/comments/201'*)
-    printf '%s\n' '{"id":201,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:21:00Z","user":{"id":12345}}' ;;
+    printf '%s\n' '{"id":201,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:21:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'repos/example/repo/commits/'*'/check-suites?per_page=100'*)
     printf '%s\n' '[{"check_suites":[]}]' ;;
   *'repos/example/repo/commits/'*)
     printf '%s\n' "{\"sha\":\"${CAPTURE_HEAD:?}\",\"commit\":{\"author\":{\"date\":\"2026-10-01T00:00:00Z\"},\"committer\":{\"date\":\"2026-10-01T00:00:00Z\"}}}" ;;
   *'repos/example/repo/issues/493/comments?per_page=100'*)
     printf '%s\n' '[[]]' ;;
-  *'api user'*) printf '%s\n' '{"id":12345}' ;;
+  *'api user'*) printf '%s\n' '{"id":37220977}' ;;
   *) printf 'unexpected gh command: %s\n' "$*" >&2; exit 1 ;;
 esac
 EOF
 chmod +x "$capture_bin/gh"
+base64 <"$asset_dir/../../../../../agent-registry.json" >"$capture_bin/registry.b64"
 capture_state="$tmp/capture-state.json"
 capture_base="$(git -C "$asset_dir/../../../../../" rev-parse HEAD)"
+# The production checker resolves the trusted finder registry at the captured
+# asset base.  Make that immutable source commit available in this isolated
+# fixture repository before exercising the canonical retry reconstruction.
+git -C "$repo" fetch -q "$asset_dir/../../../../../" "$capture_base"
 jq -n --arg head "$integration_head" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
-  charged_cycles:1,exempt_cycles:0,attempt:1,reserved_at:"2026-10-01T00:06:00Z"}' >"$capture_state"
+  charged_cycles:1,exempt_cycles:0,attempt:1,timeout_min:10,reserved_at:"2026-10-01T00:06:00Z"}' >"$capture_state"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
 # The capture input is still the integrator-owned mutable state file.  Rewrite

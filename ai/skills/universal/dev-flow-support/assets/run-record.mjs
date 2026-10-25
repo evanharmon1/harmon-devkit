@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
-import { authorityIdentity, authorityNote, retainedAuthorities, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -1724,7 +1724,78 @@ function ghJson(args) {
 // Observe the transition outside run.json's mutex.  The caller owns the slate
 // token and invokes this immediately after reserve/attach/carry; the retained
 // ruling, not this mutable source file, is later receipt authority.
-function observeAuthority(kind, source, repoDir, record, context, sourcePath) {
+function rederiveRetryReservation(source, record, context) {
+  let origin
+  try { origin = retainedCycleOrigin(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
+    throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
+  }
+  const scratch = mkdtempSync(join(tmpdir(), 'integration-retry-'))
+  try {
+    const scratchState = join(scratch, 'state.json')
+    writeFileSync(scratchState, `${JSON.stringify(origin)}\n`, { mode: 0o600 })
+    const args = [INTEGRATION_CHECKER, 'reserve', '--state', scratchState,
+      '--repo', origin.repo, '--pr', String(origin.pr), '--head', origin.head,
+      '--attempt', '2', '--timeout-min', String(origin.timeout_min)]
+    if (origin.run_id) args.push('--run-id', origin.run_id)
+    if (origin.review_trigger) args.push('--review-trigger', origin.review_trigger)
+    if (origin.integration_exempt_cap != null) args.push('--integration-exempt-cap', String(origin.integration_exempt_cap))
+    execFileSync('bash', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    const reserved = JSON.parse(readFileSync(scratchState, 'utf8'))
+    // The canonical replay decides whether the original first window permits
+    // attempt 2.  Its scratch reservation is necessarily later than the real
+    // owner reservation, so preserve only that already-observed transition
+    // timestamp for the subsequent exact-trigger freshness check; it is never
+    // a first-window or receipt control.
+    if (typeof source.reserved_at === 'string') reserved.reserved_at = source.reserved_at
+    return reserved
+  } catch (error) {
+    throw new Refusal(`retry reservation did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+}
+
+function rederiveCarry(source, repoDir, record, context) {
+  if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
+  const target = source?.carry?.attests_head
+  if (typeof target !== 'string' || target === '') throw new Refusal('carry authority has no claimed attested head')
+  let predecessor
+  try { predecessor = retainedCarryPredecessor(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
+    // The strictly authenticated legacy r1 is the one non-capture origin.
+    // validateAuthority proves that narrow recovery path after observation.
+    if ((retainedAuthorities(record, { common: context.common, runId: record.run_id }).length === 0)) predecessor = source
+    else throw new Refusal(`carry authority has no immutable predecessor controls: ${error.message}`)
+  }
+  const scratch = mkdtempSync(join(tmpdir(), 'integration-carry-'))
+  try {
+    const scratchState = join(scratch, 'state.json')
+    writeFileSync(scratchState, `${JSON.stringify(predecessor)}\n`, { mode: 0o600 })
+    const carryArgs = [INTEGRATION_CHECKER, 'carry', '--state', scratchState, '--head', target, '--repo-dir', repoDir]
+    if (predecessor.run_id) carryArgs.push('--run-id', predecessor.run_id)
+    execFileSync('bash', carryArgs, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    let exit = 0, output = ''
+    try {
+      output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', scratchState,
+        '--actor-id', '199175422', '--repo-dir', repoDir, '--read-only'], {
+        encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      exit = error.status
+      output = `${error.stdout ?? ''}`
+      if (exit !== 10) throw new Refusal(`carry authority canonical proof did not re-derive: ${(error.stderr || output || error.message).trim()}`)
+    }
+    try { JSON.parse(output.trim()) } catch {
+      throw new Refusal('carry authority canonical proof returned no machine-readable observation')
+    }
+    // Exit 10 preserves a live finding for ordinary receipt/adjudication; it
+    // proves a carry transition but never becomes a clean verdict here.
+    return JSON.parse(readFileSync(scratchState, 'utf8'))
+  } catch (error) {
+    if (error instanceof Refusal) throw error
+    throw new Refusal(`carry authority did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+}
+
+function observeAuthority(kind, source, repoDir, record, context) {
+  if (kind === 'reserve' && Number(source.attempt) === 2) source = rederiveRetryReservation(source, record, context)
   if (kind === 'attach') {
     let reservation
     try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
@@ -1771,29 +1842,11 @@ function observeAuthority(kind, source, repoDir, record, context, sourcePath) {
     }
     return attached
   }
+  if (kind === 'carry') source = rederiveCarry(source, repoDir, record, context)
   const expectedHead = source?.carry?.attests_head ?? source?.head
   const pr = ghJson(['pr', 'view', String(source?.pr), '--repo', source?.repo ?? '', '--json', 'state,isDraft,headRefOid'])
   if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== expectedHead) {
     throw new Refusal('integration review authority must observe an open draft on the captured head')
-  }
-  if (kind === 'carry') {
-    if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
-    let exit = 0, output = ''
-    try {
-      output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', sourcePath,
-        '--actor-id', '199175422', '--repo-dir', repoDir, '--read-only'], {
-        encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
-      })
-    } catch (error) {
-      exit = error.status
-      output = `${error.stdout ?? ''}`
-      if (exit !== 10) throw new Refusal(`carry authority canonical proof did not re-derive: ${(error.stderr || output || error.message).trim()}`)
-    }
-    try { JSON.parse(output.trim()) } catch {
-      throw new Refusal('carry authority canonical proof returned no machine-readable observation')
-    }
-    // Exit 10 proves the carry and preserves its current finding for ordinary
-    // receipt/adjudication.  It is never interpreted here as a clean verdict.
   }
   return source
 }
@@ -1817,7 +1870,7 @@ function captureIntegrationReviewAuthority(args) {
   const priorRecord = readJson(canonical, 'run record')
   const previousAuthorityDigest = retainedAuthorities(priorRecord, { common, runId }).at(-1)?.digest ?? null
   const state = observeAuthority(kind, structuredClone(source), args['repo-dir'], priorRecord,
-    { common, runId }, args.state)
+    { common, runId })
   const temporary = join(mkdtempSync(join(tmpdir(), 'integration-authority-')), 'authority.json')
   try {
     writeFileSync(temporary, `${JSON.stringify({ schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }, null, 2)}\n`, { mode: 0o600 })

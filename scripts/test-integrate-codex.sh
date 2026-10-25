@@ -437,11 +437,13 @@ write_defaults() {
 }
 
 new_cycle() {
+    local timeout_args=()
+    [ -z "${1:-}" ] || timeout_args=(--timeout-min "$1")
     write_defaults
     rm -f "$state" "${state%.json}.spend.json"
     "$helper" reserve \
         --state "$state" --repo example/repo --pr 493 \
-        --head "$head_sha" --attempt 1 >/dev/null
+        --head "$head_sha" --attempt 1 "${timeout_args[@]}" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' \
         "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -8701,6 +8703,8 @@ grep -Fq 'refusing an uncontrolled duplicate trigger for this head' <<<"$rerun_o
 # remediation pushes so far (omitted: no --remediation). Leaves an attached
 # run-a cycle whose finder has already reacted +1.
 ci_cycle() {
+    local timeout_args=()
+    [ -z "${5:-}" ] || timeout_args=(--timeout-min "$5")
     write_defaults
     rm -f "$state" "${state%.json}.spend.json"
     ci_exempt_flag=
@@ -8708,7 +8712,7 @@ ci_cycle() {
     [ -z "${3:-}" ] || ci_exempt_flag="$ci_exempt_flag --remediation $3"
     # shellcheck disable=SC2086 # optional flag pairs, deliberately split
     "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-        --attempt 1 --run-id "${4:-run-a}" --integration-cap 4 $ci_exempt_flag \
+        --attempt 1 --run-id "${4:-run-a}" --integration-cap 4 "${timeout_args[@]}" $ci_exempt_flag \
         --review-trigger "$1" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -9480,7 +9484,7 @@ auth_run='run-1159-checker-auth'
 # global. Its copied checker therefore needs the actual fixture checkout HEAD;
 # the production checker’s different source-checkout anchor is set below.
 head_sha="$(git -C "$test_repo" rev-parse HEAD)"
-new_cycle
+new_cycle 15
 jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
     '[[{id:9001,user:{id:$id,login:$login,type:"User"},
         content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
@@ -9703,7 +9707,7 @@ echo "==> receipt authentication accepts only independently retained non-thread 
 # the retained orchestration record documents the matching disposition.  This
 # keeps the regression on the real checker with its stubbed GitHub transport;
 # it does not manufacture a state entry by editing JSON.
-new_cycle
+new_cycle 15
 base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
 write_badged_comment 77
 run_check '2026-07-31T08:01:00Z'
@@ -9814,7 +9818,7 @@ echo "==> real-checker receipt authentication refuses altered accepted IDs, coun
 auth_ci_split_case() {
     local trigger="$1" remediation="$2" label="$3" reserve digest attach_digest
     base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
-    ci_cycle "$trigger" 4 "$remediation" "$auth_run"
+    ci_cycle "$trigger" 4 "$remediation" "$auth_run" 15
     base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
     git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
     reserve="$auth_dir/ci-${label}-reserve.json"

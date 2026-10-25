@@ -92,17 +92,35 @@ export function sameAuthoritySnapshot(left, right) {
 // Attachment is produced by the canonical checker from this retained state.
 // These fields identify the request control tuple after that transition.  The
 // checker alone may change requires_full_window as it reconstructs the trigger.
-function reservationControls(state) {
+function cycleIdentity(state) {
   return {
     run_id: state?.run_id ?? null,
     repo: state?.repo,
     pr: state?.pr,
     head: state?.head,
-    charged_cycles: state?.charged_cycles,
-    exempt_cycles: state?.exempt_cycles,
-    attempt: state?.attempt,
+    cycle: Number(state?.charged_cycles) + Number(state?.exempt_cycles),
     finder: state?.finder ?? null,
-    reserved_at: state?.reserved_at ?? null,
+  }
+}
+
+// Request controls belong to an owner-created cycle, not the integrator's
+// mutable checker file.  CI's charged/exempt split is deliberately absent:
+// the canonical checker recomputes it from current CI evidence at admission.
+function requestControls(state) {
+  return {
+    ...cycleIdentity(state),
+    attempt: state?.attempt,
+    first_trigger_comment_id: state?.first_trigger_comment_id ?? null,
+    trigger_comment_id: state?.trigger_comment_id ?? null,
+    requested_at: state?.requested_at ?? null,
+    timeout_min: state?.timeout_min ?? null,
+  }
+}
+
+function reservationControls(state) {
+  return {
+    ...cycleIdentity(state),
+    attempt: state?.attempt,
     timeout_min: state?.timeout_min ?? null,
   }
 }
@@ -110,6 +128,30 @@ function reservationControls(state) {
 function matchingReserve(prior, state) {
   return prior.find((entry) => entry.kind === 'reserve' &&
     authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(state)) ?? null
+}
+
+function matchingOriginAttach(prior, state) {
+  const matches = prior.filter((entry) => entry.kind === 'attach' &&
+    Number(entry.authority.snapshot.attempt) === 1 &&
+    stable(cycleIdentity(entry.authority.snapshot)) === stable(cycleIdentity(state)))
+  if (matches.length !== 1) return null
+  return matches[0]
+}
+
+function matchingCarryPredecessor(prior, state) {
+  const from = state?.carry?.from_head
+  const matches = prior.filter((entry) => {
+    if (!['attach', 'carry'].includes(entry.kind)) return false
+    const predecessor = entry.authority.snapshot
+    const attested = predecessor.carry?.attests_head ?? predecessor.head
+    return attested === from &&
+      stable(cycleIdentity(predecessor)) === stable(cycleIdentity(state))
+  })
+  return matches.length === 1 ? matches[0] : null
+}
+
+function hasOwnerTimeout(state) {
+  return Number.isSafeInteger(state?.timeout_min) && state.timeout_min >= 10
 }
 
 function validLegacyOriginReceipt(record, state, { common, runId }) {
@@ -144,6 +186,22 @@ export function retainedReservation(record, state, options) {
   return reserve.authority.snapshot
 }
 
+// The first retained attachment is the cycle's immutable owner origin.  It is
+// selected by cycle identity rather than globally: later ordinary heads and
+// cycles retain their own first request, and current CI settlement may still
+// redistribute the charged/exempt pair without changing that identity.
+export function retainedCycleOrigin(record, state, options) {
+  const origin = matchingOriginAttach(retainedAuthorities(record, options), state)
+  if (!origin) throw new Error('no retained first attachment matches this review cycle origin')
+  return origin.authority.snapshot
+}
+
+export function retainedCarryPredecessor(record, state, options) {
+  const predecessor = matchingCarryPredecessor(retainedAuthorities(record, options), state)
+  if (!predecessor) throw new Error('no retained carry predecessor matches this review cycle origin')
+  return predecessor.authority.snapshot
+}
+
 export function validateAuthority(authority, prior = [], record = null, options = null) {
   const { kind, snapshot } = authority ?? {}
   if (!['reserve', 'attach', 'carry'].includes(kind)) throw new Error('unknown integration review authority kind')
@@ -154,6 +212,16 @@ export function validateAuthority(authority, prior = [], record = null, options 
   if (kind === 'reserve') {
     if (snapshot.phase !== 'reserved' || snapshot.trigger_comment_id != null) {
       throw new Error('reserve authority must snapshot an un-attached checker reservation')
+    }
+    if (!hasOwnerTimeout(snapshot)) {
+      throw new Error('reserve authority requires an explicit owner timeout of at least 10 minutes')
+    }
+    if (Number(snapshot.attempt) === 2) {
+      const origin = matchingOriginAttach(prior, snapshot)
+      if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
+          Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min)) {
+        throw new Error('retry reserve authority does not preserve the retained first-request controls')
+      }
     }
     return
   }
@@ -168,27 +236,29 @@ export function validateAuthority(authority, prior = [], record = null, options 
     const priorFirst = reserve.authority.snapshot.first_trigger_comment_id
     if (priorFirst != null && Number(snapshot.first_trigger_comment_id) !== Number(priorFirst))
       throw new Error('attach authority rewrites the retained first-request identity')
-    if (Number(snapshot.attempt) === 2 && !POSITIVE.test(String(snapshot.first_trigger_comment_id ?? '')))
-      throw new Error('retry attach authority has no retained first-request identity')
+    if (Number(snapshot.attempt) === 2) {
+      const origin = matchingOriginAttach(prior, snapshot)
+      if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
+          Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min)) {
+        throw new Error('retry attach authority does not preserve the retained first-request controls')
+      }
+    }
     return
   }
   const carry = snapshot.carry
   if (!carry || !SHA40.test(carry.from_head ?? '') || !SHA40.test(carry.attests_head ?? '')) {
     throw new Error('carry authority has no complete origin/attested-head proof')
   }
-  const origin = snapshot.head
-  const predecessor = prior.some((entry) => {
-    const state = entry.authority.snapshot
-    const attested = state.carry?.attests_head ?? state.head
-    return ['attach', 'carry'].includes(entry.kind) &&
-      (carry.from_head === origin ? state.head === origin : attested === carry.from_head)
-  })
+  const predecessor = matchingCarryPredecessor(prior, snapshot)
   // An already admitted clean legacy r1 is the one non-capture origin.  It
   // can seed only the first carry; every later carry remains capture chained.
-  const legacyOrigin = prior.length === 0 && carry.from_head === origin &&
+  const legacyOrigin = prior.length === 0 && carry.from_head === snapshot.head &&
     record && options && validLegacyOriginReceipt(record, snapshot, options)
   if (!predecessor && !legacyOrigin) {
     throw new Error('carry authority has no retained origin or immediate predecessor authority')
+  }
+  if (predecessor && stable(requestControls(predecessor.authority.snapshot)) !== stable(requestControls(snapshot))) {
+    throw new Error('carry authority does not preserve the retained predecessor request controls')
   }
 }
 

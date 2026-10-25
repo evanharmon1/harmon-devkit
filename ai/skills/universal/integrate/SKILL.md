@@ -1336,8 +1336,14 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   token, run/slate/session, the checker state, and `--authority-kind reserve|attach|carry`
   (plus `--repo-dir` for carry). That command observes the open draft and exact
   head, verifies the owner-posted attachment or re-derives carry, then retains
-  the complete checker control snapshot as an immutable ruling linked to the
-  preceding capture. It does no network work under the run mutex. If a crash or
+  the canonical transition derived from that cycle's immutable first owner
+  attachment. The origin is keyed by run, PR, original head, cycle ordinal,
+  and finder; current CI's charged/exempt split and independently corroborated
+  settlements remain live observations. Before any owner-captured `reserve`,
+  choose and pass an explicit numeric `--timeout-min` (at least 10) so the
+  polling state and retained authority share one window. The checker's generic
+  unset-timeout adoption remains for legacy recovery, never a new owner
+  capture. It does no network work under the run mutex. If a crash or
   concurrent state change prevents that capture, retry the owner transition or
   leave the receipt blocked; do not admit an integrator result from mutable
   state. The dispatch brief gives the integrator this captured cycle only for

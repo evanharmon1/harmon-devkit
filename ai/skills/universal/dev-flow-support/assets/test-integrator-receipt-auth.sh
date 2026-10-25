@@ -18,9 +18,9 @@ const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
 const runId = 'run', runRoot = join(common, 'dev-flow-v2', 'runs', runId)
 mkdirSync(join(runRoot, 'rulings'), { recursive: true })
-const state = { repo: 'example/repo', pr: 1, head: h1, phase: 'attached', trigger_comment_id: '200', charged_cycles: 1, exempt_cycles: 0, attempt: 1 }
+const state = { repo: 'example/repo', pr: 1, head: h1, phase: 'attached', trigger_comment_id: '200', first_trigger_comment_id: '200', requested_at: '2026-01-01T00:01:00Z', timeout_min: 15, charged_cycles: 1, exempt_cycles: 0, attempt: 1 }
 const reserve = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:00:00Z', previous_authority_digest: null,
-  snapshot: { ...state, phase: 'reserved', trigger_comment_id: null } }
+  snapshot: { ...state, phase: 'reserved', trigger_comment_id: null, first_trigger_comment_id: null, requested_at: null } }
 const reserveBytes = Buffer.from(`${JSON.stringify(reserve)}\n`), reserveDigest = digestBytes(reserveBytes)
 writeFileSync(join(runRoot, 'rulings', reserveDigest), reserveBytes)
 const attach = { schema: 1, kind: 'attach', captured_at: '2026-01-01T00:01:00Z', previous_authority_digest: reserveDigest, snapshot: state }
@@ -45,6 +45,12 @@ assert.equal(retainedAuthorities(record, { common, runId }).length, 4)
 assert.equal(authorityForEnvelope(record, envelope, { common, runId }).digest, attachDigest)
 assert.throws(() => authorityForEnvelope(record, { ...envelope, head: 'd'.repeat(40) }, { common, runId }), /no retained owner authority/)
 assert.equal(authorityForEnvelope(record, { ...envelope, head: h3 }, { common, runId }).digest, carry3Digest)
+assert.doesNotThrow(() => validateAuthority({ ...carry2, snapshot: { ...carry2.snapshot, charged_cycles: 0, exempt_cycles: 1 } },
+  [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'attach', digest: attachDigest, authority: attach }], record, { common, runId }))
+assert.throws(() => validateAuthority({ ...carry2, snapshot: { ...carry2.snapshot, first_trigger_comment_id: '50' } },
+  [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'attach', digest: attachDigest, authority: attach }], record, { common, runId }), /predecessor request controls/)
+assert.throws(() => validateAuthority({ ...carry2, snapshot: { ...carry2.snapshot, requested_at: '2025-12-31T23:00:00Z' } },
+  [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'attach', digest: attachDigest, authority: attach }], record, { common, runId }), /predecessor request controls/)
 assert.equal(passAttestsCheckerCycle({ head: h2, payload: { codex_cycle: { carried: { origin_head: h1, attests_head: h2 } } } },
   { head: h1, carry: { attests_head: h3 } }), true)
 assert.equal(passAttestsCheckerCycle({ head: h2, payload: { codex_cycle: { carried: { origin_head: h1, attests_head: h3 } } } },
@@ -83,5 +89,10 @@ const legacyCarry2 = { schema: 1, kind: 'carry', captured_at: '2026-01-01T00:01:
   snapshot: { ...legacyState, carry: { from_head: h2, attests_head: h3 } } }
 const legacyPredecessor = [{ kind: 'carry', digest: 'd'.repeat(64), authority: legacyCarry }]
 assert.doesNotThrow(() => validateAuthority(legacyCarry2, legacyPredecessor, legacyRecord, legacyOptions))
+const retryReserve = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:02:00Z', previous_authority_digest: attachDigest,
+  snapshot: { ...state, phase: 'reserved', attempt: 2, trigger_comment_id: null, requested_at: null } }
+const retryPrior = [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'attach', digest: attachDigest, authority: attach }]
+assert.doesNotThrow(() => validateAuthority(retryReserve, retryPrior, record, { common, runId }))
+assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, first_trigger_comment_id: '50' } }, retryPrior, record, { common, runId }), /retained first-request controls/)
 console.log('integrator owner authority authentication OK')
 NODE
