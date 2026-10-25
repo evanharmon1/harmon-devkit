@@ -112,7 +112,34 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     if [[ "$*" == *baseRefOid* ]]; then
         if [ -f "$GH_FIXTURES/fail-base-read-once" ]; then
             rm -f "$GH_FIXTURES/fail-base-read-once"
-            exit 94
+            base_read_error="$(cat "$GH_FIXTURES/base-read-error" 2>/dev/null || echo timeout124)"
+            case "$base_read_error" in
+                http404)
+                    echo 'GraphQL: Could not resolve to a PullRequest with the number of 493. (repository.pullRequest)' >&2
+                    exit 1
+                    ;;
+                http403)
+                    echo 'HTTP 403: Resource not accessible by integration' >&2
+                    exit 1
+                    ;;
+                auth4)
+                    echo 'To get started with GitHub CLI, please run:  gh auth login' >&2
+                    exit 4
+                    ;;
+                timeout124) exit 124 ;;
+                http502)
+                    echo 'HTTP 502: Bad Gateway' >&2
+                    exit 1
+                    ;;
+                network)
+                    echo 'Post https://api.github.com/graphql: dial tcp: connection refused' >&2
+                    exit 1
+                    ;;
+                *)
+                    echo "unexpected base read failure fixture: $base_read_error" >&2
+                    exit 94
+                    ;;
+            esac
         fi
         cat "$GH_FIXTURES/base-head"
         exit 0
@@ -9420,6 +9447,65 @@ assert_status 16 transient-read
     fail "transient base-SHA read did not preserve its diagnostic: $check_out"
 run_check "$request_time"
 assert_status 11 pending
+
+echo "==> check distinguishes permanent and transient base-SHA read failures"
+for base_read_error in http404 http403 auth4 timeout124 http502 network; do
+    new_cycle
+    printf '%s\n' "$base_read_error" >"${fixtures}/base-read-error"
+    : >"${fixtures}/fail-base-read-once"
+    run_check "$request_time"
+    case "$base_read_error" in
+    http404 | http403 | auth4) expected_freshness_rc=2 ;;
+    timeout124 | http502 | network) expected_freshness_rc=16 ;;
+    esac
+    [ "$check_rc" -eq "$expected_freshness_rc" ] ||
+        fail "$base_read_error base-SHA failure should exit $expected_freshness_rc, got $check_rc: $check_out"
+    case "$base_read_error" in
+    http404)
+        [[ "$check_out" == *"HTTP 404"* && "$check_out" == *"Could not resolve to a PullRequest"* ]] ||
+            fail "404 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    http403)
+        [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"Resource not accessible"* ]] ||
+            fail "403 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    auth4)
+        [[ "$check_out" == *"gh exit 4"* && "$check_out" == *"gh auth login"* ]] ||
+            fail "gh auth base-SHA diagnostic lost its exit status: $check_out"
+        ;;
+    timeout124)
+        [[ "$check_out" == *"gh exit 124"* ]] ||
+            fail "timeout base-SHA diagnostic lost its exit status: $check_out"
+        ;;
+    http502)
+        [[ "$check_out" == *"HTTP 502"* && "$check_out" == *"Bad Gateway"* ]] ||
+            fail "502 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    network)
+        [[ "$check_out" == *"connection refused"* ]] ||
+            fail "network base-SHA diagnostic lost its connection detail: $check_out"
+        ;;
+    esac
+done
+rm -f "${fixtures}/base-read-error"
+
+echo "==> a transient base-SHA read failure under reserve remains indeterminate"
+freshness_reserve_failure_state="${test_tmp}/freshness-transient-reserve.json"
+printf '%s\n' http502 >"${fixtures}/base-read-error"
+: >"${fixtures}/fail-base-read-once"
+set +e
+freshness_reserve_failure_out=$("$helper" reserve \
+    --state "$freshness_reserve_failure_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)
+freshness_reserve_failure_rc=$?
+set -e
+[ "$freshness_reserve_failure_rc" -eq 2 ] ||
+    fail "transient base-SHA failure under reserve should exit 2, got $freshness_reserve_failure_rc: $freshness_reserve_failure_out"
+[ ! -e "$freshness_reserve_failure_state" ] ||
+    fail "reserve wrote state after a transient base-SHA failure"
+[[ "$freshness_reserve_failure_out" == *"HTTP 502"* ]] ||
+    fail "reserve failure did not preserve the transient read diagnostic: $freshness_reserve_failure_out"
+rm -f "${fixtures}/base-read-error"
 
 echo "==> check keeps malformed base-SHA data indeterminate"
 new_cycle

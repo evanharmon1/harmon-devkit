@@ -9,8 +9,10 @@
 #
 # check_vendored_asset_freshness PR REPO SCRIPT_DIR TIMEOUT_BIN returns:
 #   0  checkout is not an ancestor of the base, or the relevant asset bytes match
-#   2  indeterminate; details are stored in asset_freshness_detail
-#   16 the remote base-SHA read failed; the caller decides whether to retry
+#   2  indeterminate or permanent base-SHA read failure; details are stored in
+#      asset_freshness_detail
+#   16 transient remote base-SHA read failure; the caller decides whether to
+#      retry
 #   19 checkout is an ancestor and the relevant asset bytes differ
 
 asset_freshness_helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -20,6 +22,7 @@ asset_freshness_detail=
 check_vendored_asset_freshness() {
     local target_pr=$1 target_repo=$2 script_dir=$3 timeout_bin=$4
     local checkout_root checkout_head base_sha support_dir integrate_path support_path grafts_path
+    local base_sha_status base_sha_error base_sha_status_detail
     local probe probe_status
 
     asset_freshness_detail=
@@ -47,11 +50,33 @@ check_vendored_asset_freshness() {
         asset_freshness_detail="asset freshness indeterminate: cannot resolve checkout HEAD in $checkout_root"
         return 2
     }
-    base_sha=$(run_gh pr view "$target_pr" --repo "$target_repo" \
-        --json baseRefOid --jq .baseRefOid 2>/dev/null) || {
-        asset_freshness_detail="asset freshness base-SHA read failed: cannot read PR base SHA for $target_repo#$target_pr (checkout HEAD $checkout_head)"
-        return 16
-    }
+    if base_sha=$(run_gh pr view "$target_pr" --repo "$target_repo" \
+        --json baseRefOid --jq .baseRefOid 2>&1); then
+        :
+    else
+        base_sha_status=$?
+        base_sha_error=$base_sha
+        if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+([0-9]{3}) ]]; then
+            base_sha_status_detail="HTTP ${BASH_REMATCH[1]}"
+        elif [[ "$base_sha_error" == *"Could not resolve to a PullRequest"* ]]; then
+            base_sha_status_detail="HTTP 404 (GraphQL)"
+        else
+            base_sha_status_detail="gh exit $base_sha_status"
+        fi
+        asset_freshness_detail="asset freshness base-SHA read failed ($base_sha_status_detail): cannot read PR base SHA for $target_repo#$target_pr (checkout HEAD $checkout_head); gh stderr: ${base_sha_error:-<empty>}"
+
+        case "$base_sha_status" in
+        124 | 137) return 16 ;;
+        4) return 2 ;;
+        esac
+        if [[ "$base_sha_error" =~ [Hh][Tt][Tt][Pp][[:space:]]+5[0-9][0-9] ]] ||
+            grep -Ei \
+                '(dial tcp|connection (refused|reset|timed out|closed)|network is unreachable|no such host|temporary failure in name resolution|TLS handshake timeout|i/o timeout|context deadline exceeded|unexpected EOF)' \
+                <<<"$base_sha_error" >/dev/null; then
+            return 16
+        fi
+        return 2
+    fi
     [[ "$base_sha" =~ ^[0-9a-fA-F]{40}$ ]] || {
         asset_freshness_detail="asset freshness indeterminate: PR base SHA for $target_repo#$target_pr is malformed (checkout HEAD $checkout_head)"
         return 2

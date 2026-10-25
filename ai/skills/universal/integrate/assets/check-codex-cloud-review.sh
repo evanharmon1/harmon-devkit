@@ -27,7 +27,9 @@
 #      from 12/13, which mean the reviewer's window elapsed with no verdict:
 #      nothing here says anything about the reviewer, so the caller retries
 #      the READ rather than the reviewer cycle, and a gate maps it to
-#      indeterminate-with-reason rather than to a not-clean failure.
+#      indeterminate-with-reason rather than to a not-clean failure. During
+#      `check`, a transient base-SHA freshness read failure also exits 16;
+#      permanent base-SHA failures and failures under other subcommands exit 2.
 #   17 not carried — `carry` only (harmon-init#752). The previously reviewed
 #      clean verdict could not be shown to attest this head, so a fresh cycle
 #      is required: reserve and trigger exactly as before. A normal negative
