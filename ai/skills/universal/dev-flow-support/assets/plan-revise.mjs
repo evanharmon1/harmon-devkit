@@ -9,6 +9,9 @@
 //   plan-revise.mjs expand --slate ID --session ID --lane ID --path PATH --reason TEXT
 //   plan-revise.mjs release --slate ID --session ID --issue N --lane ID --path PATH... --reason TEXT
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS]
+//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT
+//   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
+// Queue-order input: {issues: [N, ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
 // Genesis input is planContent, with overlaps supplying resolution/dependency decisions;
 // paths are computed. It requires a held reservation and never acquires a lock.
@@ -24,13 +27,16 @@
 //
 // Appends one revision for a default-branch move: `base_sha` becomes the new
 // base, every `--done` issue keeps its verified record as `verdict: "done"`
-// (orchestrate § Planning step 2: never erase a verdict) and leaves every
-// dispatch structure — waves, lanes, lane_profiles, overlaps — and a wave the
-// removal empties is dropped with the later waves renumbered in order. The
+// (orchestrate § Planning step 2: never erase a verdict) and is removed from
+// waves, lanes, lane_profiles, overlaps and merge_queue.
+// Waiting handed-off successors are queued when their predecessors complete.
+// An emptied wave is dropped, with later waves renumbered in order. The
 // revision is chained (seq, prev_digest, digest over the canonical
 // {seq, plan, at, reason, prev_digest}) and published through the candidate,
 // `validate-result-schemas.mjs plan`, rename, readback sequence.
 //
+// Handed-off issues are excluded from the live set below: their candidate
+// paths do not block a base move, and eligible waiting handoffs queue mechanically.
 // Everything that is orchestrator judgment is refused, naming what needs it,
 // rather than written:
 //   - the commits between the old and new base touch a live lane's effective
@@ -38,7 +44,7 @@
 //     may need a rebase, a fence change, or a re-verification;
 //   - a done issue releases a dependent — a live issue lists it in
 //     `blocked_by`, or an overlap's merge dependency names it as `before` —
-//     because releasing it is a wave/queue decision;
+//     because releasing a live dispatch dependent needs a wave decision;
 //   - a live fence or candidate pattern has a component combining a bracket
 //     class with `*`/`?`, or holding a backslash — such a pattern is never
 //     interpreted here, so any move needs judgment;
@@ -160,7 +166,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
   const unknown = done.filter((number) => !known.has(number))
   if (unknown.length > 0) throw new Refusal(`--done names issue(s) not in the plan: ${unknown.join(', ')}`)
 
-  const live = plan.issues.filter((issue) => issue.verdict !== 'done' && !doneSet.has(issue.number))
+  const live = plan.issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
   const refusals = []
   for (const issue of live) {
     for (const blocker of issue.blocked_by ?? []) {
@@ -169,7 +175,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
   }
   for (const overlap of plan.overlaps) {
     const dependency = overlap.merge_dependency
-    if (dependency && doneSet.has(dependency.before) && !doneSet.has(dependency.after)) {
+    if (dependency && doneSet.has(dependency.before) && live.some((issue) => issue.number === dependency.after)) {
       refusals.push(`done issue #${dependency.before} releases dependent #${dependency.after} (merge dependency)`)
     }
   }
@@ -219,6 +225,8 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
     plan.lane_profiles = plan.lane_profiles.filter((entry) => lanes.has(entry.lane))
   }
   plan.overlaps = plan.overlaps.filter((overlap) => !doneSet.has(overlap.issue_a) && !doneSet.has(overlap.issue_b))
+  if (plan.merge_queue !== undefined) plan.merge_queue = plan.merge_queue.filter((entry) => !doneSet.has(entry.issue))
+  queueWaitingHandoffs(plan)
   return plan
 }
 
@@ -379,21 +387,56 @@ function placeWaves(plan, waves) {
   }
 }
 
-function retireIssue(plan, number) {
+// One predecessor relation: file merge ordering and issue prerequisites.
+function planPredecessors(plan) {
+  const predecessors = new Map((plan.issues ?? []).map((issue) => [issue.number, new Set(issue.blocked_by ?? [])]))
+  for (const overlap of plan.overlaps ?? []) {
+    const edge = overlap.merge_dependency
+    if (edge) predecessors.get(edge.after)?.add(edge.before)
+  }
+  return predecessors
+}
+
+function retireIssue(plan, number, verdict = 'done') {
   const issue = plan.issues.find((entry) => entry.number === number)
   if (!issue || issue.verdict === 'done') throw new Refusal(`issue #${number} is not live in this slate`)
-  issue.verdict = 'done'
+  issue.verdict = verdict
   const lanes = new Set(plan.lanes.filter((lane) => lane.issue === number).map((lane) => lane.lane))
   plan.lanes = plan.lanes.filter((lane) => lane.issue !== number)
   if (plan.lane_profiles) plan.lane_profiles = plan.lane_profiles.filter((entry) => !lanes.has(entry.lane))
-  const remap = new Map()
-  plan.waves = plan.waves.map((wave) => ({ ...wave, issues: wave.issues.filter((n) => n !== number) }))
-    .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number).map((wave, index) => {
-      remap.set(wave.number, index + 1)
-      return { ...wave, number: index + 1 }
-    })
-  for (const lane of plan.lanes) lane.wave = remap.get(lane.wave)
-  plan.overlaps = plan.overlaps.filter((entry) => entry.issue_a !== number && entry.issue_b !== number)
+  if (verdict === 'done') {
+    const remap = new Map()
+    plan.waves = plan.waves.map((wave) => ({ ...wave, issues: wave.issues.filter((n) => n !== number) }))
+      .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number).map((wave, index) => {
+        remap.set(wave.number, index + 1)
+        return { ...wave, number: index + 1 }
+      })
+    for (const lane of plan.lanes) lane.wave = remap.get(lane.wave)
+    plan.overlaps = plan.overlaps.filter((entry) => entry.issue_a !== number && entry.issue_b !== number)
+    if (plan.merge_queue !== undefined) plan.merge_queue = plan.merge_queue.filter((entry) => entry.issue !== number)
+  }
+}
+
+// Every queued issue has each merge predecessor done or queued ahead of it.
+// A waiting handoff retains its PR on the issue until its predecessors allow
+// appending. Repeated passes release chains while preserving existing queue order.
+function queueWaitingHandoffs(plan) {
+  const queue = plan.merge_queue ?? []
+  const issueByNumber = new Map(plan.issues.map((issue) => [issue.number, issue]))
+  const predecessorByIssue = planPredecessors(plan)
+  let added
+  do {
+    added = false
+    for (const issue of plan.issues) {
+      if (issue.verdict !== 'handed-off' || queue.some((entry) => entry.issue === issue.number)) continue
+      const predecessors = [...predecessorByIssue.get(issue.number)]
+      if (predecessors.some((number) => issueByNumber.get(number)?.verdict !== 'done' && !queue.some((entry) => entry.issue === number))) continue
+      if (!Number.isInteger(issue.pr) || issue.pr < 1) throw new Refusal(`handed-off issue #${issue.number} needs its PR binding`)
+      queue.push({ issue: issue.number, pr: issue.pr })
+      added = true
+    }
+  } while (added)
+  if (plan.merge_queue !== undefined || queue.length) plan.merge_queue = queue
 }
 
 function expandLane(plan, laneName, paths, at, reason, { source, fresh = false } = {}) {
@@ -429,7 +472,7 @@ function decisionWrite(command, args) {
   const at = resolveAt(args.at)
   const canonical = join(root, 'slates', slate, 'plan.json')
   const input = args.input ? readJson(args.input, 'decision input') : {}
-  if (['genesis', 'add-issue'].includes(command) && !args.input) throw new UsageError('--input is required')
+  if (['genesis', 'add-issue', 'queue-order'].includes(command) && !args.input) throw new UsageError('--input is required')
   if (command === 'genesis' && !args['owner-token']) throw new Refusal('genesis requires --owner-token for an already-held lock')
   mkdirSync(dirname(canonical), { recursive: true })
   return withMutex(canonical, () => {
@@ -458,12 +501,36 @@ function decisionWrite(command, args) {
       fields(input, [], 'expand input')
       if (args.path?.length !== 1) throw new UsageError('expand requires exactly one --path')
       expandLane(plan, requireId('lane', args.lane), args.path, at, args.reason)
+    } else if (command === 'handoff') {
+      fields(input, [], 'handoff input')
+      const number = Number(args.issue), pr = Number(args.pr)
+      if (!Number.isInteger(number) || number < 1) throw new UsageError('--issue must be a positive issue number')
+      if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
+      if (!plan.lanes.some((lane) => lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
+      if ((plan.merge_queue ?? []).some((entry) => entry.pr === pr) ||
+          plan.issues.some((issue) => issue.verdict === 'handed-off' && issue.pr === pr)) {
+        throw new Refusal(`duplicate PR ${pr}`)
+      }
+      retireIssue(plan, number, 'handed-off')
+      plan.issues.find((issue) => issue.number === number).pr = pr
+    } else if (command === 'queue-order') {
+      fields(input, ['issues'], 'queue-order input')
+      const queue = plan.merge_queue ?? []
+      if (!Array.isArray(input.issues) || input.issues.length !== queue.length ||
+          new Set(input.issues).size !== queue.length ||
+          input.issues.some((number) => !queue.some((entry) => entry.issue === number))) {
+        throw new Refusal('queue-order issues must be a permutation of the current merge queue')
+      }
+      plan.merge_queue = input.issues.map((number) => queue.find((entry) => entry.issue === number))
     } else {
       fields(input, ['releases', 'addition', 'waves'], 'retirement input')
       const number = Number(args.issue)
       if (!Number.isInteger(number) || number < 1) throw new UsageError('--issue must be a positive issue number')
       const source = plan.lanes.find((lane) => lane.issue === number)
-      if (!source) throw new Refusal(`issue #${number} has no live source lane`)
+      if (!source && (command !== 'done' || plan.issues.find((issue) => issue.number === number)?.verdict !== 'handed-off')) {
+        throw new Refusal(`issue #${number} has no live source lane`)
+      }
+      if (!source && ((input.releases?.length ?? 0) > 0)) throw new Refusal('a handed-off issue has no source fence to release')
       retireIssue(plan, number)
       let waves
       if (input.addition) waves = appendIssue(plan, input.addition)
@@ -482,6 +549,7 @@ function decisionWrite(command, args) {
       decisions = [...plan.overlaps, ...(input.addition?.overlaps ?? [])]
     }
     computeOverlaps(plan, decisions)
+    if (['handoff', 'done', 'release'].includes(command)) queueWaitingHandoffs(plan)
     const seq = document.revisions.length
     const prev_digest = last?.digest ?? 'genesis'
     const entry = { seq, prev_digest, at, reason: args.reason, plan }
@@ -507,13 +575,13 @@ function decisionWrite(command, args) {
 
 function main(argv) {
   const [command, ...rest] = argv
-  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|base-move … (see the header)'
-  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'base-move'].includes(command)) throw new UsageError(usage)
+  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|queue-order|base-move … (see the header)'
+  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'queue-order', 'base-move'].includes(command)) throw new UsageError(usage)
   const allowed = command === 'base-move'
     ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'] }[command])]
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
