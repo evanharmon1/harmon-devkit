@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.62.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.62.0...v0.62.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **integrate:** align promotion IDs and reconciliation timestamps ([#1629](https://github.com/evanharmon1/harmon-devkit/issues/1629)) ([689a841](https://github.com/evanharmon1/harmon-devkit/commit/689a84151546c92ed037ba9f60f50d748c7bbba4))
+
+## [0.62.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.61.0...v0.62.0) (2026-10-24)
+
+
+### Features
+
+* **dev-flow-support:** configure per-reviewer finders and per-PR operator overrides ([#1613](https://github.com/evanharmon1/harmon-devkit/issues/1613)) ([2d5d396](https://github.com/evanharmon1/harmon-devkit/commit/2d5d396d61063c2940501555bc26b44569708b44))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** prevalidate promotion records before notifying reviewers ([#1618](https://github.com/evanharmon1/harmon-devkit/issues/1618)) ([0bf0fc7](https://github.com/evanharmon1/harmon-devkit/commit/0bf0fc7a68ed6506343603ceef3d2e430d398c6f))
+
 ## [0.61.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.60.0...v0.61.0) (2026-10-23)
 
 

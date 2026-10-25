@@ -86,7 +86,7 @@ while [ "$#" -gt 0 ]; do
 done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$pr" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [ -n "$record" ] && [ -n "$slate" ] && [ -n "$session" ] && [ -n "$owner_token" ] || usage
-[[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]] || usage
+[[ "$run_id" =~ ^[A-Za-z0-9._-]+$ && "$run_id" != . && "$run_id" != .. ]] || usage
 # Bind the gate's record to the record the writer will update; no second gate.
 common="$(git rev-parse --path-format=absolute --git-common-dir)" || exit 11
 canonical="$(cd "$common/dev-flow-v2/runs/$run_id" && pwd -P)" || exit 11

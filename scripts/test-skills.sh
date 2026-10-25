@@ -283,6 +283,12 @@ expect_ok "dev-flow-support documents decision writers (#1410)" \
     grep -qF 'Write held-lock `genesis`, `add-issue`' \
     "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
 
+for plan_command in handoff queue-order; do
+    expect_ok "dev-flow-support documents the $plan_command writer (#1625)" \
+        grep -qF "\`$plan_command" \
+        "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+done
+
 # Reviewer policy (#1604): independent of the review-marker lifecycle (#1608).
 expect_ok "reviewer settings document recorded operator overrides (#1604)" \
     grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
@@ -12315,9 +12321,14 @@ for region in (
 ):
     assert not guarded(region % "then run `gh pr ready 42`"), region
 integrate = pathlib.Path(sys.argv[1]).read_text()
+reconciled_promotion = '`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`'
+assert integrate.count(reconciled_promotion) == 3, integrate.count(reconciled_promotion)
+assert '--at <the ready_for_review event time>' not in integrate
+integrate_flat = " ".join(integrate.split())
+assert integrate_flat.count("Omit `--at` so the writer records reconciliation time; the `--exit` retains the original event ID and time for attribution.") == 3
 for required in (
     "promotion (the current head independently passes `readiness-gate.sh promoted`)",
-    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
+    reconciled_promotion,
     "Only promoted status `pass`",
     "on the current head may be recorded; a behind head fails",
     "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
