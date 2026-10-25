@@ -152,9 +152,10 @@ Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-
 merge. In the readiness conditions below, "checks" means required status
 contexts from the union of rulesets and classic branch protection. With no
 required contexts, or if classic protection cannot be read, every reported
-check gates. Ruleset `workflows` or `code_scanning` rules also gate every
-reported check, because their requirements cannot be narrowed to named
-status contexts. Report non-required failures;
+check gates. Only the supported `required_status_checks` rule type permits
+narrowing; any other rule type gates every reported check, including
+`workflows`, `code_scanning`, `required_deployments` and unknown types.
+Report non-required failures;
 they do not gate the handoff.
 
 This skill may be re-entered on a non-draft PR. Treat that as an idempotent
@@ -1205,9 +1206,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `GET repos/{repo}/branches/{base}/protection/required_status_checks`
   (classic protection; Administration read). If classic protection cannot be
   read, including a 403 or ambiguous 404, or the union has no required
-  contexts, gate every reported check. Ruleset `workflows` or `code_scanning`
-  rules also gate every reported check. Only a known, nonempty union with
-  neither rule type narrows the set. The latest run
+  contexts, gate every reported check. Only rulesets whose rules are all
+  `required_status_checks` permit narrowing to a known, nonempty union.
+  Every other rule type gates every reported check. The latest run
   of each required context on the exact head must have concluded successfully;
   skipped/neutral is non-failing. A pending or missing required check, an empty
   check list, or a failed rules/checks read is indeterminate. Non-required
@@ -1315,15 +1316,15 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 - **Which threads still need a reply is the dispatched integrator agent's
   own computation, not this skill's** — its `unanswered_thread_roots[]`
   (§7 of `ai/agents/integrator.md`, and its own `result.integrator`) is the
-  fail-closed answer for unresolved threads: a root appears there whenever this PR's own account has
-  never replied in that thread, **or** a reviewer's newest activity in it —
+  fail-closed answer: a root appears there whenever this PR's own account has
+  never replied in that thread, **or**, in an unresolved thread, a reviewer's newest activity —
   a new comment or an edit to an existing one — postdates the last reply.
   Adjudicate every listed root (§3) and answer it (§4) through that same root
   ID; the agent re-lists it on the next dispatch until a reply actually
   clears it or the thread is resolved. Under #1601's ADR and maintainer
-  ruling 61, a resolved thread is settled, whatever its last comment. An
-  unresolved thread settles only when the agent spoke last, after the
-  reviewer's last activity. Thread
+  ruling 61a, a thread requires an agent reply **and** either resolution or
+  the agent speaking last, after the reviewer's last activity. A resolved
+  thread with no agent reply is unanswered. Thread
   `isResolved` is read via GraphQL and linked to the REST root through
   `comments(first:1){nodes{databaseId}}`. A resolved acknowledgement passes.
   A reviewer who objects after resolution must reopen the thread; the
@@ -1933,7 +1934,7 @@ group the comments payload by thread (replies carry `in_reply_to_id`) and
 reply through each thread's **root** comment ID — replying to a reply
 nests invalidly. Step 2's enumeration already emits exactly that set, keyed
 by root ID: work its output, don't re-derive which threads are owed a reply.
-Skip a settled thread under §2. In an unresolved thread, a reviewer
+After the required agent reply, skip a thread settled under §2. In an unresolved thread, a reviewer
 follow-up posted after your reply is a fresh
 finding to adjudicate and answer (through the same root ID), while
 re-answering an unchanged thread just spams it.
@@ -2546,8 +2547,8 @@ that loops indefinitely:
    `GET repos/{repo}/branches/{base}/protection/required_status_checks`
    (classic protection; Administration read). A classic read error (including
    403 or ambiguous 404), or an empty union, gates every reported check.
-   Ruleset `workflows` or `code_scanning` rules also gate every reported
-   check. Only a known, nonempty union with neither rule type narrows the set. The latest run
+   Only rulesets whose rules are all `required_status_checks` permit narrowing
+   to a known, nonempty union. Every other rule type gates every reported check. The latest run
    of each required context on the exact head must have concluded successfully;
    skipped/neutral is non-failing. A pending or missing required check, an empty
    check list, or a failed rules/checks read is indeterminate. Non-required
@@ -2562,9 +2563,9 @@ that loops indefinitely:
    none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
    PR body ticked **and** carrying its outcome (a bare `- [x]` settles
    nothing); §2's reply-linkage predicate over the inline threads, run
-   fresh rather than recalled — a resolved thread is settled, whatever its
-   last comment. An agent reply after the last reviewer activity settles an
-   unresolved thread; otherwise it fails. An acknowledgement followed by
+   fresh rather than recalled — every thread needs an agent reply **and**
+   either resolution or the agent speaking last. A resolved thread with no
+   agent reply fails. An agent reply, then an acknowledgement followed by
    resolution passes. A later objection requires reopening the thread.
    `--allow-edited-root <root>` may explain an edit that needs no further reply;
    and, where Codex cloud review is enabled, the sibling
@@ -2613,8 +2614,9 @@ that loops indefinitely:
      stay out, because promotion mutates those and would invalidate
      every normal promotion (#227). Keep the value — it is the "before" of
      the promotion compare below. Thread `isResolved` remains hashed. Settlement
-     follows §2: resolved, or the agent spoke last. Reviewer activity blocks
-     an unresolved thread; a resolved thread remains settled until reopened.
+     follows §2: an agent reply, then resolution or the agent speaking last.
+     Resolution alone never settles an unanswered thread. Reviewer activity
+     blocks an unresolved thread; an answered, resolved thread stays settled until reopened.
 
    The pass fingerprint certifies the exact content the gate evaluated.
    For recorded runs, `assets/promote.sh` is the only promotion path: it runs
@@ -2838,8 +2840,8 @@ that loops indefinitely:
    Report the ready state honestly rather than over-claiming:
    `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the
    maintainer/required approval" — say that, and
-   list required approvals still owed. Every review thread must be settled
-   before this ready claim: resolved, or the agent spoke last under §2.
+   list required approvals still owed. Every review thread must have an agent
+   reply and be settled before this ready claim: resolved, or the agent spoke last under §2.
    A rejection reply with no later reviewer
    activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.

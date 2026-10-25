@@ -1682,7 +1682,7 @@ assert_skill "the fast-forward to the recorded OID, not the configured upstream"
 assert_skill "the fork without maintainer edits stopping rather than falling back" \
     "stop and ask for maintainer edits"
 assert_skill "thread fingerprint prose permits agent-last settlement" \
-    "Thread \`isResolved\` remains hashed. Settlement follows §2: resolved, or the agent spoke last."
+    "Thread \`isResolved\` remains hashed. Settlement follows §2: an agent reply, then resolution or the agent speaking last."
 assert_skill "ready-claim prose permits an unresolved thread when the agent spoke last" \
     "A rejection reply with no later reviewer activity settles an unresolved thread."
 assert_skill "a promoted PR caught up only on the maintainer's request" \
@@ -2914,7 +2914,7 @@ for classic_none in 'Branch not protected' 'Required status checks not enabled';
 done
 
 echo "==> #1602 r4: workflow and code-scanning rules gate every check (REPRO-N/N2/O)"
-for required_source in workflows-none workflows-empty code_scanning; do
+for required_source in workflows-none workflows-empty code_scanning required_deployments future_required_check; do
     write_defaults
     case "$required_source" in
     workflows-*)
@@ -2925,12 +2925,18 @@ for required_source in workflows-none workflows-empty code_scanning; do
         rule_type=code_scanning
         required_name=CodeQL
         ;;
+    required_deployments | future_required_check)
+        rule_type="$required_source"
+        required_name="$required_source"
+        ;;
     esac
     jq -cn --arg type "$rule_type" '[[
       {type:"required_status_checks",parameters:{required_status_checks:[{context:"build"}]}},
       {type:$type,parameters:(if $type == "workflows" then
         {do_not_enforce_on_create:false,workflows:[{path:".github/workflows/org-required.yml",repository_id:99,ref:"refs/heads/main"}]}
-        else {code_scanning_tools:[{tool:"CodeQL",security_alerts_threshold:"high_or_higher",alerts_threshold:"errors"}]} end)}
+        elif $type == "code_scanning" then {code_scanning_tools:[{tool:"CodeQL",security_alerts_threshold:"high_or_higher",alerts_threshold:"errors"}]}
+        elif $type == "required_deployments" then {required_deployment_environments:["production"]}
+        else {} end)}
     ]]' >"${fixtures}/rules.pages.json"
     jq -cn --arg name "$required_name" '[{check_runs:[
       {name:"build",status:"completed",conclusion:"success"},
@@ -3096,14 +3102,21 @@ run_gate
 assert_gate 1 fail threads-unanswered
 grep -Fq '900' <<<"$gate_out" ||
     fail "threads-unanswered did not name the root: $gate_out"
-# Ruling 61: resolution settles even a thread with no agent reply.
-printf '%s\n' '[900]' >"${fixtures}/resolved-roots.json"
-run_gate
-assert_gate 0 pass ready
-jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
-mv "${fixtures}/p" "${fixtures}/pr-view.json"
-run_promoted
-assert_gate 0 pass promoted
+# Ruling 61a: neither a bot nor a maintainer can waive the agent reply.
+for resolver in reviewer-bot maintainer; do
+    jq -cn --arg resolver "$resolver" '[{data:{repository:{pullRequest:{reviewThreads:{
+      nodes:[{id:"T900",isResolved:true,resolvedBy:{login:$resolver},comments:{nodes:[{databaseId:900}]}}],
+      pageInfo:{hasNextPage:false,endCursor:null}
+    }}}}}]' >"${fixtures}/threads.pages.json"
+    jq '.isDraft=true' "${fixtures}/pr-view.json" >"${fixtures}/p"
+    mv "${fixtures}/p" "${fixtures}/pr-view.json"
+    run_gate
+    assert_gate 1 fail threads-unanswered
+    jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+    mv "${fixtures}/p" "${fixtures}/pr-view.json"
+    run_promoted
+    assert_gate 1 fail threads-unanswered
+done
 
 echo "==> an answered thread passes; a reviewer follow-up after the reply fails"
 write_defaults
@@ -3196,7 +3209,7 @@ for resolved, comments, expected in [
     (True, [root, reply, ack], []),
     (False, [root, reply, ack], [900]),
     (False, [root, reply], []),
-    (True, [root], []),
+    (True, [root], [900]),
     (False, [root], [900]),
 ]:
     env = dict(os.environ, me="pr-author", comments=json.dumps([comments]),
@@ -3210,6 +3223,9 @@ for invalid in [[], [dict(root=900, resolved=False)] * 2]:
                thread_resolution=json.dumps(invalid))
     result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True)
     assert result.returncode != 0, "integrator producer accepted unknown resolution"
+flat = " ".join(section.split())
+assert 'return `status: blocked` with `payload.verdict: pending`' in flat, \
+    "agent posture must report a blocker when GraphQL is unavailable"
 PY
 
 echo "==> #1602 r1: GraphQL-only, missing, duplicate and multi-page root mappings"
@@ -3230,10 +3246,10 @@ for mapping in graphql-only resolved-only unknown unknown-flag duplicate pages; 
       else [page([$thread];false)] end' >"${fixtures}/threads.pages.json"
     run_gate
     case "$mapping" in
-    graphql-only) assert_gate 1 fail threads-unanswered ;;
+    graphql-only | resolved-only) assert_gate 1 fail threads-unanswered ;;
     unknown | unknown-flag) assert_gate 2 indeterminate malformed-data ;;
     duplicate) assert_gate 2 indeterminate malformed-data ;;
-    pages | resolved-only) assert_gate 0 pass ready ;;
+    pages) assert_gate 0 pass ready ;;
     esac
 done
 

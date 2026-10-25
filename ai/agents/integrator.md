@@ -1035,8 +1035,9 @@ from its own `check_out`, the same way `codex_cycle` is built for codex-cloud.
 
 ## 5. Find what still needs a reply
 
-Fetch review-thread resolution and inline comments. A resolved thread is
-settled regardless of its last comment (maintainer ruling 61). For unresolved
+Fetch review-thread resolution and inline comments. A thread is settled only
+after an agent reply, followed by resolution or the agent speaking last
+(ruling 61a). Resolution never substitutes for that reply. For unresolved
 threads, classify by reply linkage — a thread with no reply from this PR's
 own account since the newest reviewer activity in it,
 **including an edit to an existing comment**, is unanswered. Compare
@@ -1045,9 +1046,10 @@ own account since the newest reviewer activity in it,
 after your reply and have it stay hidden behind it:
 
 **Agent-posture GraphQL reads:** The agent posture has no GraphQL read
-path. Run this step from the dev or bot posture, or skip it and report
-unresolved review-thread resolution as unverified. Do not route this query
-through either GET-only wrapper.
+path. In that posture, return `status: blocked` with `payload.verdict: pending`
+and a blocker explaining that thread resolution cannot be verified. Never
+report a clean pass or omit unanswered roots by skipping this read. Run the
+query only from the dev or bot posture, never through either GET-only wrapper.
 
 ```sh
 thread_pages="$(gh api graphql --paginate --slurp \
@@ -1076,9 +1078,9 @@ jq -c --arg me "$me" --argjson resolution "$thread_resolution" 'add
     | map(. as $t
         | ($t[0].in_reply_to_id // $t[0].id) as $root
         | [$resolution[] | select(.root == $root)] as $resolved
-        | if ($resolved | length) != 1 then error("missing thread resolution")
-          else select($resolved[0].resolved | not) end
+        | if ($resolved | length) != 1 then error("missing thread resolution") else . end
         | ([$t[] | select(.user.login == $me and .in_reply_to_id != null) | .created_at] | max) as $mine
+        | select($mine == null or ($resolved[0].resolved | not))
         | ([$t[] | select(.user.login != $me
                           and ($mine == null or .created_at >= $mine or .updated_at >= $mine))
                  | (.updated_at // .created_at)] | max) as $new
