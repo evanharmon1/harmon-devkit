@@ -109,7 +109,9 @@
 # Required automation that reacts only to ready_for_review remains a caller
 # prerequisite: promotion cannot wait for an automation it starts. Required
 # status contexts, including ones that never registered, ARE checked against
-# GET repos/{repo}/rules/branches/{base} on every evaluation.
+# the union of ruleset and classic protection requirements on every evaluation.
+# Definitive 404s (Branch not protected / Required status checks not enabled)
+# mean no classic requirement; other classic read errors gate every reported check.
 # The remaining automation prerequisite is:
 #   - required automation that reacts only to `pull_request.ready_for_review`
 #     (a configuration blocker: promotion would notify humans before its
@@ -1020,7 +1022,7 @@ evaluate_checks() {
     # Rulesets and classic protection can coexist. An unreadable classic
     # policy (including an ambiguous 404) cannot prove a check optional.
     classic_checks=null
-    if classic_payload="$(run_gh api "repos/$repo/branches/$encoded_rule_base/protection/required_status_checks")"; then
+    if classic_payload="$(run_gh api "repos/$repo/branches/$encoded_rule_base/protection/required_status_checks" 2>&1)"; then
         classic_checks="$(jq -ce '
           if (.contexts | type) != "array" or ((.checks // []) | type) != "array"
           then error("invalid classic contexts") else
@@ -1031,6 +1033,15 @@ evaluate_checks() {
                 (.app == null or (.app | type == "number" and floor == .)))
             then unique else error("invalid classic context") end
           end' <<<"$classic_payload" 2>/dev/null)" || classic_checks=null
+    else
+        # gh prints the JSON error body before its diagnostic, possibly with
+        # no intervening newline. Only these exact 404 diagnostics prove none.
+        case "$classic_payload" in
+        *"gh: Branch not protected (HTTP 404)" | *"gh: Required status checks not enabled (HTTP 404)")
+            classic_checks='[]'
+            ;;
+        esac
+        printf '%s\n' "$classic_payload" >&2
     fi
     required_checks="$(jq -cn \
         --slurpfile rules <(printf '%s' "$required_checks") \

@@ -174,6 +174,9 @@ done
 
 if [ -f "$GH_FIXTURES/fail-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/fail-endpoint")" <<<"$endpoint"; then
+    if [ -f "$GH_FIXTURES/fail-body" ]; then
+        cat "$GH_FIXTURES/fail-body"
+    fi
     if [ -f "$GH_FIXTURES/fail-diagnostic" ]; then
         cat "$GH_FIXTURES/fail-diagnostic" >&2
     fi
@@ -634,7 +637,7 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/top.pages.json"
     printf '%s\n' '[]' >"${fixtures}/resolved-roots.json"
     rm -f "${fixtures}/threads.pages.json" "${fixtures}/rules.pages.json" "${fixtures}/classic-checks.json"
-    rm -f "${fixtures}/fail-endpoint"
+    rm -f "${fixtures}/fail-endpoint" "${fixtures}/fail-diagnostic" "${fixtures}/fail-body"
     rm -f "${fixtures}/fail-closing-references"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
     rm -f "${fixtures}/second-closing-view.json"
@@ -2890,6 +2893,26 @@ printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status
 run_gate
 assert_gate 1 fail checks-failing
 
+echo "==> #1602 r3: definitive classic-none 404s leave ruleset requirements (REPRO-K)"
+for classic_none in 'Branch not protected' 'Required status checks not enabled'; do
+    write_defaults
+    printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]]' >"${fixtures}/rules.pages.json"
+    printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"advisory","status":"completed","conclusion":"failure"}]}]' >"${fixtures}/check-runs.pages.json"
+    printf '%s\n' 'protection/required_status_checks' >"${fixtures}/fail-endpoint"
+    # Real gh emits the error JSON on stdout without a trailing newline,
+    # followed by the diagnostic on stderr. Exercise that combined shape.
+    jq -ncj --arg message "$classic_none" '{message:$message,status:"404"}' >"${fixtures}/fail-body"
+    printf 'gh: %s (HTTP 404)\n' "$classic_none" >"${fixtures}/fail-diagnostic"
+    run_gate
+    assert_gate 0 pass ready
+    printf '%s\n' "$gate_out" | tail -1 | jq -e '.reportable_checks.failing == ["advisory"]' >/dev/null ||
+        fail "ruleset-only advisory failure was not reported"
+    jq '.isDraft=false' "${fixtures}/pr-view.json" >"${fixtures}/p"
+    mv "${fixtures}/p" "${fixtures}/pr-view.json"
+    run_promoted
+    assert_gate 0 pass promoted
+done
+
 echo "==> #1602 r2: union ruleset and classic requirements (REPRO-I)"
 write_defaults
 printf '%s\n' '[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]]' >"${fixtures}/rules.pages.json"
@@ -2898,15 +2921,16 @@ printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion"
 run_gate
 assert_gate 1 fail checks-failing
 # A successful classic read narrows optional failures only after both
-# sources are known; absent/error responses must never infer no protection.
+# sources are known; ambiguous errors must never infer no protection.
 printf '%s\n' '{"contexts":[]}' >"${fixtures}/classic-checks.json"
-for classic_error in 403 404 500 malformed; do
+for classic_error in 'gh: Branch not protected (HTTP 403)' 'gh: Not Found (HTTP 404)' \
+    'gh: Required status checks not enabled (HTTP 500)' malformed; do
     if [ "$classic_error" = malformed ]; then
         rm -f "${fixtures}/fail-endpoint"
         printf '%s\n' '{}' >"${fixtures}/classic-checks.json"
     else
         printf '%s\n' 'protection/required_status_checks' >"${fixtures}/fail-endpoint"
-        printf '%s\n' "HTTP $classic_error" >"${fixtures}/fail-diagnostic"
+        printf '%s\n' "$classic_error" >"${fixtures}/fail-diagnostic"
     fi
     run_gate
     assert_gate 1 fail checks-failing
@@ -3016,6 +3040,17 @@ for prior_finder in codex-cloud coderabbit-cloud; do
     *) assert_gate 1 fail finder-missing ;;
     esac
 done
+
+echo "==> #1602 r3: an explicit spent Codex budget still requires current evidence (REPRO-M/M3a)"
+write_defaults
+write_finder_policy '["codex-cloud"]' '[{"id":"codex-cloud","budget":1}]'
+prior_result="$(write_integrator_result spent-explicit-codex "$(codex_cycle_json 0 "$stale_head_sha")" "$stale_head_sha")"
+cp "$prior_result" "${record_dir}/passes/integration-r1-codex-cloud.json"
+current_result="$(write_integrator_result explicit-still-required null)"
+jq '.payload.integration_round=2' "$current_result" >"${fixtures}/explicit-still-required.json"
+cp "${fixtures}/explicit-still-required.json" "${record_dir}/passes/integration-r2-current.json"
+run_gate --integrator-result "${fixtures}/explicit-still-required.json" --integration-cap 1
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> an unanswered inline thread fails as threads-unanswered"
 write_defaults
@@ -5257,6 +5292,39 @@ jq --arg promoted "$promoted_intermediate" '.head=$promoted |
 cp "${fixtures}/promoted-carried-receipt.json" "${record_dir}/passes/integration-r1-codex-cloud.json"
 run_promoted --integrator-result "${fixtures}/promoted-carried-receipt.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
 assert_gate 0 pass promoted
+jq -c '{head,cycle:.payload.codex_cycle}' "${fixtures}/promoted-carried-receipt.json" >"${fixtures}/promotion-receipt.json"
+# Isolate the production predicate: upstream schema checks also reject some
+# mismatches, so a full-gate test alone would leave individual guards untested.
+carry_receipt_predicate="$(
+    python3 - "$gate" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text()
+start = '--argjson receipt "$promotion_receipt" \'\n'
+end = '\' "$codex_recheck_state"'
+assert text.count(start) == 1
+predicate = text.split(start, 1)[1].split(end, 1)
+assert len(predicate) == 2
+print(predicate[0])
+PY
+)"
+promotion_receipt="$(cat "${fixtures}/promotion-receipt.json")"
+jq -e --arg promoted "$promoted_intermediate" --arg head "$head_sha" \
+    --argjson receipt "$promotion_receipt" "$carry_receipt_predicate" "$recheck_state" >/dev/null ||
+    fail "valid multi-hop promotion receipt predicate failed"
+for receipt_binding in origin_head attests_head head; do
+    echo "==> #1602 r3: multi-hop receipt rejects mismatched $receipt_binding (M4d/M4e/M4f)"
+    case "$receipt_binding" in
+    origin_head) receipt_mutation='.cycle.carried.origin_head=$wrong' ;;
+    attests_head) receipt_mutation='.cycle.carried.attests_head=$wrong' ;;
+    head) receipt_mutation='.head=$wrong' ;;
+    esac
+    wrong_receipt="$(jq -c --arg wrong "$stale_head_sha" "$receipt_mutation" <<<"$promotion_receipt")"
+    if jq -e --arg promoted "$promoted_intermediate" --arg head "$head_sha" \
+        --argjson receipt "$wrong_receipt" "$carry_receipt_predicate" "$recheck_state" >/dev/null; then
+        fail "multi-hop receipt accepted mismatched $receipt_binding"
+    fi
+done
 jq '.carry.change_id="1111111111111111111111111111111111111111"' "$recheck_state" >"${recheck_state}.next"
 mv "${recheck_state}.next" "$recheck_state"
 run_promoted --integrator-result "${fixtures}/promoted-carried-receipt.json" --integration-cap 2 --integration-exempt-cap 2 --codex-recheck "$recheck_state"
