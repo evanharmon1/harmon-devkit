@@ -2433,6 +2433,48 @@ jq -e '.phase == "attached" and .first_trigger_comment_id == 123 and
     .boundary_source == "unavailable"' "$state" >/dev/null ||
     fail 'denied suites did not accept the authenticated same-head retry'
 
+# The persisted fallback must remain a live exact trigger.  When the first
+# trigger was deleted, the candidate list is empty; that must not bypass the
+# same-head retry authentication and attach must leave the reservation intact.
+cp "${test_tmp}/same-head-retry-reserved.json" "$state"
+jq -cn --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+cp "$state" "${test_tmp}/same-head-retry-before-missing-refusal.json"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted a deleted persisted same-head trigger'
+fi
+grep -qF 'persisted same-head trigger is not a live trusted review request' \
+    "${test_tmp}/suites.out" ||
+    fail "missing same-head trigger refusal was not actionable: $(cat "${test_tmp}/suites.out")"
+cmp "$state" "${test_tmp}/same-head-retry-before-missing-refusal.json" ||
+    fail 'missing same-head trigger refusal changed the reserved state'
+
+# Editing the first request away from the exact trigger contract has the same
+# effect as deletion: it must fail closed before attach writes state.
+cp "${test_tmp}/same-head-retry-reserved.json" "$state"
+jq -cn --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:123,user:{id:$trusted,login:"trusted-trigger"},body:"edited away",
+       created_at:"2026-07-31T08:00:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"},
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+cp "$state" "${test_tmp}/same-head-retry-before-edited-refusal.json"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted an edited-away persisted same-head trigger'
+fi
+grep -qF 'persisted same-head trigger is not a live trusted review request' \
+    "${test_tmp}/suites.out" ||
+    fail "edited same-head trigger refusal was not actionable: $(cat "${test_tmp}/suites.out")"
+cmp "$state" "${test_tmp}/same-head-retry-before-edited-refusal.json" ||
+    fail 'edited same-head trigger refusal changed the reserved state'
+
 # A carried id is not authority by itself: the exact persisted first trigger
 # must still be a live request by a trusted orchestrator.  This keeps a
 # hand-edited state from turning arbitrary historical comments into current

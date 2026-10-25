@@ -3325,12 +3325,11 @@ attach)
         ') || die "cannot classify prior review triggers"
 
     same_head_retry_anchor=
-    if [ "$boundary_source" = unavailable ] &&
-        [ "$(jq 'length' <<<"$prior_trigger_candidates")" -gt 0 ]; then
+    if [ "$boundary_source" = unavailable ]; then
         previous_head_anchor=$(jq -r '.previous_head_trigger_comment_id // empty' "$state_file")
         if valid_uint "$previous_head_anchor" && [ "$previous_head_anchor" -lt "$trigger_id" ]; then
             prior_trigger_candidates=$(jq -c --argjson anchor "$previous_head_anchor" 'map(select(.id > $anchor))' <<<"$prior_trigger_candidates")
-        else
+        elif [ "$state_attempt" = 2 ]; then
             # A second attempt has an authenticated, same-head predecessor in
             # its own state: reserve only reaches this shape by replacing an
             # attached attempt 1 on the same head, and carries both ids.  A
@@ -3351,6 +3350,8 @@ attach)
             # anchor itself lets the trust check reject a hand-edited state
             # that points at an untrusted or missing comment.
             prior_trigger_candidates=$(jq -c --argjson anchor "$same_head_retry_anchor" 'map(select(.id >= $anchor))' <<<"$prior_trigger_candidates")
+        elif [ "$(jq 'length' <<<"$prior_trigger_candidates")" -gt 0 ]; then
+            die "check-suite boundary unavailable and earlier triggers lack a previous-head anchor; restore verified previous-head state or grant Checks: read before retrying attach"
         fi
     fi
 
@@ -3359,6 +3360,7 @@ attach)
     # whenever it can authenticate an earlier one.
     first_trigger_candidate=$trigger_id
     if [ "$requested_at" \< "$state_reserved" ] ||
+        [ -n "$same_head_retry_anchor" ] ||
         [ "$(printf '%s' "$prior_trigger_candidates" | jq 'length')" -gt 0 ]; then
         # A trigger that predates this local reservation is state-recovery
         # evidence, not a newly posted first attempt. A distinct same-head
