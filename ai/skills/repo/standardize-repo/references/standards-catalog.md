@@ -428,8 +428,11 @@ Shared structure:
   annotate tool versions with `# renovate: datasource=…`.
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
-- **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
-  security, …]`) reports one rollup status. Branch protection requires
+- **Aggregate gate:** harmon-init v5.10.0+ has a final `verify` job
+  (`if: always()`, `needs: [changes, check, repo-guards, security, …]`) that
+  reports one rollup status. Repos pinned to v5.9.x or earlier keep the
+  pre-split `lint` job, including `verify:skills` at v5.9.0's
+  `build.yml.jinja:96`. Branch protection requires
   **`verify`** and **`security`**, plus **`codeql-verify`** exactly when
   `use_codeql=true` and **`terraform-verify`** for a Terraform-capable
   repo (when `include_terraform=true`, the Terraform aggregate is required).
@@ -511,7 +514,7 @@ Workflow inventory:
 
 | Workflow | Triggers / role | Source |
 |---|---|---|
-| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
+| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; harmon-init v5.10.0+ job/task map below; aggregate `verify`; Semgrep for free-private or no-CodeQL profiles; v5.9.x and earlier retain the pre-split `lint` job. | [copier] |
 | `claude-plan.yml` | Mention-only, no label trigger: an authorized sender's comment or review body carrying the bot mention and then the `plan` subcommand → claims the target, posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
 | `claude-implement.yml` | Mention-only, no label trigger: same gate with the `implement` subcommand → claims the target, opens a **draft** PR on a `claude/` branch (`--model opus`, `gh pr ready` denied) | [copier] |
 | `claude-review.yml` | Mention-only, no label trigger: same gate with the `review` subcommand, PR targets only, senders extended with the review bots (renovate/dependabot, coderabbit when enabled) → claims the target, posts a sticky review comment, no writes | [copier] |
@@ -520,6 +523,23 @@ Workflow inventory:
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
+
+For harmon-init v5.10.0+, the Build job/task map is:
+
+- `changes` classifies docs-only changes; `check` runs `task check`.
+- `repo-guards` runs `task test:verify-ci-parity`, then `task ci:repo-guards`.
+- Web-app `codegen-guard` runs `task guard:codegen`.
+- Devcontainer `devcontainer-permissions` runs `task test:devcontainer:permissions`.
+- `build-test` runs `task build`, `task validate`, and `task test` when `use_node`.
+- `e2e` runs `task build` and `task test:e2e` when `use_node`.
+- `security` runs `task security:secrets`, `task security:audit`, and
+  `task security:sast`.
+- Web-astro `lighthouse` runs `task build`; `render-parity` runs
+  `task test:render-parity`.
+- Web-app/web-astro `a11y` runs `task test:a11y` and is report-only.
+- `verify` aggregates required jobs. Repos pinned to harmon-init v5.9.x or
+  earlier retain the pre-split `lint` job, with `verify:skills` at v5.9.0's
+  `build.yml.jinja:96`.
 
 **Mention-only trigger gate** (all three `claude-*` workflows, since
 harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
@@ -851,9 +871,12 @@ install the Renovate GitHub App on the repo. Conventions:
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
-  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
-  (in the Build workflow's `repo-guards` job via `task ci:repo-guards`) and a
-  pre-push offline check. The drift checks skip cleanly
+  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check,
+  and a pre-push offline check. In harmon-init v5.10.0+ the drift check runs in
+  the Build workflow's `repo-guards` job via `task ci:repo-guards`; repos pinned
+  to v5.9.x or earlier keep `verify:skills` in the pre-split `lint` job
+  (v5.9.0 `build.yml.jinja:96`). Split-workflow repos keep that task wherever
+  they already run it. The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
   ships the machinery + an empty `.claude/skills/` (`.gitkeep`); pinning the
   manifest `ref` to a harmon-devkit release and running `task sync:skills` is
@@ -1538,8 +1561,11 @@ them:
   runbooks/` + kebab-case filenames. They lack `docs/product/`, `docs/guides/`,
   `docs/glossary.md`, `docs/conventions.md`.
 - **Split CI workflows:** an older repo may split `build`/`security`/`validate`
-  into separate workflow files where the current template consolidates
-  lint+security+build-test into `build.yml`. NB: **harmon-infra retains** its
+  into separate workflow files. In harmon-init v5.10.0+, `build.yml` keeps those
+  gates in one workflow but splits them into task-specific jobs (`check`,
+  `repo-guards`, `security`, and conditional `build-test`, `lighthouse`, and
+  other project jobs); repos pinned to v5.9.x or earlier retain the pre-split
+  `lint` job. NB: **harmon-infra retains** its
   split workflows, extra `deploy.yaml`/`mirror-devcontainer-base.yaml`, and
   self-hosted `contraption` runners as an **accepted permanent customization** —
   treat that as 3.2-class, not lag. (sommerlawn-site's old `-max` claude-workflow

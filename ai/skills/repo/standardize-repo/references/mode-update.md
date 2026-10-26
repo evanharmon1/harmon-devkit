@@ -2902,14 +2902,16 @@ freshly-adopted guard blocks the run until it's configured (providers + prod
 domains). Configure it as part of the update, or explicitly defer adoption —
 **never delete the guard** to get the suite green.
 
-**Split-workflow repos: graft template CI additions by gate task.** In the
-rendered Build workflow, `check` runs `task check`, so additions to that gate
-(including lint steps) go in `check`. The skills drift check runs separately
-through `task ci:repo-guards` in `repo-guards`; do not put it in `check`. A
-split-workflow repo (e.g. harmon-infra) may use different job names — graft
-each addition into the job that runs its corresponding gate task, such as the
-`task check` gate in harmon-infra's `validate.yml` workflow, feeding
-`validate-verify`, not into a dead copy of `build.yml`.
+**Split-workflow repos: graft template CI additions by gate task.** In
+harmon-init v5.10.0+, the rendered Build workflow's `check` job runs
+`task check`; `repo-guards` runs `task test:verify-ci-parity` before
+`task ci:repo-guards`. Graft each added gate into the existing job that runs its
+task. Keep `task verify:skills` wherever the repo already runs it; for example,
+harmon-infra keeps it in its existing `validate.yml` lint job alongside
+`task check`. Never invent, move, or rename a job to match the template's
+`check` or `repo-guards` names. Repos pinned to harmon-init v5.9.x or earlier
+keep `verify:skills` in the pre-split `lint` job (v5.9.0 `build.yml.jinja:96`);
+name only jobs that the repo's pin actually renders.
 
 **web-astro: the `pnpm-workspace.yaml` (#248) requires pnpm 11+.** Its `allowBuilds` approval
 map is a pnpm-11 setting (it replaced pnpm 10's `onlyBuiltDependencies` list); the file
