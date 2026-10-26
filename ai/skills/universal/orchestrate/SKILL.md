@@ -933,6 +933,10 @@ Sentinels use the exact kind-first form
 `^(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
 only ASCII letters, digits, underscores and hyphens. Both report and pane
 observations match that whole final nonblank line.
+Before re-arming a watcher after this grammar upgrade, re-render every live
+lane's brief or watch it to completion with the pre-upgrade watcher. The new
+watcher intentionally ignores old `HANDOFF-`/`READY-` terminals, which would
+otherwise surface only as PR events and `STALL`.
 A DRAFT-PUBLISHED result emits its own `DRAFT-PUBLISHED <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
 The watcher also emits these supervision events:

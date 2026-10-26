@@ -517,6 +517,8 @@ done <"$parity_brief.sentinels"
 # whitespace and a partial/embedded signal must all stay invisible.
 for bad_terminal in \
     $'DRAFT-PUBLISHED-L-d1220-parity1\nStill working.' \
+    'HANDOFF-L-d1220-parity1' \
+    'READY-L-d1220-parity1' \
     'DRAFT-PUBLISHED-L-d1220-oldnonce' \
     'DRAFT-PUBLISHED-L-other-parity1' \
     ' DRAFT-PUBLISHED-L-d1220-parity1' \
