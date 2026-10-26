@@ -46,7 +46,7 @@ JSON
 
 cat >"$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" <<'EOF'
 Implementation complete.
-READY-alpha-n1
+MERGE-READY-alpha-n1
 EOF
 
 cat >"$bin_dir/herdr" <<'STUB'
@@ -110,7 +110,7 @@ if [ "${1:-} ${2:-}" = "agent read" ]; then
         case "$lane" in
         beta)
             if [ -f "$WATCH_FIXTURES/pane-handoff" ]; then
-                printf '%s\n' 'HANDOFF-beta-n2'
+                printf '%s\n' 'DRAFT-PUBLISHED-beta-n2'
             else
                 printf '%s\n' 'BLOCKED-beta-n2'
             fi
@@ -472,21 +472,22 @@ root = pathlib.Path(root)
 fixture = (root / "ai/schemas/fixtures/brief.envelope/valid/minimal.md").read_text()
 envelope = json.loads(re.search(r"```json\n(.*?)\n```", fixture, re.S)[1])
 envelope["report_path"] = report
-envelope["sentinels"] = {kind: f"{kind.upper()}-L-d1220-parity1"
-                         for kind in ("ready", "handoff", "blocked")}
+prefixes = {"ready": "MERGE-READY", "handoff": "DRAFT-PUBLISHED", "blocked": "BLOCKED"}
+envelope["sentinels"] = {kind: f"{prefixes[kind]}-L-d1220-parity1"
+                         for kind in prefixes}
 envelope["sentinels"]["attempt_nonce"] = "parity1"
 source = (root / "ai/skills/universal/orchestrate/assets/lane-brief.md").read_text()
 values = {key: "fixture-" + key for key in re.findall(r"\{\{([^}]+)\}\}", source)}
 values.update({"brief-envelope-json": json.dumps(envelope), "report-path": report,
                "lane-name": "L-d1220", "attempt-nonce": "parity1"})
-values.update({kind + "-sentinel": kind.upper() + "-L-d1220"
-               for kind in ("ready", "handoff", "blocked")})
+values.update({kind + "-sentinel": prefixes[kind] + "-L-d1220"
+               for kind in prefixes})
 rendered = re.sub(r"\{\{([^}]+)\}\}", lambda m: values[m[1]], source)
 pathlib.Path(output).write_text(rendered)
 # Extract what the reporting protocol actually renders rather than duplicating
 # its placeholder ordering in the shell test.
 reporting = rendered.split("## Reporting protocol\n", 1)[1]
-sentinels = re.findall(r"^  - `((?:READY|HANDOFF|BLOCKED)-[^`]+)`", reporting, re.M)
+sentinels = re.findall(r"^  - `((?:MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-[^`]+)`", reporting, re.M)
 assert set(sentinels) == {envelope["sentinels"][kind]
                           for kind in ("ready", "handoff", "blocked")}
 pathlib.Path(output + ".sentinels").write_text("\n".join(sentinels) + "\n")
@@ -502,25 +503,25 @@ while IFS= read -r terminal; do
     printf 'Worker result.\n%s\n\n' "$terminal" >"$parity_report"
     bash "$watcher" "${parity_args[@]}" >"$parity_dir/$terminal.out"
     assert_line "$parity_dir/$terminal.out" "SENTINEL alpha: $terminal"
-    if [[ "$terminal" = HANDOFF-* ]]; then
-        assert_line "$parity_dir/$terminal.out" "HANDOFF alpha: $terminal"
+    if [[ "$terminal" = DRAFT-PUBLISHED-* ]]; then
+        assert_line "$parity_dir/$terminal.out" "DRAFT-PUBLISHED alpha: $terminal"
     else
-        assert_count "$parity_dir/$terminal.out" 0 '^HANDOFF '
+        assert_count "$parity_dir/$terminal.out" 0 '^DRAFT-PUBLISHED '
     fi
     # Restarting against durable state does not repeat the transition.
     bash "$watcher" "${parity_args[@]}" >"$parity_dir/restart.out"
-    assert_count "$parity_dir/restart.out" 0 '^(SENTINEL|HANDOFF) '
+    assert_count "$parity_dir/restart.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 done <"$parity_brief.sentinels"
 
-# A valid old line followed by prose, a stale attempt, another lane's signal,
+# A valid sentinel followed by prose, a stale attempt, another lane's signal,
 # whitespace and a partial/embedded signal must all stay invisible.
 for bad_terminal in \
-    $'HANDOFF-L-d1220-parity1\nStill working.' \
-    'HANDOFF-L-d1220-oldnonce' \
-    'HANDOFF-L-other-parity1' \
-    ' HANDOFF-L-d1220-parity1' \
-    'HANDOFF-L-d1220-parity1 extra' \
-    'prefix HANDOFF-L-d1220-parity1'; do
+    $'DRAFT-PUBLISHED-L-d1220-parity1\nStill working.' \
+    'DRAFT-PUBLISHED-L-d1220-oldnonce' \
+    'DRAFT-PUBLISHED-L-other-parity1' \
+    ' DRAFT-PUBLISHED-L-d1220-parity1' \
+    'DRAFT-PUBLISHED-L-d1220-parity1 extra' \
+    'prefix DRAFT-PUBLISHED-L-d1220-parity1'; do
     printf '%s\n' "$bad_terminal" >"$parity_report"
     # Fresh state makes rejection independent of the dedup above.
     bash "$watcher" --iterations 1 --registry "$registry" \
@@ -528,23 +529,23 @@ for bad_terminal in \
         2099-01-01T00:00:00Z \
         "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
         >"$parity_dir/rejected.out"
-    assert_count "$parity_dir/rejected.out" 0 '^(SENTINEL|HANDOFF) '
+    assert_count "$parity_dir/rejected.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 done
 
-# Report-only extension defaults the label to the agent; pane handoffs use
+# Report-only extension defaults the label to the agent; pane publications use
 # the same grammar and retain the advisory pane-only tag.
-printf '%s\n' 'HANDOFF-alpha-parity1' >"$parity_report"
+printf '%s\n' 'DRAFT-PUBLISHED-alpha-parity1' >"$parity_report"
 bash "$watcher" --iterations 1 --registry "$registry" --interval-seconds 0 \
     --timeout-seconds 1 2099-01-01T00:00:00Z \
     "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report" \
     >"$parity_dir/default-label.out"
-assert_line "$parity_dir/default-label.out" 'HANDOFF alpha: HANDOFF-alpha-parity1'
+assert_line "$parity_dir/default-label.out" 'DRAFT-PUBLISHED alpha: DRAFT-PUBLISHED-alpha-parity1'
 touch "$fixture_dir/pane-handoff"
 bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
     --interval-seconds 0 --timeout-seconds 1 2099-01-01T00:00:00Z \
     beta:branch-beta:n2:evanharmon1/harmon-devkit >"$parity_dir/pane.out"
-assert_line "$parity_dir/pane.out" 'SENTINEL beta: HANDOFF-beta-n2 (pane only)'
-assert_line "$parity_dir/pane.out" 'HANDOFF beta: HANDOFF-beta-n2 (pane only)'
+assert_line "$parity_dir/pane.out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 (pane only)'
+assert_line "$parity_dir/pane.out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 (pane only)'
 # INT1 / integration-r1-codex-cloud-1: pane advisory must not consume the
 # later report confirmation. Each invocation restarts the watcher, testing
 # that both source facts survive persistence rather than only live memory.
@@ -557,40 +558,40 @@ source_args=(--iterations 1 --state-file "$source_state" --registry "$registry"
 source_out="$parity_dir/source.out"
 bash "$watcher" "${source_args[@]}" >"$source_out"
 bash "$watcher" "${source_args[@]}" >>"$source_out"
-assert_count "$source_out" 1 '^SENTINEL beta: HANDOFF-beta-n2 \(pane only\)$'
-assert_count "$source_out" 1 '^HANDOFF beta: HANDOFF-beta-n2 \(pane only\)$'
-printf '%s\n' 'HANDOFF-beta-n2' >"$source_report"
+assert_count "$source_out" 1 '^SENTINEL beta: DRAFT-PUBLISHED-beta-n2 \(pane only\)$'
+assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 \(pane only\)$'
+printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$source_report"
 bash "$watcher" "${source_args[@]}" >>"$source_out"
-assert_count "$source_out" 1 '^SENTINEL beta: HANDOFF-beta-n2$'
-assert_count "$source_out" 1 '^HANDOFF beta: HANDOFF-beta-n2$'
+assert_count "$source_out" 1 '^SENTINEL beta: DRAFT-PUBLISHED-beta-n2$'
+assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2$'
 bash "$watcher" "${source_args[@]}" >"$parity_dir/source-restart.out"
-assert_count "$parity_dir/source-restart.out" 0 '^(SENTINEL|HANDOFF) '
+assert_count "$parity_dir/source-restart.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 # Even if the report later has no terminal line, confirmation suppresses a
 # pane fallback for that same sentinel across restart.
 printf '%s\n' 'Report continuing.' >"$source_report"
 bash "$watcher" "${source_args[@]}" >"$parity_dir/source-fallback.out"
-assert_count "$parity_dir/source-fallback.out" 0 '^(SENTINEL|HANDOFF) '
+assert_count "$parity_dir/source-fallback.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 
 # Report-first: only the untagged pair, never a later pane-only duplicate.
 rm "$source_state"
-printf '%s\n' 'HANDOFF-beta-n2' >"$source_report"
+printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$source_report"
 bash "$watcher" "${source_args[@]}" >"$source_out"
-assert_line "$source_out" 'SENTINEL beta: HANDOFF-beta-n2'
-assert_line "$source_out" 'HANDOFF beta: HANDOFF-beta-n2'
+assert_line "$source_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2'
+assert_line "$source_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2'
 printf '%s\n' 'Report continuing.' >"$source_report"
 bash "$watcher" "${source_args[@]}" >>"$source_out"
 assert_count "$source_out" 1 '^SENTINEL beta:'
-assert_count "$source_out" 1 '^HANDOFF beta:'
+assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta:'
 assert_count "$source_out" 0 '\(pane only\)'
 
 # Adopting a source-less legacy state must not lose report confirmation.
-printf 'SENTINEL\tbeta\tHANDOFF-beta-n2\t\n' >"$source_state"
-printf '%s\n' 'HANDOFF-beta-n2' >"$source_report"
+printf 'SENTINEL\tbeta\tDRAFT-PUBLISHED-beta-n2\t\n' >"$source_state"
+printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$source_report"
 bash "$watcher" "${source_args[@]}" >"$source_out"
-assert_line "$source_out" 'SENTINEL beta: HANDOFF-beta-n2'
-assert_line "$source_out" 'HANDOFF beta: HANDOFF-beta-n2'
+assert_line "$source_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2'
+assert_line "$source_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2'
 bash "$watcher" "${source_args[@]}" >"$parity_dir/legacy-restart.out"
-assert_count "$parity_dir/legacy-restart.out" 0 '^(SENTINEL|HANDOFF) '
+assert_count "$parity_dir/legacy-restart.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 rm "$fixture_dir/pane-handoff"
 
 for invalid_spec in \
@@ -620,7 +621,7 @@ assert_line "$cloud_out" 'BRANCH cloud: claude/cloud-fixture head=aaaaaaaa'
 assert_count "$cloud_out" 0 '^(AGENT|SENTINEL|PR) cloud:'
 [ ! -e "$workspace_root/harmon-devkit/.worktrees/cloud" ] || fail "cloud fixture unexpectedly has a worktree"
 mkdir -p "$workspace_root/harmon-devkit/.worktrees/cloud"
-printf '%s\n' 'READY-cloud-n4' >"$workspace_root/harmon-devkit/.worktrees/cloud/.lane-report.md"
+printf '%s\n' 'MERGE-READY-cloud-n4' >"$workspace_root/harmon-devkit/.worktrees/cloud/.lane-report.md"
 printf '%s\n' '{"ref":"refs/heads/claude/cloud-fixture","object":{"type":"commit","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}' >"$fixture_dir/cloud-branch.json"
 printf '%s\n' '[{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' >"$fixture_dir/cloud-pr.json"
 bash "$watcher" "${cloud_args[@]}" >>"$cloud_out"
@@ -666,7 +667,7 @@ assert_line "$primary_out" 'AGENT beta: init -> idle'
 assert_line "$primary_out" 'AGENT gamma: init -> blocked'
 
 # Report-file results win; pane-only results are tagged and prompt prose cannot match.
-assert_line "$primary_out" 'SENTINEL alpha: READY-alpha-n1'
+assert_line "$primary_out" 'SENTINEL alpha: MERGE-READY-alpha-n1'
 assert_line "$primary_out" 'SENTINEL beta: BLOCKED-beta-n2 (pane only)'
 assert_count "$primary_out" 0 '^SENTINEL gamma:'
 assert_count "$primary_out" 1 '^SENTINEL alpha:'
@@ -1937,7 +1938,7 @@ flattened_out="$test_tmp/flattened.out"
 bash "$flattened_watcher" --iterations 1 \
     --state-file "$test_tmp/flattened.state" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/consumer >"$flattened_out"
-assert_line "$flattened_out" 'SENTINEL alpha: READY-alpha-n1'
+assert_line "$flattened_out" 'SENTINEL alpha: MERGE-READY-alpha-n1'
 
 # A watcher launched from a linked worktree still finds reports in sibling
 # worktrees under the primary checkout.
@@ -1961,7 +1962,7 @@ linked_out="$test_tmp/linked.out"
 bash "$linked_watcher" --iterations 1 \
     --state-file "$test_tmp/linked.state" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/repo >"$linked_out"
-assert_line "$linked_out" 'SENTINEL alpha: READY-alpha-n1'
+assert_line "$linked_out" 'SENTINEL alpha: MERGE-READY-alpha-n1'
 
 # Nonces use a literal-safe identity alphabet rather than regex syntax.
 invalid_nonce_err="$test_tmp/invalid-nonce.err"
@@ -2559,14 +2560,14 @@ events_poll
 events_poll
 assert_count "$events_out" 2 '^STALL '
 assert_count "$events_out" 2 '^HEARTBEAT '
-# Both report and pane terminals suppress stalls. Use the real HANDOFF grammar.
-printf '%s\n' 'HANDOFF-events-a2' >"$events_report"
+# Both report and pane terminals suppress stalls. Use the real DRAFT-PUBLISHED grammar.
+printf '%s\n' 'DRAFT-PUBLISHED-events-a2' >"$events_report"
 printf '%s\n' 2000000360 >"$clock_file"
 events_poll
 assert_count "$events_out" 2 '^STALL '
-assert_line "$events_out" 'HANDOFF events: HANDOFF-events-a2'
+assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2'
 rm "$events_report"
-printf '%s\n' 'HANDOFF-events-a2' >"$fixture_dir/events-pane"
+printf '%s\n' 'DRAFT-PUBLISHED-events-a2' >"$fixture_dir/events-pane"
 events_poll
 printf '%s\n' 2000000480 >"$clock_file"
 events_poll
@@ -2648,23 +2649,23 @@ assert_count "$fixture_dir/events-calls" 1 '^agent list$'
 assert_count "$fixture_dir/events-calls" 1 '^agent read events --source visible '
 assert_count "$fixture_dir/events-calls" 0 '^agent (explain|read events --source recent-unwrapped)'
 rm "$fixture_dir/events-fail-list"
-# Working panes cannot announce advisory sentinels or handoffs.
+# Working panes cannot announce advisory sentinels or draft publications.
 printf '%s\n' working >"$fixture_dir/events-status"
-for terminal in READY HANDOFF BLOCKED; do
+for terminal in MERGE-READY DRAFT-PUBLISHED BLOCKED; do
     events_state="$test_tmp/working-$terminal.state"
     printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
     events_poll
 done
-assert_count "$events_out" 0 '^(SENTINEL|HANDOFF) events: .* \(pane only\)$'
-# Fallback idle lanes still surface each pane-only terminal, including HANDOFF.
+assert_count "$events_out" 0 '^(SENTINEL|DRAFT-PUBLISHED) events: .* \(pane only\)$'
+# Fallback idle lanes still surface each pane-only terminal, including DRAFT-PUBLISHED.
 touch "$fixture_dir/events-fallback"
-for terminal in READY HANDOFF BLOCKED; do
+for terminal in MERGE-READY DRAFT-PUBLISHED BLOCKED; do
     events_state="$test_tmp/fallback-$terminal.state"
     printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
     events_poll
     assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
 done
-assert_line "$events_out" 'HANDOFF events: HANDOFF-events-a2 (pane only)'
+assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only)'
 rm "$fixture_dir/events-fallback"
 # Transient failed/malformed explain reads never flap a normally working lane.
 events_state="$test_tmp/explain-working.state"
@@ -3028,8 +3029,8 @@ event_patterns=(
     "AGENT $lane_pattern: (init|$state_pattern) -> $state_pattern"
     "STALL $lane_pattern: no pane change for [0-9]+m"
     "HEARTBEAT $heartbeat_lane_pattern(; $heartbeat_lane_pattern)*"
-    "SENTINEL $lane_pattern: (READY|HANDOFF|BLOCKED)-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
-    "HANDOFF $lane_pattern: HANDOFF-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
+    "SENTINEL $lane_pattern: (MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
+    "DRAFT-PUBLISHED $lane_pattern: DRAFT-PUBLISHED-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
     "BRANCH $lane_pattern: (absent|[^[:space:]]+ head=[0-9A-Fa-f]{8})"
     "PR $lane_pattern: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8}"
     "POST-PROMOTION-ACTIVITY $lane_pattern: [^[:space:]]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*"

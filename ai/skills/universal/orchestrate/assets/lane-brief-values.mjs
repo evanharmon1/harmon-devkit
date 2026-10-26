@@ -80,7 +80,9 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
   })
   const deadline = new Date(Date.parse(at) + profile.caps.wall_clock_min * 60000).toISOString().replace(/\.000Z$/, 'Z')
   const projection = `rigor ${profile.rigor} (${profile.rigor_source}); caps ${JSON.stringify(profile.caps)}; breadth ${JSON.stringify(profile.breadth)}; tiers ${JSON.stringify(profile.role_tiers)}; strategy ${profile.strategy} (${profile.strategy_source}); projection file ${runDir}/policy.json`
-  const sentinels = Object.fromEntries(['ready', 'handoff', 'blocked'].map((name) => [name, `${name.toUpperCase()}-${lane.lane}`]))
+  const sentinelPrefixes = { ready: 'MERGE-READY', handoff: 'DRAFT-PUBLISHED', blocked: 'BLOCKED' }
+  const sentinels = Object.fromEntries(Object.entries(sentinelPrefixes)
+    .map(([name, prefix]) => [name, `${prefix}-${lane.lane}`]))
   const envelope = {
     run_id: lane.run_id, branch: lane.branch, generation, active_state_path: active, record_directory: runDir,
     policy_projection: projection, default_branch: defaultBranch, base_sha: plan.base_sha,

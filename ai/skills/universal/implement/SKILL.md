@@ -882,7 +882,7 @@ meant to carry it, where it reads as instruction.
 | `{{codex-launch-flags}}` | The approval and sandbox policy the Codex pane was launched with. Default: `-a never -s workspace-write -c sandbox_workspace_write.network_access=true` plus narrow rules for the commands Codex would otherwise prompt on. `--dangerously-bypass-approvals-and-sandbox` is a per-dispatch override, disclosed on the profile line; `n/a` for a non-Codex harness |
 | `{{pr-title}}` | Release-title-guard-compliant proposal |
 | `{{policy-profile}}` | The PR-body profile line — `AGENTS.md` § "Rigor and Strategy"'s complete announce set: resolved rigor and source; the rounds policy's challenge/review/integration/remediation caps **plus `min_rounds` and the wall-clock ceiling**; the **breadth envelope** (`max_agent_runs`, `max_parallel_agents`); strategy and source; all five role tiers, with the implementer's **tier source** (pinned, rigor, derived, default, or operator) and any **pin-caused invariant break** — the `dev-flow-support/assets/tier-inputs.mjs disclose` lines, verbatim (`dev-flow-support` § "Resolving an issue's Tier"); and every off-profile choice named as off-profile |
-| `{{handoff-sentinel}}` | Dispatcher-generated draft-handoff sentinel prefix |
+| `{{handoff-sentinel}}` | Dispatcher-generated draft-publication sentinel prefix |
 | `{{blocked-sentinel}}` | Dispatcher-generated blocked sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
 

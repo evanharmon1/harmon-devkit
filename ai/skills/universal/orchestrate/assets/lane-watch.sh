@@ -5,7 +5,7 @@
 #   STALL <lane>: no pane change for <N>m
 #   HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...
 #   SENTINEL <lane>: <value>[ (pane only)]
-#   HANDOFF <lane>: <value>[ (pane only)]
+#   DRAFT-PUBLISHED <lane>: <value>[ (pane only)]
 #   BRANCH <lane>: <branch> head=<sha8> | absent (cloud lanes)
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
@@ -90,7 +90,7 @@ Options:
   Local spec: agent:branch:nonce:owner/repo[:/absolute/report-path[:lane-label]]
   agent is the lowercase herdr name; lane-label defaults to agent.
   Report defaults to <checkout>/.worktrees/<agent>/.lane-report.md.
-  Sentinels are READY|HANDOFF|BLOCKED-<lane-label>-<nonce>, whole final lines.
+  Sentinels are (MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>, whole final lines.
   Lane specs may end in :cloud (GitHub-only; no local worktree/report).
 
   --state-file PATH               Persist emitted state across restarts
@@ -604,7 +604,7 @@ done
 terminal_sentinel() {
     local label=$1 nonce=$2
     awk 'NF { last = $0 } END { print last }' |
-        grep -E "^(READY|HANDOFF|BLOCKED)-${label}-${nonce}$" 2>/dev/null
+        grep -E "^(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-${label}-${nonce}$" 2>/dev/null
 }
 
 sentinel_from_report() {
@@ -1493,7 +1493,7 @@ while true; do
                 [ "$pane_only" -eq 0 ] || suffix=' (pane only)'
                 echo "SENTINEL $lane: $sentinel$suffix"
                 case "$sentinel" in
-                HANDOFF-*) echo "HANDOFF $lane: $sentinel$suffix" ;;
+                DRAFT-PUBLISHED-*) echo "DRAFT-PUBLISHED $lane: $sentinel$suffix" ;;
                 esac
             fi
 

@@ -116,6 +116,10 @@ to this validator, including when it quotes a literal double-brace example.
 The orchestrator renderer separately checks its entire rendered output for
 unreplaced template tokens before dispatch.
 
+The envelope keys remain `ready`, `handoff`, and `blocked`; their required
+sentinel prefixes are `MERGE-READY-`, `DRAFT-PUBLISHED-`, and `BLOCKED-`,
+respectively, and the brief validator enforces that mapping.
+
 ## Composition: how envelope and payload fit together
 
 `result.envelope.schema.json` declares `payload: { type: "object" }` —
