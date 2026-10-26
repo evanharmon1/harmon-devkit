@@ -84,7 +84,7 @@ const template = readFileSync(file, 'utf8')
 const match = template.match(/```json\n([^\n]+)\n```/)
 function check(name, label, overlap, expected, reason, customize = () => {}, body = template) {
   const facts = JSON.parse(match[1])
-  facts.sentinels = { ready: `READY-${label}-n`, handoff: `HANDOFF-${label}-n`, blocked: `BLOCKED-${label}-n`, attempt_nonce: 'n' }
+  facts.sentinels = { ready: `MERGE-READY-${label}-n`, handoff: `DRAFT-PUBLISHED-${label}-n`, blocked: `BLOCKED-${label}-n`, attempt_nonce: 'n' }
   facts.live_lane_overlaps = overlap
   customize(facts)
   const path = `${dir}/${name}.md`
@@ -115,7 +115,7 @@ check('merge-predecessor', '1542', ['lane `other` (#2, branch `feature/other`, w
 check('own-branch-alias', 'l1', ['lane `alias` (#2, branch `b`, wave 1) has a disjoint effective fence.'], 1, 'names its own lane')
 check('own-issue-alias', 'l1', ['lane `alias` (#1, branch `other`, wave 1) has a disjoint effective fence.'], 1, 'names its own lane')
 check('missing-identity', 'l1', [], 1, 'cannot derive its own lane identity', (facts) => {
-  facts.sentinels = { ready: 'r-n', handoff: 'h-n', blocked: 'b-n', attempt_nonce: 'n' }
+  facts.sentinels = { ready: 'MERGE-READY--n', handoff: 'DRAFT-PUBLISHED--n', blocked: 'BLOCKED--n', attempt_nonce: 'n' }
 })
 console.log('PASS: canonical lane tuples, identity outside code fences, aliases and missing identity')
 NODE

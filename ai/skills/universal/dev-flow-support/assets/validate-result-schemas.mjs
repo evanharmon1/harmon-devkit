@@ -319,10 +319,15 @@ function checkBriefFacts(instance, errors) {
   const heading = prose.join('\n').match(/^# Lane brief — (.+?)(?: \([^\n]+\))?$/m)
   if (heading) ownLanes.add(heading[1])
   const suffix = `-${instance.sentinels.attempt_nonce}`
+  const sentinelPrefixes = { ready: 'MERGE-READY-', handoff: 'DRAFT-PUBLISHED-', blocked: 'BLOCKED-' }
   for (const field of ['ready', 'handoff', 'blocked']) {
     const sentinel = instance.sentinels[field]
-    const prefix = `${field.toUpperCase()}-`
-    if (sentinel.startsWith(prefix) && sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
+    const prefix = sentinelPrefixes[field]
+    if (!sentinel.startsWith(prefix)) {
+      errors.push(`$brief.sentinels.${field}: sentinel ${JSON.stringify(sentinel)} must use prefix ${prefix}`)
+      continue
+    }
+    if (sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
   }
   ownLanes.delete('')
   if (ownLanes.size === 0) errors.push('$brief: cannot derive its own lane identity from the title or sentinels')
