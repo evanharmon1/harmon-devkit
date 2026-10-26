@@ -1330,23 +1330,32 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   automation coverage and every readiness prerequisite. Additional configured
   finders still need their evidence; use the dispatched-integrator path when
   their `finder_cycles` must be supplied.
-  **The run owner drives and captures cycle authority before dispatch.**
-  Immediately after each owner-driven `reserve`, broker `attach`, or `carry`, the
-  coordinator calls `run-record.mjs integration-review-capture` with its owner
-  token, run/slate/session, the checker state, and `--authority-kind reserve|attach|carry`
-  (plus `--repo-dir` for carry). That command observes the open draft and exact
-  head, verifies the owner-posted attachment or re-derives carry, then retains
-  the canonical transition derived from that cycle's immutable first owner
-  attachment. The origin is keyed by run, PR, original head, cycle ordinal,
-  and finder; current CI's charged/exempt split and independently corroborated
-  settlements remain live observations. Before any owner-captured `reserve`,
+  **The run owner alone drives cycle transitions and their capture boundaries.**
+  Capture `reserve` immediately. After broker `attach`, the integrator polls
+  first. On a terminal clean/findings result, first-window exit 12, final exit
+  13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
+  with its owner token, run/slate/session, the checker state, and
+  `--authority-kind attach` before admitting a receipt or reserving retry 2.
+  The command reconstructs the attachment from the retained reservation and
+  exact owner trigger, then runs the ordinary canonical checker on scratch while
+  the origin head is still live; it retains that one canonical attachment, not
+  mutable poll-state fields. A clean attachment therefore retains the checker’s
+  corroborated reviewed base; an exit-12 attachment retains only the first
+  request controls retry 2 needs. Capture `carry` immediately after its
+  owner-driven transition (with `--repo-dir`). The origin is keyed by run, PR,
+  original head, cycle ordinal, and finder; current CI's charged/exempt split
+  and independently corroborated settlements remain live observations. Before
+  any owner-captured `reserve`,
   choose and pass an explicit numeric `--timeout-min` (at least 10) so the
   polling state and retained authority share one window. The checker's generic
   unset-timeout adoption remains for legacy recovery, never a new owner
   capture. It does no network work under the run mutex. If a crash or
   concurrent state change prevents that capture, retry the owner transition or
   leave the receipt blocked; do not admit an integrator result from mutable
-  state. The dispatch brief gives the integrator this captured cycle only for
+  state. Original-head legacy receipt admission remains supported; without an
+  owner-retained, corroborated reviewed base, first carry is refused and the
+  owner starts a fresh ordinary cycle at the new head. The dispatch brief gives
+  the integrator this captured cycle only for
   polling and reporting. This applies to every
   trigger order (`after-ci`, `with-push`, and `after-ci-first`), including
   status-only CI and no-suite heads; timestamps do not bind a review to a head.
@@ -1473,8 +1482,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   - A report-only `completed`/`pending` result carrying
     `codex_cycle.exit_code: 12` is consumed by the owner before any receipt,
     adjudication, evidence publication, or stage transition. The owner verifies
-    the first window, reserves and broker-attaches attempt 2, captures that
-    authority, and re-dispatches the same integration round. It spends neither
+    the first window, captures the reconstructed attempt-1 attachment, reserves
+    and broker-attaches attempt 2, and re-dispatches the same integration round. It spends neither
     another cycle nor a remediation round. A second timeout is exit 13 and
     follows the ordinary terminal path below.
 
@@ -1535,8 +1544,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     above): re-dispatch the agent after a bounded wait rather than
     inventing a poller of your own. The agent absorbs the single
     reserve-retry attempt (exit `12`) through the owner-only transition: the
-    owner observes the first full window, reserves and broker-attaches attempt
-    2, records its authority, then re-dispatches. A delegate never creates
+    owner observes the first full window, captures attempt 1, reserves and
+    broker-attaches attempt 2, then re-dispatches. A delegate never creates
     owner-controlled retry evidence.
   - A checker exit `19` — whether recorded as `codex_cycle.exit_code: 19` or
     reported with `codex_cycle: null` because a stale `reserve` (including a

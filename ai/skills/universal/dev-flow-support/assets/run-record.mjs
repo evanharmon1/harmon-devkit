@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
-import { admittedLegacyCarryOrigin, authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -1721,8 +1721,9 @@ function ghJson(args) {
   }
 }
 
-// Observe the transition outside run.json's mutex.  The caller owns the slate
-// token and invokes this immediately after reserve/attach/carry; the retained
+// Observe the transition outside run.json's mutex. The caller owns the slate
+// token and captures reserve/carry immediately, but captures attach only after
+// the checker has reached its terminal or retry observation; the retained
 // ruling, not this mutable source file, is later receipt authority.
 function rederiveRetryReservation(source, record, context) {
   // An idempotent owner replay keeps the reservation capture the owner already
@@ -1754,53 +1755,16 @@ function rederiveRetryReservation(source, record, context) {
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 }
 
-function legacyCarryPredecessor(source, record, context) {
-  const origin = admittedLegacyCarryOrigin(record, source, { common: context.common, runId: record.run_id })
-  const trigger = ghJson(['api', `repos/${origin.repo}/issues/comments/${origin.trigger_comment_id}`])
-  if (Number(trigger?.id) !== origin.trigger_comment_id || typeof trigger?.created_at !== 'string' ||
-      typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${origin.pr}`)) {
-    throw new Refusal('legacy origin receipt trigger is no longer a valid PR request observation')
-  }
-  // Only current checker observations remain writable here.  The received
-  // request controls above come from the admitted receipt and the live
-  // immutable trigger, never from the mutable legacy checker snapshot.
-  return {
-    version: source.version,
-    ...origin,
-    phase: 'attached',
-    reserved_at: trigger.created_at,
-    requested_at: trigger.created_at,
-    previous_head_trigger_comment_id: null,
-    previous_trigger_comment_id: null,
-    settled: source.settled ?? [],
-    charge: source.charge,
-    charge_reason: source.charge_reason,
-    base_sha: source.base_sha,
-    review_trigger: source.review_trigger,
-    review_order: source.review_order,
-    integration_exempt_cap: source.integration_exempt_cap,
-    ci_exempt: source.ci_exempt,
-    last_reviewed_head: source.last_reviewed_head,
-    last_reviewed_base_sha: source.last_reviewed_base_sha,
-    last_reviewed_verdict: source.last_reviewed_verdict,
-  }
-}
-
 function rederiveCarry(source, repoDir, record, context) {
   if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
   const target = source?.carry?.attests_head
   if (typeof target !== 'string' || target === '') throw new Refusal('carry authority has no claimed attested head')
   let predecessor
-  try { predecessor = retainedCarryPredecessor(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
-    // The strictly authenticated legacy r1 is the one non-capture origin.
-    // Its conservative tuple is reconstructed from the immutable receipt and
-    // a fresh trigger observation; no raw checker request controls survive.
-    if ((retainedAuthorities(record, { common: context.common, runId: record.run_id }).length === 0)) {
-      try { predecessor = legacyCarryPredecessor(source, record, context) } catch (legacyError) {
-        throw new Refusal(`carry authority has no immutable predecessor controls: ${legacyError.message}`)
-      }
-    }
-    else throw new Refusal(`carry authority has no immutable predecessor controls: ${error.message}`)
+  try {
+    predecessor = retainedCarryReplay(record, source, { common: context.common, runId: record.run_id }) ??
+      retainedCarryPredecessor(record, source, { common: context.common, runId: record.run_id })
+  } catch (error) {
+    throw new Refusal(`carry authority has no immutable predecessor controls: ${error.message}`)
   }
   const scratch = mkdtempSync(join(tmpdir(), 'integration-carry-'))
   try {
@@ -1836,6 +1800,7 @@ function observeAuthority(kind, source, repoDir, record, context) {
   if (kind === 'reserve' && Number(source.attempt) === 2) source = rederiveRetryReservation(source, record, context)
   if (kind === 'attach') {
     let reservation
+    let verifiedTrigger
     try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
       throw new Refusal(`attached trigger has no immutable reservation controls: ${error.message}`)
     }
@@ -1852,19 +1817,44 @@ function observeAuthority(kind, source, repoDir, record, context) {
       writeFileSync(scratchState, `${JSON.stringify(reservation)}\n`, { mode: 0o600 })
       attached = JSON.parse(execFileSync('bash', [INTEGRATION_CHECKER, 'attach', '--state', scratchState,
         '--trigger-id', String(source.trigger_comment_id)], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }))
+      const trigger = ghJson(['api', `repos/${reservation.repo}/issues/comments/${attached.trigger_comment_id}`])
+      const actor = ghJson(['api', 'user'])
+      const body = reservation?.finder?.trigger_body ?? '@codex review'
+      if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
+        typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
+        typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
+        typeof trigger?.created_at !== 'string' || typeof reservation?.reserved_at !== 'string' || trigger.created_at < reservation.reserved_at) {
+        throw new Refusal('attached trigger is not the exact post-reservation owner request')
+      }
+      verifiedTrigger = trigger
+      const checkArgs = [INTEGRATION_CHECKER, 'check', '--state', scratchState,
+        '--actor-id', '199175422']
+      if (reservation.run_id) checkArgs.push('--run-id', reservation.run_id)
+      let checkExit = 0
+      try {
+        execFileSync('bash', checkArgs, {
+          encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+        })
+      } catch (error) {
+        checkExit = error.status
+        if (![10, 12, 13, 15].includes(checkExit)) {
+          throw new Refusal(`attached trigger did not reach a terminal canonical observation: ${(error.stderr || error.stdout || error.message).trim()}`)
+        }
+      }
+      attached = readJson(scratchState, 'canonical attached checker state')
+      if (!attached || (checkExit === 0 && attached.last_reviewed_verdict !== 'clean') ||
+          (checkExit === 10 && attached.last_reviewed_verdict !== 'findings') ||
+          ([0, 10].includes(checkExit) && attached.last_reviewed_head !== reservation.head)) {
+        throw new Refusal('attached trigger did not retain the canonical terminal review observation')
+      }
     } catch (error) {
       throw new Refusal(`attached trigger did not complete the canonical retained-reservation transition: ${(error.stderr || error.stdout || error.message).trim()}`)
     } finally { rmSync(scratch, { recursive: true, force: true }) }
     // Retain the canonical transition itself.  Merging into source would let
     // source-only keys (for example injected carry provenance) survive.
-    const trigger = ghJson(['api', `repos/${reservation.repo}/issues/comments/${attached.trigger_comment_id}`])
-    const actor = ghJson(['api', 'user'])
-    const body = reservation?.finder?.trigger_body ?? '@codex review'
-    if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
-      typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
-      typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
-      typeof trigger?.created_at !== 'string' || typeof reservation?.reserved_at !== 'string' || trigger.created_at < reservation.reserved_at) {
-      throw new Refusal('attached trigger is not the exact post-reservation owner request')
+    const finalPr = ghJson(['pr', 'view', String(reservation.pr), '--repo', reservation.repo, '--json', 'state,isDraft,headRefOid'])
+    if (finalPr?.state !== 'OPEN' || finalPr?.isDraft !== true || finalPr?.headRefOid !== reservation.head) {
+      throw new Refusal('integration review authority head moved while the terminal attachment was being captured')
     }
     if (Number(attached.attempt) === 2) {
       const firstId = Number(reservation.first_trigger_comment_id)
@@ -1873,7 +1863,7 @@ function observeAuthority(kind, source, repoDir, record, context) {
         throw new Refusal('retry authority has no valid first-request or full-window control')
       }
       const first = ghJson(['api', `repos/${reservation.repo}/issues/comments/${firstId}`])
-      const waited = Date.parse(trigger.created_at) - Date.parse(first?.created_at)
+      const waited = Date.parse(verifiedTrigger?.created_at) - Date.parse(first?.created_at)
       if (first?.id !== firstId || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
         throw new Refusal('retry authority did not observe two owner requests separated by the full review window')
       }
@@ -1907,8 +1897,19 @@ function captureIntegrationReviewAuthority(args) {
   const source = readCaptureState(args.state)
   const priorRecord = readJson(canonical, 'run record')
   const previousAuthorityDigest = retainedAuthorities(priorRecord, { common, runId }).at(-1)?.digest ?? null
-  const state = observeAuthority(kind, structuredClone(source), args['repo-dir'], priorRecord,
+  let state = observeAuthority(kind, structuredClone(source), args['repo-dir'], priorRecord,
     { common, runId })
+  // Replaying an attachment proves the current request and live observation
+  // again, but never turns a later CI split or terminal result into a second
+  // immutable capture for the same request. Receipt authentication consumes
+  // that fresh observation and remains responsible for its verdict.
+  if (kind === 'attach') {
+    const replay = retainedAuthorities(priorRecord, { common, runId })
+      .filter((entry) => authorityIdentity(entry.authority) === authorityIdentity({ kind, snapshot: state }))
+    if (replay.length === 1) {
+      state = replay[0].authority.snapshot
+    }
+  }
   const temporary = join(mkdtempSync(join(tmpdir(), 'integration-authority-')), 'authority.json')
   try {
     writeFileSync(temporary, `${JSON.stringify({ schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }, null, 2)}\n`, { mode: 0o600 })

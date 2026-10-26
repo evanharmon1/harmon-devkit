@@ -2,8 +2,9 @@
 //
 // The checker state in a worktree belongs to the integrator.  It is useful for
 // polling, but it cannot say which PR head a review request was made for.  The
-// run owner snapshots that state while it performs reserve/attach/carry and
-// retains the snapshot through run-record.mjs's existing ruling mechanism.
+// run owner snapshots reserve/carry immediately and a reconstructed attachment
+// only after polling reaches a terminal or retry observation, retaining that
+// snapshot through run-record.mjs's existing ruling mechanism.
 // Receipt admission consumes only those snapshots as cycle authority.
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -155,8 +156,52 @@ function matchingCarryPredecessor(prior, state) {
     const predecessor = entry.authority.snapshot
     const attested = predecessor.carry?.attests_head ?? predecessor.head
     return attested === from &&
+      Number(predecessor.attempt) === Number(state?.attempt) &&
       stable(cycleIdentity(predecessor)) === stable(cycleIdentity(state))
   })
+  return matches.length === 1 ? matches[0] : null
+}
+
+function matchingCarryReplay(prior, state) {
+  const wanted = state?.carry
+  const matches = prior.filter((entry) => {
+    if (entry.kind !== 'carry') return false
+    const retained = entry.authority.snapshot
+    return retained.carry?.from_head === wanted?.from_head &&
+      retained.carry?.attests_head === wanted?.attests_head &&
+      Number(retained.attempt) === Number(state?.attempt) &&
+      stable(cycleIdentity(retained)) === stable(cycleIdentity(state)) &&
+      stable(requestControls(retained)) === stable(requestControls(state))
+  })
+  return matches.length === 1 ? matches[0] : null
+}
+
+function matchingTerminalReceipt(record, snapshot, { common, runId }) {
+  const binding = record?.pr_bindings?.at(-1)
+  let bound = false
+  try {
+    const url = new URL(binding?.url)
+    bound = Number(binding?.number) === Number(snapshot.pr) &&
+      url.pathname.replace(/^\/+|\/+$/g, '') === `${snapshot.repo}/pull/${snapshot.pr}`
+  } catch { /* an unbound receipt cannot authorize a carry */ }
+  // The admitted receipt, not this immutable terminal observation, attests
+  // that the cycle is now clean: findings may have been settled after capture.
+  // The attachment still proves the original reviewed head and corroborated base.
+  if (!bound || snapshot.last_reviewed_head !== snapshot.head ||
+      !['clean', 'findings'].includes(snapshot.last_reviewed_verdict) ||
+      !SHA40.test(snapshot.last_reviewed_base_sha ?? '')) return false
+  const matches = (record?.receipts ?? []).filter((receipt) =>
+    receipt?.kind === 'pass' && /^integration-r[1-9][0-9]*-integrator$/.test(receipt?.file ?? ''))
+    .map((receipt) => readJson(join(common, 'dev-flow-v2', 'runs', runId, 'passes', `${receipt.file}.json`)))
+    .filter((pass) => {
+      const cycle = pass?.payload?.codex_cycle
+      return pass?.run?.run_id === record?.run_id && pass?.role === 'integrator' &&
+        pass?.status === 'completed' && pass?.head === snapshot.head &&
+        pass?.payload?.verdict === 'clean' && cycle?.head === snapshot.head &&
+        cycle?.exit_code === 0 && Number(cycle?.cycle) === Number(snapshot.charged_cycles) + Number(snapshot.exempt_cycles) &&
+        Number(cycle?.attempt) === Number(snapshot.attempt) &&
+        String(cycle?.trigger_comment_id) === String(snapshot.trigger_comment_id)
+    })
   return matches.length === 1 ? matches[0] : null
 }
 
@@ -164,66 +209,14 @@ function hasOwnerTimeout(state) {
   return Number.isSafeInteger(state?.timeout_min) && state.timeout_min >= 10
 }
 
-function validLegacyOriginReceipt(record, state, { common, runId }) {
-  // This is deliberately a receipt lookup, not a second checker.  The writer
-  // admitted these immutable bytes under the legacy live-authentication path.
-  const receipt = (record?.receipts ?? []).filter((entry) =>
-    entry?.kind === 'pass' && entry?.file === 'integration-r1-integrator')
-  if (receipt.length !== 1) return false
-  const pass = readJson(join(common, 'dev-flow-v2', 'runs', runId, 'passes', 'integration-r1-integrator.json'))
-  const cycle = pass?.payload?.codex_cycle
-  const binding = record?.pr_bindings?.at(-1)
-  if (pass?.run?.run_id !== record?.run_id || pass?.role !== 'integrator' ||
-      pass?.status !== 'completed' || pass?.payload?.integration_round !== 1 ||
-      pass?.payload?.verdict !== 'clean' || pass?.head !== state?.head ||
-      !cycle || cycle?.head !== state?.head || cycle?.exit_code !== 0 ||
-      Number(cycle?.cycle) !== Number(state?.charged_cycles) + Number(state?.exempt_cycles) ||
-      Number(cycle?.attempt) !== Number(state?.attempt) ||
-      String(cycle?.trigger_comment_id) !== String(state?.trigger_comment_id) ||
-      !['comment', 'review'].includes(cycle?.accepted?.surface) ||
-      cycle?.accepted?.reviewed_commit !== state?.head ||
-      Number(binding?.number) !== Number(state?.pr)) return false
-  try {
-    const url = new URL(binding?.url)
-    return url.pathname.replace(/^\/+|\/+$/g, '') === `${state.repo}/pull/${state.pr}`
-  } catch { return false }
-}
-
-// Legacy r1 predates owner captures.  Its initial, live admission still
-// validates the checker itself, so keep this projection pure and usable
-// before a receipt exists.  A carry adds receipt authentication below.
+// Legacy r1 predates owner captures. Its initial, live admission still
+// validates the checker itself, so retain this pure compatibility projection.
 export function conservativeLegacyControls(state, { allowCarry = false } = {}) {
   if ((!allowCarry && state?.carry) || Number(state?.charged_cycles) !== 1 ||
       Number(state?.exempt_cycles) !== 0 || Number(state?.attempt) !== 1) {
     throw new Error('legacy review evidence cannot prove non-initial cycle counters or carry provenance')
   }
   return { first_trigger_comment_id: 1, requires_full_window: true, timeout_min: 15 }
-}
-
-// An admitted legacy receipt is the one non-capture carry origin.  It may
-// seed only the first carry and replaces every legacy request control with the
-// conservative compatibility projection.
-export function admittedLegacyCarryOrigin(record, state, options) {
-  // Capture receives the claimed carry proof in the mutable source.  The
-  // receipt authenticates the original cycle while the canonical carry
-  // transition below replaces that proof; it must not make the original r1
-  // impossible to recover merely because a first carry is being requested.
-  const controls = conservativeLegacyControls(state, { allowCarry: true })
-  if (!validLegacyOriginReceipt(record, state, options)) {
-    throw new Error('no admitted clean legacy origin receipt matches this review cycle')
-  }
-  return {
-    repo: state.repo,
-    pr: state.pr,
-    head: state.head,
-    charged_cycles: 1,
-    exempt_cycles: 0,
-    attempt: 1,
-    trigger_comment_id: Number(state.trigger_comment_id),
-    run_id: options.runId,
-    finder: null,
-    ...controls,
-  }
 }
 
 export function retainedReservation(record, state, options) {
@@ -246,7 +239,23 @@ export function retainedCycleOrigin(record, state, options) {
 export function retainedCarryPredecessor(record, state, options) {
   const predecessor = matchingCarryPredecessor(retainedAuthorities(record, options), state)
   if (!predecessor) throw new Error('no retained carry predecessor matches this review cycle origin')
-  return predecessor.authority.snapshot
+  const snapshot = predecessor.authority.snapshot
+  if (predecessor.kind === 'attach') {
+    const receipt = matchingTerminalReceipt(record, snapshot, options)
+    if (!receipt) throw new Error('retained carry origin has no matching admitted authenticated terminal receipt')
+    // Never alter the retained terminal observation. A matching admitted clean
+    // receipt may settle a findings result, so only the ephemeral canonical
+    // carry proof receives its clean verdict.
+    if (snapshot.last_reviewed_verdict === 'findings') return { ...snapshot, last_reviewed_verdict: 'clean' }
+  }
+  return snapshot
+}
+
+// Replaying an existing carry rechecks that exact immutable ruling. Starting
+// again from its attachment would manufacture a different carried_at value.
+export function retainedCarryReplay(record, state, options) {
+  const replay = matchingCarryReplay(retainedAuthorities(record, options), state)
+  return replay?.authority.snapshot ?? null
 }
 
 export function validateAuthority(authority, prior = [], record = null, options = null) {
@@ -266,7 +275,8 @@ export function validateAuthority(authority, prior = [], record = null, options 
     if (Number(snapshot.attempt) === 2) {
       const origin = matchingOriginAttach(prior, snapshot)
       if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
-          Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min)) {
+          Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min) ||
+          stable(snapshot.finder) !== stable(origin.authority.snapshot.finder)) {
         throw new Error('retry reserve authority does not preserve the retained first-request controls')
       }
     }
@@ -286,7 +296,8 @@ export function validateAuthority(authority, prior = [], record = null, options 
     if (Number(snapshot.attempt) === 2) {
       const origin = matchingOriginAttach(prior, snapshot)
       if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
-          Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min)) {
+          Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min) ||
+          stable(snapshot.finder) !== stable(origin.authority.snapshot.finder)) {
         throw new Error('retry attach authority does not preserve the retained first-request controls')
       }
     }
@@ -297,11 +308,7 @@ export function validateAuthority(authority, prior = [], record = null, options 
     throw new Error('carry authority has no complete origin/attested-head proof')
   }
   const predecessor = matchingCarryPredecessor(prior, snapshot)
-  // An already admitted clean legacy r1 is the one non-capture origin.  It
-  // can seed only the first carry; every later carry remains capture chained.
-  const legacyOrigin = prior.length === 0 && carry.from_head === snapshot.head &&
-    record && options && validLegacyOriginReceipt(record, snapshot, options)
-  if (!predecessor && !legacyOrigin) {
+  if (!predecessor) {
     throw new Error('carry authority has no retained origin or immediate predecessor authority')
   }
   if (predecessor && stable(requestControls(predecessor.authority.snapshot)) !== stable(requestControls(snapshot))) {

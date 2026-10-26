@@ -424,10 +424,15 @@ leave in state, as always.
 ### Owner-only control-transition reference
 
 The coordinator owns every `reserve`, `carry`, broker trigger/attach, release,
-and authority capture described in this reference. It performs and captures
-those transitions before dispatching this role. The dispatched integrator must
-not execute the recipes below: it receives the retained cycle, polls it, and
-reports the resulting observation. A missing capture is a blocker.
+and authority capture described in this reference. It captures `reserve` before
+dispatch and captures `carry` immediately after that owner transition. The
+dispatched integrator must not execute the recipes below: it receives the
+attached cycle, polls it, and reports the resulting observation. After its
+terminal clean/findings observation, first-window exit 12, final 13, or quota
+answer, the owner reconstructs and captures that one attachment from its
+retained reservation and exact trigger while the origin head is still live.
+That attachment is captured before a receipt or attempt 2; a missing required
+capture is a blocker.
 
 The owner persists state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
@@ -767,10 +772,11 @@ fast-forwards, or switches worktrees to recover. Keep the checker's detail in
 the report, not in `codex_cycle`.
 On **12 (retry)**, return the retry observation without reserving, posting, or
 attaching anything. The run owner alone observes the full first window,
-reserves attempt 2 against the same state and head, posts through the broker,
-captures the new authority, then re-dispatches an integrator to poll it. This
-is the one bounded retry; a delegate never receives the owner token or creates
-uncaptured retry evidence.
+captures the reconstructed attempt-1 attachment, reserves attempt 2 against
+the same state and head, posts through the broker, then re-dispatches an
+integrator to poll it. The owner captures attempt 2 only after that poll reaches
+its terminal observation. This is the one bounded retry; a delegate never
+receives the owner token or creates uncaptured retry evidence.
 On **13 (escalate)**, **14**, **15**, or **2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.

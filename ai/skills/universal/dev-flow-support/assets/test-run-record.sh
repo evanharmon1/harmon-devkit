@@ -49,6 +49,22 @@ git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 printf '{"trusted_orchestrator_actor_ids": [12345]}\n' >"$repo/agent-registry.json"
 git -C "$repo" add agent-registry.json
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m registry
+
+# The public writer's canonical checker resolves its helper from the physical
+# writer path. Seed the unmodified runtime closure before any reviewed head so
+# freshness, registry lookup, and the carry graph use one fixture repository.
+fixture_support="$repo/ai/skills/universal/dev-flow-support"
+fixture_integrate="$repo/ai/skills/universal/integrate"
+mkdir -p "$fixture_support" "$fixture_integrate" "$repo/ai"
+cp -R "$asset_dir" "$fixture_support/assets"
+cp -R "$asset_dir/../../integrate/assets" "$fixture_integrate/assets"
+# The validator defaults to its vendored schema copy, but preserve the
+# authoring schemas too so every module-relative validation dependency remains
+# available without replacing this fixture's intentionally local registry.
+cp -R "$asset_dir/../../../../schemas" "$repo/ai/schemas"
+git -C "$repo" add ai/schemas ai/skills/universal/dev-flow-support/assets ai/skills/universal/integrate/assets
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "test: seed integration runtime fixture"
+capture_writer="$fixture_support/assets/run-record.mjs"
 state="$repo/.git/dev-flow-v2"
 
 # The state root must be this fixture's, never the clone running the test.
@@ -829,7 +845,12 @@ for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verifi
     ri --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
 done
 integration_branch="fixture-run-integrator"
-git -C "$repo" branch "$integration_branch" HEAD
+integration_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" branch "$integration_branch" "$integration_base"
+git -C "$repo" checkout -q "$integration_branch"
+printf 'reviewed carry fixture\n' >"$repo/reviewed-carry.txt"
+git -C "$repo" add reviewed-carry.txt
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "reviewed carry fixture"
 mkdir -p "$state/runs/run-integrator/passes" "$state/runs/run-integrator/adjudications"
 printf '{"branch":"%s"}\n' "$integration_branch" >"$state/runs/run-integrator/branch.json"
 resolve_fixture_policy "$state/runs/run-integrator/policy.json" 0
@@ -879,6 +900,12 @@ mkdir -p "$capture_bin"
 cat >"$capture_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
+  *'repos/example/repo/issues/comments/'*'/reactions?per_page=100'*)
+    if [ "${CAPTURE_CLEAN:-}" = 1 ]; then
+      printf '%s\n' '[[{"id":901,"content":"+1","created_at":"2026-10-01T00:22:00Z","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]'
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
   *'pr view 493 --repo example/repo --json baseRefOid --jq .baseRefOid'*)
     printf '%s\n' "${CAPTURE_BASE:?}" ;;
   *'pr view 493 --repo example/repo --json state,isDraft,headRefOid'*)
@@ -891,12 +918,28 @@ case "$*" in
     printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'repos/example/repo/issues/comments/201'*)
     printf '%s\n' '{"id":201,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:21:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
+  *'users/chatgpt-codex-connector[bot]'*)
+    printf '%s\n' '{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}' ;;
+  *'repos/example/repo/issues/493/timeline?per_page=100'*)
+    printf '%s\n' '[[]]' ;;
+  *'repos/example/repo/pulls/493/reviews?per_page=100'*)
+    printf '%s\n' '[[]]' ;;
+  *'repos/example/repo/pulls/493/comments?per_page=100'*)
+    printf '%s\n' '[[]]' ;;
+  *'repos/example/repo/pulls/493'*)
+    printf '{"base":{"sha":"%s"},"head":{"sha":"%s"}}\n' "${CAPTURE_BASE:?}" "${CAPTURE_HEAD:?}" ;;
   *'repos/example/repo/commits/'*'/check-suites?per_page=100'*)
     printf '%s\n' '[{"check_suites":[]}]' ;;
+  *"repos/example/repo/commits/${CAPTURE_ORIGIN_HEAD:-__missing__}"*)
+    printf '{"sha":"%s","commit":{"author":{"date":"2026-10-01T00:00:00Z"},"committer":{"date":"2026-10-01T00:00:00Z"}}}\n' "${CAPTURE_ORIGIN_HEAD:?}" ;;
   *'repos/example/repo/commits/'*)
     printf '%s\n' "{\"sha\":\"${CAPTURE_HEAD:?}\",\"commit\":{\"author\":{\"date\":\"2026-10-01T00:00:00Z\"},\"committer\":{\"date\":\"2026-10-01T00:00:00Z\"}}}" ;;
   *'repos/example/repo/issues/493/comments?per_page=100'*)
-    printf '%s\n' '[[]]' ;;
+    if [ "${CAPTURE_FINDING:-}" = 1 ]; then
+      printf '[[{"id":902,"created_at":"2026-10-01T00:24:00Z","body":"**P1** late finding\\n\\n**Reviewed commit:** `%s`","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]\n' "${CAPTURE_ORIGIN_HEAD:?}"
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
   *'api user'*) printf '%s\n' '{"id":37220977}' ;;
   *) printf 'unexpected gh command: %s\n' "$*" >&2; exit 1 ;;
 esac
@@ -920,7 +963,7 @@ EOF
 chmod +x "$capture_bin/date"
 base64 <"$asset_dir/../../../../../agent-registry.json" >"$capture_bin/registry.b64"
 capture_state="$tmp/capture-state.json"
-capture_base="$(git -C "$asset_dir/../../../../../" rev-parse HEAD)"
+capture_base="$integration_base"
 capture_finder="$(jq -c '
   .finders[] | select(.slug == "codex-cloud") | {
     slug, actor_id:(.trusted_actor_id|tostring), actor_login:.trusted_actor_login,
@@ -933,13 +976,12 @@ capture_finder="$(jq -c '
     carrier_sentence:.collection.terminal_signals.carrier_sentence, success_reaction:.collection.terminal_signals.success_reaction,
     pending_reaction:.collection.terminal_signals.pending_reaction
   }' "$asset_dir/../../../../../agent-registry.json")"
-# The production checker resolves the trusted finder registry at the captured
-# asset base.  Make that immutable source commit available in this isolated
-# fixture repository before exercising the canonical retry reconstruction.
-git -C "$repo" fetch -q "$asset_dir/../../../../../" "$capture_base"
+# The fixture GH endpoint supplies the trusted registry at the retained base;
+# that base itself must be on the reviewed branch so the real carry proof can
+# derive both canonical three-dot identities from one local graph.
 jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
-  charged_cycles:1,exempt_cycles:0,attempt:1,timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$capture_state"
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-integrator",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$capture_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
 # The capture input is still the integrator-owned mutable state file.  Rewrite
 # every source-only control we can without changing the coordinate needed to
@@ -950,12 +992,12 @@ jq '.phase="attached" | .trigger_comment_id="200" |
     .timeout_min=1 | .finder={slug:"foreign"} |
     .carry={from_head:("f" * 40),attests_head:("e" * 40)}' "$capture_state" >"$capture_state.next"
 mv "$capture_state.next" "$capture_state"
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
 # A replay after a crash observes the same transition. It adopts the retained
 # capture without appending another authority that would make receipt lookup
 # ambiguous.
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind attach --at 2026-10-01T00:08:00Z) >/dev/null
 AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
   import { readFileSync } from "node:fs";
@@ -964,11 +1006,11 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
   const retained = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN });
   if (retained.length !== 2) process.exit(1);
   const attached = retained.find((entry) => entry.kind === "attach")?.authority.snapshot;
-  if (!attached || attached.carry !== undefined || attached.run_id !== undefined ||
+  if (!attached || attached.carry !== undefined || attached.run_id !== "run-integrator" ||
       attached.reserved_at !== "2026-10-01T00:06:00Z" || attached.timeout_min === 1 ||
-      attached.finder?.slug !== "codex-cloud") process.exit(1);
+      attached.finder?.slug !== "codex-cloud" || attached.last_reviewed_verdict === "clean") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
-pass "owner capture derives attach authority from its retained reservation, not rewritten checker state"
+pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
 
 # Exit 12 is diagnostic-only: it cannot be receipted (asserted above), and the
 # owner creates the bounded attempt-2 reservation and attachment before a
@@ -976,14 +1018,14 @@ pass "owner capture derives attach authority from its retained reservation, not 
 # capture path, including the retained first request and full-window check.
 retry_state="$tmp/capture-retry-state.json"
 jq -n --arg head "$integration_head" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
-  charged_cycles:1,exempt_cycles:0,attempt:2,first_trigger_comment_id:200,
+  charged_cycles:1,exempt_cycles:0,attempt:2,run_id:"run-integrator",first_trigger_comment_id:200,
   requires_full_window:true,timeout_min:10,reserved_at:"2000-01-01T00:00:00Z"}' >"$retry_state"
 retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')"
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind reserve --at 2026-10-01T00:20:30Z) >/dev/null
 jq '.phase="attached" | .trigger_comment_id="201"' "$retry_state" >"$retry_state.next"
 mv "$retry_state.next" "$retry_state"
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" integration-review-capture \
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind attach --at 2026-10-01T00:21:30Z) >/dev/null
 AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
   import { readFileSync } from "node:fs";
@@ -992,9 +1034,128 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
   const retry = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
     .find((entry) => entry.kind === "attach" && entry.authority.snapshot.attempt === 2)?.authority.snapshot;
   if (!retry || retry.trigger_comment_id !== 201 || retry.first_trigger_comment_id !== 200 ||
-      retry.reserved_at !== "2026-10-01T00:20:00Z" || retry.finder?.slug !== "codex-cloud") process.exit(1);
+      retry.reserved_at !== "2026-10-01T00:20:00Z" || retry.finder?.slug !== "codex-cloud" ||
+      retry.last_reviewed_head !== retry.head || retry.last_reviewed_verdict !== "clean" ||
+      !/^[0-9a-f]{40}$/.test(retry.last_reviewed_base_sha ?? "")) process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "owner retry capture did not retain canonical attempt-2 controls"
 pass "diagnostic retry evidence cannot be receipted before owner-captured attempt 2"
+# Admit the actual clean attempt-2 result through the public writer before a
+# base catch-up asks carry to use it. The receipt is authenticated against the
+# same real checker state and fixture surfaces as the owner capture above.
+rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:22:00Z >/dev/null
+carry_pass="$tmp/integration-r2-carry.json"
+jq --arg head "$integration_head" '
+  .head = $head | .payload.integration_round = 2 |
+  .payload.codex_cycle = {head:$head,cycle:1,attempt:2,trigger_comment_id:"201",exit_code:0,
+    accepted:{surface:"reaction",id:"901",reviewed_commit:$head}}
+' "$integration_pass" >"$carry_pass"
+carry_auth_state="$tmp/carry-auth-state.json"
+carry_attach_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+cp "$state/runs/run-integrator/rulings/$carry_attach_digest" "$carry_auth_state"
+jq '.snapshot | .run_id = "run-integrator"' "$carry_auth_state" >"${carry_auth_state}.next" && mv "${carry_auth_state}.next" "$carry_auth_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt \
+    --slate s-integrator --session alice --run-id run-integrator --pass "$carry_pass" \
+    --codex-state "$carry_auth_state" --codex-repo-dir "$repo") >/dev/null
+
+# The checked branch has one reviewed feature edit. Advancing main without a
+# tree change and merging it into the branch preserves that nonempty canonical
+# three-dot identity at both heads.
+git -C "$repo" checkout -q main
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "base catch-up fixture"
+carry_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -q "$integration_branch"
+carry_merge="$(git -C "$repo" commit-tree "$(git -C "$repo" rev-parse "$integration_head^{tree}")" \
+    -p "$integration_head" -p "$carry_base" -m "base catch-up fixture")"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$carry_merge"
+git -C "$repo" checkout -q "$integration_branch"
+carry_head="$(git -C "$repo" rev-parse HEAD)"
+# Carry starts from the retained canonical attempt-2 attachment, not the
+# mutable retry report. That retained state supplies the exact finder profile,
+# terminal/base markers, and request tuple the real carry selector re-proves.
+jq --arg head "$carry_head" '.carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-state.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:22:30Z) >/dev/null
+carry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 carry sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$state/runs/run-integrator/rulings/$carry_digest" >"$tmp/carry-live-state.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-live-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:23:00Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const carries = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .filter((entry) => entry.kind === "carry");
+  if (carries.length !== 1 || carries[0].authority.snapshot.carry?.attests_head !== process.argv[2] ||
+      typeof carries[0].authority.snapshot.carry?.carried_at !== "string") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" "$carry_head" || fail "public writer did not retain one replay-stable ordinary carry"
+pass "authenticated clean receipt carries across a real base catch-up and replays without a second immutable carry"
+# A changed PR diff cannot inherit this carry. A later finding is a fresh live
+# observation: replay re-proves the retained immutable carry but cannot rewrite
+# that capture to make the old clean result current.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$integration_head" CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-live-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:25:00Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const carries = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .filter((entry) => entry.kind === "carry");
+  if (carries.length !== 1 || carries[0].authority.snapshot.last_reviewed_verdict !== "clean") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "late finding rewrote immutable carried origin evidence"
+late_rc=0
+late_observation="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$integration_head" CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$tmp/carry-live-state.json" --actor-id 199175422 --repo-dir "$repo" --read-only)" || late_rc=$?
+[ "$late_rc" -eq 10 ] || fail "late Codex finding did not remain a live canonical observation: $late_observation"
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:2,reviewed_head:$head,adjudications:[]}' >"$tmp/integration-r2-adjudication.json"
+rri adjudicate --run-id run-integrator --file "$tmp/integration-r2-adjudication.json" >/dev/null
+late_clean_pass="$tmp/integration-r3-late-clean.json"
+jq --arg head "$carry_head" --argjson observation "$late_observation" --slurpfile live "$tmp/carry-live-state.json" '
+  .head = $head | .payload.integration_round = 3 | .payload.verdict = "clean" | .payload.findings = [] |
+  .payload.codex_cycle = {
+    head:$head, cycle:(($live[0].charged_cycles // 0) + ($live[0].exempt_cycles // 0)),
+    attempt:$live[0].attempt, trigger_comment_id:($live[0].trigger_comment_id|tostring), exit_code:0,
+    accepted:$observation.accepted,
+    carried:($live[0].carry + {origin_head:$live[0].head})
+  }' "$integration_pass" >"$late_clean_pass"
+expect_refused "late finding rejects a claimed clean carried receipt" "does not match the live checker process exit" bash -c 'cd "$1" && PATH="$2" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$3" CAPTURE_HEAD="$4" CAPTURE_BASE="$5" RUN_RECORD_OWNER_TOKEN="$6" node "$7" receipt --slate s-integrator --session alice --run-id run-integrator --pass "$8" --codex-state "$9" --codex-repo-dir "$1"' _ "$repo" "$capture_bin:$PATH" "$integration_head" "$carry_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$late_clean_pass" "$tmp/carry-live-state.json"
+late_findings_pass="$tmp/integration-r3-late-findings.json"
+jq --arg head "$carry_head" --argjson observation "$late_observation" --slurpfile live "$tmp/carry-live-state.json" '
+  .head = $head | .payload.integration_round = 3 | .payload.verdict = "findings" |
+  .payload.findings = [{id:"integration-r3-codex-cloud-1",body:"**P1** late finding",source_id:"902"}] |
+  .payload.codex_cycle = {
+    head:$head, cycle:(($live[0].charged_cycles // 0) + ($live[0].exempt_cycles // 0)),
+    attempt:$live[0].attempt, trigger_comment_id:($live[0].trigger_comment_id|tostring), exit_code:10,
+    accepted:$observation.accepted,
+    carried:($live[0].carry + {origin_head:$live[0].head})
+  }' "$integration_pass" >"$late_findings_pass"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$integration_head" CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt --slate s-integrator --session alice --run-id run-integrator --pass "$late_findings_pass" --codex-state "$tmp/carry-live-state.json" --codex-repo-dir "$repo") >/dev/null
+pass "late findings reject a claimed clean carry receipt and admit the truthful findings receipt"
+printf 'changed\n' >"$repo/carry-changed.txt"
+git -C "$repo" add carry-changed.txt
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "changed carry fixture"
+changed_head="$(git -C "$repo" rev-parse HEAD)"
+jq --arg head "$changed_head" '.carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-changed-state.json"
+expect_refused "changed diff refuses carry" "not-carried" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --repo-dir "$1" --at 2026-10-01T00:24:30Z' _ \
+    "$repo" "$capture_bin:$PATH" "$changed_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-changed-state.json"
+# The rejected carry leaves the changed PR head able to start its own ordinary
+# cycle. This is a new owner reservation, not a recovery or mutation of the
+# prior carried attachment.
+fresh_state="$tmp/fresh-changed-head-state.json"
+jq -n --arg head "$changed_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",
+  trigger_comment_id:null,first_trigger_comment_id:null,requested_at:null,
+  charged_cycles:2,exempt_cycles:0,attempt:1,run_id:"run-integrator",
+  timeout_min:10,reserved_at:"2026-10-01T00:26:00Z",finder:$finder}' >"$fresh_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$changed_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$fresh_state" --authority-kind reserve --at 2026-10-01T00:26:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const fresh = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .filter((entry) => entry.kind === "reserve").at(-1)?.authority.snapshot;
+  if (!fresh || fresh.head !== process.argv[2] || fresh.attempt !== 1 || fresh.carry !== undefined) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" "$changed_head" || fail "changed head did not admit a fresh ordinary reserve"
+pass "a changed diff starts a fresh ordinary current-head cycle after carry refusal"
 (cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
 pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"
 
