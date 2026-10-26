@@ -9496,7 +9496,13 @@ mv "${state}.with-run" "$state"
 jq -n --arg run "$auth_run" \
     '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[]}' \
     >"$auth_record"
-jq -n '{rounds:{integration:1},stages:{integration:{finders:["codex-cloud"]}}}' >"$auth_policy"
+# Receipt authentication consumes the same complete resolved projection the
+# writer records. Build it through the production reader: hand-authoring only
+# the two fields this assertion happens to inspect would bypass its full
+# policy/tier contract and drift as that projection grows.
+node "${repo_root}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" resolve \
+    --policy "${repo_root}/.devflow.toml" --registry "${repo_root}/agent-registry.json" \
+    --taskfile-dir "${repo_root}" --json >"$auth_policy"
 jq --arg run "$auth_run" --arg head "$head_sha" \
     --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '
   .run = {run_id:$run,initiated_by:"human"}
@@ -9599,7 +9605,7 @@ auth_validate "$auth_dir/counters.json"
 jq '.pr_bindings[0].number = 494' "$auth_record" >"$auth_dir/wrong-pr.json"
 mv "$auth_dir/wrong-pr.json" "$auth_record"
 auth_validate "$auth_receipt"
-[ "$auth_rc" -eq 1 ] && grep -Fq 'not bound to the run' <<<"$auth_out" ||
+[ "$auth_rc" -eq 1 ] && grep -Fq 'trusted PR binding' <<<"$auth_out" ||
     fail "wrong trusted PR binding was not refused: $auth_out"
 jq -n --arg run "$auth_run" \
     '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
