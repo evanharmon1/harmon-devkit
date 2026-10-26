@@ -564,9 +564,10 @@ _docs_glob_regex() {
 
 # Reads docs_only_paths (one pattern per line) from FILE and echoes "docs" or
 # "code" for the NUL-delimited changed paths in PATHS_FILE; it also depends on
-# the global $resolved_json for whole-allowlist validation. An empty PATHS_FILE
-# stays docs-only because there is no changed path to classify. It mirrors
-# CI's glob translation, fails closed when any allowlist entry is invalid,
+# the global $resolved_json for whole-allowlist validation. With a valid
+# allowlist, an empty PATHS_FILE stays docs-only because there is no changed
+# path to classify. The matcher mirrors CI's glob translation, fails closed
+# when any allowlist entry is invalid,
 # classifies newline/CR filenames as code, and classifies
 # .github/actions/*, .github/workflows/*, Taskfile.yml, Taskfile.yaml,
 # scripts/*, and .devflow.toml as code before allowlist matching. It does not

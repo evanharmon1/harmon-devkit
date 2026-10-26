@@ -15,7 +15,7 @@ set -euo pipefail
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 support_dir="${asset_dir}/../../dev-flow-support/assets"
 repo_root="$(cd "$asset_dir" && git rev-parse --show-toplevel)"
-helper="${ROUND_PUSH_TEST_HELPER:-${asset_dir}/round-push.sh}"
+helper="${asset_dir}/round-push.sh"
 devflow_policy_src="${support_dir}/devflow-policy.mjs"
 toml_lite_src="${support_dir}/lib/toml-lite.mjs"
 gitleaks_scan_src="${repo_root}/scripts/gitleaks-scan.sh"
